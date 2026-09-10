@@ -64,17 +64,63 @@ const CAPABILITY_LABELS: Record<RemoteCapability, string> = {
 // Defensive clamps for the agent-enforced session-lifetime fields. Even after
 // Zod validation these are clamped again here so a future schema relaxation (or
 // a DEFAULTS edit) can never push the agent into never-idle-out / never-expire
-// territory. 0 is a legitimate "disabled" sentinel for both.
+// territory. 0 is still a legitimate "disabled" sentinel for the idle timeout.
 function clamp(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(Math.max(Math.trunc(value), min), max);
 }
 
-function clampSettings(settings: RemoteAccessSettings): RemoteAccessSettings {
+/** Policy floor and ceiling for the session hard cap. */
+export const MIN_MAX_SESSION_DURATION_HOURS = 1;
+export const MAX_MAX_SESSION_DURATION_HOURS = 12;
+
+// One reconciliation warning per policy per process. Stored policies written
+// before the 12 h cap can hold `0` ("unlimited") or anything up to 168; those
+// are clamped here rather than rejected, because rejecting them at the shared
+// Zod schema would discard the WHOLE settings blob and fall back to DEFAULTS —
+// re-enabling clipboard and every other gate the policy meant to close.
+const clampWarned = new Set<string>();
+
+function warnClampOnce(key: string, message: string): void {
+  if (clampWarned.has(key)) return;
+  clampWarned.add(key);
+  console.warn(message);
+}
+
+export function resetRemoteAccessClampWarningsForTests(): void {
+  clampWarned.clear();
+}
+
+/**
+ * `maxSessionDurationHours` is clamped to [1, 12]:
+ *   - `0` no longer means "unlimited" — it resolves to the 12 h hard cap;
+ *   - anything above 12 clamps down to 12.
+ * Policy can SHORTEN the desktop session cap, never extend it.
+ */
+export function clampSettings(
+  settings: RemoteAccessSettings,
+  context?: { policyId?: string | null; deviceId?: string },
+): RemoteAccessSettings {
+  const requested = settings.maxSessionDurationHours;
+  const maxSessionDurationHours = Number.isFinite(requested) && Math.trunc(requested) > 0
+    ? clamp(requested, MIN_MAX_SESSION_DURATION_HOURS, MAX_MAX_SESSION_DURATION_HOURS)
+    : MAX_MAX_SESSION_DURATION_HOURS;
+
+  if (maxSessionDurationHours !== Math.trunc(requested)) {
+    warnClampOnce(
+      context?.policyId ?? `device:${context?.deviceId ?? 'unknown'}`,
+      `[RemoteAccessPolicy] maxSessionDurationHours=${requested} on policy ` +
+        `${context?.policyId ?? '(none)'} is outside the supported range ` +
+        `[${MIN_MAX_SESSION_DURATION_HOURS}, ${MAX_MAX_SESSION_DURATION_HOURS}] ` +
+        `(0/"unlimited" is no longer supported); resolving to ${maxSessionDurationHours} hours. ` +
+        'Update the remote-access policy to a value in range.',
+    );
+  }
+
   return {
     ...settings,
     idleTimeoutMinutes: clamp(settings.idleTimeoutMinutes, 0, 1440),
-    maxSessionDurationHours: clamp(settings.maxSessionDurationHours, 0, 168),
+    maxSessionDurationHours,
   };
 }
 
@@ -158,7 +204,10 @@ export async function resolveRemoteAccessForDevice(deviceId: string): Promise<Re
     // garbage. Numeric lifetime fields are additionally clamped below.
     const parsed = remoteAccessInlineSettingsSchema.safeParse(feature.inlineSettings ?? {});
     if (parsed.success) {
-      settings = clampSettings({ ...DEFAULTS, ...parsed.data });
+      settings = clampSettings(
+        { ...DEFAULTS, ...parsed.data },
+        { policyId: feature.sourcePolicyId ?? null, deviceId },
+      );
     } else {
       console.warn(
         `[RemoteAccessPolicy] Invalid remote_access inlineSettings for device ${deviceId}; falling back to defaults:`,
@@ -266,7 +315,7 @@ export async function resolveDesktopSessionPolicy(deviceId: string): Promise<Des
     return FAILSAFE_DESKTOP_POLICY;
   }
 
-  const clamped = clampSettings(settings);
+  const clamped = clampSettings(settings, { deviceId });
   return {
     clipboard: {
       hostToViewer: clamped.clipboardHostToViewer,
