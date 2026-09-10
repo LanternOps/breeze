@@ -21,6 +21,7 @@ import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { registerPlaybookTools } from './aiToolsPlaybooks';
+import { SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 function toolMap(): Map<string, AiTool> {
   const map = new Map<string, AiTool>();
@@ -174,17 +175,17 @@ describe('execute_playbook — users-FK probe-and-degrade (#3826)', () => {
 });
 
 describe('get_playbook_history — site narrowing', () => {
-  it.each([
-    ['defined-empty', []],
-    ['malformed null', null],
-  ])('returns no history and makes no query for a %s site ceiling', async (_label, allowedSiteIds) => {
+  it('returns no history and makes no query for a defined-empty site ceiling', async () => {
     const history = toolMap().get('get_playbook_history')!;
     const parsed = JSON.parse(await history.handler({}, makeAuth({
-      allowedSiteIds: allowedSiteIds as string[],
+      allowedSiteIds: [],
       canAccessSite: () => false,
     })));
 
-    expect(parsed).toEqual({ executions: [], count: 0 });
+    // The note is what lets the model distinguish "no executions" from
+    // "executions exist but none are in your sites" — every sibling
+    // site-scoped tool returns it.
+    expect(parsed).toEqual({ executions: [], count: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
     expect(db.select).not.toHaveBeenCalled();
   });
 

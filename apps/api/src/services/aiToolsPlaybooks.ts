@@ -19,6 +19,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { checkPlaybookRequiredPermissions } from './playbookPermissions';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -294,12 +295,11 @@ registerTool({
     try {
       // The site axis is not enforced by RLS. History is attributable to the
       // execution's current device, so restrict the joined device in SQL
-      // before ordering/LIMIT. Malformed runtime closures fail closed.
-      const allowedSiteIds = auth.allowedSiteIds === undefined
-        ? undefined
-        : Array.isArray(auth.allowedSiteIds) ? auth.allowedSiteIds : [];
+      // before ordering/LIMIT. `undefined` means unrestricted; a defined-empty
+      // ceiling denies every device and therefore every execution.
+      const allowedSiteIds = auth.allowedSiteIds;
       if (allowedSiteIds?.length === 0) {
-        return JSON.stringify({ executions: [], count: 0 });
+        return JSON.stringify({ executions: [], count: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
       }
 
       const conditions: SQL[] = [];

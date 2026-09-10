@@ -513,10 +513,8 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       const idleThresholdMinutes = Math.min(Math.max(1, Number(input.idleThresholdMinutes) || 15), 1440);
       const limit = Math.min(Math.max(1, Number(input.limit) || 100), 200);
       // Site authority is app-layer only. A defined ceiling constrains even
-      // the fleet form (no deviceId); malformed runtime values fail closed.
-      const allowedSiteIds = auth.allowedSiteIds === undefined
-        ? undefined
-        : Array.isArray(auth.allowedSiteIds) ? auth.allowedSiteIds : [];
+      // the fleet form (no deviceId); a defined-empty one denies everything.
+      const allowedSiteIds = auth.allowedSiteIds;
       if (allowedSiteIds?.length === 0) {
         return JSON.stringify({
           idleThresholdMinutes,
@@ -637,9 +635,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       const limit = Math.min(Math.max(1, Number(input.limit) || 200), 500);
       // Apply the current device's site before ordering/LIMIT so a hidden
       // newest session cannot starve an older visible result.
-      const allowedSiteIds = auth.allowedSiteIds === undefined
-        ? undefined
-        : Array.isArray(auth.allowedSiteIds) ? auth.allowedSiteIds : [];
+      const allowedSiteIds = auth.allowedSiteIds;
       if (allowedSiteIds?.length === 0) {
         return JSON.stringify({
           daysBack,

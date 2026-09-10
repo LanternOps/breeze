@@ -592,8 +592,12 @@ sentinelOneRoutes.get(
       }
     }
 
-    const perms = c.get('permissions') as UserPermissions | undefined;
-    if (perms?.allowedSiteIds) {
+    // The ceiling comes from `auth`, which `authMiddleware` populates on every
+    // request — not from the `permissions` context, which only exists once a
+    // `requirePermission` middleware has run. Reading it from the context
+    // would let a middleware reorder silently drop the site axis.
+    const allowedSiteIds = auth.allowedSiteIds;
+    if (allowedSiteIds) {
       // Status is requested either for one org or across the caller's whole
       // accessible org set. Site is an app-layer axis that org RLS does not
       // enforce, so the ceiling has to be applied in BOTH shapes — a
@@ -604,7 +608,7 @@ sentinelOneRoutes.get(
         : auth.orgCondition(devices.orgId);
       // No sites, or a cross-org request with no organization ceiling at all:
       // fail closed rather than scan every tenant's devices.
-      if (perms.allowedSiteIds.length === 0 || !deviceOrgCondition) {
+      if (allowedSiteIds.length === 0 || !deviceOrgCondition) {
         return c.json({ integration, mapped: true, summary: {
           totalAgents: 0, mappedDevices: 0, infectedAgents: 0, activeThreats: 0,
           highOrCriticalThreats: 0, pendingActions: 0, reportedThreatCount: 0,
@@ -613,7 +617,7 @@ sentinelOneRoutes.get(
       // Each security table has its own nullable device FK. SQL membership
       // excludes unmapped rows and avoids materializing a fleet-sized ID list.
       const siteDevices = db.select({ id: devices.id }).from(devices).where(and(
-        deviceOrgCondition, inArray(devices.siteId, perms.allowedSiteIds),
+        deviceOrgCondition, inArray(devices.siteId, allowedSiteIds),
       ));
       agentConditions.push(inArray(s1Agents.deviceId, siteDevices));
       threatConditions.push(inArray(s1Threats.deviceId, siteDevices));

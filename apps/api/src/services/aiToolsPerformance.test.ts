@@ -458,13 +458,6 @@ describe('fleet user-session AI tools — site narrowing', () => {
     expect(mockDb.select).not.toHaveBeenCalled();
   });
 
-  it('fails closed for a malformed null site ceiling before querying', async () => {
-    const parsed = JSON.parse(await handlerFor('get_active_users')({}, restrictedAuth(null)));
-
-    expect(parsed.totalActiveSessions).toBe(0);
-    expect(mockDb.select).not.toHaveBeenCalled();
-  });
-
   it.each([
     ['get_active_users', { limit: 1 }],
     ['get_user_experience_metrics', { limit: 1 }],

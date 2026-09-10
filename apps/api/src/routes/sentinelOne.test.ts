@@ -12,6 +12,7 @@ const { permissionGate, mfaGate, permsState, authState } = vi.hoisted(() => ({
     partnerId: 'a0000000-0000-4000-8000-000000000001' as string | undefined,
     partnerOrgAccess: null as 'all' | 'selected' | 'none' | null,
     accessibleOrgIds: ['11111111-1111-4111-8111-111111111111'] as string[],
+    allowedSiteIds: undefined as string[] | undefined,
     canAccessOrg: ((orgId: string) => orgId === '11111111-1111-4111-8111-111111111111') as (orgId: string) => boolean,
     orgCondition: () => undefined as any,
   }
@@ -100,6 +101,9 @@ vi.mock('../middleware/auth', () => ({
       accessibleOrgIds: authState.accessibleOrgIds,
       canAccessOrg: authState.canAccessOrg,
       orgCondition: authState.orgCondition,
+      // authMiddleware populates the site ceiling on EVERY request, unlike
+      // the `permissions` context, which exists only behind requirePermission.
+      allowedSiteIds: authState.allowedSiteIds,
       user: { id: 'user-123', email: 'test@example.com' }
     });
     return next();
@@ -203,7 +207,12 @@ describe('sentinel one routes', () => {
     authState.accessibleOrgIds = [ORG_ID];
     authState.canAccessOrg = (orgId: string) => orgId === ORG_ID;
     authState.orgCondition = () => undefined as any;
+    authState.allowedSiteIds = undefined;
     permsState.permissions = undefined;
+    // `vi.clearAllMocks()` clears call records but NOT queued
+    // `mockReturnValueOnce` values or a `mockImplementation`, so a test whose
+    // query count differs from what it queued would leak into the next one.
+    vi.mocked(db.select).mockReset();
 
     app = new Hono();
     app.route('/s1', sentinelOneRoutes);
@@ -973,15 +982,74 @@ describe('sentinel one routes', () => {
     // a site subquery; these two cover the CROSS-ORG shape (partner/system
     // caller, no `orgId` selector), where the ceiling used to be dropped
     // entirely and the aggregates counted devices outside the caller's sites.
-    function mockIntegrationLookup() {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: INTEGRATION_ID, partnerId: PARTNER_ID }])
-          })
-        })
-      } as any);
+    //
+    // Dispatch is keyed on the SELECTED COLUMNS, not on call order: a
+    // positional `mockReturnValueOnce` queue silently misaligns the moment the
+    // handler's query count changes (and `vi.clearAllMocks()` does not drain
+    // the queue, so the misalignment leaks into later tests). Same shape as
+    // `aiToolsSentinelOne.siteScope.test.ts`'s `isDeviceResolverSelect`.
+    function hasExactColumns(cols: unknown, ...names: string[]): boolean {
+      if (!cols || typeof cols !== 'object') return false;
+      const keys = Object.keys(cols as object);
+      return keys.length === names.length && names.every((n) => keys.includes(n));
     }
+    const INTEGRATION_ROW = { id: INTEGRATION_ID, partnerId: PARTNER_ID };
+    const AGENT_SUMMARY = [{ totalAgents: 1, mappedDevices: 1, infectedAgents: 0, totalThreatCount: 0 }];
+    const THREAT_SUMMARY = [{ activeThreats: 0, highOrCritical: 0 }];
+    const ACTION_SUMMARY = [{ pendingActions: 0 }];
+
+    /**
+     * @param onAggregateWhere receives each aggregate's WHERE predicate
+     * @param onSiteDeviceWhere receives the visible-device subquery's WHERE,
+     *   and its return value becomes the subquery embedded in the aggregates
+     */
+    function mockStatusQueries(
+      onAggregateWhere?: (where: unknown) => void,
+      onSiteDeviceWhere?: (where: unknown) => unknown,
+    ) {
+      vi.mocked(db.select).mockImplementation(((cols?: unknown) => {
+        // The visible-device subquery: `db.select({ id: devices.id })`.
+        if (hasExactColumns(cols, 'id')) {
+          return {
+            from: vi.fn().mockReturnValue({
+              where: vi.fn((where: unknown) => onSiteDeviceWhere?.(where) ?? where),
+            }),
+          };
+        }
+        for (const [names, rows] of [
+          [['totalAgents', 'mappedDevices', 'infectedAgents', 'totalThreatCount'], AGENT_SUMMARY],
+          [['activeThreats', 'highOrCritical'], THREAT_SUMMARY],
+          [['pendingActions'], ACTION_SUMMARY],
+        ] as [string[], unknown[]][]) {
+          if (hasExactColumns(cols, ...names)) {
+            return {
+              from: vi.fn().mockReturnValue({
+                where: vi.fn((where: unknown) => {
+                  onAggregateWhere?.(where);
+                  return Promise.resolve(rows);
+                }),
+              }),
+            };
+          }
+        }
+        // Everything else on this path is the partner integration lookup.
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([INTEGRATION_ROW]) }),
+          }),
+        };
+      }) as never);
+    }
+
+    const EMPTY_SUMMARY = {
+      totalAgents: 0,
+      mappedDevices: 0,
+      infectedAgents: 0,
+      activeThreats: 0,
+      highOrCriticalThreats: 0,
+      pendingActions: 0,
+      reportedThreatCount: 0,
+    };
 
     it('fails closed for a site-restricted cross-org read with no organization ceiling', async () => {
       authState.scope = 'partner';
@@ -989,26 +1057,16 @@ describe('sentinel one routes', () => {
       // No org ceiling at all: narrowing by site would have to scan every
       // tenant's devices, so the read must return nothing instead.
       authState.orgCondition = () => undefined as any;
-      permsState.permissions = { allowedSiteIds: ['site-A'] };
-      mockIntegrationLookup();
+      authState.allowedSiteIds = ['site-A'];
+      const aggregateWheres: unknown[] = [];
+      mockStatusQueries((where) => aggregateWheres.push(where));
 
       const res = await app.request('/s1/status');
 
       expect(res.status).toBe(200);
-      expect(await res.json()).toMatchObject({
-        mapped: true,
-        summary: {
-          totalAgents: 0,
-          mappedDevices: 0,
-          infectedAgents: 0,
-          activeThreats: 0,
-          highOrCriticalThreats: 0,
-          pendingActions: 0,
-          reportedThreatCount: 0,
-        },
-      });
-      // Only the integration lookup ran — no aggregate touched S1 data.
-      expect(db.select).toHaveBeenCalledTimes(1);
+      expect(await res.json()).toMatchObject({ mapped: true, summary: EMPTY_SUMMARY });
+      // No aggregate touched S1 data.
+      expect(aggregateWheres).toHaveLength(0);
     });
 
     it('applies the site ceiling to every cross-org status aggregate', async () => {
@@ -1016,35 +1074,15 @@ describe('sentinel one routes', () => {
       authState.orgId = undefined;
       const orgConditionSpy = vi.fn(() => sql`org_ceiling`);
       authState.orgCondition = orgConditionSpy as any;
-      permsState.permissions = { allowedSiteIds: ['site-A'] };
-      const capturedWhere: unknown[] = [];
+      authState.allowedSiteIds = ['site-A'];
+      const aggregateWheres: unknown[] = [];
       let siteDevicesWhere: unknown;
-
-      mockIntegrationLookup();
-      // The visible-device subquery. Returning its own WHERE makes the
-      // predicate observable inside each aggregate's condition tree.
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn((where: unknown) => {
-            siteDevicesWhere = where;
-            return where;
-          })
-        })
-      } as any);
-      for (const result of [
-        [{ totalAgents: 1, mappedDevices: 1, infectedAgents: 0, totalThreatCount: 0 }],
-        [{ activeThreats: 0, highOrCritical: 0 }],
-        [{ pendingActions: 0 }],
-      ]) {
-        vi.mocked(db.select).mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn((where: unknown) => {
-              capturedWhere.push(where);
-              return Promise.resolve(result);
-            })
-          })
-        } as any);
-      }
+      mockStatusQueries(
+        (where) => aggregateWheres.push(where),
+        // Returning the subquery's own WHERE makes its predicate observable
+        // inside each aggregate's condition tree.
+        (where) => { siteDevicesWhere = where; return where; },
+      );
 
       const res = await app.request('/s1/status');
 
@@ -1053,10 +1091,27 @@ describe('sentinel one routes', () => {
       expect(orgConditionSpy).toHaveBeenCalled();
       expect(collectSqlValues(siteDevicesWhere)).toContain('site-A');
       // ...and every aggregate family is narrowed by it.
-      expect(capturedWhere).toHaveLength(3);
-      for (const where of capturedWhere) {
+      expect(aggregateWheres).toHaveLength(3);
+      for (const where of aggregateWheres) {
         expect(collectSqlValues(where)).toContain('site-A');
       }
+    });
+
+    it('reads the ceiling from auth, not the permissions context', async () => {
+      // `permissions` exists only once a requirePermission middleware has run;
+      // `auth.allowedSiteIds` is set unconditionally by authMiddleware. A
+      // middleware reorder must not be able to drop the site axis.
+      authState.scope = 'partner';
+      authState.orgId = undefined;
+      authState.orgCondition = () => undefined as any;
+      authState.allowedSiteIds = [];
+      permsState.permissions = undefined;
+      mockStatusQueries();
+
+      const res = await app.request('/s1/status');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ mapped: true, summary: EMPTY_SUMMARY });
     });
   });
 
