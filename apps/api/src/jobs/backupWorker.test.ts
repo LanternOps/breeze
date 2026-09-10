@@ -812,4 +812,40 @@ describe('prepareBackupDispatchTargets — base pin + storage identity (D18 W01)
     expect(entry?.payload.publishLeaseExpiresAt).toBeUndefined();
     expect(entry?.payload.baseSnapshotId).toBeUndefined();
   });
+
+  // Interface contract confirmed against the merged agent implementation
+  // (W03, exec_backup.go): a backup_run payload is REJECTED by the helper if
+  // baseSnapshotId is present without publishLeaseExpiresAt, or vice versa --
+  // presence of the baseSnapshotId KEY (even "") is the server-owned-mode
+  // switch. Every backup_run dispatch must therefore always send BOTH keys
+  // together, and hyperv/mssql (never backup_run) must send NEITHER.
+  it('sends baseSnapshotId+publishLeaseExpiresAt together for backup_run, and neither for a hyperv_backup dispatch', async () => {
+    let capturedCommand: { type?: string; payload?: Record<string, unknown> } | undefined;
+    agentRelayMock.dispatchCommandToAgent.mockImplementation((async (_agentId: string, command: any) => {
+      capturedCommand = command;
+      return { status: 'sent', via: 'local' };
+    }) as any);
+
+    // Route the job-mode lookup to 'hyperv' and the hypervVms discovery
+    // select (`{vmName}`) to one VM, on top of this describe's existing
+    // shape router.
+    mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
+      const keys = cols ? Object.keys(cols) : [];
+      if (keys.length === 0) return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([CONFIG_ROW]) }) }) };
+      if (keys.length === 1 && keys[0] === 'status') return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }) };
+      if (keys.length === 1 && keys[0] === 'agentId') return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ agentId: 'agent-1' }]) }) }) };
+      if (keys.includes('featureLinkId')) return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ featureLinkId: null, backupMode: 'hyperv', modeTargets: {} }]) }) }) };
+      if (keys.length === 1 && keys[0] === 'vmName') return { from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ vmName: 'DC-01' }]) }) };
+      throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
+    }) as never);
+
+    await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(capturedCommand?.type).toBe('hyperv_backup');
+    expect(capturedCommand?.payload).not.toHaveProperty('baseSnapshotId');
+    expect(capturedCommand?.payload).not.toHaveProperty('publishLeaseExpiresAt');
+    // storage_identity is still stamped on the job row for a hyperv target.
+    const entry = updateLog.find((u) => u.payload.storageIdentity !== undefined);
+    expect(entry?.payload.storageIdentity).toBe('local::/tmp/gc-test');
+  });
 });
