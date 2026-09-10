@@ -101,6 +101,32 @@ function partnerScopedPermission(...guards: MiddlewareHandler[]): MiddlewareHand
 }
 
 const requireImportPermissions = partnerScopedPermission(requireOrgWrite, requireSiteWrite);
+
+/**
+ * Dedicated accounting capabilities (SEC-2026-09-05-057). Before these, every
+ * interactive QuickBooks route gated on partner authority alone, so any
+ * full-partner member — however low their role — could read the shared
+ * provider realm and, with MFA, drive realm lifecycle and settings mutations.
+ *
+ * `accounting:read` covers the provider reads (status, customers, entity
+ * mappings, income accounts, remote candidates); `accounting:manage` covers
+ * connect/disconnect, settings update/refresh, mapping writes and provider or
+ * mapping synchronization. Both are wrapped in `partnerScopedPermission` for
+ * the same reason the import/invoice guards are: a system-scope token carries
+ * no partner or org membership, so `requirePermission` can resolve no role for
+ * it (see that helper's comment above).
+ *
+ * These are ADDITIVE. Every pre-existing route requirement — MFA,
+ * organizations:write + sites:write on customer import, invoices:write on
+ * invoice push, catalog:write on item mappings, and the full-partner authority
+ * check — stays exactly as it was.
+ */
+const requireAccountingRead = partnerScopedPermission(
+  requirePermission(PERMISSIONS.ACCOUNTING_READ.resource, PERMISSIONS.ACCOUNTING_READ.action),
+);
+const requireAccountingManage = partnerScopedPermission(
+  requirePermission(PERMISSIONS.ACCOUNTING_MANAGE.resource, PERMISSIONS.ACCOUNTING_MANAGE.action),
+);
 const providerParamSchema = z.object({ provider: z.enum(['quickbooks']) });
 const partnerQuerySchema = z.object({ partnerId: z.string().guid().optional() });
 const callbackQuerySchema = z.object({
@@ -397,7 +423,7 @@ function validateProviderConfig(provider: AccountingProviderId): string | null {
 
 // Initiate the OAuth flow. Authenticated + MFA-gated: this is the privileged
 // action that decides which partner an external accounting realm links to.
-accountingRoutes.get('/:provider/connect', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+accountingRoutes.get('/:provider/connect', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -640,7 +666,7 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
   return c.redirect('/integrations?accounting=quickbooks&connected=1#accounting');
 });
 
-accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
@@ -671,7 +697,7 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
   return c.json({ disconnected: true });
 });
 
-accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingRead, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
@@ -722,7 +748,7 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccount
 // imported. The route creates nothing in Breeze, so it needs no write-role
 // permission, but annotation still compares against every organization in the
 // partner and therefore requires full-partner org access.
-accountingRoutes.get('/:provider/customers', authMiddleware, partnerScopes, requireFullPartnerOrgImportAccess, requireAccountingPartnerAuthority, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+accountingRoutes.get('/:provider/customers', authMiddleware, partnerScopes, requireFullPartnerOrgImportAccess, requireAccountingPartnerAuthority, requireAccountingRead, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -773,7 +799,7 @@ accountingRoutes.post('/:provider/customers/import', authMiddleware, partnerScop
   return c.json({ data: summary });
 });
 
-accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', settingsSchema), requireInvoicePushForSyncSwitches, async (c) => {
+accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', settingsSchema), requireInvoicePushForSyncSwitches, async (c) => {
   const { provider } = c.req.valid('param');
   const body = c.req.valid('json');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
@@ -830,7 +856,7 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
 // already open, so no connection is pinned across the QuickBooks round trip
 // and each phase commits on its own (services/accounting/dbContextGuard.ts).
 // The same applies to the four mapping-workbench routes below.
-accountingRoutes.post('/:provider/settings/refresh', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+accountingRoutes.post('/:provider/settings/refresh', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -877,7 +903,7 @@ accountingRoutes.post('/:provider/settings/refresh', authMiddleware, partnerScop
 // Reports `enqueued` HONESTLY (the Phase C lesson: `enqueueAccountingInvoicePush`
 // swallows a Redis outage by design, so the caller must surface its boolean
 // rather than assume the job landed — see the push-bulk route's comment above).
-accountingRoutes.post('/:provider/reconcile', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireMfa(), requireInvoicePush, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+accountingRoutes.post('/:provider/reconcile', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), requireInvoicePush, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
@@ -921,7 +947,7 @@ accountingRoutes.post('/:provider/reconcile', authMiddleware, partnerScopes, req
 // SELF_MANAGED_DB_CONTEXT_ROUTES (middleware/selfManagedDbContextRoutes.ts) —
 // no ambient request transaction, so the service's ambient-`db` reads need an
 // explicit context (Task 5 review fix — see the settings/refresh comment above).
-accountingRoutes.get('/:provider/mappings', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, zValidator('param', providerParamSchema), zValidator('query', mappingEntityQuerySchema), async (c) => {
+accountingRoutes.get('/:provider/mappings', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingRead, zValidator('param', providerParamSchema), zValidator('query', mappingEntityQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -944,7 +970,7 @@ accountingRoutes.get('/:provider/mappings', authMiddleware, partnerScopes, requi
 // Remote income account selector for item mapping — read-only. Also QBO-HTTP
 // backed, so it carries the same SELF_MANAGED_DB_CONTEXT_ROUTES registration
 // (and the same explicit-context requirement — Task 5 review fix).
-accountingRoutes.get('/:provider/income-accounts', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+accountingRoutes.get('/:provider/income-accounts', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingRead, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -968,7 +994,7 @@ accountingRoutes.get('/:provider/income-accounts', authMiddleware, partnerScopes
 // `confirmed` path calls the provider list to verify the remote entity, so
 // this route also carries the SELF_MANAGED_DB_CONTEXT_ROUTES registration
 // (and the same explicit-context requirement — Task 5 review fix).
-accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', mappingDecisionSchema), requireMappingWrite, async (c) => {
+accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', mappingDecisionSchema), requireMappingWrite, async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -1013,7 +1039,7 @@ accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requi
 // SELF_MANAGED_DB_CONTEXT_ROUTES registration (the provider upsert call is
 // real QuickBooks HTTP) — and the same explicit-context requirement (Task 5
 // review fix).
-accountingRoutes.post('/:provider/mappings/sync', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', mappingSyncSchema), requireMappingWrite, async (c) => {
+accountingRoutes.post('/:provider/mappings/sync', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', mappingSyncSchema), requireMappingWrite, async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -1184,6 +1210,7 @@ accountingRoutes.get(
   authMiddleware,
   partnerScopes,
   requireAccountingPartnerAuthority,
+  requireAccountingRead,
   zValidator('param', providerParamSchema),
   zValidator('query', remoteCandidatesQuerySchema),
   async (c) => {
