@@ -1873,6 +1873,7 @@
       "disablingMaintenance": "Désactivation du mode maintenance",
       "enablingMaintenance": "Activation du mode maintenance"
     },
+    "refresh": "Actualiser",
     "selectedOrganization": "L’organisation sélectionnée",
     "subtitle": "Gérez et surveillez votre flotte.",
     "title": "Dispositifs",

@@ -3048,3 +3048,32 @@ describe('DevicesPage — header "Add" split menu (#5213)', () => {
     expect(screen.queryByTestId('devices-page-add-menu')).toBeNull();
   });
 });
+
+describe('DevicesPage — header refresh button', () => {
+  it('refetches the fleet in place without dropping the list into the loading skeleton', async () => {
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    expect(vi.mocked(fetchAllDevices)).toHaveBeenCalledTimes(1);
+
+    let resolveSecond: (v: unknown) => void = () => {};
+    vi.mocked(fetchAllDevices).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveSecond = resolve; }) as never
+    );
+
+    fireEvent.click(screen.getByTestId('devices-page-refresh'));
+
+    // While the refetch is in flight the list stays mounted (no skeleton swap).
+    expect(vi.mocked(fetchAllDevices)).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId('device-list')).toBeTruthy();
+    expect(screen.getByTestId('devices-page-refresh').getAttribute('aria-busy')).toBe('true');
+
+    await act(async () => {
+      resolveSecond({ data: [rawDevice(DEV_1, 'host-refreshed')] });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('device-list').getAttribute('data-hostnames')).toContain('host-refreshed');
+    });
+    expect(screen.getByTestId('devices-page-refresh').getAttribute('aria-busy')).toBe('false');
+  });
+});

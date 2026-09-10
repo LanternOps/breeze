@@ -1874,6 +1874,7 @@
       "disablingMaintenance": "Wartungsmodus deaktivieren",
       "enablingMaintenance": "Wartungsmodus aktivieren"
     },
+    "refresh": "Aktualisieren",
     "selectedOrganization": "die ausgewählte Organisation",
     "subtitle": "Verwalten und überwachen Sie Ihre Flotte.",
     "title": "Geräte",

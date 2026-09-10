@@ -1877,6 +1877,7 @@
       "disablingMaintenance": "Bakım modunun devre dışı bırakılması",
       "enablingMaintenance": "Bakım modunu etkinleştirme"
     },
+    "refresh": "Yenile",
     "selectedOrganization": "seçilen kuruluş",
     "subtitle": "Filonuzu yönetin ve izleyin.",
     "title": "Cihazlar",

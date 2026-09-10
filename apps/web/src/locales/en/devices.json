@@ -1878,6 +1878,7 @@
       "disablingMaintenance": "Disabling maintenance mode",
       "enablingMaintenance": "Enabling maintenance mode"
     },
+    "refresh": "Refresh",
     "selectedOrganization": "the selected organization",
     "subtitle": "Manage and monitor your fleet.",
     "title": "Devices",

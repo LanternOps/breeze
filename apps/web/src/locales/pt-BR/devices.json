@@ -1877,6 +1877,7 @@
       "disablingMaintenance": "Desativando o modo de manutenção",
       "enablingMaintenance": "Ativando o modo de manutenção"
     },
+    "refresh": "Atualizar",
     "selectedOrganization": "a organização selecionada",
     "subtitle": "Gerencie e monitore sua frota.",
     "title": "Dispositivos",
