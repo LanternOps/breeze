@@ -33,7 +33,29 @@ const mockDb = {
 
 vi.mock('../db', () => ({ db: mockDb }));
 
-const fetchBackupObjectTextMock = vi.fn();
+// notFoundError mirrors what isBackupObjectNotFound (backupSnapshotStorage.ts)
+// recognizes as "object absent" (S3's NoSuchKey / local's ENOENT) — used
+// below as fetchBackupObjectTextMock's DEFAULT (base) implementation.
+function notFoundError(): Error {
+  return Object.assign(new Error('not found'), { name: 'NoSuchKey' });
+}
+
+// fetchBackupObjectTextMock's base implementation always rejects "not found".
+// markLiveBackupObjects now fetches TWO keys per snapshot — the ordinary
+// manifest, then (D15) the system-state manifest — and the vast majority of
+// tests in this file only care about the ordinary one. vi.fn()'s queued
+// `.mockResolvedValueOnce`/`.mockRejectedValueOnce` calls are consumed
+// strictly in CALL order regardless of the key argument, so as long as each
+// test queues exactly one entry per snapshot's ORDINARY manifest fetch (the
+// existing, unchanged convention), the interleaved system-state fetch calls
+// fall through to this base implementation and resolve as "no system state
+// for this snapshot" — the routine, expected case for a file-mode snapshot —
+// without every pre-existing test needing to queue a second entry. Tests that
+// DO care about system-state behavior override this per-call via
+// `mockImplementation`/explicit `.Once` queuing, same as any other vi.fn().
+const fetchBackupObjectTextMock = vi.fn(async () => {
+  throw notFoundError();
+});
 const listBackupObjectsUnderPrefixMock = vi.fn();
 const deleteBackupObjectKeysMock = vi.fn();
 
@@ -594,9 +616,20 @@ describe('sweepUnreferencedBackupObjects', () => {
       // different config's snapshot, same bucket) references an object that
       // physically lives under A's prefix — the cross-config reference the
       // identity-scoped mark protects.
-      fetchBackupObjectTextMock
-        .mockResolvedValueOnce(manifestJson([])) // manifest for A
-        .mockResolvedValueOnce(manifestJson([{ backupPath: 'snapshots/A/files/shared.dat' }])); // manifest for B
+      //
+      // Dispatched by key (not a positional .mockResolvedValueOnce chain):
+      // markLiveBackupObjects now fetches TWO keys per snapshot (ordinary +
+      // D15's system-state probe), which would otherwise misalign a
+      // positional queue across multiple snapshots — see the failure this
+      // fixture originally hit before switching to key dispatch.
+      fetchBackupObjectTextMock.mockImplementation(async (input: { key: string }) => {
+        if (input.key === 'snapshots/A/manifest.json') return manifestJson([]);
+        if (input.key === 'snapshots/B/manifest.json') {
+          return manifestJson([{ backupPath: 'snapshots/A/files/shared.dat' }]);
+        }
+        if (input.key.endsWith('/system-state/manifest.json')) throw notFoundError();
+        throw new Error(`unexpected manifest fetch: ${input.key}`);
+      });
 
       const old = new Date(Date.now() - 10 * DAY_MS);
       listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
@@ -667,9 +700,12 @@ describe('sweepUnreferencedBackupObjects', () => {
     selectQueue.push([destination]); // destinations
     selectQueue.push([]); // retained snapshots for the identity — NONE (row never persisted)
 
-    // Only ONE manifest fetch expected: snapshot NEW is picked up purely from
-    // the listing (not from a retained row), and NEW is the only snapshot in
-    // this bucket at all.
+    // ONE ordinary-manifest fetch expected: snapshot NEW is picked up purely
+    // from the listing (not from a retained row), and NEW is the only
+    // snapshot in this bucket at all. markLiveBackupObjects also probes for a
+    // system-state manifest per snapshot (D15) — that second call falls
+    // through to fetchBackupObjectTextMock's default "not found" (this
+    // snapshot has none), so it isn't queued here.
     fetchBackupObjectTextMock.mockResolvedValueOnce(
       manifestJson([{ backupPath: 'snapshots/OLD/files/base.dat' }]),
     );
@@ -683,9 +719,12 @@ describe('sweepUnreferencedBackupObjects', () => {
 
     const result = await sweepUnreferencedBackupObjects();
 
-    expect(fetchBackupObjectTextMock).toHaveBeenCalledTimes(1);
+    expect(fetchBackupObjectTextMock).toHaveBeenCalledTimes(2);
     expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(
       expect.objectContaining({ key: 'snapshots/NEW/manifest.json' }),
+    );
+    expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'snapshots/NEW/system-state/manifest.json' }),
     );
     expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
     expect(result).toEqual({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
@@ -720,6 +759,11 @@ describe('sweepUnreferencedBackupObjects', () => {
         if (input.key === 'snapshots/OLDER/manifest.json') {
           return manifestJson([{ backupPath: 'snapshots/BASE/files/base.dat' }]);
         }
+        // Neither snapshot has system state — this test predates D15 and
+        // isn't about it. markLiveBackupObjects probes for it unconditionally
+        // per snapshot, so it must resolve as "absent" (routine case), not an
+        // unexpected-key failure.
+        if (input.key.endsWith('/system-state/manifest.json')) throw notFoundError();
         throw new Error(`unexpected manifest fetch: ${input.key}`);
       });
 
@@ -771,14 +815,22 @@ describe('sweepUnreferencedBackupObjects', () => {
 
       const result = await sweepUnreferencedBackupObjects();
 
-      // Only the file manifest is fetched; the system_image manifest key is
-      // never touched, so the identity is NOT blocked.
-      expect(fetchBackupObjectTextMock).toHaveBeenCalledTimes(1);
+      // Only FILE1's manifests are fetched (ordinary + D15's system-state
+      // probe, which falls through to "not found" since this fixture has
+      // none); the system_image snapshot's keys are never touched at all, so
+      // the identity is NOT blocked.
+      expect(fetchBackupObjectTextMock).toHaveBeenCalledTimes(2);
       expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(
         expect.objectContaining({ key: 'snapshots/FILE1/manifest.json' }),
       );
+      expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'snapshots/FILE1/system-state/manifest.json' }),
+      );
       expect(fetchBackupObjectTextMock).not.toHaveBeenCalledWith(
         expect.objectContaining({ key: 'snapshots/IMG1/manifest.json' }),
+      );
+      expect(fetchBackupObjectTextMock).not.toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'snapshots/IMG1/system-state/manifest.json' }),
       );
       expect(result).toEqual({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
       expect(captureExceptionMock).not.toHaveBeenCalled();
@@ -924,6 +976,102 @@ describe('sweepUnreferencedBackupObjects', () => {
     it('sweeps a manifest-less prefix whose newest object is 1ms past the 9-day threshold', async () => {
       const result = await sweepManifestlessPrefixAtNewestAge(BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS + 1);
       expect(result.deleted).toBe(1);
+    });
+  });
+
+  // D15 bare-metal-recovery contract (Option A): a system_image snapshot
+  // publishes system-state/manifest.json + system-state/<artifact.path>
+  // alongside (or instead of) the ordinary manifest.files[] — see
+  // docs/superpowers/plans/backup/2026-09-09-bmr-system-state-contract.md.
+  // markLiveBackupObjects must mark those objects live too, or GC deletes
+  // every system_image snapshot's bare-metal-recovery state 48h after upload.
+  describe('D15 system-state GC (Option A)', () => {
+    it('keeps system-state objects live when referenced by system-state/manifest.json', async () => {
+      selectQueue.push([]); // unattributedRows
+      selectQueue.push([destination]); // destinations
+      selectQueue.push([{ snapshotId: 'B' }]); // retained
+
+      fetchBackupObjectTextMock.mockImplementation(async (input: { key: string }) => {
+        if (input.key === 'snapshots/B/manifest.json') return manifestJson([]);
+        if (input.key === 'snapshots/B/system-state/manifest.json') {
+          return JSON.stringify({ artifacts: [{ path: 'registry/SYSTEM' }, { path: 'boot/grub.cfg' }] });
+        }
+        throw new Error(`unexpected manifest fetch: ${input.key}`);
+      });
+
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/B/manifest.json', lastModified: old },
+        { key: 'snapshots/B/system-state/manifest.json', lastModified: old },
+        // Both old enough to sweep on age alone if NOT marked live by the
+        // system-state manifest's artifacts[] — the thing under test.
+        { key: 'snapshots/B/system-state/registry/SYSTEM', lastModified: old },
+        { key: 'snapshots/B/system-state/boot/grub.cfg', lastModified: old },
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result).toEqual({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
+    });
+
+    it('deletes system-state objects under an expired/unretained snapshot the same way ordinary file objects are', async () => {
+      // Snapshot B is retained and references nothing; snapshot EXPIRED is
+      // NOT retained and not in the listing's manifest set either (it has
+      // aged out / its row is gone) — both its ordinary-shaped loose object
+      // and its system-state artifact are old, unreferenced, manifest-less,
+      // and past the 9-day manifest-less-prefix window, so BOTH must sweep.
+      selectQueue.push([]); // unattributedRows
+      selectQueue.push([destination]); // destinations
+      selectQueue.push([{ snapshotId: 'B' }]); // retained
+
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([])); // B's ordinary manifest; B has no system-state manifest (falls through to "not found")
+
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/B/manifest.json', lastModified: old },
+        { key: 'snapshots/EXPIRED/system-state/registry/SYSTEM', lastModified: old },
+      ]);
+
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({
+        deletedKeys: ['snapshots/EXPIRED/system-state/registry/SYSTEM'],
+        failedKeys: [],
+      });
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      const deletedArg = deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] };
+      expect(deletedArg.keys).toEqual(['snapshots/EXPIRED/system-state/registry/SYSTEM']);
+      expect(result.deleted).toBe(1);
+    });
+
+    it('does NOT sweep the group when the system-state manifest fetch fails with a non-404 error (fail-closed)', async () => {
+      selectQueue.push([]); // unattributedRows
+      selectQueue.push([destination]); // destinations
+      selectQueue.push([{ snapshotId: 'B' }]); // retained
+
+      fetchBackupObjectTextMock.mockImplementation(async (input: { key: string }) => {
+        if (input.key === 'snapshots/B/manifest.json') return manifestJson([]);
+        if (input.key === 'snapshots/B/system-state/manifest.json') {
+          throw new Error('S3 500 fetching system state manifest');
+        }
+        throw new Error(`unexpected manifest fetch: ${input.key}`);
+      });
+
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/B/manifest.json', lastModified: old },
+        { key: 'snapshots/B/system-state/registry/SYSTEM', lastModified: old }, // would be deletable if the abort didn't protect it
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      // A non-"not found" fetch failure cannot prove liveness one way or the
+      // other, so the WHOLE identity is fail-closed — same contract as an
+      // unfetchable ordinary manifest.
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result).toEqual({ deleted: 0, skippedIdentities: 1, blockedIdentities: 1 });
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     });
   });
 });

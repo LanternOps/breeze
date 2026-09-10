@@ -162,6 +162,22 @@ export function backupSnapshotManifestKey(snapshotId: string): string {
   return `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}/${BACKUP_SNAPSHOT_MANIFEST_KEY}`;
 }
 
+// Mirrors agent/internal/backup/snapshot.go's systemStateDir/
+// systemStateManifestKey constants exactly (D15 bare-metal-recovery
+// contract, Option A — see docs/superpowers/plans/backup/
+// 2026-09-09-bmr-system-state-contract.md): system-state artifacts live
+// under their own sub-prefix, never inside manifest.files[].
+export const BACKUP_SYSTEM_STATE_DIR = 'system-state';
+export const BACKUP_SYSTEM_STATE_MANIFEST_KEY = 'manifest.json';
+
+export function backupSystemStateManifestKey(snapshotId: string): string {
+  return `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}/${BACKUP_SYSTEM_STATE_DIR}/${BACKUP_SYSTEM_STATE_MANIFEST_KEY}`;
+}
+
+export function backupSystemStateArtifactKey(snapshotId: string, artifactPath: string): string {
+  return `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}/${BACKUP_SYSTEM_STATE_DIR}/${artifactPath}`;
+}
+
 // ── GC support: list objects with last-modified ──────────────────────────────
 
 async function listS3ObjectsWithLastModified(
@@ -302,6 +318,24 @@ export async function fetchBackupObjectText(input: {
   if (provider === 's3') return fetchS3ObjectText(providerConfig, input.key);
   if (provider === 'local') return fetchLocalObjectText(providerConfig, input.key);
   throw new Error(`Provider ${provider ?? 'unknown'} does not support object fetch for GC`);
+}
+
+/**
+ * Distinguishes a genuine "object not present" from any other fetch failure,
+ * across both providers fetchBackupObjectText supports — mirrors
+ * isS3NotFound (s3Storage.ts) for S3 (NotFound/NoSuchKey) and adds the local
+ * provider's ENOENT. Used by GC's system-state-manifest probe
+ * (backupRetention.ts's markLiveBackupObjects): "not found" is the expected,
+ * routine case for a file-mode snapshot with no system-state manifest, so it
+ * must NOT abort the sweep the way every other fetch failure does — but
+ * anything else (permission fault, transport error, corrupt local FS) means
+ * liveness cannot be proven and the fail-closed contract still applies.
+ */
+export function isBackupObjectNotFound(err: unknown): boolean {
+  const name = (err as { name?: string } | undefined)?.name;
+  if (name === 'NotFound' || name === 'NoSuchKey') return true;
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'ENOENT';
 }
 
 // ── GC support: delete specific object keys ───────────────────────────────────

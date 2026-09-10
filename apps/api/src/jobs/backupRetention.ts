@@ -21,8 +21,11 @@ import {
   BACKUP_SNAPSHOT_MANIFEST_KEY,
   backupSnapshotManifestKey,
   backupSnapshotRootPrefix,
+  backupSystemStateArtifactKey,
+  backupSystemStateManifestKey,
   deleteBackupObjectKeys,
   fetchBackupObjectText,
+  isBackupObjectNotFound,
   listBackupObjectsUnderPrefix,
   type BackupObjectListing,
 } from '../services/backupSnapshotStorage';
@@ -559,6 +562,25 @@ export type BackupGcResult = { deleted: number; skippedIdentities: number; block
 
 type BackupGcManifest = { files?: Array<{ backupPath?: unknown }> };
 
+// D15 bare-metal-recovery contract (Option A): a system_image snapshot
+// publishes a SEPARATE manifest under system-state/manifest.json, describing
+// artifacts under system-state/<artifact.path> — never inside the ordinary
+// manifest's `files[]`. Mirrors agent/internal/backup/systemstate/types.go's
+// SystemStateManifest/Artifact shape (only the field GC needs: path).
+type BackupGcSystemStateManifest = { artifacts?: Array<{ path?: unknown }> };
+
+function parseBackupGcSystemStateManifest(raw: string): BackupGcSystemStateManifest {
+  const parsed: unknown = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('system state manifest is not a JSON object');
+  }
+  const artifacts = (parsed as { artifacts?: unknown }).artifacts;
+  if (artifacts !== undefined && !Array.isArray(artifacts)) {
+    throw new Error('system state manifest.artifacts is not an array');
+  }
+  return parsed as BackupGcSystemStateManifest;
+}
+
 /**
  * Resolves the per-run deletion cap from env on every call (not once at
  * module load) so it stays test-overridable without module-reset gymnastics.
@@ -853,6 +875,55 @@ async function markLiveBackupObjects(
     for (const file of manifest.files ?? []) {
       if (typeof file.backupPath === 'string' && file.backupPath.length > 0) {
         live.add(file.backupPath);
+      }
+    }
+
+    // D15 bare-metal-recovery contract (Option A): system-state artifacts
+    // live under their own manifest/prefix, never inside manifest.files[]
+    // above — so without this, GC would sweep them 48h after ANY
+    // system_image snapshot, live regression, not hypothetical (see the plan
+    // doc referenced on backupSystemStateManifestKey). Absence is the
+    // ROUTINE case for a file-mode snapshot (no system state ever
+    // collected) — isBackupObjectNotFound distinguishes that from "the fetch
+    // failed for some other reason", which must still fail-closed (abort
+    // this identity's whole sweep) the same as an ordinary-manifest fetch
+    // failure: an unproven system-state manifest must never be inferred as
+    // "doesn't exist" — that would open the door to sweeping objects a
+    // transient error only made unreachable, not orphaned.
+    const stateManifestKey = backupSystemStateManifestKey(snapshotId);
+    let stateRaw: string;
+    try {
+      stateRaw = await fetchBackupObjectText({
+        provider: identity.provider,
+        providerConfig: identity.providerConfig,
+        key: stateManifestKey,
+      });
+    } catch (error) {
+      if (isBackupObjectNotFound(error)) continue;
+      console.error(
+        `[BackupGC] System state manifest fetch failed for snapshot ${snapshotId} (key ${stateManifestKey}) — ` +
+        `aborting sweep for this identity:`,
+        error,
+      );
+      return null;
+    }
+
+    let stateManifest: BackupGcSystemStateManifest;
+    try {
+      stateManifest = parseBackupGcSystemStateManifest(stateRaw);
+    } catch (error) {
+      console.error(
+        `[BackupGC] System state manifest parse failed for snapshot ${snapshotId} (key ${stateManifestKey}) — ` +
+        `aborting sweep for this identity:`,
+        error,
+      );
+      return null;
+    }
+
+    live.add(stateManifestKey);
+    for (const artifact of stateManifest.artifacts ?? []) {
+      if (typeof artifact.path === 'string' && artifact.path.length > 0) {
+        live.add(backupSystemStateArtifactKey(snapshotId, artifact.path));
       }
     }
   }
