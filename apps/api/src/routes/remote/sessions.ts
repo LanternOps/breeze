@@ -1176,6 +1176,15 @@ sessionRoutes.post(
 sessionRoutes.post(
   '/sessions/:id/end',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the site gate below is provably live
+  // from this route's OWN chain (#1051 detector). The parent router
+  // (routes/remote/index.ts) already applies the identical gate to /remote/*,
+  // so this adds no new authority requirement and cannot lock anyone out — it
+  // states the dependency locally instead of inheriting it from a mount the
+  // file-local analyzer cannot see, and keeps the gate live if that mount ever
+  // changes. REMOTE_ACCESS rather than DEVICES_READ: it is the permission this
+  // surface already requires.
+  requirePermission(PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action),
   zValidator('param', sessionIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
