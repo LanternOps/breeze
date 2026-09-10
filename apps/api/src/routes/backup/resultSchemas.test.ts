@@ -50,6 +50,45 @@ describe('backupCommandResultSchema — system_image manifest', () => {
   });
 });
 
+// D15 Wave 1 finding #1: a state-only system_image run's ordinary manifest
+// must publish `"files":[]`, never `"files":null` — the agent-side fix is at
+// backup.go's state-only Snapshot literal. This documents the API-side half
+// of that contract: `snapshot.files` is `z.array(...).optional()`, which
+// accepts a MISSING key or an empty array, but Zod's `.optional()` rejects an
+// explicit `null` — so a result that regressed back to emitting `null` would
+// 400 and silently drop the whole job result (snapshot id, size, everything).
+describe('backupCommandResultSchema — snapshot.files null-vs-empty contract (D15)', () => {
+  it('parses a system_image result whose snapshot.files is an empty array', () => {
+    const parsed = backupCommandResultSchema.parse({
+      snapshotId: 'snap-1',
+      backupType: 'system_image',
+      systemStateManifest: {
+        platform: 'linux',
+        artifacts: [{ name: 'services_systemd', category: 'services' }],
+      },
+      snapshot: {
+        id: 'snap-1',
+        files: [],
+      },
+    });
+    expect(parsed.snapshot?.files).toEqual([]);
+    expect(parsed.systemStateManifest?.platform).toBe('linux');
+  });
+
+  it('rejects a result whose snapshot.files is null', () => {
+    expect(() =>
+      backupCommandResultSchema.parse({
+        snapshotId: 'snap-1',
+        backupType: 'system_image',
+        snapshot: {
+          id: 'snap-1',
+          files: null,
+        },
+      }),
+    ).toThrow();
+  });
+});
+
 describe('backupCommandResultSchema — incremental-backup referenced stats', () => {
   it('accepts referencedBytes + referencedFiles from an agent that deduped files', () => {
     const parsed = backupCommandResultSchema.parse({
