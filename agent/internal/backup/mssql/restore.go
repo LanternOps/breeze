@@ -56,10 +56,21 @@ func RunRestore(instance, backupFile, targetDB string, noRecovery bool) (*Restor
 		recoveryOption = "NORECOVERY"
 	}
 
-	query := fmt.Sprintf(
-		"RESTORE DATABASE [%s] FROM DISK='%s' WITH %s, REPLACE, STATS=10",
-		escapedDB, escapedFile, recoveryOption,
-	)
+	// D25: adds WITH MOVE clauses when targetDB differs from the backup's
+	// own source database name, so SQL Server doesn't try to recreate the
+	// backup's files at physical paths a still-attached source database
+	// owns (Msg 1834). See resolveRestoreQuery (restoremove.go).
+	query, buildErr := resolveRestoreQuery(serverName, backupFile, escapedFile, targetDB, escapedDB, recoveryOption)
+	if buildErr != nil {
+		duration := time.Since(start)
+		return &RestoreResult{
+			DatabaseName: targetDB,
+			RestoredAs:   targetDB,
+			Status:       "failed",
+			Error:        buildErr.Error(),
+			DurationMs:   duration.Milliseconds(),
+		}, fmt.Errorf("%w: %v", ErrRestoreFailed, buildErr)
+	}
 
 	slog.Info("mssql restore starting",
 		"instance", instance,
