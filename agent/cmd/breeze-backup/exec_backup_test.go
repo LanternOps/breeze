@@ -292,6 +292,9 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 		wantPaths       []string // expected manager paths
 		wantSystemImage bool     // expected SystemStateEnabled
 		wantVSS         bool     // expected VSSEnabled
+
+		wantBaseSnapshotID        *string
+		wantPublishLeaseExpiresAt time.Time
 	}{
 		{
 			name:    "empty payload falls back to agent.yaml manager",
@@ -386,6 +389,35 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 			wantSystemImage: true,
 			wantVSS:         false,
 		},
+		{
+			name:                      "server-owned mode: non-empty baseSnapshotId with a lease",
+			payload:                   `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"baseSnapshotId":"snap-123","publishLeaseExpiresAt":"2026-09-16T00:00:00Z"}`,
+			wantProvider:              "local",
+			wantBasePath:              filepath.Clean("/var/backups"),
+			wantPaths:                 []string{"/data"},
+			wantVSS:                   runtime.GOOS == "windows",
+			wantBaseSnapshotID:        strPtr("snap-123"),
+			wantPublishLeaseExpiresAt: time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:                      "server-owned mode: empty baseSnapshotId means full run, lease still set",
+			payload:                   `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"baseSnapshotId":"","publishLeaseExpiresAt":"2026-09-16T00:00:00Z"}`,
+			wantProvider:              "local",
+			wantBasePath:              filepath.Clean("/var/backups"),
+			wantPaths:                 []string{"/data"},
+			wantVSS:                   runtime.GOOS == "windows",
+			wantBaseSnapshotID:        strPtr(""),
+			wantPublishLeaseExpiresAt: time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:         "legacy payload: no baseSnapshotId field at all",
+			payload:      `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"]}`,
+			wantProvider: "local",
+			wantBasePath: filepath.Clean("/var/backups"),
+			wantPaths:    []string{"/data"},
+			wantVSS:      runtime.GOOS == "windows",
+			// wantBaseSnapshotID left nil (legacy mode), wantPublishLeaseExpiresAt left zero.
+		},
 	}
 
 	for _, tt := range tests {
@@ -432,6 +464,17 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 
 			if got := mgr.GetVSSEnabled(); got != tt.wantVSS {
 				t.Fatalf("VSSEnabled = %v, want %v", got, tt.wantVSS)
+			}
+
+			gotBase := mgr.GetBaseSnapshotID()
+			if (gotBase == nil) != (tt.wantBaseSnapshotID == nil) {
+				t.Fatalf("GetBaseSnapshotID() = %v, want %v", gotBase, tt.wantBaseSnapshotID)
+			}
+			if gotBase != nil && tt.wantBaseSnapshotID != nil && *gotBase != *tt.wantBaseSnapshotID {
+				t.Fatalf("GetBaseSnapshotID() = %q, want %q", *gotBase, *tt.wantBaseSnapshotID)
+			}
+			if !mgr.GetPublishLeaseExpiresAt().Equal(tt.wantPublishLeaseExpiresAt) {
+				t.Fatalf("GetPublishLeaseExpiresAt() = %v, want %v", mgr.GetPublishLeaseExpiresAt(), tt.wantPublishLeaseExpiresAt)
 			}
 
 			provider := mgr.GetProvider()
@@ -613,5 +656,43 @@ func TestManagerFromBackupRunPayload_CarriesHelperAgentID(t *testing.T) {
 		if got := mgr.GetAgentID(); got != "agent-abc123" {
 			t.Fatalf("%s: AgentID = %q, want agent-abc123", name, got)
 		}
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
+// TestManagerFromBackupRunPayload_RejectsServerOwnedModeWithoutLease is the
+// D18 §3.1 P1 fix: a present baseSnapshotId (server-owned mode is ON, even
+// when it points at an explicit full run "") with a missing/empty/zero
+// publishLeaseExpiresAt is a protocol violation by the dispatching server —
+// reject the whole payload rather than silently running ungated.
+func TestManagerFromBackupRunPayload_RejectsServerOwnedModeWithoutLease(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "baseSnapshotId present, publishLeaseExpiresAt entirely absent",
+			payload: `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"baseSnapshotId":"snap-1"}`,
+		},
+		{
+			name:    "baseSnapshotId present, publishLeaseExpiresAt empty string",
+			payload: `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"baseSnapshotId":"snap-1","publishLeaseExpiresAt":""}`,
+		},
+		{
+			name:    "baseSnapshotId is an explicit full-run empty string, lease still required",
+			payload: `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"baseSnapshotId":""}`,
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr, err := managerFromBackupRunPayload(json.RawMessage(tt.payload))
+			if err == nil {
+				t.Fatal("expected an error rejecting a server-owned-mode payload with no publish lease")
+			}
+			if mgr != nil {
+				t.Fatal("expected a nil manager on rejection")
+			}
+		})
 	}
 }

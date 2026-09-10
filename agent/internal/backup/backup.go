@@ -106,6 +106,28 @@ type BackupConfig struct {
 	// plumbing (#3269) is free to change the session's shape underneath without
 	// touching this field.
 	VSSProvider vss.Provider
+
+	// BaseSnapshotID switches this run between server-owned base selection
+	// (D18 §3.1) and the legacy bucket-listing previousManifest path. nil
+	// means the dispatching server predates the field (legacy mode,
+	// unchanged behavior — see exec_backup.go's payload decode). A non-nil
+	// pointer to "" means the server explicitly selected no base for this
+	// run (full run, no dedupe attempted). A non-nil pointer to a snapshot
+	// id means the server selected that snapshot as this run's dedupe base
+	// — fetchServerOwnedBase fetches and validates it (D6 identity guard)
+	// before use, failing open to a full run on any problem (download
+	// error, decode error, or identity mismatch).
+	BaseSnapshotID *string
+
+	// PublishLeaseExpiresAt is the deadline (verbatim from the backup_run
+	// payload's publishLeaseExpiresAt field) after which this run must not
+	// publish snapshots/<id>/manifest.json — see leaseGate. Set for every
+	// server-dispatched file/system_image run, base or not (it fences late
+	// results server-side too, D18 §3.1). Zero value means the dispatching
+	// server predates the field, disabling the check entirely (legacy
+	// behavior: publish whenever ready). There is no renewal — this is
+	// exactly what the server chose at dispatch time.
+	PublishLeaseExpiresAt time.Time
 }
 
 // BackupJob tracks the state of a backup run.
@@ -217,11 +239,25 @@ func (m *BackupManager) GetPaths() []string {
 	return m.config.Paths
 }
 
-// GetRetention returns the configured retention count. On the helper's
-// backup_run path this is 0: retention is owned by the server, and 0 makes
-// DeleteSnapshotContext a no-op so the agent never prunes remote storage.
+// GetRetention returns the configured retention count. It is retained for
+// config-shape compatibility only: agent-side retention pruning has been
+// removed entirely (D18 §3.5) — the server is the sole retention/GC
+// authority. This value drives no behavior anywhere in this package.
 func (m *BackupManager) GetRetention() int {
 	return m.config.Retention
+}
+
+// GetBaseSnapshotID returns the server-selected incremental-dedupe base for
+// this run (D18 §3.1): nil in legacy mode, a pointer to "" for an
+// explicit full run, a pointer to a snapshot id otherwise.
+func (m *BackupManager) GetBaseSnapshotID() *string {
+	return m.config.BaseSnapshotID
+}
+
+// GetPublishLeaseExpiresAt returns the deadline this run must publish its
+// manifest by (zero value = no lease, legacy server).
+func (m *BackupManager) GetPublishLeaseExpiresAt() time.Time {
+	return m.config.PublishLeaseExpiresAt
 }
 
 // GetStagingDir returns the configured staging base directory, or an empty
