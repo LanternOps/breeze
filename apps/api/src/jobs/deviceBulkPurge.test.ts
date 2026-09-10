@@ -84,6 +84,7 @@ function payload(overrides: Partial<DeviceBulkPurgeJobPayload> = {}): DeviceBulk
       { deviceId: DEV_1, orgId: ORG_A, hostname: 'host-1' },
       { deviceId: DEV_2, orgId: ORG_A, hostname: 'host-2' },
     ],
+    authorization: { version: 1, siteAccess: { mode: 'unrestricted' } },
     actorUserId: 'user-1',
     actorEmail: 'tech@example.com',
     partnerId: 'partner-1',
@@ -91,11 +92,11 @@ function payload(overrides: Partial<DeviceBulkPurgeJobPayload> = {}): DeviceBulk
   };
 }
 
-function fakeJob(data: DeviceBulkPurgeJobPayload, name = 'device-bulk-purge') {
+function fakeJob(data: DeviceBulkPurgeJobPayload, name = 'device-bulk-purge-v2') {
   const progress: unknown[] = [];
   const job = {
     name,
-    id: `device-bulk-purge-${data.jobId}`,
+    id: `device-bulk-purge-v2-${data.jobId}`,
     data,
     updateProgress: vi.fn(async (p: unknown) => {
       progress.push(p);
@@ -157,6 +158,55 @@ describe('processDeviceBulkPurgeJob', () => {
     ]);
     // A refusal is not a job failure: the other devices still ran.
     expect(purgeRemovedDevice).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-applies the serialized site ceiling inside every worker transaction', async () => {
+    const ceiling = ['site-visible'];
+    vi.mocked(purgeRemovedDevice).mockImplementation(async (_tx, id, allowedSiteIds) => {
+      expect(allowedSiteIds).toEqual(ceiling);
+      if (id === DEV_1) {
+        throw new DeviceLifecycleError(
+          'STATE_CHANGED',
+          'Device access or linked state changed before deletion',
+        );
+      }
+      return { linkGroupId: null, linkGroupDissolved: false };
+    });
+
+    const { job } = fakeJob(payload({
+      authorization: {
+        version: 1,
+        siteAccess: { mode: 'restricted', allowedSiteIds: ceiling },
+      },
+    }));
+    const result = (await processDeviceBulkPurgeJob(job as never)) as DeviceBulkPurgeResult;
+
+    expect(result.skipped).toEqual([{ deviceId: DEV_1, code: 'STATE_CHANGED' }]);
+    expect(result.purged).toEqual([DEV_2]);
+    expect(purgeRemovedDevice).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['missing legacy envelope', undefined],
+    ['unknown envelope version', { version: 99, siteAccess: { mode: 'unrestricted' } }],
+    ['unknown site mode', { version: 1, siteAccess: { mode: 'legacy-all' } }],
+  ])('fails closed on %s before opening a purge transaction', async (_label, authorization) => {
+    const legacy = payload() as unknown as Record<string, unknown>;
+    if (authorization === undefined) delete legacy.authorization;
+    else legacy.authorization = authorization;
+
+    const { job } = fakeJob(legacy as unknown as DeviceBulkPurgeJobPayload);
+    const result = (await processDeviceBulkPurgeJob(job as never)) as DeviceBulkPurgeResult;
+
+    expect(result).toEqual({
+      purged: [],
+      skipped: [
+        { deviceId: DEV_1, code: 'AUTHORIZATION_CONTEXT_INVALID' },
+        { deviceId: DEV_2, code: 'AUTHORIZATION_CONTEXT_INVALID' },
+      ],
+    });
+    expect(purgeRemovedDevice).not.toHaveBeenCalled();
+    expect(createAuditLog).not.toHaveBeenCalled();
   });
 
   it('records an unexpected error as ERROR and keeps going', async () => {
@@ -289,8 +339,8 @@ describe('processDeviceBulkPurgeJob', () => {
     expect(progress).toHaveLength(DEVICE_BULK_PURGE_MAX_TARGETS);
   });
 
-  it('ignores a job posted under a different name', async () => {
-    const { job } = fakeJob(payload(), 'some-other-job');
+  it('does not let the v2 worker execute a legacy v1 job name', async () => {
+    const { job } = fakeJob(payload(), 'device-bulk-purge');
     const result = await processDeviceBulkPurgeJob(job as never);
     expect(result).toEqual({ skipped: true });
     expect(purgeRemovedDevice).not.toHaveBeenCalled();
@@ -306,13 +356,13 @@ describe('processDeviceBulkPurgeJob', () => {
 });
 
 describe('enqueueDeviceBulkPurge', () => {
-  it('keys the job on device-bulk-purge-<uuid> and disables retries', async () => {
+  it('keys the job on the isolated v2 protocol queue and disables retries', async () => {
     await enqueueDeviceBulkPurge(payload());
 
     expect(enqueueOrReplaceStale).toHaveBeenCalledTimes(1);
     const [, jobName, jobId, sent, options] = vi.mocked(enqueueOrReplaceStale).mock.calls[0]!;
-    expect(jobName).toBe('device-bulk-purge');
-    expect(jobId).toBe('device-bulk-purge-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    expect(jobName).toBe('device-bulk-purge-v2');
+    expect(jobId).toBe('device-bulk-purge-v2-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
     expect(sent).toMatchObject({ partnerId: 'partner-1' });
     // attempts: 1 — a retry would re-run a half-finished purge list against
     // devices whose state has moved on since the first pass.
@@ -321,7 +371,7 @@ describe('enqueueDeviceBulkPurge', () => {
 });
 
 describe('createDeviceBulkPurgeWorker', () => {
-  it('constructs a single-concurrency worker on the device-bulk-purge queue', () => {
+  it('constructs a single-concurrency worker on the isolated v2 queue', () => {
     createDeviceBulkPurgeWorker();
     expect(WorkerMockCtor).toHaveBeenCalledTimes(1);
     const [queueName, , options] = vi.mocked(WorkerMockCtor).mock.calls[0] as unknown as [
@@ -329,7 +379,7 @@ describe('createDeviceBulkPurgeWorker', () => {
       unknown,
       { concurrency: number },
     ];
-    expect(queueName).toBe('device-bulk-purge');
+    expect(queueName).toBe('device-bulk-purge-v2');
     // Concurrency 1: the cascade takes wide row locks across ~40 tables, and
     // two of these racing on the same org is contention for no throughput win.
     expect(options.concurrency).toBe(1);

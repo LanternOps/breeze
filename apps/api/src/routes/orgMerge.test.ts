@@ -55,6 +55,16 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: writeRouteAuditMock,
 }));
 
+const { partnerReach } = vi.hoisted(() => ({
+  partnerReach: { current: { kind: 'allOfPartner' } as
+    | { kind: 'allOfPartner' }
+    | { kind: 'selection'; orgIds: string[] }
+    | { kind: 'none' } },
+}));
+vi.mock('../services/partnerOrgSelection', () => ({
+  resolvePartnerOrgReach: vi.fn(async () => partnerReach.current),
+}));
+
 // --- engine (services/orgMerge) ------------------------------------------
 //
 // A local MergeValidationError class, NOT the real module's — the route
@@ -123,6 +133,7 @@ type FakeAuth = {
   token: { mfa?: boolean };
   scope: 'system' | 'partner' | 'organization';
   partnerId: string | null;
+  partnerOrgAccess?: 'all' | 'selected' | 'none' | null;
   orgId?: string | null;
   canAccessOrg: (orgId: string) => boolean;
 };
@@ -133,6 +144,7 @@ function setAuthContext(overrides: Partial<FakeAuth> = {}) {
     token: { mfa: true },
     scope: 'partner',
     partnerId: PARTNER_ID,
+    partnerOrgAccess: 'all',
     orgId: null,
     canAccessOrg: () => true,
     ...overrides,
@@ -174,10 +186,29 @@ describe('org merge routes', () => {
     previewOrgMergeMock.mockResolvedValue(PREVIEW_RESULT);
     enqueueOrgMergeMock.mockResolvedValue({ id: `org-merge-${LOSER_ID}` });
     getJobMock.mockResolvedValue(undefined);
+    partnerReach.current = { kind: 'allOfPartner' };
     setAuthContext();
   });
 
   describe('POST /orgs/organizations/:id/merge-preview', () => {
+    it.each([
+      ['selected loser exclusion', { kind: 'selection', orgIds: [SURVIVOR_ID] }],
+      ['selected survivor exclusion', { kind: 'selection', orgIds: [LOSER_ID] }],
+      ['no-org access', { kind: 'none' }],
+    ] as const)('404s before preview when current partner reach has %s', async (_label, reach) => {
+      partnerReach.current = reach.kind === 'selection'
+        ? { kind: 'selection', orgIds: [...reach.orgIds] }
+        : reach;
+      const app = buildApp();
+      const res = await postJson(app, `/orgs/organizations/${LOSER_ID}/merge-preview`, {
+        survivorId: SURVIVOR_ID,
+      });
+      expect(res.status).toBe(404);
+      expect(previewOrgMergeMock).not.toHaveBeenCalled();
+      expect(enqueueOrgMergeMock).not.toHaveBeenCalled();
+      expect(writeRouteAuditMock).not.toHaveBeenCalled();
+    });
+
     it('returns 200 with the engine preview on a valid pair', async () => {
       const app = buildApp();
       const res = await postJson(app, `/orgs/organizations/${LOSER_ID}/merge-preview`, {
@@ -234,7 +265,7 @@ describe('org merge routes', () => {
       expect(previewOrgMergeMock).not.toHaveBeenCalled();
     });
 
-    it('403s on a cross-partner survivor', async () => {
+    it('404s on a cross-partner survivor without confirming its existence', async () => {
       orgRows.current = orgRows.current.map((o) =>
         o.id === SURVIVOR_ID ? { ...o, partnerId: OTHER_PARTNER_ID } : o,
       );
@@ -242,18 +273,22 @@ describe('org merge routes', () => {
       const res = await postJson(app, `/orgs/organizations/${LOSER_ID}/merge-preview`, {
         survivorId: SURVIVOR_ID,
       });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
       expect(previewOrgMergeMock).not.toHaveBeenCalled();
     });
 
-    it('403s when a selected-access partner member cannot access the survivor (same partner, canAccessOrg false)', async () => {
-      setAuthContext({ canAccessOrg: (orgId) => orgId !== SURVIVOR_ID });
+    it('uses the current raw selection rather than the status-filtered token snapshot', async () => {
+      setAuthContext({
+        partnerOrgAccess: 'selected',
+        canAccessOrg: (orgId) => orgId !== SURVIVOR_ID,
+      });
+      partnerReach.current = { kind: 'selection', orgIds: [LOSER_ID, SURVIVOR_ID] };
       const app = buildApp();
       const res = await postJson(app, `/orgs/organizations/${LOSER_ID}/merge-preview`, {
         survivorId: SURVIVOR_ID,
       });
-      expect(res.status).toBe(403);
-      expect(previewOrgMergeMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(200);
+      expect(previewOrgMergeMock).toHaveBeenCalledOnce();
     });
 
     it('400s when auth.partnerId is missing for a partner-scope caller', async () => {
@@ -314,6 +349,19 @@ describe('org merge routes', () => {
   });
 
   describe('POST /orgs/organizations/:id/merge', () => {
+    it('does not preview, enqueue, or audit when the loser is outside the current selection', async () => {
+      partnerReach.current = { kind: 'selection', orgIds: [SURVIVOR_ID] };
+      const app = buildApp();
+      const res = await postJson(app, `/orgs/organizations/${LOSER_ID}/merge`, {
+        survivorId: SURVIVOR_ID,
+        confirmName: 'Acme Loser',
+      });
+      expect(res.status).toBe(404);
+      expect(previewOrgMergeMock).not.toHaveBeenCalled();
+      expect(enqueueOrgMergeMock).not.toHaveBeenCalled();
+      expect(writeRouteAuditMock).not.toHaveBeenCalled();
+    });
+
     it('202s, enqueues with the auth identity, and audits org.merge.requested on the survivor', async () => {
       const app = buildApp();
       const res = await postJson(app, `/orgs/organizations/${LOSER_ID}/merge`, {
@@ -417,7 +465,7 @@ describe('org merge routes', () => {
       expect(enqueueOrgMergeMock).not.toHaveBeenCalled();
     });
 
-    it('403s a cross-partner survivor', async () => {
+    it('404s a cross-partner survivor', async () => {
       orgRows.current = orgRows.current.map((o) =>
         o.id === SURVIVOR_ID ? { ...o, partnerId: OTHER_PARTNER_ID } : o,
       );
@@ -426,7 +474,7 @@ describe('org merge routes', () => {
         survivorId: SURVIVOR_ID,
         confirmName: 'Acme Loser',
       });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
       expect(enqueueOrgMergeMock).not.toHaveBeenCalled();
     });
 
@@ -466,6 +514,35 @@ describe('org merge routes', () => {
 
   describe('GET /orgs/organizations/merge-runs/:jobId', () => {
     const JOB_ID = `org-merge-${LOSER_ID}`;
+
+    it('404s an active same-partner job when either merge org is outside the current selection', async () => {
+      partnerReach.current = { kind: 'selection', orgIds: [SURVIVOR_ID] };
+      const getState = vi.fn().mockResolvedValue('active');
+      getJobMock.mockResolvedValueOnce({
+        data: { loserOrgId: LOSER_ID, survivorOrgId: SURVIVOR_ID, partnerId: PARTNER_ID },
+        getState,
+        returnvalue: { mergeEventId: 'evt-hidden' },
+        failedReason: undefined,
+      });
+      const app = buildApp();
+      const res = await app.request(`/orgs/organizations/merge-runs/${JOB_ID}`);
+      expect(res.status).toBe(404);
+      expect(getState).toHaveBeenCalledOnce();
+    });
+
+    it('allows a completed job after merge rewrites the caller selection to the survivor', async () => {
+      partnerReach.current = { kind: 'selection', orgIds: [SURVIVOR_ID] };
+      getJobMock.mockResolvedValueOnce({
+        data: { loserOrgId: LOSER_ID, survivorOrgId: SURVIVOR_ID, partnerId: PARTNER_ID },
+        getState: vi.fn().mockResolvedValue('completed'),
+        returnvalue: { mergeEventId: 'evt-complete' },
+        failedReason: undefined,
+      });
+      const app = buildApp();
+      const res = await app.request(`/orgs/organizations/merge-runs/${JOB_ID}`);
+      expect(res.status).toBe(200);
+      expect((await res.json()).result).toEqual({ mergeEventId: 'evt-complete' });
+    });
 
     it('404s an unknown job', async () => {
       getJobMock.mockResolvedValueOnce(undefined);

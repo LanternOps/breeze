@@ -16,16 +16,18 @@ const h = vi.hoisted(() => {
     whereCalls: 0,
     whereArgs: [] as any[],
     deviceRowsResult: [] as Array<{ id: string; agentId: string | null }>,
+    mode: 'update' as 'update' | 'select',
   };
   const chain: Record<string, any> = {};
-  for (const m of ['update', 'set', 'select', 'from']) {
-    chain[m] = vi.fn(() => chain);
-  }
+  chain.update = vi.fn(() => { state.mode = 'update'; return chain; });
+  chain.set = vi.fn(() => chain);
+  chain.select = vi.fn(() => { state.mode = 'select'; return chain; });
+  chain.from = vi.fn(() => chain);
   chain.where = vi.fn((arg: unknown) => {
     state.whereArgs.push(arg);
     state.whereCalls += 1;
     // 1st where() = UPDATE (fluent); 2nd+ = device SELECT terminal.
-    return state.whereCalls >= 2 ? Promise.resolve(state.deviceRowsResult) : chain;
+    return state.mode === 'select' ? Promise.resolve(state.deviceRowsResult) : chain;
   });
   chain.returning = vi.fn();
 
@@ -40,12 +42,17 @@ const h = vi.hoisted(() => {
         via: 'relay',
       }),
     ),
+    // The socket-local send is still the tunnel path's transport (main), so the
+    // harness keeps both: `dispatchCommandToAgent` for desktop/terminal stops,
+    // `sendCommandToAgent` for `tunnel_close`.
+    sendCommandToAgent: vi.fn(),
     revokeViewerSession: vi.fn().mockResolvedValue(undefined),
     captureException: vi.fn(),
     // closeTerminalSession returns true when a live terminal socket existed on
     // THIS instance (and was closed, incl. its own terminal_stop). Default
     // false = not local, so the teardown falls back to signalling the agent.
     closeTerminalSession: vi.fn().mockReturnValue(false),
+    closeTunnelSession: vi.fn().mockReturnValue(false),
   };
 });
 
@@ -73,6 +80,14 @@ vi.mock('../db/schema', () => ({
     status: 'remote_sessions.status',
     endedAt: 'remote_sessions.ended_at',
   },
+  tunnelSessions: {
+    id: 'tunnel_sessions.id',
+    type: 'tunnel_sessions.type',
+    deviceId: 'tunnel_sessions.device_id',
+    userId: 'tunnel_sessions.user_id',
+    status: 'tunnel_sessions.status',
+    endedAt: 'tunnel_sessions.ended_at',
+  },
   devices: { id: 'devices.id', agentId: 'devices.agent_id' },
 }));
 
@@ -80,7 +95,7 @@ vi.mock('./agentCommandRelay', () => ({
   dispatchCommandToAgent: (...args: unknown[]) => h.dispatchCommandToAgent(...(args as [])),
 }));
 vi.mock('../routes/agentWs', () => ({
-  sendCommandToAgent: vi.fn(),
+  sendCommandToAgent: (...args: unknown[]) => h.sendCommandToAgent(...(args as [])),
 }));
 
 vi.mock('./viewerTokenRevocation', () => ({
@@ -95,6 +110,10 @@ vi.mock('./sentry', () => ({
 // import cycle; mock the closed-over closeTerminalSession.
 vi.mock('../routes/terminalWs', () => ({
   closeTerminalSession: (...args: unknown[]) => h.closeTerminalSession(...args),
+}));
+
+vi.mock('../routes/tunnelWs', () => ({
+  closeTunnelSession: (...args: unknown[]) => h.closeTunnelSession(...args),
 }));
 
 import {
@@ -121,18 +140,18 @@ describe('terminateUserRemoteSessions', () => {
     h.state.whereCalls = 0;
     h.state.whereArgs = [];
     h.state.deviceRowsResult = [];
+    h.state.mode = 'update';
     // Re-establish fluent defaults wiped by clearAllMocks.
-    h.chain.update.mockImplementation(() => h.chain);
+    h.chain.update.mockImplementation(() => { h.state.mode = 'update'; return h.chain; });
     h.chain.set.mockImplementation(() => h.chain);
-    h.chain.select.mockImplementation(() => h.chain);
+    h.chain.select.mockImplementation(() => { h.state.mode = 'select'; return h.chain; });
     h.chain.from.mockImplementation(() => h.chain);
     h.chain.where.mockImplementation((arg: unknown) => {
       h.state.whereArgs.push(arg);
       h.state.whereCalls += 1;
-      return h.state.whereCalls >= 2
-        ? Promise.resolve(h.state.deviceRowsResult)
-        : h.chain;
+      return h.state.mode === 'select' ? Promise.resolve(h.state.deviceRowsResult) : h.chain;
     });
+    h.chain.returning.mockResolvedValue([]);
     h.revokeViewerSession.mockResolvedValue(undefined);
     h.closeTerminalSession.mockReturnValue(false);
   });
@@ -172,7 +191,7 @@ describe('terminateUserRemoteSessions', () => {
     const result = await terminateUserRemoteSessions('u1');
 
     expect(result).toBe(2);
-    expect(h.chain.update).toHaveBeenCalledTimes(1);
+    expect(h.chain.update).toHaveBeenCalledTimes(2);
     expect(h.chain.set).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'disconnected' }),
     );
@@ -263,6 +282,27 @@ describe('terminateUserRemoteSessions', () => {
     expect(h.dispatchCommandToAgent).not.toHaveBeenCalled();
     // The device-resolution SELECT must not run when nothing was disconnected.
     expect(h.chain.select).not.toHaveBeenCalled();
+  });
+
+  it('disconnects and revokes live tunnels when user authority is removed', async () => {
+    h.chain.returning
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 't1', type: 'vnc', deviceId: 'd1' }]);
+    h.state.deviceRowsResult = [{ id: 'd1', agentId: 'agent-1' }];
+
+    const result = await terminateUserRemoteSessions('u1');
+
+    expect(result).toBe(1);
+    expect(h.revokeViewerSession).toHaveBeenCalledWith('t1');
+    expect(h.closeTunnelSession).toHaveBeenCalledWith('t1');
+    expect(h.sendCommandToAgent).toHaveBeenCalledWith('agent-1', {
+      id: 'tun-close-t1',
+      type: 'tunnel_close',
+      payload: { tunnelId: 't1' },
+    });
+    const tunnelWhere = h.state.whereArgs.find((arg) =>
+      arg?.args?.some((part: any) => part?.col === 'tunnel_sessions.user_id'));
+    expect(tunnelWhere).toBeDefined();
   });
 
   it('still processes the other sessions and returns the count when one viewer revoke rejects (best-effort)', async () => {
@@ -411,17 +451,17 @@ describe('terminateDeviceRemoteSessions', () => {
     h.state.whereCalls = 0;
     h.state.whereArgs = [];
     h.state.deviceRowsResult = [];
-    h.chain.update.mockImplementation(() => h.chain);
+    h.state.mode = 'update';
+    h.chain.update.mockImplementation(() => { h.state.mode = 'update'; return h.chain; });
     h.chain.set.mockImplementation(() => h.chain);
-    h.chain.select.mockImplementation(() => h.chain);
+    h.chain.select.mockImplementation(() => { h.state.mode = 'select'; return h.chain; });
     h.chain.from.mockImplementation(() => h.chain);
     h.chain.where.mockImplementation((arg: unknown) => {
       h.state.whereArgs.push(arg);
       h.state.whereCalls += 1;
-      return h.state.whereCalls >= 2
-        ? Promise.resolve(h.state.deviceRowsResult)
-        : h.chain;
+      return h.state.mode === 'select' ? Promise.resolve(h.state.deviceRowsResult) : h.chain;
     });
+    h.chain.returning.mockResolvedValue([]);
     h.revokeViewerSession.mockResolvedValue(undefined);
     h.closeTerminalSession.mockReturnValue(false);
   });

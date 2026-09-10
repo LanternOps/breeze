@@ -188,10 +188,13 @@ interface ResolvedRemoteAccess {
   policyId: string | null;
 }
 
-export async function resolveRemoteAccessForDevice(deviceId: string): Promise<ResolvedRemoteAccess> {
+export async function resolveRemoteAccessForDevice(
+  deviceId: string,
+  options: { bypassCache?: boolean } = {},
+): Promise<ResolvedRemoteAccess> {
   // Check cache
   const now = Date.now();
-  const cached = cache.get(deviceId);
+  const cached = options.bypassCache ? undefined : cache.get(deviceId);
   if (cached && cached.expiresAt > now) {
     return { settings: cached.settings, policyName: cached.policyName, policyId: cached.policyId };
   }
@@ -241,14 +244,15 @@ export async function resolveRemoteAccessForDevice(deviceId: string): Promise<Re
 
 export async function checkRemoteAccess(
   deviceId: string,
-  capability: RemoteCapability
+  capability: RemoteCapability,
+  options: { bypassCache?: boolean } = {},
 ): Promise<PolicyCheckResult> {
   let settings: RemoteAccessSettings;
   let policyName: string | null = null;
   let policyId: string | null = null;
 
   try {
-    const resolved = await resolveRemoteAccessForDevice(deviceId);
+    const resolved = await resolveRemoteAccessForDevice(deviceId, options);
     settings = resolved.settings;
     policyName = resolved.policyName;
     policyId = resolved.policyId;

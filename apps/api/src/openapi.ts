@@ -4409,25 +4409,6 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       }
     },
-    '/remote/sessions/{id}/answer': {
-      post: {
-        operationId: 'submitWebRtcAnswer',
-        tags: ['Remote'],
-        summary: 'Submit WebRTC answer',
-        description: 'Submit WebRTC SDP answer from agent',
-        parameters: [{ $ref: '#/components/parameters/idParam' }],
-        responses: {
-          '200': {
-            description: 'Answer submitted',
-            content: {
-              'application/json': {
-                schema: { type: 'object' }
-              }
-            }
-          }
-        }
-      }
-    },
     '/remote/sessions/{id}/ice': {
       post: {
         operationId: 'addIceCandidate',

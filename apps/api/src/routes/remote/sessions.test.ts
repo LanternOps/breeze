@@ -32,6 +32,8 @@ const {
   evaluateCapability,
   partnerIdForDevice,
   partnerTrustMode,
+  createDesktopConnectCode,
+  createWsTicket,
 } = vi.hoisted(() => ({
   getDeviceWithOrgCheck: vi.fn(),
   getSessionWithOrgCheck: vi.fn(),
@@ -45,6 +47,8 @@ const {
   evaluateCapability: vi.fn(async (): Promise<any> => ({ allow: true })),
   partnerIdForDevice: vi.fn(() => Promise.resolve('partner-1')),
   partnerTrustMode: vi.fn(() => 'off'),
+  createDesktopConnectCode: vi.fn(),
+  createWsTicket: vi.fn(),
 }));
 
 // `runOutsideDbContext` is synchronous (wraps AsyncLocalStorage.exit); the real
@@ -67,6 +71,7 @@ vi.mock('../../db/schema', () => ({
     id: 'remoteSessions.id',
     status: 'remoteSessions.status',
     deviceId: 'remoteSessions.deviceId',
+    orgId: 'remoteSessions.orgId',
     userId: 'remoteSessions.userId',
     type: 'remoteSessions.type',
     webrtcOffer: 'remoteSessions.webrtcOffer',
@@ -97,6 +102,7 @@ vi.mock('../../db/schema', () => ({
 // x-restrict-site opts into a single-site allowlist.
 vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => async (c: any, next: any) => {
+    const restrict = c.req.header('x-restrict-site');
     c.set('auth', {
       user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
@@ -104,6 +110,17 @@ vi.mock('../../middleware/auth', () => ({
       orgId: 'org-111',
       accessibleOrgIds: ['org-111'],
       canAccessOrg: (id: string) => id === 'org-111',
+    });
+    // The production parent router runs requirePermission(REMOTE_ACCESS)
+    // before these child routes. Seed its resulting live permission context
+    // here because this focused suite mounts sessionRoutes directly.
+    c.set('permissions', {
+      permissions: [],
+      partnerId: null,
+      orgId: 'org-111',
+      roleId: 'role-1',
+      scope: 'organization',
+      ...(restrict ? { allowedSiteIds: [restrict] } : {}),
     });
     return next();
   }),
@@ -123,7 +140,10 @@ vi.mock('../../middleware/auth', () => ({
 
 // Faithful canAccessSite so the route's site gate behaves like production.
 vi.mock('../../services/permissions', () => ({
-  PERMISSIONS: { DEVICES_READ: { resource: 'devices', action: 'read' } },
+  PERMISSIONS: {
+    DEVICES_READ: { resource: 'devices', action: 'read' },
+    REMOTE_ACCESS: { resource: 'remote', action: 'access' },
+  },
   canAccessSite: (perms: any, siteId: string) =>
     !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId),
 }));
@@ -142,6 +162,9 @@ vi.mock('./helpers', () => ({
   // construction itself (partner-name redaction etc.) is covered by the
   // buildRemoteSessionPromptPayload suite in helpers.test.ts.
   buildRemoteSessionPromptPayload: vi.fn(async () => undefined),
+  createDesktopStartCommandId: vi.fn((sessionId: string) =>
+    `desk-start-${sessionId}-22222222-2222-4222-8222-222222222222`
+  ),
   MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG: 10,
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER: 5,
 }));
@@ -167,8 +190,8 @@ vi.mock('../../services/remoteAccessPolicy', () => ({
 vi.mock('../agentWs', () => ({ sendCommandToAgent }));
 
 vi.mock('../../services/remoteSessionAuth', () => ({
-  createDesktopConnectCode: vi.fn(),
-  createWsTicket: vi.fn(),
+  createDesktopConnectCode,
+  createWsTicket,
 }));
 
 vi.mock('../../services/clientIp', () => ({
@@ -253,43 +276,47 @@ function makeRemoteSessionRow(deviceId: string) {
   };
 }
 
-// DELETE /sessions/stale, no deviceId: first select resolves org devices (id+siteId),
-// then select of stale session ids, then update().returning().
-function rigStaleNarrowing(orgDevices: Array<{ id: string; siteId: string | null }>, staleIds: string[]) {
-  // org-device resolution: db.select(...).from(devices).where(...) -> Promise<rows>
-  const deviceWhere = vi.fn().mockResolvedValue(orgDevices);
+// DELETE /sessions/stale, no deviceId: the device/site subquery is embedded in
+// the one atomic update().where().returning() claim.
+function rigStaleNarrowing(staleIds: string[]) {
+  const deviceWhere = vi.fn().mockReturnValue({ __siteScopedDeviceSubquery: true });
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({ where: deviceWhere }),
   } as never);
-  // stale session select: db.select(...).from().innerJoin().where() -> Promise<rows>
-  const staleWhere = vi.fn().mockResolvedValue(staleIds.map((id) => ({ id })));
-  vi.mocked(db.select).mockReturnValueOnce({
-    from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: staleWhere }) }),
-  } as never);
-  // update().set().where().returning() — returns the {id,type,deviceId} shape
-  // that teardownDisconnectedSessions consumes.
+  const staleWhere = vi.fn();
   const returning = vi
     .fn()
     .mockResolvedValue(staleIds.map((id) => ({ id, type: 'desktop', deviceId: DEVICE_IN_ALLOWED })));
   vi.mocked(db.update).mockReturnValueOnce({
-    set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) }),
+    set: vi.fn().mockReturnValue({ where: staleWhere.mockReturnValue({ returning }) }),
   } as never);
   return { deviceWhere, staleWhere };
 }
 
-// DELETE /sessions/stale, unrestricted (no narrowing select): just the stale select + update.
+// DELETE /sessions/stale, unrestricted: one atomic update, no device query.
 function rigStaleUnrestricted(staleIds: string[]) {
-  const staleWhere = vi.fn().mockResolvedValue(staleIds.map((id) => ({ id })));
-  vi.mocked(db.select).mockReturnValueOnce({
-    from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: staleWhere }) }),
-  } as never);
+  const staleWhere = vi.fn();
   const returning = vi
     .fn()
     .mockResolvedValue(staleIds.map((id) => ({ id, type: 'desktop', deviceId: DEVICE_IN_ALLOWED })));
   vi.mocked(db.update).mockReturnValueOnce({
-    set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) }),
+    set: vi.fn().mockReturnValue({ where: staleWhere.mockReturnValue({ returning }) }),
   } as never);
   return { staleWhere };
+}
+
+function rigLockedCleanupDevice(siteId: string | null, orgId = ORG_ID) {
+  const forUpdate = vi.fn().mockResolvedValue([{
+    id: DEVICE_IN_ALLOWED,
+    orgId,
+    siteId,
+  }]);
+  const limit = vi.fn().mockReturnValue({ for: forUpdate });
+  const where = vi.fn().mockReturnValue({ limit });
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({ where }),
+  } as never);
+  return { forUpdate, where };
 }
 
 describe('remote sessions — site-scope enforcement', () => {
@@ -559,13 +586,7 @@ describe('remote sessions — site-scope enforcement', () => {
 
   describe('DELETE /sessions/stale', () => {
     it('narrows to allowed-site devices when caller is site-restricted and no deviceId is given', async () => {
-      const { staleWhere } = rigStaleNarrowing(
-        [
-          { id: DEVICE_IN_ALLOWED, siteId: ALLOWED_SITE },
-          { id: DEVICE_IN_FORBIDDEN, siteId: FORBIDDEN_SITE },
-        ],
-        ['sess-allowed']
-      );
+      const { deviceWhere, staleWhere } = rigStaleNarrowing(['sess-allowed']);
 
       const res = await app.request('/remote/sessions/stale', {
         method: 'DELETE',
@@ -575,8 +596,9 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.cleaned).toBe(1);
-      // The stale-session select must have been constrained (the device-id
-      // narrowing condition was pushed), so the where clause was invoked.
+      expect(deviceWhere).toHaveBeenCalledTimes(1);
+      // Freshness, ownership, tenant and current-site scope are claimed in
+      // one UPDATE predicate rather than a stale SELECT-id snapshot.
       expect(staleWhere).toHaveBeenCalledTimes(1);
       // Wiring: the disconnected rows must be handed to the agent-stop teardown,
       // shaped {id,type,deviceId}. Dropping this call silently reintroduces the
@@ -588,13 +610,7 @@ describe('remote sessions — site-scope enforcement', () => {
     });
 
     it('returns {cleaned:0} without touching sessions when caller has no in-scope devices', async () => {
-      // org devices are all in the forbidden site -> no allowed device ids
-      const deviceWhere = vi
-        .fn()
-        .mockResolvedValue([{ id: DEVICE_IN_FORBIDDEN, siteId: FORBIDDEN_SITE }]);
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({ where: deviceWhere }),
-      } as never);
+      rigStaleNarrowing([]);
 
       const res = await app.request('/remote/sessions/stale', {
         method: 'DELETE',
@@ -603,11 +619,11 @@ describe('remote sessions — site-scope enforcement', () => {
 
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ cleaned: 0, ids: [] });
-      expect(db.update).not.toHaveBeenCalled();
+      expect(db.update).toHaveBeenCalledTimes(1);
     });
 
     it('returns 403 when a site-restricted caller targets an out-of-scope deviceId (guard)', async () => {
-      getDeviceWithOrgCheck.mockResolvedValue('SITE_ACCESS_DENIED');
+      const { forUpdate } = rigLockedCleanupDevice(FORBIDDEN_SITE);
 
       const res = await app.request(`/remote/sessions/stale?deviceId=${DEVICE_IN_FORBIDDEN}`, {
         method: 'DELETE',
@@ -617,6 +633,46 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(res.status).toBe(403);
       const body = await res.json();
       expect(body.error).toMatch(/site/i);
+      expect(forUpdate).toHaveBeenCalledWith('update');
+      expect(db.update).not.toHaveBeenCalled();
+      expect(teardownDisconnectedSessions).not.toHaveBeenCalled();
+    });
+
+    it('fails closed before effects when an exact cleanup device has no site', async () => {
+      rigLockedCleanupDevice(null);
+
+      const res = await app.request(`/remote/sessions/stale?deviceId=${DEVICE_IN_ALLOWED}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': ALLOWED_SITE },
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(teardownDisconnectedSessions).not.toHaveBeenCalled();
+    });
+
+    it('locks an allowed exact device before atomically claiming only its stale sessions', async () => {
+      const { forUpdate } = rigLockedCleanupDevice(ALLOWED_SITE);
+      const returning = vi.fn().mockResolvedValue([
+        { id: 'sess-allowed', type: 'desktop', deviceId: DEVICE_IN_ALLOWED },
+      ]);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning }),
+        }),
+      } as never);
+
+      const res = await app.request(`/remote/sessions/stale?deviceId=${DEVICE_IN_ALLOWED}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t', 'x-restrict-site': ALLOWED_SITE },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ cleaned: 1, ids: ['sess-allowed'] });
+      expect(forUpdate).toHaveBeenCalledWith('update');
+      expect(teardownDisconnectedSessions).toHaveBeenCalledWith([
+        { id: 'sess-allowed', type: 'desktop', deviceId: DEVICE_IN_ALLOWED },
+      ]);
     });
 
     it('does not narrow for unrestricted callers (no behavior change)', async () => {
@@ -630,8 +686,7 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.cleaned).toBe(2);
-      // Only the stale-session select ran — no org-device narrowing query.
-      expect(db.select).toHaveBeenCalledTimes(1);
+      expect(db.select).not.toHaveBeenCalled();
       expect(staleWhere).toHaveBeenCalledTimes(1);
       // Wiring: even on the unrestricted path the disconnected rows are torn down.
       expect(teardownDisconnectedSessions).toHaveBeenCalledTimes(1);
@@ -642,12 +697,7 @@ describe('remote sessions — site-scope enforcement', () => {
     });
 
     it('does not call the agent-stop teardown when no in-scope devices exist', async () => {
-      const deviceWhere = vi
-        .fn()
-        .mockResolvedValue([{ id: DEVICE_IN_FORBIDDEN, siteId: FORBIDDEN_SITE }]);
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({ where: deviceWhere }),
-      } as never);
+      rigStaleNarrowing([]);
 
       const res = await app.request('/remote/sessions/stale', {
         method: 'DELETE',
@@ -953,6 +1003,82 @@ describe('remote sessions — site-scope enforcement', () => {
       );
       const call = vi.mocked(sendCommandToAgent).mock.calls.at(-1) as unknown as [string, { payload: Record<string, unknown> }];
       expect(call[1].payload.prompt).toEqual(prompt);
+    });
+  });
+
+  describe('existing-session capability reauthorization', () => {
+    const forbidden = {
+      session: {
+        id: SESSION_ID,
+        userId: 'user-1',
+        type: 'desktop',
+        status: 'connecting',
+        deviceId: DEVICE_IN_FORBIDDEN,
+        iceCandidates: [],
+      },
+      device: {
+        id: DEVICE_IN_FORBIDDEN,
+        orgId: ORG_ID,
+        siteId: FORBIDDEN_SITE,
+        agentId: 'agent-1',
+      },
+    };
+
+    it.each([
+      {
+        label: 'WebSocket ticket',
+        path: `/remote/sessions/${SESSION_ID}/ws-ticket`,
+        method: 'POST',
+        body: undefined,
+      },
+      {
+        label: 'desktop connect code',
+        path: `/remote/sessions/${SESSION_ID}/desktop-connect-code`,
+        method: 'POST',
+        body: undefined,
+      },
+      {
+        label: 'ICE server credentials',
+        path: `/remote/ice-servers?sessionId=${SESSION_ID}`,
+        method: 'GET',
+        body: undefined,
+      },
+      {
+        label: 'WebRTC answer',
+        path: `/remote/sessions/${SESSION_ID}/answer`,
+        method: 'POST',
+        body: JSON.stringify({ answer: 'v=0' }),
+      },
+      {
+        label: 'ICE candidate',
+        path: `/remote/sessions/${SESSION_ID}/ice`,
+        method: 'POST',
+        body: JSON.stringify({ candidate: { candidate: 'candidate:1' } }),
+      },
+    ])('denies $label after site access is revoked, before any side effect', async ({ path, method, body }) => {
+      getSessionWithOrgCheck.mockResolvedValue(forbidden);
+
+      const res = await app.request(path, {
+        method,
+        headers: {
+          Authorization: 'Bearer t',
+          'x-restrict-site': ALLOWED_SITE,
+          ...(body ? { 'Content-Type': 'application/json' } : {}),
+        },
+        body,
+      });
+
+      if (path.endsWith('/answer')) {
+        // The coordinated consent repair retires this user-authenticated sink.
+        expect(res.status).toBe(404);
+        expect(await res.text()).toBe('404 Not Found');
+      } else {
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: 'Access to this site denied' });
+      }
+      expect(db.update).not.toHaveBeenCalled();
+      expect(createWsTicket).not.toHaveBeenCalled();
+      expect(createDesktopConnectCode).not.toHaveBeenCalled();
     });
   });
 });

@@ -2305,6 +2305,25 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
+	var backupReservation *backupSpawnReservation
+	if helperRole == backupipc.HelperRoleBackup {
+		backupReservation, err = b.claimBackupHelperAdmission(uint32(creds.PID))
+		if err != nil {
+			log.Warn("backup helper admission rejected",
+				"identity", identityKey,
+				"pid", creds.PID,
+				"error", err.Error(),
+			)
+			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+				Accepted:  false,
+				Reason:    "backup helper was not started by the agent",
+				Permanent: true,
+			})
+			_ = conn.Close()
+			return
+		}
+	}
+
 	scopes := b.grantScopes(helperRole, authReq, runtime.GOOS, creds.BinaryPath)
 	ownedProcess, err := openOwnedPeerProcess(uint32(creds.PID))
 	if err != nil {
@@ -2415,7 +2434,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		}
 		helperReservation = nil
 	} else {
-		if err := b.registerNonLifecycleSession(identityKey, helperRole, session); err != nil {
+		if err := b.registerNonLifecycleSession(identityKey, helperRole, session, backupReservation); err != nil {
 			log.Warn("max connections exceeded at register (admit race)",
 				"identity", identityKey,
 				"sessionId", authReq.SessionID,
@@ -2469,7 +2488,7 @@ func (b *Broker) finishHelperSession(session *Session) {
 		// Report before clearing the session pointer: the report has to see
 		// that this session is the one that owns the in-flight run.
 		b.reportBackupHelperDeath(session)
-		b.ClearBackupSession()
+		b.ClearBackupSession(session)
 	}
 	log.Info("user helper disconnected", "uid", session.UID, "sessionId", session.SessionID)
 }
@@ -2676,6 +2695,8 @@ func roleIdentityRejection(role ipc.HelperRole, sid string, uid uint32, peerWinS
 		switch {
 		case role == ipc.HelperRoleSystem && sid != systemSID:
 			return "system role requires SYSTEM identity", true
+		case role == backupipc.HelperRoleBackup && sid != systemSID:
+			return "backup role requires SYSTEM identity", true
 		case role == ipc.HelperRoleUser && sid == systemSID:
 			return "user role requires non-SYSTEM identity", true
 		case role == ipc.HelperRoleAssist && sid == systemSID:
@@ -2706,6 +2727,8 @@ func roleIdentityRejection(role ipc.HelperRole, sid string, uid uint32, peerWinS
 		return "watchdog role requires root identity", true
 	case role == ipc.HelperRoleSystem && uid != 0:
 		return "system role requires root identity", true
+	case role == backupipc.HelperRoleBackup && uid != 0:
+		return "backup role requires root identity", true
 	}
 	return "", false
 }

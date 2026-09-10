@@ -10,6 +10,7 @@ vi.mock('./configurationPolicy', async (importOriginal) => {
 
 import { getRemoteAccessBaseline } from './policyBaselineDefaults';
 import {
+  checkRemoteAccess,
   resolveRemoteAccessForDevice,
   invalidateRemoteAccessCache,
   clampSettings,
@@ -57,6 +58,28 @@ describe('resolveRemoteAccessForDevice no-policy fallback', () => {
     expect(result.settings.remoteTools).toBe(true);
     expect(result.policyName).toBeNull();
     expect(result.policyId).toBeNull();
+  });
+
+  it('bypasses a stale allowed cache entry for live continuation checks', async () => {
+    const deviceId = `test-device-policy-transition-${Date.now()}`;
+    vi.mocked(resolveEffectiveConfig)
+      .mockResolvedValueOnce({ deviceId, features: {}, inheritanceChain: [] })
+      .mockResolvedValueOnce({
+        deviceId,
+        features: {
+          remote_access: {
+            inlineSettings: { webrtcDesktop: false },
+            sourcePolicyName: 'Disabled now',
+            sourcePolicyId: 'policy-disabled',
+          },
+        },
+        inheritanceChain: [],
+      } as any);
+
+    await expect(checkRemoteAccess(deviceId, 'webrtcDesktop')).resolves.toEqual({ allowed: true });
+    await expect(checkRemoteAccess(deviceId, 'webrtcDesktop', { bypassCache: true }))
+      .resolves.toMatchObject({ allowed: false, policyId: 'policy-disabled' });
+    expect(resolveEffectiveConfig).toHaveBeenCalledTimes(2);
   });
 });
 

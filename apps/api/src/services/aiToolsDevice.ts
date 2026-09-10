@@ -27,6 +27,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { projectPublicDevice } from '../routes/devices/helpers';
 import {
   getActiveDeviceContext,
   getAllDeviceContext,
@@ -179,7 +180,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
 
       return JSON.stringify({
         device: {
-          ...device,
+          ...projectPublicDevice(device),
           siteName: site?.name
         },
         hardware: hardware[0] ?? null,
