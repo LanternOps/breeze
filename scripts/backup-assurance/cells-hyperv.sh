@@ -14,7 +14,7 @@ R=$HOME/breeze-assurance/phase2; mkdir -p "$R"
 DEV=$(jq -r .devKit "$LAB_STATE")
 hsh() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$H" "powershell -NoProfile -Command \"$1\"" 2>/dev/null; }
 say() { echo; echo "### $*"; }
-jobid() { jq -r '.jobId // .id // .data.jobId // .data.id // empty'; }
+jobid() { jq -r '.data.backupJobId // .backupJobId // .jobId // .data.jobId // .id // .data.id // empty'; }
 
 say "H0 discover VMs on the host"
 $L api POST "/backup/hyperv/discover/$DEV" '{}' | head -c 400; echo; sleep 30

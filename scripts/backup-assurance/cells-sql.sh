@@ -16,7 +16,7 @@ SQLCMD='C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\180\Tools\Binn\SQL
 wsh() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$W" "$@" 2>/dev/null; }
 sql() { wsh "& '$SQLCMD' -S 'localhost\\SQLEXPRESS' -E -C -h -1 -W -Q \"SET NOCOUNT ON; $1\""; }
 say() { echo; echo "### $*"; }
-jobid() { jq -r '.jobId // .id // .data.jobId // .data.id // empty'; }
+jobid() { jq -r '.data.backupJobId // .backupJobId // .jobId // .data.jobId // .id // .data.id // empty'; }
 
 say "S1 full backup of AssureDB (on-demand)"
 RESP=$($L api POST /backup/mssql/backup "$(jq -cn --arg d "$DEV" '{deviceId:$d,instance:"SQLEXPRESS",database:"AssureDB",backupType:"full"}')"); echo "$RESP" | head -c 300; echo
