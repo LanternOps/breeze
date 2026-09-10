@@ -34,6 +34,7 @@ const {
   partnerTrustMode,
   createDesktopConnectCode,
   createWsTicket,
+  dispatchCommandToAgent,
 } = vi.hoisted(() => ({
   getDeviceWithOrgCheck: vi.fn(),
   getSessionWithOrgCheck: vi.fn(),
@@ -49,6 +50,7 @@ const {
   partnerTrustMode: vi.fn(() => 'off'),
   createDesktopConnectCode: vi.fn(),
   createWsTicket: vi.fn(),
+  dispatchCommandToAgent: vi.fn(async () => ({ status: 'sent', via: 'local' })),
 }));
 
 // `runOutsideDbContext` is synchronous (wraps AsyncLocalStorage.exit); the real
@@ -188,6 +190,8 @@ vi.mock('../../services/remoteAccessPolicy', () => ({
 }));
 
 vi.mock('../agentWs', () => ({ sendCommandToAgent }));
+
+vi.mock('../../services/agentCommandRelay', () => ({ dispatchCommandToAgent }));
 
 vi.mock('../../services/remoteSessionAuth', () => ({
   createDesktopConnectCode,
@@ -1360,5 +1364,149 @@ describe('POST /remote/sessions/:id/lease/renew', () => {
     });
     expect(res.status).toBe(403);
     expect((await res.json()).status).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /remote/sessions/:id/end — transition reauthorization + terminal-write
+// safety (SEC-2026-09-05-038 wave 0).
+// ---------------------------------------------------------------------------
+
+describe('POST /remote/sessions/:id/end', () => {
+  let app: Hono;
+
+  const liveSession = {
+    session: {
+      id: SESSION_ID,
+      userId: 'user-1',
+      type: 'desktop',
+      status: 'active',
+      deviceId: DEVICE_IN_FORBIDDEN,
+      startedAt: new Date('2026-01-01T00:00:00Z'),
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+      bytesTransferred: null,
+      recordingUrl: null,
+    },
+    device: {
+      id: DEVICE_IN_FORBIDDEN,
+      orgId: ORG_ID,
+      siteId: FORBIDDEN_SITE,
+      agentId: 'agent-1',
+      hostname: 'host-1',
+    },
+  };
+
+  // db.update(...).set(...).where(...).returning()
+  function rigEndUpdate(rows: unknown[]) {
+    const where = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) });
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnValue({ where }),
+    } as never);
+    return where;
+  }
+
+  // The post-race re-read: db.select(...).from(...).where(...).limit(1)
+  function rigStatusReread(rows: unknown[]) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+      }),
+    } as never);
+  }
+
+  function endRequest(headers: Record<string, string> = {}) {
+    return app.request(`/remote/sessions/${SESSION_ID}/end`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({}),
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
+    getSessionWithOrgCheck.mockReset();
+    getSessionWithOrgCheck.mockResolvedValue(liveSession);
+    checkRemoteAccess.mockReturnValue(Promise.resolve({ allowed: true }));
+    revokeViewerSession.mockResolvedValue(undefined);
+    dispatchCommandToAgent.mockResolvedValue({ status: 'sent', via: 'local' });
+    app = new Hono();
+    app.route('/remote', sessionRoutes);
+  });
+
+  it('dispatches stop_desktop through the durable relay, never the socket-local send', async () => {
+    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null }]);
+
+    const res = await endRequest();
+
+    expect(res.status).toBe(200);
+    // The agent's command socket routinely lives on another API replica, where
+    // sendCommandToAgent silently returns false and the stream keeps running.
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(dispatchCommandToAgent).toHaveBeenCalledWith('agent-1', {
+      id: `desk-stop-${SESSION_ID}`,
+      type: 'stop_desktop',
+      payload: { sessionId: SESSION_ID },
+    });
+  });
+
+  it('still answers 200 when the relay throws (teardown is best-effort, the row is already terminal)', async () => {
+    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null }]);
+    dispatchCommandToAgent.mockRejectedValueOnce(new Error('relay down'));
+
+    const res = await endRequest();
+
+    expect(res.status).toBe(200);
+    expect(revokeViewerSession).toHaveBeenCalledWith(SESSION_ID);
+  });
+
+  it('guards the UPDATE on the live statuses so a concurrently-failed row is not overwritten', async () => {
+    const where = rigEndUpdate([]);      // lost the race: no live row matched
+    rigStatusReread([{ status: 'failed' }]);
+
+    const res = await endRequest();
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Session is already ended', status: 'failed' });
+    // The predicate must actually carry the live-status allowlist, otherwise
+    // the "no row matched" branch above could never be reached in production.
+    const predicate = JSON.stringify(where.mock.calls[0]?.[0] ?? null);
+    for (const live of ['pending', 'connecting', 'active']) {
+      expect(predicate).toContain(live);
+    }
+    // A row that is already terminal must not be told to stop again, and above
+    // all must not have its recorded failure rewritten as an operator End.
+    expect(dispatchCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('answers 404 when the session row is gone by the time the guarded UPDATE runs', async () => {
+    rigEndUpdate([]);
+    rigStatusReread([]);
+
+    const res = await endRequest();
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Session not found' });
+  });
+
+  it('denies a caller narrowed away from the device site, before any write or teardown', async () => {
+    const res = await endRequest({ 'x-restrict-site': ALLOWED_SITE });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Access to this site denied' });
+    expect(db.update).not.toHaveBeenCalled();
+    expect(dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(revokeViewerSession).not.toHaveBeenCalled();
+  });
+
+  it('does NOT gate End on the remote-access policy — a disabled policy must never strand a live stream', async () => {
+    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null }]);
+
+    const res = await endRequest();
+
+    expect(res.status).toBe(200);
+    expect(checkRemoteAccess).not.toHaveBeenCalled();
+    expect(dispatchCommandToAgent).toHaveBeenCalled();
   });
 });
