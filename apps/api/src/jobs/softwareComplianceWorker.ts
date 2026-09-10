@@ -219,6 +219,15 @@ type CheckPolicyJobData = {
   type: 'check-policy';
   policyId: string;
   deviceIds?: string[];
+  /**
+   * Site-ceiling gate contract §3: the policy's approval_generation at
+   * enqueue time. Compared against the freshly-reloaded row at dispatch —
+   * a mismatch means the policy was edited after this job was queued, so
+   * the job is skipped rather than enforcing a policy shape that no longer
+   * applies. `undefined` means the caller did not opt into the check
+   * (existing behavior — reload + isActive check only).
+   */
+  generation?: number;
 };
 
 type SoftwareComplianceJobData = ScanPoliciesJobData | CheckPolicyJobData;
@@ -268,7 +277,7 @@ async function processScanPolicies(): Promise<{ queued: number }> {
   return { queued: activePolicies.length };
 }
 
-async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
+export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   policyId: string;
   devicesEvaluated: number;
   violations: number;
@@ -286,6 +295,22 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   if (!policy) {
     console.warn(
       `[SoftwareComplianceWorker] Policy ${data.policyId} not found or inactive — job may be stale (queued after deletion)`
+    );
+    return {
+      policyId: data.policyId,
+      devicesEvaluated: 0,
+      violations: 0,
+      remediationQueued: 0,
+    };
+  }
+
+  // Site-ceiling gate contract §3: a queued job may carry a generation
+  // snapshot from enqueue time. If the policy was edited since, this job's
+  // premise (enforce THAT config shape) no longer holds — skip rather than
+  // enforce a superseded policy.
+  if (data.generation !== undefined && policy.approvalGeneration !== data.generation) {
+    console.warn(
+      `[SoftwareComplianceWorker] Policy ${data.policyId} generation mismatch (job=${data.generation}, current=${policy.approvalGeneration}) — skipping superseded job`
     );
     return {
       policyId: data.policyId,
@@ -585,7 +610,8 @@ export async function shutdownSoftwareComplianceWorker(): Promise<void> {
 
 export async function scheduleSoftwareComplianceCheck(
   policyId?: string,
-  deviceIds?: string[]
+  deviceIds?: string[],
+  generation?: number
 ): Promise<string> {
   const queue = getSoftwareComplianceQueue();
   const uniqueDeviceIds = Array.isArray(deviceIds)
@@ -599,6 +625,7 @@ export async function scheduleSoftwareComplianceCheck(
         type: 'check-policy',
         policyId,
         deviceIds: uniqueDeviceIds,
+        generation,
       }
       : {
         type: 'scan-policies',

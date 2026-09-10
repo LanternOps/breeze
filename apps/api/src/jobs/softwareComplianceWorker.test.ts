@@ -19,11 +19,68 @@ vi.mock('../services/redis', () => ({
   getBullMQConnection: vi.fn(() => ({})),
 }));
 
+const { dbSelectMock, resolveDeviceIdsMock } = vi.hoisted(() => ({
+  dbSelectMock: vi.fn(),
+  resolveDeviceIdsMock: vi.fn(async () => []),
+}));
+vi.mock('../db', () => ({
+  db: { select: dbSelectMock },
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+vi.mock('../services/featureConfigResolver', () => ({
+  resolveDeviceIdsForSoftwarePolicy: resolveDeviceIdsMock,
+}));
+
 import {
+  processCheckPolicy,
   readEarliestUnauthorizedDetection,
   scheduleSoftwareComplianceCheck,
   shouldQueueAutoRemediation,
 } from './softwareComplianceWorker';
+
+const POLICY_ID = 'policy-1';
+
+function mockPolicyReload(row: Record<string, unknown> | undefined) {
+  dbSelectMock.mockReturnValueOnce({
+    from: () => ({ where: () => ({ limit: () => Promise.resolve(row ? [row] : []) }) }),
+  });
+}
+
+describe('processCheckPolicy — approval_generation mismatch (site-ceiling gate contract §3)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('skips (does not evaluate any device) when the job generation does not match the reloaded row', async () => {
+    mockPolicyReload({ id: POLICY_ID, isActive: true, approvalGeneration: 3 });
+
+    const result = await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID, generation: 2 });
+
+    expect(result.devicesEvaluated).toBe(0);
+    expect(result.violations).toBe(0);
+    expect(resolveDeviceIdsMock).not.toHaveBeenCalled();
+  });
+
+  it('proceeds past the generation check (reaches device resolution) when the job generation matches', async () => {
+    mockPolicyReload({ id: POLICY_ID, isActive: true, approvalGeneration: 3 });
+    resolveDeviceIdsMock.mockRejectedValueOnce(new Error('stop-here-marker'));
+
+    await expect(
+      processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID, generation: 3 })
+    ).rejects.toThrow('stop-here-marker');
+
+    expect(resolveDeviceIdsMock).toHaveBeenCalledWith(POLICY_ID);
+  });
+
+  it('proceeds when the job carries no generation (existing behavior, opt-in only)', async () => {
+    mockPolicyReload({ id: POLICY_ID, isActive: true, approvalGeneration: 3 });
+    resolveDeviceIdsMock.mockRejectedValueOnce(new Error('stop-here-marker'));
+
+    await expect(
+      processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID })
+    ).rejects.toThrow('stop-here-marker');
+  });
+});
 
 const NOW = new Date('2025-01-15T12:00:00Z');
 const PAST_VIOLATION = [{ type: 'unauthorized', detectedAt: '2025-01-01T00:00:00Z' }];

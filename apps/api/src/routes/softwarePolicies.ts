@@ -542,6 +542,10 @@ softwarePoliciesRoutes.patch(
 
     const updates: Partial<typeof softwarePolicies.$inferInsert> = {
       updatedAt: new Date(),
+      // Site-ceiling gate contract §3: bump on every PATCH so a queued
+      // compliance/remediation job carrying the OLD generation can tell it
+      // has been superseded and skip acting on stale config.
+      approvalGeneration: sql`${softwarePolicies.approvalGeneration} + 1`,
     };
 
     if (payload.name !== undefined) updates.name = payload.name;
@@ -580,7 +584,7 @@ softwarePoliciesRoutes.patch(
 
     let scheduleWarning: string | undefined;
     try {
-      await scheduleSoftwareComplianceCheck(policy.id);
+      await scheduleSoftwareComplianceCheck(policy.id, undefined, updated?.approvalGeneration);
     } catch (error) {
       scheduleWarning = error instanceof Error ? error.message : 'Failed to schedule compliance check';
       console.error(`[softwarePolicies] Failed to schedule compliance check for policy ${policy.id}:`, error);
