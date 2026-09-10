@@ -236,11 +236,16 @@ Per listed prefix group:
   that is `pending`/`running` (any age) **or** was created in the last 30 d reports
   `devices.backup_version >= BACKUP_SERVER_BASE_MIN_HELPER_VERSION`
   (`backupHelperCapabilities.ts`, the release carrying W03). Otherwise that identity logs
-  `reclamation deferred: legacy helper <device>` and only the rooted-prefix rule runs (today's
-  behaviour). A helper upgrade kills any run in progress, so the current version attests the
+  `reclamation deferred: legacy helper <device>` and runs **exactly today's algorithm**: every
+  listed manifest (rooted or not, retired or not) is marked live, so a base a legacy helper
+  chose by listing keeps its cross-prefix references protected; only loose objects under a
+  manifest-bearing prefix and manifest-less prefixes older than 9 d are reclaimed. A helper upgrade kills any run in progress, so the current version attests the
   running helper. The gate is removed one release after every supported helper carries W03.
-- **Unknown-identity rows:** while any row mapped to I has `storage_identity IS NULL` and its
-  prefix is not found in I's listing, I runs the rooted-prefix rule only (§3.6).
+- **Unknown-identity rows:** every row mapped to I with `storage_identity IS NULL` is a root
+  of I (its manifest is fetched; a fetch failure aborts I fail-closed like any root). While any
+  such row's manifest is not found in I's listing, I runs today's algorithm as for a deferred
+  identity (§3.6). Self-heal updates by row **id** (`snapshot_id` is not unique across
+  identities, `schema/backup.ts:330`) and only where `storage_identity IS NULL`.
 
 All knobs are resolved **per run** with the existing production-floor/warn pattern:
 `BACKUP_GC_GRACE_MS`, `BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS` (default 9 d),
