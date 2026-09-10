@@ -1049,60 +1049,6 @@ func ListSnapshots(provider providers.BackupProvider) ([]Snapshot, error) {
 	return snapshots, errors.Join(errs...)
 }
 
-// DeleteSnapshot prunes snapshots beyond the retention count.
-func DeleteSnapshot(provider providers.BackupProvider, retention int) error {
-	return DeleteSnapshotContext(context.Background(), provider, retention)
-}
-
-// DeleteSnapshotContext prunes snapshots beyond the retention count.
-func DeleteSnapshotContext(ctx context.Context, provider providers.BackupProvider, retention int) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if retention <= 0 {
-		return nil
-	}
-	if err := ctx.Err(); err != nil {
-		return errBackupStopped
-	}
-	snapshots, err := ListSnapshots(provider)
-	if err != nil && len(snapshots) == 0 {
-		return err
-	}
-	if len(snapshots) <= retention {
-		return err
-	}
-
-	var errs []error
-
-	toDelete := snapshots[:len(snapshots)-retention]
-	for _, snapshot := range toDelete {
-		if err := ctx.Err(); err != nil {
-			return errBackupStopped
-		}
-		items, listErr := listSnapshotPrefixItems(provider, snapshot.ID)
-		if listErr != nil {
-			listErr = fmt.Errorf("failed to list snapshot %s: %w", snapshot.ID, listErr)
-			errs = append(errs, listErr)
-			log.Warn("snapshot list failed", "snapshotId", snapshot.ID, "error", listErr.Error())
-			continue
-		}
-
-		for _, item := range items {
-			if err := ctx.Err(); err != nil {
-				return errBackupStopped
-			}
-			if delErr := provider.Delete(item); delErr != nil {
-				delErr = fmt.Errorf("failed to delete %s: %w", item, delErr)
-				errs = append(errs, delErr)
-				log.Warn("snapshot delete failed", "item", item, "error", delErr.Error())
-			}
-		}
-	}
-
-	return errors.Join(err, errors.Join(errs...))
-}
-
 func listSnapshotPrefixItems(provider providers.BackupProvider, snapshotID string) ([]string, error) {
 	prefix := path.Join(snapshotRootDir, snapshotID)
 	items, err := provider.List(prefix + "/")

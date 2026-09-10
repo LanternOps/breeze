@@ -816,12 +816,17 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			// StaleSnapshotID covers both an actually-stale (>journalMaxAge)
 			// journal and the (near-impossible) identity-mismatch case — see
 			// openSnapshotJournal — so the message below is deliberately
-			// generic rather than claiming a specific cause.
-			log.Warn("discarding unusable checkpoint journal, cleaning up its remote prefix",
+			// generic rather than claiming a specific cause. The agent no
+			// longer cleans up the STALE JOURNAL'S remote prefix itself
+			// (D18 §3.5): that prefix belongs to a PRIOR, different run
+			// (not this run's own in-progress prefix, which is the only
+			// exception §3.5 keeps — see abortStopped/abortSourceGone in
+			// snapshot.go), so it is simply dropped and GC's existing
+			// manifest-less-prefix rule reclaims it.
+			log.Warn("discarding unusable checkpoint journal",
 				"snapshotId", staleID,
 				"maxAge", journalMaxAge.String(),
 			)
-			cleanupSnapshotPrefix(m.config.Provider, staleID)
 		}
 		if resumedJournal {
 			log.Info("resuming interrupted backup from checkpoint journal",
@@ -872,32 +877,8 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		}
 	}
 
-	retentionErr := error(nil)
 	if err := runCtx.Err(); err != nil {
 		return stopBackupRun()
-	}
-	// Agent-side retention pruning is DISABLED whenever incremental dedupe is
-	// active for this run. Incremental is now unconditional (previousManifest is
-	// consulted on every file-mode run), and a reference entry carries the
-	// ORIGINAL upload's BackupPath forward: an unchanged file's bytes live under
-	// the OLDEST snapshot's prefix indefinitely while every newer manifest
-	// references back into it. DeleteSnapshotContext deletes an expired
-	// snapshot's ENTIRE prefix with ZERO reference-awareness, so pruning the
-	// oldest prefix here would strand every retained manifest's references as
-	// dangling pointers — an unrestorable backup that only surfaces at restore
-	// time. Only a reference-aware GC may prune, and the server is the sole
-	// retention authority (dispatched runs pin Retention:0 — see exec_backup.go's
-	// server-owns-retention invariant). Reference-aware agent-side pruning for
-	// standalone storage reclamation is deliberately deferred: reimplementing
-	// mark-and-sweep GC on the agent is out of scope and too risky to one-shot.
-	if snapshot != nil && m.config.Retention > 0 && !incrementalDedupeActive {
-		retentionErr = DeleteSnapshotContext(runCtx, m.config.Provider, m.config.Retention)
-		if retentionErr != nil {
-			if errors.Is(retentionErr, errBackupStopped) {
-				return stopBackupRun()
-			}
-			log.Warn("failed to enforce snapshot retention", "error", retentionErr.Error())
-		}
 	}
 
 	if snapErr != nil {
@@ -947,7 +928,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// failures in a large run still completes, preserving the deliberate
 	// partial-success design above.
 	job.Status = classifyCompletionStatus(job.BytesBackedUp, totalScannedBytes(files), job.ErrorCount, len(files)+len(scanFailures))
-	job.Error = errors.Join(scanErr, retentionErr)
+	job.Error = scanErr
 	log.Info("backup run finished",
 		"status", job.Status,
 		"jobId", job.ID,

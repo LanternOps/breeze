@@ -195,60 +195,74 @@ func TestCreateSnapshot_EmptyFileSlice(t *testing.T) {
 	}
 }
 
-func TestDeleteSnapshot_DoesNotDeleteAdjacentPrefix(t *testing.T) {
-	provider := newMockProvider()
-	oldSnapshot := Snapshot{
-		ID:        "snapshot-abc",
-		Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+// cancelAfterFirstUploadProvider wraps mockProvider and cancels the given
+// CancelFunc right after the FIRST real Upload lands, so an aborted run has
+// something concrete under ITS OWN prefix for the abort cleanup to act on
+// (P3 fix — the previous version of this test never uploaded anything
+// before cancelling, so it could only prove absence-of-harm on an empty
+// prefix, not that own-prefix cleanup actually deletes what it should).
+type cancelAfterFirstUploadProvider struct {
+	*mockProvider
+	cancel   context.CancelFunc
+	uploaded int
+	mu       sync.Mutex
+}
+
+func (p *cancelAfterFirstUploadProvider) Upload(localPath, remotePath string) error {
+	err := p.mockProvider.Upload(localPath, remotePath)
+	p.mu.Lock()
+	p.uploaded++
+	first := p.uploaded == 1
+	p.mu.Unlock()
+	if first && p.cancel != nil {
+		p.cancel()
 	}
-	adjacentSnapshot := Snapshot{
-		ID:        "snapshot-abc2",
-		Timestamp: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+	return err
+}
+
+// TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix_NeverAForeignPublishedPrefix
+// pins the §3.5 exception's boundary from both directions (P3 fix): objects
+// are seeded under BOTH the aborted run's own (to-be-cleaned) prefix and a
+// foreign, already-published sibling prefix, and only the former may be
+// deleted.
+func TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix_NeverAForeignPublishedPrefix(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content-one")
+	file2 := createTempFile(t, tmpDir, "file2.txt", "content-two")
+	backing := newMockProvider()
+
+	// Seed a sibling, already-published snapshot that must never be
+	// touched by the aborted run's cleanup.
+	sibling := &Snapshot{
+		ID:    "snapshot-sibling-published",
+		Files: []SnapshotFile{{SourcePath: "/data/other.txt", BackupPath: "snapshots/snapshot-sibling-published/files/other.txt.gz", Size: 1}},
 	}
-	newSnapshot := Snapshot{
-		ID:        "snapshot-def",
-		Timestamp: time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC),
+	storeManifest(t, backing, sibling)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	provider := &cancelAfterFirstUploadProvider{mockProvider: backing, cancel: cancel}
+
+	files := []backupFile{
+		{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 11, modTime: time.Now()},
+		{sourcePath: file2, snapshotPath: "path_0/file2.txt", size: 11, modTime: time.Now()},
+	}
+	_, err := createSnapshotWithProgress(ctx, provider, files, nil, nil, nil, nil)
+	if !errors.Is(err, errBackupStopped) {
+		t.Fatalf("err = %v, want errBackupStopped", err)
 	}
 
-	for _, snapshot := range []Snapshot{oldSnapshot, adjacentSnapshot, newSnapshot} {
-		manifest, err := json.Marshal(snapshot)
-		if err != nil {
-			t.Fatalf("marshal snapshot: %v", err)
+	sawOwnPrefixDelete := false
+	for _, key := range backing.deleteCalls {
+		if strings.HasPrefix(key, "snapshots/snapshot-sibling-published/") {
+			t.Fatalf("abort cleanup deleted a key under a PUBLISHED sibling prefix: %s", key)
 		}
-		provider.files[path.Join(snapshotRootDir, snapshot.ID, snapshotManifestKey)] = manifest
-		provider.files[path.Join(snapshotRootDir, snapshot.ID, snapshotFilesDir, "data.txt.gz")] = []byte(snapshot.ID)
+		sawOwnPrefixDelete = true
 	}
-
-	if err := DeleteSnapshot(provider, 2); err != nil {
-		t.Fatalf("DeleteSnapshot failed: %v", err)
+	if !sawOwnPrefixDelete {
+		t.Fatal("expected the aborted run's own uploaded file to be cleaned up under its own prefix")
 	}
-
-	deleted := map[string]bool{}
-	for _, key := range provider.deleteCalls {
-		deleted[key] = true
-		if strings.Contains(key, "snapshot-abc2/") {
-			t.Fatalf("deleted adjacent-prefix key %q", key)
-		}
-	}
-
-	for _, key := range []string{
-		path.Join(snapshotRootDir, oldSnapshot.ID, snapshotManifestKey),
-		path.Join(snapshotRootDir, oldSnapshot.ID, snapshotFilesDir, "data.txt.gz"),
-	} {
-		if !deleted[key] {
-			t.Fatalf("expected old snapshot key %q to be deleted; calls=%v", key, provider.deleteCalls)
-		}
-	}
-
-	for _, key := range []string{
-		path.Join(snapshotRootDir, adjacentSnapshot.ID, snapshotManifestKey),
-		path.Join(snapshotRootDir, adjacentSnapshot.ID, snapshotFilesDir, "data.txt.gz"),
-		path.Join(snapshotRootDir, newSnapshot.ID, snapshotManifestKey),
-		path.Join(snapshotRootDir, newSnapshot.ID, snapshotFilesDir, "data.txt.gz"),
-	} {
-		if _, ok := provider.files[key]; !ok {
-			t.Fatalf("expected retained key %q to remain", key)
-		}
+	if _, stillThere := backing.files["snapshots/snapshot-sibling-published/manifest.json"]; !stillThere {
+		t.Fatal("sibling published manifest must survive the aborted run's cleanup")
 	}
 }
 
