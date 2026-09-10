@@ -24,6 +24,10 @@ import {
 } from './managedSoftwareDispatchPolicy';
 import { getEffectiveSoftwareDownloadPolicy } from './softwareDownloadPolicy';
 import { sendCommandToAgent, type AgentCommand } from '../routes/agentWs';
+import {
+  fingerprintSoftwareInstallMethodDependency,
+  fingerprintSoftwareVersionDependency,
+} from './softwareDependencyIdentity';
 
 export interface CreateSoftwareDeploymentInput {
   orgId: string;
@@ -185,6 +189,7 @@ export interface SoftwareInstallFanoutCatalogItem {
  */
 export interface SoftwareInstallFanoutMethod {
   id: string;
+  catalogId: string;
   platform: string;
   kind: string;
   packageId: string;
@@ -1039,6 +1044,10 @@ export async function createSoftwareDeployment(
     );
   }
 
+  const dependencyFingerprint = installMethod
+    ? fingerprintSoftwareInstallMethodDependency(installMethod, catalogItem)
+    : fingerprintSoftwareVersionDependency(versionRecord!, catalogItem);
+
   // Manager deploys persist their version intent in `options` so the
   // scheduler and the retry endpoint can rebuild the same payload later
   // without new columns.
@@ -1066,6 +1075,7 @@ export async function createSoftwareDeployment(
       maintenanceWindowId: maintenanceWindowId ?? null,
       createdBy,
       options: storedOptions,
+      dependencyFingerprint,
     })
     .returning();
 

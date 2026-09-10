@@ -226,6 +226,18 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
   { childTable: 'script_to_tags', constraint: 'script_to_tags_script_id_scripts_id_fk', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'script_versions', constraint: 'script_versions_script_id_scripts_id_fk', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'snmp_alert_thresholds', constraint: 'snmp_alert_thresholds_device_id_snmp_devices_id_fk', parentTable: 'snmp_devices', reason: 'child-not-deleted', allColumnsNullable: false },
+  // Was `pre-cleared` until #5473: software_versions rows for a deleted org
+  // used to have their own ASSOCIATED_SYSTEM_SCOPED_TABLES clearSql entry.
+  // #5473 replaced it with deleteSoftwareCatalogsAndObjects (invoked in place
+  // of the generic DELETE when the cascade walk reaches software_catalog),
+  // which still deletes these rows -- first, and removes their uploaded S3
+  // artifacts too, which a bare clearSql DELETE couldn't do -- but that
+  // function is opaque to this file's classifier, so software_catalog no
+  // longer counts as a table whose children this contract tracks. Not a
+  // regression: software_deployments (the only other table with a live FK
+  // into software_versions) is still a step-1b pre-clear, so it is always
+  // empty before deleteSoftwareCatalogsAndObjects runs.
+  { childTable: 'software_versions', constraint: 'software_versions_catalog_id_software_catalog_id_fk', parentTable: 'software_catalog', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'ticket_comments', constraint: 'ticket_comments_ticket_id_tickets_id_fk', parentTable: 'tickets', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'access_review_items', constraint: 'access_review_items_reviewed_by_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
   { childTable: 'access_review_items', constraint: 'access_review_items_user_id_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: false },
@@ -315,10 +327,8 @@ export const ORG_CASCADE_FK_PRE_CLEARED: ReadonlyArray<OrgCascadeFkRef> = Object
   },
   { childTable: 'psa_ticket_mappings', constraint: 'psa_ticket_mappings_connection_id_psa_connections_id_fk', parentTable: 'psa_connections', reason: 'pre-cleared', allColumnsNullable: false },
   { childTable: 'report_runs', constraint: 'report_runs_report_id_reports_id_fk', parentTable: 'reports', reason: 'pre-cleared', allColumnsNullable: false },
-  { childTable: 'software_versions', constraint: 'software_versions_catalog_id_software_catalog_id_fk', parentTable: 'software_catalog', reason: 'pre-cleared', allColumnsNullable: false },
   { childTable: 'deployment_results', constraint: 'deployment_results_deployment_id_software_deployments_id_fk', parentTable: 'software_deployments', reason: 'pre-cleared', allColumnsNullable: false },
   { childTable: 'software_deployments', constraint: 'software_deployments_install_method_id_fkey', parentTable: 'software_install_methods', reason: 'pre-cleared', allColumnsNullable: true },
-  { childTable: 'software_deployments', constraint: 'software_deployments_software_version_id_software_versions_id_f', parentTable: 'software_versions', reason: 'pre-cleared', allColumnsNullable: true },
   { childTable: 'sso_sessions', constraint: 'sso_sessions_provider_id_sso_providers_id_fk', parentTable: 'sso_providers', reason: 'pre-cleared', allColumnsNullable: false },
   { childTable: 'user_sso_identities', constraint: 'user_sso_identities_provider_id_sso_providers_id_fk', parentTable: 'sso_providers', reason: 'pre-cleared', allColumnsNullable: false },
   {

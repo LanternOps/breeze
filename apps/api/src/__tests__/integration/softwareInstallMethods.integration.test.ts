@@ -51,6 +51,12 @@ type ActiveAuth = {
 };
 let activeAuth: ActiveAuth | null = null;
 
+const { deleteObjectsMock } = vi.hoisted(() => ({ deleteObjectsMock: vi.fn(async () => undefined) }));
+vi.mock('../../services/s3Storage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/s3Storage')>()),
+  deleteObjects: deleteObjectsMock,
+}));
+
 vi.mock('../../middleware/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../middleware/auth')>();
   const { withDbAccessContext } = await import('../../db');
@@ -162,6 +168,8 @@ async function seedMethod(
 
 beforeEach(() => {
   activeAuth = null;
+  deleteObjectsMock.mockReset();
+  deleteObjectsMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -484,7 +492,7 @@ describe('org erasure removes the whole software chain', () => {
     const catalog = await seedCatalog(orgId, `Chrome ${orgId.slice(0, 8)}`);
     const [version] = await getTestDb()
       .insert(softwareVersions)
-      .values({ catalogId: catalog.id, version: '1.0.0', fileType: 'exe', isLatest: true })
+      .values({ catalogId: catalog.id, version: '1.0.0', fileType: 'exe', isLatest: true, s3Key: `software/${orgId}/package.exe` })
       .returning();
     const method = await seedMethod(catalog.id, 'windows', 'winget', 'Google.Chrome');
     const [device] = await getTestDb()
@@ -562,6 +570,7 @@ describe('org erasure removes the whole software chain', () => {
     expect(stats.tablesDeleted['deployment_results']).toBe(2);
     expect(stats.tablesDeleted['software_deployments']).toBe(2);
     expect(stats.tablesDeleted['software_catalog']).toBe(1);
+    expect(deleteObjectsMock).toHaveBeenCalledWith([`software/${orgA.id}/package.exe`]);
 
     // Org B untouched — including the org_id-less children.
     expect(await countWhere('software_catalog', 'org_id', orgB.id)).toBe(1);
@@ -604,7 +613,7 @@ describe('partner erasure removes the partner-owned software chain (#3600)', () 
     if (!catalog) throw new Error('failed to seed partner catalog item');
     const [version] = await getTestDb()
       .insert(softwareVersions)
-      .values({ catalogId: catalog.id, version: '2.0.0', fileType: 'exe', isLatest: true })
+      .values({ catalogId: catalog.id, version: '2.0.0', fileType: 'exe', isLatest: true, s3Key: `software/partner/${partnerId}/package.exe` })
       .returning();
     const method = await seedMethod(catalog.id, 'windows', 'winget', 'Huntress.Agent');
     return { catalog, version: version!, method };
@@ -661,6 +670,7 @@ describe('partner erasure removes the partner-owned software chain (#3600)', () 
 
     // The partner-axis pre-clear genuinely ran rather than matching zero rows.
     expect(stats.tablesDeleted['software_versions']).toBeGreaterThanOrEqual(1);
+    expect(deleteObjectsMock).toHaveBeenCalledWith([`software/partner/${partnerA.id}/package.exe`]);
 
     // Partner B is untouched — including its org_id-less children.
     expect(await countWhere('software_catalog', 'partner_id', partnerB.id)).toBe(1);

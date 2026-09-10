@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
+	"github.com/breeze-rmm/agent/internal/backup/hyperv"
+	"github.com/breeze-rmm/agent/internal/backup/mssql"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/config"
@@ -484,5 +488,488 @@ func TestInitBackupManager_CarriesAgentIDIntoManager(t *testing.T) {
 	}
 	if got := mgr.GetAgentID(); got != "agent-wiring-test" {
 		t.Fatalf("mgr.GetAgentID() = %q, want %q", got, "agent-wiring-test")
+	}
+}
+
+// ── D20b item B: provider-backed workloads route through a payload-built
+// manager when mgr == nil (the normal state for every policy-managed
+// device) ──────────────────────────────────────────────────────────────
+//
+// Before this fix, mssql_backup/hyperv_backup/mssql_restore/hyperv_restore/
+// mssql_verify fell straight through executeCommand's mgr==nil switch to the
+// generic `default: return fail("backup not configured on this device")` —
+// even though the on-demand routes (apps/api/src/routes/backup/mssql.ts,
+// hyperv.ts) now attach provider/providerConfig to the payload (D20b item
+// A). These tests dispatch through executeCommand with mgr == nil, exactly
+// how handleBackupCommand calls it for a real policy-managed device.
+
+func TestExecuteCommand_MSSQLBackupNilManagerUsesPayloadProvider(t *testing.T) {
+	baseDir := t.TempDir()
+
+	origRunMSSQLBackup := runMSSQLBackup
+	t.Cleanup(func() { runMSSQLBackup = origRunMSSQLBackup })
+	backupBytes := []byte("mssql-nil-mgr-backup-bytes")
+	runMSSQLBackup = func(instance, database, backupType, outputPath string) (*mssql.BackupResult, error) {
+		backupFile := filepath.Join(outputPath, "AppDb_full.bak")
+		if err := os.WriteFile(backupFile, backupBytes, 0o644); err != nil {
+			t.Fatalf("write backup file: %v", err)
+		}
+		return &mssql.BackupResult{
+			InstanceName: instance,
+			DatabaseName: database,
+			BackupType:   backupType,
+			BackupFile:   backupFile,
+			SizeBytes:    int64(len(backupBytes)),
+		}, nil
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"instance":   "MSSQLSERVER",
+		"database":   "AppDb",
+		"backupType": "full",
+		"provider":   "local",
+		"providerConfig": map[string]any{
+			"path": baseDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := executeCommand(backupipc.BackupCommandRequest{
+		CommandID:   "mssql-backup-nil-mgr",
+		CommandType: "mssql_backup",
+		Payload:     payload,
+	}, nil, nil, nil, newActiveCommandCanceller())
+
+	if !result.Success {
+		t.Fatalf("mssql_backup with nil manager + payload provider failed: %q", result.Stderr)
+	}
+	var decoded struct {
+		SnapshotID string `json:"snapshotId"`
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &decoded); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if decoded.SnapshotID == "" {
+		t.Fatal("expected snapshotId")
+	}
+}
+
+func TestExecuteCommand_MSSQLBackupNilManagerNoProviderConfigFailsWithSpecificMessage(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"instance":   "MSSQLSERVER",
+		"database":   "AppDb",
+		"backupType": "full",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := executeCommand(backupipc.BackupCommandRequest{
+		CommandID:   "mssql-backup-no-provider",
+		CommandType: "mssql_backup",
+		Payload:     payload,
+	}, nil, nil, nil, newActiveCommandCanceller())
+
+	if result.Success {
+		t.Fatal("expected failure when payload carries no provider config")
+	}
+	if result.Stderr == "backup not configured on this device" {
+		t.Fatalf("expected a specific missing-provider message, got the generic fallback: %q", result.Stderr)
+	}
+	if !strings.Contains(result.Stderr, "provider") {
+		t.Fatalf("expected error to name the missing provider config, got: %q", result.Stderr)
+	}
+}
+
+func TestExecuteCommand_HypervBackupNilManagerUsesPayloadProvider(t *testing.T) {
+	baseDir := t.TempDir()
+
+	payload, err := json.Marshal(map[string]any{
+		"vmName":          "Accounting VM",
+		"consistencyType": "application",
+		"provider":        "local",
+		"providerConfig": map[string]any{
+			"path": baseDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := executeCommand(backupipc.BackupCommandRequest{
+		CommandID:   "hyperv-backup-nil-mgr",
+		CommandType: "hyperv_backup",
+		Payload:     payload,
+	}, nil, nil, nil, newActiveCommandCanceller())
+
+	// hyperv.ExportVM has no test seam and this suite always runs on the
+	// !windows stub (ErrHyperVNotSupported) — so a real end-to-end backup
+	// can't be driven here. What this test CAN prove is that the payload
+	// carrying a provider config routed all the way through to
+	// execHypervBackup (which calls hyperv.ExportVM) instead of stopping at
+	// the nil-manager "backup not configured" fallback: the stub error is
+	// the tell, since execHypervBackup's own nil-provider guard returns a
+	// different message ("backup not configured", singular device-less
+	// form) and the mgr built here is never nil.
+	if result.Success {
+		t.Fatal("expected failure: hyperv.ExportVM is not supported on this (non-Windows) test platform")
+	}
+	if result.Stderr == "backup not configured on this device" {
+		t.Fatalf("routing stopped at the nil-manager fallback instead of reaching execHypervBackup: %q", result.Stderr)
+	}
+	if !strings.Contains(result.Stderr, hyperv.ErrHyperVNotSupported.Error()) {
+		t.Fatalf("expected the platform-stub error from execHypervBackup, got: %q", result.Stderr)
+	}
+}
+
+func TestExecuteCommand_HypervBackupNilManagerNoProviderConfigFailsWithSpecificMessage(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"vmName":          "Accounting VM",
+		"consistencyType": "application",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := executeCommand(backupipc.BackupCommandRequest{
+		CommandID:   "hyperv-backup-no-provider",
+		CommandType: "hyperv_backup",
+		Payload:     payload,
+	}, nil, nil, nil, newActiveCommandCanceller())
+
+	if result.Success {
+		t.Fatal("expected failure when payload carries no provider config")
+	}
+	if result.Stderr == "backup not configured on this device" {
+		t.Fatalf("expected a specific missing-provider message, got the generic fallback: %q", result.Stderr)
+	}
+	if !strings.Contains(result.Stderr, "provider") {
+		t.Fatalf("expected error to name the missing provider config, got: %q", result.Stderr)
+	}
+}
+
+func TestExecuteCommand_MSSQLRestoreNilManagerUsesPayloadProvider(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "mssql-nil-mgr-restore-20260909"
+	prefix := path.Join("snapshots", snapshotID)
+
+	backupBytes := []byte("nil-mgr-restore-source-bytes")
+	srcPath := filepath.Join(t.TempDir(), "AppDb_full.bak")
+	if err := os.WriteFile(srcPath, backupBytes, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	remoteBackupPath := path.Join(prefix, "files", filepath.Base(srcPath))
+	if err := provider.Upload(srcPath, remoteBackupPath); err != nil {
+		t.Fatalf("upload backup file: %v", err)
+	}
+	manifest := backup.Snapshot{
+		ID:        snapshotID,
+		Timestamp: time.Now().UTC(),
+		Files: []backup.SnapshotFile{
+			{SourcePath: filepath.Base(srcPath), BackupPath: remoteBackupPath, Size: int64(len(backupBytes))},
+		},
+		Size: int64(len(backupBytes)),
+	}
+	if err := uploadMssqlSnapshotManifest(provider, manifest); err != nil {
+		t.Fatalf("upload manifest: %v", err)
+	}
+
+	origResolve := resolveMSSQLRestoreTargetDir
+	t.Cleanup(func() { resolveMSSQLRestoreTargetDir = origResolve })
+	resolveMSSQLRestoreTargetDir = func(string) (string, error) { return t.TempDir(), nil }
+
+	origRunMSSQLRestore := runMSSQLRestore
+	t.Cleanup(func() { runMSSQLRestore = origRunMSSQLRestore })
+	var stagedPath string
+	runMSSQLRestore = func(instance, backupFile, targetDB string, noRecovery bool) (*mssql.RestoreResult, error) {
+		stagedPath = backupFile
+		return &mssql.RestoreResult{DatabaseName: targetDB, RestoredAs: targetDB, Status: "completed"}, nil
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"instance":       "MSSQLSERVER",
+		"snapshotId":     snapshotID,
+		"targetDatabase": "AppDb_Restore",
+		"provider":       "local",
+		"providerConfig": map[string]any{
+			"path": baseDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := executeCommand(backupipc.BackupCommandRequest{
+		CommandID:   "mssql-restore-nil-mgr",
+		CommandType: "mssql_restore",
+		Payload:     payload,
+	}, nil, nil, nil, newActiveCommandCanceller())
+
+	if !result.Success {
+		t.Fatalf("mssql_restore with nil manager + payload provider failed: %q", result.Stderr)
+	}
+	if stagedPath == "" {
+		t.Fatal("expected restore to receive a staged backup file path")
+	}
+}
+
+func TestExecuteCommand_MSSQLRestoreNilManagerNoProviderConfigFailsWithSpecificMessage(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"instance":       "MSSQLSERVER",
+		"snapshotId":     "mssql-some-snapshot",
+		"targetDatabase": "AppDb_Restore",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := executeCommand(backupipc.BackupCommandRequest{
+		CommandID:   "mssql-restore-no-provider",
+		CommandType: "mssql_restore",
+		Payload:     payload,
+	}, nil, nil, nil, newActiveCommandCanceller())
+
+	if result.Success {
+		t.Fatal("expected failure when payload carries no provider config")
+	}
+	if result.Stderr == "backup not configured on this device" {
+		t.Fatalf("expected a specific missing-provider message, got the generic fallback: %q", result.Stderr)
+	}
+	if !strings.Contains(result.Stderr, "provider") {
+		t.Fatalf("expected error to name the missing provider config, got: %q", result.Stderr)
+	}
+}
+
+func TestExecuteCommand_MSSQLVerifyNilManagerUsesPayloadProvider(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "mssql-nil-mgr-verify-20260909"
+	prefix := path.Join("snapshots", snapshotID)
+
+	backupBytes := []byte("nil-mgr-verify-source-bytes")
+	srcPath := filepath.Join(t.TempDir(), "AppDb_log.trn")
+	if err := os.WriteFile(srcPath, backupBytes, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	remoteBackupPath := path.Join(prefix, "files", filepath.Base(srcPath))
+	if err := provider.Upload(srcPath, remoteBackupPath); err != nil {
+		t.Fatalf("upload backup file: %v", err)
+	}
+	manifest := backup.Snapshot{
+		ID:        snapshotID,
+		Timestamp: time.Now().UTC(),
+		Files: []backup.SnapshotFile{
+			{SourcePath: filepath.Base(srcPath), BackupPath: remoteBackupPath, Size: int64(len(backupBytes))},
+		},
+		Size: int64(len(backupBytes)),
+	}
+	if err := uploadMssqlSnapshotManifest(provider, manifest); err != nil {
+		t.Fatalf("upload manifest: %v", err)
+	}
+
+	origResolve := resolveMSSQLRestoreTargetDir
+	t.Cleanup(func() { resolveMSSQLRestoreTargetDir = origResolve })
+	resolveMSSQLRestoreTargetDir = func(string) (string, error) { return t.TempDir(), nil }
+
+	origRunMSSQLVerify := runMSSQLVerify
+	t.Cleanup(func() { runMSSQLVerify = origRunMSSQLVerify })
+	var verifiedPath string
+	runMSSQLVerify = func(instance, backupFile string) (*mssql.VerifyResult, error) {
+		verifiedPath = backupFile
+		return &mssql.VerifyResult{Valid: true}, nil
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"instance":   "MSSQLSERVER",
+		"snapshotId": snapshotID,
+		"provider":   "local",
+		"providerConfig": map[string]any{
+			"path": baseDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := executeCommand(backupipc.BackupCommandRequest{
+		CommandID:   "mssql-verify-nil-mgr",
+		CommandType: "mssql_verify",
+		Payload:     payload,
+	}, nil, nil, nil, newActiveCommandCanceller())
+
+	if !result.Success {
+		t.Fatalf("mssql_verify with nil manager + payload provider failed: %q", result.Stderr)
+	}
+	if verifiedPath == "" {
+		t.Fatal("expected verify to receive a staged backup file path")
+	}
+}
+
+func TestExecuteCommand_MSSQLVerifyNilManagerNoProviderConfigFailsWithSpecificMessage(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"instance":   "MSSQLSERVER",
+		"snapshotId": "mssql-some-snapshot",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := executeCommand(backupipc.BackupCommandRequest{
+		CommandID:   "mssql-verify-no-provider",
+		CommandType: "mssql_verify",
+		Payload:     payload,
+	}, nil, nil, nil, newActiveCommandCanceller())
+
+	if result.Success {
+		t.Fatal("expected failure when payload carries no provider config")
+	}
+	if result.Stderr == "backup not configured on this device" {
+		t.Fatalf("expected a specific missing-provider message, got the generic fallback: %q", result.Stderr)
+	}
+	if !strings.Contains(result.Stderr, "provider") {
+		t.Fatalf("expected error to name the missing provider config, got: %q", result.Stderr)
+	}
+}
+
+func TestExecuteCommand_HypervRestoreNilManagerReachesExecFunction(t *testing.T) {
+	baseDir := t.TempDir()
+
+	payload, err := json.Marshal(map[string]any{
+		"snapshotId": "hyperv-nil-mgr-restore-20260909",
+		"vmName":     "Recovered VM",
+		"provider":   "local",
+		"providerConfig": map[string]any{
+			"path": baseDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := executeCommand(backupipc.BackupCommandRequest{
+		CommandID:   "hyperv-restore-nil-mgr",
+		CommandType: "hyperv_restore",
+		Payload:     payload,
+	}, nil, nil, nil, newActiveCommandCanceller())
+
+	// No real snapshot manifest exists at baseDir, so execHypervRestore fails
+	// at the manifest-download step (before it would ever reach
+	// hyperv.ImportVM's platform stub) — that failure, distinct from the
+	// nil-manager fallback, is what proves the payload-built manager routed
+	// all the way into execHypervRestore.
+	if result.Success {
+		t.Fatal("expected failure: no real Hyper-V snapshot manifest exists at the test provider path")
+	}
+	if result.Stderr == "backup not configured on this device" {
+		t.Fatalf("routing stopped at the nil-manager fallback instead of reaching execHypervRestore: %q", result.Stderr)
+	}
+	if !strings.Contains(result.Stderr, "Hyper-V snapshot manifest") {
+		t.Fatalf("expected execHypervRestore's manifest-download error, got: %q", result.Stderr)
+	}
+}
+
+// ── D20c: manager-less Hyper-V commands (hyperv_checkpoint, hyperv_vm_state)
+// run with mgr == nil ──────────────────────────────────────────────────
+//
+// execHypervCheckpoint/execHypervVMState take only a payload, no
+// *backup.BackupManager — unlike every other Hyper-V/MSSQL command handler.
+// Before this fix their command types were never added to executeCommand's
+// mgr == nil switch, so they fell straight through to the generic
+// "backup not configured on this device", even though they need no
+// manager/provider to run at all. mgr == nil is the NORMAL state for every
+// policy-managed device (no agent.yaml backup config), so this broke VM
+// start/stop/pause/resume and checkpoint create/delete/apply for exactly
+// those devices.
+
+func TestExecuteCommand_HypervCheckpointNilManagerRunsWithoutManager(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"vmName":         "Accounting VM",
+		"action":         "create",
+		"checkpointName": "pre-patch",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := executeCommand(backupipc.BackupCommandRequest{
+		CommandID:   "hyperv-checkpoint-nil-mgr",
+		CommandType: "hyperv_checkpoint",
+		Payload:     payload,
+	}, nil, nil, nil, newActiveCommandCanceller())
+
+	// hyperv.ManageCheckpoint has no test seam and this suite always runs on
+	// the !windows stub (ErrHyperVNotSupported), so a real checkpoint can't be
+	// driven here. What this test CAN prove is that the command routed all
+	// the way through to execHypervCheckpoint instead of stopping at the
+	// nil-manager "backup not configured" fallback: the platform-stub error
+	// is the tell, since execHypervCheckpoint takes no manager at all and so
+	// can never itself report "not configured".
+	if result.Success {
+		t.Fatal("expected failure: hyperv.ManageCheckpoint is not supported on this (non-Windows) test platform")
+	}
+	if result.Stderr == "backup not configured on this device" {
+		t.Fatalf("routing stopped at the nil-manager fallback instead of reaching execHypervCheckpoint: %q", result.Stderr)
+	}
+	if !strings.Contains(result.Stderr, hyperv.ErrHyperVNotSupported.Error()) {
+		t.Fatalf("expected the platform-stub error from execHypervCheckpoint, got: %q", result.Stderr)
+	}
+}
+
+func TestExecuteCommand_HypervVMStateNilManagerRunsWithoutManager(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"vmName":      "Accounting VM",
+		"targetState": "start",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := executeCommand(backupipc.BackupCommandRequest{
+		CommandID:   "hyperv-vm-state-nil-mgr",
+		CommandType: "hyperv_vm_state",
+		Payload:     payload,
+	}, nil, nil, nil, newActiveCommandCanceller())
+
+	// Same reasoning as the checkpoint test above: hyperv.ChangeVMState has no
+	// test seam and hits the !windows stub, so the stub error (rather than
+	// the nil-manager fallback) is what proves routing reached
+	// execHypervVMState, which also takes no manager.
+	if result.Success {
+		t.Fatal("expected failure: hyperv.ChangeVMState is not supported on this (non-Windows) test platform")
+	}
+	if result.Stderr == "backup not configured on this device" {
+		t.Fatalf("routing stopped at the nil-manager fallback instead of reaching execHypervVMState: %q", result.Stderr)
+	}
+	if !strings.Contains(result.Stderr, hyperv.ErrHyperVNotSupported.Error()) {
+		t.Fatalf("expected the platform-stub error from execHypervVMState, got: %q", result.Stderr)
+	}
+}
+
+func TestExecuteCommand_HypervRestoreNilManagerNoProviderConfigFailsWithSpecificMessage(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"snapshotId": "hyperv-some-snapshot",
+		"vmName":     "Recovered VM",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := executeCommand(backupipc.BackupCommandRequest{
+		CommandID:   "hyperv-restore-no-provider",
+		CommandType: "hyperv_restore",
+		Payload:     payload,
+	}, nil, nil, nil, newActiveCommandCanceller())
+
+	if result.Success {
+		t.Fatal("expected failure when payload carries no provider config")
+	}
+	if result.Stderr == "backup not configured on this device" {
+		t.Fatalf("expected a specific missing-provider message, got the generic fallback: %q", result.Stderr)
+	}
+	if !strings.Contains(result.Stderr, "provider") {
+		t.Fatalf("expected error to name the missing provider config, got: %q", result.Stderr)
 	}
 }

@@ -122,6 +122,10 @@ import {
 import { resolveEdrInstaller } from './edrInstallerResolver';
 import { getPresignedUrl } from './s3Storage';
 import { inArray } from 'drizzle-orm';
+import {
+  fingerprintSoftwareInstallMethodDependency,
+  fingerprintSoftwareVersionDependency,
+} from './softwareDependencyIdentity';
 
 const resolveEdrMock = vi.mocked(resolveEdrInstaller);
 const getPresignedUrlMock = vi.mocked(getPresignedUrl);
@@ -338,8 +342,9 @@ describe('createSoftwareDeployment', () => {
       .mockReturnValueOnce(sel(targetDevices));
 
     // 1st insert: softwareDeployments (.returning())  2nd: deploymentResults (no .returning())
+    const deploymentInsert = insWithReturning([deployment]);
     insertMock
-      .mockReturnValueOnce(insWithReturning([deployment]))
+      .mockReturnValueOnce(deploymentInsert)
       .mockReturnValueOnce(ins());
 
     const result = await createSoftwareDeployment({
@@ -352,6 +357,9 @@ describe('createSoftwareDeployment', () => {
     });
 
     expect(result.status).toBe('pending');
+    expect(deploymentInsert.values).toHaveBeenCalledWith(expect.objectContaining({
+      dependencyFingerprint: fingerprintSoftwareVersionDependency(versionRecord, catalogItem),
+    }));
     expect(result.deployment).toEqual(deployment);
     expect(result.dispatchedDeviceIds).toEqual(['dev-1', 'dev-2']);
     // #5128: deviceCommandId is ALWAYS the seam's persisted row id now — the
@@ -1949,6 +1957,7 @@ describe('createSoftwareDeployment (package-manager install methods)', () => {
     expect(insertedValues[0]).toMatchObject({
       installMethodId: 'method-win',
       softwareVersionId: null,
+      dependencyFingerprint: fingerprintSoftwareInstallMethodDependency(wingetMethod, catalogItem),
     });
 
     const payload = dispatchDeviceCommandMock.mock.calls[0]![0].payload;
@@ -2079,6 +2088,7 @@ describe('buildAndDispatchSoftwareInstalls — targets missing at dispatch (#360
   };
   const installMethod = {
     id: 'sim-1',
+    catalogId: 'cat-1',
     platform: 'windows',
     kind: 'winget',
     packageId: 'Google.Chrome',

@@ -114,18 +114,30 @@ tgt "sudo md5sum /etc/fstab | cut -d' ' -f1" > "$R/tgt-pre-fstab.md5"
 # ---------------------------------------------------------------------------
 say "run backup on SOURCE, isolate the system_image job"
 JOBS_RAW=$($L run "$DEV")
+# A manual run creates one job per selection (file + system_image); make sure we see all of
+# them even if the run response only echoes the first — pick up every job created since the run.
+sleep 3
+JOBS_RAW=$( { echo "$JOBS_RAW"; $L api GET "/backup/jobs?deviceId=$DEV&limit=10" | jq -r --arg t "$(date -u -v-2M +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '-2 min' +%Y-%m-%dT%H:%M:%S)" '(.data // .)[] | select(.createdAt >= $t) | .id'; } | sort -u | tr '\n' ' ')
 read -ra JOBS <<< "$JOBS_RAW"
 SNAPJOB=""
 SNAPLABEL=""
 for j in "${JOBS[@]}"; do
   out=$($L wait-job "$j" 1800)
   echo "$out" > "$R/job-$j.json"
-  ty=$(echo "$out" | jq -r '.type // .backupMode // empty')
   st=$(echo "$out" | jq -r '.status')
-  echo "job $j type=$ty status=$st"
+  label=$(echo "$out" | jq -r '.snapshotId // empty')
+  # The job row carries the JOB type (manual/scheduled), not the backup mode; the
+  # snapshot row it produced is what says system_image. Resolve the mode through it.
+  ty=""
+  for _ in $(seq 1 12); do
+    ty=$($L api GET "/backup/snapshots?deviceId=$DEV" | jq -r --arg j "$j" '(.data // .)[] | select(.jobId==$j) | .backupType' | head -1)
+    [ -n "$ty" ] && break
+    sleep 5
+  done
+  echo "job $j mode=${ty:-?} status=$st label=${label:-?}"
   if [ "$ty" = system_image ]; then
     SNAPJOB=$j
-    SNAPLABEL=$(echo "$out" | jq -r '.snapshotId // empty')
+    SNAPLABEL=$label
   fi
 done
 
@@ -139,7 +151,7 @@ if [ -z "$SNAPLABEL" ]; then
   exit 1
 fi
 
-SNAPROW=$($L snapshots "$DEV" | jq -r 'select(.backupType=="system_image") | .id' | head -1)
+SNAPROW=$($L api GET "/backup/snapshots?deviceId=$DEV" | jq -r --arg j "$SNAPJOB" '(.data // .)[] | select(.jobId==$j) | .id' | head -1)
 if [ -n "$SNAPROW" ]; then
   pass "backup: snapshot row id resolved ($SNAPROW)"
 else
@@ -172,7 +184,13 @@ if [ -s "$R/state-manifest.json" ]; then
   jq -c '.artifacts[]' "$R/state-manifest.json" | while IFS= read -r art; do
     apath=$(echo "$art" | jq -r '.path')
     acsum=$(echo "$art" | jq -r '.checksum // empty')
+    alink=$(echo "$art" | jq -r '.linkTarget // empty')
     okey="$BUCKET/system-state/$apath"
+    # Symlinks are carried in the manifest (linkTarget) and never uploaded as objects.
+    if [ -n "$alink" ]; then
+      echo "OK(symlink) $apath -> $alink" >> "$R/artifact-check.log"
+      continue
+    fi
     if ! "$S"/mc stat "$okey" > /dev/null 2>&1; then
       echo "FAIL missing $okey" >> "$R/artifact-check.log"
       continue
@@ -217,13 +235,23 @@ fi
 # ---------------------------------------------------------------------------
 if [ "$MODE" = tamper ]; then
   say "tamper: corrupt one system-state artifact object"
-  TAMPER_PATH=$(jq -r '.artifacts[0].path // empty' "$R/state-manifest.json")
+  # Pick a real, non-empty, checksummed artifact (not a symlink, not a 0-byte file whose
+  # "corruption" would be indistinguishable), and prove the object actually changed size —
+  # an mc wrapper without stdin passthrough silently writes nothing with `mc pipe`.
+  TAMPER_PATH=$(jq -r '[.artifacts[] | select((.linkTarget // "") == "" and (.checksum // "") != "" and (.sizeBytes // 0) > 0)][0].path // empty' "$R/state-manifest.json")
+  TAMPER_SIZE=$(jq -r --arg p "$TAMPER_PATH" '.artifacts[] | select(.path==$p) | .sizeBytes' "$R/state-manifest.json")
   if [ -z "$TAMPER_PATH" ]; then
     echo "no artifact available to tamper" >&2
     exit 1
   fi
-  echo "garbage-$(date +%s)" | "$S"/mc pipe "$BUCKET/system-state/$TAMPER_PATH"
-  echo "tampered object: $BUCKET/system-state/$TAMPER_PATH" | tee "$R/tamper-target.txt"
+  mkdir -p /tmp/mcout; printf 'garbage-%s-%s\n' "$(date +%s)" "$RANDOM$RANDOM" > /tmp/mcout/tamper.bin
+  "$S"/mc cp /out/tamper.bin "$BUCKET/system-state/$TAMPER_PATH" > /dev/null
+  NEWSIZE=$("$S"/mc stat --json "$BUCKET/system-state/$TAMPER_PATH" 2>/dev/null | jq -r '.size // empty' | head -1)
+  echo "tampered object: $BUCKET/system-state/$TAMPER_PATH (manifest size $TAMPER_SIZE, now $NEWSIZE)" | tee "$R/tamper-target.txt"
+  if [ -z "$NEWSIZE" ] || [ "$NEWSIZE" = "$TAMPER_SIZE" ]; then
+    echo "tamper did not change the object — aborting so the negative case is not vacuous" >&2
+    exit 1
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -289,7 +317,8 @@ if [ "$MODE" = recover ]; then
   assert_eq "target: breeze-assure.service enabled" enabled "$ENABLED"
 
   GOTCRON=$(tgt "sudo crontab -u assure -l" 2> /dev/null)
-  assert_eq "target: assure crontab matches source" "$CRON_LINE" "$GOTCRON"
+  # `crontab -l` on the target includes the install header comments; the schedule line is the contract.
+  if printf '%s\n' "$GOTCRON" | grep -qF -- "$CRON_LINE"; then pass "target: assure crontab contains the source schedule line"; else fail "target: assure crontab missing '$CRON_LINE' (got: $(printf '%s' "$GOTCRON" | tr '\n' '|' | cut -c1-160))"; fi
 
   if tgt "dpkg -s $PKG > /dev/null 2>&1"; then
     pass "target: package $PKG installed"
@@ -315,10 +344,13 @@ else
   else
     fail "tamper: restore job status is completed — checksum tamper was not caught"
   fi
-  if echo "$RERR" | grep -qi checksum; then
-    pass "tamper: failure names a checksum problem"
+  # The server's restore row has no reason column (only status); the helper's own result
+  # carries the verification failure in `error` or `warnings`. Assert on that.
+  HELPER_REASON=$(jq -r '[.error // empty] + (.warnings // []) | join(" | ")' "$R/recover-result.json" 2>/dev/null)
+  if printf '%s' "$RERR $HELPER_REASON" | grep -qiE 'checksum|verification|mismatch'; then
+    pass "tamper: failure names a verification/checksum problem ($(printf '%s' "$HELPER_REASON" | grep -oiE '[^|]*(checksum|verification|mismatch)[^|]*' | head -1 | cut -c1-140))"
   else
-    fail "tamper: failure reason does not mention checksum ('$RERR')"
+    fail "tamper: failure reason does not mention checksum/verification (server='$RERR' helper='$(printf '%s' "$HELPER_REASON" | cut -c1-160)')"
   fi
 fi
 
