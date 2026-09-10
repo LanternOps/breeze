@@ -631,6 +631,7 @@ export type BulkLifecycleFailureCode =
   | 'NOT_REMOVED'
   | 'UNINSTALL_PENDING'
   | 'SITE_ACCESS_DENIED'
+  | 'STATE_CHANGED'
   | 'ERROR';
 
 export interface BulkLifecycleFailure {

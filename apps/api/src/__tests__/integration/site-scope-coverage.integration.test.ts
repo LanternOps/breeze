@@ -172,7 +172,6 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/agents/sessions.ts:PUT /:id/sessions',
   'routes/agents/state.ts:PUT /:id/config-state',
   'routes/agents/state.ts:PUT /:id/registry-state',
-  'routes/desktopWs.ts:POST /connect/exchange',
   'routes/helper/index.ts:DELETE /chat/sessions/:id',
   'routes/helper/index.ts:GET /chat/sessions',
   'routes/helper/index.ts:GET /chat/sessions/:id/messages',
@@ -422,6 +421,15 @@ describe('site-scope coverage — input-sourced / list-style', () => {
 // Vetted-safe: confirmed NOT a dead gate despite matching the static shape.
 // Each entry MUST carry a one-line justification.
 const DEAD_PERMS_GATE_EXEMPT: ReadonlySet<string> = new Set<string>([
+  // remote/index.ts mounts auth -> requirePermission(REMOTE_ACCESS) -> MFA
+  // before sessionRoutes. Its live permission context is inherited by these
+  // child handlers; the file-local scanner cannot see the parent mount.
+  // remote.test.ts exercises parent-only loading, same-site success and
+  // cross-site/no-side-effect denials for all four capability endpoints.
+  'routes/remote/sessions.ts:POST /sessions/:id/ws-ticket',
+  'routes/remote/sessions.ts:POST /sessions/:id/desktop-connect-code',
+  'routes/remote/sessions.ts:GET /ice-servers',
+  'routes/remote/sessions.ts:POST /sessions/:id/ice',
   // ws-ticket mint route sources its site gate from `auth.allowedSiteIds`
   // (set unconditionally by authMiddleware via getUserPermissions — the same
   // source as `permissions.allowedSiteIds`), not the `permissions` context, so
