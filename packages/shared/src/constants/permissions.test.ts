@@ -24,6 +24,17 @@ describe('PAM dedicated permissions (pam:approve / pam:manage_policy)', () => {
   });
 });
 
+describe('Accounting dedicated permissions (accounting:read / accounting:manage)', () => {
+  it('exposes a dedicated provider-read capability, distinct from partner authority alone', () => {
+    expect(PERMISSION_GRANTS.ACCOUNTING_READ).toEqual({ resource: 'accounting', action: 'read' });
+  });
+
+  it('exposes a dedicated realm-management capability, distinct from invoices:write', () => {
+    expect(PERMISSION_GRANTS.ACCOUNTING_MANAGE).toEqual({ resource: 'accounting', action: 'manage' });
+    expect(PERMISSION_GRANTS.ACCOUNTING_MANAGE).not.toEqual(PERMISSION_GRANTS.INVOICES_WRITE);
+  });
+});
+
 describe('Workspace extension grants', () => {
   it('keeps read, configuration, credentials, and execution as distinct capabilities', () => {
     expect(PERMISSION_GRANTS.WORKSPACE_READ).toEqual({ resource: 'workspace', action: 'read' });

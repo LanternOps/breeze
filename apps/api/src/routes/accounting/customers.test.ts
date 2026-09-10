@@ -12,7 +12,7 @@ const { listAnnotatedMock, importMock, writeRouteAuditMock, QbImportError, authS
   const authState = {
     scope: 'partner' as 'partner' | 'system',
     partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
-    permissions: new Set<string>(['organizations:write', 'sites:write']),
+    permissions: new Set<string>(['accounting:read', 'accounting:manage', 'organizations:write', 'sites:write']),
   };
   return { listAnnotatedMock, importMock, writeRouteAuditMock, QbImportError, authState };
 });
@@ -63,7 +63,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   authState.scope = 'partner';
   authState.partnerOrgAccess = 'all';
-  authState.permissions = new Set(['organizations:write', 'sites:write']);
+  authState.permissions = new Set(['accounting:read', 'accounting:manage', 'organizations:write', 'sites:write']);
 });
 
 describe('GET /accounting/:provider/customers', () => {
@@ -118,7 +118,7 @@ describe('GET /accounting/:provider/customers', () => {
   it('allows a read-only caller with NO write permissions (listing creates nothing)', async () => {
     // The seeded "Partner Billing" role owns the QuickBooks connection but has
     // no orgs:write — it must still be able to browse customers.
-    authState.permissions = new Set();
+    authState.permissions = new Set(['accounting:read', 'accounting:manage']);
     listAnnotatedMock.mockResolvedValue([]);
     const res = await app().request('/accounting/quickbooks/customers');
     expect(res.status).toBe(200);
@@ -167,7 +167,7 @@ describe('POST /accounting/:provider/customers/import', () => {
   });
 
   it('denies a caller without organizations:write (403) before importing anything', async () => {
-    authState.permissions = new Set(['sites:write']);
+    authState.permissions = new Set(['accounting:read', 'accounting:manage', 'sites:write']);
     const res = await app().request('/accounting/quickbooks/customers/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -178,7 +178,7 @@ describe('POST /accounting/:provider/customers/import', () => {
   });
 
   it('denies a caller without sites:write (403) — the import creates a default site', async () => {
-    authState.permissions = new Set(['organizations:write']);
+    authState.permissions = new Set(['accounting:read', 'accounting:manage', 'organizations:write']);
     const res = await app().request('/accounting/quickbooks/customers/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -193,7 +193,7 @@ describe('POST /accounting/:provider/customers/import', () => {
     // system-scope token does not have — without the bypass every system-scope
     // import 403s while requireScope still advertises support for it.
     authState.scope = 'system';
-    authState.permissions = new Set();
+    authState.permissions = new Set(['accounting:read', 'accounting:manage']);
     importMock.mockResolvedValue({ imported: [], skipped: [], errors: [] });
     const res = await app().request('/accounting/quickbooks/customers/import?partnerId=11111111-1111-4111-8111-111111111111', {
       method: 'POST',

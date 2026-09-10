@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/layout"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 	"github.com/breeze-rmm/agent/internal/backup/vss"
@@ -68,6 +69,10 @@ var ErrJournalExpiredAtPublish = errors.New("checkpoint journal expired before m
 // real collector shells out to OS tools and succeeds on any CI host, which
 // would otherwise leave the system-state fail-loud/warning branches uncovered.
 var collectSystemState = systemstate.CollectSystemState
+
+// collectLayout is the seam over layout.Collect (disk layout for bare-metal
+// rebuilds, spec §5.2). Same rationale as collectSystemState above.
+var collectLayout = layout.Collect
 
 // BackupConfig defines backup configuration settings.
 type BackupConfig struct {
@@ -206,6 +211,13 @@ type BackupJob struct {
 	ErrorCount          int                              `json:"errorCount,omitempty"`
 	VSSMetadata         *vss.VSSMetadata                 `json:"vssMetadata,omitempty"`         // nil when VSS was not used
 	SystemStateManifest *systemstate.SystemStateManifest `json:"systemStateManifest,omitempty"` // nil when system state was not collected
+	// LayoutManifest is the disk layout captured for bare-metal rebuilds
+	// (snapshots/<id>/layout.json). nil on file-only runs and when capture
+	// failed. BareMetal is the guard verdict for that layout; on capture
+	// failure it is non-nil with Restorable=false and the error as the reason,
+	// so the server never mistakes "unknown" for "restorable".
+	LayoutManifest *layout.Manifest      `json:"layoutManifest,omitempty"`
+	BareMetal      *layout.Restorability `json:"bareMetal,omitempty"`
 	// ReferencedFiles/ReferencedBytes count how much of FilesBackedUp/
 	// BytesBackedUp this run satisfied by referencing an older snapshot's
 	// object instead of re-uploading (see decideFile / isReferenceEntry).
@@ -572,7 +584,11 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			job.FilesBackedUp = len(existing.Files)
 			job.BytesBackedUp = existing.Size
 			for _, f := range existing.Files {
-				if isReferenceEntry(f, existing.ID) {
+				// A content-less entry (symlink/dir) is never a reference —
+				// isReferenceEntry already guards on BackupPath=="", this is
+				// belt-and-suspenders against the same miscount (review
+				// finding, PR #5520).
+				if f.HasContent() && isReferenceEntry(f, existing.ID) {
 					job.ReferencedFiles++
 					job.ReferencedBytes += f.Size
 				}
@@ -699,6 +715,32 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 					log.Warn("failed to clean up system state staging dir", "dir", stagingDir, "error", removeErr.Error())
 				}
 			}()
+		}
+
+		// Disk layout — independent of system-state success: a partial state
+		// capture with a good layout is still worth knowing about, and vice
+		// versa. Never fatal: the run is still a valid file backup.
+		//
+		// ErrUnsupportedPlatform (no collector for this GOOS, e.g. darwin) is
+		// an EXPECTED, permanent condition, not a collection failure — it
+		// never becomes a run warning, and job.BareMetal stays nil exactly
+		// like a file-only run, so a healthy system-state run on an
+		// unsupported platform stays warning-free.
+		if lm, lerr := collectLayout(runCtx); lerr != nil {
+			if errors.Is(lerr, layout.ErrUnsupportedPlatform) {
+				log.Debug("disk layout capture skipped: unsupported platform")
+			} else {
+				log.Warn("disk layout capture failed", "error", lerr.Error())
+				appendWarning(job, "disk layout was not captured: "+lerr.Error())
+				job.BareMetal = &layout.Restorability{Restorable: false, Reasons: []string{"disk layout was not captured: " + lerr.Error()}}
+			}
+		} else {
+			job.LayoutManifest = lm
+			verdict := layout.Assess(lm)
+			job.BareMetal = &verdict
+			if !verdict.Restorable {
+				appendWarning(job, "not bare-metal restorable: "+strings.Join(verdict.Reasons, "; "))
+			}
 		}
 	}
 
@@ -880,6 +922,14 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 				job.Error = fmt.Errorf("system state publish failed: %w", pubErr)
 				return job, job.Error
 			}
+			if job.LayoutManifest != nil {
+				if pubErr := publishLayoutManifest(runCtx, uploadProvider, snapshot.ID, job.LayoutManifest); pubErr != nil {
+					job.Status = jobStatusFailed
+					job.CompletedAt = time.Now().UTC()
+					job.Error = fmt.Errorf("layout manifest publish failed: %w", pubErr)
+					return job, job.Error
+				}
+			}
 			if pubErr := publishSnapshotManifest(runCtx, uploadProvider, snapshot, prefix); pubErr != nil {
 				job.Status = jobStatusFailed
 				job.CompletedAt = time.Now().UTC()
@@ -995,6 +1045,9 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// ordinary manifest first (wrong order — D15 Wave 1 finding #4).
 		snapshotOpts = append(snapshotOpts, withSystemState(systemStateStagingDir, job.SystemStateManifest))
 	}
+	if m.config.SystemStateEnabled && job.LayoutManifest != nil {
+		snapshotOpts = append(snapshotOpts, withLayout(job.LayoutManifest))
+	}
 	// Ownership of the journal's fd lifecycle transfers to
 	// createSnapshotWithProgress from here on (it has its own
 	// completed/Abandon defer) — this function's defer above must not also
@@ -1015,7 +1068,9 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// reference-count fields (they're result/wire-only, not manifest
 		// content — see BackupJob.ReferencedFiles's doc comment).
 		for _, f := range snapshot.Files {
-			if isReferenceEntry(f, snapshot.ID) {
+			// See the identical guard/comment above: a content-less entry
+			// is never a reference (review finding, PR #5520).
+			if f.HasContent() && isReferenceEntry(f, snapshot.ID) {
 				job.ReferencedFiles++
 				job.ReferencedBytes += f.Size
 			}
@@ -1323,6 +1378,49 @@ type backupFile struct {
 	// copy device path every run), so keying the journal on it would make
 	// resume silently never match on Windows-with-VSS.
 	originalPath string
+	// kind is "" for a regular file, KindSymlink or KindDir for a
+	// content-less entry — see SnapshotFile.Kind. linkTarget is the verbatim
+	// os.Readlink result for a symlink. modeBits/owner are the full Unix
+	// mode (perm + setuid/setgid/sticky) and uid/gid; nil/0 on Windows.
+	kind       string
+	linkTarget string
+	modeBits   uint32
+	owner      *FileOwner
+}
+
+// fullModeBits keeps perm + setuid/setgid/sticky; everything else (type bits)
+// is dropped so the value round-trips through os.Chmod.
+func fullModeBits(mode os.FileMode) uint32 {
+	return uint32(mode & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky))
+}
+
+// dirNeedsEntry decides whether a directory gets its own manifest entry:
+// empty directories always (nothing else recreates them); otherwise only
+// when mode/owner differ from the MkdirAll default the restore would apply.
+func dirNeedsEntry(info os.FileInfo, owner *FileOwner, empty bool) bool {
+	if empty {
+		return true
+	}
+	if runtime.GOOS == "windows" {
+		return false
+	}
+	if fullModeBits(info.Mode()) != 0o755 {
+		return true
+	}
+	if owner == nil {
+		return false
+	}
+	// Compare against the CURRENT PROCESS's own effective owner rather than
+	// a hardcoded 0:0: a restore's MkdirAll creates directories owned by
+	// whichever identity runs it. In production both the whole-machine
+	// backup and the bare-metal restore run as root, so this reduces to
+	// "owner != 0:0" exactly as designed. Hardcoding 0:0 instead would flag
+	// EVERY non-empty directory a non-root run walks (dev machines, and
+	// this package's own test suite on a non-root CI runner) as needing an
+	// entry, since every directory is legitimately owned by that non-root
+	// user — a false positive on every single directory, not a rare edge
+	// case.
+	return owner.UID != os.Geteuid() || owner.GID != os.Getegid()
 }
 
 func (m *BackupManager) collectBackupFiles() ([]backupFile, error) {
@@ -1370,9 +1468,23 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				size:         info.Size(),
 				modTime:      info.ModTime(),
 				mode:         info.Mode(),
+				modeBits:     fullModeBits(info.Mode()),
+				owner:        fileOwner(info),
 			})
 			continue
 		}
+
+		// walkedDir/dirs/childCount defer the "does this directory need its
+		// own manifest entry" decision until after the walk: emptiness is
+		// only known once every child has been visited (see dirNeedsEntry).
+		// childCount is keyed by the ABSOLUTE parent path and counts every
+		// visited child (files, symlinks, subdirs) INCLUDING excluded ones,
+		// so an excluded-only directory still counts as non-empty and gets
+		// no entry of its own — its exclusion means "do not back this up",
+		// not "this is an empty directory worth recreating".
+		type walkedDir struct{ path, rel string }
+		var dirs []walkedDir
+		childCount := map[string]int{}
 
 		err = filepath.WalkDir(cleanRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 			if err := ctx.Err(); err != nil {
@@ -1382,39 +1494,53 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				errs = append(errs, fmt.Errorf("walk error for %s: %w", path, walkErr))
 				return nil
 			}
+			relPath, relErr := filepath.Rel(cleanRoot, path)
+			if relErr != nil {
+				errs = append(errs, fmt.Errorf("failed to resolve relative path for %s: %w", path, relErr))
+				return nil
+			}
+			slashRel := filepath.ToSlash(relPath)
 			if entry.IsDir() {
+				if path == cleanRoot {
+					return nil
+				}
 				// An excluded directory is skipped entirely (fs.SkipDir), not
 				// just its immediate files (#2418).
-				if excl != nil && path != cleanRoot {
-					relPath, relErr := filepath.Rel(cleanRoot, path)
-					if relErr == nil && excl.matches(filepath.ToSlash(relPath)) {
-						return fs.SkipDir
-					}
+				if excl != nil && excl.matches(slashRel) {
+					return fs.SkipDir
 				}
+				dirs = append(dirs, walkedDir{path: path, rel: slashRel})
+				childCount[filepath.Dir(path)]++
 				return nil
 			}
-			if entry.Type()&os.ModeSymlink != 0 {
-				return nil
-			}
-			info, err := entry.Info()
-			if err != nil {
-				errs = append(errs, fmt.Errorf("failed to read info for %s: %w", path, err))
-				return nil
-			}
-			if !info.Mode().IsRegular() {
-				return nil
-			}
-			relPath, err := filepath.Rel(cleanRoot, path)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("failed to resolve relative path for %s: %w", path, err))
-				return nil
-			}
-			if excl.matches(filepath.ToSlash(relPath)) {
+			childCount[filepath.Dir(path)]++
+			if excl.matches(slashRel) {
 				return nil
 			}
 			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, relPath))
 			if _, exists := seen[snapshotPath]; exists {
 				log.Debug("duplicate backup path skipped", "snapshotPath", snapshotPath)
+				return nil
+			}
+			info, err := entry.Info() // Lstat semantics: never follows the link
+			if err != nil {
+				errs = append(errs, fmt.Errorf("failed to read info for %s: %w", path, err))
+				return nil
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				target, linkErr := os.Readlink(path)
+				if linkErr != nil {
+					errs = append(errs, fmt.Errorf("failed to read symlink %s: %w", path, linkErr))
+					return nil
+				}
+				seen[snapshotPath] = struct{}{}
+				files = append(files, backupFile{
+					sourcePath: path, snapshotPath: snapshotPath, modTime: info.ModTime(), mode: info.Mode(),
+					kind: KindSymlink, linkTarget: target, owner: fileOwner(info),
+				})
+				return nil
+			}
+			if !info.Mode().IsRegular() {
 				return nil
 			}
 			seen[snapshotPath] = struct{}{}
@@ -1424,6 +1550,8 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				size:         info.Size(),
 				modTime:      info.ModTime(),
 				mode:         info.Mode(),
+				modeBits:     fullModeBits(info.Mode()),
+				owner:        fileOwner(info),
 			})
 			return nil
 		})
@@ -1432,6 +1560,26 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				return files, errBackupStopped
 			}
 			errs = append(errs, fmt.Errorf("backup walk failed for %s: %w", cleanRoot, err))
+		}
+
+		for _, d := range dirs {
+			info, statErr := os.Lstat(d.path)
+			if statErr != nil {
+				continue
+			}
+			owner := fileOwner(info)
+			if !dirNeedsEntry(info, owner, childCount[d.path] == 0) {
+				continue
+			}
+			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, d.rel))
+			if _, exists := seen[snapshotPath]; exists {
+				continue
+			}
+			seen[snapshotPath] = struct{}{}
+			files = append(files, backupFile{
+				sourcePath: d.path, snapshotPath: snapshotPath, modTime: info.ModTime(), mode: info.Mode(),
+				kind: KindDir, modeBits: fullModeBits(info.Mode()), owner: owner,
+			})
 		}
 	}
 

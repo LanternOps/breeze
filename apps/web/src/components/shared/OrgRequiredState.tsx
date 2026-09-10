@@ -27,7 +27,14 @@ export function OrgRequiredState({ description }: { description?: string }) {
   const pick = async (orgId: string, name: string) => {
     if (switchingId) return;
     setSwitchingId(orgId);
-    await applyOrgSwitch(orgId, t('layout.org.toast.switched', { name }));
+    try {
+      await applyOrgSwitch(orgId, t('layout.org.toast.switched', { name }));
+    } finally {
+      // This page island is normally unmounted by the soft navigation; the
+      // reset only matters if the switch fell back to a hard load and the
+      // island is still on screen before unload.
+      setSwitchingId(null);
+    }
   };
 
   return (

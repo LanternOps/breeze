@@ -436,6 +436,43 @@ describe('PAM dedicated permissions (pam:approve / pam:manage_policy)', () => {
   });
 });
 
+describe('Accounting dedicated permissions (accounting:read / accounting:manage)', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((r) => r.name === name);
+
+  it('defines accounting:read and accounting:manage in DEFAULT_PERMISSIONS', () => {
+    expect(
+      DEFAULT_PERMISSIONS.some((p) => p.resource === 'accounting' && p.action === 'read'),
+    ).toBe(true);
+    expect(
+      DEFAULT_PERMISSIONS.some((p) => p.resource === 'accounting' && p.action === 'manage'),
+    ).toBe(true);
+  });
+
+  it('registers accounting:read and accounting:manage in the shared PERMISSION_GRANTS registry', () => {
+    expect(PERMISSION_GRANTS.ACCOUNTING_READ).toEqual({ resource: 'accounting', action: 'read' });
+    expect(PERMISSION_GRANTS.ACCOUNTING_MANAGE).toEqual({ resource: 'accounting', action: 'manage' });
+  });
+
+  it('grants BOTH accounting permissions to Org Admin (the same built-in role the PAM 150200 migration granted)', () => {
+    expect(byName('Org Admin')?.permissions).toContain('accounting:read');
+    expect(byName('Org Admin')?.permissions).toContain('accounting:manage');
+  });
+
+  it('does NOT grant either accounting permission to any other built-in role', () => {
+    // SEC-2026-09-05-057: the finding is precisely that full-partner low-role
+    // members reached the shared QuickBooks realm. Partner Technician /
+    // Partner Billing must NOT acquire that authority automatically.
+    for (const role of SYSTEM_ROLES.filter((r) => !['Partner Admin', 'Org Admin'].includes(r.name))) {
+      expect(role.permissions, `role "${role.name}"`).not.toContain('accounting:read');
+      expect(role.permissions, `role "${role.name}"`).not.toContain('accounting:manage');
+    }
+  });
+
+  it('Partner Admin covers accounting via the wildcard grant (does not need a redundant literal entry)', () => {
+    expect(byName('Partner Admin')?.permissions).toContain('*:*');
+  });
+});
+
 describe('permission-registry consistency: every SYSTEM_ROLES literal is seeded (§6G)', () => {
   // seedRoles() drops any permission literal it can't resolve to a seeded
   // permissions row (a console.warn + continue) — a role definition can

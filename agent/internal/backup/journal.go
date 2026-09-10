@@ -328,6 +328,12 @@ func (j *snapshotJournal) Record(f SnapshotFile) error {
 	if j == nil {
 		return nil
 	}
+	if !f.HasContent() {
+		// Content-less entries (symlinks/directories) are rebuilt from the
+		// live filesystem on every run, never resumed from a checkpoint —
+		// see contentlessEntry's doc comment (snapshot.go).
+		return nil
+	}
 	line, err := json.Marshal(f)
 	if err != nil {
 		slog.Warn("failed to encode backup journal entry", "path", j.path, "error", err.Error())

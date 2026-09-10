@@ -195,7 +195,7 @@ func TestTestRestore_HappyPath(t *testing.T) {
 	var progressCalls int
 	progressFn := func(current, total int) { progressCalls++ }
 
-	result, err := TestRestore(provider, snapshotID, progressFn)
+	result, err := TestRestore(provider, snapshotID, t.TempDir(), progressFn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestTestRestore_MissingFile(t *testing.T) {
 	os.WriteFile(filepath.Join(manifestDir, "manifest.json"), manifestBytes, 0o644)
 
 	provider := providers.NewLocalProvider(basePath)
-	result, err := TestRestore(provider, snapshotID, nil)
+	result, err := TestRestore(provider, snapshotID, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -248,11 +248,12 @@ func TestTestRestore_MissingFile(t *testing.T) {
 }
 
 func TestCleanupRestoreDir_Success(t *testing.T) {
-	dir := filepath.Join(os.TempDir(), "breeze-restore-test", "test-cleanup")
+	configuredRoot := t.TempDir()
+	dir := filepath.Join(configuredRoot, "restore-work", "breeze-restore-test-test-cleanup")
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, "dummy.txt"), []byte("x"), 0o644)
 
-	if err := CleanupRestoreDir(dir); err != nil {
+	if err := CleanupRestoreDir(dir, configuredRoot); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
@@ -261,7 +262,7 @@ func TestCleanupRestoreDir_Success(t *testing.T) {
 }
 
 func TestCleanupRestoreDir_PathTraversal(t *testing.T) {
-	err := CleanupRestoreDir("/etc/passwd")
+	err := CleanupRestoreDir("/etc/passwd", t.TempDir())
 	if err == nil {
 		t.Error("expected error for path outside restore prefix")
 	}
@@ -289,7 +290,7 @@ func TestTestRestorePreservesDistinctPathsForDuplicateBasenames(t *testing.T) {
 		},
 	}
 
-	result, err := TestRestore(provider, "dup-basenames", nil)
+	result, err := TestRestore(provider, "dup-basenames", t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -344,7 +345,7 @@ func TestTestRestore_UsesOriginalPathUnderVSS(t *testing.T) {
 		},
 	}
 
-	result, err := TestRestore(provider, "dup-basenames", nil)
+	result, err := TestRestore(provider, "dup-basenames", t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -362,5 +363,57 @@ func TestTestRestore_UsesOriginalPathUnderVSS(t *testing.T) {
 	wantSuffix := filepath.Join("assure", "src", "x")
 	if !strings.HasSuffix(downloadedTo, wantSuffix) {
 		t.Fatalf("TestRestore destination = %q, want it to end with the original path's relative structure %q", downloadedTo, wantSuffix)
+	}
+}
+
+// W02: VerifyIntegrity must never try to download a content-less entry's
+// (empty) BackupPath — it has no object to verify, so it's simply skipped;
+// only the one real file counts toward FilesVerified.
+func TestVerifyIntegrity_SkipsContentlessEntries(t *testing.T) {
+	provider := newMockProvider()
+	fileKey := "snapshots/s1/files/path_0/etc/hosts"
+	provider.files[fileKey] = []byte("abc")
+	manifest := Snapshot{ID: "s1", FormatVersion: manifestFormatFidelity, Files: []SnapshotFile{
+		{SourcePath: "/etc/hosts", BackupPath: fileKey, Size: 3, Checksum: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
+		{SourcePath: "/bin", Kind: KindSymlink, LinkTarget: "usr/bin"},
+		{SourcePath: "/var/empty", Kind: KindDir},
+	}}
+	data, _ := json.Marshal(manifest)
+	provider.files["snapshots/s1/manifest.json"] = data
+
+	res, err := VerifyIntegrity(provider, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "passed" || res.FilesVerified != 1 || res.FilesFailed != 0 {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+// W02: TestRestore shares VerifyIntegrity's content-less-entry blind spot —
+// without this fix every fidelity-format snapshot would permanently report
+// "partial" from TestRestore (the symlink/dir entries' empty BackupPath
+// downloads would fail) even though a real restore handles them fine (see
+// restore.go's separate symlink/dir passes, Task 4). Not explicitly in the
+// plan's Task 3 scope, but the identical fix on the identical file for the
+// identical reason.
+func TestTestRestore_SkipsContentlessEntries(t *testing.T) {
+	provider := newMockProvider()
+	fileKey := "snapshots/s2/files/path_0/etc/hosts"
+	provider.files[fileKey] = []byte("abc")
+	manifest := Snapshot{ID: "s2", FormatVersion: manifestFormatFidelity, Files: []SnapshotFile{
+		{SourcePath: "/etc/hosts", BackupPath: fileKey, Size: 3},
+		{SourcePath: "/bin", Kind: KindSymlink, LinkTarget: "usr/bin"},
+		{SourcePath: "/var/empty", Kind: KindDir},
+	}}
+	data, _ := json.Marshal(manifest)
+	provider.files["snapshots/s2/manifest.json"] = data
+
+	res, err := TestRestore(provider, "s2", t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "passed" || res.FilesVerified != 1 || res.FilesFailed != 0 {
+		t.Fatalf("result = %+v", res)
 	}
 }

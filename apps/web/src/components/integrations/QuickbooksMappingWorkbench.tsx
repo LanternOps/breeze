@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
+import { usePermissions } from "../../lib/permissions";
 import { runAction, handleActionError, ActionError } from "../../lib/runAction";
 import { showToast } from "../shared/Toast";
 import { useHashTab } from "@/lib/useHashState";
@@ -104,6 +105,17 @@ export default function QuickbooksMappingWorkbench({
   onSettingsChanged,
 }: Props) {
   const { t } = useTranslation("integrations");
+
+  /**
+   * SEC-2026-09-05-057 (PR review finding): every mutating control in this
+   * workbench drives a route that now requires `accounting:manage` — Save
+   * income account (PATCH /settings), Confirm/Create/Unlink (PUT /mappings)
+   * and Sync now (POST /mappings/sync). Disable them without the grant so a
+   * read-only caller sees an inert control instead of a 403. Loading proposals
+   * and switching tabs are reads and stay operable. UX only — every route
+   * re-checks server-side.
+   */
+  const canManageAccounting = usePermissions().can("accounting", "manage");
   const [tab, setTab] = useHashTab<WorkbenchTab>(TABS, "quickbooks-customers");
   const entityType: MappingEntityType = tab === "quickbooks-items" ? "catalog_item" : "org";
 
@@ -451,7 +463,7 @@ export default function QuickbooksMappingWorkbench({
               type="button"
               data-testid="quickbooks-income-account-save"
               onClick={() => void saveIncomeAccount()}
-              disabled={savingIncomeAccount || !incomeAccountRef}
+              disabled={savingIncomeAccount || !incomeAccountRef || !canManageAccounting}
               className="inline-flex h-8 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
             >
               {t("quickbooksMapping.saveIncomeAccount")}
@@ -574,7 +586,7 @@ export default function QuickbooksMappingWorkbench({
                     <button
                       type="button"
                       data-testid={`quickbooks-mapping-confirm-${id}`}
-                      disabled={busy || !remoteIdFor(id, p)}
+                      disabled={busy || !remoteIdFor(id, p) || !canManageAccounting}
                       onClick={() => void decide(p, "confirmed", remoteIdFor(id, p))}
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     >
@@ -583,7 +595,7 @@ export default function QuickbooksMappingWorkbench({
                     <button
                       type="button"
                       data-testid={`quickbooks-mapping-create-${id}`}
-                      disabled={busy || createGated}
+                      disabled={busy || createGated || !canManageAccounting}
                       onClick={() => void decide(p, "create_new")}
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     >
@@ -592,7 +604,7 @@ export default function QuickbooksMappingWorkbench({
                     <button
                       type="button"
                       data-testid={`quickbooks-mapping-unlink-${id}`}
-                      disabled={busy || p.linkStatus === "unlinked"}
+                      disabled={busy || p.linkStatus === "unlinked" || !canManageAccounting}
                       onClick={() => void decide(p, "unlinked")}
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     >
@@ -601,7 +613,7 @@ export default function QuickbooksMappingWorkbench({
                     <button
                       type="button"
                       data-testid={`quickbooks-mapping-sync-${id}`}
-                      disabled={busy || syncGated}
+                      disabled={busy || syncGated || !canManageAccounting}
                       onClick={() => void sync(p)}
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     >
