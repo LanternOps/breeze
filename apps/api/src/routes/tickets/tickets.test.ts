@@ -789,6 +789,45 @@ describe('ticket triage suggestion routes', () => {
     });
   });
 
+  it('GET /tickets/triage-evaluation propagates the caller site ceiling', async () => {
+    authRef.current = {
+      ...DEFAULT_AUTH,
+      scope: 'organization',
+      orgId: ORG_ID,
+      partnerId: null,
+      allowedSiteIds: ['site-visible'],
+    } as typeof authRef.current;
+    vi.mocked(evaluateTicketTriage).mockResolvedValue({
+      labelWindowDays: 90,
+      totalLabels: 0,
+      acceptedSuggestionLabels: 0,
+      manualOverrideLabels: 0,
+      rejectedSuggestionLabels: 0,
+      categoryLabels: 0,
+      priorityLabels: 0,
+      assigneeLabels: 0,
+      overrideRate: null,
+    });
+
+    const res = await makeApp().request('/tickets/triage-evaluation');
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(evaluateTicketTriage)).toHaveBeenCalledWith({
+      orgIds: [ORG_ID],
+      labelWindowDays: 90,
+      allowedSiteIds: ['site-visible'],
+    });
+
+    authRef.current = { ...authRef.current, allowedSiteIds: [] } as typeof authRef.current;
+    const zeroSiteRes = await makeApp().request('/tickets/triage-evaluation');
+    expect(zeroSiteRes.status).toBe(200);
+    expect(vi.mocked(evaluateTicketTriage)).toHaveBeenLastCalledWith({
+      orgIds: [ORG_ID],
+      labelWindowDays: 90,
+      allowedSiteIds: [],
+    });
+  });
+
   it('GET /tickets/triage-evaluation rejects inaccessible explicit org scope', async () => {
     authRef.current = {
       ...DEFAULT_AUTH,
