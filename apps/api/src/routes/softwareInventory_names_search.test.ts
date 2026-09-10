@@ -29,27 +29,43 @@ vi.mock('../db/schema', () => ({
   configPolicyAssignments: {},
   configPolicyFeatureLinks: {},
   configurationPolicies: {},
-  devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },
+  devices: {
+    id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId',
+    isEphemeral: 'devices.isEphemeral',
+  },
   softwareInventory: {
     name: 'softwareInventory.name',
+    deviceId: 'softwareInventory.deviceId',
+    orgId: 'softwareInventory.orgId',
   },
   softwarePolicies: {},
+}));
+
+const testAuthState = vi.hoisted(() => ({
+  scope: 'organization' as 'organization' | 'partner' | 'system',
+  allowedSiteIds: ['22222222-2222-4222-8222-222222222222'] as string[] | undefined,
 }));
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
-      scope: 'organization',
+      scope: testAuthState.scope,
       partnerId: null,
       orgId: '11111111-1111-1111-1111-111111111111',
       accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
       canAccessOrg: (id: string) => id === '11111111-1111-1111-1111-111111111111',
+      orgCondition: (column: unknown) => testAuthState.scope === 'system'
+        ? undefined
+        : { kind: 'org-condition', column },
     });
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    c.set('permissions', { allowedSiteIds: testAuthState.allowedSiteIds });
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
@@ -88,6 +104,8 @@ describe('GET /software-inventory/names', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    testAuthState.scope = 'organization';
+    testAuthState.allowedSiteIds = ['22222222-2222-4222-8222-222222222222'];
     executedSql = [];
     app = new Hono();
     app.route('/software-inventory', softwareInventoryRoutes);
@@ -133,6 +151,50 @@ describe('GET /software-inventory/names', () => {
     const querySql = dumpSql(executedSql[1]);
     expect(querySql).toContain('DISTINCT');
     expect(querySql).toContain('ILIKE');
+    expect(querySql).toContain('devices.id');
+    expect(querySql).toContain('softwareInventory.orgId');
+    expect(querySql).toContain('devices.siteId');
+    expect(querySql).toContain('devices.isEphemeral');
+  });
+
+  it('filters hidden-only names before DISTINCT and LIMIT', async () => {
+    mockTransaction([{ name: 'Visible Next' }]);
+
+    const res = await app.request('/software-inventory/names?q=a&limit=1', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: ['Visible Next'] });
+    const querySql = dumpSql(executedSql[1]);
+    expect(querySql).toContain('devices.siteId');
+    expect(querySql).toContain('LIMIT');
+  });
+
+  it('returns an empty result without touching the database for an empty site ceiling', async () => {
+    testAuthState.allowedSiteIds = [];
+
+    const res = await app.request('/software-inventory/names?q=hidden', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: [] });
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it.each(['partner', 'system'] as const)('preserves unrestricted %s name search', async (scope) => {
+    testAuthState.scope = scope;
+    testAuthState.allowedSiteIds = undefined;
+    mockTransaction([{ name: 'Fleet Software' }]);
+
+    const res = await app.request('/software-inventory/names?q=fleet', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: ['Fleet Software'] });
+    expect(db.transaction).toHaveBeenCalledTimes(1);
   });
 
   it('escapes LIKE wildcards in the search term', async () => {

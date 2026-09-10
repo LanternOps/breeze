@@ -369,12 +369,30 @@ softwareInventoryRoutes.get('/', requireSoftwareInventoryRead, zValidator('query
 // ============================================
 
 softwareInventoryRoutes.get('/names', requireSoftwareInventoryRead, zValidator('query', nameSearchQuerySchema), async (c) => {
+  const auth = c.get('auth') as AuthContext;
+  const perms = c.get('permissions') as UserPermissions | undefined;
   const { q, limit } = c.req.valid('query');
   const pattern = `%${escapeLike(q)}%`;
 
-  // No manual org filter: software_inventory has RLS enabled + forced
-  // (org_id, shape 1), and the request runs inside the auth-established
-  // withDbAccessContext, so the proxied db auto-scopes to the caller's orgs.
+  if (perms?.allowedSiteIds?.length === 0) {
+    return c.json({ data: [] });
+  }
+
+  const conditions: SQL[] = [
+    eq(devices.isEphemeral, false),
+    sql`${softwareInventory.name} ILIKE ${pattern}`,
+  ];
+  const orgCondition = auth.orgCondition(devices.orgId);
+  if (orgCondition) conditions.push(orgCondition);
+  if (perms?.allowedSiteIds) {
+    conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
+  }
+  const whereClause = and(...conditions);
+
+  // Keep the authorization predicate inside the DISTINCT statement and before
+  // ORDER/LIMIT. RLS protects the org axis on software_inventory, while the
+  // current-device join enforces the app-layer site axis and excludes ephemeral
+  // or stale/mismatched inventory rows from the picker.
   const rows = await db.transaction(async (tx) => {
     await tx.execute(
       sql`select set_config('statement_timeout', ${`${NAME_SEARCH_TIMEOUT_MS}ms`}, true)`
@@ -382,7 +400,10 @@ softwareInventoryRoutes.get('/names', requireSoftwareInventoryRead, zValidator('
     return tx.execute(sql`
       SELECT DISTINCT ${softwareInventory.name} AS name
       FROM ${softwareInventory}
-      WHERE ${softwareInventory.name} ILIKE ${pattern}
+      INNER JOIN ${devices}
+        ON ${softwareInventory.deviceId} = ${devices.id}
+        AND ${softwareInventory.orgId} = ${devices.orgId}
+      WHERE ${whereClause}
       ORDER BY ${softwareInventory.name}
       LIMIT ${limit}
     `);
