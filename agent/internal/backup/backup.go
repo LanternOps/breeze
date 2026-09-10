@@ -1323,6 +1323,49 @@ type backupFile struct {
 	// copy device path every run), so keying the journal on it would make
 	// resume silently never match on Windows-with-VSS.
 	originalPath string
+	// kind is "" for a regular file, KindSymlink or KindDir for a
+	// content-less entry — see SnapshotFile.Kind. linkTarget is the verbatim
+	// os.Readlink result for a symlink. modeBits/owner are the full Unix
+	// mode (perm + setuid/setgid/sticky) and uid/gid; nil/0 on Windows.
+	kind       string
+	linkTarget string
+	modeBits   uint32
+	owner      *FileOwner
+}
+
+// fullModeBits keeps perm + setuid/setgid/sticky; everything else (type bits)
+// is dropped so the value round-trips through os.Chmod.
+func fullModeBits(mode os.FileMode) uint32 {
+	return uint32(mode & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky))
+}
+
+// dirNeedsEntry decides whether a directory gets its own manifest entry:
+// empty directories always (nothing else recreates them); otherwise only
+// when mode/owner differ from the MkdirAll default the restore would apply.
+func dirNeedsEntry(info os.FileInfo, owner *FileOwner, empty bool) bool {
+	if empty {
+		return true
+	}
+	if runtime.GOOS == "windows" {
+		return false
+	}
+	if fullModeBits(info.Mode()) != 0o755 {
+		return true
+	}
+	if owner == nil {
+		return false
+	}
+	// Compare against the CURRENT PROCESS's own effective owner rather than
+	// a hardcoded 0:0: a restore's MkdirAll creates directories owned by
+	// whichever identity runs it. In production both the whole-machine
+	// backup and the bare-metal restore run as root, so this reduces to
+	// "owner != 0:0" exactly as designed. Hardcoding 0:0 instead would flag
+	// EVERY non-empty directory a non-root run walks (dev machines, and
+	// this package's own test suite on a non-root CI runner) as needing an
+	// entry, since every directory is legitimately owned by that non-root
+	// user — a false positive on every single directory, not a rare edge
+	// case.
+	return owner.UID != os.Geteuid() || owner.GID != os.Getegid()
 }
 
 func (m *BackupManager) collectBackupFiles() ([]backupFile, error) {
@@ -1370,9 +1413,23 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				size:         info.Size(),
 				modTime:      info.ModTime(),
 				mode:         info.Mode(),
+				modeBits:     fullModeBits(info.Mode()),
+				owner:        fileOwner(info),
 			})
 			continue
 		}
+
+		// walkedDir/dirs/childCount defer the "does this directory need its
+		// own manifest entry" decision until after the walk: emptiness is
+		// only known once every child has been visited (see dirNeedsEntry).
+		// childCount is keyed by the ABSOLUTE parent path and counts every
+		// visited child (files, symlinks, subdirs) INCLUDING excluded ones,
+		// so an excluded-only directory still counts as non-empty and gets
+		// no entry of its own — its exclusion means "do not back this up",
+		// not "this is an empty directory worth recreating".
+		type walkedDir struct{ path, rel string }
+		var dirs []walkedDir
+		childCount := map[string]int{}
 
 		err = filepath.WalkDir(cleanRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 			if err := ctx.Err(); err != nil {
@@ -1382,39 +1439,53 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				errs = append(errs, fmt.Errorf("walk error for %s: %w", path, walkErr))
 				return nil
 			}
+			relPath, relErr := filepath.Rel(cleanRoot, path)
+			if relErr != nil {
+				errs = append(errs, fmt.Errorf("failed to resolve relative path for %s: %w", path, relErr))
+				return nil
+			}
+			slashRel := filepath.ToSlash(relPath)
 			if entry.IsDir() {
+				if path == cleanRoot {
+					return nil
+				}
 				// An excluded directory is skipped entirely (fs.SkipDir), not
 				// just its immediate files (#2418).
-				if excl != nil && path != cleanRoot {
-					relPath, relErr := filepath.Rel(cleanRoot, path)
-					if relErr == nil && excl.matches(filepath.ToSlash(relPath)) {
-						return fs.SkipDir
-					}
+				if excl != nil && excl.matches(slashRel) {
+					return fs.SkipDir
 				}
+				dirs = append(dirs, walkedDir{path: path, rel: slashRel})
+				childCount[filepath.Dir(path)]++
 				return nil
 			}
-			if entry.Type()&os.ModeSymlink != 0 {
-				return nil
-			}
-			info, err := entry.Info()
-			if err != nil {
-				errs = append(errs, fmt.Errorf("failed to read info for %s: %w", path, err))
-				return nil
-			}
-			if !info.Mode().IsRegular() {
-				return nil
-			}
-			relPath, err := filepath.Rel(cleanRoot, path)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("failed to resolve relative path for %s: %w", path, err))
-				return nil
-			}
-			if excl.matches(filepath.ToSlash(relPath)) {
+			childCount[filepath.Dir(path)]++
+			if excl.matches(slashRel) {
 				return nil
 			}
 			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, relPath))
 			if _, exists := seen[snapshotPath]; exists {
 				log.Debug("duplicate backup path skipped", "snapshotPath", snapshotPath)
+				return nil
+			}
+			info, err := entry.Info() // Lstat semantics: never follows the link
+			if err != nil {
+				errs = append(errs, fmt.Errorf("failed to read info for %s: %w", path, err))
+				return nil
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				target, linkErr := os.Readlink(path)
+				if linkErr != nil {
+					errs = append(errs, fmt.Errorf("failed to read symlink %s: %w", path, linkErr))
+					return nil
+				}
+				seen[snapshotPath] = struct{}{}
+				files = append(files, backupFile{
+					sourcePath: path, snapshotPath: snapshotPath, modTime: info.ModTime(), mode: info.Mode(),
+					kind: KindSymlink, linkTarget: target, owner: fileOwner(info),
+				})
+				return nil
+			}
+			if !info.Mode().IsRegular() {
 				return nil
 			}
 			seen[snapshotPath] = struct{}{}
@@ -1424,6 +1495,8 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				size:         info.Size(),
 				modTime:      info.ModTime(),
 				mode:         info.Mode(),
+				modeBits:     fullModeBits(info.Mode()),
+				owner:        fileOwner(info),
 			})
 			return nil
 		})
@@ -1432,6 +1505,26 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				return files, errBackupStopped
 			}
 			errs = append(errs, fmt.Errorf("backup walk failed for %s: %w", cleanRoot, err))
+		}
+
+		for _, d := range dirs {
+			info, statErr := os.Lstat(d.path)
+			if statErr != nil {
+				continue
+			}
+			owner := fileOwner(info)
+			if !dirNeedsEntry(info, owner, childCount[d.path] == 0) {
+				continue
+			}
+			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, d.rel))
+			if _, exists := seen[snapshotPath]; exists {
+				continue
+			}
+			seen[snapshotPath] = struct{}{}
+			files = append(files, backupFile{
+				sourcePath: d.path, snapshotPath: snapshotPath, modTime: info.ModTime(), mode: info.Mode(),
+				kind: KindDir, modeBits: fullModeBits(info.Mode()), owner: owner,
+			})
 		}
 	}
 
