@@ -5,24 +5,40 @@ import { z } from 'zod';
 // `.datetime()` (which requires Z) rejects them — and one bad modTime fails the
 // whole result parse, so total_size / snapshot id / file_count silently never
 // get recorded (F13). Accept an offset.
-export const backupSnapshotFileResultSchema = z.object({
-  sourcePath: z.string().min(1),
-  backupPath: z.string().min(1),
-  size: z.number().int().nonnegative().optional(),
-  modTime: z.string().datetime({ offset: true }).optional(),
-  // D12: on a Windows VSS-backed run, `sourcePath` is the transient shadow-copy
-  // device path the agent actually read from
-  // (\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\...) — it stops resolving
-  // the moment the shadow copy is released and has no display/selection value.
-  // `originalPath` is the stable, user-facing path (e.g. C:\assure\src\x) the
-  // agent also matches selective-restore selections against. When present, it
-  // is what gets indexed into backup_snapshot_files.source_path (see
-  // backupResultPersistence.ts) so the browse tree and selective-restore
-  // validation both operate on a path that is still meaningful after the
-  // snapshot completes. Omitted by non-Windows / non-VSS runs, where
-  // sourcePath already IS the display/selection path.
-  originalPath: z.string().min(1).optional(),
-});
+export const backupSnapshotFileResultSchema = z
+  .object({
+    sourcePath: z.string().min(1),
+    // W02: content-less entries (symlinks/directories) never upload an
+    // object, so backupPath is '' for those — see the superRefine below,
+    // which still requires a non-empty backupPath for an ordinary file
+    // (kind unset).
+    backupPath: z.string(),
+    size: z.number().int().nonnegative().optional(),
+    modTime: z.string().datetime({ offset: true }).optional(),
+    // D12: on a Windows VSS-backed run, `sourcePath` is the transient shadow-copy
+    // device path the agent actually read from
+    // (\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\...) — it stops resolving
+    // the moment the shadow copy is released and has no display/selection value.
+    // `originalPath` is the stable, user-facing path (e.g. C:\assure\src\x) the
+    // agent also matches selective-restore selections against. When present, it
+    // is what gets indexed into backup_snapshot_files.source_path (see
+    // backupResultPersistence.ts) so the browse tree and selective-restore
+    // validation both operate on a path that is still meaningful after the
+    // snapshot completes. Omitted by non-Windows / non-VSS runs, where
+    // sourcePath already IS the display/selection path.
+    originalPath: z.string().min(1).optional(),
+    // W02 fidelity: content-less entries (symlinks/directories) carry no
+    // object. kind is "" (omitted) for an ordinary file; "symlink"/"dir"
+    // marks an entry the agent recreates directly rather than downloads —
+    // see agent/internal/backup/snapshot.go's SnapshotFile.Kind.
+    kind: z.enum(['symlink', 'dir']).optional(),
+    linkTarget: z.string().optional(),
+  })
+  .superRefine((file, ctx) => {
+    if (!file.kind && file.backupPath.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['backupPath'], message: 'backupPath is required for file entries' });
+    }
+  });
 
 export const backupSnapshotResultSchema = z.object({
   id: z.string().min(1),

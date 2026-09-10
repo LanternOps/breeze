@@ -13,17 +13,29 @@ export const queueActorMetaSchema = z.object({
   source: z.string().min(1),
 }).strict();
 
-const backupSnapshotFileSchema = z.object({
-  sourcePath: z.string().min(1),
-  // Stable pre-VSS path (D12): under a shadow copy sourcePath is the
-  // \\?\GLOBALROOT device path; originalPath is the real C:\ path the index,
-  // browse tree and selective restore must use. Strict schema: a missing entry
-  // here silently drops the whole result and leaves the job running forever.
-  originalPath: z.string().min(1).optional(),
-  backupPath: z.string().min(1),
-  size: z.number().nonnegative().optional(),
-  modTime: z.string().min(1).optional(),
-}).strict();
+const backupSnapshotFileSchema = z
+  .object({
+    sourcePath: z.string().min(1),
+    // Stable pre-VSS path (D12): under a shadow copy sourcePath is the
+    // \\?\GLOBALROOT device path; originalPath is the real C:\ path the index,
+    // browse tree and selective restore must use. Strict schema: a missing entry
+    // here silently drops the whole result and leaves the job running forever.
+    originalPath: z.string().min(1).optional(),
+    // W02: content-less entries (symlinks/directories) never upload an
+    // object, so backupPath is '' for those — see the superRefine below.
+    backupPath: z.string(),
+    size: z.number().nonnegative().optional(),
+    modTime: z.string().min(1).optional(),
+    // W02 fidelity — mirrors resultSchemas.ts's backupSnapshotFileResultSchema.
+    kind: z.enum(['symlink', 'dir']).optional(),
+    linkTarget: z.string().optional(),
+  })
+  .strict()
+  .superRefine((file, ctx) => {
+    if (!file.kind && file.backupPath.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['backupPath'], message: 'backupPath is required for file entries' });
+    }
+  });
 
 const backupSnapshotSummarySchema = z.object({
   id: z.string().min(1),

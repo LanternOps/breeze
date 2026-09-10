@@ -1106,6 +1106,15 @@ describe('backup result persistence', () => {
               backupPath: 'snapshots/snap-1/files/x.gz',
               size: 123,
             },
+            // W02: a content-less entry (symlink) carries an empty backupPath —
+            // it must still be indexed (browse/selective-restore need to know
+            // it exists), just with backupPath persisted as ''.
+            {
+              sourcePath: '/bin',
+              backupPath: '',
+              kind: 'symlink',
+              linkTarget: 'usr/bin',
+            },
           ],
         },
       },
@@ -1116,6 +1125,10 @@ describe('backup result persistence', () => {
       expect.objectContaining({
         sourcePath: 'C:\\assure\\src\\x',
         backupPath: 'snapshots/snap-1/files/x.gz',
+      }),
+      expect.objectContaining({
+        sourcePath: '/bin',
+        backupPath: '',
       }),
     ]);
   });
