@@ -28,6 +28,11 @@ export const remoteSessions = pgTable('remote_sessions', {
   bytesTransferred: bigint('bytes_transferred', { mode: 'bigint' }),
   recordingUrl: text('recording_url'),
   errorMessage: text('error_message'),
+  // users.permissions_epoch as it stood when this session was created — the
+  // durable baseline the revocation-lease renew recheck compares against.
+  // Redis holds only the lease TTL, so a renew after a Redis flush re-derives
+  // the baseline from here. NULL on rows predating the revocation lease.
+  permissionsEpochSnapshot: bigint('permissions_epoch_snapshot', { mode: 'number' }),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (t) => [
   // W06 (#3900): one user's ended sessions for a day window; partial so the

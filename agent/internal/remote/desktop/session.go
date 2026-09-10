@@ -162,6 +162,11 @@ type Session struct {
 	// viewer would never idle out and the idle timeout would be defeated.
 	// Updated via recordInputActivity().
 	lastInputUnixNano atomic.Int64
+
+	// leaseState tracks this session's revocation lease: the latest expiry and
+	// hard deadline, plus whether the control plane revoked it. Never nil for a
+	// session created by StartSession (a start without a lease is refused).
+	leaseState *revocationLeaseState
 }
 
 // SessionManager manages remote desktop sessions
@@ -183,6 +188,13 @@ type SessionManager struct {
 	// mode the helper sets this to route the request via IPC to the SCM service
 	// which can call SendSAS(FALSE). In direct mode it defaults to InvokeSAS().
 	OnSASRequest func() error
+
+	// RequestRevocationLeaseRenew, if set, asks the control plane to renew the
+	// revocation lease for a session. Set by the layer that owns the agent's
+	// command WebSocket (the heartbeat), because this package has no transport
+	// of its own. Fire-and-forget: the answer arrives asynchronously and is
+	// applied via ApplyRevocationLease / RevokeSession.
+	RequestRevocationLeaseRenew func(sessionID string)
 
 	// OnSessionStopped is called when a WebRTC peer connection transitions to
 	// Failed or Closed. Used to notify the API so it can mark the session as

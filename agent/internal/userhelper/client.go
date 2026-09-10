@@ -149,6 +149,15 @@ func (c *Client) Run() error {
 		return c.requestSASViaIPC()
 	}
 
+	// Wire the revocation-lease bridge: this process hosts the capture session
+	// but has no command WebSocket, so its lease watchdog renews over IPC and
+	// the service turns that into a renew on the socket. Without this the
+	// watchdog asks nobody, no answer ever arrives, and the session is killed
+	// at expiresAt+grace — 150s after start on every service/daemon install.
+	c.desktopMgr.mgr.WireHelperRevocationLease(func(msgType string, payload any) error {
+		return c.conn.SendTyped("desk-lease-renew", msgType, payload)
+	})
+
 	// Notify the service when a WebRTC peer connection drops so it can relay
 	// the disconnect to the API and allow the viewer to reconnect. reason
 	// (#5300) carries the no-video watchdog's swallowed capture error, when
@@ -436,6 +445,9 @@ func (c *Client) commandLoop() error {
 
 		case ipc.TypeDesktopStop:
 			safeGo("desktop_stop", func() { c.handleDesktopStop(env) })
+
+		case ipc.TypeDesktopLeaseUpdate:
+			safeGo("desktop_lease_update", func() { c.handleDesktopLeaseUpdate(env) })
 
 		case ipc.TypeDesktopInput:
 			safeGo("desktop_input", func() { c.handleDesktopInput(env) })
@@ -1179,6 +1191,30 @@ func (c *Client) handleDesktopStart(env *ipc.Envelope) {
 		log.Warn("failed to send desktop_start response", "error", err)
 		c.desktopMgr.stopSession(req.SessionID)
 	}
+}
+
+// handleDesktopLeaseUpdate applies the control plane's answer to one of this
+// helper's lease renewals, forwarded by the service.
+//
+// A revocation is recorded on the session's lease state, which the helper's own
+// watchdog acts on immediately — the local watchdog stays authoritative either
+// way, stopping the session at expiresAt+grace or the hard deadline even if the
+// service never answers again.
+func (c *Client) handleDesktopLeaseUpdate(env *ipc.Envelope) {
+	var update ipc.DesktopLeaseUpdate
+	if err := json.Unmarshal(env.Payload, &update); err != nil {
+		log.Warn("invalid desktop_lease_update payload", "error", err)
+		return
+	}
+	if !helperDesktopSessionIDPattern.MatchString(update.SessionID) {
+		log.Warn("invalid desktop_lease_update sessionId", "sessionId", update.SessionID)
+		return
+	}
+	if update.Revoked {
+		log.Warn("desktop session revoked by the control plane",
+			"sessionId", update.SessionID, "reason", update.Reason)
+	}
+	c.desktopMgr.mgr.ApplyLeaseUpdate(update)
 }
 
 func (c *Client) handleDesktopStop(env *ipc.Envelope) {
