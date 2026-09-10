@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -128,10 +129,25 @@ func fetchServerOwnedBase(ctx context.Context, provider providers.BackupProvider
 	}
 	tempPath := tempFile.Name()
 	_ = tempFile.Close()
-	defer os.Remove(tempPath)
+	// Best-effort: tempPath is an OS temp file already read (or about to
+	// fail trying) — a leftover on Remove failure is harmless temp-dir
+	// clutter, not a correctness issue worth surfacing.
+	defer func() { _ = os.Remove(tempPath) }()
 
 	if err := provider.Download(manifestKey, tempPath); err != nil {
-		return nil, fmt.Sprintf("failed to download server-selected base manifest %s: %v", manifestKey, err)
+		// Deliberately do NOT format the provider error's message (%v/
+		// .Error()) into this reason: it is logged verbatim by the caller
+		// (backup.go), and a storage-provider error can echo back request/
+		// signing details from a credentialed client (S3Provider holds the
+		// account's secret access key) — CodeQL's go/clear-text-logging
+		// flags exactly this shape. errors.Is(err, providers.ErrObjectNotFound)
+		// still distinguishes the common "never published" case; anything
+		// else is reported by error TYPE only, which carries no request or
+		// credential content.
+		if errors.Is(err, providers.ErrObjectNotFound) {
+			return nil, fmt.Sprintf("server-selected base manifest %s not found", manifestKey)
+		}
+		return nil, fmt.Sprintf("failed to download server-selected base manifest %s (%T)", manifestKey, err)
 	}
 	data, err := os.ReadFile(tempPath)
 	if err != nil {

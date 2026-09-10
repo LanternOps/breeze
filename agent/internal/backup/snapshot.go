@@ -1083,7 +1083,10 @@ func fetchPublishedManifest(ctx context.Context, provider providers.BackupProvid
 	}
 	tempPath := tempFile.Name()
 	_ = tempFile.Close()
-	defer os.Remove(tempPath)
+	// Best-effort: tempPath is an OS temp file already read (or about to
+	// fail trying) — a leftover on Remove failure is harmless temp-dir
+	// clutter, not a correctness issue worth surfacing.
+	defer func() { _ = os.Remove(tempPath) }()
 
 	if err := provider.Download(manifestKey, tempPath); err != nil {
 		if errors.Is(err, providers.ErrObjectNotFound) {
@@ -1114,12 +1117,17 @@ func refreshUploadLease(ctx context.Context, provider providers.BackupProvider, 
 	tempPath := tempFile.Name()
 	if _, err := tempFile.WriteString(time.Now().UTC().Format(time.RFC3339)); err != nil {
 		_ = tempFile.Close()
-		os.Remove(tempPath)
+		// Best-effort cleanup of a temp file we're abandoning anyway; a
+		// Remove failure here is harmless temp-dir clutter.
+		_ = os.Remove(tempPath)
 		log.Warn("failed to write upload lease content", "error", err.Error())
 		return
 	}
 	_ = tempFile.Close()
-	defer os.Remove(tempPath)
+	// Best-effort: tempPath is an OS temp file already uploaded (or about to
+	// fail trying) — a leftover on Remove failure is harmless temp-dir
+	// clutter, not a correctness issue worth surfacing.
+	defer func() { _ = os.Remove(tempPath) }()
 	if err := uploadSnapshotFile(ctx, provider, tempPath, leaseKey); err != nil {
 		log.Warn("failed to refresh upload lease", "key", leaseKey, "error", err.Error())
 	}

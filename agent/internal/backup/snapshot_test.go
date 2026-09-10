@@ -2186,8 +2186,10 @@ func TestAbortSourceGone_StopsLeaseRefreshBeforeCleanup_NoOrphanLeaseAfterAbort(
 	// of the fix, not a broken heartbeat. The heartbeat firing at all is
 	// separately proven by TestCreateSnapshot_UploadLease_RefreshedDuring
 	// UploadThenDeletedAfterPublish (which uses a slow provider precisely
-	// so the ticker gets a chance to tick); provider.leaseUploads() is kept
-	// as an instrumentation hook other tests or future changes here can use.
+	// so the ticker gets a chance to tick). leaseUploads() is logged here
+	// purely as a diagnostic (0 or 1 is both a legitimate outcome, so it is
+	// not asserted on) rather than left as dead instrumentation.
+	t.Logf("lease-key uploads observed during this run: %d", provider.leaseUploads())
 	if provider.sawViolation() {
 		t.Fatal("a lease-key Upload landed while cleanupSnapshotPrefix's List was in flight — " +
 			"the lease-refresh ticker must be fully stopped (stopLeaseRefresh, blocking) before cleanup starts")
