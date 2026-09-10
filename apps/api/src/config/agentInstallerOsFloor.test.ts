@@ -43,7 +43,7 @@ describe('agent installer minimum-OS LaunchCondition (#4608)', () => {
       /<Property\s+Id="([A-Za-z_0-9]+)"[^>]*>\s*<RegistrySearch\s+[^>]*Key="SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"[^>]*Name="CurrentMajorVersionNumber"/s,
     )?.[1];
     expect(prop, 'a <Property> wrapping the CurrentMajorVersionNumber RegistrySearch').toBeDefined();
-    const launchConditions = [...wxs.matchAll(/<Launch\s+Condition="([^"]*)"/g)].map((m) => m[1]);
+    const launchConditions = [...wxs.matchAll(/<Launch\s+Condition="([^"]*)"/g)].map((m) => m[1] ?? "");
     // The Launch condition must read the property the search fills, and
     // `Installed OR` keeps repair/upgrade/uninstall unblocked.
     expect(launchConditions).toContain(`Installed OR ${prop}`);
