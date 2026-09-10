@@ -46,7 +46,88 @@ const (
 	snapshotRootDir     = "snapshots"
 	snapshotFilesDir    = "files"
 	snapshotManifestKey = "manifest.json"
+
+	// publishMargin is subtracted from the lease deadline at publish time
+	// (D18 §3.1): the server keeps a job's base pinned for
+	// lease+publishMargin precisely so a manifest PUT that STARTS inside
+	// the margin has room to finish before the server's pin lapses. Must
+	// match the API's BACKUP_PUBLISH_MARGIN_MS default —
+	// backupAgentContract.test.ts asserts the two stay equal.
+	publishMargin = 1 * time.Hour
 )
+
+// uploadLeaseInterval is how often createSnapshotWithProgress refreshes
+// snapshots/<id>/upload.lease while uploading (D18 §3.4), so a
+// long-running single-object upload keeps the prefix's newest object
+// fresh. MUST stay well under the API's manifest-less-prefix GC window
+// (journalMaxAge + 48h grace = 9 days) — backupAgentContract.test.ts
+// asserts this. A package-level var (not const) so tests can shrink it.
+var uploadLeaseInterval = 15 * time.Minute
+
+// leaseGate wraps a BackupProvider so publishing a snapshot manifest past
+// its server-granted publish lease (or, for a resumed run, past the
+// checkpoint journal's max age) fails closed instead of publishing a
+// manifest the server can no longer trust (D18 §3.1/§3.4). Only
+// isManifestPath uploads are gated — ordinary file uploads and the
+// upload.lease heartbeat object pass straight through to the wrapped
+// provider.
+type leaseGate struct {
+	providers.BackupProvider
+	// publishLeaseExpiresAt is BackupConfig.PublishLeaseExpiresAt verbatim.
+	// Zero value disables the lease check (legacy server, no field sent).
+	publishLeaseExpiresAt time.Time
+	// journal is this run's checkpoint journal, or nil. Only a RESUMED
+	// journal (journal.resumed) is checked against journalMaxAge — a fresh
+	// journal's age is irrelevant here.
+	journal *snapshotJournal
+}
+
+func (g *leaseGate) checkPublish(remotePath string) error {
+	if !isManifestPath(remotePath) {
+		return nil
+	}
+	if g.publishLeaseExpiresAt.IsZero() {
+		// P1 fix: a zero lease reaching here means the "server-owned mode
+		// implies a non-zero lease" invariant (enforced at payload
+		// validation, exec_backup.go) was violated somewhere upstream.
+		// Fail CLOSED — refusing to publish is always safe; treating an
+		// absent lease as "no lease configured, proceed" is exactly the
+		// fail-open bug this gate exists to prevent, and this gate is only
+		// ever installed when server-owned mode is on (see backup.go's
+		// call site), so there is no legitimate zero-lease case here.
+		return ErrPublishLeaseExpired
+	}
+	if time.Now().Add(publishMargin).After(g.publishLeaseExpiresAt) {
+		return ErrPublishLeaseExpired
+	}
+	if g.journal != nil && g.journal.resumed && g.journal.Age() >= journalMaxAge {
+		return ErrJournalExpiredAtPublish
+	}
+	return nil
+}
+
+// Upload implements providers.BackupProvider.
+func (g *leaseGate) Upload(localPath, remotePath string) error {
+	if err := g.checkPublish(remotePath); err != nil {
+		return err
+	}
+	return g.BackupProvider.Upload(localPath, remotePath)
+}
+
+// UploadContext implements contextUploader. Declared unconditionally (even
+// when the wrapped provider doesn't support it) so uploadSnapshotFile's
+// type assertion on the WRAPPER always succeeds and the lease check always
+// runs; it falls back to a plain Upload when the wrapped provider lacks
+// context support, exactly like uploadSnapshotFile itself does.
+func (g *leaseGate) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	if err := g.checkPublish(remotePath); err != nil {
+		return err
+	}
+	if u, ok := g.BackupProvider.(contextUploader); ok {
+		return u.UploadContext(ctx, localPath, remotePath)
+	}
+	return g.BackupProvider.Upload(localPath, remotePath)
+}
 
 // Snapshot represents a point-in-time backup.
 type Snapshot struct {

@@ -1836,3 +1836,105 @@ func TestCreateSnapshotWithProgress_JournalResumeWinsOverReference(t *testing.T)
 		t.Fatalf("expected only the manifest to upload (file resumed via journal), got %d upload calls: %v", len(provider.uploadCalls), provider.uploadCalls)
 	}
 }
+
+func TestLeaseGate_RefusesManifestPastLeaseMargin(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content")
+	provider := newMockProvider()
+	gated := &leaseGate{
+		BackupProvider:        provider,
+		publishLeaseExpiresAt: time.Now().Add(30 * time.Minute), // inside the 1h margin
+	}
+
+	files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 7, modTime: time.Now()}}
+	_, err := createSnapshotWithProgress(context.Background(), gated, files, nil, nil, nil, nil)
+	if !errors.Is(err, ErrPublishLeaseExpired) {
+		t.Fatalf("err = %v, want ErrPublishLeaseExpired", err)
+	}
+	// provider.uploads is map[remotePath]localPath — range over the KEYS
+	// (remote paths), never the values (which are local temp filenames and
+	// would make isManifestPath check the wrong string entirely).
+	for key := range provider.uploads {
+		if isManifestPath(key) {
+			t.Fatalf("manifest was uploaded despite an expired lease: %s", key)
+		}
+	}
+}
+
+func TestLeaseGate_ZeroLeaseFailsClosed(t *testing.T) {
+	// Defense in depth for the P1 fix: Task 1's payload validation is
+	// SUPPOSED to make a zero lease alongside server-owned mode
+	// unreachable, but the gate itself must never fail open if that
+	// invariant is ever violated upstream — a missing lease must refuse to
+	// publish, not silently behave as "no lease configured".
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content")
+	provider := newMockProvider()
+	gated := &leaseGate{BackupProvider: provider} // publishLeaseExpiresAt left zero
+
+	files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 7, modTime: time.Now()}}
+	_, err := createSnapshotWithProgress(context.Background(), gated, files, nil, nil, nil, nil)
+	if !errors.Is(err, ErrPublishLeaseExpired) {
+		t.Fatalf("err = %v, want ErrPublishLeaseExpired (zero lease must fail closed)", err)
+	}
+}
+
+func TestLeaseGate_AllowsManifestWellInsideLease(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content")
+	provider := newMockProvider()
+	gated := &leaseGate{
+		BackupProvider:        provider,
+		publishLeaseExpiresAt: time.Now().Add(24 * time.Hour),
+	}
+
+	files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 7, modTime: time.Now()}}
+	snap, err := createSnapshotWithProgress(context.Background(), gated, files, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap == nil {
+		t.Fatal("expected a snapshot")
+	}
+}
+
+func TestLeaseGate_RefusesManifestWhenResumedJournalTooOld(t *testing.T) {
+	restore := setJournalMaxAgeForTest(1 * time.Millisecond)
+	defer restore()
+
+	dir := t.TempDir()
+	j1, _, err := openSnapshotJournal(dir, "lease-journal-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal (1st) failed: %v", err)
+	}
+	j1.Abandon()
+	time.Sleep(5 * time.Millisecond)
+
+	j2, resumed, err := openSnapshotJournal(dir, "lease-journal-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal (2nd) failed: %v", err)
+	}
+	if resumed {
+		t.Fatal("journal should be treated as stale (too old), not resumed")
+	}
+	// Force resumed+old state directly to exercise the gate deterministically
+	// (openSnapshotJournal already discarded the stale one above, matching
+	// production behavior — this constructs the boundary case directly).
+	j2.resumed = true
+	j2.createdAt = time.Now().Add(-2 * journalMaxAge)
+
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content")
+	provider := newMockProvider()
+	// publishLeaseExpiresAt is set well in the future so this test isolates
+	// the journal-age branch specifically — a zero lease would hit
+	// checkPublish's zero-lease guard first (see TestLeaseGate_ZeroLeaseFailsClosed)
+	// and never reach the journal-age check this test is proving.
+	gated := &leaseGate{BackupProvider: provider, publishLeaseExpiresAt: time.Now().Add(24 * time.Hour), journal: j2}
+
+	files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 7, modTime: time.Now()}}
+	_, err = createSnapshotWithProgress(context.Background(), gated, files, nil, j2, nil, nil)
+	if !errors.Is(err, ErrJournalExpiredAtPublish) {
+		t.Fatalf("err = %v, want ErrJournalExpiredAtPublish", err)
+	}
+}

@@ -46,6 +46,23 @@ const (
 
 var errBackupStopped = errors.New("backup stopped")
 
+// ErrPublishLeaseExpired is returned when a server-dispatched run (D18
+// §3.1) cannot publish its manifest because the server's publish lease
+// (BackupConfig.PublishLeaseExpiresAt, minus the 1h publishMargin) expired
+// before upload finished. The server treats a late result past lease
+// expiry as failed — returning this distinct, unwrapped-comparable error
+// lets logs and tests tell it apart from an ordinary publish failure. No
+// manifest is uploaded and nothing is deleted: the partial, manifest-less
+// prefix is reclaimed by GC's existing manifest-less-prefix rule.
+var ErrPublishLeaseExpired = errors.New("backup publish lease expired before manifest could be published")
+
+// ErrJournalExpiredAtPublish is the same fail-closed rule as
+// ErrPublishLeaseExpired but keyed on the checkpoint journal's age for a
+// RESUMED run: if journalMaxAge has elapsed by the time upload finishes,
+// the server can no longer distinguish this manifest from an abandoned
+// resume attempt, so publishing is refused.
+var ErrJournalExpiredAtPublish = errors.New("checkpoint journal expired before manifest could be published")
+
 // collectSystemState is a seam over systemstate.CollectSystemState so tests can
 // exercise the failure and partial-collection paths deterministically — the
 // real collector shells out to OS tools and succeeds on any CI host, which
@@ -814,7 +831,26 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		}
 	}
 
-	snapshot, snapErr := createSnapshotWithProgress(runCtx, m.config.Provider, files, progressFn, journal, prevSnapshot, sourceLiveness, runIdentity)
+	// Gate manifest publication whenever server-owned mode is on (D18
+	// §3.1) — keyed on BaseSnapshotID being present, NOT on the lease
+	// being non-zero (P1 fix): Task 1's payload validation guarantees a
+	// non-zero lease whenever BaseSnapshotID is set, but the gate's
+	// INSTALLATION must not itself depend on that value, or a payload that
+	// somehow slipped validation with a zero lease would run completely
+	// ungated instead of hitting checkPublish's fail-closed zero-lease
+	// branch. Legacy servers (nil BaseSnapshotID) get the unwrapped
+	// provider and fully unchanged behavior. Applies to full runs too, not
+	// just incremental ones — the server fences every dispatched run's
+	// late-result window this way.
+	uploadProvider := m.config.Provider
+	if m.config.BaseSnapshotID != nil {
+		uploadProvider = &leaseGate{
+			BackupProvider:        m.config.Provider,
+			publishLeaseExpiresAt: m.config.PublishLeaseExpiresAt,
+			journal:               journal,
+		}
+	}
+	snapshot, snapErr := createSnapshotWithProgress(runCtx, uploadProvider, files, progressFn, journal, prevSnapshot, sourceLiveness, runIdentity)
 	if errors.Is(snapErr, errBackupStopped) {
 		return stopBackupRun()
 	}
