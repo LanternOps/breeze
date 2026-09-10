@@ -913,8 +913,8 @@ async function prepareBackupDispatchTargets(
         target.commandType === 'backup_run'
           ? ((target.payload as Record<string, unknown>).systemImage === true ? 'system_image' : 'file')
           : null,
-      provider: config.provider,
-      providerConfig: commandProviderConfig,
+      provider: destination.provider,
+      providerConfig: destination.providerConfig,
     });
 
     const command: AgentCommand = {
