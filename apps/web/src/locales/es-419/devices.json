@@ -1928,6 +1928,7 @@
       "permanentDeleteCancelled": "Eliminación permanente cancelada",
       "permanentDeleting": "Eliminando permanentemente {{hostname}}…",
       "permanentlyDeleted": "{{hostname}} eliminado permanentemente",
+      "refreshFailed": "No se pudieron actualizar los dispositivos. La lista mostrada puede estar desactualizada.",
       "restored": "Restaurado",
       "scriptQueueFailed": "Error en la cola de script",
       "scriptQueuedMany": "Script en cola muchos",

@@ -30,7 +30,9 @@ export function OrgRequiredState({ description }: { description?: string }) {
     try {
       await applyOrgSwitch(orgId, t('layout.org.toast.switched', { name }));
     } finally {
-      // Normally unmounted by the soft navigation; guards the no-op case.
+      // This page island is normally unmounted by the soft navigation; the
+      // reset only matters if the switch fell back to a hard load and the
+      // island is still on screen before unload.
       setSwitchingId(null);
     }
   };

@@ -1934,6 +1934,7 @@
       "permanentDeleting": "Permanently deleting {{hostname}}…",
       "permanentlyDeleted": "{{hostname}} permanently deleted",
       "queuedOfflineTail": ", {{count}} queued for offline devices",
+      "refreshFailed": "Couldn't refresh devices. The list shown may be out of date.",
       "restored": "Restored",
       "runsWhenOnline": "Runs when the device is online — expires {{date}}",
       "runsWhenOnlineNoExpiry": "Runs when the device is online",

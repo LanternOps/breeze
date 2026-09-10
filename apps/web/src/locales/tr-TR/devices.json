@@ -1932,6 +1932,7 @@
       "permanentDeleteCancelled": "Kalıcı Silme İptal Edildi",
       "permanentDeleting": "{{hostname}} kalıcı olarak siliniyor…",
       "permanentlyDeleted": "{{hostname}} kalıcı olarak silindi",
+      "refreshFailed": "Cihazlar yenilenemedi. Gösterilen liste güncel olmayabilir.",
       "restored": "Yenilendi",
       "scriptQueueFailed": "Komut Dosyası Sırası Başarısız",
       "scriptQueuedMany": "Komut Dosyası Çok Sayıda Sıraya Alındı",

@@ -276,9 +276,9 @@ export default function DevicesPage() {
   // fetchOrganizations. A fetch fired at mount therefore went out with no
   // orgId — the API reads that as "every accessible org" — and nothing ever
   // refetched, so the list stayed fleet-wide while the switcher pill showed a
-  // single org. (Re-picking an org only "fixed" it because applyOrgSwitch does
-  // a full window.location.reload, by which point the org IS persisted and
-  // rehydrates synchronously.)
+  // single org. (Re-picking an org only "fixed" it because applyOrgSwitch
+  // re-navigates — historically a full window.location.reload, now a soft
+  // remount of the page island — by which point the org IS in the store.)
   //
   // So key the fetch on the RESOLVED scope rather than on mount: hold while the
   // context is still loading, then fetch — and refetch — whenever the scope
@@ -953,6 +953,14 @@ export default function DevicesPage() {
       // Aborts are expected when the component unmounts mid-walk — drop
       // them silently rather than rendering a misleading error banner.
       if (err instanceof Error && err.name === 'AbortError') return;
+      if (background) {
+        // The whole point of a background refresh is to keep the last-good
+        // list on screen. Swapping it for the full-page error card would
+        // throw away data the user was already looking at over a transient
+        // blip, so report the failure without tearing the page down.
+        showToast({ type: 'error', message: t('devicesPage.toasts.refreshFailed') });
+        return;
+      }
       setError(err);
     } finally {
       // setLoading(false) is harmless after unmount (React 18 ignores
@@ -981,7 +989,9 @@ export default function DevicesPage() {
    *
    * The mount effect below deliberately keeps calling `fetchDevices` directly:
    * the hook resolves the filter itself on mount, so going through here would
-   * just fire a second, redundant /filters/preview.
+   * just fire a second, redundant /filters/preview. `handleManualRefresh` also
+   * calls `fetchDevices` directly, only to pass the `background` flag; it
+   * re-applies the same id-set pairing.
    */
   const refreshDevices = useCallback(async () => {
     await fetchDevices();

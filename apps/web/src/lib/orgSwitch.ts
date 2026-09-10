@@ -19,7 +19,8 @@ export function stashSwitchToast(message: string) {
   }
 }
 
-/** Pop the stashed confirmation (if any) after a reload. */
+/** Pop the stashed confirmation (if any). Fired from OrgSwitcher's mount after
+ *  a hard load, and by applyOrgSwitch itself once a soft navigation settles. */
 export function consumeSwitchToast(): string | null {
   try {
     const message = sessionStorage.getItem(SWITCH_TOAST_KEY);
@@ -34,7 +35,7 @@ export function consumeSwitchToast(): string | null {
  * When switching organizations, certain detail-view routes show data scoped to
  * the previous org and would render blank or 404 under the new org. For those
  * routes we navigate up to the list view in the destination org instead of
- * reloading the now-inaccessible URL.
+ * re-navigating to the now-inaccessible URL.
  *
  * Returns the destination URL when redirection is needed, otherwise null
  * (meaning the caller should keep the current path and just re-navigate).
@@ -50,7 +51,7 @@ export function getOrgSwitchRedirect(pathname: string): string | null {
     }
   }
   // /organizations/:id (the org RECORD) -> the organizations list. The record's
-  // subject is the org in the URL, so reloading it after a switch would leave
+  // subject is the org in the URL, so re-navigating to it after a switch would leave
   // the user on the customer they just switched away from (#5075).
   if (/^\/organizations\/[^/]+\/?$/.test(pathname)) {
     return '/settings/organizations';
@@ -96,7 +97,7 @@ export async function applyOrgSwitch(
     ?? getOrgSwitchRedirect(window.location.pathname)
     ?? `${window.location.pathname}${window.location.search}`;
   const mode = await navigateTo(target, { replace: !destination });
-  if (mode !== 'soft') return; // page is unloading; the next mount pops the stash
+  if (mode !== 'soft') return; // a full load is under way; the next mount pops the stash
   // The persisted switcher never remounts on a soft navigation, so its
   // mount-time consume would never fire — surface the confirmation here.
   const message = consumeSwitchToast();

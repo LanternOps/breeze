@@ -3076,4 +3076,23 @@ describe('DevicesPage — header refresh button', () => {
     });
     expect(screen.getByTestId('devices-page-refresh').getAttribute('aria-busy')).toBe('false');
   });
+
+  it('keeps the last-good list on screen and toasts when a background refresh fails', async () => {
+    const { showToast } = await import('../shared/Toast');
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    vi.mocked(fetchAllDevices).mockRejectedValueOnce(new Error('boom'));
+    fireEvent.click(screen.getByTestId('devices-page-refresh'));
+
+    await waitFor(() => {
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+    // No full-page error card: the rows the user was looking at are still there.
+    expect(screen.getByTestId('device-list').getAttribute('data-hostnames')).toContain('host-alpha');
+    expect(screen.queryByText('Try again')).toBeNull();
+    const btn = screen.getByTestId('devices-page-refresh');
+    expect(btn.getAttribute('aria-busy')).toBe('false');
+    expect((btn as HTMLButtonElement).disabled).toBe(false);
+  });
 });

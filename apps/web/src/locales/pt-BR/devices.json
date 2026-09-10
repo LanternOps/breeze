@@ -1932,6 +1932,7 @@
       "permanentDeleteCancelled": "Exclusão permanente cancelada",
       "permanentDeleting": "Excluindo permanentemente {{hostname}}…",
       "permanentlyDeleted": "{{hostname}} excluído permanentemente",
+      "refreshFailed": "Não foi possível atualizar os dispositivos. A lista exibida pode estar desatualizada.",
       "restored": "Restaurado",
       "scriptQueueFailed": "Falha ao colocar o script na fila",
       "scriptQueuedMany": "Scripts colocados na fila",

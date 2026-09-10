@@ -1928,6 +1928,7 @@
       "permanentDeleteCancelled": "Suppression permanente annulée",
       "permanentDeleting": "Suppression permanente de {{hostname}} en cours…",
       "permanentlyDeleted": "{{hostname}} supprimé définitivement",
+      "refreshFailed": "Impossible d'actualiser les appareils. La liste affichée peut être obsolète.",
       "restored": "Restauré",
       "scriptQueueFailed": "File d’attente de scripts échouée",
       "scriptQueuedMany": "Script en file d’attente de nombreux",
