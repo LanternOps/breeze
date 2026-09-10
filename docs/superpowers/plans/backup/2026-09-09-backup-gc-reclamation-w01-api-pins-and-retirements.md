@@ -19,15 +19,15 @@ tracking_issue: LanternOps/breeze#5449
 ## Global Constraints
 
 - Migration files (next free slot after shipped `2026-10-15-140004`, confirmed via `ls apps/api/migrations/*.sql | sort | tail -1`):
-  - `apps/api/migrations/2026-10-15-150041-backup-jobs-base-pin-and-storage-identity.sql`
-  - `apps/api/migrations/2026-10-15-150042-backup-snapshot-retirements.sql`
+  - `apps/api/migrations/2026-10-15-150301-backup-jobs-base-pin-and-storage-identity.sql`
+  - `apps/api/migrations/2026-10-15-150302-backup-snapshot-retirements.sql`
 - New columns: `backup_jobs.base_snapshot_id varchar(255)` NULL, `backup_jobs.publish_lease_expires_at timestamptz` NULL (set for **every** dispatched file/system_image job, base or not; fixed at dispatch — never renewed on progress), `backup_jobs.storage_identity text` NULL (stamped at dispatch), `backup_snapshots.storage_identity text` NULL (**forever** nullable — no follow-up `SET NOT NULL` migration; self-healing is W02's sweep job).
 - New table: `backup_snapshot_retirements` (columns per spec §3.3, shape-1 RLS, unique `(storage_identity, snapshot_id)`).
 - New env knobs, all resolved **per call** (never module-load-cached) via one shared `resolveMsKnob` helper in new file `apps/api/src/services/backupGcKnobs.ts`:
   - `BACKUP_BASE_LEASE_MS` — default 7 d (`604_800_000`), production floor 1 h.
   - `BACKUP_RESTORE_PIN_LINGER_MS` — default 7 d, production floor 1 h.
   - `BACKUP_PUBLISH_MARGIN_MS` — default 1 h (`3_600_000`), production floor 5 min.
-- `normalizeStorageIdentity(provider, providerConfig)` (exported, `apps/api/src/jobs/backupRetention.ts:661`) is the ONE identity function for live TypeScript code paths. Migration `150041` does NOT replicate it in SQL and does not backfill `backup_snapshots.storage_identity` at all (coordinator decision, spec §3.6/§4 amended) — every row starts NULL and is self-healed later by the W02 GC sweep from a live bucket listing.
+- `normalizeStorageIdentity(provider, providerConfig)` (exported, `apps/api/src/jobs/backupRetention.ts:661`) is the ONE identity function for live TypeScript code paths. Migration `150301` does NOT replicate it in SQL and does not backfill `backup_snapshots.storage_identity` at all (coordinator decision, spec §3.6/§4 amended) — every row starts NULL and is self-healed later by the W02 GC sweep from a live bucket listing.
 - Registries to touch: `apps/api/src/services/tenantCascade.ts` (`CORE_ORG_CASCADE_DELETE_ORDER`), `apps/api/src/routes/devices/core.ts` (`CORE_DEVICE_CASCADE_DELETE_TABLES`, `CORE_DEVICE_ORG_DENORMALIZED_TABLES`), `apps/api/src/services/tenantExportPolicyRegistry.ts` (`CORE_TENANT_EXPORT_POLICY`). `rls-coverage.integration.test.ts` needs NO new allowlist entry (shape 1 = plain `org_id` column = auto-discovered).
 - Lock order for the base pin is **job, then snapshot** (mirrors `routes/devices/moveOrg.ts:248-253`'s "lock parents in a fixed order as the transaction's first statements" pattern).
 
@@ -39,7 +39,7 @@ All of the below was verified directly against the worktree at `/Users/toddhebeb
 - `apps/api/src/db/schema/backup.ts:280-337` (`backupSnapshots`) — `:300` `isIncremental boolean default(false)` and `:305-308` `parentSnapshotId` self-FK `ON DELETE SET NULL` already exist (D17, migration `2026-10-15-140004`) and are never written by the live write path. No `storageIdentity` column yet.
 - `apps/api/src/db/schema/backup.ts:330-332` — `snapshotIdIdx: index('backup_snapshots_snapshot_id_idx').on(table.snapshotId)` is a PLAIN, NON-UNIQUE index — `backup_snapshots.snapshot_id` (the agent-supplied string) carries no uniqueness constraint of any kind at the DB level. Review fix implication: every lookup in this plan that matches a row by a bare `snapshotId` string (dispatch's base-candidate re-check, retention's backup-pin check, the late-result fence's base lookup, reconcile's base-existence check) must ALSO be scoped by `storageIdentity`, or it is not guaranteed to identify one specific row.
 - `apps/api/src/db/schema/backup.ts:62` — `IN_FLIGHT_BACKUP_JOB_STATUSES = ['pending', 'running'] as const`, exported from this module.
-- `apps/api/migrations/2026-10-15-140004-backup-snapshot-lineage-fk-set-null.sql` (full file read) — the newest shipped migration; confirmed via `ls apps/api/migrations/*.sql | sort | tail -1` that no later-sorting file exists, so `150041`/`150042` are free, correctly-ordered slots.
+- `apps/api/migrations/2026-10-15-140004-backup-snapshot-lineage-fk-set-null.sql` (full file read) — the newest shipped migration; confirmed via `ls apps/api/migrations/*.sql | sort | tail -1` that no later-sorting file exists, so `150301`/`150302` are free, correctly-ordered slots.
 - `apps/api/src/jobs/backupRetention.ts:661-672` — `normalizeStorageIdentity` verbatim:
   ```ts
   export function normalizeStorageIdentity(provider: string, providerConfig: Record<string, unknown>): string {
@@ -91,8 +91,8 @@ All of the below was verified directly against the worktree at `/Users/toddhebeb
 
 ## File structure
 
-- **Create** `apps/api/migrations/2026-10-15-150041-backup-jobs-base-pin-and-storage-identity.sql` — new `backup_jobs` columns + partial index; nullable `backup_snapshots.storage_identity` column, DDL only, no backfill.
-- **Create** `apps/api/migrations/2026-10-15-150042-backup-snapshot-retirements.sql` — new table + shape-1 RLS.
+- **Create** `apps/api/migrations/2026-10-15-150301-backup-jobs-base-pin-and-storage-identity.sql` — new `backup_jobs` columns + partial index; nullable `backup_snapshots.storage_identity` column, DDL only, no backfill.
+- **Create** `apps/api/migrations/2026-10-15-150302-backup-snapshot-retirements.sql` — new table + shape-1 RLS.
 - **Create** `apps/api/src/services/backupGcKnobs.ts` + `apps/api/src/services/backupGcKnobs.test.ts` — shared per-run env-knob resolver.
 - **Modify** `apps/api/src/db/schema/backup.ts` — add columns to `backupJobs`/`backupSnapshots`, new `backupSnapshotRetirements` table.
 - **Modify** `apps/api/src/services/tenantCascade.ts`, `apps/api/src/routes/devices/core.ts`, `apps/api/src/services/tenantExportPolicyRegistry.ts` — registries.
@@ -109,9 +109,9 @@ All of the below was verified directly against the worktree at `/Users/toddhebeb
 
 ---
 
-### Task 1: Migration 150041 — `backup_jobs` pin/identity columns + nullable `backup_snapshots.storage_identity` (DDL only)
+### Task 1: Migration 150301 — `backup_jobs` pin/identity columns + nullable `backup_snapshots.storage_identity` (DDL only)
 
-**Files:** Create `apps/api/migrations/2026-10-15-150041-backup-jobs-base-pin-and-storage-identity.sql`.
+**Files:** Create `apps/api/migrations/2026-10-15-150301-backup-jobs-base-pin-and-storage-identity.sql`.
 
 **Decision (no backfill — coordinator directive, spec §3.6/§4 amended):** this migration is DDL only. `backup_snapshots.storage_identity` is added nullable with **no UPDATE and no `breeze.scope` elevation** — every existing row is simply left NULL. W02's sweep self-heals each NULL row by matching it against a live bucket listing (per row id), so no SQL or TS backfill of any kind is needed here. This replaces an earlier draft of this task that ported `normalizeStorageIdentity` into PL/pgSQL for a guarded subset of rows — dropped entirely, not merely deferred.
 
@@ -123,7 +123,7 @@ All of the below was verified directly against the worktree at `/Users/toddhebeb
 - [ ] Step 3: Implement
 
 ```sql
--- apps/api/migrations/2026-10-15-150041-backup-jobs-base-pin-and-storage-identity.sql
+-- apps/api/migrations/2026-10-15-150301-backup-jobs-base-pin-and-storage-identity.sql
 -- D18 W01 (#5429 family, spec v3 §3.1/§3.6): server-chosen incremental-dedupe
 -- base pin with a fixed publish-lease deadline, plus a per-job/per-snapshot
 -- storage identity that survives a backup_configs destination edit.
@@ -166,7 +166,7 @@ END $$;
   - `docker exec -it breeze-postgres psql -U breeze_app -d breeze -c "SELECT count(*) FROM backup_snapshots WHERE storage_identity IS NOT NULL;"` — expect `0` (no backfill).
 
 - [ ] Step 5: Commit
-  `git add apps/api/migrations/2026-10-15-150041-backup-jobs-base-pin-and-storage-identity.sql && git commit -m "feat(backup): base-pin/storage-identity columns, DDL only, no backfill (D18 W01)"`
+  `git add apps/api/migrations/2026-10-15-150301-backup-jobs-base-pin-and-storage-identity.sql && git commit -m "feat(backup): base-pin/storage-identity columns, DDL only, no backfill (D18 W01)"`
 
 ---
 
@@ -279,7 +279,7 @@ export const backupSnapshotRetirements = pgTable(
 
 ### Task 3: `backup_snapshot_retirements` table + RLS migration
 
-**Files:** Create `apps/api/migrations/2026-10-15-150042-backup-snapshot-retirements.sql`.
+**Files:** Create `apps/api/migrations/2026-10-15-150302-backup-snapshot-retirements.sql`.
 
 - [ ] Step 1: Write the failing test
   Command: `docker exec -it breeze-postgres psql -U breeze_app -d breeze -c "SELECT * FROM backup_snapshot_retirements LIMIT 1;"` → expect `ERROR: relation "backup_snapshot_retirements" does not exist`.
@@ -289,7 +289,7 @@ export const backupSnapshotRetirements = pgTable(
 - [ ] Step 3: Implement
 
 ```sql
--- apps/api/migrations/2026-10-15-150042-backup-snapshot-retirements.sql
+-- apps/api/migrations/2026-10-15-150302-backup-snapshot-retirements.sql
 -- D18 W01 (#5429/§3.3): backup_snapshot_retirements — durable tombstone
 -- written by retention the instant it deletes an expired/pruned
 -- backup_snapshots row (see backupRetention.ts's cleanupExpiredSnapshots).
@@ -358,7 +358,7 @@ CREATE POLICY breeze_org_isolation_delete ON backup_snapshot_retirements
   - `pnpm db:check-drift`
 
 - [ ] Step 5: Commit
-  `git add apps/api/migrations/2026-10-15-150042-backup-snapshot-retirements.sql && git commit -m "feat(backup): backup_snapshot_retirements table + RLS (D18 W01)"`
+  `git add apps/api/migrations/2026-10-15-150302-backup-snapshot-retirements.sql && git commit -m "feat(backup): backup_snapshot_retirements table + RLS (D18 W01)"`
 
 ---
 
@@ -2857,7 +2857,7 @@ runDb('forges a cross-tenant insert on backup_snapshot_retirements and gets 4250
 - [ ] `pnpm lint`
 - [ ] **Explicitly out of scope, handed to W02:** pruning `backup_snapshot_retirements` rows 30 days after `swept_at` is set (spec §3.3: "Rows are pruned 30 d after `swept_at`"). This wave never sets `swept_at` at all (that's the GC sweep's job, §3.4/W02) and adds no pruning job — a pruning task only makes sense once W02's sweep is setting `swept_at` in the first place. W02's plan should include a `swept_at IS NOT NULL AND swept_at < now() - 30d` cleanup pass (a new scheduled job, or folded into the existing GC cadence) as one of its own tasks; it is NOT silently dropped here — call it out in that plan's own Consumes/Produces the same way this note does.
 - [ ] PR body checklist:
-  - [ ] Migrations `150041`/`150042` applied and idempotent-verified (`pnpm db:migrate` run twice locally, second run a no-op).
+  - [ ] Migrations `150301`/`150302` applied and idempotent-verified (`pnpm db:migrate` run twice locally, second run a no-op).
   - [ ] `pnpm db:check-drift` clean (ledger parity only — not a schema-correctness proof; see above).
   - [ ] Tenancy contract suites (cascade order, device cascade/denormalized lists, export-policy, rls-coverage) all green against the real test DB, not just the unit job.
   - [ ] `Closes #<W01 sub-issue>` once this feature is registered via `feature-lifecycle` (per CLAUDE.md's Feature Lifecycle Tracking section, if this plan is executed as a tracked wave).
@@ -2867,7 +2867,7 @@ runDb('forges a cross-tenant insert on backup_snapshot_retirements and gets 4250
 
 All eight items below were raised during drafting and have since been resolved by explicit coordinator decision; the plan text above already reflects each resolution. Kept here as a decision log, not as open items.
 
-1. **RESOLVED — no backfill.** Migration `150041` is DDL only (Task 1): no PL/pgSQL port of `normalizeStorageIdentity`, no UPDATE, no `breeze.scope` elevation. Every `backup_snapshots.storage_identity` starts NULL; W02's sweep self-heals each row from a live bucket listing, matched by row id. The SQL-fidelity concerns that motivated the original open question (path/URL parsing divergence) no longer apply, since no SQL normalization is attempted here at all.
+1. **RESOLVED — no backfill.** Migration `150301` is DDL only (Task 1): no PL/pgSQL port of `normalizeStorageIdentity`, no UPDATE, no `breeze.scope` elevation. Every `backup_snapshots.storage_identity` starts NULL; W02's sweep self-heals each row from a live bucket listing, matched by row id. The SQL-fidelity concerns that motivated the original open question (path/URL parsing divergence) no longer apply, since no SQL normalization is attempted here at all.
 2. **CONFIRMED — asymmetry intentional.** `staleCommandReaper.ts`'s `RESTORE_COMMANDLESS_PENDING_TIMEOUT_MS` (Task 7) is a fixed 1 hour, independent of the env-tunable, 7-day-default `BACKUP_RESTORE_PIN_LINGER_MS` (Task 9) retention's own pin check uses. Coordinator confirms this is the intended operator-facing behavior, not an oversight.
 3. **RESOLVED — import path.** `backupRetention.test.ts:34` mocks only `vi.mock('../db', () => ({ db: mockDb }))` — there is no mock on `'../db/schema'` in that file. Task 9 now imports `restoreJobs`/`backupSnapshotRetirements`/`IN_FLIGHT_BACKUP_JOB_STATUSES` from the barrel `'../db/schema'` (joining the file's existing barrel import), and `recoveryTokens` from the concrete `'../db/schema/recoveryTokens'` module (matching `backupWorker.ts`'s existing convention for that specific table). Tasks 6/10/11 were also normalized to add `backupSnapshotRetirements` to each file's existing barrel import rather than a separate `'../db/schema/backup'` line.
 4. **ACCEPTED — N+1 query shape.** Task 11's base-existence check re-queries the DB per adopted candidate; accepted as consistent with `reconcileOrphanedBackupSnapshots`'s existing per-candidate DB-read pattern. Flagged for a future pass only if reconcile's throughput over a large orphan backlog becomes a real bottleneck — not addressed in this wave.
@@ -2891,7 +2891,7 @@ An independent review pass found the following defects; each is fixed in place (
 17. **FIXED — hyperv/mssql identity stamping (P2).** `stampDispatchPinAndIdentity` is now called for every dispatched target; `storage_identity` is stamped unconditionally, while `publish_lease_expires_at`/`base_snapshot_id` remain file/system_image-only (Task 6).
 18. **FIXED — discriminating test assertions (P2).** Task 10's tests now assert the actual captured `parentSnapshotId`/`isIncremental`/`storageIdentity`/`errorLog` values, not `applied === true` alone. Task 13 gained: restore pin with/without `command_id`, recovery-token pin, max-versions-respects-pins, a real-DB late-result-lease-expired case, a two-path concurrent dispatch-vs-retention race, and a `processCleanupExpiredSnapshots` (worker-handler-level) proof of §6(6b).
 19. **FIXED — compile/setup issues (P2).** `sql` added to `backupRetention.ts`'s widened `drizzle-orm` import (Task 9); the RLS forge test's `DbAccessContext` shape corrected to the real interface (no `partnerId` field) using the established `orgContext` helper convention, with the SQLSTATE assertion corrected to read `.cause.code` for a Drizzle insert (Task 13); all integration-test run commands now use the safe default test DB instead of the dev DB URl, which `testUtils/integrationDatabaseSafety.ts` actively refuses (Tasks 13-14).
-20. **FIXED — migration verification claims (P2).** A Drizzle partial index matching migration `150041`'s `backup_jobs_base_snapshot_id_idx` was added to Task 2's schema edit (previously missing). The plan no longer claims `pnpm db:check-drift` compares the Drizzle schema to a live database — `scripts/check-drift.ts` verifies migration-ledger parity only; a `pnpm db:migrate` run-twice idempotency check was added instead (Tasks 2, 14). The 30-day `backup_snapshot_retirements` pruning pass (spec §3.3) is explicitly handed to W02 (Task 14's Produces/handoff note), since this wave never sets `swept_at` in the first place.
+20. **FIXED — migration verification claims (P2).** A Drizzle partial index matching migration `150301`'s `backup_jobs_base_snapshot_id_idx` was added to Task 2's schema edit (previously missing). The plan no longer claims `pnpm db:check-drift` compares the Drizzle schema to a live database — `scripts/check-drift.ts` verifies migration-ledger parity only; a `pnpm db:migrate` run-twice idempotency check was added instead (Tasks 2, 14). The 30-day `backup_snapshot_retirements` pruning pass (spec §3.3) is explicitly handed to W02 (Task 14's Produces/handoff note), since this wave never sets `swept_at` in the first place.
 
 ## W02 handoff note (§3.7 call-shape contract — corrected by coordinator's second review pass)
 

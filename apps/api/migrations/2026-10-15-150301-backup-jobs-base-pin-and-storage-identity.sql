@@ -1,4 +1,4 @@
--- apps/api/migrations/2026-10-15-150041-backup-jobs-base-pin-and-storage-identity.sql
+-- apps/api/migrations/2026-10-15-150301-backup-jobs-base-pin-and-storage-identity.sql
 -- D18 W01 (#5429 family, spec v3 §3.1/§3.6): server-chosen incremental-dedupe
 -- base pin with a fixed publish-lease deadline, plus a per-job/per-snapshot
 -- storage identity that survives a backup_configs destination edit.
