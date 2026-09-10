@@ -519,3 +519,56 @@ func TestOpenSnapshotJournal_RefusesSymlinkJournal(t *testing.T) {
 		t.Fatalf("symlink target must not be deleted: %v", err)
 	}
 }
+
+func TestSnapshotJournal_Age(t *testing.T) {
+	dir := t.TempDir()
+	j, _, err := openSnapshotJournal(dir, "age-test-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	defer j.Abandon()
+
+	if age := j.Age(); age < 0 || age > time.Second {
+		t.Fatalf("fresh journal Age() = %v, want ~0", age)
+	}
+
+	// A nil journal must not panic and reports zero age.
+	var nilJournal *snapshotJournal
+	if age := nilJournal.Age(); age != 0 {
+		t.Fatalf("nil journal Age() = %v, want 0", age)
+	}
+}
+
+func TestSnapshotJournal_Age_SurvivesResume(t *testing.T) {
+	dir := t.TempDir()
+	restore := setJournalMaxAgeForTest(24 * time.Hour)
+	defer restore()
+
+	j1, _, err := openSnapshotJournal(dir, "resume-age-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal (1st) failed: %v", err)
+	}
+	if err := j1.Record(SnapshotFile{SourcePath: "/a.txt", Size: 1}); err != nil {
+		t.Fatalf("Record failed: %v", err)
+	}
+	j1.Abandon()
+
+	// A real gap between creation and resume (P3 fix): back-to-back opens
+	// with no sleep can't distinguish "createdAt correctly preserved from
+	// the original header" from "createdAt buggily reset to time.Now() on
+	// resume" — both would read back as ~0 either way. The sleep makes the
+	// two hypotheses diverge: preserved reads back ~50ms, reset reads ~0.
+	time.Sleep(50 * time.Millisecond)
+
+	j2, resumed, err := openSnapshotJournal(dir, "resume-age-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal (2nd) failed: %v", err)
+	}
+	defer j2.Abandon()
+	if !resumed {
+		t.Fatal("expected the second open to resume the first journal")
+	}
+	if age := j2.Age(); age < 40*time.Millisecond || age > 2*time.Second {
+		t.Fatalf("resumed journal Age() = %v, want ~50ms (original createdAt preserved across resume, not reset to time.Now())", age)
+	}
+}

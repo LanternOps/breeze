@@ -558,8 +558,10 @@ require_grep "severity: 'HIGH,CRITICAL'" .github/workflows/security.yml \
   "Trivy must fail on HIGH and CRITICAL vulnerabilities"
 require_grep '^  trivy-image-scan:' .github/workflows/security.yml \
   "security workflow must scan built Docker images"
-# The scan must target the Dockerfiles release.yml and hosted-images.yml
-# actually publish. It previously built the docker/Dockerfile.api|web compose
+# The scan must target the Dockerfiles release.yml actually publishes
+# (emergency manual builds go through `docker buildx` + a GHCR push from a
+# maintainer machine instead of a workflow). It previously built the
+# docker/Dockerfile.api|web compose
 # variants, which ship to nobody, so the two most widely deployed images in the
 # product were never scanned at all (issues #4273 / #4260). Note this makes the
 # images visible, not merge-blocking: main's ruleset requires only `CI Success`,

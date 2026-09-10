@@ -544,7 +544,10 @@ jobs:
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
-    needs: [build-agent]
+    # validate-release-lineage: this job codesigns/notarizes with the Apple
+    # secrets — it must not run against a tag whose lineage hasn't been
+    # validated yet.
+    needs: [build-agent, validate-release-lineage]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -994,6 +997,12 @@ jobs:
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
+    # validate-release-lineage: this job signs the Tauri updater bundle with
+    # TAURI_SIGNING_PRIVATE_KEY — it must not run against a tag whose
+    # lineage hasn't been validated yet. sign-windows-tauri-{azure,sslcom}
+    # (which Authenticode-sign the MSI this job produces) already depend on
+    # build-viewer, so they inherit this transitively.
+    needs: [validate-release-lineage]
     strategy:
       fail-fast: false
       matrix:
@@ -1276,6 +1285,10 @@ jobs:
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
+    # validate-release-lineage: this job codesigns (TAURI_SIGNING_PRIVATE_KEY
+    # + Apple signing identity) and notarizes the DMG — it must not run
+    # against a tag whose lineage hasn't been validated yet.
+    needs: [validate-release-lineage]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1413,6 +1426,10 @@ jobs:
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
+    # validate-release-lineage: this job codesigns (Apple signing identity)
+    # and notarizes the DMG — it must not run against a tag whose lineage
+    # hasn't been validated yet.
+    needs: [validate-release-lineage]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

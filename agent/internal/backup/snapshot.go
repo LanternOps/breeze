@@ -48,6 +48,15 @@ const (
 	snapshotRootDir     = "snapshots"
 	snapshotFilesDir    = "files"
 	snapshotManifestKey = "manifest.json"
+
+	// publishMargin is subtracted from the lease deadline at publish time
+	// (D18 §3.1): the server keeps a job's base pinned for
+	// lease+publishMargin precisely so a manifest PUT that STARTS inside
+	// the margin has room to finish before the server's pin lapses. Must
+	// match the API's BACKUP_PUBLISH_MARGIN_MS default —
+	// backupAgentContract.test.ts asserts the two stay equal.
+	publishMargin = 1 * time.Hour
+
 	// systemStateDir is the remote sub-prefix, under a snapshot, where system
 	// state artifacts and their own manifest live — a dedicated tree, never
 	// the ordinary files/ tree. This is Option A of the D15 bare-metal-
@@ -57,13 +66,88 @@ const (
 	// layout, so the value here MUST match that constant.
 	systemStateDir = "system-state"
 	// systemStateManifestKey mirrors snapshotManifestKey, scoped to
-	// systemStateDir.
+	// systemStateDir. Also caught by isManifestPath (basename match), so
+	// leaseGate (D18 §3.1) fences a system-state manifest publish exactly
+	// like the ordinary snapshot manifest — see leaseGate's doc comment.
 	systemStateManifestKey = "manifest.json"
 	// systemStateManifestSchemaVersion mirrors systemstate.manifestSchemaVersion
 	// (that package's own unexported constant) — see publishSystemState's
 	// doc comment for why the backup package also stamps it.
 	systemStateManifestSchemaVersion = 1
 )
+
+// uploadLeaseInterval is how often createSnapshotWithProgress refreshes
+// snapshots/<id>/upload.lease while uploading (D18 §3.4), so a
+// long-running single-object upload keeps the prefix's newest object
+// fresh. MUST stay well under the API's manifest-less-prefix GC window
+// (journalMaxAge + 48h grace = 9 days) — backupAgentContract.test.ts
+// asserts this. A package-level var (not const) so tests can shrink it.
+var uploadLeaseInterval = 15 * time.Minute
+
+// leaseGate wraps a BackupProvider so publishing a snapshot manifest past
+// its server-granted publish lease (or, for a resumed run, past the
+// checkpoint journal's max age) fails closed instead of publishing a
+// manifest the server can no longer trust (D18 §3.1/§3.4). Only
+// isManifestPath uploads are gated — ordinary file uploads and the
+// upload.lease heartbeat object pass straight through to the wrapped
+// provider.
+type leaseGate struct {
+	providers.BackupProvider
+	// publishLeaseExpiresAt is BackupConfig.PublishLeaseExpiresAt verbatim.
+	// Zero value disables the lease check (legacy server, no field sent).
+	publishLeaseExpiresAt time.Time
+	// journal is this run's checkpoint journal, or nil. Only a RESUMED
+	// journal (journal.resumed) is checked against journalMaxAge — a fresh
+	// journal's age is irrelevant here.
+	journal *snapshotJournal
+}
+
+func (g *leaseGate) checkPublish(remotePath string) error {
+	if !isManifestPath(remotePath) {
+		return nil
+	}
+	if g.publishLeaseExpiresAt.IsZero() {
+		// P1 fix: a zero lease reaching here means the "server-owned mode
+		// implies a non-zero lease" invariant (enforced at payload
+		// validation, exec_backup.go) was violated somewhere upstream.
+		// Fail CLOSED — refusing to publish is always safe; treating an
+		// absent lease as "no lease configured, proceed" is exactly the
+		// fail-open bug this gate exists to prevent, and this gate is only
+		// ever installed when server-owned mode is on (see backup.go's
+		// call site), so there is no legitimate zero-lease case here.
+		return ErrPublishLeaseExpired
+	}
+	if time.Now().Add(publishMargin).After(g.publishLeaseExpiresAt) {
+		return ErrPublishLeaseExpired
+	}
+	if g.journal != nil && g.journal.resumed && g.journal.Age() >= journalMaxAge {
+		return ErrJournalExpiredAtPublish
+	}
+	return nil
+}
+
+// Upload implements providers.BackupProvider.
+func (g *leaseGate) Upload(localPath, remotePath string) error {
+	if err := g.checkPublish(remotePath); err != nil {
+		return err
+	}
+	return g.BackupProvider.Upload(localPath, remotePath)
+}
+
+// UploadContext implements contextUploader. Declared unconditionally (even
+// when the wrapped provider doesn't support it) so uploadSnapshotFile's
+// type assertion on the WRAPPER always succeeds and the lease check always
+// runs; it falls back to a plain Upload when the wrapped provider lacks
+// context support, exactly like uploadSnapshotFile itself does.
+func (g *leaseGate) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	if err := g.checkPublish(remotePath); err != nil {
+		return err
+	}
+	if u, ok := g.BackupProvider.(contextUploader); ok {
+		return u.UploadContext(ctx, localPath, remotePath)
+	}
+	return g.BackupProvider.Upload(localPath, remotePath)
+}
 
 // Snapshot represents a point-in-time backup.
 type Snapshot struct {
@@ -450,6 +534,39 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	prevIndex := buildPreviousIndex(prevSnapshot)
 
 	prefix := path.Join(snapshotRootDir, snapshot.ID)
+
+	// Resume-with-already-published-manifest (D18 §3.5): a prior attempt
+	// may have published manifest.json and then crashed before
+	// journal.Complete() removed the journal. Re-uploading now would
+	// overwrite a COMPLETED, restorable manifest — treat its confirmed
+	// presence as "this run already finished" and return it as-is,
+	// uploading nothing. This is a SECOND check: RunBackupContext
+	// (backup.go) performs the same one earlier, before source scanning,
+	// so a source-gone resumed run reports success instead of hitting the
+	// len(files)==0 reject above first — see this task's ordering note.
+	// Kept here too so direct callers of this function (this package's own
+	// unit tests) still exercise and prove the behavior without going
+	// through RunBackupContext.
+	if journal != nil && journal.resumed {
+		existing, fetchErr := fetchPublishedManifest(ctx, provider, prefix)
+		if fetchErr != nil {
+			return nil, fmt.Errorf("resume check failed, refusing to guess whether %s was already published: %w", prefix, fetchErr)
+		}
+		if existing != nil {
+			log.Info("resume: manifest already published, skipping upload",
+				"snapshotId", existing.ID,
+				"files", len(existing.Files),
+			)
+			if err := journal.Complete(); err != nil {
+				log.Warn("failed to remove completed checkpoint journal", "error", err.Error())
+			}
+			completed = true
+			return existing, nil
+		}
+		// existing == nil, fetchErr == nil: confirmed absent — fall through
+		// to a normal upload below.
+	}
+
 	var errs []error
 
 	var bytesTotal int64
@@ -515,6 +632,50 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}()
 	}
 
+	// upload.lease heartbeat (D18 §3.4): refresh a tiny marker object every
+	// uploadLeaseInterval while uploading, so GC's manifest-less-prefix
+	// window keeps extending for a legitimately slow multi-day single-file
+	// upload. leaseCtx (derived from ctx) is cancelled by stopLeaseRefresh —
+	// called exactly once via leaseStopOnce, on completion or ctx
+	// cancellation — cancelling leaseCtx immediately signals any in-flight
+	// refresh to stop and unblocks the NEXT select iteration without
+	// waiting out the full 60s bound; a refresh already inside a plain
+	// Upload (a provider with no UploadContext, e.g. leaseGate's fallback,
+	// mirroring uploadSnapshotFile's own pre-existing trade-off) still runs
+	// to completion since a plain Upload has no cancellation hook. Skipped
+	// entirely by the resume-already-published shortcut above, since that
+	// path returns before this point.
+	leaseKey := path.Join(prefix, "upload.lease")
+	leaseCtx, leaseCancel := context.WithCancel(ctx)
+	leaseDone := make(chan struct{})
+	var leaseStopOnce sync.Once
+	stopLeaseRefresh := func() {
+		leaseStopOnce.Do(func() {
+			leaseCancel()
+			<-leaseDone
+		})
+	}
+	go func() {
+		defer close(leaseDone)
+		ticker := time.NewTicker(uploadLeaseInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-leaseCtx.Done():
+				return
+			case <-ticker.C:
+				// Each refresh is bounded to 60s AND tied to leaseCtx, so
+				// stopLeaseRefresh's leaseCancel() unblocks it immediately
+				// instead of this goroutine sitting in a stalled PUT for up
+				// to 60s after the caller asked it to stop.
+				refreshCtx, cancel := context.WithTimeout(leaseCtx, 60*time.Second)
+				refreshUploadLease(refreshCtx, provider, leaseKey)
+				cancel()
+			}
+		}
+	}()
+	defer stopLeaseRefresh()
+
 	// Resume matching: build the full matched set up front (rather than
 	// deciding file-by-file inside the loop below) so filesDone/bytesDone
 	// can be pre-seeded with the resumed totals and reported in one jump
@@ -558,6 +719,12 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// conditional on journal == nil.
 	abortStopped := func() (*Snapshot, error) {
 		if journal == nil {
+			// Stop the lease-refresh ticker BEFORE cleanup, not after (via
+			// the deferred stopLeaseRefresh() at the top of this function):
+			// a ticker fire racing cleanupSnapshotPrefix would re-PUT
+			// upload.lease into the prefix cleanup just emptied, leaving an
+			// orphan object behind and defeating the point of cleaning up.
+			stopLeaseRefresh()
 			cleanupSnapshotPrefix(provider, snapshot.ID)
 		}
 		return nil, errBackupStopped
@@ -602,7 +769,10 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		if len(snapshot.Files) == 0 {
 			// Nothing landed, so there is no restore point to preserve and the
 			// prefix holds no recoverable data. Same disposal as any other
-			// journal-less abort.
+			// journal-less abort. Stop the lease ticker BEFORE cleanup for the
+			// same reason as abortStopped above — a racing refresh would
+			// re-create the prefix cleanup just emptied.
+			stopLeaseRefresh()
 			cleanupSnapshotPrefix(provider, snapshot.ID)
 			return nil, detail
 		}
@@ -625,6 +795,10 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			"filesUploaded", len(snapshot.Files),
 			"filesTotal", filesTotal,
 		)
+		stopLeaseRefresh()
+		if delErr := provider.Delete(leaseKey); delErr != nil {
+			log.Warn("failed to remove upload.lease after partial publish", "key", leaseKey, "error", delErr.Error())
+		}
 		return snapshot, detail
 	}
 
@@ -877,7 +1051,86 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		completed = true
 	}
 
+	stopLeaseRefresh()
+	if delErr := provider.Delete(leaseKey); delErr != nil {
+		log.Warn("failed to remove upload.lease after publish", "key", leaseKey, "error", delErr.Error())
+	}
+
 	return snapshot, nil
+}
+
+// fetchPublishedManifest checks whether prefix's manifest.json has already
+// been published, distinguishing three outcomes (P1 fix — a transient
+// error must NEVER be treated the same as confirmed absence):
+//   - (snapshot, nil): confirmed present and decodable — the caller's
+//     resume-shortcut must return this snapshot, uploading nothing.
+//   - (nil, nil): CONFIRMED absent (providers.ErrObjectNotFound) — safe to
+//     proceed with a normal upload.
+//   - (nil, err): anything else (network error, decode error, corrupt
+//     manifest, context already done) — the caller MUST fail the run
+//     closed: upload nothing, delete nothing, since we genuinely don't
+//     know whether a real manifest exists at this prefix.
+func fetchPublishedManifest(ctx context.Context, provider providers.BackupProvider, prefix string) (*Snapshot, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+	manifestKey := path.Join(prefix, snapshotManifestKey)
+	tempFile, err := os.CreateTemp("", "resume-manifest-*.json")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp file for resume manifest check: %w", err)
+	}
+	tempPath := tempFile.Name()
+	_ = tempFile.Close()
+	// Best-effort: tempPath is an OS temp file already read (or about to
+	// fail trying) — a leftover on Remove failure is harmless temp-dir
+	// clutter, not a correctness issue worth surfacing.
+	defer func() { _ = os.Remove(tempPath) }()
+
+	if err := provider.Download(manifestKey, tempPath); err != nil {
+		if errors.Is(err, providers.ErrObjectNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to check for an already-published manifest at %s: %w", manifestKey, err)
+	}
+	data, err := os.ReadFile(tempPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read downloaded resume manifest: %w", err)
+	}
+	var snapshot Snapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return nil, fmt.Errorf("failed to decode resume manifest %s: %w", manifestKey, err)
+	}
+	return &snapshot, nil
+}
+
+// refreshUploadLease best-effort writes the current UTC time (RFC3339) to
+// leaseKey. Failure is logged, never fatal — see the upload.lease doc
+// comment in createSnapshotWithProgress.
+func refreshUploadLease(ctx context.Context, provider providers.BackupProvider, leaseKey string) {
+	tempFile, err := os.CreateTemp("", "upload-lease-*.txt")
+	if err != nil {
+		log.Warn("failed to create upload lease temp file", "error", err.Error())
+		return
+	}
+	tempPath := tempFile.Name()
+	if _, err := tempFile.WriteString(time.Now().UTC().Format(time.RFC3339)); err != nil {
+		_ = tempFile.Close()
+		// Best-effort cleanup of a temp file we're abandoning anyway; a
+		// Remove failure here is harmless temp-dir clutter.
+		_ = os.Remove(tempPath)
+		log.Warn("failed to write upload lease content", "error", err.Error())
+		return
+	}
+	_ = tempFile.Close()
+	// Best-effort: tempPath is an OS temp file already uploaded (or about to
+	// fail trying) — a leftover on Remove failure is harmless temp-dir
+	// clutter, not a correctness issue worth surfacing.
+	defer func() { _ = os.Remove(tempPath) }()
+	if err := uploadSnapshotFile(ctx, provider, tempPath, leaseKey); err != nil {
+		log.Warn("failed to refresh upload lease", "key", leaseKey, "error", err.Error())
+	}
 }
 
 // publishSnapshotManifest serializes snapshot's manifest and uploads it under
@@ -1160,60 +1413,6 @@ func ListSnapshots(provider providers.BackupProvider) ([]Snapshot, error) {
 		return nil, errors.Join(errs...)
 	}
 	return snapshots, errors.Join(errs...)
-}
-
-// DeleteSnapshot prunes snapshots beyond the retention count.
-func DeleteSnapshot(provider providers.BackupProvider, retention int) error {
-	return DeleteSnapshotContext(context.Background(), provider, retention)
-}
-
-// DeleteSnapshotContext prunes snapshots beyond the retention count.
-func DeleteSnapshotContext(ctx context.Context, provider providers.BackupProvider, retention int) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if retention <= 0 {
-		return nil
-	}
-	if err := ctx.Err(); err != nil {
-		return errBackupStopped
-	}
-	snapshots, err := ListSnapshots(provider)
-	if err != nil && len(snapshots) == 0 {
-		return err
-	}
-	if len(snapshots) <= retention {
-		return err
-	}
-
-	var errs []error
-
-	toDelete := snapshots[:len(snapshots)-retention]
-	for _, snapshot := range toDelete {
-		if err := ctx.Err(); err != nil {
-			return errBackupStopped
-		}
-		items, listErr := listSnapshotPrefixItems(provider, snapshot.ID)
-		if listErr != nil {
-			listErr = fmt.Errorf("failed to list snapshot %s: %w", snapshot.ID, listErr)
-			errs = append(errs, listErr)
-			log.Warn("snapshot list failed", "snapshotId", snapshot.ID, "error", listErr.Error())
-			continue
-		}
-
-		for _, item := range items {
-			if err := ctx.Err(); err != nil {
-				return errBackupStopped
-			}
-			if delErr := provider.Delete(item); delErr != nil {
-				delErr = fmt.Errorf("failed to delete %s: %w", item, delErr)
-				errs = append(errs, delErr)
-				log.Warn("snapshot delete failed", "item", item, "error", delErr.Error())
-			}
-		}
-	}
-
-	return errors.Join(err, errors.Join(errs...))
 }
 
 func listSnapshotPrefixItems(provider providers.BackupProvider, snapshotID string) ([]string, error) {
