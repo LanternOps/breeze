@@ -99,25 +99,29 @@ func (p *LocalProvider) Download(remotePath, localPath string) error {
 	if err != nil {
 		return err
 	}
+	// Positively confirm the SOURCE object is absent before attempting
+	// anything else. copyFileContext/decompressFile also touch the
+	// destination side (os.Create, os.Chtimes) after this point, and their
+	// own fmt.Errorf wrapping would let a DESTINATION-side ENOENT (a
+	// concurrently-removed destination directory, however unlikely) also
+	// satisfy errors.Is(_, fs.ErrNotExist) — which must never be classified
+	// the same as "the requested remote object doesn't exist" (the
+	// fail-open bug ErrObjectNotFound exists to prevent; see
+	// fetchPublishedManifest's three-state contract).
+	if _, statErr := os.Stat(srcPath); statErr != nil {
+		if errors.Is(statErr, fs.ErrNotExist) {
+			return fmt.Errorf("%w: %s", ErrObjectNotFound, statErr)
+		}
+		return fmt.Errorf("failed to stat local backup object: %w", statErr)
+	}
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return fmt.Errorf("failed to create destination directory: %w", err)
 	}
 
-	var downloadErr error
 	if strings.HasSuffix(remotePath, ".gz") {
-		downloadErr = decompressFile(srcPath, localPath)
-	} else {
-		downloadErr = copyFileContext(context.Background(), srcPath, localPath)
+		return decompressFile(srcPath, localPath)
 	}
-	if downloadErr != nil && errors.Is(downloadErr, fs.ErrNotExist) {
-		// %w wrapping through decompressFile/copyFileContext's own
-		// fmt.Errorf calls preserves the underlying os.PathError, so
-		// errors.Is against fs.ErrNotExist still sees through the chain —
-		// this positively confirms the source object is absent, not merely
-		// that SOME step failed.
-		return fmt.Errorf("%w: %s", ErrObjectNotFound, downloadErr)
-	}
-	return downloadErr
+	return copyFileContext(context.Background(), srcPath, localPath)
 }
 
 // List enumerates files under the given prefix.

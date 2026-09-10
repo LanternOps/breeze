@@ -572,10 +572,14 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// window keeps extending for a legitimately slow multi-day single-file
 	// upload. leaseCtx (derived from ctx) is cancelled by stopLeaseRefresh —
 	// called exactly once via leaseStopOnce, on completion or ctx
-	// cancellation — which immediately interrupts any in-flight refresh
-	// rather than waiting out its 60s bound. Skipped entirely by the
-	// resume-already-published shortcut above, since that path returns
-	// before this point.
+	// cancellation — cancelling leaseCtx immediately signals any in-flight
+	// refresh to stop and unblocks the NEXT select iteration without
+	// waiting out the full 60s bound; a refresh already inside a plain
+	// Upload (a provider with no UploadContext, e.g. leaseGate's fallback,
+	// mirroring uploadSnapshotFile's own pre-existing trade-off) still runs
+	// to completion since a plain Upload has no cancellation hook. Skipped
+	// entirely by the resume-already-published shortcut above, since that
+	// path returns before this point.
 	leaseKey := path.Join(prefix, "upload.lease")
 	leaseCtx, leaseCancel := context.WithCancel(ctx)
 	leaseDone := make(chan struct{})
@@ -650,6 +654,12 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// conditional on journal == nil.
 	abortStopped := func() (*Snapshot, error) {
 		if journal == nil {
+			// Stop the lease-refresh ticker BEFORE cleanup, not after (via
+			// the deferred stopLeaseRefresh() at the top of this function):
+			// a ticker fire racing cleanupSnapshotPrefix would re-PUT
+			// upload.lease into the prefix cleanup just emptied, leaving an
+			// orphan object behind and defeating the point of cleaning up.
+			stopLeaseRefresh()
 			cleanupSnapshotPrefix(provider, snapshot.ID)
 		}
 		return nil, errBackupStopped
@@ -694,7 +704,10 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		if len(snapshot.Files) == 0 {
 			// Nothing landed, so there is no restore point to preserve and the
 			// prefix holds no recoverable data. Same disposal as any other
-			// journal-less abort.
+			// journal-less abort. Stop the lease ticker BEFORE cleanup for the
+			// same reason as abortStopped above — a racing refresh would
+			// re-create the prefix cleanup just emptied.
+			stopLeaseRefresh()
 			cleanupSnapshotPrefix(provider, snapshot.ID)
 			return nil, detail
 		}

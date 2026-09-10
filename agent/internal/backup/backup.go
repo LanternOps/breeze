@@ -486,6 +486,25 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			journal = nil
 		}
 	}
+	// The journal is now open earlier than it used to be (before VSS/scan,
+	// P2 fix) — a stop/failure between here and createSnapshotWithProgress's
+	// call site (VSS ctx cancellation, a scan/system-state failure, the
+	// resume-shortcut's own early returns) would otherwise leak the open
+	// file descriptor and leave an unresolved journal on disk. journalOwned
+	// flips true only once the journal's fd lifecycle has been handed off
+	// (to createSnapshotWithProgress, or resolved directly by the
+	// resume-shortcut's own Complete() call below); every other exit path
+	// closes it here via Abandon() (idempotent alongside Complete() — both
+	// just Close() the file; a resumable journal with zero new entries is
+	// harmless to leave for pickup on the next run).
+	journalOwned := false
+	if journal != nil {
+		defer func() {
+			if !journalOwned {
+				journal.Abandon()
+			}
+		}()
+	}
 	if journal != nil {
 		if staleID, ok := journal.StaleSnapshotID(); ok {
 			// StaleSnapshotID covers both an actually-stale (>journalMaxAge)
@@ -536,6 +555,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			if err := journal.Complete(); err != nil {
 				log.Warn("failed to remove completed checkpoint journal", "error", err.Error())
 			}
+			journalOwned = true
 			job.Status = jobStatusCompleted
 			job.CompletedAt = time.Now().UTC()
 			job.Snapshot = existing
@@ -898,6 +918,11 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			journal:               journal,
 		}
 	}
+	// Ownership of the journal's fd lifecycle transfers to
+	// createSnapshotWithProgress from here on (it has its own
+	// completed/Abandon defer) — this function's defer above must not also
+	// Abandon() it out from under that call.
+	journalOwned = true
 	snapshot, snapErr := createSnapshotWithProgress(runCtx, uploadProvider, files, progressFn, journal, prevSnapshot, sourceLiveness, runIdentity)
 	if errors.Is(snapErr, errBackupStopped) {
 		return stopBackupRun()

@@ -696,3 +696,20 @@ func TestManagerFromBackupRunPayload_RejectsServerOwnedModeWithoutLease(t *testi
 		})
 	}
 }
+
+// TestManagerFromBackupRunPayload_RejectsLeaseWithoutBaseSnapshotID is the
+// symmetric case of TestManagerFromBackupRunPayload_RejectsServerOwnedModeWithoutLease
+// (review finding, D18 §3.1): a payload carrying publishLeaseExpiresAt but
+// no baseSnapshotId field at all would otherwise silently fall back to
+// legacy (fully unfenced) mode instead of getting the publish-lease gate
+// its own lease implies it wants.
+func TestManagerFromBackupRunPayload_RejectsLeaseWithoutBaseSnapshotID(t *testing.T) {
+	payload := `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"publishLeaseExpiresAt":"2026-09-16T00:00:00Z"}`
+	mgr, err := managerFromBackupRunPayload(json.RawMessage(payload))
+	if err == nil {
+		t.Fatal("expected an error rejecting a lease with no baseSnapshotId")
+	}
+	if mgr != nil {
+		t.Fatal("expected a nil manager on rejection")
+	}
+}

@@ -2095,3 +2095,88 @@ func TestCreateSnapshot_UploadLease_RefreshedDuringUploadThenDeletedAfterPublish
 		t.Error("expected exactly one Delete call for upload.lease after publish")
 	}
 }
+
+// raceDetectProvider fails every real-file Upload (forcing abortSourceGone's
+// zero-files branch, which is reached via a sourceLiveness failure rather
+// than ctx cancellation — so unlike abortStopped, nothing else kills the
+// lease-refresh ticker as a side effect of the abort trigger itself) and
+// deterministically detects whether a lease-key Upload ever lands WHILE
+// cleanupSnapshotPrefix's List call is in flight — the property that must
+// be impossible once stopLeaseRefresh() runs (and fully blocks until the
+// ticker goroutine has exited) BEFORE cleanup starts, and is otherwise
+// reachable given a wide-enough List window and a short ticker interval.
+type raceDetectProvider struct {
+	*mockProvider
+	mu                sync.Mutex
+	listInFlight      bool
+	violationDetected bool
+	listDelay         time.Duration
+}
+
+func (p *raceDetectProvider) Upload(localPath, remotePath string) error {
+	if strings.HasSuffix(remotePath, "/upload.lease") {
+		p.mu.Lock()
+		if p.listInFlight {
+			p.violationDetected = true
+		}
+		p.mu.Unlock()
+		return p.mockProvider.Upload(localPath, remotePath)
+	}
+	if isManifestPath(remotePath) {
+		return p.mockProvider.Upload(localPath, remotePath)
+	}
+	return errors.New("destination refused the object")
+}
+
+func (p *raceDetectProvider) List(prefix string) ([]string, error) {
+	p.mu.Lock()
+	p.listInFlight = true
+	p.mu.Unlock()
+	time.Sleep(p.listDelay)
+	p.mu.Lock()
+	p.listInFlight = false
+	p.mu.Unlock()
+	return p.mockProvider.List(prefix)
+}
+
+func (p *raceDetectProvider) sawViolation() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.violationDetected
+}
+
+func TestAbortSourceGone_StopsLeaseRefreshBeforeCleanup_NoOrphanLeaseAfterAbort(t *testing.T) {
+	restoreInterval := setUploadLeaseIntervalForTest(2 * time.Millisecond)
+	defer restoreInterval()
+
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content-one")
+	backing := newMockProvider()
+	provider := &raceDetectProvider{
+		mockProvider: backing,
+		// Wide enough, relative to the 2ms ticker interval, that an
+		// unfixed implementation (ticker still alive during cleanup)
+		// reliably lands at least one Upload while listInFlight is true.
+		listDelay: 100 * time.Millisecond,
+	}
+	liveness := func(string) error { return errSourceSnapshotGone }
+
+	files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 11, modTime: time.Now()}}
+	snap, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, nil, liveness)
+	if !errors.Is(err, errSourceSnapshotGone) {
+		t.Fatalf("err = %v, want errSourceSnapshotGone", err)
+	}
+	if snap != nil {
+		t.Fatalf("expected nil snapshot (zero files landed), got %+v", snap)
+	}
+
+	if provider.sawViolation() {
+		t.Fatal("a lease-key Upload landed while cleanupSnapshotPrefix's List was in flight — " +
+			"the lease-refresh ticker must be fully stopped (stopLeaseRefresh, blocking) before cleanup starts")
+	}
+	for key := range backing.files {
+		if strings.HasSuffix(key, "/upload.lease") {
+			t.Fatalf("upload.lease was resurrected after abort cleanup ran: %s", key)
+		}
+	}
+}

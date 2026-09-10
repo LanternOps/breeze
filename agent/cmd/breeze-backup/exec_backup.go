@@ -145,6 +145,18 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	if p.BaseSnapshotID != nil && publishLeaseExpiresAt.IsZero() {
 		return nil, fmt.Errorf("invalid backup_run payload: baseSnapshotId is present (server-owned mode) but publishLeaseExpiresAt is missing, empty, or zero")
 	}
+	// Symmetric defense-in-depth (review finding): the leaseGate installs
+	// on BaseSnapshotID != nil alone (backup.go), never on the lease value,
+	// so a payload that sent a non-zero lease WITHOUT baseSnapshotId would
+	// otherwise silently fall back to fully-unfenced legacy mode instead of
+	// getting the publish fence its own lease implies it wants. This can
+	// only happen if a dispatching server has a bug (the protocol ties the
+	// two together — baseSnapshotId's presence, even as "", IS the
+	// server-owned-mode switch per D18 §3.1), but reject it loudly here
+	// rather than silently downgrading to legacy/ungated.
+	if p.BaseSnapshotID == nil && !publishLeaseExpiresAt.IsZero() {
+		return nil, fmt.Errorf("invalid backup_run payload: publishLeaseExpiresAt is present but baseSnapshotId is absent (server-owned mode requires both fields together)")
+	}
 	// vssEnabled defaults to on for server-dispatched Windows file backups so
 	// locked files (open documents, DB files) aren't silently skipped — VSS
 	// failure is already non-fatal (backup.go's RunBackupWithExcludes proceeds
