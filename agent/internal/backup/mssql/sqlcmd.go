@@ -174,6 +174,47 @@ var sqlcmdFallbackPaths = []string{
 // Windows test runner.
 var findSqlcmd = defaultFindSqlcmd
 
+// parseSqlcmdSingleValue extracts the first non-empty line from sqlcmd
+// output that isn't a header separator ("---") or a row-count message
+// ("(1 rows affected)") — the shape of any single-column, single-row
+// sqlcmd query run through runSqlcmd. Shared by discovery.go's
+// enrichInstance and backupcompression.go/backuptarget.go's SERVERPROPERTY
+// queries.
+//
+// Callers that use this to pull out a value meant for further use (as
+// opposed to just logging it) must check containsSqlError(output) first:
+// a T-SQL error rides home on a successful (err == nil) sqlcmd exit just
+// like a real result does, and its "Msg NNNN, Level ..." line doesn't
+// start with "-" or "(" either, so this function alone can't tell a
+// SERVERPROPERTY value apart from an error message.
+func parseSqlcmdSingleValue(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "(") {
+			return line
+		}
+	}
+	return ""
+}
+
+// containsSqlError checks sqlcmd output for error indicators.
+func containsSqlError(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "msg ") && strings.Contains(lower, "level ") && strings.Contains(lower, "state ")
+}
+
+// extractSqlError pulls the first error message from sqlcmd output.
+func extractSqlError(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "msg ") && strings.Contains(lower, "level ") {
+			return line
+		}
+	}
+	return "unknown SQL error"
+}
+
 // defaultFindSqlcmd locates sqlcmd.exe on PATH or in known install
 // directories.
 func defaultFindSqlcmd() (string, error) {

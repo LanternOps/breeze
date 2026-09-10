@@ -24,22 +24,20 @@ func validateSQLIdentifier(name string) error {
 	return nil
 }
 
-// validateBackupPath ensures a path is absolute and does not contain traversal sequences.
-func validateBackupPath(path string) error {
-	cleaned := filepath.Clean(path)
-	if strings.Contains(cleaned, "..") {
-		return fmt.Errorf("path traversal not allowed: %s", path)
-	}
-	if !filepath.IsAbs(cleaned) {
-		return fmt.Errorf("backup path must be absolute: %s", path)
-	}
-	return nil
-}
-
 // RunBackup executes a SQL Server backup via sqlcmd.
 //
 // Supported backupType values: "full", "differential", "log".
-// outputPath is the directory where the .bak/.trn file will be written.
+//
+// outputPath is accepted for source compatibility with existing callers
+// (it used to be the directory the Breeze helper's own process wrote the
+// backup file into) but is no longer used to place the file: BACKUP
+// DATABASE/LOG is executed by the SQL Server service, not the Breeze
+// helper, so the file has to land somewhere that service's own account can
+// open — which the helper's process-local staging directory generally is
+// not (D23: the helper runs as SYSTEM, whose os.TempDir() resolves to
+// C:\Windows\SystemTemp, closed to the SQL Server service account). See
+// resolveBackupTargetDir, which RunBackup uses instead.
+//
 // Returns a BackupResult with file location and LSN chain info.
 func RunBackup(instance, database, backupType, outputPath string) (*BackupResult, error) {
 	if instance == "" {
@@ -48,24 +46,16 @@ func RunBackup(instance, database, backupType, outputPath string) (*BackupResult
 	if database == "" {
 		return nil, fmt.Errorf("%w: database name is required", ErrBackupFailed)
 	}
-	if outputPath == "" {
-		return nil, fmt.Errorf("%w: output path is required", ErrBackupFailed)
-	}
 	if err := validateSQLIdentifier(instance); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrBackupFailed, err)
 	}
 	if err := validateSQLIdentifier(database); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrBackupFailed, err)
 	}
-	if err := validateBackupPath(outputPath); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrBackupFailed, err)
-	}
 
 	start := time.Now()
 	serverName := buildServerName(instance)
 
-	// Build backup filename
-	timestamp := time.Now().Format("20060102_150405")
 	var ext string
 	switch backupType {
 	case "full":
@@ -77,24 +67,33 @@ func RunBackup(instance, database, backupType, outputPath string) (*BackupResult
 	default:
 		return nil, fmt.Errorf("%w: unsupported backup type %q", ErrBackupFailed, backupType)
 	}
-	filename := fmt.Sprintf("%s_%s_%s%s", database, backupType, timestamp, ext)
-	backupFile := filepath.Join(outputPath, filename)
 
-	// Ensure output directory exists
-	if err := os.MkdirAll(outputPath, 0o755); err != nil {
-		return nil, fmt.Errorf("%w: create output dir: %v", ErrBackupFailed, err)
+	targetDir, err := resolveBackupTargetDir(instance, serverName)
+	if err != nil {
+		return nil, fmt.Errorf("%w: resolve backup target directory: %v", ErrBackupFailed, err)
 	}
 
-	// Build T-SQL
-	query := buildBackupQuery(database, backupFile, backupType)
+	timestamp := time.Now().Format("20060102_150405")
+	filename := fmt.Sprintf("%s_%s_%s%s", database, backupType, timestamp, ext)
+	backupFile := filepath.Join(targetDir, filename)
+
+	edition, editionErr := queryEdition(serverName)
+	if editionErr != nil {
+		slog.Warn("mssql: failed to determine edition for compression decision; will attempt WITH COMPRESSION and fall back on Msg 1844",
+			"instance", instance, "error", editionErr.Error())
+	}
+	includeCompression := !isExpressEdition(edition)
+
 	slog.Info("mssql backup starting",
 		"instance", instance,
 		"database", database,
 		"type", backupType,
 		"file", backupFile,
+		"edition", edition,
+		"compression", includeCompression,
 	)
 
-	out, err := runSqlcmd(serverName, query)
+	out, compressed, err := executeBackupStatement(serverName, database, backupFile, backupType, includeCompression)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrBackupFailed, err)
 	}
@@ -118,7 +117,7 @@ func RunBackup(instance, database, backupType, outputPath string) (*BackupResult
 		BackupType:   backupType,
 		BackupFile:   backupFile,
 		SizeBytes:    sizeBytes,
-		Compressed:   true,
+		Compressed:   compressed,
 		DurationMs:   duration.Milliseconds(),
 	}
 
@@ -140,55 +139,18 @@ func RunBackup(instance, database, backupType, outputPath string) (*BackupResult
 		"type", backupType,
 		"file", backupFile,
 		"sizeBytes", sizeBytes,
+		"compressed", compressed,
 		"durationMs", duration.Milliseconds(),
 	)
 
 	return result, nil
 }
 
-// buildBackupQuery constructs the T-SQL BACKUP statement.
-func buildBackupQuery(database, backupFile, backupType string) string {
-	escapedDB := strings.ReplaceAll(database, "]", "]]")
-	escapedFile := strings.ReplaceAll(backupFile, "'", "''")
-
-	switch backupType {
-	case "full":
-		return fmt.Sprintf(
-			"BACKUP DATABASE [%s] TO DISK='%s' WITH COMPRESSION, INIT, STATS=10",
-			escapedDB, escapedFile,
-		)
-	case "differential":
-		return fmt.Sprintf(
-			"BACKUP DATABASE [%s] TO DISK='%s' WITH DIFFERENTIAL, COMPRESSION, INIT, STATS=10",
-			escapedDB, escapedFile,
-		)
-	case "log":
-		return fmt.Sprintf(
-			"BACKUP LOG [%s] TO DISK='%s' WITH COMPRESSION, INIT, STATS=10",
-			escapedDB, escapedFile,
-		)
-	default:
-		return ""
-	}
-}
-
-// containsSqlError checks sqlcmd output for error indicators.
-func containsSqlError(output string) bool {
-	lower := strings.ToLower(output)
-	return strings.Contains(lower, "msg ") && strings.Contains(lower, "level ") && strings.Contains(lower, "state ")
-}
-
-// extractSqlError pulls the first error message from sqlcmd output.
-func extractSqlError(output string) string {
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		lower := strings.ToLower(line)
-		if strings.Contains(lower, "msg ") && strings.Contains(lower, "level ") {
-			return line
-		}
-	}
-	return "unknown SQL error"
-}
+// containsSqlError and extractSqlError (generic sqlcmd-output error
+// detection, used by backup.go and restore.go) now live in sqlcmd.go, tag-
+// neutral like the rest of the sqlcmd output-parsing helpers, since
+// backuptarget.go needs them too to tell a real SERVERPROPERTY value apart
+// from a T-SQL error message riding in on the same successful-exit output.
 
 // parseLSNInfo extracts LSN values from RESTORE HEADERONLY output.
 func parseLSNInfo(output string, result *BackupResult) {

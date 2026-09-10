@@ -289,21 +289,10 @@ func buildServerName(instanceName string) string {
 	return `.\` + instanceName
 }
 
-// runSqlcmd and findSqlcmd (the -C trust-cert fallback and sqlcmd.exe
-// lookup path list) now live in sqlcmd.go, shared with backup.go and
-// restore.go, and carry no build tag so their logic has real test coverage
-// on every platform.
-
-// parseSqlcmdSingleValue extracts the first non-empty line from sqlcmd output.
-func parseSqlcmdSingleValue(output string) string {
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && !strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "(") {
-			return line
-		}
-	}
-	return ""
-}
+// runSqlcmd, findSqlcmd (the -C trust-cert fallback and sqlcmd.exe lookup
+// path list), and parseSqlcmdSingleValue now live in sqlcmd.go, shared with
+// backup.go and restore.go, and carry no build tag so their logic has real
+// test coverage on every platform.
 
 // parseDatabaseList parses the tabular output of the database query.
 func parseDatabaseList(output string) []SQLDatabase {
