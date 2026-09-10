@@ -47,17 +47,26 @@ const MFA_REQUIRED_ERROR = JSON.stringify({ error: 'MFA required' });
 
 /**
  * Match the HTTP `requireMfa()` boundary for config-policy mutations reached
- * through AI or MCP instead of a Hono route. Interactive user sessions must
- * carry the live MFA claim. Autonomous agents cannot substitute an approval
- * envelope for that claim, just as `requireMfa()` rejects an `ai_agent`
- * principal before inspecting its token. API-key and OAuth MCP callers retain
- * the product-wide `ENABLE_2FA=false` behavior through `hasSatisfiedMfa`.
+ * through AI or MCP instead of a Hono route: a human session must carry the
+ * live MFA claim before it can change what takes effect across a fleet.
+ *
+ * `ai_agent` principals are EXEMPT, deliberately. `requireMfa()` rejects them
+ * (middleware/auth.ts) because HTTP is not an agent's channel at all — not
+ * because an agent failed an MFA check. An agent never has, and never could
+ * have, a session MFA claim, so deriving its authorization from one would
+ * permanently disable the grantable `config_policies` agent capability
+ * (agentToolCatalog.ts) rather than gate it. An approved agent run's
+ * authorization is the UPSTREAM Tier-3 approval enforced in aiGuardrails; the
+ * maintenance-link machine-principal check below exempts `ai_agent` for exactly
+ * the same reason (RMM-QA-176 D9.3).
+ *
+ * API-key and OAuth MCP callers carry `token: {}` (mcpServer.ts) and so are
+ * denied while `ENABLE_2FA` is on, and retain the product-wide
+ * `ENABLE_2FA=false` behavior through `hasSatisfiedMfa`.
  */
 function configPolicyMutationMfaError(auth: AuthContext): string | null {
-  if (auth.principal?.kind === 'ai_agent' || !hasSatisfiedMfa(auth)) {
-    return MFA_REQUIRED_ERROR;
-  }
-  return null;
+  if (auth.principal?.kind === 'ai_agent') return null;
+  return hasSatisfiedMfa(auth) ? null : MFA_REQUIRED_ERROR;
 }
 
 /**

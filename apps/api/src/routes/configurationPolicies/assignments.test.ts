@@ -52,6 +52,10 @@ vi.mock('../../services/remoteAccessPolicy', () => ({
   invalidateRemoteAccessCache: vi.fn(),
 }));
 
+// ORDERING stand-in for `requireMfa()`: proves the gate runs ahead of every
+// handler body here. What the real gate ACCEPTS (an API-key `token: {}` is not
+// an MFA claim) is asserted in `crud.test.ts`, which mounts the genuine
+// middleware via `importOriginal`.
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),

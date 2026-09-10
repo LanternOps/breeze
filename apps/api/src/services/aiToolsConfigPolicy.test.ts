@@ -243,14 +243,22 @@ describe('configuration policy AI/MCP mutation MFA boundary', () => {
     },
   );
 
-  it('denies autonomous agents consistently with requireMfa middleware', async () => {
-    const output = await tools().get('manage_configuration_policy')!.handler(
-      { action: 'create', name: 'Autonomous policy' },
-      makeAgentAuth(),
-    );
+  it('lets an ai_agent principal through — its authorization is the upstream approval, not a session claim', async () => {
+    // RMM-QA-176 D9.3, restated for the blanket gate: an agent has no session
+    // and can never satisfy `hasSatisfiedMfa`, so an MFA-shaped denial here is
+    // not a gate — it is a permanent shutdown of the grantable
+    // `config_policies` agent capability (agentToolCatalog.ts). The real
+    // authorization for an agent run is the Tier-3 approval in aiGuardrails.
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy' } as any);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'monitoring' } as any);
 
-    expect(JSON.parse(output)).toEqual({ error: 'MFA required' });
-    expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    const output = await tools().get('manage_policy_feature_link')!.handler({
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'monitoring',
+      inlineSettings: { checkIntervalSeconds: 60, watches: [] },
+    }, makeAgentAuth());
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(vi.mocked(addFeatureLink)).toHaveBeenCalled();
   });
 
   it('keeps read-only feature-link listing available without MFA', async () => {
@@ -1211,14 +1219,20 @@ describe('manage_policy_feature_link machine-principal denial (RMM-QA-176 D9.3)'
     expect(vi.mocked(updateFeatureLink)).toHaveBeenCalled();
   });
 
-  it('an ai_agent principal cannot substitute upstream approval for MFA', async () => {
+  it('an ai_agent principal PROCEEDS — approval is upstream, the handler must not hard-deny', async () => {
+    // Inside the web app an escalated call is a normal supervised approval; an
+    // APPROVED run reaching this handler must execute. Hard-denying here would
+    // break the approval workflow the escalation exists to create — and the MFA
+    // gate must not reintroduce that denial by a side door: an agent principal
+    // has no session and can never carry an `mfa` claim, so gating on one would
+    // permanently disable the grantable `config_policies` agent capability.
     vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'maintenance' } as any);
     const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
       action: 'add', configPolicyId: POLICY_ID, featureType: 'maintenance', inlineSettings: MAINTENANCE_SETTINGS,
     }, makeAgentAuth());
 
-    expect(JSON.parse(output).error).toBe('MFA required');
-    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+    expect(JSON.parse(output).success).toBe(true);
+    expect(vi.mocked(addFeatureLink)).toHaveBeenCalled();
   });
 
   it('an unassured api_key principal is denied for a non-maintenance link', async () => {

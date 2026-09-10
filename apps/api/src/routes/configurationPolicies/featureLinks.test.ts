@@ -40,11 +40,12 @@ vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
-// RMM-QA-176: the MFA answer becomes per-test controllable, DEFAULTING TO TRUE
-// so every pre-existing case in this file keeps exactly its current meaning
-// (they are about inline-settings validation and partner-wide scope, not MFA).
-// Before this, `hasSatisfiedMfa: () => true` meant no test in the repo ever
-// exercised this route's MFA branch — for maintenance OR for patch.
+// The MFA answer is per-test controllable, DEFAULTING TO TRUE so every
+// pre-existing case in this file keeps exactly its current meaning (they are
+// about inline-settings validation and partner-wide scope, not MFA).
+// This is an ORDERING stand-in: it proves `requireMfa()` runs ahead of every
+// handler body. What the real gate ACCEPTS is asserted in `crud.test.ts`,
+// which mounts the genuine middleware via `importOriginal`.
 const { mfaState } = vi.hoisted(() => ({ mfaState: { satisfied: true } }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -55,7 +56,6 @@ vi.mock('../../middleware/auth', () => ({
     if (!mfaState.satisfied) return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
     await next();
   }),
-  hasSatisfiedMfa: vi.fn(() => mfaState.satisfied),
 }));
 
 import { featureLinkRoutes } from './featureLinks';
