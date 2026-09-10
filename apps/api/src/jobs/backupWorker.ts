@@ -13,6 +13,7 @@ import {
   backupJobs,
   backupSnapshotFiles,
   backupSnapshots,
+  backupSnapshotRetirements,
   backupConfigs,
   devices,
   configurationPolicies,
@@ -23,11 +24,13 @@ import {
   sqlInstances,
 } from '../db/schema';
 import { recoveryTokens } from '../db/schema/recoveryTokens';
-import { eq, ne, and, sql, isNull, lt, inArray } from 'drizzle-orm';
+import { eq, ne, and, or, desc, gt, sql, isNull, lt, inArray } from 'drizzle-orm';
 import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
 import { getBullMQConnection } from '../services/redis';
 import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
 import type { AgentCommand } from '../routes/agentWs';
+import { resolveBackupBaseLeaseMs } from '../services/backupGcKnobs';
+import { normalizeStorageIdentity } from './backupRetention';
 import {
   cleanupExpiredSnapshots,
   sweepUnreferencedBackupObjects,
@@ -601,6 +604,122 @@ type BackupDispatchPrepare =
     };
 
 /**
+ * D18 §3.1/§3.6: stamps this job's storage_identity (from the providerConfig
+ * actually placed in the dispatch payload) on EVERY dispatched target —
+ * including `hyperv_backup`/`mssql_backup` (review fix: GC must be able to
+ * group those rows by identity too, even though they never carry a base pin)
+ * — and, only when `mode` is `'file'`/`'system_image'`, a FIXED publish-lease
+ * deadline plus, when an eligible incremental-dedupe base exists, a pin on it.
+ * `mode: null` (hyperv/mssql) stamps identity only and returns immediately.
+ *
+ * Lock order is JOB then SNAPSHOT (mirrors the parent-rows-first pattern at
+ * routes/devices/moveOrg.ts:248-253): the UPDATE on backup_jobs below takes
+ * the job row's lock first. The snapshot-row re-check is then done as TWO
+ * separate statements, not one outer-joined `FOR SHARE` — Postgres rejects
+ * `FOR UPDATE`/`FOR SHARE` on the nullable side of an outer join. First,
+ * `FOR SHARE` locks `backup_snapshots` ALONE; only once that lock is held is
+ * `backup_snapshot_retirements` checked with a second, plain (unlocked)
+ * SELECT — safe because by the time the FOR SHARE lock is granted, any
+ * concurrent retention transaction that already inserted a retirement row for
+ * this snapshot has either fully committed (so its retirement row is visible
+ * here) or is blocked behind this same lock (so no retirement can appear
+ * between the two selects). Retention's per-row delete (backupRetention.ts)
+ * takes `FOR UPDATE` on the same snapshot row — whichever side gets there
+ * first wins: the other either sees the live pin (and skips) or finds the row
+ * already gone (and this function falls back to a full run). No FK-column
+ * write happens while a lock from the other table is held (cf. #3911's
+ * key-share deadlock).
+ */
+async function stampDispatchPinAndIdentity(params: {
+  deviceId: string;
+  configId: string;
+  jobId: string;
+  mode: 'file' | 'system_image' | null;
+  provider: string;
+  providerConfig: Record<string, unknown>;
+}): Promise<{ baseSnapshotId: string; publishLeaseExpiresAt: Date | null }> {
+  const storageIdentity = normalizeStorageIdentity(params.provider, params.providerConfig);
+
+  if (params.mode === null) {
+    // hyperv/mssql: identity only — no lease, no pin (spec: pins/leases are
+    // file/system_image only; storage_identity stamping is not).
+    await db.update(backupJobs).set({ storageIdentity }).where(eq(backupJobs.id, params.jobId));
+    return { baseSnapshotId: '', publishLeaseExpiresAt: null };
+  }
+  const mode = params.mode;
+
+  const leaseMs = resolveBackupBaseLeaseMs();
+  const publishLeaseExpiresAt = new Date(Date.now() + leaseMs);
+
+  return db.transaction(async (tx) => {
+    const [candidate] = await tx
+      .select({ id: backupSnapshots.id, snapshotId: backupSnapshots.snapshotId })
+      .from(backupSnapshots)
+      .innerJoin(backupJobs, eq(backupSnapshots.jobId, backupJobs.id))
+      .where(
+        and(
+          eq(backupSnapshots.deviceId, params.deviceId),
+          eq(backupSnapshots.configId, params.configId),
+          mode === 'system_image'
+            ? eq(backupSnapshots.backupType, 'system_image')
+            : or(eq(backupSnapshots.backupType, 'file'), isNull(backupSnapshots.backupType)),
+          or(isNull(backupSnapshots.expiresAt), gt(backupSnapshots.expiresAt, publishLeaseExpiresAt)),
+          eq(backupJobs.status, 'completed'),
+        ),
+      )
+      .orderBy(desc(backupSnapshots.timestamp))
+      .limit(1);
+
+    // Lock order: JOB row first (this UPDATE stamps identity/lease/tentative
+    // pin unconditionally — every dispatched backup_run job gets these).
+    await tx
+      .update(backupJobs)
+      .set({
+        storageIdentity,
+        publishLeaseExpiresAt,
+        baseSnapshotId: candidate?.snapshotId ?? null,
+      })
+      .where(eq(backupJobs.id, params.jobId));
+
+    if (!candidate) {
+      return { baseSnapshotId: '', publishLeaseExpiresAt };
+    }
+
+    // SNAPSHOT row second, locked ALONE (see docstring for why the retirement
+    // check cannot share this statement).
+    const [locked] = await tx
+      .select({ id: backupSnapshots.id })
+      .from(backupSnapshots)
+      .where(eq(backupSnapshots.id, candidate.id))
+      .for('share');
+
+    if (!locked) {
+      // Row already gone — a concurrent retention delete won the race.
+      await tx.update(backupJobs).set({ baseSnapshotId: null }).where(eq(backupJobs.id, params.jobId));
+      return { baseSnapshotId: '', publishLeaseExpiresAt };
+    }
+
+    const [retirement] = await tx
+      .select({ id: backupSnapshotRetirements.id })
+      .from(backupSnapshotRetirements)
+      .where(
+        and(
+          eq(backupSnapshotRetirements.storageIdentity, storageIdentity),
+          eq(backupSnapshotRetirements.snapshotId, candidate.snapshotId),
+        ),
+      )
+      .limit(1);
+
+    if (retirement) {
+      await tx.update(backupJobs).set({ baseSnapshotId: null }).where(eq(backupJobs.id, params.jobId));
+      return { baseSnapshotId: '', publishLeaseExpiresAt };
+    }
+
+    return { baseSnapshotId: candidate.snapshotId, publishLeaseExpiresAt };
+  });
+}
+
+/**
  * Phase 3: resolve the backup mode/targets, build every target's command
  * payload and record its dispatch expectation — all inside ONE short system
  * DB context (#1105). Nothing here calls `dispatchCommandToAgent`; that send
@@ -739,6 +858,18 @@ async function prepareBackupDispatchTargets(
       }
     }
 
+    const dispatchPin = await stampDispatchPinAndIdentity({
+      deviceId: data.deviceId,
+      configId: data.configId,
+      jobId: commandJobId,
+      mode:
+        target.commandType === 'backup_run'
+          ? ((target.payload as Record<string, unknown>).systemImage === true ? 'system_image' : 'file')
+          : null,
+      provider: config.provider,
+      providerConfig: commandProviderConfig,
+    });
+
     const command: AgentCommand = {
       id: commandJobId,
       type: target.commandType,
@@ -757,6 +888,14 @@ async function prepareBackupDispatchTargets(
               required: false,
               mode: 'disabled',
             },
+        // Payload fields stay file/system_image-only (spec §3.1) even though
+        // storage_identity is now stamped for every target above.
+        ...(target.commandType === 'backup_run'
+          ? {
+              baseSnapshotId: dispatchPin.baseSnapshotId,
+              publishLeaseExpiresAt: dispatchPin.publishLeaseExpiresAt!.toISOString(),
+            }
+          : {}),
         ...target.payload,
       },
     };
@@ -1198,4 +1337,7 @@ export const __testOnly = {
   processResults,
   // Exposed for the wave 3.5b (#4084) dispatch-facade migration tests.
   processDispatchBackup,
+  // D18 W01 (#5429): exposed so integration tests can race this real
+  // function against cleanupExpiredSnapshots without hand-rolling its SQL.
+  stampDispatchPinAndIdentity,
 };
