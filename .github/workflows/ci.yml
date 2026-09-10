@@ -155,6 +155,7 @@ jobs:
           bash scripts/check-guided-setup-local-certs-backfill.sh
           bash scripts/check-guided-setup-placeholders.sh
           bash scripts/check-guided-setup-systemd-unit.sh
+          bash scripts/check-guided-setup-signed-image-floor.sh
 
       # docker/Caddyfile.prod is shared by hosted production and every
       # self-hosted install, so the CADDY_LOCAL_CERTS opt-in must be a strict
@@ -1380,6 +1381,11 @@ jobs:
       - name: Download Go dependencies
         working-directory: agent
         run: go mod download
+
+      - name: Test macOS installer
+        if: matrix.goos == 'darwin' && matrix.goarch == 'arm64'
+        working-directory: agent/installer/macos-app
+        run: swift test
 
       - name: Build Agent
         shell: bash
@@ -2792,23 +2798,27 @@ jobs:
       # The installer pins images by BREEZE_VERSION; build this checkout's
       # api/web/portal under that tag so `docker compose up` uses them
       # (the pull for these local-only tags fails, which the installer treats
-      # as non-fatal — the documented bring-your-own-images path). The agent
-      # binaries image is pulled from GHCR like the Smoke Test job does.
-      - name: Build api/web/portal images under the ci-smoke tag
+      # as non-fatal — the documented bring-your-own-images path). Unlike the
+      # Smoke Test / dev-stack jobs, this job runs guided-setup.sh unmodified
+      # against the unmodified docker-compose.yml (no CI override stubbing
+      # binaries-init), so the agent binaries image is a real published
+      # artifact — scripts/smoke-guided-setup.sh's own preflight pulls it
+      # from GHCR before staging.
+      - name: Build api/web/portal images under the synthetic semver tag
         run: |
           set -euo pipefail
           mkdir -p /tmp/guided-smoke-build
-          docker build -f docker/Dockerfile.api -t ghcr.io/lanternops/breeze/api:ci-smoke .             > /tmp/guided-smoke-build/api.log 2>&1 &
+          docker build -f docker/Dockerfile.api -t ghcr.io/lanternops/breeze/api:0.112.0-ci-smoke .             > /tmp/guided-smoke-build/api.log 2>&1 &
           API_PID=$!
-          docker build -f docker/Dockerfile.web --build-arg PUBLIC_API_URL=             -t ghcr.io/lanternops/breeze/web:ci-smoke .             > /tmp/guided-smoke-build/web.log 2>&1 &
+          docker build -f docker/Dockerfile.web --build-arg PUBLIC_API_URL=             -t ghcr.io/lanternops/breeze/web:0.112.0-ci-smoke .             > /tmp/guided-smoke-build/web.log 2>&1 &
           WEB_PID=$!
-          docker build -f apps/portal/Dockerfile --build-arg PORTAL_BASE_PATH=/portal --build-arg PUBLIC_API_URL=             -t ghcr.io/lanternops/breeze/portal:ci-smoke .             > /tmp/guided-smoke-build/portal.log 2>&1 &
+          docker build -f apps/portal/Dockerfile --build-arg PORTAL_BASE_PATH=/portal --build-arg PUBLIC_API_URL=             -t ghcr.io/lanternops/breeze/portal:0.112.0-ci-smoke .             > /tmp/guided-smoke-build/portal.log 2>&1 &
           PORTAL_PID=$!
           FAIL=0
           for pair in "api:${API_PID}" "web:${WEB_PID}" "portal:${PORTAL_PID}"; do
             name="${pair%%:*}"; pid="${pair##*:}"
             if wait "${pid}"; then
-              echo "built ghcr.io/lanternops/breeze/${name}:ci-smoke"
+              echo "built ghcr.io/lanternops/breeze/${name}:0.112.0-ci-smoke"
             else
               echo "::error::docker build failed for ${name}"
               tail -60 "/tmp/guided-smoke-build/${name}.log"

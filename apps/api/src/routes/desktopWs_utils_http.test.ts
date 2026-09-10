@@ -141,6 +141,28 @@ vi.mock('../services/rate-limit', () => ({
   })),
 }));
 
+vi.mock('../services/remoteRevocationLease', () => ({
+  AGENT_UPGRADE_REQUIRED_CODE: 'agent_upgrade_required',
+  AGENT_UPGRADE_REQUIRED_MESSAGE: 'agent update required',
+  prepareRevocationLeaseForStart: vi.fn(async () => ({
+    ok: true,
+    lease: {
+      token: 'lease-token',
+      expiresAt: 1_000_060_000,
+      hardDeadline: 1_000_600_000,
+      renewEverySec: 25,
+      graceSec: 90,
+    },
+  })),
+  renewRevocationLease: vi.fn(async () => ({
+    status: 'renewed',
+    expiresAt: 1_000_060_000,
+    hardDeadline: 1_000_600_000,
+    renewEverySec: 25,
+    graceSec: 90,
+  })),
+}));
+
 vi.mock('../services/remoteWsAuthorization', () => ({
   authorizeConsumedRemoteWsTicket: vi.fn(),
   authorizeLiveRemoteSessionAccess: authorizeLiveRemoteSessionAccessMock,
@@ -165,6 +187,7 @@ import {
   revokeViewerSession,
 } from '../services/viewerTokenRevocation';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
+import { renewRevocationLease } from '../services/remoteRevocationLease';
 import {
   handleDesktopFrame,
   registerDesktopFrameCallback,
@@ -1023,4 +1046,88 @@ describe('desktopWs', () => {
     });
   });
 
+});
+
+// ---------------------------------------------------------------------------
+// Viewer-token revocation-lease renewal
+// ---------------------------------------------------------------------------
+
+describe('POST /:id/viewer/lease/renew', () => {
+  const VIEWER_SESSION_ID = SESSION_ID;
+
+  beforeEach(() => {
+    vi.mocked(verifyViewerAccessToken).mockResolvedValue({
+      sub: 'viewer-user',
+      email: 'viewer@example.com',
+      sessionId: VIEWER_SESSION_ID,
+      purpose: 'viewer',
+      jti: 'viewer-jti',
+      iat: 1_000,
+      exp: 2_000,
+    } as never);
+    vi.mocked(isViewerJtiRevoked).mockResolvedValue(false);
+    vi.mocked(renewRevocationLease).mockClear();
+    vi.mocked(renewRevocationLease).mockResolvedValue({
+      status: 'renewed',
+      expiresAt: 111,
+      hardDeadline: 222,
+      renewEverySec: 25,
+      graceSec: 90,
+    } as never);
+  });
+
+  const call = () =>
+    buildApp().request(`/${VIEWER_SESSION_ID}/viewer/lease/renew`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+  it('renews for the session owner and binds the recheck to the token subject', async () => {
+    const res = await call();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      status: 'renewed', expiresAt: 111, hardDeadline: 222, renewEverySec: 25, graceSec: 90,
+    });
+    expect(vi.mocked(renewRevocationLease)).toHaveBeenCalledWith(VIEWER_SESSION_ID, {
+      expectUserId: 'viewer-user',
+    });
+  });
+
+  it('answers 403 with the reason when the recheck revokes', async () => {
+    vi.mocked(renewRevocationLease).mockResolvedValue({
+      status: 'revoked', reason: 'site_scope_lost',
+    } as never);
+    const res = await call();
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ status: 'revoked', reason: 'site_scope_lost' });
+  });
+
+  it('answers 503 lease_unavailable on an infrastructure failure, never a revocation', async () => {
+    vi.mocked(renewRevocationLease).mockResolvedValue({ status: 'unavailable' } as never);
+    const res = await call();
+    expect(res.status).toBe(503);
+    expect((await res.json()).code).toBe('lease_unavailable');
+  });
+
+  it('rejects a token minted for a different session', async () => {
+    vi.mocked(verifyViewerAccessToken).mockResolvedValue({
+      sub: 'viewer-user',
+      email: 'viewer@example.com',
+      sessionId: '99999999-9999-4999-8999-999999999999',
+      purpose: 'viewer',
+      jti: 'viewer-jti',
+      iat: 1_000,
+      exp: 2_000,
+    } as never);
+    const res = await call();
+    expect(res.status).toBe(401);
+    expect(vi.mocked(renewRevocationLease)).not.toHaveBeenCalled();
+  });
+
+  it('rejects a revoked viewer JTI', async () => {
+    vi.mocked(isViewerJtiRevoked).mockResolvedValue(true);
+    const res = await call();
+    expect(res.status).toBe(401);
+    expect(vi.mocked(renewRevocationLease)).not.toHaveBeenCalled();
+  });
 });

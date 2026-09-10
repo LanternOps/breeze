@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import type Redis from 'ioredis';
 import { z } from 'zod';
+import { renewRevocationLease } from '../services/remoteRevocationLease';
 import { eq, and, ne, notInArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
@@ -849,6 +850,14 @@ const backupProgressMessageSchema = z.object({
   type: z.literal('backup_progress'),
   commandId: z.string(),
   progress: z.record(z.string(), z.unknown()).optional(),
+});
+
+// Revocation-lease renewal ping from the agent. Handled on the fast path
+// (before the id-less-frame skip) rather than through agentMessageSchema,
+// alongside terminal_output and update_status.
+const revocationLeaseRenewSchema = z.object({
+  type: z.literal('revocation_lease_renew'),
+  sessionId: z.string().uuid(),
 });
 
 const agentMessageSchema = z.discriminatedUnion('type', [
@@ -2604,6 +2613,62 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             sessionId,
             decodedOutput,
           );
+          return;
+        }
+
+        // Revocation-lease renewal from the agent (fail-closed desktop session
+        // revalidation). The agent renews every 25s over this socket; the API
+        // runs the live authorization recheck and answers on the same socket.
+        //
+        // No `id` on this frame, so it must be handled BEFORE the id-less skip
+        // further down. A superseded socket may not renew: the answer carries
+        // authority to keep a live screen/input session running.
+        if (message?.type === 'revocation_lease_renew') {
+          const parsedRenew = revocationLeaseRenewSchema.safeParse(message);
+          if (!parsedRenew.success) {
+            console.warn(
+              `[AgentWs] Dropping malformed revocation_lease_renew from agent ${agentId}: ` +
+              `${parsedRenew.error.issues[0]?.message ?? 'invalid shape'}`
+            );
+            return;
+          }
+          if (!ownsCurrentAgentSocket(agentId, ws, socketEpoch)) {
+            console.warn(`[AgentWs] Dropping revocation_lease_renew from superseded socket for agent ${agentId}`);
+            return;
+          }
+          const { sessionId: leaseSessionId } = parsedRenew.data;
+          // Bind the renew to the device this socket authenticated as: an agent
+          // must never be able to renew (or learn about) another tenant's
+          // session by guessing a session id.
+          const leaseResult = await renewRevocationLease(leaseSessionId, {
+            expectDeviceId: authenticatedAgent.deviceId,
+          });
+          if (leaseResult.status === 'renewed') {
+            ws.send(JSON.stringify({
+              type: 'revocation_lease',
+              sessionId: leaseSessionId,
+              expiresAt: leaseResult.expiresAt,
+              hardDeadline: leaseResult.hardDeadline,
+              renewEverySec: leaseResult.renewEverySec,
+              graceSec: leaseResult.graceSec,
+            }));
+          } else if (leaseResult.status === 'revoked' || leaseResult.status === 'forbidden') {
+            // `forbidden` is reported as a revocation on purpose: from the
+            // agent's point of view a session it may not renew is a session it
+            // must stop streaming. It reveals nothing about the real session.
+            ws.send(JSON.stringify({
+              type: 'revocation_lease_revoked',
+              sessionId: leaseSessionId,
+              reason: leaseResult.status === 'revoked' ? leaseResult.reason : 'not_authorized',
+            }));
+          } else {
+            // Infrastructure blip: say nothing conclusive and let the agent ride
+            // its grace window. Silence here is the whole point of the grace.
+            ws.send(JSON.stringify({
+              type: 'revocation_lease_unavailable',
+              sessionId: leaseSessionId,
+            }));
+          }
           return;
         }
 

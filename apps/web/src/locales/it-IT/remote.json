@@ -31,6 +31,7 @@
     "dismiss": "Chiudi",
     "downloadFor": "Scarica per {{platform}}",
     "errors": {
+      "agentUpgradeRequired": "Il desktop remoto richiede un aggiornamento dell'agente su questo dispositivo (supporto del lease di revoca della sessione). L'agente si aggiorna automaticamente: di solito si risolve entro un minuto. Terminale e trasferimento file non sono interessati.",
       "connectionFailed": "Connessione non riuscita",
       "createDesktopCode": "Impossibile creare il codice di connessione al desktop",
       "createDesktopSession": "Impossibile creare la sessione desktop",

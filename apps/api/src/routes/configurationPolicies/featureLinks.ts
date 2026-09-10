@@ -13,6 +13,7 @@ import {
 } from '@breeze/shared/validators';
 import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared/constants';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import { PERMISSIONS } from '../../services/permissions';
 import { findOfflineDurationViolation } from '../../services/alertConditions/offlineDuration';
 import {
@@ -30,6 +31,10 @@ import {
   PARTNER_LINKABLE_FEATURE_TYPES,
   isBackupProfileReference,
 } from '../../services/configurationPolicy';
+import {
+  MAX_MAX_SESSION_DURATION_HOURS,
+  MIN_MAX_SESSION_DURATION_HOURS,
+} from '../../services/remoteAccessPolicy';
 import {
   addFeatureLinkSchema,
   updateFeatureLinkSchema,
@@ -112,6 +117,9 @@ featureLinkRoutes.post(
   zValidator('json', addFeatureLinkSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id } = c.req.valid('param');
     const data = c.req.valid('json');
 
@@ -214,6 +222,8 @@ featureLinkRoutes.post(
           400
         );
       }
+      const rangeError = remoteAccessWriteRangeError(parsed.data);
+      if (rangeError) return c.json({ error: rangeError }, 400);
       data.inlineSettings = parsed.data;
     }
 
@@ -307,6 +317,9 @@ featureLinkRoutes.patch(
   zValidator('json', updateFeatureLinkSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id, linkId } = c.req.valid('param');
     const data = c.req.valid('json');
 
@@ -402,6 +415,8 @@ featureLinkRoutes.patch(
             400
           );
         }
+        const rangeError = remoteAccessWriteRangeError(parsed.data);
+        if (rangeError) return c.json({ error: rangeError }, 400);
         data.inlineSettings = parsed.data;
       }
       if (existingLink.featureType === 'onedrive_helper') {
@@ -474,6 +489,9 @@ featureLinkRoutes.delete(
   zValidator('param', linkIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id, linkId } = c.req.valid('param');
 
     const policy = await getConfigPolicy(id, auth);
@@ -523,3 +541,34 @@ featureLinkRoutes.delete(
     return c.json({ success: true });
   }
 );
+
+/**
+ * Write-time range check for `maxSessionDurationHours`.
+ *
+ * Deliberately NOT expressed in the shared Zod schema
+ * (`remoteAccessInlineSettingsSchema` stays `min(0).max(168)`): a parse failure
+ * there discards the WHOLE settings blob — the resolver falls back to DEFAULTS,
+ * `configurationPolicy.ts` throws, and these routes 400 — so tightening it
+ * would turn every legacy policy that stored `0` into a silent re-enable of
+ * every other remote-access gate the policy meant to close. Reads clamp
+ * (`clampSettings`); only WRITES are refused, so an author cannot store a new
+ * out-of-range value.
+ */
+function remoteAccessWriteRangeError(
+  settings: { maxSessionDurationHours?: number } | undefined,
+): string | null {
+  const value = settings?.maxSessionDurationHours;
+  if (value === undefined) return null;
+  if (
+    !Number.isInteger(value)
+    || value < MIN_MAX_SESSION_DURATION_HOURS
+    || value > MAX_MAX_SESSION_DURATION_HOURS
+  ) {
+    return (
+      `maxSessionDurationHours must be a whole number of hours between `
+      + `${MIN_MAX_SESSION_DURATION_HOURS} and ${MAX_MAX_SESSION_DURATION_HOURS}. `
+      + 'Remote desktop sessions are capped at 12 hours and "unlimited" (0) is no longer supported.'
+    );
+  }
+  return null;
+}

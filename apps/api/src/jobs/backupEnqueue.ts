@@ -6,6 +6,9 @@
  */
 
 import { Queue } from 'bullmq';
+import { eq } from 'drizzle-orm';
+import { db } from '../db';
+import { backupConfigs } from '../db/schema';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import {
   backupQueueJobDataSchema,
@@ -138,12 +141,24 @@ export async function enqueueBackupDispatch(
   meta: QueueActorMeta = SYSTEM_DISPATCH_META,
 ): Promise<string> {
   const queue = getBackupQueue();
+  // Site-ceiling gate contract §3: snapshot the config's CURRENT
+  // approval_generation at enqueue time. backupWorker's dispatch precheck
+  // compares this against the freshly-reloaded row and fails the job closed
+  // (backup_config_changed) if the config was edited after this job was
+  // queued — the scheduler's next tick then re-enqueues against the new
+  // generation.
+  const [configRow] = await db
+    .select({ approvalGeneration: backupConfigs.approvalGeneration })
+    .from(backupConfigs)
+    .where(eq(backupConfigs.id, configId))
+    .limit(1);
   const payload = backupQueueJobDataSchema.parse(withQueueMeta({
     type: 'dispatch-backup' as const,
     jobId,
     configId,
     orgId,
     deviceId,
+    configGeneration: configRow?.approvalGeneration,
   }, meta));
   const job = await queue.add(
     'dispatch-backup',

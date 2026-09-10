@@ -58,6 +58,10 @@ Administrators invite users by providing an email address, display name, and rol
     ```
 
     Omit `siteIds` and `deviceGroupIds` to grant access to all sites and device groups within the organisation.
+
+    <Aside type="note" title="Site-restricted users and org-wide settings">
+      A site-restricted technician can still **assign** an existing policy to their own site — that stays governed by the resource's normal write permission (e.g. `devices:write`). But a defined site restriction (including a restriction to zero sites) blocks **creating or editing** the org-wide governance objects themselves: webhooks, alert notification channels, software policies, peripheral (USB/Bluetooth) policies, configuration policies and their feature links, PAM configuration and signer groups, and backup destinations/profiles. These objects have no per-site ownership model — they always apply organisation- or partner-wide — so a technician who can only see one site is never allowed to create or change one, even if their role otherwise grants the write permission. An unrestricted administrator (no `siteIds` set) is unaffected. Attempting a blocked action returns an error asking to contact an unrestricted administrator.
+    </Aside>
   </TabItem>
   <TabItem label="Partner Scope">
     When inviting into a partner (MSP), you specify the **organisation access level**:

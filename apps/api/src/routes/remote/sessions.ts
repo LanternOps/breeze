@@ -42,6 +42,13 @@ import { captureException } from '../../services/sentry';
 import { teardownDisconnectedSessions } from '../../services/remoteSessionTeardown';
 import { normalizeRecordingUrl } from './recordingUrl';
 import { createRemoteSession, RemoteSessionDeniedError } from '../../services/remoteSessionCreate';
+import {
+  AGENT_UPGRADE_REQUIRED_CODE,
+  AGENT_UPGRADE_REQUIRED_MESSAGE,
+  isRevocationLeaseCapable,
+  prepareRevocationLeaseForStart,
+  renewRevocationLease,
+} from '../../services/remoteRevocationLease';
 import { trustDenyBody } from '../../services/partnerTrust';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { remoteSessionStaleCondition } from '../../services/remoteSessionStaleness';
@@ -211,6 +218,27 @@ sessionRoutes.post(
           capability,
           policyName: policyCheck.policyName,
         }, 403);
+      }
+    }
+
+    // Fail fast on an agent that cannot hold a revocation lease. The three
+    // desktop-start dispatch sites gate on this too (that is the authoritative
+    // fail-closed check); doing it here as well means the operator gets the
+    // "agent update required" answer on the click that started it, instead of
+    // a stranded session row and a confusing failure inside the viewer.
+    if (data.type === 'desktop') {
+      let leaseCapable: boolean;
+      try {
+        leaseCapable = await isRevocationLeaseCapable(data.deviceId);
+      } catch (err) {
+        console.error('[remote] Failed to read revocation-lease capability for device', data.deviceId, err);
+        leaseCapable = false;
+      }
+      if (!leaseCapable) {
+        return c.json({
+          error: AGENT_UPGRADE_REQUIRED_MESSAGE,
+          code: AGENT_UPGRADE_REQUIRED_CODE,
+        }, 503);
       }
     }
 
@@ -972,6 +1000,23 @@ sessionRoutes.post(
       getTrustedClientIpOrUndefined(c)
     );
 
+    // Fail-closed revocation lease. Without a lease-capable agent there is no
+    // way to end this peer-to-peer session once authorization changes, so the
+    // start is refused rather than run unrevokable.
+    const leaseResult = await prepareRevocationLeaseForStart(sessionId);
+    if (!leaseResult.ok) {
+      if (leaseResult.reason === 'agent_upgrade_required') {
+        return c.json({
+          error: AGENT_UPGRADE_REQUIRED_MESSAGE,
+          code: AGENT_UPGRADE_REQUIRED_CODE,
+        }, 503);
+      }
+      return c.json({
+        error: 'Unable to authorize this remote session right now. Please try again.',
+        code: 'lease_unavailable',
+      }, 503);
+    }
+
     const agentReachable = sendCommandToAgent(device.agentId, {
       id: startCommandId,
       type: 'start_desktop',
@@ -982,6 +1027,7 @@ sessionRoutes.post(
         clipboard: desktopPolicy.clipboard,
         idleTimeoutMinutes: desktopPolicy.idleTimeoutMinutes,
         maxSessionDurationHours: desktopPolicy.maxSessionDurationHours,
+        revocationLease: leaseResult.lease,
         ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}),
         ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}),
         ...(gpuVendor ? { gpuVendor } : {}),
@@ -1001,6 +1047,58 @@ sessionRoutes.post(
       status: updated.status,
       webrtcOffer: updated.webrtcOffer,
     });
+  }
+);
+
+// POST /remote/sessions/:id/lease/renew - Revocation-lease renewal.
+//
+// The live authorization recheck for a desktop session: session still live,
+// user still active, membership still present, permissions epoch unchanged,
+// device still inside the caller's site ceiling, MFA still satisfied, hard
+// deadline not passed. Session owner only.
+//
+// Answers:
+//   200 { status: 'renewed', ... }            keep streaming
+//   403 { status: 'revoked', reason }         stop NOW (the row is already
+//                                             disconnected and the agent has
+//                                             been signalled through the relay)
+//   503 { code: 'lease_unavailable' }         infrastructure blip — the caller
+//                                             rides its grace window, and the
+//                                             session row is deliberately NOT
+//                                             touched.
+sessionRoutes.post(
+  '/sessions/:id/lease/renew',
+  requireScope('organization', 'partner', 'system'),
+  zValidator('param', sessionIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: sessionId } = c.req.valid('param');
+
+    const result = await renewRevocationLease(sessionId, {
+      // System-scope callers (internal tooling) are not bound to a session
+      // owner; every human caller is.
+      ...(auth.scope === 'system' ? {} : { expectUserId: auth.user.id }),
+    });
+
+    switch (result.status) {
+      case 'renewed':
+        return c.json({
+          status: 'renewed',
+          expiresAt: result.expiresAt,
+          hardDeadline: result.hardDeadline,
+          renewEverySec: result.renewEverySec,
+          graceSec: result.graceSec,
+        });
+      case 'revoked':
+        return c.json({ status: 'revoked', reason: result.reason }, 403);
+      case 'forbidden':
+        return c.json({ error: 'Access denied' }, 403);
+      default:
+        return c.json({
+          error: 'Unable to verify session authorization right now.',
+          code: 'lease_unavailable',
+        }, 503);
+    }
   }
 );
 

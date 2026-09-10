@@ -45,6 +45,7 @@ import {
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { writeAuditEvent } from '../services/auditEvents';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGovernance';
 import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
@@ -1617,6 +1618,9 @@ pamRoutes.put(
   zValidator('json', updateConfigSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const payload = c.req.valid('json');
     const resolvedOrg = resolveOrgIdForWrite(
       auth,
@@ -1742,6 +1746,9 @@ pamRoutes.post(
   zValidator('json', createSignerGroupSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const payload = c.req.valid('json');
     const resolvedOrg = resolveOrgIdForWrite(
       auth,
@@ -1783,6 +1790,9 @@ pamRoutes.patch(
   zValidator('json', updateSignerGroupSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const id = c.req.param('id');
     const payload = c.req.valid('json');
     if (!z.string().guid().safeParse(id).success) {
@@ -1821,6 +1831,9 @@ pamRoutes.patch(
 
 pamRoutes.delete('/signer-groups/:id', requirePamManagePolicy, requireMfa(), async (c) => {
   const auth = c.get('auth');
+  if (!canMutateOrgWideGovernance(auth)) {
+    return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+  }
   const id = c.req.param('id');
   if (!z.string().guid().safeParse(id).success) {
     return c.json({ error: 'Invalid signer group id' }, 400);

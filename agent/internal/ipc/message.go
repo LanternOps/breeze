@@ -76,6 +76,15 @@ const (
 	// helper can differentiate "never got to auth" from "auth was rejected".
 	TypePreAuthReject = "pre_auth_reject"
 
+	// Desktop revocation-lease bridge. A helper-hosted session's SessionManager
+	// has no command WebSocket of its own, so its lease renewals travel over
+	// IPC: the helper asks (desktop_lease_renew), the agent turns that into a
+	// renew on the command socket, and forwards the control plane's answer back
+	// (desktop_lease_update). Without this bridge a helper-hosted session
+	// renews nothing and dies at expiresAt+grace.
+	TypeDesktopLeaseRenew  = "desktop_lease_renew"  // helper -> agent
+	TypeDesktopLeaseUpdate = "desktop_lease_update" // agent -> helper
+
 	// Remote-session consent + banner
 	TypeConsentRequest = "consent_request"
 	TypeConsentResult  = "consent_result"
@@ -328,9 +337,27 @@ type DesktopStartRequest struct {
 	ClipboardViewerToHost   *bool `json:"clipboardViewerToHost,omitempty"`
 	IdleTimeoutMinutes      int   `json:"idleTimeoutMinutes,omitempty"`
 	MaxSessionDurationHours int   `json:"maxSessionDurationHours,omitempty"`
+	// RevocationLease is the server-issued lease this session must keep alive.
+	// The agent process (the only one holding the command WebSocket) performs
+	// the renewals and forwards a revocation to the helper as TypeDesktopStop;
+	// the helper still needs the lease so its own watchdog enforces the hard
+	// deadline and the expiry+grace cutoff locally. Nil is refused by
+	// validateDesktopStartRequest — a session with no lease is unrevokable.
+	RevocationLease *RevocationLease `json:"revocationLease,omitempty"`
 	// Prompt carries the consent/notification configuration for the session.
 	// Nil means no prompt or banner is requested (legacy behaviour).
 	Prompt *DesktopPrompt `json:"prompt,omitempty"`
+}
+
+// RevocationLease is the wire form of a desktop session's revocation lease.
+// Times are epoch milliseconds and intervals are whole seconds so the JSON is
+// identical to what the API ships in the start_desktop payload.
+type RevocationLease struct {
+	Token              string `json:"token"`
+	ExpiresAtUnixMs    int64  `json:"expiresAtUnixMs"`
+	HardDeadlineUnixMs int64  `json:"hardDeadlineUnixMs"`
+	RenewEverySec      int64  `json:"renewEverySec"`
+	GraceSec           int64  `json:"graceSec"`
 }
 
 // DesktopStartResponse is returned by the user helper after creating the
@@ -338,6 +365,30 @@ type DesktopStartRequest struct {
 type DesktopStartResponse struct {
 	SessionID string `json:"sessionId"`
 	Answer    string `json:"answer"`
+}
+
+// DesktopLeaseRenewRequest is sent by a helper that hosts a desktop session,
+// asking the agent to renew that session's revocation lease with the control
+// plane. Unsolicited (no reply on this envelope) — the answer comes back
+// separately as a DesktopLeaseUpdate, because the round trip to the API is far
+// longer than the IPC command timeout and must not hold an IPC slot open.
+type DesktopLeaseRenewRequest struct {
+	SessionID string `json:"sessionId"`
+}
+
+// DesktopLeaseUpdate is the agent forwarding the control plane's answer to a
+// helper-hosted session's lease renewal.
+//
+// Revoked=true means the control plane ended the session; the helper stops it
+// through its normal stop path. Otherwise the deadlines extend the helper's
+// local watchdog, which stays authoritative: it stops the session at
+// expiresAt+grace or the hard deadline whether or not the agent ever answers.
+type DesktopLeaseUpdate struct {
+	SessionID          string `json:"sessionId"`
+	ExpiresAtUnixMs    int64  `json:"expiresAtUnixMs,omitempty"`
+	HardDeadlineUnixMs int64  `json:"hardDeadlineUnixMs,omitempty"`
+	Revoked            bool   `json:"revoked,omitempty"`
+	Reason             string `json:"reason,omitempty"`
 }
 
 // DesktopStopRequest tells the user helper to tear down a desktop session.

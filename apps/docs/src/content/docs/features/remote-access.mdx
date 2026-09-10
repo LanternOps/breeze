@@ -53,6 +53,37 @@ The browser and device negotiate a WebRTC peer-to-peer connection through the Br
 
 Once the P2P connection is active, screen data flows directly between the browser and the agent.
 
+### Session lease and revocation
+
+Because a desktop session is peer-to-peer, screen and input traffic flows straight between the viewer and the device once the connection is up — the Breeze server is no longer in that path. A **session lease** keeps the server in control anyway.
+
+The agent holds a short lease and renews it about every 25 seconds over its existing control connection. Each renewal re-checks, live, that the technician is still allowed to be there:
+
+- the session is still open and the user account is still active;
+- the user is still a member of the customer organisation the device belongs to;
+- their role, role permissions, and site scope have not changed since the session started;
+- the device is still inside their site scope;
+- multi-factor authentication is still satisfied under the current role policy;
+- the session's hard time limit has not been reached.
+
+If any of those checks fails, the session ends within about half a minute: the agent stops capture and input, the viewer shows **Session ended: access revoked**, and the session record is marked disconnected. Removing a technician's membership or changing their role now ends their live sessions immediately as well, rather than only blocking the next one.
+
+If the server is briefly unreachable, the session is **not** dropped — the agent tolerates about 90 seconds of failed renewals before ending the session on its own. That way a short API or network hiccup does not disconnect anyone, while a device that genuinely cannot reach Breeze cannot hold a remote-control session open indefinitely.
+
+<Aside type="caution">
+  **Agent update required.** Only agents that support session leases can start a remote desktop session. If you click **Connect → Desktop** and see *"Remote desktop needs an agent update on this device"*, the agent has not yet reported lease support — agents update themselves automatically, so this normally clears within one heartbeat interval (about a minute). If you pin agent versions in a self-hosted deployment, update the pinned build before your technicians will be able to start desktop sessions again. Remote Terminal, the Files tab, and every other remote tool are unaffected.
+</Aside>
+
+### Session time limits
+
+Every remote desktop session has a hard limit of **12 hours**, enforced both by the server and independently by the agent. A remote-access configuration policy can shorten it through **Max session duration**, but nothing can extend it past 12 hours.
+
+<Aside type="note">
+  "Unlimited" is no longer a valid setting. A policy that stored `0` (formerly "no maximum") or a value above 12 hours now behaves as 12 hours, and saving a new value outside the 1–12 hour range is rejected. Existing policies keep working — they are simply capped.
+</Aside>
+
+The separate **Idle timeout** setting is unchanged, including `0` meaning "no idle timeout".
+
 ### Windows Session 0 Support
 
 When the Breeze agent runs as a Windows service, it operates in Session 0 — an isolated session with no interactive desktop. Standard screen capture APIs (DXGI, GDI) and input injection all fail in Session 0.
@@ -374,6 +405,8 @@ pending → connecting → active → disconnected / failed / denied
 | `disconnected` | Session ended normally — user closed it or the agent reported a clean disconnect |
 | `failed` | Connection could not be established, or an active connection dropped unexpectedly |
 | `denied` | The end user declined the connection at the consent prompt (or the policy's *"When consent can't be asked"* fallback was set to **Block**). The technician sees that the user denied the remote connection. |
+
+A session ended by the lease recheck (see [Session lease and revocation](#session-lease-and-revocation)) becomes `disconnected` with a recorded reason such as `revoked:membership_removed`, `revoked:permissions_changed`, `revoked:site_scope_lost` or `revoked:hard_deadline`, which appears in the session's history entry.
 
 When a session ends (`disconnected` or `failed`), the platform records `durationSeconds` (calculated from start time). The `bytesTransferred` field is available but must be supplied by the caller when ending the session via `POST /remote/sessions/:id/end`.
 

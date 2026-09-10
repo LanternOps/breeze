@@ -2752,6 +2752,16 @@ describe('Audit logging — credential-minting tunnel endpoints', () => {
       agentId: 'agent-abc',
       userEmail: 'test@example.com',
     }]) as any);
+    // createRemoteSession reads users.permissions_epoch as the revocation-lease
+    // baseline; a desktop create without it 503s instead of minting a session
+    // the first renew would revoke.
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ permissionsEpoch: 1 }]),
+        }),
+      }),
+    } as any);
     // db.update (terminate stragglers) then db.insert (new desktop session)
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),

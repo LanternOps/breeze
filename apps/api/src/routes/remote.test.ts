@@ -91,6 +91,29 @@ vi.mock('../services/remoteAccessPolicy', () => ({
   }),
 }));
 
+vi.mock('../services/remoteRevocationLease', () => ({
+  AGENT_UPGRADE_REQUIRED_CODE: 'agent_upgrade_required',
+  AGENT_UPGRADE_REQUIRED_MESSAGE: 'agent update required',
+  isRevocationLeaseCapable: vi.fn(async () => true),
+  prepareRevocationLeaseForStart: vi.fn(async () => ({
+    ok: true,
+    lease: {
+      token: 'lease-token',
+      expiresAt: 1_000_060_000,
+      hardDeadline: 1_000_600_000,
+      renewEverySec: 25,
+      graceSec: 90,
+    },
+  })),
+  renewRevocationLease: vi.fn(async () => ({
+    status: 'renewed',
+    expiresAt: 1,
+    hardDeadline: 2,
+    renewEverySec: 25,
+    graceSec: 90,
+  })),
+}));
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
@@ -270,7 +293,11 @@ describe('remote routes', () => {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([{ count: 0 }])
           })
-        } as any);
+        } as any)
+        // 5. createRemoteSession -> users.permissions_epoch revocation-lease
+        // baseline (a desktop session without it would be unrenewable, so the
+        // create 503s rather than mint one).
+        .mockReturnValueOnce(mockSelectChain([{ permissionsEpoch: 1 }]));
 
       // 1. db.insert for session creation
       // 2. db.insert for audit log

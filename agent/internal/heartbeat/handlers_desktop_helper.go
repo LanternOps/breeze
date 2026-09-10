@@ -257,6 +257,7 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 		ClipboardViewerToHost:   &clipViewerToHost,
 		IdleTimeoutMinutes:      int(policy.IdleTimeout / time.Minute),
 		MaxSessionDurationHours: int(policy.MaxDuration / time.Hour),
+		RevocationLease:         desktop.RevocationLeaseToIPC(policy.RevocationLease),
 	}
 
 	// Only one start may be in flight per desktop session — see

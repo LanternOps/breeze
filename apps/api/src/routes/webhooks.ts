@@ -18,6 +18,8 @@ import {
   redactWebhookHeaders,
 } from '../services/notificationChannelSecrets';
 import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders } from '../services/outboundHeaders';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
+import { bumpApprovalGeneration } from '../services/approvalGeneration';
 
 export const webhookRoutes = new Hono();
 
@@ -28,10 +30,11 @@ type WebhookDeliveryStatus = 'pending' | 'delivered' | 'failed' | 'retrying';
 type WebhookHeaders = Array<{ key: string; value: unknown }>;
 
 type RouteAuth = {
-  scope: 'organization' | 'partner' | 'system' | string;
+  scope: 'organization' | 'partner' | 'system';
   partnerId: string | null;
   orgId: string | null;
   accessibleOrgIds: string[] | null;
+  allowedSiteIds?: string[];
   canAccessOrg: (orgId: string) => boolean;
   user: { id: string; email?: string };
 };
@@ -374,6 +377,9 @@ webhookRoutes.post(
   zValidator('json', createWebhookSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const data = c.req.valid('json');
 
     let orgId = data.orgId;
@@ -475,6 +481,9 @@ webhookRoutes.patch(
   zValidator('json', updateWebhookSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id: webhookId } = c.req.valid('param');
     const data = c.req.valid('json');
 
@@ -502,8 +511,13 @@ webhookRoutes.patch(
       }
     }
 
-    const updatePayload: Partial<typeof webhooksTable.$inferInsert> = {
-      updatedAt: new Date()
+    const updatePayload: Omit<Partial<typeof webhooksTable.$inferInsert>, 'approvalGeneration'> & { approvalGeneration?: SQL } = {
+      updatedAt: new Date(),
+      // Site-ceiling gate contract §3: bump on every PATCH so a queued
+      // delivery carrying the OLD generation can tell it has been
+      // superseded (edited or disabled) and drop rather than deliver
+      // against stale config.
+      approvalGeneration: bumpApprovalGeneration(webhooksTable.approvalGeneration),
     };
 
     if (data.name !== undefined) updatePayload.name = data.name;
@@ -552,6 +566,9 @@ webhookRoutes.delete(
   zValidator('param', webhookIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id: webhookId } = c.req.valid('param');
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
@@ -639,12 +656,22 @@ webhookRoutes.post(
   zValidator('json', testWebhookSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id: webhookId } = c.req.valid('param');
     const data = c.req.valid('json');
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
     if (!webhook) {
       return c.json({ error: 'Webhook not found' }, 404);
+    }
+
+    // A non-active webhook's delivery would just be dropped by the worker's
+    // own generation/status check and recorded as superseded — reject up
+    // front with a clear message instead of queueing a job doomed to no-op.
+    if (webhook.status !== 'active') {
+      return c.json({ error: 'Cannot test a webhook that is not active' }, 409);
     }
 
     const eventType = data.event ?? 'webhook.test';
@@ -688,7 +715,7 @@ webhookRoutes.post(
     };
 
     try {
-      await getWebhookWorker().queueDelivery(toWorkerWebhookConfig(webhook), event as any, delivery.id);
+      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, event as any, delivery.id);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
       const [failedDelivery] = await db
@@ -737,11 +764,20 @@ webhookRoutes.post(
   zValidator('param', webhookRetryParamSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
 const { id: webhookId, deliveryId } = c.req.valid('param');
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
     if (!webhook) {
       return c.json({ error: 'Webhook not found' }, 404);
+    }
+
+    // Same rationale as /test: a non-active webhook's retry would just be
+    // dropped by the worker as superseded — reject up front.
+    if (webhook.status !== 'active') {
+      return c.json({ error: 'Cannot retry delivery for a webhook that is not active' }, 409);
     }
 
     const [delivery] = await db
@@ -797,7 +833,7 @@ const { id: webhookId, deliveryId } = c.req.valid('param');
     };
 
     try {
-      await getWebhookWorker().queueDelivery(toWorkerWebhookConfig(webhook), retryEvent as any, retryDelivery.id);
+      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, retryEvent as any, retryDelivery.id);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
       const [failedRetry] = await db

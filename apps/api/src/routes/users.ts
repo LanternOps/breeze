@@ -1667,7 +1667,23 @@ async function removeMembershipForScope(
         return { deleted: true };
       })
     )
-  );
+  ).then(async (result) => {
+    if (result.deleted) {
+      // Belt, to the epoch advance's braces. The epoch bump above makes the
+      // next revocation-lease renew fail (within ~25s), but that still leaves a
+      // window where a removed member keeps live screen and keyboard control —
+      // so tear their remote sessions down NOW as well. Post-commit: the
+      // membership delete must be durable before the sessions are ended.
+      const torn = await terminateUserRemoteSessions(userId);
+      if (torn === TEARDOWN_FAILED) {
+        console.error(
+          `[users] Remote-session teardown FAILED after membership removal for user ${userId}; ` +
+          'the permissions-epoch recheck remains the only cutoff.'
+        );
+      }
+    }
+    return result;
+  });
 }
 
 userRoutes.delete(
@@ -1863,6 +1879,7 @@ userRoutes.post(
         }
       });
       await clearPermissionCache(userId);
+      await terminateRemoteSessionsAfterRoleChange(userId);
 
       return c.json({ success: true });
     }
@@ -1887,7 +1904,35 @@ userRoutes.post(
       }
     });
     await clearPermissionCache(userId);
+    await terminateRemoteSessionsAfterRoleChange(userId);
 
     return c.json({ success: true });
   }
 );
+
+/**
+ * Belt for a role change, matching the one in `removeMembershipForScope`.
+ *
+ * The `organization_users` / `partner_users` UPDATE already advances the
+ * target's `permissions_epoch` by trigger, so the next revocation-lease renew
+ * (within ~25s) ends any live remote session. Ending it immediately closes that
+ * window: a role change is often exactly the moment somebody's remote-control
+ * rights were meant to stop.
+ *
+ * Best-effort by design — a teardown failure is logged (and reported to Sentry
+ * inside the service) but never fails the role assignment, which has already
+ * committed.
+ */
+async function terminateRemoteSessionsAfterRoleChange(userId: string): Promise<void> {
+  try {
+    const torn = await terminateUserRemoteSessions(userId);
+    if (torn === TEARDOWN_FAILED) {
+      console.error(
+        `[users] Remote-session teardown FAILED after role change for user ${userId}; ` +
+        'the permissions-epoch recheck remains the only cutoff.'
+      );
+    }
+  } catch (err) {
+    console.error(`[users] Remote-session teardown threw after role change for user ${userId}:`, err);
+  }
+}

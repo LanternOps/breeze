@@ -58,7 +58,8 @@ vi.mock('../db/schema', () => ({
     status: 'status',
     createdAt: 'createdAt',
     successCount: 'successCount',
-    failureCount: 'failureCount'
+    failureCount: 'failureCount',
+    approvalGeneration: 'approvalGeneration'
   },
   webhookDeliveries: {
     id: 'id',
@@ -306,7 +307,7 @@ describe('webhook routes', () => {
     expect(body.url).toBe('https://example.com/hook');
   });
 
-  it('decrypts the delivery URL for internal delivery use', async () => {
+  it('queues delivery by webhookId + generation only, never the decrypted URL (site-ceiling gate contract §7E)', async () => {
     const { encryptSecret } = await import('../services/secretCrypto');
     const encryptedUrl = encryptSecret('https://user:pass@example.com/deliver?token=abc') as string;
     expect(encryptedUrl).toMatch(/^enc:v[123]:/);
@@ -325,7 +326,8 @@ describe('webhook routes', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
         lastDeliveryAt: null,
-        retryPolicy: null
+        retryPolicy: null,
+        approvalGeneration: 1
       }
     ]) as any);
 
@@ -354,9 +356,13 @@ describe('webhook routes', () => {
     });
 
     expect(res.status).toBe(202);
-    // The worker config passed to queueDelivery must carry the decrypted URL.
-    const workerConfig = (queueDeliveryMock.mock.calls as any[])[0][0];
-    expect(workerConfig.url).toBe('https://user:pass@example.com/deliver?token=abc');
+    // The decrypted url/secret never leave this route on the enqueue path —
+    // only the webhook's identity and generation snapshot. The worker
+    // reloads and decrypts the row itself, at send time.
+    const call = (queueDeliveryMock.mock.calls as any[])[0];
+    expect(call[0]).toBe(WEBHOOK_ID_1);
+    expect(call[1]).toBe(1);
+    expect(JSON.stringify(call)).not.toContain('user:pass');
   });
 
   it('keeps the stored URL when an update re-submits the masked form', async () => {
@@ -413,6 +419,63 @@ describe('webhook routes', () => {
     const setPayload = (updateValuesSpy.mock.calls as any[])[0][0];
     expect(setPayload.url).toBeUndefined();
     expect(setPayload.name).toBe('Renamed');
+  });
+
+  // Site-ceiling gate contract §3: every PATCH must bump approval_generation
+  // so an already-queued delivery carrying the OLD generation can tell it
+  // has been superseded by this edit and drop rather than deliver stale
+  // config. Before this fix, PATCH never touched the column, so
+  // `row.approvalGeneration !== job.generation` inside the worker could
+  // never be true.
+  it('bumps approval_generation on every PATCH (site-ceiling gate contract §3)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([
+      {
+        id: WEBHOOK_ID_1,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        name: 'Device Alerts',
+        url: 'https://example.com/webhook',
+        secret: 'secret-123',
+        events: ['device.created'],
+        headers: [],
+        status: 'active',
+        createdBy: 'user-123',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        lastDeliveryAt: null,
+        approvalGeneration: 1
+      }
+    ]) as any);
+
+    const updateValuesSpy2 = vi.fn(() => ({
+      where: vi.fn(() => ({
+        returning: vi.fn(() => Promise.resolve([{
+          id: WEBHOOK_ID_1,
+          orgId: '11111111-1111-1111-1111-111111111111',
+          name: 'Renamed Again',
+          url: 'https://example.com/webhook',
+          secret: 'secret-123',
+          events: ['device.created'],
+          headers: [],
+          status: 'active',
+          createdBy: 'user-123',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          lastDeliveryAt: null,
+          approvalGeneration: 2
+        }]))
+      }))
+    }));
+    vi.mocked(db.update).mockReturnValueOnce({ set: updateValuesSpy2 } as any);
+
+    const res = await app.request(`/webhooks/${WEBHOOK_ID_1}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ name: 'Renamed Again' })
+    });
+
+    expect(res.status).toBe(200);
+    const setPayload = (updateValuesSpy2.mock.calls as any[])[0][0];
+    expect(setPayload.approvalGeneration).toBeDefined();
   });
 
   it('rejects unsafe webhook URLs', async () => {
@@ -567,6 +630,39 @@ describe('webhook routes', () => {
     expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
   });
 
+  // Site-ceiling gate contract §3/finding 6: a paused webhook's test job
+  // would just be recorded superseded by the worker's generation check —
+  // reject up front with a clear 409 instead of queueing a job doomed to be
+  // dropped.
+  it('rejects /test with 409 when the webhook is not active', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([
+      {
+        id: WEBHOOK_ID_1,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        name: 'Device Alerts',
+        url: 'https://example.com/webhook',
+        secret: 'secret-123',
+        events: ['device.created'],
+        headers: [],
+        status: 'disabled',
+        createdBy: 'user-123',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        lastDeliveryAt: null,
+        retryPolicy: null
+      }
+    ]) as any);
+
+    const res = await app.request(`/webhooks/${WEBHOOK_ID_1}/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ payload: { test: true } })
+    });
+
+    expect(res.status).toBe(409);
+    expect(queueDeliveryMock).not.toHaveBeenCalled();
+  });
+
   it('rejects retry when delivery is not failed', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(mockSelectLimit([
@@ -611,6 +707,34 @@ describe('webhook routes', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toBe('Only failed deliveries can be retried');
+  });
+
+  it('rejects retry with 409 when the webhook is not active', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([
+      {
+        id: WEBHOOK_ID_1,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        name: 'Device Alerts',
+        url: 'https://example.com/webhook',
+        secret: 'secret-123',
+        events: ['device.created'],
+        headers: [],
+        status: 'error',
+        createdBy: 'user-123',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        lastDeliveryAt: null,
+        retryPolicy: null
+      }
+    ]) as any);
+
+    const res = await app.request(`/webhooks/${WEBHOOK_ID_1}/retry/${DELIVERY_ID_1}`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(409);
+    expect(queueDeliveryMock).not.toHaveBeenCalled();
   });
 
   it('rejects webhook mutations when permission check fails', async () => {

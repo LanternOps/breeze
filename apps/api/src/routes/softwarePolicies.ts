@@ -17,6 +17,7 @@ import {
   recordSoftwarePolicyAudit,
 } from '../services/softwarePolicyService';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { captureException } from '../services/sentry';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { requestPamCleanup } from '../services/pamActuationLifecycle';
@@ -294,6 +295,9 @@ softwarePoliciesRoutes.post(
   zValidator('json', createPolicySchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const payload = c.req.valid('json');
 
     // Ownership axis (#2126). Partner-wide templates push rules to devices in
@@ -518,6 +522,9 @@ softwarePoliciesRoutes.patch(
   zValidator('json', updatePolicySchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
 
@@ -533,8 +540,12 @@ softwarePoliciesRoutes.patch(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
-    const updates: Partial<typeof softwarePolicies.$inferInsert> = {
+    const updates: Omit<Partial<typeof softwarePolicies.$inferInsert>, 'approvalGeneration'> & { approvalGeneration?: SQL } = {
       updatedAt: new Date(),
+      // Site-ceiling gate contract §3: bump on every PATCH so a queued
+      // compliance/remediation job carrying the OLD generation can tell it
+      // has been superseded and skip acting on stale config.
+      approvalGeneration: sql`${softwarePolicies.approvalGeneration} + 1`,
     };
 
     if (payload.name !== undefined) updates.name = payload.name;
@@ -573,7 +584,7 @@ softwarePoliciesRoutes.patch(
 
     let scheduleWarning: string | undefined;
     try {
-      await scheduleSoftwareComplianceCheck(policy.id);
+      await scheduleSoftwareComplianceCheck(policy.id, undefined, updated?.approvalGeneration);
     } catch (error) {
       scheduleWarning = error instanceof Error ? error.message : 'Failed to schedule compliance check';
       console.error(`[softwarePolicies] Failed to schedule compliance check for policy ${policy.id}:`, error);
@@ -618,6 +629,9 @@ softwarePoliciesRoutes.delete(
   zValidator('param', policyIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id } = c.req.valid('param');
 
     const policy = await getPolicyWithAccess(id, auth);

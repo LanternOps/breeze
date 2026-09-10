@@ -241,6 +241,16 @@ export function normalizePamLifetimeProtocolVersion(value: unknown): 0 | 2 {
   return value === 2 ? 2 : 0;
 }
 
+/**
+ * Normalize the only revocation-lease protocol version implemented here.
+ * Anything other than exactly 1 — absent, malformed, or a future version this
+ * server does not speak — is capability 0, and every desktop-start dispatch
+ * site refuses the session with 503 agent_upgrade_required.
+ */
+export function normalizeRevocationLeaseProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
+}
+
 // #5250 — the agent recomputes `checkedAt` (and, on macOS/Linux, the whole
 // DesktopAccessState) fresh on EVERY heartbeat regardless of whether access
 // actually changed (agent/internal/heartbeat/desktop_access_{darwin,linux}.go
@@ -835,6 +845,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     ),
     pamLifetimeProtocolVersion: normalizePamLifetimeProtocolVersion(
       data.securityCapabilities?.pamLifetimeProtocolVersion,
+    ),
+    // Revocation-lease capability, same non-sticky contract: rewritten every
+    // beat so an agent DOWNGRADE stops the dispatch gate trusting a stale claim
+    // and desktop sessions are refused again until the agent is back.
+    revocationLeaseProtocolVersion: normalizeRevocationLeaseProtocolVersion(
+      data.securityCapabilities?.revocationLeaseProtocolVersion,
     ),
     // Migration-banner Task 2 — self-reported install edition + migration
     // flag. Written UNCONDITIONALLY every heartbeat, mirroring

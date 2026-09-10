@@ -33,6 +33,7 @@ vi.mock('../db/schema', () => ({
     mode: 'softwarePolicies.mode',
     isActive: 'softwarePolicies.isActive',
     rules: 'softwarePolicies.rules',
+    approvalGeneration: 'softwarePolicies.approvalGeneration',
   },
   configurationPolicies: {
     id: 'configurationPolicies.id',
@@ -223,10 +224,11 @@ describe('software inventory routes', () => {
         id: POLICY_ID,
         rules: { software: [{ name: 'BadApp' }] },
       }]);
+      const denySetSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
       vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined),
-        }),
+        set: denySetSpy,
       } as any);
       // ensureDefaultConfigPolicyLink:
       mockSelectFromWhereLimit([{ id: 'config-1' }]);
@@ -251,6 +253,10 @@ describe('software inventory routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+
+      // Site-ceiling gate contract §3/finding 2.
+      const denySetArg = (denySetSpy.mock.calls as any[])[0][0];
+      expect(denySetArg.approvalGeneration).toBeDefined();
     });
 
     it('rejects missing softwareName', async () => {
@@ -276,10 +282,11 @@ describe('software inventory routes', () => {
           rules: { software: [{ name: 'TestApp', vendor: 'Vendor' }] },
         },
       ]);
+      const clearSetSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
       vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined),
-        }),
+        set: clearSetSpy,
       } as any);
 
       const res = await app.request('/software-inventory/clear', {
@@ -306,6 +313,10 @@ describe('software inventory routes', () => {
       expect(recordSoftwarePolicyAudit).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'inventory_clear', policyId: 'policy-1' }),
       );
+
+      // Site-ceiling gate contract §3/finding 2.
+      const clearSetArg = (clearSetSpy.mock.calls as any[])[0][0];
+      expect(clearSetArg.approvalGeneration).toBeDefined();
     });
 
     it('returns cleared=false when software not found in any policy', async () => {
