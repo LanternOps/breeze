@@ -69,10 +69,10 @@ Package `agent/internal/backup/rebuild`. Inputs: snapshot id, layout manifest, t
 Phases (idempotent, resumable, logged by name):
 
 1. **Preflight** — verify manifests and checksums (W02 verifier); target size ≥ source used size + 10 %; layout supported (else `refused` with the feature named); target disk not carrying the device's current live identity unless explicitly overridden; nothing written before this passes.
-2. **Provision** — write GPT from the layout (EFI, root, other data partitions; sizes scaled proportionally when the target is larger, never smaller than source used size); format with the recorded filesystem types; reuse recorded UUIDs and labels so `fstab`, GRUB and BCD keep resolving.
+2. **Provision** — write GPT from the layout: every partition keeps its recorded size except the last data partition (normally the root/`C:` volume), which absorbs any extra space on a larger target; no partition is ever made smaller than its recorded used size. Format with the recorded filesystem types; reuse recorded UUIDs and labels so `fstab`, GRUB and BCD keep resolving.
 3. **Restore tree** — mount under a staging root; restore the file snapshot through the provider chain (vault first) with the existing journal, retry and circuit breaker; apply system state against the staging root (Linux restorer takes `root`; Windows applies hives, BCD, drivers, certs, firewall offline — legitimate here because the volume is not the running OS).
 4. **Boot** — Linux: chroot, `grub-install --target=<arch>-efi`, regenerate GRUB config, ensure an EFI boot entry; Windows: `bcdboot <root>\Windows /s <efi> /f UEFI`, DISM driver injection for the target's storage/network devices (reuse of the Hyper-V injector, generalised).
-5. **Identity** — `original`: restore hostname, machine identity, agent enrollment state and secrets, write the recovery marker; `new`: regenerate identity, leave the agent unenrolled with the marker for a fresh enrollment.
+5. **Identity** — `original`: restore hostname, machine identity, agent enrollment state and secrets, and write the recovery marker (`recoveryId` + one-time nonce issued with the token) into the agent state directory; `new`: regenerate hostname suffix and machine identity, strip enrollment state so the agent starts unenrolled, no marker (the recovery completes at Validate, see §8.1).
 6. **Encryption** — if the source volume was encrypted, re-apply with the escrowed key (BitLocker: enable on first boot via a one-shot task; LUKS: refused in the first release).
 7. **Validate** — sample restored files against checksums, confirm bootloader files and EFI entry, unmount, report.
 
@@ -87,14 +87,15 @@ CI builds `breeze-recovery-linux-{amd64,arm64}.iso` per release: Debian-based li
 Because the ADK/WinPE licence does not permit redistribution, Breeze ships a **media builder**: an agent command (and CLI) run on a customer Windows machine that downloads the ADK WinPE add-on, layers `breeze-backup.exe`, the console, and driver artifacts from the source device's system state, and writes an ISO/USB. The API stores the builder result (version, hash, built-on device) for the boot-media page.
 
 ### 7.3 Console
-Boot → network → "Enter recovery code" → exchange → plan screen (device, snapshot time, source layout, detected target disk with model/size/serial, partition plan, identity mode) → confirm by typing the disk serial (or `ERASE`) → phases with progress → "Restored. Rebooting in 10 s". Refusals and failures stay on screen with the phase and reason; each phase can be retried. Media older than the server's `minHelperVersion` is refused with a clear message. `--unattended` is reserved for a later wave.
+Boot → network → "Enter recovery code" → exchange → plan screen (device, snapshot time, source layout, detected target disk with model/size/serial, partition plan, identity mode) → confirm by typing the disk serial (or `ERASE`) → phases with progress → "Restored. Rebooting in 10 s". Refusals and failures stay on screen with the phase and reason; each phase can be retried. Media older than the server's `minHelperVersion` is refused with a clear message. An `--unattended` flag is reserved (parsed, refused) so the CLI surface is stable; unattended recovery is out of scope (§12).
 
 ## 8. Server side
 
 ### 8.1 Recovery codes and state
-- `POST /backup/bmr/recoveries` `{deviceId, snapshotId, identity: original|new, target?: {disk?}}` → creates a `bare_metal_recoveries` row (RLS by `org_id`, cascade-registered) and a token; returns a 9-character one-time code (15 min TTL, rate-limited like `/bmr/tokens`).
+- `POST /backup/bmr/recoveries` `{deviceId, snapshotId, identity: original|new, target?: {disk?}}` → creates a `bare_metal_recoveries` row and a recovery token; returns a 9-character one-time code (15 min TTL, rate-limited like `/bmr/tokens`).
+- `bare_metal_recoveries` is tenancy shape 5 with denormalised `org_id` + `device_id`: RLS policy in the creating migration; registered in `CORE_ORG_CASCADE_DELETE_ORDER`, `CORE_DEVICE_CASCADE_DELETE_TABLES`, `CORE_DEVICE_ORG_DENORMALIZED_TABLES`, and `CORE_TENANT_EXPORT_POLICY` (`result` jsonb → `excludedOpen`). The new `backup_snapshots.layout_manifest_key` and `bare_metal_restorable`/`bare_metal_reasons` columns get export-policy entries in the same PR. Migrations are named to sort after the newest committed file (currently a `2026-10-15-…` name).
 - Public `POST /backup/bmr/recover/exchange` `{code}` → recovery token + bootstrap (reuses `recoveryBootstrap`); the code is consumed.
-- Transitions posted by the console/helper with the `RebuildResult`: `created → media_booted → planned → restoring → rebooted`, terminal `checked_in | failed | refused`. `checked_in` is set by the heartbeat handler when the device identity in the recovery heartbeats carrying the marker. Device gets `recovered_at`, `recovered_from_snapshot_id`.
+- Transitions posted by the console/helper with the `RebuildResult`: `created → media_booted → planned → restoring → validated → rebooted`, terminal `checked_in | completed | failed | refused`. For `identity: original`, the heartbeat handler sets `checked_in` when the restored device's first heartbeat carries the marker nonce that matches this pending recovery; the nonce is consumed and the device gets `recovered_at` and `recovered_from_snapshot_id`. For `identity: new`, `validated` moves straight to `completed` (no check-in is expected; a rehearsal VM enrolls, if at all, as a brand-new device).
 - Failure reason and warnings are persisted on the recovery row (closes the gap in #5479).
 
 ### 8.2 Identity resumption
@@ -114,7 +115,7 @@ Recovery bootstrap tab gains "Bare-metal recovery" (pick snapshot → code → l
 - Codes are one-time and short-lived, bound to org + device + snapshot; tokens keep single-use semantics; no secrets on media.
 - Rehearsals cannot resume the production identity.
 - Every phase is resumable; network loss retries with the existing backoff and circuit breaker; the console keeps the reason on screen.
-- If the device does not check in within 30 minutes after `rebooted`, the recovery shows that state with the last phase so the operator looks at the console.
+- If an `original`-identity device does not check in within 30 minutes after `rebooted`, the recovery row is flagged `overdue` (not failed: the row stays pending and the marker nonce stays valid for 7 days) so the operator looks at the console.
 
 ## 10. Testing
 
@@ -130,7 +131,7 @@ Recovery bootstrap tab gains "Bare-metal recovery" (pick snapshot → code → l
 4. Restore-as-VM / Instant Boot and DR plans on the engine (rehearsal mode).
 5. Windows engine: offline hives, `bcdboot`, DISM injection, `vhdx` target with tests.
 6. Windows media builder (WinPE) + console; lab proof on KIT via WIN-A.
-7. Docs, UI polish, recovery readiness fed from real results, `--unattended`.
+7. Docs, UI polish, recovery readiness fed from real results.
 
 ## 12. Out of scope (first release)
 
