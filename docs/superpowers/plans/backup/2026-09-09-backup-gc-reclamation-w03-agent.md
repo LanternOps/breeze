@@ -20,6 +20,7 @@
 - `journalMaxAge = 7 * 24 * time.Hour` (`agent/internal/backup/journal.go:34`) — unchanged, reused as the resumed-journal-age fence.
 - `uploadLeaseInterval = 15 * time.Minute`, constant in `agent/internal/backup/snapshot.go`, comment must state it stays well under the API's 9-day (`journalMaxAge` + 48h grace) manifest-less window.
 - No lease renewal exists anywhere in this wave: the helper enforces exactly the payload's `publishLeaseExpiresAt` value with no extension. A run that legitimately takes longer than the lease fails to publish by design — this mirrors the existing `journalMaxAge` non-resumable-after-7-days envelope, not a new limitation class.
+- **Gate-installation rule (P1 fix):** a present `baseSnapshotId` field (server-owned mode is ON — including an explicit full run, `baseSnapshotId: ""`) REQUIRES a non-zero `publishLeaseExpiresAt`; a payload violating this is rejected outright by `managerFromBackupRunPayload` (Task 1) before any manager is built. The `leaseGate` (Task 4) installs whenever `BackupConfig.BaseSnapshotID != nil` — never keyed off the lease value alone — so a legacy server (nil `BaseSnapshotID`) skips the gate entirely, and a server-owned-mode run always gets it. Inside the gate, a zero lease is treated as a fail-CLOSED bug condition (refuse to publish), never as "no lease configured, go ahead."
 - `DeleteSnapshot`, `DeleteSnapshotContext` are removed from `agent/internal/backup/snapshot.go` (ground truth below confirms no other caller exists). `cleanupSnapshotPrefix`/`listSnapshotPrefixItems` are KEPT — spec §3.5 names the own-run-prefix abort cleanups (`snapshot.go:499`, `:544`) as explicit exceptions.
 
 ## 0. Ground truth (re-verified 2026-09-09 against this worktree)
@@ -39,7 +40,7 @@
 - `agent/internal/backup/incremental.go:54-92` `previousManifest` (spec says `:53-100`, off by one; logic identical) — scans `ListSnapshots` results newest-first for `candidate.BackupIdentity == identity`; empty `identity` short-circuits to full-run.
 - `agent/internal/backup/snapshot.go:52-91` `Snapshot` struct (`ID`, `Timestamp`, `Files`, `Size`, `FormatVersion`, `BaseSnapshotID`, `BackupIdentity`, `UploadFailures`). `:898-956` `ListSnapshots` downloads and decodes every `snapshots/*/manifest.json`. `:1099-1126` `backupIdentity`/`runBackupIdentity`.
 - `agent/internal/backup/snapshot.go:343` `createSnapshotWithProgress(ctx, provider, files, onProgress, journal, prevSnapshot, sourceLiveness, runIdentity ...string) (*Snapshot, error)` — called from ~30 sites across `backup.go` and 5 test files with a bare `providers.BackupProvider`. Deliberately left with this exact signature (no new parameter) — see Task 4's design note.
-- `agent/internal/backup/snapshot.go:812-834` `publishSnapshotManifest` — writes the manifest to a temp file, then `uploadSnapshotFile(attemptCtx, provider, manifestPath, manifestKey)`. Both the normal-completion call (`:782`) and the `abortSourceGone` partial-manifest call (`:544-561`, specifically the `publishSnapshotManifest` at `:547`) go through this same function, so gating at the `provider.Upload`/`UploadContext` boundary via `isManifestPath` covers both without duplicating the check.
+- `agent/internal/backup/snapshot.go:812-834` `publishSnapshotManifest` — writes the manifest to a temp file, then `uploadSnapshotFile(attemptCtx, provider, manifestPath, manifestKey)`. Both the normal-completion call (`:784`) and the `abortSourceGone` partial-manifest call (`:544-561`, specifically the `publishSnapshotManifest` at `:548`) go through this same function, so gating at the `provider.Upload`/`UploadContext` boundary via `isManifestPath` covers both without duplicating the check.
 - `agent/internal/backup/snapshot.go:151` `contextUploader` interface (`UploadContext(ctx, localPath, remotePath) error`), checked via type assertion in `uploadSnapshotFile` (`:869`).
 - `agent/internal/backup/snapshot.go:1054-1057` `isManifestPath(item string) bool` — already matches `.../manifest.json` or a bare `manifest.json` basename; reused as-is by the new lease gate, no change needed.
 - `agent/internal/backup/journal.go:34` `journalMaxAge`. `:60-68` `snapshotJournal` struct has no `createdAt` field today — `header.CreatedAt` is read at `:155` inside `openSnapshotJournal` but never stored on the struct, so nothing today can ask "how old is my journal" after open. `:268-292` `createFreshJournal` builds `header.CreatedAt = time.Now().UTC()` but likewise drops it. `:88` `resumed bool` field already exists and is exactly the flag Task 4 needs ("if the run was resumed from a journal").
@@ -49,22 +50,25 @@
 - `apps/api/src/services/backupAgentContract.test.ts` (243 lines) — existing source-text-grep contract suite (e.g. `:31-48` pins `journalMaxAge` parity). Picked up by the ordinary unit config: confirmed `apps/api/vitest.config.ts` has no `exclude` for `services/*.test.ts`, so this file runs in `pnpm --filter @breeze/api test`, not the integration config.
 - `apps/api/src/jobs/backupWorker.ts:411-490,640-760` `resolveBackupTargets`/dispatch payload construction — confirmed **no** `baseSnapshotId`/`publishLeaseExpiresAt` field exists yet (W01's job). Task 8's contract test must not hard-fail before W01 lands.
 - `apps/api/src/services/backupHelperCapabilities.ts:1-20` — existing min-helper-version gate pattern (`BACKUP_QUEUE_MIN_HELPER_VERSION`, `backupHelperSupportsQueue`) that W02 will mirror for the GC capability gate; W03 does not add a TS constant, it only needs to confirm the *mechanism* by which a shipped agent's version becomes visible server-side (Task 9 below, doc-only).
-- `agent/internal/heartbeat/backup_version.go:13-120` — the helper reports its version by shelling out to `breeze-backup --version`, which prints `Breeze Backup Version: <version>` (`agent/cmd/breeze-backup/main.go:36 var version = "dev"`, overridden via `-ldflags "-X main.version=$VERSION"` in `agent/Makefile:2-8` and the release build script). This is a **build-time value supplied by the release pipeline**, not something this wave's code sets — see Open Questions.
+- `agent/internal/heartbeat/backup_version.go:13-120` (exec at `:160`) — the helper reports its version by shelling out to `breeze-backup --version`, which prints `Breeze Backup Version: <version>` (`agent/cmd/breeze-backup/main.go:36 var version = "dev"`, overridden via `-ldflags "-X main.version=$VERSION"` in `agent/Makefile:2-8` and the release build script). This is a **build-time value supplied by the release pipeline**, not something this wave's code sets — see Open Questions.
 
 ## File structure
 
 - Modify `agent/cmd/breeze-backup/exec_backup.go` — decode `baseSnapshotId`/`publishLeaseExpiresAt`, thread into both `BackupConfig` literals.
-- Modify `agent/internal/backup/backup.go` — `BackupConfig` new fields + doc comments, run-path mode switch, lease-gated provider substitution at the `createSnapshotWithProgress` call site, remove the retention-prune branch, remove ONLY the stale-journal `cleanupSnapshotPrefix` call (the two own-run-prefix `cleanupSnapshotPrefix` calls in `snapshot.go` are kept, see Task 5), add `ErrPublishLeaseExpired`/`ErrJournalExpiredAtPublish`, add `GetBaseSnapshotID`/`GetPublishLeaseExpiresAt` getters.
+- Modify `agent/internal/backup/backup.go` — `BackupConfig` new fields + doc comments, HOISTED journal-open block (moved before VSS/scan) + early resume-shortcut check, gate-install call site keyed on `BaseSnapshotID != nil`, remove the retention-prune branch (preserving the `runCtx.Err()` guard that was inside it), remove ONLY the stale-journal `cleanupSnapshotPrefix` call (the two own-run-prefix `cleanupSnapshotPrefix` calls in `snapshot.go` are kept, see Task 5), fix `job.Error = errors.Join(scanErr, retentionErr)` → `job.Error = scanErr`, add `ErrPublishLeaseExpired`/`ErrJournalExpiredAtPublish`, add `GetBaseSnapshotID`/`GetPublishLeaseExpiresAt` getters, add a plain `"path"` import.
 - Modify `agent/internal/backup/incremental.go` — new `fetchServerOwnedBase` function (imports gain `encoding/json`, `os`).
 - Modify `agent/internal/backup/journal.go` — add `createdAt time.Time` field + `Age() time.Duration` method.
-- Modify `agent/internal/backup/snapshot.go` — new `leaseGate` provider wrapper + `publishMargin`/`uploadLeaseInterval` constants; remove `DeleteSnapshot`/`DeleteSnapshotContext` only (`cleanupSnapshotPrefix`/`listSnapshotPrefixItems` and their two call sites in `abortStopped`/`abortSourceGone` are KEPT — spec §3.5 exception); add the resume-with-published-manifest shortcut and the `upload.lease` refresh goroutine + post-publish delete inside `createSnapshotWithProgress`.
-- Modify (delete tests) `agent/internal/backup/snapshot_lifecycle_test.go` — remove the six `TestDeleteSnapshot_*` tests (they target the removed `DeleteSnapshot`/`DeleteSnapshotContext`), replace with `TestBackupNeverDeletesRemoteObjects_RetentionConfigured`.
-- Modify `agent/internal/backup/snapshot_test.go` — remove `TestDeleteSnapshot_DoesNotDeleteAdjacentPrefix`; add `TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix_NeverAPublishedManifestPrefix` plus lease-gate / resume-shortcut / upload-lease tests.
-- Modify `agent/internal/backup/incremental_test.go` — add `TestFetchServerOwnedBase_*` table.
-- Modify `agent/internal/backup/journal_test.go` — add `TestSnapshotJournal_Age`.
-- Modify `agent/internal/backup/backup_test.go` — add server-owned-mode `RunBackupContext` integration-style tests; update the stale comment on `TestRunBackup_IncrementalRetentionDoesNotStrandReferencedObjects`.
-- Modify `agent/cmd/breeze-backup/exec_backup_test.go` — extend `TestManagerFromBackupRunPayload` table with the two new fields.
-- Modify `apps/api/src/services/backupAgentContract.test.ts` — add the Go/TS payload-field-name parity test + the `uploadLeaseInterval` vs. manifest-less-window assertion.
+- Modify `agent/internal/backup/providers/interface.go` — new `ErrObjectNotFound` sentinel.
+- Modify `agent/internal/backup/providers/local.go` and `agent/internal/backup/providers/s3.go` — wrap confirmed-not-found `Download` errors with `ErrObjectNotFound`.
+- Modify `agent/internal/backup/snapshot.go` — new `leaseGate` provider wrapper (fail-closed on a zero lease) + `publishMargin` const + `uploadLeaseInterval` var; remove `DeleteSnapshot`/`DeleteSnapshotContext` only (`cleanupSnapshotPrefix`/`listSnapshotPrefixItems` and their two call sites in `abortStopped`/`abortSourceGone` are KEPT — spec §3.5 exception); add the three-state `fetchPublishedManifest` + its defensive in-function resume-shortcut check; add the `upload.lease` refresh goroutine (bounded per-refresh context, `leaseCtx`-based cancellation) + post-publish delete inside `createSnapshotWithProgress`.
+- Modify (delete tests) `agent/internal/backup/snapshot_lifecycle_test.go` — remove the six `TestDeleteSnapshot_*` tests (they target the removed `DeleteSnapshot`/`DeleteSnapshotContext`) and the now-unused `"fmt"`/`"strings"` imports; no replacement test added here (moved to `backup_test.go`).
+- Modify `agent/internal/backup/snapshot_test.go` — remove `TestDeleteSnapshot_DoesNotDeleteAdjacentPrefix`; add `TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix_NeverAForeignPublishedPrefix` plus lease-gate / resume-shortcut / upload-lease / `fetchPublishedManifest` tests.
+- Modify `agent/internal/backup/incremental_test.go` — add `TestFetchServerOwnedBase` table.
+- Modify `agent/internal/backup/journal_test.go` — add `TestSnapshotJournal_Age` (with the real-gap fix), `TestSnapshotJournal_Age_SurvivesResume`.
+- Modify `agent/internal/backup/backup_test.go` — add `TestBackupNeverDeletesRemoteObjects_RetentionConfigured` (system-state-only config, see Task 5), rewrite `TestRunBackupContext_StaleJournalCleansUpRemotePrefixAndRunsFresh` → `TestRunBackupContext_StaleJournalDiscardedWithoutRemoteCleanup`, add `TestRunBackupContext_ServerOwnedMode_NeverListsTheBucket`, `TestRunBackupContext_ExpiredLease_RefusesToPublishManifest` (Task 4b), `TestRunBackupContext_ResumeWithPublishedManifest_SucceedsEvenIfSourceGone` (Task 6), update the stale comment on `TestRunBackup_IncrementalRetentionDoesNotStrandReferencedObjects`.
+- Modify (new tests) `agent/internal/backup/providers/local_test.go`, `agent/internal/backup/providers/s3_test.go` — `ErrObjectNotFound` wrapping proof.
+- Modify `agent/cmd/breeze-backup/exec_backup_test.go` — extend `TestManagerFromBackupRunPayload` table with the two new fields; add `TestManagerFromBackupRunPayload_RejectsServerOwnedModeWithoutLease`.
+- Modify `apps/api/src/services/backupAgentContract.test.ts` — add the Go/TS payload-field-name parity test, the real `BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS` import + comparison, and the gated `BACKUP_PUBLISH_MARGIN_MS` regex check.
 
 ### Task 1: Thread `baseSnapshotId`/`publishLeaseExpiresAt` from payload into `BackupConfig`
 
@@ -117,6 +121,40 @@ wantPublishLeaseExpiresAt time.Time
 },
 ```
 
+Also add a dedicated rejection test (P1 fix — a present `baseSnapshotId` with a missing/zero lease must be a hard payload error, not a silently-ungated run):
+```go
+func TestManagerFromBackupRunPayload_RejectsServerOwnedModeWithoutLease(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "baseSnapshotId present, publishLeaseExpiresAt entirely absent",
+			payload: `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"baseSnapshotId":"snap-1"}`,
+		},
+		{
+			name:    "baseSnapshotId present, publishLeaseExpiresAt empty string",
+			payload: `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"baseSnapshotId":"snap-1","publishLeaseExpiresAt":""}`,
+		},
+		{
+			name:    "baseSnapshotId is an explicit full-run empty string, lease still required",
+			payload: `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"baseSnapshotId":""}`,
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr, err := managerFromBackupRunPayload(json.RawMessage(tt.payload))
+			if err == nil {
+				t.Fatal("expected an error rejecting a server-owned-mode payload with no publish lease")
+			}
+			if mgr != nil {
+				t.Fatal("expected a nil manager on rejection")
+			}
+		})
+	}
+}
+```
+
 Add near the top of the test file (or reuse if a similar helper already exists — grep first):
 ```go
 func strPtr(s string) *string { return &s }
@@ -136,9 +174,9 @@ if !mgr.GetPublishLeaseExpiresAt().Equal(tt.wantPublishLeaseExpiresAt) {
 }
 ```
 
-- [ ] Step 2: Run it, expect FAIL with `mgr.GetBaseSnapshotID undefined (type *backup.BackupManager has no field or method GetBaseSnapshotID)`:
+- [ ] Step 2: Run it, expect FAIL with `mgr.GetBaseSnapshotID undefined (type *backup.BackupManager has no field or method GetBaseSnapshotID)`; the new rejection test currently FAILS the other way (expects an error, gets none, since no validation exists yet):
 ```
-cd agent && go test ./cmd/breeze-backup/ -run TestManagerFromBackupRunPayload
+cd agent && go test ./cmd/breeze-backup/ -run 'TestManagerFromBackupRunPayload|TestManagerFromBackupRunPayload_RejectsServerOwnedModeWithoutLease'
 ```
 
 - [ ] Step 3: Implement.
@@ -227,6 +265,18 @@ In `agent/cmd/breeze-backup/exec_backup.go`, extend the payload struct inside `m
 			return nil, fmt.Errorf("invalid backup_run payload: publishLeaseExpiresAt %q: %w", p.PublishLeaseExpiresAt, parseErr)
 		}
 		publishLeaseExpiresAt = parsed
+	}
+	// D18 §3.1 (P1 fix): publishLeaseExpiresAt is sent for EVERY
+	// server-owned-mode run — base or an explicit full run — never only
+	// when a base was actually chosen. A present baseSnapshotId (server-
+	// owned mode is ON, even if it points at "") with a missing, empty, or
+	// unparseable-to-zero lease means the dispatching server is violating
+	// its own protocol. Reject the WHOLE payload here rather than silently
+	// running server-owned mode ungated: main.go's caller turns this error
+	// into `fail(err.Error())`, so the backup_run command fails outright
+	// and uploads nothing.
+	if p.BaseSnapshotID != nil && publishLeaseExpiresAt.IsZero() {
+		return nil, fmt.Errorf("invalid backup_run payload: baseSnapshotId is present (server-owned mode) but publishLeaseExpiresAt is missing, empty, or zero")
 	}
 ```
 
@@ -515,6 +565,13 @@ func TestSnapshotJournal_Age_SurvivesResume(t *testing.T) {
 	}
 	j1.Abandon()
 
+	// A real gap between creation and resume (P3 fix): back-to-back opens
+	// with no sleep can't distinguish "createdAt correctly preserved from
+	// the original header" from "createdAt buggily reset to time.Now() on
+	// resume" — both would read back as ~0 either way. The sleep makes the
+	// two hypotheses diverge: preserved reads back ~50ms, reset reads ~0.
+	time.Sleep(50 * time.Millisecond)
+
 	j2, resumed, err := openSnapshotJournal(dir, "resume-age-identity", journalMaxAge)
 	if err != nil {
 		t.Fatalf("openSnapshotJournal (2nd) failed: %v", err)
@@ -523,8 +580,8 @@ func TestSnapshotJournal_Age_SurvivesResume(t *testing.T) {
 	if !resumed {
 		t.Fatal("expected the second open to resume the first journal")
 	}
-	if age := j2.Age(); age < 0 || age > time.Second {
-		t.Fatalf("resumed journal Age() = %v, want ~0 (same createdAt as the original)", age)
+	if age := j2.Age(); age < 40*time.Millisecond || age > 2*time.Second {
+		t.Fatalf("resumed journal Age() = %v, want ~50ms (original createdAt preserved across resume, not reset to time.Now())", age)
 	}
 }
 ```
@@ -606,6 +663,7 @@ git commit -m "feat(agent/backup): track checkpoint journal creation age"
 **Interfaces:**
 - Produces: `ErrPublishLeaseExpired`, `ErrJournalExpiredAtPublish` (both `error`, `backup.go`); `leaseGate` (unexported, `snapshot.go`); `publishMargin`, `uploadLeaseInterval` constants (`snapshot.go`).
 - Design note: `createSnapshotWithProgress`'s signature (`snapshot.go:343`) is deliberately left unchanged — it has ~30 call sites across 5 test files. The lease/journal-age check is enforced by wrapping the `providers.BackupProvider` passed in, at the ONE real call site (`backup.go:758`), so existing tests need no changes for this task.
+- **Gate-installation rule (P1 fix, see Global Constraints):** the gate installs whenever `m.config.BaseSnapshotID != nil` (server-owned mode ON), NOT whenever the lease happens to be non-zero. Inside `checkPublish`, a zero `publishLeaseExpiresAt` is a FAIL-CLOSED condition (`ErrPublishLeaseExpired`), never treated as "no lease, allow" — Task 1's payload validation is what's supposed to prevent this combination from ever occurring, so this is defense in depth, not the primary enforcement point.
 
 - [ ] Step 1: Write the failing test in `snapshot_test.go`:
 ```go
@@ -623,10 +681,31 @@ func TestLeaseGate_RefusesManifestPastLeaseMargin(t *testing.T) {
 	if !errors.Is(err, ErrPublishLeaseExpired) {
 		t.Fatalf("err = %v, want ErrPublishLeaseExpired", err)
 	}
-	for _, key := range provider.uploads {
+	// provider.uploads is map[remotePath]localPath — range over the KEYS
+	// (remote paths), never the values (which are local temp filenames and
+	// would make isManifestPath check the wrong string entirely).
+	for key := range provider.uploads {
 		if isManifestPath(key) {
 			t.Fatalf("manifest was uploaded despite an expired lease: %s", key)
 		}
+	}
+}
+
+func TestLeaseGate_ZeroLeaseFailsClosed(t *testing.T) {
+	// Defense in depth for the P1 fix: Task 1's payload validation is
+	// SUPPOSED to make a zero lease alongside server-owned mode
+	// unreachable, but the gate itself must never fail open if that
+	// invariant is ever violated upstream — a missing lease must refuse to
+	// publish, not silently behave as "no lease configured".
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content")
+	provider := newMockProvider()
+	gated := &leaseGate{BackupProvider: provider} // publishLeaseExpiresAt left zero
+
+	files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 7, modTime: time.Now()}}
+	_, err := createSnapshotWithProgress(context.Background(), gated, files, nil, nil, nil, nil)
+	if !errors.Is(err, ErrPublishLeaseExpired) {
+		t.Fatalf("err = %v, want ErrPublishLeaseExpired (zero lease must fail closed)", err)
 	}
 }
 
@@ -756,7 +835,18 @@ func (g *leaseGate) checkPublish(remotePath string) error {
 	if !isManifestPath(remotePath) {
 		return nil
 	}
-	if !g.publishLeaseExpiresAt.IsZero() && time.Now().Add(publishMargin).After(g.publishLeaseExpiresAt) {
+	if g.publishLeaseExpiresAt.IsZero() {
+		// P1 fix: a zero lease reaching here means the "server-owned mode
+		// implies a non-zero lease" invariant (enforced at payload
+		// validation, exec_backup.go) was violated somewhere upstream.
+		// Fail CLOSED — refusing to publish is always safe; treating an
+		// absent lease as "no lease configured, proceed" is exactly the
+		// fail-open bug this gate exists to prevent, and this gate is only
+		// ever installed when server-owned mode is on (see backup.go's
+		// call site), so there is no legitimate zero-lease case here.
+		return ErrPublishLeaseExpired
+	}
+	if time.Now().Add(publishMargin).After(g.publishLeaseExpiresAt) {
 		return ErrPublishLeaseExpired
 	}
 	if g.journal != nil && g.journal.resumed && g.journal.Age() >= journalMaxAge {
@@ -791,13 +881,19 @@ func (g *leaseGate) UploadContext(ctx context.Context, localPath, remotePath str
 
 In `agent/internal/backup/backup.go`, change the call site at `:758` (immediately before it, after the journal block ends at `:756`):
 ```go
-	// Gate manifest publication on the server's lease (D18 §3.1) whenever
-	// one was sent — legacy servers (zero PublishLeaseExpiresAt) get the
-	// unwrapped provider and unchanged behavior. Applies to full runs too,
-	// not just incremental ones: the server fences every dispatched run's
+	// Gate manifest publication whenever server-owned mode is on (D18
+	// §3.1) — keyed on BaseSnapshotID being present, NOT on the lease
+	// being non-zero (P1 fix): Task 1's payload validation guarantees a
+	// non-zero lease whenever BaseSnapshotID is set, but the gate's
+	// INSTALLATION must not itself depend on that value, or a payload that
+	// somehow slipped validation with a zero lease would run completely
+	// ungated instead of hitting checkPublish's fail-closed zero-lease
+	// branch. Legacy servers (nil BaseSnapshotID) get the unwrapped
+	// provider and fully unchanged behavior. Applies to full runs too, not
+	// just incremental ones — the server fences every dispatched run's
 	// late-result window this way.
 	uploadProvider := m.config.Provider
-	if !m.config.PublishLeaseExpiresAt.IsZero() {
+	if m.config.BaseSnapshotID != nil {
 		uploadProvider = &leaseGate{
 			BackupProvider:        m.config.Provider,
 			publishLeaseExpiresAt: m.config.PublishLeaseExpiresAt,
@@ -818,6 +914,117 @@ git add agent/internal/backup/backup.go agent/internal/backup/snapshot.go agent/
 git commit -m "feat(agent/backup): refuse to publish a manifest past its lease or journal age"
 ```
 
+### Task 4b: Manager-level proof — server-owned mode never lists, expired lease blocks publish end-to-end
+
+Task 4's tests exercise `leaseGate`/`createSnapshotWithProgress` directly; this task proves the SAME properties hold through the full `RunBackupContext` wiring (goal 4's "never lists the bucket" and the gate's actual installation), which nothing else in this plan otherwise checks end-to-end.
+
+**Files:**
+- Test: `agent/internal/backup/backup_test.go` (new tests)
+
+**Interfaces:** none new — exercises `BackupManager.RunBackupContext` only.
+
+- [ ] Step 1: Write the failing tests:
+```go
+// listRecordingProvider wraps mockProvider and counts List calls, proving
+// goal 4 ("the agent never lists the bucket to choose a base") at the
+// RunBackupContext level — fetchServerOwnedBase's own unit tests (Task 2)
+// only prove it in isolation.
+type listRecordingProvider struct {
+	*mockProvider
+	listCalls int
+}
+
+func (p *listRecordingProvider) List(prefix string) ([]string, error) {
+	p.listCalls++
+	return p.mockProvider.List(prefix)
+}
+
+func TestRunBackupContext_ServerOwnedMode_NeverListsTheBucket(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content")
+	backing := newMockProvider()
+	provider := &listRecordingProvider{mockProvider: backing}
+
+	baseID := "snap-base"
+	mgr := NewBackupManager(BackupConfig{
+		Provider:              provider,
+		Paths:                 []string{tmpDir},
+		StagingDir:            t.TempDir(),
+		AgentID:               "test-device",
+		BaseSnapshotID:        &baseID,
+		PublishLeaseExpiresAt: time.Now().Add(1 * time.Hour),
+	})
+
+	// Seed the server-selected base AFTER constructing mgr, using its own
+	// runBackupIdentity() so the identity guard (D6) matches exactly what
+	// this run will compute — see incremental.go's fetchServerOwnedBase.
+	base := &Snapshot{
+		ID:             baseID,
+		BackupIdentity: mgr.runBackupIdentity(),
+		Files:          []SnapshotFile{{SourcePath: "/prior.txt", BackupPath: "snapshots/snap-base/files/prior.txt.gz", Size: 3}},
+	}
+	storeManifest(t, backing, base)
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("RunBackupContext failed: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("job.Status = %q, want %q", job.Status, jobStatusCompleted)
+	}
+	if provider.listCalls != 0 {
+		t.Fatalf("expected zero List calls in server-owned mode, got %d", provider.listCalls)
+	}
+}
+
+func TestRunBackupContext_ExpiredLease_RefusesToPublishManifest(t *testing.T) {
+	tmpDir := t.TempDir()
+	createTempFile(t, tmpDir, "file1.txt", "content")
+	provider := newMockProvider()
+
+	baseID := "" // full run — the lease is enforced for full runs too, not just incremental ones
+	mgr := NewBackupManager(BackupConfig{
+		Provider:              provider,
+		Paths:                 []string{tmpDir},
+		StagingDir:            t.TempDir(),
+		AgentID:               "test-device",
+		BaseSnapshotID:        &baseID,
+		PublishLeaseExpiresAt: time.Now().Add(-1 * time.Hour), // already expired
+	})
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if !errors.Is(err, ErrPublishLeaseExpired) {
+		t.Fatalf("err = %v, want ErrPublishLeaseExpired", err)
+	}
+	if job.Status != jobStatusFailed {
+		t.Fatalf("job.Status = %q, want %q", job.Status, jobStatusFailed)
+	}
+	for key := range provider.files {
+		if isManifestPath(key) {
+			t.Fatalf("manifest was published despite an expired lease: %s", key)
+		}
+	}
+}
+```
+
+- [ ] Step 2: Run it, expect FAIL (both: `TestRunBackupContext_ServerOwnedMode_NeverListsTheBucket` fails to compile / behaves like legacy mode since Tasks 1/2/4's production code doesn't exist on its own branch point yet if run standalone; run AFTER Tasks 1, 2, and 4 land, at which point this is a regression-proof addition — if implementing strictly in order, this task's tests should already be GREEN, so treat any failure here as a signal that Tasks 1/2/4 have a wiring gap, not as this task's own red-first step):
+```
+cd agent && go test ./internal/backup/ -run 'TestRunBackupContext_ServerOwnedMode_NeverListsTheBucket|TestRunBackupContext_ExpiredLease_RefusesToPublishManifest' -v
+```
+
+- [ ] Step 3: No new production code — this task is verification-only, confirming Tasks 1/2/4's wiring holds end-to-end.
+
+- [ ] Step 4: Run, expect PASS:
+```
+cd agent && go test ./internal/backup/ -run 'TestRunBackupContext_ServerOwnedMode_NeverListsTheBucket|TestRunBackupContext_ExpiredLease_RefusesToPublishManifest' -v
+```
+
+- [ ] Step 5: Commit:
+```
+git add agent/internal/backup/backup_test.go
+git commit -m "test(agent/backup): prove server-owned mode never lists the bucket and an expired lease blocks publish end-to-end"
+```
+
 ### Task 5: Remove agent-side retention pruning and stale-journal cleanup; keep the own-run-prefix abort cleanups
 
 Spec §3.5 (re-read after coordinator review) states the deletion removal has two **explicit
@@ -834,36 +1041,44 @@ snapshots' entire prefixes — the actually dangerous case). `cleanupSnapshotPre
 **Files:**
 - Modify `agent/internal/backup/backup.go` (retention branch `:780-806`, stale-journal cleanup call `:748`)
 - Modify `agent/internal/backup/snapshot.go` (remove only `DeleteSnapshot`/`DeleteSnapshotContext`; `abortStopped` `:496-500` and `abortSourceGone`'s zero-files branch `:541-546` are UNCHANGED — their `cleanupSnapshotPrefix` calls stay)
-- Modify `agent/internal/backup/snapshot_lifecycle_test.go` (remove the `DeleteSnapshot`/`DeleteSnapshotContext` tests only; `cleanupSnapshotPrefix`'s own behavior needs no new coverage here since Task 6 already proves it's never reached for a published manifest)
-- Modify `agent/internal/backup/snapshot_test.go` (add a new scoping test; `TestDeleteSnapshot_DoesNotDeleteAdjacentPrefix` is removed since it targets the removed `DeleteSnapshot`)
-- Modify `agent/internal/backup/backup_test.go:924-985` (comment update only)
+- Modify `agent/internal/backup/snapshot_lifecycle_test.go` (remove ONLY the six `DeleteSnapshot`/`DeleteSnapshotContext` tests; also drop the now-unused `"fmt"` and `"strings"` imports — see P2 compile-facts note below)
+- Modify `agent/internal/backup/snapshot_test.go` (`TestDeleteSnapshot_DoesNotDeleteAdjacentPrefix` is removed since it targets the removed `DeleteSnapshot`; add the own-prefix-vs-foreign-prefix scoping test)
+- Modify `agent/internal/backup/backup_test.go` (add the retention regression test HERE, not in `snapshot_lifecycle_test.go` — see below; also rewrite `TestRunBackupContext_StaleJournalCleansUpRemotePrefixAndRunsFresh` at `:245-300` to assert NO deletion)
 
 **Interfaces:**
 - Removes: `DeleteSnapshot`, `DeleteSnapshotContext` only (confirmed zero external callers in Ground Truth §0; `backup.go:799` was `DeleteSnapshotContext`'s only caller).
 - Keeps unchanged: `cleanupSnapshotPrefix`, `listSnapshotPrefixItems` (still called from `snapshot.go:499`/`:544`).
-- Produces (test-only): `TestBackupNeverDeletesRemoteObjects_RetentionConfigured`, `TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix_NeverAPublishedManifestPrefix`.
-- **Ordering guarantee this task relies on**: Task 6's resume-with-already-published-manifest shortcut is inserted immediately after `prefix := path.Join(snapshotRootDir, snapshot.ID)` and returns before the upload loop — and therefore before either `abortStopped` or `abortSourceGone` can be reached — whenever `journal != nil && journal.resumed` and that journal's manifest already exists. So a journal-resumed run whose manifest is already published can never reach a `cleanupSnapshotPrefix` call: it returns via Task 6's early path first. This is a structural property of the current control flow (Task 6's insertion point strictly precedes both abort closures' only call sites), not something Task 5 needs to add logic for — but the new test below pins it as a regression guard in case a future refactor reorders them.
+- Produces (test-only): `TestBackupNeverDeletesRemoteObjects_RetentionConfigured` (moved to `backup_test.go`), `TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix_NeverAForeignPublishedPrefix` (`snapshot_test.go`), a rewritten `TestRunBackupContext_StaleJournalCleansUpRemotePrefixAndRunsFresh` (`backup_test.go`).
+- **Ordering guarantee this task relies on**: Task 6 (revised after review) installs the resume-with-already-published-manifest shortcut in TWO places: primarily in `RunBackupContext` (`backup.go`), hoisted to run before VSS/scan/`createSnapshotWithProgress` are ever reached at all; and defensively inside `createSnapshotWithProgress` itself, immediately after `prefix := path.Join(...)`, before the upload loop — and therefore before either `abortStopped` or `abortSourceGone` can be reached — whenever `journal != nil && journal.resumed` and that journal's manifest is CONFIRMED already published. Either way, a journal-resumed run whose manifest is already published never reaches a `cleanupSnapshotPrefix` call: it returns via one of the two early paths first. This is a structural property of the control flow both checks establish; Task 6's own `TestCreateSnapshot_ResumeWithAlreadyPublishedManifest_SkipsUploadAndDelete` test already asserts zero deletes for this exact scenario, so this task does not duplicate it.
 
 - [ ] Step 1: Write the failing tests.
 
-Remove `TestDeleteSnapshot_NothingToDelete`, `_ZeroRetention`, `_NegativeRetention`, `_PrunesOldSnapshots`, `_RetentionExceedsCount`, `_DeleteError` from `snapshot_lifecycle_test.go` (`:108-208`) — they exercise a function that no longer exists — and add:
+Remove `TestDeleteSnapshot_NothingToDelete`, `_ZeroRetention`, `_NegativeRetention`, `_PrunesOldSnapshots`, `_RetentionExceedsCount`, `_DeleteError` from `snapshot_lifecycle_test.go` (`:108-208`) — they exercise a function that no longer exists. **P2 compile-facts fix**: after removing them, `"fmt"` and `"strings"` become unused imports in this file (both are used ONLY inside these six tests — verified by reading the whole file; `errors` and `path` remain used by `TestListSnapshots_ListError`/`TestListSnapshots_CorruptManifest` and stay). Remove `"fmt"` and `"strings"` from this file's import block entirely; do not add a replacement test to this file (the replacement test below goes in `backup_test.go` instead, which already imports everything it needs).
+
+**P2 fix — exercise the REAL retention-prune branch, not a vacuous config.** `incrementalDedupeActive := !m.config.SystemStateEnabled || len(m.config.Paths) > 0` (`backup.go:683`) is `true` for ANY file-mode config with `Paths` set, regardless of Retention — so a `Paths`-configured test can never reach the retention-prune branch (`backup.go:798`) even on UNFIXED code, making it pass vacuously both before and after this task's fix. The branch is reachable only for a system-state-ONLY run (`SystemStateEnabled: true`, `Paths` empty). Also, after Task 7 lands, EVERY successful run legitimately writes-then-deletes its own `upload.lease` — so asserting `len(deleteCalls) == 0` outright would break for an unrelated, correct reason. Add to `backup_test.go` (which already imports `systemstate` for `stubCollectSystemState`, defined at `:479-484`):
 ```go
-// D18 §3.5: agent-side retention pruning is removed entirely (unlike the
-// two explicit own-run-prefix exceptions kept in snapshot.go — see
-// TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix... below). This replaces
-// the removed DeleteSnapshot/DeleteSnapshotContext pruning tests: instead of
-// asserting pruning behavior, it asserts NO deletion happens across
-// multiple successful runs even with Retention configured.
+// D18 §3.5: agent-side retention pruning is removed entirely. A
+// system-state-only run is the ONLY config shape that reaches the (now
+// removed) retention-prune branch pre-fix — incrementalDedupeActive is
+// false exactly when SystemStateEnabled && len(Paths)==0 (backup.go:683) —
+// so this is the config that actually exercises the danger, unlike a
+// Paths-configured run which never reaches that branch either way.
 func TestBackupNeverDeletesRemoteObjects_RetentionConfigured(t *testing.T) {
-	tmpDir := t.TempDir()
-	createTempFile(t, tmpDir, "data.txt", "content")
+	systemStateDir := t.TempDir()
+	if err := os.WriteFile(pathpkg.Join(systemStateDir, "services.txt"), []byte("svc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return &systemstate.SystemStateManifest{Platform: "test"}, systemStateDir, nil
+	})
+
 	provider := newMockProvider()
 	mgr := NewBackupManager(BackupConfig{
-		Provider:   provider,
-		Paths:      []string{tmpDir},
-		Retention:  1, // ignored — see GetRetention's doc comment
-		StagingDir: t.TempDir(),
-		AgentID:    "test-device",
+		Provider:           provider,
+		SystemStateEnabled: true,
+		Retention:          1, // ignored — see GetRetention's doc comment
+		StagingDir:         t.TempDir(),
+		AgentID:            "test-device",
 	})
 
 	for i := 0; i < 3; i++ {
@@ -871,113 +1086,102 @@ func TestBackupNeverDeletesRemoteObjects_RetentionConfigured(t *testing.T) {
 			t.Fatalf("RunBackupContext #%d failed: %v", i+1, err)
 		}
 	}
-	if len(provider.deleteCalls) != 0 {
-		t.Fatalf("expected zero Delete calls across successful runs with Retention set, got %d: %v", len(provider.deleteCalls), provider.deleteCalls)
+	// After Task 7, each run's own upload.lease is written then deleted —
+	// the ONLY delete this test may legitimately see. Any delete for a
+	// DIFFERENT run's snapshot id (i.e. anything but that run's own
+	// upload.lease) is the retention-prune bug this test guards against.
+	for _, key := range provider.deleteCalls {
+		if !strings.HasSuffix(key, "/upload.lease") {
+			t.Fatalf("expected deletes to be limited to each run's own upload.lease, got: %s (all: %v)", key, provider.deleteCalls)
+		}
 	}
 }
 ```
 
 Remove `TestDeleteSnapshot_DoesNotDeleteAdjacentPrefix` in `snapshot_test.go` (`:198-230`) and add:
 ```go
-// TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix_NeverAPublishedManifestPrefix
-// pins the §3.5 exception's boundary from both directions: (1) a journal-less
-// stop DOES delete keys, but only under the aborted run's OWN snapshot id —
-// never a sibling prefix that already has a manifest.json (an existing,
-// referenceable snapshot); and (2) proves the ordering guarantee this task's
-// Interfaces section describes — a journal-RESUMED run whose manifest is
-// already published takes Task 6's early-return path and reaches
-// cleanupSnapshotPrefix zero times, never deleting the manifest it just
-// found.
-func TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix_NeverAPublishedManifestPrefix(t *testing.T) {
-	t.Run("journal-less stop deletes only its own snapshot id's keys", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		file1 := createTempFile(t, tmpDir, "file1.txt", "content")
-		provider := newMockProvider()
+// cancelAfterFirstUploadProvider wraps mockProvider and cancels the given
+// CancelFunc right after the FIRST real Upload lands, so an aborted run has
+// something concrete under ITS OWN prefix for the abort cleanup to act on
+// (P3 fix — the previous version of this test never uploaded anything
+// before cancelling, so it could only prove absence-of-harm on an empty
+// prefix, not that own-prefix cleanup actually deletes what it should).
+type cancelAfterFirstUploadProvider struct {
+	*mockProvider
+	cancel   context.CancelFunc
+	uploaded int
+	mu       sync.Mutex
+}
 
-		// Seed a sibling, already-published snapshot that must never be
-		// touched by the aborted run's cleanup.
-		sibling := &Snapshot{
-			ID:    "snapshot-sibling-published",
-			Files: []SnapshotFile{{SourcePath: "/data/other.txt", BackupPath: "snapshots/snapshot-sibling-published/files/other.txt.gz", Size: 1}},
-		}
-		storeManifest(t, provider, sibling)
+func (p *cancelAfterFirstUploadProvider) Upload(localPath, remotePath string) error {
+	err := p.mockProvider.Upload(localPath, remotePath)
+	p.mu.Lock()
+	p.uploaded++
+	first := p.uploaded == 1
+	p.mu.Unlock()
+	if first && p.cancel != nil {
+		p.cancel()
+	}
+	return err
+}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // already stopped before the loop starts
-		files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 7, modTime: time.Now()}}
-		snap, err := createSnapshotWithProgress(ctx, provider, files, nil, nil, nil, nil)
-		if !errors.Is(err, errBackupStopped) {
-			t.Fatalf("err = %v, want errBackupStopped", err)
-		}
-		_ = snap // stopped runs return a nil snapshot; the aborted run's own id is read from deleteCalls below.
+// TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix_NeverAForeignPublishedPrefix
+// pins the §3.5 exception's boundary from both directions (P3 fix): objects
+// are seeded under BOTH the aborted run's own (to-be-cleaned) prefix and a
+// foreign, already-published sibling prefix, and only the former may be
+// deleted. The resume-skips-cleanup property is deliberately NOT duplicated
+// here — Task 6's TestCreateSnapshot_ResumeWithAlreadyPublishedManifest_
+// SkipsUploadAndDelete already asserts zero deletes for that exact scenario
+// with a valid (non-cancelled) context; an earlier draft of this test tried
+// to force that scenario via an already-cancelled context, which cannot
+// pass against this plan's fetchPublishedManifest (it checks ctx.Err()
+// first and fails closed) and was dropped as a P2 fix.
+func TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix_NeverAForeignPublishedPrefix(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content-one")
+	file2 := createTempFile(t, tmpDir, "file2.txt", "content-two")
+	backing := newMockProvider()
 
-		for _, key := range provider.deleteCalls {
-			if strings.HasPrefix(key, "snapshots/snapshot-sibling-published/") {
-				t.Fatalf("abort cleanup deleted a key under a PUBLISHED sibling prefix: %s", key)
-			}
-		}
-		if _, stillThere := provider.files["snapshots/snapshot-sibling-published/manifest.json"]; !stillThere {
-			t.Fatal("sibling published manifest must survive the aborted run's cleanup")
-		}
-	})
+	// Seed a sibling, already-published snapshot that must never be
+	// touched by the aborted run's cleanup.
+	sibling := &Snapshot{
+		ID:    "snapshot-sibling-published",
+		Files: []SnapshotFile{{SourcePath: "/data/other.txt", BackupPath: "snapshots/snapshot-sibling-published/files/other.txt.gz", Size: 1}},
+	}
+	storeManifest(t, backing, sibling)
 
-	t.Run("resumed run with an already-published manifest never reaches cleanupSnapshotPrefix", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		file1 := createTempFile(t, tmpDir, "file1.txt", "content")
-		provider := newMockProvider()
+	ctx, cancel := context.WithCancel(context.Background())
+	provider := &cancelAfterFirstUploadProvider{mockProvider: backing, cancel: cancel}
 
-		journalDir := t.TempDir()
-		journal, _, err := openSnapshotJournal(journalDir, "resume-cleanup-guard-identity", journalMaxAge)
-		if err != nil {
-			t.Fatalf("openSnapshotJournal failed: %v", err)
-		}
-		published := &Snapshot{
-			ID:    journal.snapshotID,
-			Files: []SnapshotFile{{SourcePath: file1, BackupPath: "snapshots/" + journal.snapshotID + "/files/file1.txt.gz", Size: 7}},
-		}
-		storeManifest(t, provider, published)
-		journal.Abandon()
+	files := []backupFile{
+		{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 11, modTime: time.Now()},
+		{sourcePath: file2, snapshotPath: "path_0/file2.txt", size: 11, modTime: time.Now()},
+	}
+	_, err := createSnapshotWithProgress(ctx, provider, files, nil, nil, nil, nil)
+	if !errors.Is(err, errBackupStopped) {
+		t.Fatalf("err = %v, want errBackupStopped", err)
+	}
 
-		journal2, resumed, err := openSnapshotJournal(journalDir, "resume-cleanup-guard-identity", journalMaxAge)
-		if err != nil {
-			t.Fatalf("openSnapshotJournal (resume) failed: %v", err)
+	sawOwnPrefixDelete := false
+	for _, key := range backing.deleteCalls {
+		if strings.HasPrefix(key, "snapshots/snapshot-sibling-published/") {
+			t.Fatalf("abort cleanup deleted a key under a PUBLISHED sibling prefix: %s", key)
 		}
-		if !resumed {
-			t.Fatal("expected the journal to resume")
-		}
-
-		// A cancelled context proves the resume shortcut wins the race
-		// against abortStopped: if cleanupSnapshotPrefix ran here instead,
-		// it would delete the manifest just seeded above.
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 7, modTime: time.Now()}}
-		snap, err := createSnapshotWithProgress(ctx, provider, files, nil, journal2, nil, nil)
-		if err != nil {
-			t.Fatalf("expected the resume shortcut to succeed despite the cancelled context, got err: %v", err)
-		}
-		if snap == nil || snap.ID != journal.snapshotID {
-			t.Fatalf("expected the already-published snapshot back, got %+v", snap)
-		}
-		manifestKey := "snapshots/" + journal.snapshotID + "/manifest.json"
-		if _, stillThere := provider.files[manifestKey]; !stillThere {
-			t.Fatal("resumed run's own already-published manifest must survive — cleanupSnapshotPrefix must never have run")
-		}
-		for _, key := range provider.deleteCalls {
-			if strings.HasPrefix(key, "snapshots/"+journal.snapshotID+"/") {
-				t.Fatalf("cleanupSnapshotPrefix ran for a prefix with an already-published manifest: deleted %s", key)
-			}
-		}
-	})
+		sawOwnPrefixDelete = true
+	}
+	if !sawOwnPrefixDelete {
+		t.Fatal("expected the aborted run's own uploaded file to be cleaned up under its own prefix")
+	}
+	if _, stillThere := backing.files["snapshots/snapshot-sibling-published/manifest.json"]; !stillThere {
+		t.Fatal("sibling published manifest must survive the aborted run's cleanup")
+	}
 }
 ```
-(`strings` is already imported by `snapshot_test.go` — verify before adding if not.)
 
-- [ ] Step 2: Run it, expect FAIL — `TestBackupNeverDeletesRemoteObjects_RetentionConfigured` fails with non-zero delete calls (current retention-prune branch still fires for `Retention:1` since it's only gated on `!incrementalDedupeActive`, and this test uses `Paths` with no prior snapshot so `incrementalDedupeActive` is still true every run in this config... re-check: confirm which sub-case reproduces the CURRENT bug before relying on it — if `incrementalDedupeActive` is true throughout for this config the branch already doesn't fire, in which case this specific test is a regression guard rather than red-first. The second test, `TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix_NeverAPublishedManifestPrefix`'s second subtest, IS red-first against current code: Task 6 doesn't exist yet, so the resumed run calls `abortStopped()` → `cleanupSnapshotPrefix` → deletes the seeded manifest):
+- [ ] Step 2: Run it, expect FAIL — `TestBackupNeverDeletesRemoteObjects_RetentionConfigured` (in `backup_test.go`) fails with a non-`/upload.lease` delete call, since the system-state-only config now correctly reaches the retention-prune branch pre-fix (`backup.go:798`, `!incrementalDedupeActive` is true for this config shape). `TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix_NeverAForeignPublishedPrefix` should already PASS against current (pre-Task-5) code — it exercises `abortStopped`'s existing, UNCHANGED own-prefix cleanup, which this task does not remove; treat any failure here as a signal the test itself has a bug, not as this task's red-first step:
 ```
 cd agent && go test ./internal/backup/ -run 'TestBackupNeverDeletesRemoteObjects_RetentionConfigured|TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix' -v
 ```
-Confirm the resume subtest fails with the manifest missing (`stillThere` false) before implementing — that failure is this task's actual red signal; write Task 6 first if sequencing this task standalone (Tasks are listed in dependency order specifically so Task 6 lands before this test is expected green — if implementing out of order, note the dependency here).
 
 - [ ] Step 3: Implement.
 
@@ -1007,6 +1211,69 @@ Change the stale-journal branch (`:738-749`) — remove ONLY the `cleanupSnapsho
 
 Remove `DeleteSnapshot` (`:972-974`) and `DeleteSnapshotContext` (`:977-1023`) from `snapshot.go` entirely. Leave `cleanupSnapshotPrefix` (`:884-892`) and `listSnapshotPrefixItems` (`:1025-1032`) exactly as they are.
 
+**P2 fix — rewrite the stale-journal test to assert NO deletion.** `TestRunBackupContext_StaleJournalCleansUpRemotePrefixAndRunsFresh` (`backup_test.go:245-300`) currently seeds an orphan object under the stale snapshot's prefix and asserts it GETS deleted (`found` must be `true` at `:295-299`) — that assertion describes the exact behavior this task removes. Rename and rewrite it:
+```go
+// TestRunBackupContext_StaleJournalDiscardedWithoutRemoteCleanup proves the
+// D18 §3.5 fix directly: a journal older than journalMaxAge is discarded
+// and the run proceeds fresh with a brand new snapshot ID, but the STALE
+// journal's remote prefix is left untouched — no agent-side delete, ever,
+// for another run's (even an abandoned one's) prefix. GC's existing
+// manifest-less-prefix rule is the only thing that may eventually reclaim
+// it.
+func TestRunBackupContext_StaleJournalDiscardedWithoutRemoteCleanup(t *testing.T) {
+	restoreMaxAge := setJournalMaxAgeForTest(time.Millisecond)
+	defer restoreMaxAge()
+
+	provider := newMockProvider()
+	stagingDir := t.TempDir()
+	tmpDir := t.TempDir()
+	createTempFile(t, tmpDir, "data.txt", "hello")
+
+	mgr := NewBackupManager(BackupConfig{
+		Provider:   provider,
+		Paths:      []string{tmpDir},
+		StagingDir: stagingDir,
+	})
+
+	identity := backupIdentity(provider, []string{tmpDir})
+	staleJournal, _, err := openSnapshotJournal(stagingDir, identity, time.Hour)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	if err := staleJournal.Record(SnapshotFile{SourcePath: "/gone.txt", Size: 1, ModTime: time.Now()}); err != nil {
+		t.Fatalf("Record failed: %v", err)
+	}
+	staleSnapshotID := staleJournal.snapshotID
+	staleJournal.Abandon()
+
+	orphanKey := path.Join(snapshotRootDir, staleSnapshotID, snapshotFilesDir, "orphan.gz")
+	provider.files[orphanKey] = []byte("orphan")
+
+	time.Sleep(2 * time.Millisecond) // the journal is now older than the shrunk maxAge
+
+	job, err := mgr.RunBackup()
+	if err != nil {
+		t.Fatalf("RunBackup failed: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("job.Status = %q, want %q", job.Status, jobStatusCompleted)
+	}
+	if job.Snapshot == nil {
+		t.Fatal("expected a completed snapshot")
+	}
+	if job.Snapshot.ID == staleSnapshotID {
+		t.Fatal("a stale journal must never resume the old snapshot ID")
+	}
+
+	if len(provider.deleteCalls) != 0 {
+		t.Fatalf("expected zero Delete calls for a discarded stale journal, got: %v", provider.deleteCalls)
+	}
+	if _, stillThere := provider.files[orphanKey]; !stillThere {
+		t.Fatal("the stale journal's orphan object must survive — the agent no longer cleans it up (GC's manifest-less rule is the backstop)")
+	}
+}
+```
+
 Update the comment on `TestRunBackup_IncrementalRetentionDoesNotStrandReferencedObjects` (`backup_test.go:924-933`) — the branch it warns about is now gone, not merely gated:
 ```go
 // Incremental dedupe (now unconditional) carries an unchanged file's bytes
@@ -1023,7 +1290,7 @@ Update the comment on `TestRunBackup_IncrementalRetentionDoesNotStrandReferenced
 
 - [ ] Step 4: Run, expect PASS (and confirm the two removed functions leave no dangling references while the two kept ones still compile and are still called):
 ```
-cd agent && go build ./... && go test ./internal/backup/... ./cmd/breeze-backup/... -run 'TestBackupNeverDeletesRemoteObjects|TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix|TestRunBackup_IncrementalRetentionDoesNotStrandReferencedObjects' -v
+cd agent && go build ./... && go test ./internal/backup/... ./cmd/breeze-backup/... -run 'TestBackupNeverDeletesRemoteObjects|TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix|TestRunBackup_IncrementalRetentionDoesNotStrandReferencedObjects|TestRunBackupContext_StaleJournalDiscardedWithoutRemoteCleanup' -v
 ```
 
 - [ ] Step 5: Commit:
@@ -1032,18 +1299,83 @@ git add agent/internal/backup/backup.go agent/internal/backup/snapshot.go agent/
 git commit -m "feat(agent/backup): remove agent-side retention pruning and stale-journal cleanup (D18 §3.5)"
 ```
 
-### Task 6: Resume with an already-published manifest — skip re-upload entirely
+### Task 6: Resume with an already-published manifest — skip re-upload entirely, fail CLOSED on ambiguous errors, run BEFORE source validation
+
+Two corrections from independent review folded in here:
+- **P1 (fail-open bug):** the original design treated ANY download failure — including a transient network error — as "manifest absent, safe to upload". That is wrong: a transient error must never be conflated with a confirmed-absent object, since guessing wrong risks silently overwriting/duplicating a manifest that genuinely exists. Only a POSITIVELY CONFIRMED not-found may proceed to upload; every other error must abort the run untouched. This requires a way to distinguish "confirmed absent" from "some other failure" across providers — added as part of this task (`providers.ErrObjectNotFound`).
+- **P2 (ordering bug):** the resume check must run BEFORE `RunBackupContext`'s source-scan short-circuits (`backup.go:641`'s `len(files) == 0` exit, reached before `createSnapshotWithProgress` is ever called) and before `createSnapshotWithProgress`'s own `len(files) == 0` reject (`snapshot.go:371`). Otherwise a resumed run whose source has since vanished (disk unplugged, volume gone) would report failure/skipped instead of the success it should report, since the manifest was already durably published. This means the journal-open block (currently `backup.go:713-756`) must be HOISTED to before VSS/scan, and the resume check performed there — not solely inside `createSnapshotWithProgress`, which by construction can't run early enough for this ordering to hold when reached only from `RunBackupContext`.
 
 **Files:**
-- Modify `agent/internal/backup/snapshot.go` (`createSnapshotWithProgress`, insert after the `prefix := path.Join(...)` line, currently `:388`)
-- Test: `agent/internal/backup/snapshot_test.go` (new tests)
+- Modify `agent/internal/backup/providers/interface.go` (new `ErrObjectNotFound` sentinel)
+- Modify `agent/internal/backup/providers/local.go` (`Download`, `:87-107`) and `agent/internal/backup/providers/s3.go` (`Download`, `:135-165`) — wrap confirmed-not-found errors
+- Modify `agent/internal/backup/backup.go` — hoist the journal-open block (`:713-756`) from after the scan to right after `defer stopRunKeepalive()` (`:408`), before the VSS block (`:410`); add the resume-shortcut check there
+- Modify `agent/internal/backup/snapshot.go` (`createSnapshotWithProgress`, insert after the `prefix := path.Join(...)` line, currently `:390`, as a SECOND, defensive check — see design note)
+- Test: `agent/internal/backup/snapshot_test.go`, `agent/internal/backup/backup_test.go` (new tests), `agent/internal/backup/providers/local_test.go`, `agent/internal/backup/providers/s3_test.go` (new tests for the sentinel wrapping)
 
 **Interfaces:**
-- Produces (unexported): `fetchPublishedManifest(ctx context.Context, provider providers.BackupProvider, prefix string) (*Snapshot, bool)`
+- Produces: `providers.ErrObjectNotFound` (sentinel `error`, `providers/interface.go`) — a provider's `Download` wraps it (`fmt.Errorf("%w: ...", providers.ErrObjectNotFound, ...)`) only when it can POSITIVELY confirm the object doesn't exist.
+- Produces (unexported): `fetchPublishedManifest(ctx context.Context, provider providers.BackupProvider, prefix string) (snapshot *Snapshot, err error)` — **three-state**, not two: `(snapshot, nil)` = confirmed present and decodable; `(nil, nil)` = confirmed absent (`errors.Is(downloadErr, providers.ErrObjectNotFound)`), safe to proceed with upload; `(nil, err)` = anything else (network failure, decode error, corrupt manifest) — caller MUST fail the run closed, uploading and deleting nothing.
+- Design note: the check now lives in TWO places by design, not one. `RunBackupContext` (`backup.go`) performs it early (before scan) as the PRIMARY enforcement point — this is what makes the "source gone" ordering correct. `createSnapshotWithProgress` keeps a second, identical check (as before) so its own direct unit tests (which call it without going through `RunBackupContext`) still exercise and prove the behavior in isolation. Both call the same `fetchPublishedManifest` helper, so there is one implementation, not two.
 
-- [ ] Step 1: Write the failing test:
+- [ ] Step 1: Write the failing tests.
+
+**Provider-level (new files or extend existing `_test.go` files) — proves the sentinel wrapping:**
 ```go
-func TestCreateSnapshot_ResumeWithAlreadyPublishedManifest_SkipsUpload(t *testing.T) {
+// In agent/internal/backup/providers/local_test.go
+func TestLocalProvider_Download_MissingFileWrapsErrObjectNotFound(t *testing.T) {
+	p := NewLocalProvider(t.TempDir())
+	err := p.Download("snapshots/does-not-exist/manifest.json", filepath.Join(t.TempDir(), "out.json"))
+	if err == nil {
+		t.Fatal("expected an error for a missing object")
+	}
+	if !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("err = %v, want it to wrap ErrObjectNotFound", err)
+	}
+}
+
+// In agent/internal/backup/providers/s3_test.go — requires whatever fake S3
+// backend / httptest server this file's existing tests already use to
+// return a 404/NoSuchKey response; mirror that pattern (grep the file
+// first for its existing GetObject-mocking approach) rather than hitting
+// real S3. If no such fake exists for Download today, add the minimal one
+// needed to return a NoSuchKey-shaped error.
+func TestS3Provider_Download_NoSuchKeyWrapsErrObjectNotFound(t *testing.T) {
+	// (fill in using this file's existing S3 test-double pattern)
+}
+```
+
+**Resume/ordering (`snapshot_test.go`):**
+```go
+func TestFetchPublishedManifest_ConfirmedAbsent_ReturnsNilNil(t *testing.T) {
+	provider := newMockProvider() // never seeded with the manifest key
+	snap, err := fetchPublishedManifest(context.Background(), provider, "snapshots/never-published")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap != nil {
+		t.Fatalf("expected nil snapshot for a confirmed-absent manifest, got %+v", snap)
+	}
+}
+
+// mockProvider needs a way to simulate a TRANSIENT (non-not-found) download
+// failure, distinct from "key genuinely absent" — add a `downloadErr error`
+// override if the existing field always represents a generic failure (check
+// mockProvider.downloadErr's current semantics first; if it's already a
+// plain, non-ErrObjectNotFound error by default, it already models this
+// case correctly with no changes needed).
+func TestFetchPublishedManifest_TransientError_FailsClosed_NotTreatedAsAbsent(t *testing.T) {
+	provider := newMockProvider()
+	provider.downloadErr = errors.New("connection reset by peer") // NOT ErrObjectNotFound
+	snap, err := fetchPublishedManifest(context.Background(), provider, "snapshots/some-id")
+	if err == nil {
+		t.Fatal("expected a non-nil error for a transient failure — must NOT be treated as confirmed absence")
+	}
+	if snap != nil {
+		t.Fatalf("expected nil snapshot on error, got %+v", snap)
+	}
+}
+
+func TestCreateSnapshot_ResumeWithAlreadyPublishedManifest_SkipsUploadAndDelete(t *testing.T) {
 	tmpDir := t.TempDir()
 	file1 := createTempFile(t, tmpDir, "file1.txt", "content one")
 	provider := newMockProvider()
@@ -1065,9 +1397,6 @@ func TestCreateSnapshot_ResumeWithAlreadyPublishedManifest_SkipsUpload(t *testin
 	storeManifest(t, provider, published)
 	preUploadCount := len(provider.uploadCalls)
 
-	// Re-open as a resume (same identity, same dir): openSnapshotJournal
-	// would normally do this on a real second process start. Emulate it by
-	// re-opening — resumed should be true since createdAt is fresh.
 	journal.Abandon()
 	journal2, resumed, err := openSnapshotJournal(journalDir, "resume-published-identity", journalMaxAge)
 	if err != nil {
@@ -1088,66 +1417,209 @@ func TestCreateSnapshot_ResumeWithAlreadyPublishedManifest_SkipsUpload(t *testin
 	if len(provider.uploadCalls) != preUploadCount {
 		t.Fatalf("expected zero NEW uploads on an already-published resume, got %d new calls", len(provider.uploadCalls)-preUploadCount)
 	}
+	if len(provider.deleteCalls) != 0 {
+		t.Fatalf("expected zero deletes on an already-published resume, got %v", provider.deleteCalls)
+	}
 }
 ```
 
-- [ ] Step 2: Run it, expect FAIL (current code re-uploads `file1.txt` since it isn't in the journal's resumed entries):
+**Source-gone ordering, at the `RunBackupContext` level (`backup_test.go`) — this is the test that actually proves the P2 fix:**
+```go
+func TestRunBackupContext_ResumeWithPublishedManifest_SucceedsEvenIfSourceGone(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content")
+	provider := newMockProvider()
+	stagingDir := t.TempDir()
+
+	identity := backupIdentity(provider, []string{tmpDir})
+	journal, _, err := openSnapshotJournal(stagingDir, identity, journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	published := &Snapshot{
+		ID:    journal.snapshotID,
+		Files: []SnapshotFile{{SourcePath: file1, BackupPath: "snapshots/" + journal.snapshotID + "/files/file1.txt.gz", Size: 7}},
+		Size:  7,
+	}
+	storeManifest(t, provider, published)
+	journal.Abandon()
+
+	// The source is now GONE — remove the file (and its directory) the
+	// configured path pointed at, so a fresh scan would find nothing and,
+	// pre-fix, hit backup.go:641's len(files)==0 early exit BEFORE the
+	// journal/resume check ever ran.
+	if err := os.RemoveAll(tmpDir); err != nil {
+		t.Fatalf("failed to remove source dir: %v", err)
+	}
+
+	mgr := NewBackupManager(BackupConfig{
+		Provider:   provider,
+		Paths:      []string{tmpDir},
+		StagingDir: stagingDir,
+	})
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("expected the resume shortcut to succeed despite the gone source, got err: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("job.Status = %q, want %q (source-gone must not prevent reporting the already-published manifest)", job.Status, jobStatusCompleted)
+	}
+	if job.Snapshot == nil || job.Snapshot.ID != journal.snapshotID {
+		t.Fatalf("expected the already-published snapshot back, got %+v", job.Snapshot)
+	}
+}
 ```
-cd agent && go test ./internal/backup/ -run TestCreateSnapshot_ResumeWithAlreadyPublishedManifest_SkipsUpload -v
+
+- [ ] Step 2: Run it, expect FAIL — `TestLocalProvider_Download_MissingFileWrapsErrObjectNotFound` fails to compile (`undefined: ErrObjectNotFound`); `TestFetchPublishedManifest_TransientError_FailsClosed_NotTreatedAsAbsent` fails to compile (`undefined: fetchPublishedManifest`, or once Step 3 lands, fails because the old two-state version treats the transient error as absence); `TestRunBackupContext_ResumeWithPublishedManifest_SucceedsEvenIfSourceGone` fails against CURRENT/unhoisted code with `job.Status = "skipped"` (or `"failed"`), proving the ordering bug:
+```
+cd agent && go test ./internal/backup/... -run 'ErrObjectNotFound|FetchPublishedManifest|TestCreateSnapshot_ResumeWithAlreadyPublishedManifest|TestRunBackupContext_ResumeWithPublishedManifest' -v
 ```
 
 - [ ] Step 3: Implement.
 
-Add near `publishSnapshotManifest` in `snapshot.go`:
+In `agent/internal/backup/providers/interface.go`, add:
 ```go
-// fetchPublishedManifest downloads and decodes prefix's manifest.json if it
-// exists, returning (snapshot, true) on success. ANY failure — download
-// error (including a genuine "not found"), or decode error — returns
-// (nil, false): a resume whose manifest isn't there yet just proceeds to
-// upload normally, exactly like every other fail-open check in this
-// package.
-func fetchPublishedManifest(ctx context.Context, provider providers.BackupProvider, prefix string) (*Snapshot, bool) {
+// ErrObjectNotFound is a sentinel a BackupProvider's Download should wrap
+// (via fmt.Errorf("%w: ...", ErrObjectNotFound, ...)) ONLY when it can
+// POSITIVELY confirm the requested remote object does not exist — never for
+// any other failure (network, permission, decode, timeout). Callers use
+// errors.Is(err, ErrObjectNotFound) to distinguish "confirmed absent, safe
+// to proceed" from "unknown, must fail closed" — see backup.fetchPublished
+// Manifest, whose entire correctness depends on this distinction never
+// being blurred. LocalProvider and S3Provider (the two providers reachable
+// via the backup_run payload today, per exec_backup.go) implement this;
+// other providers are not wired to it yet and any caller depending on it
+// must treat their errors as "not confirmed absent" (the safe default).
+var ErrObjectNotFound = errors.New("backup provider: object not found")
+```
+(Add `"errors"` to that file's imports if not already present.)
+
+In `agent/internal/backup/providers/local.go`, change `Download` (`:87-107`) to check for a missing source file and wrap it:
+```go
+// Download retrieves a file from the local backup store.
+func (p *LocalProvider) Download(remotePath, localPath string) error {
+	if p.BasePath == "" {
+		return errors.New("local provider base path is required")
+	}
+	if remotePath == "" {
+		return errors.New("remote path is required")
+	}
+	if localPath == "" {
+		return errors.New("local destination path is required")
+	}
+
+	srcPath, err := containedPath(p.BasePath, remotePath)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return fmt.Errorf("failed to create destination directory: %w", err)
+	}
+
+	var downloadErr error
+	if strings.HasSuffix(remotePath, ".gz") {
+		downloadErr = decompressFile(srcPath, localPath)
+	} else {
+		downloadErr = copyFileContext(context.Background(), srcPath, localPath)
+	}
+	if downloadErr != nil && errors.Is(downloadErr, fs.ErrNotExist) {
+		// %w wrapping through decompressFile/copyFileContext's own
+		// fmt.Errorf calls preserves the underlying os.PathError, so
+		// errors.Is against fs.ErrNotExist still sees through the chain —
+		// this positively confirms the source object is absent, not merely
+		// that SOME step failed.
+		return fmt.Errorf("%w: %s", ErrObjectNotFound, downloadErr)
+	}
+	return downloadErr
+}
+```
+(Add `"io/fs"` to `local.go`'s imports.)
+
+In `agent/internal/backup/providers/s3.go`, change `Download` (`:135-165`) to check for `NoSuchKey`:
+```go
+	resp, err := client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.Bucket),
+		Key:    aws.String(remotePath),
+	})
+	if err != nil {
+		var noSuchKey *s3types.NoSuchKey
+		if errors.As(err, &noSuchKey) {
+			return fmt.Errorf("%w: %s", ErrObjectNotFound, err)
+		}
+		return fmt.Errorf("failed to get s3 object: %w", err)
+	}
+```
+(Note: some S3-compatible backends return a generic API error with `Code() == "NoSuchKey"` rather than the typed `s3types.NoSuchKey` struct — this typed check does not catch that case. Flagged in Open Questions; not fixed in this wave to avoid pulling `github.com/aws/smithy-go` from an indirect to a direct `go.mod` dependency for a single error-classification edge case.)
+
+In `agent/internal/backup/snapshot.go`, replace the earlier two-state `fetchPublishedManifest` design with the three-state contract:
+```go
+// fetchPublishedManifest checks whether prefix's manifest.json has already
+// been published, distinguishing three outcomes (P1 fix — a transient
+// error must NEVER be treated the same as confirmed absence):
+//   - (snapshot, nil): confirmed present and decodable — the caller's
+//     resume-shortcut must return this snapshot, uploading nothing.
+//   - (nil, nil): CONFIRMED absent (providers.ErrObjectNotFound) — safe to
+//     proceed with a normal upload.
+//   - (nil, err): anything else (network error, decode error, corrupt
+//     manifest, context already done) — the caller MUST fail the run
+//     closed: upload nothing, delete nothing, since we genuinely don't
+//     know whether a real manifest exists at this prefix.
+func fetchPublishedManifest(ctx context.Context, provider providers.BackupProvider, prefix string) (*Snapshot, error) {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
-			return nil, false
+			return nil, err
 		}
 	}
 	manifestKey := path.Join(prefix, snapshotManifestKey)
 	tempFile, err := os.CreateTemp("", "resume-manifest-*.json")
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("failed to create temp file for resume manifest check: %w", err)
 	}
 	tempPath := tempFile.Name()
 	_ = tempFile.Close()
 	defer os.Remove(tempPath)
 
 	if err := provider.Download(manifestKey, tempPath); err != nil {
-		return nil, false
+		if errors.Is(err, providers.ErrObjectNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to check for an already-published manifest at %s: %w", manifestKey, err)
 	}
 	data, err := os.ReadFile(tempPath)
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("failed to read downloaded resume manifest: %w", err)
 	}
 	var snapshot Snapshot
 	if err := json.Unmarshal(data, &snapshot); err != nil {
-		return nil, false
+		return nil, fmt.Errorf("failed to decode resume manifest %s: %w", manifestKey, err)
 	}
-	return &snapshot, true
+	return &snapshot, nil
 }
 ```
 
-In `createSnapshotWithProgress`, immediately after `prefix := path.Join(snapshotRootDir, snapshot.ID)` (currently line 388, right before `var errs []error`):
+In `createSnapshotWithProgress`, immediately after `prefix := path.Join(snapshotRootDir, snapshot.ID)` (currently line 390, right before `var errs []error`), add the SECOND (defensive, unit-testable-in-isolation) check:
 ```go
 	prefix := path.Join(snapshotRootDir, snapshot.ID)
 
 	// Resume-with-already-published-manifest (D18 §3.5): a prior attempt
 	// may have published manifest.json and then crashed before
-	// journal.Complete() removed the journal (or before Abandon even ran).
-	// Re-uploading now would overwrite a COMPLETED, restorable manifest —
-	// treat its presence as the definitive "this run already finished"
-	// signal and return it as-is, uploading nothing.
+	// journal.Complete() removed the journal. Re-uploading now would
+	// overwrite a COMPLETED, restorable manifest — treat its confirmed
+	// presence as "this run already finished" and return it as-is,
+	// uploading nothing. This is a SECOND check: RunBackupContext
+	// (backup.go) performs the same one earlier, before source scanning,
+	// so a source-gone resumed run reports success instead of hitting the
+	// len(files)==0 reject below first — see this task's ordering note.
+	// Kept here too so direct callers of this function (this package's own
+	// unit tests) still exercise and prove the behavior without going
+	// through RunBackupContext.
 	if journal != nil && journal.resumed {
-		if existing, ok := fetchPublishedManifest(ctx, provider, prefix); ok {
+		existing, fetchErr := fetchPublishedManifest(ctx, provider, prefix)
+		if fetchErr != nil {
+			return nil, fmt.Errorf("resume check failed, refusing to guess whether %s was already published: %w", prefix, fetchErr)
+		}
+		if existing != nil {
 			log.Info("resume: manifest already published, skipping upload",
 				"snapshotId", existing.ID,
 				"files", len(existing.Files),
@@ -1158,30 +1630,86 @@ In `createSnapshotWithProgress`, immediately after `prefix := path.Join(snapshot
 			completed = true
 			return existing, nil
 		}
+		// existing == nil, fetchErr == nil: confirmed absent — fall through
+		// to a normal upload below.
 	}
 
 	var errs []error
 ```
 
+In `agent/internal/backup/backup.go`, HOIST the journal-open block. Move the existing block currently at `:713-756` (from the `// Checkpoint journal:` comment through the closing `}` of the `if journal != nil { ... }` logging block) to immediately after `defer stopRunKeepalive()` (`:408`), before the `// VSS:` comment (`:410`). Immediately after the moved block, insert the early resume-shortcut check:
+```go
+	// (moved block: journal open + stale-journal warn + resumed-journal log,
+	// unchanged content from the original :713-756, minus the
+	// cleanupSnapshotPrefix call already removed by Task 5)
+
+	// Resume-with-already-published-manifest, checked BEFORE any source
+	// scanning (P2 fix): a resumed run whose manifest is already published
+	// must report success even if the configured source has since vanished
+	// — the len(files)==0 exits later in this function (and in
+	// createSnapshotWithProgress) must never get a chance to fail this run
+	// first. See fetchPublishedManifest's three-state contract: only a
+	// CONFIRMED-absent result falls through to a normal run; any other
+	// error fails the job closed right here.
+	if journal != nil && resumedJournal {
+		prefix := path.Join(snapshotRootDir, journal.snapshotID)
+		existing, fetchErr := fetchPublishedManifest(runCtx, m.config.Provider, prefix)
+		if fetchErr != nil {
+			job.Status = jobStatusFailed
+			job.CompletedAt = time.Now().UTC()
+			job.Error = fmt.Errorf("resume check failed, refusing to guess whether %s was already published: %w", prefix, fetchErr)
+			return job, job.Error
+		}
+		if existing != nil {
+			log.Info("resume: manifest already published, skipping the entire run",
+				"snapshotId", existing.ID,
+				"files", len(existing.Files),
+			)
+			if err := journal.Complete(); err != nil {
+				log.Warn("failed to remove completed checkpoint journal", "error", err.Error())
+			}
+			job.Status = jobStatusCompleted
+			job.CompletedAt = time.Now().UTC()
+			job.Snapshot = existing
+			job.FilesBackedUp = len(existing.Files)
+			job.BytesBackedUp = existing.Size
+			for _, f := range existing.Files {
+				if isReferenceEntry(f, existing.ID) {
+					job.ReferencedFiles++
+					job.ReferencedBytes += f.Size
+				}
+			}
+			return job, nil
+		}
+		// existing == nil, fetchErr == nil: confirmed absent — proceed to
+		// VSS/scan/upload normally, reusing this SAME journal (no second
+		// open) all the way down to createSnapshotWithProgress's call site.
+	}
+```
+`path` is already imported by `backup.go` — verify (`grep -n '"path"' agent/internal/backup/backup.go`); if the file imports only `path/filepath` today, add a plain `"path"` import alongside it (`path.Join` and `path/filepath`'s `filepath.Join` are different packages — `snapshotRootDir`/prefix construction elsewhere in this package uses `path.Join`, e.g. `snapshot.go:390`, so match that convention here, not `filepath.Join`).
+
+Remove the now-redundant original journal-open block from its old location (the code has moved, not duplicated) — the `createSnapshotWithProgress` call site (originally `:758`) now simply reuses the `journal`/`resumedJournal` variables declared up top; no `openSnapshotJournal` call remains at the bottom of the function.
+
 - [ ] Step 4: Run, expect PASS:
 ```
-cd agent && go test ./internal/backup/ -run TestCreateSnapshot_ResumeWithAlreadyPublishedManifest_SkipsUpload -v
+cd agent && go build ./... && go test ./internal/backup/... -run 'ErrObjectNotFound|FetchPublishedManifest|TestCreateSnapshot_ResumeWithAlreadyPublishedManifest|TestRunBackupContext_ResumeWithPublishedManifest' -v
 ```
 
 - [ ] Step 5: Commit:
 ```
-git add agent/internal/backup/snapshot.go agent/internal/backup/snapshot_test.go
-git commit -m "feat(agent/backup): skip re-upload when resume finds an already-published manifest"
+git add agent/internal/backup/providers/interface.go agent/internal/backup/providers/local.go agent/internal/backup/providers/s3.go agent/internal/backup/backup.go agent/internal/backup/snapshot.go agent/internal/backup/snapshot_test.go agent/internal/backup/backup_test.go agent/internal/backup/providers/local_test.go agent/internal/backup/providers/s3_test.go
+git commit -m "feat(agent/backup): resume-with-published-manifest runs before source validation, fails closed on ambiguous errors"
 ```
 
 ### Task 7: `upload.lease` heartbeat — write during upload, delete after publish
 
 **Files:**
-- Modify `agent/internal/backup/snapshot.go` (`createSnapshotWithProgress`, alongside the existing progress-keepalive goroutine at `:433-452`, and at the two successful-publish points: normal completion `:782-796` and `abortSourceGone`'s partial-publish branch `:547-566`)
+- Modify `agent/internal/backup/snapshot.go` (`createSnapshotWithProgress`, alongside the existing progress-keepalive goroutine at `:433-452`, and at the two successful-publish points: normal completion `:784-796` and `abortSourceGone`'s partial-publish branch `:548-566` — re-verified line numbers)
 - Test: `agent/internal/backup/snapshot_test.go` (new tests)
 
 **Interfaces:**
 - Produces (unexported): `refreshUploadLease(ctx context.Context, provider providers.BackupProvider, leaseKey string)`
+- **P2 fix — bounded, cancellable refreshes:** each refresh call gets its OWN context, derived from a dedicated `leaseCtx` (not the run's raw `ctx`) with a 60s timeout, so a single stalled PUT can never block longer than 60s. `stopLeaseRefresh` cancels `leaseCtx` directly (not just a bare `close(leaseStop)` channel) so an in-flight refresh's context becomes `Done` immediately on stop, rather than `stopLeaseRefresh` waiting out whatever timeout happened to be in flight.
 
 - [ ] Step 1: Write the failing test (use a short interval via a test seam, and a small local fake that sleeps on the FIRST file upload so the lease ticker has time to fire — `blockAfterNProvider` (`snapshot_test.go:743-778`) blocks until `ctx.Done()` rather than for a fixed duration, so it doesn't fit this test; a purpose-built fake is simpler than adapting it):
 ```go
@@ -1297,22 +1825,24 @@ func refreshUploadLease(ctx context.Context, provider providers.BackupProvider, 
 }
 ```
 
-In `createSnapshotWithProgress`, right after the existing progress-keepalive goroutine block (`:433-452`, the `if onProgress != nil { ... }` block), add a second, unconditional (runs regardless of `onProgress`) goroutine:
+In `createSnapshotWithProgress`, right after the existing progress-keepalive goroutine block (`:433-452`, the `if onProgress != nil { ... }` block), add a second, unconditional (runs regardless of `onProgress`) goroutine. **P2 fix**: each refresh gets its own 60s-bounded context derived from a dedicated `leaseCtx`, and `stopLeaseRefresh` cancels `leaseCtx` (not merely a bare channel close) so a stalled in-flight PUT is interrupted immediately on stop rather than making the caller wait out the full 60s:
 ```go
 	// upload.lease heartbeat (D18 §3.4): refresh a tiny marker object every
 	// uploadLeaseInterval while uploading, so GC's manifest-less-prefix
 	// window keeps extending for a legitimately slow multi-day single-file
-	// upload. Stopped on completion (stopLeaseRefresh, called exactly once
-	// via leaseStopOnce) or ctx cancellation. Skipped entirely by the
+	// upload. leaseCtx (derived from ctx) is cancelled by stopLeaseRefresh —
+	// called exactly once via leaseStopOnce, on completion or ctx
+	// cancellation — which immediately interrupts any in-flight refresh
+	// rather than waiting out its 60s bound. Skipped entirely by the
 	// resume-already-published shortcut above, since that path returns
 	// before this point.
 	leaseKey := path.Join(prefix, "upload.lease")
-	leaseStop := make(chan struct{})
+	leaseCtx, leaseCancel := context.WithCancel(ctx)
 	leaseDone := make(chan struct{})
 	var leaseStopOnce sync.Once
 	stopLeaseRefresh := func() {
 		leaseStopOnce.Do(func() {
-			close(leaseStop)
+			leaseCancel()
 			<-leaseDone
 		})
 	}
@@ -1322,12 +1852,16 @@ In `createSnapshotWithProgress`, right after the existing progress-keepalive gor
 		defer ticker.Stop()
 		for {
 			select {
-			case <-leaseStop:
-				return
-			case <-ctx.Done():
+			case <-leaseCtx.Done():
 				return
 			case <-ticker.C:
-				refreshUploadLease(ctx, provider, leaseKey)
+				// Each refresh is bounded to 60s AND tied to leaseCtx, so
+				// stopLeaseRefresh's leaseCancel() unblocks it immediately
+				// instead of this goroutine sitting in a stalled PUT for up
+				// to 60s after the caller asked it to stop.
+				refreshCtx, cancel := context.WithTimeout(leaseCtx, 60*time.Second)
+				refreshUploadLease(refreshCtx, provider, leaseKey)
+				cancel()
 			}
 		}
 	}()
@@ -1371,15 +1905,20 @@ git commit -m "feat(agent/backup): refresh an upload.lease heartbeat during uplo
 - Modify `apps/api/src/services/backupAgentContract.test.ts`
 
 **Interfaces:**
-- Consumes (source-text grep only, no import): Go field tags `baseSnapshotId`/`publishLeaseExpiresAt` in `exec_backup.go`; Go `publishMargin`/`uploadLeaseInterval` in `snapshot.go`; whatever W01 names the equivalent TS constants (grepped, not imported, so this file compiles today even though those TS names don't exist yet).
+- Consumes: `BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS` — a REAL import from `apps/api/src/jobs/backupRetention.ts` (it already exists today, confirmed via `grep -n "export const BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS" apps/api/src/jobs/backupRetention.ts`), so the `uploadLeaseInterval` assertion is an ACTUAL comparison against the live constant, not two independently-hardcoded literals that merely happen to agree. `BACKUP_PUBLISH_MARGIN_MS` does NOT exist anywhere in `apps/api` yet (it's spec §3.4/W02's constant) — it CANNOT be imported (a missing named export fails TypeScript compilation immediately, unlike a runtime `skipIf`), so that comparison is gated by source-text regex the same way the file's existing `BACKUP_GC_AGENT_JOURNAL_MAX_AGE_MS` check is (`:33-42`), and will need a follow-up edit once W02 lands to switch to a real import (noted in Open Questions).
 
-- [ ] Step 1: Write the failing test — append to `backupAgentContract.test.ts`:
+- [ ] Step 1: Write the failing test — append to `backupAgentContract.test.ts`. Add the import alongside the file's existing imports at the top:
+```ts
+import { BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS } from '../jobs/backupRetention';
+```
+Then:
 ```ts
 describe('backup Go<->TS contract — D18 server-owned base payload fields', () => {
-  it('agent exec_backup.go still decodes baseSnapshotId and publishLeaseExpiresAt from the backup_run payload', () => {
+  it('agent exec_backup.go decodes baseSnapshotId/publishLeaseExpiresAt and rejects server-owned mode without a lease', () => {
     const src = readRepoFile('agent/cmd/breeze-backup/exec_backup.go');
     expect(src).toMatch(/BaseSnapshotID\s*\*string\s*`json:"baseSnapshotId"`/);
     expect(src).toMatch(/PublishLeaseExpiresAt\s*string\s*`json:"publishLeaseExpiresAt"`/);
+    expect(src).toMatch(/BaseSnapshotID != nil && publishLeaseExpiresAt\.IsZero\(\)/);
   });
 
   // Gated on W01 having landed: apps/api/src/jobs/backupWorker.ts does not
@@ -1398,20 +1937,36 @@ describe('backup Go<->TS contract — D18 server-owned base payload fields', () 
     },
   );
 
-  it('agent publishMargin is 1 hour and stays strictly under the manifest-less GC window', () => {
+  it('agent publishMargin is 1 hour', () => {
     const src = readRepoFile('agent/internal/backup/snapshot.go');
     expect(src).toMatch(/publishMargin\s*=\s*1\s*\*\s*time\.Hour/);
   });
 
-  it('agent uploadLeaseInterval (15 min) stays well under the 9-day manifest-less GC window', () => {
-    const src = readRepoFile('agent/internal/backup/snapshot.go');
-    expect(src).toMatch(/uploadLeaseInterval\s*=\s*15\s*\*\s*time\.Minute/);
-    // 15 minutes must be at least an order of magnitude under the 9-day
-    // window (journalMaxAge 7d + 48h grace) so a slow upload has many
-    // refresh opportunities before the prefix could be swept.
+  // BACKUP_PUBLISH_MARGIN_MS is W02's constant (spec §3.4) and does not
+  // exist in apps/api yet as of this wave (confirmed 2026-09-09) — it
+  // CANNOT be imported here (an import of a non-existent export fails
+  // TypeScript compilation outright, unlike a runtime skip), so this is
+  // gated by source-text regex, mirroring this file's existing
+  // BACKUP_GC_AGENT_JOURNAL_MAX_AGE_MS pattern (:33-42). When W02 adds the
+  // real export, switch this to a real import + direct equality check
+  // (see Open Questions) — until then this only proves the AGENT side.
+  const retentionSrc = readRepoFile('apps/api/src/jobs/backupRetention.ts');
+  const apiHasPublishMargin = /BACKUP_PUBLISH_MARGIN_MS/.test(retentionSrc);
+  it.skipIf(!apiHasPublishMargin)(
+    'API BACKUP_PUBLISH_MARGIN_MS equals 1 hour (3,600,000 ms), matching the agent publishMargin',
+    () => {
+      expect(retentionSrc).toMatch(/BACKUP_PUBLISH_MARGIN_MS\s*=\s*60\s*\*\s*60\s*\*\s*1000\b/);
+    },
+  );
+
+  it('agent uploadLeaseInterval (15 min) stays well under the ACTUAL API manifest-less GC window', () => {
+    const agentSrc = readRepoFile('agent/internal/backup/snapshot.go');
+    expect(agentSrc).toMatch(/uploadLeaseInterval\s*=\s*15\s*\*\s*time\.Minute/);
     const FIFTEEN_MIN_MS = 15 * 60 * 1000;
-    const NINE_DAYS_MS = 9 * 24 * 60 * 60 * 1000;
-    expect(FIFTEEN_MIN_MS).toBeLessThan(NINE_DAYS_MS / 100);
+    // Real comparison against the imported constant (currently 9 days:
+    // journalMaxAge 7d + BACKUP_GC_GRACE_MS 48h) — not two independent
+    // literals that happen to agree today.
+    expect(FIFTEEN_MIN_MS).toBeLessThan(BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS / 100);
   });
 });
 ```
@@ -1439,15 +1994,20 @@ git commit -m "test(api): pin the D18 server-owned-base payload field names and 
 
 Not a code task — recorded here because the plan brief requires verifying it, and the finding is doc-only (see Open Questions).
 
-`devices.backup_version` is populated from `breeze-backup --version`'s stdout (`agent/internal/heartbeat/backup_version.go:13-120`), which prints `main.version` (`agent/cmd/breeze-backup/main.go:36`), a build-time value injected via `-ldflags "-X main.version=$(VERSION)"` (`agent/Makefile:2-8`; release builds go through `agent/scripts/build-edition.sh` per the Makefile's own comment at `:4-6`). **No code in this wave sets or changes that value** — it is set by whatever release tag builds the binary that ships W03's changes. There is nothing to implement here; the release process must simply ensure the binary that carries this wave's changes is built with `VERSION` set to that release's number, so that W02's future capability gate (a `BACKUP_SERVER_BASE_MIN_HELPER_VERSION`-style constant, not yet added) can compare against it correctly. Flagged in Open Questions.
+`devices.backup_version` is populated from `breeze-backup --version`'s stdout (`agent/internal/heartbeat/backup_version.go:13-120`, the actual `exec.CommandContext(...).Output()` call at `:160`), which prints `main.version` (`agent/cmd/breeze-backup/main.go:36`), a build-time value injected via `-ldflags "-X main.version=$(VERSION)"` (`agent/Makefile:2-8`; release builds go through `agent/scripts/build-edition.sh` per the Makefile's own comment at `:4-6`). **No code in this wave sets or changes that value** — it is set by whatever release tag builds the binary that ships W03's changes. There is nothing to implement here; the release process must simply ensure the binary that carries this wave's changes is built with `VERSION` set to that release's number, so that W02's future capability gate (a `BACKUP_SERVER_BASE_MIN_HELPER_VERSION`-style constant, not yet added) can compare against it correctly. Flagged in Open Questions.
 
 ## Task 10: Wave verification
 
 **Files:** none (verification only)
 
-- [ ] Run the full agent backup package + breeze-backup command suite with race detection:
+- [ ] Run the full agent backup package + breeze-backup command suite (including the touched `providers` subpackage) with race detection:
 ```
-cd agent && go build ./... && go vet ./... && go test -race ./internal/backup/... ./cmd/breeze-backup/...
+cd agent && go build ./... && go vet ./... && go test -race ./internal/backup/... ./internal/backup/providers/... ./cmd/breeze-backup/...
+```
+- [ ] Run the specific tests this review round added or rewrote, to confirm each is actually green (not just "the package compiles"):
+```
+cd agent && go test -race ./internal/backup/... -run 'TestManagerFromBackupRunPayload|TestFetchServerOwnedBase|TestSnapshotJournal_Age|TestLeaseGate|TestRunBackupContext_ServerOwnedMode_NeverListsTheBucket|TestRunBackupContext_ExpiredLease_RefusesToPublishManifest|TestBackupNeverDeletesRemoteObjects|TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix|TestRunBackupContext_StaleJournalDiscardedWithoutRemoteCleanup|TestFetchPublishedManifest|TestCreateSnapshot_ResumeWithAlreadyPublishedManifest|TestRunBackupContext_ResumeWithPublishedManifest|TestCreateSnapshot_UploadLease' -v
+cd agent && go test -race ./internal/backup/providers/... -run 'ErrObjectNotFound' -v
 ```
 - [ ] Run the one API-side contract test file:
 ```
@@ -1472,6 +2032,7 @@ cd agent && go test -race ./...
   - [ ] States this wave is agent-shipped code (full review round per repo convention for agent/GC-adjacent changes) and names the one independent reviewer round performed.
   - [ ] Notes explicitly: no signature change to `createSnapshotWithProgress`; the lease/journal-age fence is enforced via the `leaseGate` provider wrapper instead, to avoid touching ~30 existing call sites.
   - [ ] Notes the two kept exceptions: `snapshot.go:499`/`:544` (`abortStopped`/`abortSourceGone`'s own-run-prefix `cleanupSnapshotPrefix` calls) are retained per spec §3.5 and are NOT part of this wave's "never deletes" removal — only `DeleteSnapshotContext`/`DeleteSnapshot` (deletion of OTHER, already-published snapshots) and the retention/stale-journal call sites were removed.
+  - [ ] Notes the independent-review fixes folded into this version: resume detection fails CLOSED on any ambiguous error via the new `providers.ErrObjectNotFound` sentinel (Task 6); the lease gate installs on `BaseSnapshotID != nil`, not on a non-zero lease, and fails closed on a zero lease (Task 4); the resume-with-published-manifest check runs in `RunBackupContext` BEFORE source scanning, not only inside `createSnapshotWithProgress` (Task 6); the `upload.lease` heartbeat uses a per-refresh bounded context so `stopLeaseRefresh` never blocks on a stalled PUT (Task 7).
   - [ ] Notes Task 9's finding as a follow-up for whoever cuts the release that ships this wave (confirm `VERSION` at build time is the release's own version, so `devices.backup_version` reports it correctly for W02's future capability gate).
 
 ## Open questions / contradictions
@@ -1480,3 +2041,5 @@ cd agent && go test -race ./...
 2. **`publishLeaseExpiresAt` applying to full runs too, with no renewal, means a slow full run can outlive its lease and simply fail to publish**, exactly like a run that outlives `journalMaxAge` already fails to resume. This is explicitly the spec's stated design ("a run longer than the lease already cannot resume... so 'a run must publish within 7d of dispatch' is the existing envelope made explicit" — spec line ~130-135), not an open question about correctness, but it IS a new user-visible failure mode for slow FULL (non-incremental) backups that didn't exist before this wave (previously a full run had no deadline at all beyond the per-file/whole-run reaper timeouts). Confirming this is accepted product behavior, not something W03 should soften, is worth an explicit sign-off since it wasn't true before D18.
 3. **Helper-version gating (spec §3.4's capability gate) is entirely W02's responsibility**, and its minimum-version constant does not exist yet in this worktree (confirmed via grep — only `BACKUP_QUEUE_MIN_HELPER_VERSION` exists today, for an unrelated feature). W03 has no code to write for it; Task 9 records that the mechanism it will eventually gate on (`devices.backup_version` sourced from `breeze-backup --version`, a build-time `-ldflags` value) is orthogonal to this wave's code and depends entirely on the release pipeline stamping the correct version — flagging so whoever cuts that release checks it, since there's no automated test that could catch a wrong `VERSION` at build time.
 4. **`leaseGate`'s `UploadContext` fallback-to-plain-`Upload` when the wrapped provider lacks context support** silently drops `ctx` cancellation for that one call, identical to `uploadSnapshotFile`'s own pre-existing fallback behavior (`snapshot.go:869-880`) — not a regression, just noting the design intentionally mirrors an existing accepted trade-off rather than introducing a new one.
+5. **S3 not-found detection (Task 6) only checks the typed `s3types.NoSuchKey`.** Some S3-compatible backends (older MinIO, certain on-prem gateways) return a generic API error with `Code() == "NoSuchKey"` rather than the SDK's typed struct — that shape is NOT caught by `errors.As(err, &noSuchKey)`, so on those backends a genuine 404 would be (safely, but sub-optimally) treated as "unknown error, fail closed" rather than "confirmed absent, proceed". This is the conservative failure direction (never silently overwrites/duplicates a real manifest) but does mean a resumed run against such a backend could spuriously fail its resume-check when it didn't need to. Not fixed in this wave because closing the gap requires promoting `github.com/aws/smithy-go` from an indirect to a direct `go.mod` dependency for one error-classification edge case — flagged for whoever owns provider compatibility to decide if it's worth doing.
+6. **`BACKUP_PUBLISH_MARGIN_MS` contract test (Task 8) is source-text-gated, not a real import**, because the constant doesn't exist in `apps/api` yet (it's W02's, per spec §3.4). When W02 adds it, `backupAgentContract.test.ts` should be updated to import it directly (mirroring how `BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS` is already imported after this wave) rather than leaving the regex-based check in place indefinitely — noted so it isn't forgotten once the real export exists.
