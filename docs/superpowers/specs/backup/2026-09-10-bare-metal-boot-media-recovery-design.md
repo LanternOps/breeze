@@ -4,6 +4,7 @@ status: draft for review
 date: 2026-09-10
 owner: Todd
 supersedes: docs/superpowers/plans/backup/2026-09-10-bmr-windows-offline-hive-decision.md (Option B remains the contract for the reinstall-then-recover mode; boot-media mode applies Windows state offline, see §6.4)
+tracking_issue: LanternOps/breeze#5493
 related: feature #5439 (Linux system state), campaign doc docs/testing/backup-assurance/2026-09-09-backup-assurance-campaign.md, issues #5470 #5479 #5460
 ---
 

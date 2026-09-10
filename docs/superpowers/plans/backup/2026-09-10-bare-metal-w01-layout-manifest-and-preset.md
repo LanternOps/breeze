@@ -1,5 +1,5 @@
 ---
-tracking_issue: TBD-set-by-register_feature
+tracking_issue: LanternOps/breeze#5493
 ---
 
 # Wave 01 — Layout manifest, whole-machine preset, restorability guard — Implementation Plan
