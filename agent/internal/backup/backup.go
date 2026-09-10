@@ -633,32 +633,49 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
 		}
-		if m.config.SystemStateEnabled && len(m.config.Paths) == 0 {
-			// A system-state-only run (no configured file paths): success
-			// depends entirely on what was collected above, since there is no
-			// ordinary-files fallback. Nothing to publish (collection failed,
-			// or produced a manifest with zero artifacts) is a hard failure —
-			// a green empty snapshot would silently protect nothing.
-			if systemStateStagingDir == "" || job.SystemStateManifest == nil || len(job.SystemStateManifest.Artifacts) == 0 {
-				runErr := systemStateErr
-				if runErr == nil {
-					runErr = errors.New("system state collection produced no artifacts")
-				}
-				job.Status = jobStatusFailed
-				job.CompletedAt = time.Now().UTC()
-				job.Error = errors.Join(scanErr, runErr)
-				return job, job.Error
+		stateHasArtifacts := systemStateStagingDir != "" && job.SystemStateManifest != nil && len(job.SystemStateManifest.Artifacts) > 0
+		if !stateHasArtifacts && m.config.SystemStateEnabled && len(m.config.Paths) == 0 {
+			// A system-state-only run (no configured file paths) that
+			// collected nothing: success depends entirely on what was
+			// collected above, since there is no ordinary-files fallback.
+			// Nothing to publish (collection failed, or produced a manifest
+			// with zero artifacts) is a hard failure — a green empty
+			// snapshot would silently protect nothing.
+			runErr := systemStateErr
+			if runErr == nil {
+				runErr = errors.New("system state collection produced no artifacts")
 			}
-			// Collection succeeded and has something to publish. Publish it as
-			// its own snapshot: system-state/ artifacts + manifest, plus the
-			// ordinary (empty-files) manifest.json so the snapshot-id group
-			// stays "manifest-bearing" for GC (see markLiveBackupObjects in
-			// apps/api/src/jobs/backupRetention.ts). A publish failure here is
-			// a hard job failure, not `completed` — there is no fallback for a
-			// state-only run.
+			job.Status = jobStatusFailed
+			job.CompletedAt = time.Now().UTC()
+			job.Error = errors.Join(scanErr, runErr)
+			return job, job.Error
+		}
+		if stateHasArtifacts {
+			// State was collected with at least one artifact — publish it
+			// even though the ordinary file walk yielded nothing.
+			// Deliberately NOT gated on len(m.config.Paths)==0: a MIXED run
+			// (SystemStateEnabled with configured file paths too) can walk
+			// zero files just as easily — an empty directory, everything
+			// excluded, or a stale configured path — and losing the
+			// already-collected state in that case is exactly as silent a
+			// failure as the pure state-only case this branch was written
+			// for. Publish it as its own snapshot: system-state/ artifacts +
+			// manifest, plus the ordinary (empty-files) manifest.json so the
+			// snapshot-id group stays "manifest-bearing" for GC (see
+			// markLiveBackupObjects in apps/api/src/jobs/backupRetention.ts).
+			// A publish failure here is a hard job failure, not `completed`
+			// — there is no ordinary-files fallback for this snapshot.
 			snapshot := &Snapshot{
-				ID:             newSnapshotID(),
-				Timestamp:      time.Now().UTC(),
+				ID:        newSnapshotID(),
+				Timestamp: time.Now().UTC(),
+				// Files must be a non-nil empty slice, not the zero value: the
+				// field has no `omitempty` (a genuine empty-files manifest
+				// must still round-trip as "files":[]), and a nil slice
+				// encodes as `"files":null`, which the API's resultSchemas/
+				// queueSchemas reject (z.array(...).optional() accepts a
+				// missing key or [] but not null) — that silently drops the
+				// whole job result server-side.
+				Files:          []SnapshotFile{},
 				BackupIdentity: m.runBackupIdentity(),
 			}
 			prefix := path.Join(snapshotRootDir, snapshot.ID)
@@ -678,11 +695,12 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			job.BytesBackedUp = 0
 			job.CompletedAt = time.Now().UTC()
 			job.Status = jobStatusCompleted
-			log.Info("system-state-only backup run finished",
+			log.Info("backup run finished with state artifacts but zero walked files",
 				"status", job.Status,
 				"jobId", job.ID,
 				"snapshotId", snapshot.ID,
 				"artifacts", len(job.SystemStateManifest.Artifacts),
+				"configuredPaths", len(m.config.Paths),
 				"elapsedMs", time.Since(job.StartedAt).Milliseconds(),
 			)
 			return job, nil
@@ -790,7 +808,16 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		}
 	}
 
-	snapshot, snapErr := createSnapshotWithProgress(runCtx, m.config.Provider, files, progressFn, journal, prevSnapshot, sourceLiveness, runIdentity)
+	snapshotOpts := []createSnapshotOption{withRunIdentity(runIdentity)}
+	if m.config.SystemStateEnabled && systemStateStagingDir != "" && job.SystemStateManifest != nil && len(job.SystemStateManifest.Artifacts) > 0 {
+		// Publish system state under this call's own snapshot ID, BEFORE its
+		// ordinary manifest.json — see withSystemState's doc comment. This
+		// replaces a separate publishSystemState call this function used to
+		// make AFTER createSnapshotWithProgress returned, which published the
+		// ordinary manifest first (wrong order — D15 Wave 1 finding #4).
+		snapshotOpts = append(snapshotOpts, withSystemState(systemStateStagingDir, job.SystemStateManifest))
+	}
+	snapshot, snapErr := createSnapshotWithProgress(runCtx, m.config.Provider, files, progressFn, journal, prevSnapshot, sourceLiveness, snapshotOpts...)
 	if errors.Is(snapErr, errBackupStopped) {
 		return stopBackupRun()
 	}
@@ -852,26 +879,14 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 
 	// A run with BOTH configured file paths and system state (SystemStateEnabled
 	// with len(m.config.Paths) > 0 — the state-only case above already handled
-	// SystemStateEnabled with no configured paths): the ordinary snapshot above
-	// already has its real ID and published manifest, so publish the collected
-	// system state under that SAME snapshot ID now. A publish failure here is a
-	// hard job failure — per the D15 contract, a system_image-shaped run that
-	// reports `completed` while its state silently never reached the snapshot
-	// is exactly the bug this fixes, so a partial success (files ok, state
-	// missing) must not read as `completed`.
-	if m.config.SystemStateEnabled && systemStateStagingDir != "" && job.SystemStateManifest != nil && len(job.SystemStateManifest.Artifacts) > 0 {
-		if pubErr := publishSystemState(runCtx, m.config.Provider, snapshot.ID, systemStateStagingDir, job.SystemStateManifest); pubErr != nil {
-			log.Error("system state publish failed; the snapshot's ordinary files were still stored, "+
-				"but the restore point is missing bare-metal recovery state",
-				"jobId", job.ID,
-				"snapshotId", snapshot.ID,
-				"error", pubErr.Error(),
-			)
-			job.Status = jobStatusFailed
-			job.Error = fmt.Errorf("system state publish failed: %w", pubErr)
-			return job, job.Error
-		}
-	}
+	// SystemStateEnabled with no configured paths) already published its
+	// collected system state INSIDE createSnapshotWithProgress above, via the
+	// withSystemState option — before its ordinary manifest, per D15 Wave 1
+	// finding #4. A publish failure there surfaces as snapErr (checked
+	// above), which fails the job loudly: a system_image-shaped run that
+	// reports `completed` while its state silently never reached the
+	// snapshot is exactly the bug this fixes, so a partial success (files
+	// ok, state missing) must not read as `completed`.
 
 	// Per-file upload failures on a PARTIAL success (some files uploaded,
 	// some skipped/stalled/retry-exhausted): the job still completes — the

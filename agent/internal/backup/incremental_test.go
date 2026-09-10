@@ -351,7 +351,7 @@ func TestIncrementalDedupeBase_ScopedToBackupIdentity(t *testing.T) {
 	}
 	run1Files := []backupFile{{sourcePath: f1, snapshotPath: "path_0/f1.txt", size: 3, modTime: modTime}}
 
-	snapshot1, err := createSnapshotWithProgress(context.Background(), provider, run1Files, nil, nil, nil, nil, identityA)
+	snapshot1, err := createSnapshotWithProgress(context.Background(), provider, run1Files, nil, nil, nil, nil, withRunIdentity(identityA))
 	if err != nil {
 		t.Fatalf("run 1 (identity A) failed: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestIncrementalDedupeBase_ScopedToBackupIdentity(t *testing.T) {
 	// reports it as the newest snapshot in the whole bucket.
 	fB := createTempFile(t, tmpDir, "fb.txt", "foreign-device-file")
 	runBFiles := []backupFile{{sourcePath: fB, snapshotPath: "path_0/fb.txt", size: int64(len("foreign-device-file")), modTime: modTime}}
-	snapshotB, err := createSnapshotWithProgress(context.Background(), provider, runBFiles, nil, nil, nil, nil, identityB)
+	snapshotB, err := createSnapshotWithProgress(context.Background(), provider, runBFiles, nil, nil, nil, nil, withRunIdentity(identityB))
 	if err != nil {
 		t.Fatalf("foreign run (identity B) failed: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestIncrementalDedupeBase_ScopedToBackupIdentity(t *testing.T) {
 	}
 
 	run2Files := []backupFile{{sourcePath: f1, snapshotPath: "path_0/f1.txt", size: 3, modTime: modTime}} // unchanged
-	snapshot2, err := createSnapshotWithProgress(context.Background(), provider, run2Files, nil, nil, prev, nil, identityA)
+	snapshot2, err := createSnapshotWithProgress(context.Background(), provider, run2Files, nil, nil, prev, nil, withRunIdentity(identityA))
 	if err != nil {
 		t.Fatalf("run 2 (identity A) failed: %v", err)
 	}

@@ -538,6 +538,18 @@ func TestRunBackup_SystemImage_NoPathsAllowed(t *testing.T) {
 	if len(ordinaryManifest.Files) != 0 {
 		t.Errorf("ordinary manifest.files = %d, want 0 (state-only run)", len(ordinaryManifest.Files))
 	}
+	// len()==0 can't distinguish a nil slice ("files":null) from an empty one
+	// ("files":[]) — the API's resultSchemas/queueSchemas reject null (they're
+	// z.array(...).optional(), which accepts a missing key or [] but not
+	// null) and silently drop the whole job result. Assert the raw wire shape,
+	// not just the decoded length.
+	var rawOrdinaryManifest map[string]json.RawMessage
+	if err := json.Unmarshal(provider.files[wantOrdinaryManifestKey], &rawOrdinaryManifest); err != nil {
+		t.Fatalf("decode ordinary manifest as raw JSON: %v", err)
+	}
+	if rawFiles := string(rawOrdinaryManifest["files"]); rawFiles != "[]" {
+		t.Errorf(`ordinary manifest raw "files" = %s, want "[]" (not null) — API schemas reject null`, rawFiles)
+	}
 	if ordinaryManifest.ID != job.Snapshot.ID {
 		t.Errorf("ordinary manifest ID = %q, want %q (must share the state prefix's snapshot ID)", ordinaryManifest.ID, job.Snapshot.ID)
 	}
@@ -551,6 +563,130 @@ func TestRunBackup_SystemImage_NoPathsAllowed(t *testing.T) {
 	}
 	if len(stateManifest.Artifacts) != 1 || stateManifest.Artifacts[0].Checksum == "" {
 		t.Errorf("published system state manifest should carry the artifact's checksum, got %+v", stateManifest.Artifacts)
+	}
+}
+
+func TestRunBackup_SystemState_MixedRunZeroWalkedFilesStillPublishesState(t *testing.T) {
+	// A MIXED run (SystemStateEnabled AND configured file paths) whose walk
+	// yields zero files — an empty directory, everything excluded, or a stale
+	// configured path — must not lose already-collected system state. The
+	// state-only special case used to be gated on len(m.config.Paths)==0, so
+	// this exact shape (Paths configured, walk empty, state collected) fell
+	// through to jobStatusSkipped, which removes the staging dir and
+	// discards the state silently.
+	emptyDir := t.TempDir()
+
+	stagingDir := t.TempDir()
+	content := []byte("svc")
+	if err := os.WriteFile(pathpkg.Join(stagingDir, "services.txt"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return &systemstate.SystemStateManifest{
+			Platform: "test",
+			Artifacts: []systemstate.Artifact{{
+				Name: "services", Category: "services", Path: "services.txt",
+				SizeBytes: int64(len(content)),
+				Checksum:  "348c658682ae8701d3e9d21f191872491cf15e6acbb1681770b1cb787c1cf7ff",
+			}},
+		}, stagingDir, nil
+	})
+
+	provider := newMockProvider()
+	mgr := NewBackupManager(BackupConfig{
+		Provider:           provider,
+		Paths:              []string{emptyDir},
+		SystemStateEnabled: true,
+	})
+	job, err := mgr.RunBackup()
+	if err != nil {
+		t.Fatalf("mixed run with collected state should succeed despite an empty walk: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("status = %q, want %q", job.Status, jobStatusCompleted)
+	}
+	if job.Snapshot == nil {
+		t.Fatal("collected state must still produce a snapshot even though the walk found nothing")
+	}
+
+	wantArtifactKey := path.Join("snapshots", job.Snapshot.ID, "system-state", "services.txt")
+	wantManifestKey := path.Join("snapshots", job.Snapshot.ID, "system-state", "manifest.json")
+	wantOrdinaryManifestKey := path.Join("snapshots", job.Snapshot.ID, "manifest.json")
+	if _, ok := provider.files[wantArtifactKey]; !ok {
+		t.Errorf("expected artifact uploaded to %q, got keys %v", wantArtifactKey, providerKeys(provider))
+	}
+	if _, ok := provider.files[wantManifestKey]; !ok {
+		t.Errorf("expected system-state manifest uploaded to %q, got keys %v", wantManifestKey, providerKeys(provider))
+	}
+	if _, ok := provider.files[wantOrdinaryManifestKey]; !ok {
+		t.Errorf("expected ordinary (empty-files) manifest uploaded to %q, got keys %v", wantOrdinaryManifestKey, providerKeys(provider))
+	}
+}
+
+func TestRunBackup_SystemState_PublishOrderStateBeforeOrdinaryManifest(t *testing.T) {
+	// A mixed run (ordinary files + system state) must publish the
+	// system-state artifact(s), then the system-state manifest, and ONLY
+	// THEN the ordinary manifest.json — the ordinary manifest is the "commit
+	// point" a concurrent GC sweep uses to decide a snapshot-id group is
+	// "manifest-bearing" (markLiveBackupObjects, backupRetention.ts). If the
+	// ordinary manifest lands first, a GC sweep racing in between sees a
+	// manifest-bearing group whose system-state/* objects aren't marked live
+	// yet and can reap them under the per-object grace rule.
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "single.txt", "single file backup")
+
+	stagingDir := t.TempDir()
+	content := []byte("svc")
+	if err := os.WriteFile(pathpkg.Join(stagingDir, "services.txt"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return &systemstate.SystemStateManifest{
+			Platform: "test",
+			Artifacts: []systemstate.Artifact{{
+				Name: "services", Category: "services", Path: "services.txt",
+				SizeBytes: int64(len(content)),
+				Checksum:  "348c658682ae8701d3e9d21f191872491cf15e6acbb1681770b1cb787c1cf7ff",
+			}},
+		}, stagingDir, nil
+	})
+
+	provider := newMockProvider()
+	mgr := NewBackupManager(BackupConfig{
+		Provider:           provider,
+		Paths:              []string{file1},
+		SystemStateEnabled: true,
+	})
+	job, err := mgr.RunBackup()
+	if err != nil {
+		t.Fatalf("RunBackup failed: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("status = %q, want %q", job.Status, jobStatusCompleted)
+	}
+
+	wantArtifactKey := path.Join("snapshots", job.Snapshot.ID, "system-state", "services.txt")
+	wantStateManifestKey := path.Join("snapshots", job.Snapshot.ID, "system-state", "manifest.json")
+	wantOrdinaryManifestKey := path.Join("snapshots", job.Snapshot.ID, "manifest.json")
+
+	indexOf := func(remotePath string) int {
+		for i, c := range provider.uploadCalls {
+			if c.remotePath == remotePath {
+				return i
+			}
+		}
+		return -1
+	}
+	artifactIdx := indexOf(wantArtifactKey)
+	stateManifestIdx := indexOf(wantStateManifestKey)
+	ordinaryManifestIdx := indexOf(wantOrdinaryManifestKey)
+	if artifactIdx == -1 || stateManifestIdx == -1 || ordinaryManifestIdx == -1 {
+		t.Fatalf("missing expected upload(s): artifact=%d stateManifest=%d ordinaryManifest=%d, calls=%+v",
+			artifactIdx, stateManifestIdx, ordinaryManifestIdx, provider.uploadCalls)
+	}
+	if artifactIdx >= stateManifestIdx || stateManifestIdx >= ordinaryManifestIdx {
+		t.Errorf("wrong publish order: artifact=%d, stateManifest=%d, ordinaryManifest=%d (want artifact < stateManifest < ordinaryManifest)",
+			artifactIdx, stateManifestIdx, ordinaryManifestIdx)
 	}
 }
 
