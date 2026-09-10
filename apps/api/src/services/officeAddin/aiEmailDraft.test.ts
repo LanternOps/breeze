@@ -42,6 +42,20 @@ beforeEach(() => {
 });
 
 describe('draftTicketFromEmail', () => {
+  it('caps both retry attempts within the reserved operation budget', async () => {
+    createMock.mockResolvedValueOnce(reply({
+      subject: 'Outlook crashes', summary: 'Outlook crashes and needs investigation.', suggestedTimeMinutes: 20,
+    }));
+
+    await draftTicketFromEmail({
+      ...baseInput,
+      budgetCents: 4,
+      calculateCostCents: (_inputTokens, outputTokens) => outputTokens / 100,
+    });
+
+    expect(createMock).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 200 }));
+  });
+
   it('returns a structured draft from valid JSON', async () => {
     createMock.mockResolvedValueOnce(
       reply({ subject: 'Outlook crashes on launch', summary: 'The customer reports Outlook crashes every time it is opened. This is blocking their email access. Needs investigation of the mail profile or add-ins.', suggestedTimeMinutes: 20 })

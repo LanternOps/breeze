@@ -16,7 +16,7 @@ import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
-import { checkBudget, checkAiRateLimit, getRemainingBudgetUsd } from './aiCostTracker';
+import { checkBudget, checkAiRateLimit } from './aiCostTracker';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
@@ -476,17 +476,10 @@ export async function runPreFlightChecks(
     ? await buildSystemPrompt(auth, sanitizedPageContext)
     : (session.systemPrompt ?? await buildSystemPrompt(auth));
 
-  // Remaining budget
-  let maxBudgetUsd: number | undefined;
-  try {
-    const remaining = await getRemainingBudgetUsd(orgId);
-    if (remaining !== null) maxBudgetUsd = remaining;
-  } catch (err) {
-    console.error('[AI-SDK] Failed to get remaining budget:', err);
-    return { ok: false, error: 'Unable to verify spending budget. Please try again later.' };
-  }
-
-  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd, resolved };
+  // A durable reservation is acquired immediately before provider dispatch by
+  // the route. Returning an advisory remaining-budget snapshot here would
+  // recreate the check-then-spend race this preflight must not authorize.
+  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd: undefined, resolved };
 }
 
 /**

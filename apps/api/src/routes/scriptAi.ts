@@ -37,6 +37,10 @@ import { aiSessions, aiMessages } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { PERMISSIONS } from '../services/permissions';
 import { LlmUnavailableError, resolveLlmConfigForOrg } from '../services/llm/llmConfigResolver';
+import {
+  releaseUnusedAiBudgetReservation,
+  reserveAiBudget,
+} from '../services/aiBudgetReservations';
 
 export const scriptAiRoutes = new Hono();
 const requireScriptAiRead = requirePermission(
@@ -198,7 +202,7 @@ scriptAiRoutes.post(
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd, resolved } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, resolved } = preflight;
 
     // Now safe to update editor context
     let updatedSystemPrompt: string | undefined;
@@ -211,6 +215,31 @@ scriptAiRoutes.post(
       }
     }
     const effectiveSystemPrompt = updatedSystemPrompt ?? systemPrompt;
+
+    const priorSession = streamingSessionManager.get(sessionId);
+    if (priorSession?.state === 'processing') {
+      const settle = await settleBlockedTurnForNewMessage(priorSession);
+      if (settle !== 'concluded') {
+        return c.json({
+          error: settle === 'not_blocked_on_approvals'
+            ? 'A message is already being processed for this session'
+            : 'The assistant is wrapping up the previous turn — please try again in a moment',
+        }, 409);
+      }
+    }
+    if (streamingSessionManager.get(sessionId)) streamingSessionManager.remove(sessionId);
+
+    const reservation = await reserveAiBudget({
+      orgId: dbSession.orgId,
+      billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
+      sessionId,
+      idempotencyKey: `script-chat:${sessionId}:${crypto.randomUUID()}`,
+    });
+    if (reservation.kind === 'denied') return c.json({ error: reservation.message }, 402);
+    const budgetReservationId = reservation.reservationId;
+    const reservedMaxBudgetUsd = reservation.kind === 'reserved'
+      ? reservation.reservedCostCents / 100
+      : undefined;
 
     // Get or create streaming session with script builder MCP tools.
     //
@@ -235,7 +264,7 @@ scriptAiRoutes.post(
         auth,
         c,
         effectiveSystemPrompt,
-        maxBudgetUsd,
+        reservedMaxBudgetUsd,
         resolved,
         SCRIPT_BUILDER_MCP_TOOL_NAMES,
         // Custom MCP server factory for script builder tools
@@ -243,8 +272,10 @@ scriptAiRoutes.post(
           server: createScriptBuilderMcpServer(getAuth, onPreToolUse, onPostToolUse),
           name: SCRIPT_BUILDER_MCP_SERVER_NAME,
         }),
+        { budgetReservationId },
       );
     } catch (err) {
+      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
       if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
       throw err;
     }
@@ -253,14 +284,8 @@ scriptAiRoutes.post(
     // only on pending approval waits, settle them so the assistant can
     // conclude and answer this message (#3089 — shared helper, see ai.ts).
     if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
-      const settle = await settleBlockedTurnForNewMessage(activeSession);
-      if (settle !== 'concluded' || !streamingSessionManager.tryTransitionToProcessing(activeSession)) {
-        return c.json({
-          error: settle === 'not_blocked_on_approvals'
-            ? 'A message is already being processed for this session'
-            : 'The assistant is wrapping up the previous turn — please try again in a moment',
-        }, 409);
-      }
+      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
+      return c.json({ error: 'A message is already being processed for this session' }, 409);
     }
 
     writeRouteAudit(c, {
@@ -282,6 +307,7 @@ scriptAiRoutes.post(
       captureException(err, c);
       console.error('[ScriptAI] Failed to save user message to DB:', err);
       activeSession.state = 'idle';
+      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
       return c.json({ error: 'Failed to save message' }, 500);
     }
 

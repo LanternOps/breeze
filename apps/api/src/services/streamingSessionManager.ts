@@ -40,6 +40,7 @@ import { isRecognizedSelfHostSignal } from '../config/env';
 import { resolveWireModel, type ResolvedLlmEndpoint, type UsableLlmConfig } from './llm/llmConfigResolver';
 import { getLlmEgressProxy } from './llm/llmEgressProxy';
 import { recordLlmEgressEvent } from './llm/llmEgressRecorder';
+import { markAiBudgetReservationIndeterminate } from './aiBudgetReservations';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -482,6 +483,8 @@ export interface ActiveSession {
    * partner is actually charged and must be ignored (#3922 W2 Task 2.4).
    */
   readonly catalogPricing?: CatalogPricingSnapshot;
+  /** Durable org-budget reservation for the current provider turn. */
+  budgetReservationId?: string;
   /**
    * Releases this session's CONNECT-proxy grant. Set for catalog sessions only;
    * invoked by `remove()` so a torn-down, rotated or evicted session stops
@@ -709,7 +712,7 @@ export class StreamingSessionManager {
       onPostToolUse: ReturnType<typeof createSessionPostToolUse>,
       getSession: () => ActiveSession,
     ) => { server: McpSdkServerConfigWithInstance; name: string },
-    options?: { injectApprovalModeInstructions?: boolean },
+    options?: { injectApprovalModeInstructions?: boolean; budgetReservationId?: string },
   ): Promise<ActiveSession> {
     const snapshot: AuditSnapshot = {
       ip: requestContext ? getTrustedClientIpOrUndefined(requestContext) : undefined,
@@ -818,6 +821,7 @@ export class StreamingSessionManager {
       llmConfigSnapshot: llmConfigSnapshot(resolved),
       // The pricing for the model THIS session runs, not the partner default's.
       catalogPricing: wire.catalogPricing,
+      budgetReservationId: options?.budgetReservationId,
       revokeEgressGrant: undefined,
       sdkSessionId: dbSession.sdkSessionId,
       query: null as unknown as Query, // set below
@@ -1483,8 +1487,10 @@ export class StreamingSessionManager {
                     // SDK's own total_cost_usd reflects Anthropic list pricing
                     // for a request that never went to Anthropic.
                     session.catalogPricing,
+                    session.budgetReservationId,
                   ),
                 );
+                session.budgetReservationId = undefined;
               } catch (err) {
                 captureException(err);
                 console.error('[StreamingSessionManager] Failed to record SDK usage:', err);
@@ -1513,8 +1519,10 @@ export class StreamingSessionManager {
                     // SDK's own total_cost_usd reflects Anthropic list pricing
                     // for a request that never went to Anthropic.
                     session.catalogPricing,
+                    session.budgetReservationId,
                   ),
                 );
+                session.budgetReservationId = undefined;
               } catch (err) {
                 captureException(err);
                 console.error('[StreamingSessionManager] Failed to record SDK usage on error:', err);
@@ -1615,8 +1623,10 @@ export class StreamingSessionManager {
               },
               session.llmConfigSnapshot.source === 'partner' ? 'partner_key' : 'platform',
               session.catalogPricing,
+              session.budgetReservationId,
             ),
           );
+          session.budgetReservationId = undefined;
         } catch (err) {
           captureException(err);
           console.error('[StreamingSessionManager] Failed to record abandoned-turn usage:', err);
@@ -1649,6 +1659,21 @@ export class StreamingSessionManager {
             captureException(err);
             console.error('[StreamingSessionManager] recordExtraUsage failed for abandoned turn:', err);
           }
+        }
+      }
+
+      if (session.budgetReservationId) {
+        try {
+          await withDbAccessContext(
+            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+            () => markAiBudgetReservationIndeterminate({
+              orgId: session.orgId,
+              reservationId: session.budgetReservationId!,
+            }),
+          );
+        } catch (err) {
+          captureException(err);
+          console.error('[StreamingSessionManager] Failed to retain indeterminate budget reservation:', err);
         }
       }
 

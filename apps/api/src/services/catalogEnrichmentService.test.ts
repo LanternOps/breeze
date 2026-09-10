@@ -1,21 +1,36 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, captureException, captureMessage, getAnthropicClientForPartner, resolveWireModel } = vi.hoisted(() => ({
+const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, calculateCostCents, calculateCatalogCostCents, captureException, captureMessage, getAnthropicClientForPartner, resolveWireModel, reserveAiBudget, markAiBudgetReservationIndeterminate, releaseUnusedAiBudgetReservation } = vi.hoisted(() => ({
   create: vi.fn(),
   checkBudget: vi.fn(async (): Promise<string | null> => null),
   checkAiRateLimit: vi.fn(async (): Promise<string | null> => null),
   checkUserAiRateLimit: vi.fn(async (): Promise<string | null> => null),
   recordUsage: vi.fn(async () => {}),
+  calculateCostCents: vi.fn<(...args: unknown[]) => number>(() => 1),
+  calculateCatalogCostCents: vi.fn<(...args: unknown[]) => number>(() => 1),
   captureException: vi.fn(),
   captureMessage: vi.fn(),
   getAnthropicClientForPartner: vi.fn(),
   resolveWireModel: vi.fn<(resolved: unknown, model: string) => { model: string; catalogPricing?: unknown }>((_resolved: unknown, model: string) => ({ model })),
+  reserveAiBudget: vi.fn(),
+  markAiBudgetReservationIndeterminate: vi.fn(),
+  releaseUnusedAiBudgetReservation: vi.fn(),
 }));
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class { messages = { create }; },
 }));
 vi.mock('./aiAgent', () => ({ resolveDefaultModel: () => 'claude-sonnet-4-6' }));
-vi.mock('./aiCostTracker', () => ({ checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage }));
+vi.mock('./aiCostTracker', () => ({
+  checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage,
+  calculateCostCents,
+  calculateCatalogCostCents,
+}));
+vi.mock('./aiBudgetReservations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiBudgetReservations')>()),
+  reserveAiBudget,
+  markAiBudgetReservationIndeterminate,
+  releaseUnusedAiBudgetReservation,
+}));
 vi.mock('./sentry', () => ({ captureException, captureMessage }));
 vi.mock('./llm/llmConfigResolver', () => ({
   getAnthropicClientForPartner,
@@ -33,11 +48,15 @@ import { LlmUnavailableError } from './llm/llmConfigResolver';
 
 const actor = { userId: 'u1', orgId: 'o1', partnerId: 'p1' };
 
-function aiMessage(json: object) {
+function aiMessage(json: object, webSearchRequests = 0) {
   return {
     stop_reason: 'end_turn',
     content: [{ type: 'text', text: JSON.stringify(json) }],
-    usage: { input_tokens: 100, output_tokens: 50 },
+    usage: {
+      input_tokens: 100,
+      output_tokens: 50,
+      server_tool_use: { web_search_requests: webSearchRequests },
+    },
   };
 }
 
@@ -51,12 +70,90 @@ beforeEach(() => {
   captureMessage.mockClear();
   captureException.mockClear();
   checkBudget.mockClear(); checkAiRateLimit.mockClear(); checkUserAiRateLimit.mockClear(); recordUsage.mockClear();
+  reserveAiBudget.mockClear(); markAiBudgetReservationIndeterminate.mockClear(); releaseUnusedAiBudgetReservation.mockClear();
   resolveWireModel.mockReset();
   resolveWireModel.mockImplementation((_resolved: unknown, model: string) => ({ model }));
   checkBudget.mockResolvedValue(null); checkAiRateLimit.mockResolvedValue(null); checkUserAiRateLimit.mockResolvedValue(null);
+  calculateCostCents.mockReset().mockReturnValue(1);
+  calculateCatalogCostCents.mockReset().mockReturnValue(1);
+  reserveAiBudget.mockResolvedValue({
+    kind: 'unlimited',
+    reservationId: '55555555-5555-4555-8555-555555555555',
+    dailyPeriodKey: '2026-09-06',
+    monthlyPeriodKey: '2026-09-01',
+    status: 'active',
+  });
+  markAiBudgetReservationIndeterminate.mockResolvedValue({ kind: 'indeterminate', reservationId: '55555555-5555-4555-8555-555555555555' });
+  releaseUnusedAiBudgetReservation.mockResolvedValue({ kind: 'released', reservationId: '55555555-5555-4555-8555-555555555555' });
 });
 
 describe('enrichCatalogItem', () => {
+  it('caps each provider turn against the remaining durable reservation', async () => {
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'reserved',
+      reservationId: '55555555-5555-4555-8555-555555555555',
+      reservedCostCents: 7,
+      dailyPeriodKey: '2026-09-06',
+      monthlyPeriodKey: '2026-09-01',
+      status: 'active',
+    });
+    calculateCostCents.mockImplementation((_model, _inputTokens, outputTokens) => Number(outputTokens) / 100);
+    create.mockResolvedValueOnce(aiMessage({ name: 'UPS', itemType: 'hardware' }));
+
+    await enrichCatalogItem('UPS', 'hardware', actor);
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 200 }));
+  });
+
+  it('does not dispatch when the reservation cannot cover maximum web-search fees', async () => {
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'reserved',
+      reservationId: '55555555-5555-4555-8555-555555555555',
+      reservedCostCents: 5,
+      dailyPeriodKey: '2026-09-06',
+      monthlyPeriodKey: '2026-09-01',
+      status: 'active',
+    });
+    calculateCostCents.mockImplementation((_model, _inputTokens, outputTokens) => Number(outputTokens) / 100);
+
+    await expect(enrichCatalogItem('UPS', 'hardware', actor)).rejects.toMatchObject({
+      code: 'AI_LIMIT', status: 429,
+    });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('settles actual paid web-search requests in addition to token cost', async () => {
+    create.mockResolvedValueOnce(aiMessage({ name: 'UPS', itemType: 'hardware' }, 2));
+
+    await enrichCatalogItem('UPS', 'hardware', actor);
+
+    expect(recordUsage).toHaveBeenCalledWith(
+      null, 'o1', 'claude-sonnet-4-6', 100, 50, true, 'partner_key', undefined,
+      '55555555-5555-4555-8555-555555555555', 2,
+    );
+  });
+
+  it('does not dispatch after a durable budget denial', async () => {
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'denied', reason: 'daily_budget', message: 'Daily AI budget exhausted ($1.00)',
+    });
+
+    await expect(enrichCatalogItem('UPS', 'hardware', actor)).rejects.toMatchObject({
+      code: 'AI_LIMIT', status: 429,
+    });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('retains an indeterminate reservation on a provider transport failure', async () => {
+    create.mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(enrichCatalogItem('UPS', 'hardware', actor)).rejects.toThrow('connection reset');
+    expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({
+      orgId: 'o1',
+      reservationId: '55555555-5555-4555-8555-555555555555',
+    });
+  });
+
   it('maps AI fields to a draft + price guidance and never sets unitPrice', async () => {
     create.mockResolvedValueOnce(aiMessage({
       name: 'APC Back-UPS 600VA', description: 'Battery backup',
@@ -83,6 +180,8 @@ describe('enrichCatalogItem', () => {
       true,
       'partner_key',
       undefined,
+      '55555555-5555-4555-8555-555555555555',
+      0,
     );
     expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1', { surface: 'one_shot_catalog_enrichment', orgId: 'o1' });
   });
@@ -115,6 +214,8 @@ describe('enrichCatalogItem', () => {
     // …while the ledger keeps the logical id and prices from the revision.
     expect(recordUsage).toHaveBeenCalledWith(
       null, 'o1', 'claude-sonnet-4-6', 100, 50, true, 'partner_key', CATALOG_PRICING,
+      '55555555-5555-4555-8555-555555555555',
+      0,
     );
   });
 
@@ -437,6 +538,7 @@ describe('polishCatalogText', () => {
     // Anthropic list rates.
     expect(recordUsage).toHaveBeenCalledWith(
       null, 'o1', 'claude-sonnet-4-6', 100, 50, true, 'partner_key', CATALOG_PRICING,
+      '55555555-5555-4555-8555-555555555555',
     );
   });
 
@@ -469,6 +571,7 @@ describe('polishCatalogText', () => {
     // combined spend from the revision snapshot.
     expect(recordUsage).toHaveBeenCalledWith(
       null, 'o1', 'claude-sonnet-4-6', 200, 100, true, 'partner_key', CATALOG_PRICING,
+      '55555555-5555-4555-8555-555555555555',
     );
   });
 
@@ -716,6 +819,7 @@ describe('polishCatalogText', () => {
       true,
       'partner_key',
       undefined,
+      '55555555-5555-4555-8555-555555555555',
     );
   });
 });

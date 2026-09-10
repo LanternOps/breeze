@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, smallint, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, numeric, smallint, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { organizations } from './orgs';
 import { users } from './users';
@@ -18,6 +18,9 @@ export const aiApprovalModeEnum = pgEnum('ai_approval_mode', [
 ]);
 export const aiPlanStatusEnum = pgEnum('ai_plan_status', [
   'pending', 'approved', 'rejected', 'executing', 'completed', 'aborted',
+]);
+export const aiBudgetReservationStatusEnum = pgEnum('ai_budget_reservation_status', [
+  'active', 'settled', 'indeterminate', 'released',
 ]);
 
 // ============================================
@@ -49,7 +52,7 @@ export const aiSessions = pgTable('ai_sessions', {
   // Independent of the token columns above: cost comes from the SDK's own
   // total_cost_usd, or from per-component pricing when that is 0. It was
   // correct throughout — do not "reconcile" it against the token columns.
-  totalCostCents: real('total_cost_cents').notNull().default(0),
+  totalCostCents: numeric('total_cost_cents', { precision: 20, scale: 6, mode: 'number' }).notNull().default(0),
   turnCount: integer('turn_count').notNull().default(0),
   maxTurns: integer('max_turns').notNull().default(50),
   sdkSessionId: varchar('sdk_session_id', { length: 255 }),
@@ -79,6 +82,7 @@ export const aiSessions = pgTable('ai_sessions', {
   agentId: uuid('agent_id'),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
+  idOrgIdx: uniqueIndex('ai_sessions_id_org_uidx').on(table.id, table.orgId),
   userIdIdx: index('ai_sessions_user_id_idx').on(table.userId),
   statusIdx: index('ai_sessions_status_idx').on(table.status),
   // flaggedAt partial index created via SQL migration (WHERE flagged_at IS NOT NULL)
@@ -150,7 +154,7 @@ export const aiCostUsage = pgTable('ai_cost_usage', {
   periodKey: varchar('period_key', { length: 10 }).notNull(), // '2026-02-06' or '2026-02'
   inputTokens: integer('input_tokens').notNull().default(0),
   outputTokens: integer('output_tokens').notNull().default(0),
-  totalCostCents: real('total_cost_cents').notNull().default(0),
+  totalCostCents: numeric('total_cost_cents', { precision: 20, scale: 6, mode: 'number' }).notNull().default(0),
   sessionCount: integer('session_count').notNull().default(0),
   messageCount: integer('message_count').notNull().default(0),
   toolExecutionCount: integer('tool_execution_count').notNull().default(0),
@@ -183,6 +187,39 @@ export const aiBudgets = pgTable('ai_budgets', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
+
+// ============================================
+// AI Budget Reservations — durable pre-dispatch spend fence (RLS shape 1)
+// ============================================
+
+export const aiBudgetReservations = pgTable('ai_budget_reservations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  idempotencyKey: varchar('idempotency_key', { length: 200 }).notNull(),
+  sessionId: uuid('session_id'),
+  billingSource: text('billing_source', { enum: ['platform', 'partner_key'] }).notNull(),
+  dailyPeriodKey: varchar('daily_period_key', { length: 10 }).notNull(),
+  monthlyPeriodKey: varchar('monthly_period_key', { length: 7 }).notNull(),
+  uncapped: boolean('uncapped').notNull().default(false),
+  // NUMERIC retains the existing fractional-cent accounting without binary
+  // floating-point comparisons at the admission boundary.
+  reservedCostCents: numeric('reserved_cost_cents', { precision: 20, scale: 6 }).notNull(),
+  actualCostCents: numeric('actual_cost_cents', { precision: 20, scale: 6 }),
+  status: aiBudgetReservationStatusEnum('status').notNull().default('active'),
+  settlementFingerprint: varchar('settlement_fingerprint', { length: 64 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  indeterminateAt: timestamp('indeterminate_at', { withTimezone: true }),
+  settledAt: timestamp('settled_at', { withTimezone: true }),
+  releasedAt: timestamp('released_at', { withTimezone: true }),
+}, (table) => ({
+  orgIdempotencyIdx: uniqueIndex('ai_budget_reservations_org_idempotency_uidx')
+    .on(table.orgId, table.idempotencyKey),
+  activePeriodIdx: index('ai_budget_reservations_active_period_idx')
+    .on(table.orgId, table.dailyPeriodKey, table.monthlyPeriodKey, table.status),
+  // Composite (session_id, org_id) FK is SQL-only because Drizzle cannot
+  // express PostgreSQL's column-specific ON DELETE SET NULL (session_id).
+}));
 
 // ============================================
 // AI Budget Alert Events (#4388) — durable outbox, one row per threshold

@@ -78,6 +78,12 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "ai_agents": tablePolicy("org_id", {"included":["id","org_id","partner_id","kind","name","enabled","mode","model","instructions","cooldown_seconds","disabled_at","disabled_by","created_by","last_updated_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["tool_allowlist","protected_resources","limits","triggers","recipients","act_assets"]}),
   "ai_alert_verdicts": tablePolicy("org_id", {"included":["id","org_id","run_id","alert_id","correlation_group_id","classification","confidence","rationale","suggested_intent_id","feedback","feedback_by","feedback_at","superseded_by","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["pattern"]}),
   "ai_budget_alert_events": tablePolicy("org_id", {"included":["id","org_id","period","period_key","threshold_pct","cap_cents","used_cents","billing_source","created_at","delivered_at","delivery_attempts","last_delivery_error","recipient_count"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // ai_budget_reservations (SEC-142/143): the pre-dispatch spend fence. Every
+  // column is a monetary amount, a period key, a status or a timestamp — no
+  // json/jsonb/bytea, and settlement_fingerprint is a SHA-256 over the
+  // settlement's own numbers (not a secret, and it trips no
+  // SUSPICIOUS_NAME_PARTS entry), so the whole row is plain `included`.
+  "ai_budget_reservations": tablePolicy("org_id", {"included":["id","org_id","idempotency_key","session_id","billing_source","daily_period_key","monthly_period_key","uncapped","reserved_cost_cents","actual_cost_cents","status","settlement_fingerprint","created_at","updated_at","indeterminate_at","settled_at","released_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "ai_budgets": tablePolicy("org_id", {"included":["id","org_id","enabled","monthly_budget_cents","daily_budget_cents","max_turns_per_session","messages_per_minute_per_user","messages_per_hour_per_org","approval_mode","alert_threshold_pcts","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["allowed_models"]}),
   "ai_cost_usage": tablePolicy("org_id", {"included":["id","org_id","period","period_key","total_cost_cents","session_count","message_count","tool_execution_count","billing_source","updated_at"],"reviewedIncluded":["input_tokens","output_tokens"],"excludedSensitive":[],"excludedOpen":[]}),
   // AI Operator thin slice (#5205 W03, #5208; baseline §8.4). Every json/jsonb

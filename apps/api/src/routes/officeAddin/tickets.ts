@@ -1,10 +1,23 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import { Hono, type Context } from 'hono';
-import { db } from '../../db';
+import { db, runOutsideDbContext } from '../../db';
 import { partners, tickets } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
 import { officeAddinTechAuthMiddleware, requireAddinCapability } from '../../middleware/officeAddinTechAuth';
-import { recordUsage } from '../../services/aiCostTracker';
+import {
+  calculateCatalogCostCents,
+  calculateCostCents,
+  checkBudgetDetailed,
+  deductBillingCredits,
+  recordUsage,
+  type AiBillingSource,
+  type CatalogPricingSnapshot,
+} from '../../services/aiCostTracker';
+import {
+  markAiBudgetReservationIndeterminate,
+  releaseUnusedAiBudgetReservation,
+  reserveAiBudget,
+} from '../../services/aiBudgetReservations';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { applyDlp } from '../../services/clientAiDlp';
 import { getOrgPolicy } from '../../services/clientAiPolicy';
@@ -251,14 +264,75 @@ async function respondToLinkConflict(
 
 const DRAFT_TIMEOUT_MS = 20_000;
 
+class DraftTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`ai email draft timed out after ${ms}ms`);
+    this.name = 'DraftTimeoutError';
+  }
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`ai email draft timed out after ${ms}ms`)), ms);
+    const timer = setTimeout(() => reject(new DraftTimeoutError(ms)), ms);
     promise.then(
       (val) => { clearTimeout(timer); resolve(val); },
       (err) => { clearTimeout(timer); reject(err); },
     );
   });
+}
+
+/**
+ * Settle one draft's spend: organization usage aggregates plus, for platform
+ * billing, the prepaid credit draw-down (SEC-111). When a budget reservation is
+ * supplied, `recordUsage` closes it and writes both aggregates in ONE
+ * transaction (SEC-142/143) — so a failure there leaves a known provider
+ * outcome unaccounted, and the reservation must go indeterminate (keep
+ * consuming capacity) rather than silently free the cap it was holding.
+ *
+ * Best effort throughout: the pane already has its draft, and a metering
+ * failure must never turn a good draft into a 503.
+ */
+async function recordDraftUsage(input: {
+  orgId: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  billingSource: AiBillingSource;
+  catalogPricing?: CatalogPricingSnapshot;
+  reservationId?: string;
+}): Promise<void> {
+  try {
+    await recordUsage(
+      null,
+      input.orgId,
+      input.model,
+      input.inputTokens,
+      input.outputTokens,
+      false,
+      input.billingSource,
+      input.catalogPricing,
+      input.reservationId,
+    );
+  } catch (err) {
+    console.error('[office-addin] draft usage accounting failed', err);
+    if (input.reservationId) {
+      await markAiBudgetReservationIndeterminate({
+        orgId: input.orgId,
+        reservationId: input.reservationId,
+      }).catch((markError) => captureException(markError));
+    }
+  }
+
+  if (input.billingSource === 'platform' && (input.inputTokens > 0 || input.outputTokens > 0)) {
+    const costCents = input.catalogPricing
+      ? calculateCatalogCostCents(input.catalogPricing, input.inputTokens, input.outputTokens)
+      : calculateCostCents(input.model, input.inputTokens, input.outputTokens);
+    if (costCents > 0) {
+      await deductBillingCredits(input.orgId, costCents).catch((err) => {
+        console.error('[office-addin] draft usage accounting failed', err);
+      });
+    }
+  }
 }
 
 /**
@@ -322,12 +396,6 @@ officeAddinTicketRoutes.post(
     }
     const { client, resolved: llmConfig } = llm;
 
-    const policy = await getOrgPolicy(input.orgId);
-    const dlpResult = await applyDlp({ text: input.bodyText, dlpConfig: policy?.dlpConfig, orgId: input.orgId });
-    if (dlpResult.action === 'block') {
-      return c.json({ error: 'dlp_blocked' }, 422);
-    }
-
     // `model` stays the platform-logical id for metering/budgets; `wire.model`
     // is what the resolved endpoint speaks (a catalog endpoint 404s on the
     // platform id), and `wire.catalogPricing` is what meters catalog traffic.
@@ -341,62 +409,136 @@ officeAddinTicketRoutes.post(
       }
       throw err;
     }
+    const billingSource: AiBillingSource = llmConfig.source === 'partner' ? 'partner_key' : 'platform';
+    // Admission first (SEC-111): the configured budget AND the prepaid platform
+    // credit balance, answered as the established 402 before any DLP evaluation
+    // or provider contact. The reservation below is the separate atomic
+    // organization-cap fence (SEC-142/143) — this check does not replace it.
+    const budgetDenial = await checkBudgetDetailed(input.orgId, billingSource);
+    if (budgetDenial) {
+      return c.json({ error: budgetDenial.message }, 402);
+    }
+
+    const policy = await getOrgPolicy(input.orgId);
+    const dlpResult = await applyDlp({ text: input.bodyText, dlpConfig: policy?.dlpConfig, orgId: input.orgId });
+    if (dlpResult.action === 'block') {
+      return c.json({ error: 'dlp_blocked' }, 422);
+    }
+
+    // Reserve AFTER DLP (a blocked draft then never has to hand capacity back)
+    // and immediately BEFORE dispatch, so no sibling call can be admitted
+    // against the same remaining cap. The provider gets a token ceiling derived
+    // from what was actually reserved.
+    const reservation = await reserveAiBudget({
+      orgId: input.orgId,
+      idempotencyKey: `office-email-draft:${crypto.randomUUID()}`,
+      billingSource,
+    });
+    if (reservation.kind === 'denied') {
+      return c.json({ error: 'ai_budget_exceeded' }, 429);
+    }
+    if (reservation.status !== 'active') {
+      return c.json({ error: 'ai_unavailable' }, 503);
+    }
+    const reservationId = reservation.reservationId;
+
+    const draftPromise = draftTicketFromEmail({
+      subject: input.subject,
+      bodyText: dlpResult.text ?? input.bodyText,
+      model: wire.model,
+      partnerId: auth.partnerId,
+      orgId: input.orgId,
+      client,
+      ...(reservation.kind === 'reserved'
+        ? {
+          budgetCents: reservation.reservedCostCents,
+          calculateCostCents: wire.catalogPricing
+            ? (inputTokens: number, outputTokens: number) =>
+              calculateCatalogCostCents(wire.catalogPricing!, inputTokens, outputTokens)
+            : (inputTokens: number, outputTokens: number) =>
+              calculateCostCents(model, inputTokens, outputTokens),
+        }
+        : {}),
+    });
     try {
-      const draft = await withTimeout(
-        draftTicketFromEmail({
-          subject: input.subject,
-          bodyText: dlpResult.text ?? input.bodyText,
-          model: wire.model,
-          partnerId: auth.partnerId,
-          orgId: input.orgId,
-          client,
-        }),
-        DRAFT_TIMEOUT_MS
-      );
-      // Usage accounting (spec §6). `recordUsage` takes a NULLABLE session id
-      // (see its doc in aiCostTracker.ts) — this one-shot draft has no
-      // `ai_sessions` row, so the per-session totals update is skipped while
-      // the per-org budget aggregates (`ai_cost_usage`) still see the spend.
-      // Token counts are accumulated across retry attempts, so a
-      // failed-then-recovered attempt 1 is metered too. Best-effort: a
-      // metering failure must never turn a good draft into a 503 for the pane.
-      try {
-        await recordUsage(
-          null,
-          input.orgId,
-          model,
-          draft.inputTokens,
-          draft.outputTokens,
-          false,
-          llmConfig.source === 'partner' ? 'partner_key' : 'platform',
-          wire.catalogPricing,
-        );
-      } catch (err) {
-        console.error('[office-addin] draft usage accounting failed', err);
-      }
+      const draft = await withTimeout(draftPromise, DRAFT_TIMEOUT_MS);
+      // Usage accounting (spec §6). This one-shot draft has no `ai_sessions`
+      // row, so settlement closes the reservation and writes the per-org
+      // aggregates in one transaction and, for platform billing, draws down the
+      // same prepaid balance checked above. Token counts are accumulated across
+      // retry attempts, so a failed-then-recovered attempt 1 is metered too.
+      await recordDraftUsage({
+        orgId: input.orgId,
+        model,
+        inputTokens: draft.inputTokens,
+        outputTokens: draft.outputTokens,
+        billingSource,
+        catalogPricing: wire.catalogPricing,
+        reservationId,
+      });
       return c.json({ draft }, 200);
     } catch (err) {
       // Blanket 503 for the pane's deterministic fallback, but never silent —
       // a model/timeout/parse failure here is otherwise invisible in prod.
       console.error('[office-addin] draft failed', err);
-      // Failed attempts still burned tokens — meter them (same best-effort
-      // posture as the success path). A timeout escapes this: withTimeout
-      // rejects with a plain Error before token counts exist.
-      if (err instanceof EmailDraftFailedError && (err.inputTokens > 0 || err.outputTokens > 0)) {
-        try {
-          await recordUsage(
-            null,
-            input.orgId,
+      if (err instanceof DraftTimeoutError) {
+        // Outcome unknown NOW, so the reservation goes indeterminate and keeps
+        // consuming capacity — it is never released on a timeout. The provider
+        // promise can still outlive the response timeout, so observe it and
+        // settle the eventual usage without delaying the deterministic
+        // fallback (settlement accepts an indeterminate reservation). The
+        // callback must not inherit the request's transaction: it runs after
+        // that transaction has closed, so accounting opens a fresh context.
+        await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
+          .catch((markError) => captureException(markError));
+        void runOutsideDbContext(() => draftPromise.then(
+          (lateDraft) => recordDraftUsage({
+            orgId: input.orgId,
             model,
-            err.inputTokens,
-            err.outputTokens,
-            false,
-            llmConfig.source === 'partner' ? 'partner_key' : 'platform',
-            wire.catalogPricing,
-          );
-        } catch (meterErr) {
+            inputTokens: lateDraft.inputTokens,
+            outputTokens: lateDraft.outputTokens,
+            billingSource,
+            catalogPricing: wire.catalogPricing,
+            reservationId,
+          }),
+          (lateErr) => lateErr instanceof EmailDraftFailedError
+            && (lateErr.inputTokens > 0 || lateErr.outputTokens > 0)
+            ? recordDraftUsage({
+                orgId: input.orgId,
+                model,
+                inputTokens: lateErr.inputTokens,
+                outputTokens: lateErr.outputTokens,
+                billingSource,
+                catalogPricing: wire.catalogPricing,
+                reservationId,
+              })
+            : undefined,
+        )).catch((meterErr) => {
           console.error('[office-addin] draft usage accounting failed', meterErr);
-        }
+        });
+      } else if (err instanceof EmailDraftFailedError
+        && !err.providerOutcomeUnknown
+        && (err.inputTokens > 0 || err.outputTokens > 0)) {
+        // Failed attempts still burned tokens — meter them (same best-effort
+        // posture as the success path), which also settles the reservation.
+        await recordDraftUsage({
+          orgId: input.orgId,
+          model,
+          inputTokens: err.inputTokens,
+          outputTokens: err.outputTokens,
+          billingSource,
+          catalogPricing: wire.catalogPricing,
+          reservationId,
+        });
+      } else if (err instanceof EmailDraftFailedError && !err.providerOutcomeUnknown) {
+        // The provider answered and nothing was spent: the ONLY case where
+        // reserved capacity may be handed back.
+        await releaseUnusedAiBudgetReservation({ orgId: input.orgId, reservationId })
+          .catch((releaseError) => captureException(releaseError));
+      } else {
+        // Provider transport ambiguity — treat as possibly-spent.
+        await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
+          .catch((markError) => captureException(markError));
       }
       return c.json({ error: 'ai_unavailable' }, 503);
     }
