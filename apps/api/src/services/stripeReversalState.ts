@@ -140,7 +140,10 @@ export async function ingestStripeFinancialEvent(event: NormalizedStripeFinancia
     ...(event.paymentIntentId ? {} : {
       status: 'blocked' as const,
       lastError: event.quarantineReason,
+      attemptCount: 1,
+      lastAttemptAt: new Date(),
       nextAttemptAt: null,
+      processedAt: new Date(),
     }),
   }).onConflictDoNothing({ target: stripeFinancialEvents.stripeEventId }));
 

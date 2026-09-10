@@ -189,7 +189,7 @@ export async function recordStripePayment(input: CaptureInput): Promise<{ invoic
         `stripePaymentIntentId=${input.stripePaymentIntentId}`, err instanceof Error ? err.message : err);
       captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
         partner_id: outcome.partnerId,
-        operation: 'stripe-settle-pending-reversals',
+        stripe_reconcile_stage: 'settle-pending-reversals',
       });
     }
     let paidAfterReversals = outcome.paid;

@@ -147,6 +147,9 @@ describe('direct-account Stripe financial event cursor (real PostgreSQL)', () =>
       .where(eq(stripeConnectAccounts.partnerId, f.partnerId)));
     expect(connection).toMatchObject({
       financialEventCursorCreated: 200, financialEventPageAfter: null, financialEventScanUpperCreated: null,
+      // A quarantined event has no Breeze payment to reduce; it must not raise
+      // the operator-review banner that only manual SQL could ever clear.
+      financialEventLastError: null,
     });
   });
 });

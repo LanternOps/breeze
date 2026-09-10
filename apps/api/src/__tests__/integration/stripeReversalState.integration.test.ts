@@ -323,6 +323,8 @@ describe('Stripe financial reversal state (real PostgreSQL)', () => {
       .where(eq(stripeFinancialEvents.stripeEventId, 'evt_no_pi_binding')));
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
+      // Same terminal shape as every other blocked transition.
+      attemptCount: 1, processedAt: expect.any(Date),
       status: 'blocked', paymentIntentId: null, nextAttemptAt: null,
       lastError: 'Refund event evt_no_pi_binding has no PaymentIntent binding',
     });

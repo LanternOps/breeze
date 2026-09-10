@@ -168,6 +168,10 @@ export async function pollPartnerStripeFinancialEvents(partnerId: string, now = 
       eq(stripeFinancialEvents.partnerId, partnerId),
       eq(stripeFinancialEvents.stripeAccountId, stripeAccountId),
       eq(stripeFinancialEvents.status, 'blocked'),
+      // Quarantined events (no PaymentIntent, so no Breeze payment to reduce)
+      // are terminal by construction and must not raise a banner that nothing
+      // short of manual SQL could ever clear.
+      isNotNull(stripeFinancialEvents.paymentIntentId),
     )));
   if (Number(blocked?.value ?? 0) > 0) {
     captureException(new Error('Stripe payment reversal requires operator review'), undefined, {
@@ -206,7 +210,7 @@ export async function pollStripeFinancialEvents(): Promise<{ accounts: number; e
       console.error('[stripeFinancialEventPoller] account poll failed', { partnerId: account.partnerId, message });
       captureException(err instanceof Error ? err : new Error(message), undefined, {
         partner_id: account.partnerId,
-        operation: 'stripe-financial-event-poll',
+        stripe_reconcile_stage: 'financial-event-poll',
       });
       await withSystemDbAccessContext(() => db.update(stripeConnectAccounts).set({
         financialEventLastPolledAt: new Date(), financialEventLastError: publicMessage, updatedAt: new Date(),

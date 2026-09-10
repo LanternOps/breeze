@@ -634,7 +634,7 @@ describe('Phase D2 — QuickBooks payment push/delete hooks', () => {
     await expect(recordStripePayment(captureInput())).resolves.toEqual({ invoiceId: 'inv1' });
     expect(insertValues.calls.some((v) => (v as { method?: string }).method === 'card')).toBe(true);
     expect(capture).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({
-      operation: 'stripe-settle-pending-reversals',
+      stripe_reconcile_stage: 'settle-pending-reversals',
     }));
   });
 
