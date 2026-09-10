@@ -22,9 +22,13 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
-// sha256File streams a file through SHA-256 and returns the lowercase-hex
-// digest. Streaming keeps memory flat for large files.
-func sha256File(path string) (string, error) {
+// SHA256File streams a file through SHA-256 and returns the lowercase-hex
+// digest. Streaming keeps memory flat for large files. Exported so other
+// packages needing the same "hash this restored file and compare" check
+// (the rebuild engine's validate phase) never drift from this package's own
+// checksum logic — see sha256File, the unexported alias every call site in
+// this package already uses.
+func SHA256File(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -36,6 +40,11 @@ func sha256File(path string) (string, error) {
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
+
+// sha256File is an unexported alias for SHA256File — kept so every existing
+// call site in this package (written before SHA256File was exported) needs
+// no change.
+func sha256File(path string) (string, error) { return SHA256File(path) }
 
 // checksumMatches reports whether the file at path hashes to want. A hashing
 // error counts as a mismatch (fail-closed) so verification never passes a file

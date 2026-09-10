@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -104,10 +103,8 @@ func (f *fakeSystem) indexOf(prefix string) int {
 	return -1
 }
 
-func (f *fakeSystem) dump() string { return fmt.Sprintf("commands:\n  %s", strings.Join(f.cmds, "\n  ")) }
+func (f *fakeSystem) dump() string {
+	return fmt.Sprintf("commands:\n  %s", strings.Join(f.cmds, "\n  "))
+}
 
 var _ System = (*fakeSystem)(nil)
-
-func stagingPath(root string, parts ...string) string {
-	return filepath.Join(append([]string{root}, parts...)...)
-}

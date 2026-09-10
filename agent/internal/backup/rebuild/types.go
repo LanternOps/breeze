@@ -113,19 +113,28 @@ type Plan struct {
 
 // Options configures a single Run call.
 type Options struct {
-	SnapshotID string
-	Provider   providers.BackupProvider
-	Target     Target
-	Identity   IdentityMode
-	Marker     *Marker          // original identity only
-	Layout     *layout.Manifest // nil → downloaded from snapshots/<id>/layout.json
-	StateDir   string           // default /var/lib/breeze/rebuild
-	StagingRoot string          // default <StateDir>/mnt/<snapshotID>
+	SnapshotID  string
+	Provider    providers.BackupProvider
+	Target      Target
+	Identity    IdentityMode
+	Marker      *Marker          // original identity only
+	Layout      *layout.Manifest // nil → downloaded from snapshots/<id>/layout.json
+	StateDir    string           // default /var/lib/breeze/rebuild
+	StagingRoot string           // default <StateDir>/mnt/<snapshotID>
 
 	DryRun              bool // preflight only; returns the Plan
 	ForceReprovision    bool
 	AllowPartialRestore bool
-	RegenerateInitramfs bool // default true; CLI --no-initramfs clears it
+	// RegenerateInitramfs is NOT defaulted by Run() — a bare Options{} leaves
+	// it false (Go's zero value), same as any other bool field. "Default
+	// true" is a CLI-level convention: breeze-backup rebuild always passes
+	// this explicitly (RegenerateInitramfs: !noInitramfs), so an operator
+	// who never touches --no-initramfs gets regeneration without asking for
+	// it — but Run() itself cannot distinguish "caller left it unset,
+	// wants the default" from "caller explicitly wants no regen" (both are
+	// the zero value), so a direct Options caller (tests, a future W04
+	// console) must set it explicitly to get initramfs regeneration.
+	RegenerateInitramfs bool
 	SkipBoot            bool // tests/CI only: synthetic roots have no bootloader
 
 	System   System // nil → real system (system_linux.go)
