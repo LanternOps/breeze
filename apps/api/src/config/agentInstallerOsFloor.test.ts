@@ -23,16 +23,36 @@ const WXS_PATH = path.join(REPO_ROOT, 'agent/installer/breeze.wxs');
 describe('agent installer minimum-OS LaunchCondition (#4608)', () => {
   const wxs = readFileSync(WXS_PATH, 'utf8');
 
-  it('blocks install below the Windows 10 / Server 2016 floor', () => {
-    // VersionNT is Windows Installer's OS-version property
-    // (major*100+minor). Windows 10 and every Server release from 2016
-    // onward report NT 10.0, i.e. VersionNT=1000, so ">= 1000" is exactly
-    // the Windows-10/Server-2016 floor.
-    expect(wxs).toMatch(/<Launch\s+Condition="VersionNT\s*>=\s*1000"/);
+  it('blocks install below the Windows 10 / Server 2016 floor via the registry, not VersionNT', () => {
+    // VersionNT / WindowsBuild are NOT trustworthy: Windows reports a fake
+    // 6.3/9600 (VersionNT=603) to any msiexec client process without a
+    // Windows 10 supportedOS manifest, and NinjaRMM / Action1 script hosts
+    // are such processes. A "VersionNT >= 1000" floor refused a fully
+    // patched Windows 11 24H2 box pushed by Ninja (v0.111.1, 2026-09-10).
+    // HKLM\...\CurrentVersion\CurrentMajorVersionNumber exists only on
+    // Windows 10 / Server 2016+, and registry reads bypass the shim.
+    expect(wxs).toMatch(
+      /<RegistrySearch[^>]*Key="SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"[^>]*Name="CurrentMajorVersionNumber"/s,
+    );
+    expect(wxs).toMatch(/<Launch\s+Condition="WINDOWS_CURRENT_MAJOR_VERSION"/);
+    const launchConditions = [...wxs.matchAll(/<Launch\s+Condition="([^"]*)"/g)].map((m) => m[1]);
+    for (const cond of launchConditions) {
+      expect(cond).not.toMatch(/VersionNT\s*[<>=]/);
+      expect(cond).not.toContain('WindowsBuild');
+    }
+  });
+
+  it('schedules AppSearch before LaunchConditions in both sequences', () => {
+    // Default sequence puts AppSearch (400) AFTER LaunchConditions (100), so
+    // the registry-backed property would still be empty when evaluated.
+    for (const seq of ['InstallUISequence', 'InstallExecuteSequence']) {
+      const block = wxs.match(new RegExp(`<${seq}>([\\s\\S]*?)</${seq}>`))?.[1] ?? '';
+      expect(block, seq).toContain('<AppSearch Before="LaunchConditions" />');
+    }
   });
 
   it('gives a clear message naming the supported floor', () => {
-    const match = wxs.match(/<Launch\s+Condition="VersionNT\s*>=\s*1000"\s+Message="([^"]+)"/);
+    const match = wxs.match(/<Launch\s+Condition="WINDOWS_CURRENT_MAJOR_VERSION"\s+Message="([^"]+)"/);
     expect(match).not.toBeNull();
     const message = match?.[1] ?? '';
     expect(message).toContain('Windows 10');
