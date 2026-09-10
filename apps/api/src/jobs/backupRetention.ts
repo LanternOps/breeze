@@ -560,6 +560,54 @@ const BACKUP_GC_SUPPORTED_PROVIDERS = new Set(['s3', 'local']);
 //     distinctly rather than letting it hide inside skippedIdentities.
 export type BackupGcResult = { deleted: number; skippedIdentities: number; blockedIdentities: number };
 
+/**
+ * backupType values whose manifest lives under the shared
+ * snapshots/<id>/manifest.json namespace the mark phase (markLiveBackupObjects)
+ * understands. Only these — plus a NULL backupType (legacy rows predating the
+ * column's 'file' default) — may safely appear in retainedSnapshotIds:
+ * markLiveBackupObjects's ordinary-manifest fetch is UNCONDITIONAL and has no
+ * not-found tolerance, so a retained row whose type writes its manifest
+ * elsewhere would 404 and fail-close the WHOLE identity (see FIX 6 below).
+ *
+ * 'system_image' was excluded here too until D15 Wave 1 gave it the SAME
+ * snapshots/<id>/manifest.json + system-state/ layout (Option A — see
+ * docs/superpowers/plans/backup/2026-09-09-bmr-system-state-contract.md):
+ * backup.go's state-only AND mixed-run publish paths now both publish a
+ * (possibly empty-files) ordinary manifest.json for EVERY system_image run,
+ * specifically so the snapshot-id group stays "manifest-bearing" for GC.
+ * Excluding system_image rows from this set left every retained
+ * system_image snapshot's bare-metal-recovery state with no DB-side
+ * protection at all — surviving only by luck, if its manifest.json also
+ * happened to still be present in the bucket LISTING (see
+ * listedManifestSnapshotIds).
+ *
+ * 'application' (hyperv) and 'database' (mssql) still write their manifests
+ * to a different key/namespace entirely and must stay excluded.
+ *
+ * `as const` (rather than `readonly string[]` directly) so the literal tuple
+ * type-checks against backupSnapshots.backupType's pgEnum column in the
+ * `inArray(...)` call below — Drizzle's enum column typing rejects a bare
+ * `string[]`. BACKUP_GC_RETAINED_MANIFEST_BACKUP_TYPES itself is exported as
+ * the widened `readonly string[]` (below) since callers like
+ * isRetainableBackupTypeForGc only need plain string membership.
+ */
+const RETAINABLE_BACKUP_TYPES_FOR_GC = ['file', 'system_image'] as const;
+export const BACKUP_GC_RETAINED_MANIFEST_BACKUP_TYPES: readonly string[] = RETAINABLE_BACKUP_TYPES_FOR_GC;
+
+/**
+ * Whether a backupSnapshots row of this backupType may safely be included in
+ * retainedSnapshotIds — see BACKUP_GC_RETAINED_MANIFEST_BACKUP_TYPES' doc
+ * comment. NULL (legacy rows predating the backupType column) is always
+ * retainable. Factored out as its own predicate (rather than inlined into
+ * the query's `or(...)` below) purely so it has an isolated unit test
+ * independent of the mocked Drizzle query builder, which cannot exercise a
+ * real `.where()` filter — see backupRetention.test.ts's own comment on that
+ * limitation.
+ */
+export function isRetainableBackupTypeForGc(backupType: string | null): boolean {
+  return backupType === null || BACKUP_GC_RETAINED_MANIFEST_BACKUP_TYPES.includes(backupType);
+}
+
 type BackupGcManifest = { files?: Array<{ backupPath?: unknown }> };
 
 // D15 bare-metal-recovery contract (Option A): a system_image snapshot
@@ -1125,22 +1173,27 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
     }
 
     try {
-      // Only FILE-type snapshots use the snapshots/<id>/manifest.json layout
-      // the mark phase fetches. system_image / hyperv (backupType 'application')
-      // / mssql (backupType 'database') snapshots write their manifests to
-      // DIFFERENT keys and never share the snapshots/ namespace, so fetching
-      // snapshots/<id>/manifest.json for them 404s and fail-closes the WHOLE
-      // identity forever (a single such row sharing a bucket with file backups
-      // would silently wedge GC). Excluding them here confines GC to the layout
-      // it actually understands. Legacy rows with NULL backupType predate the
-      // column's 'file' default and are file backups, so include them too.
+      // Only backupTypes in BACKUP_GC_RETAINED_MANIFEST_BACKUP_TYPES (file,
+      // system_image — plus NULL, legacy rows predating the column) use the
+      // snapshots/<id>/manifest.json layout the mark phase fetches. hyperv
+      // (backupType 'application') / mssql (backupType 'database') snapshots
+      // write their manifests to DIFFERENT keys and never share the
+      // snapshots/ namespace, so fetching snapshots/<id>/manifest.json for
+      // them 404s and fail-closes the WHOLE identity forever (a single such
+      // row sharing a bucket with file backups would silently wedge GC).
+      // Excluding THOSE here confines GC to the layout it actually
+      // understands — see BACKUP_GC_RETAINED_MANIFEST_BACKUP_TYPES' doc
+      // comment for why system_image is no longer in that excluded set.
       const retainedRows = await db
         .select({ snapshotId: backupSnapshots.snapshotId })
         .from(backupSnapshots)
         .where(
           and(
             inArray(backupSnapshots.configId, identity.configIds),
-            or(eq(backupSnapshots.backupType, 'file'), isNull(backupSnapshots.backupType)),
+            or(
+              inArray(backupSnapshots.backupType, RETAINABLE_BACKUP_TYPES_FOR_GC),
+              isNull(backupSnapshots.backupType),
+            ),
           ),
         );
       const retainedSnapshotIds = retainedRows.map((row) => row.snapshotId);
