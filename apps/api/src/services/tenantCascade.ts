@@ -176,7 +176,16 @@ async function deleteSoftwareCatalogsAndObjects(
       );
     }
 
-    await deleteObjects(keys);
+    // deleteObjects itself no-ops on an empty array (s3Storage.ts: "never
+    // send a zero-key delete"), but skip the call outright here too -- most
+    // orgs/partners never uploaded a software artifact, and a mocked
+    // deleteObjects in a caller's test (it is a shared module-level spy) has
+    // no way to apply that same guard, so an unconditional call here shows up
+    // as a spurious extra invocation in unrelated erasure-order assertions
+    // (e.g. ticketAttachmentsRls.integration.test.ts's "s3 objects before
+    // rows" test, which asserts deleteObjects was called exactly once for
+    // ticket attachments).
+    if (keys.length > 0) await deleteObjects(keys);
 
     const deletedVersions = 'orgId' in owner
       ? await dbModule.db.execute(sql`
