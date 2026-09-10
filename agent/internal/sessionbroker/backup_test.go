@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,13 +35,83 @@ func TestSetClearBackupSession(t *testing.T) {
 	}
 	b.mu.RUnlock()
 
-	b.ClearBackupSession()
+	if !b.ClearBackupSession(s) {
+		t.Fatal("expected current backup session to be cleared")
+	}
 	b.mu.RLock()
 	if b.backup.session != nil {
 		b.mu.RUnlock()
 		t.Error("expected backup session to be cleared")
 	}
 	b.mu.RUnlock()
+}
+
+func TestClearBackupSessionDoesNotClearNewerOwner(t *testing.T) {
+	b := New("test", nil)
+	oldSession := &Session{SessionID: "old-backup"}
+	newSession := &Session{SessionID: "new-backup"}
+	b.SetBackupSession(newSession)
+
+	if b.ClearBackupSession(oldSession) {
+		t.Fatal("stale backup disconnect cleared the singleton")
+	}
+	b.mu.RLock()
+	got := b.backup.session
+	b.mu.RUnlock()
+	if got != newSession {
+		t.Fatalf("backup owner = %v, want newer session", got)
+	}
+	if !b.ClearBackupSession(newSession) {
+		t.Fatal("current backup disconnect did not clear the singleton")
+	}
+}
+
+// TestBackupSessionStateConcurrentAccessIsRaceFree exercises SetBackupSession,
+// ClearBackupSession, StopBackupHelperIfIdle and a raw session read
+// concurrently. b.mu only ever guards the b.backup pointer itself; bh.session
+// (and every other backupHelper field) is guarded by bh.mu, so a correct
+// reader fetches bh under b.mu and then reads session under bh.mu -- exactly
+// as GetOrSpawnBackupHelper and ForwardBackupCommand do.
+func TestBackupSessionStateConcurrentAccessIsRaceFree(t *testing.T) {
+	b := New("test", nil)
+	b.backup = &backupHelper{}
+	sessions := []*Session{{SessionID: "one"}, {SessionID: "two"}}
+
+	var wg sync.WaitGroup
+	for worker := range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 500 {
+				session := sessions[(worker+i)%len(sessions)]
+				switch worker {
+				case 0:
+					b.SetBackupSession(session)
+				case 1:
+					b.ClearBackupSession(session)
+				case 2:
+					b.StopBackupHelperIfIdle()
+				default:
+					b.mu.RLock()
+					bh := b.backup
+					b.mu.RUnlock()
+					bh.mu.Lock()
+					_ = bh.session
+					bh.mu.Unlock()
+				}
+			}
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent backup session access deadlocked")
+	}
 }
 
 func TestStopBackupHelper_NilBroker(t *testing.T) {
@@ -273,6 +344,226 @@ func TestBackupHelperScopes(t *testing.T) {
 func TestHelperRoleBackupConstant(t *testing.T) {
 	if backupipc.HelperRoleBackup != "backup" {
 		t.Errorf("expected 'backup', got %s", backupipc.HelperRoleBackup)
+	}
+}
+
+func TestBackupRoleRequiresPrivilegedIdentity(t *testing.T) {
+	tests := []struct {
+		name       string
+		goos       string
+		sid        string
+		uid        uint32
+		wantReject bool
+		wantReason string
+	}{
+		{
+			name:       "Windows user is rejected",
+			goos:       "windows",
+			sid:        "S-1-5-21-1-2-3-1001",
+			wantReject: true,
+			wantReason: "backup role requires SYSTEM identity",
+		},
+		{name: "Windows SYSTEM is allowed", goos: "windows", sid: systemSID},
+		{
+			name:       "Linux user is rejected",
+			goos:       "linux",
+			uid:        1000,
+			wantReject: true,
+			wantReason: "backup role requires root identity",
+		},
+		{name: "Linux root is allowed", goos: "linux", uid: 0},
+		{
+			name:       "macOS user is rejected",
+			goos:       "darwin",
+			uid:        501,
+			wantReject: true,
+			wantReason: "backup role requires root identity",
+		},
+		{name: "macOS root is allowed", goos: "darwin", uid: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason, rejected := roleIdentityRejection(
+				backupipc.HelperRoleBackup, tt.sid, tt.uid, "0", "0", "0", tt.goos,
+			)
+			if rejected != tt.wantReject {
+				t.Fatalf("rejected = %v, want %v (reason %q)", rejected, tt.wantReject, reason)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func readyBackupSpawnReservation(pid uint32) *backupSpawnReservation {
+	ready := make(chan struct{})
+	close(ready)
+	return &backupSpawnReservation{
+		ready:     ready,
+		pid:       pid,
+		published: true,
+	}
+}
+
+func TestBackupHelperAdmissionRequiresAgentSpawnReservation(t *testing.T) {
+	t.Run("no agent spawn", func(t *testing.T) {
+		b := New("test", nil)
+		if _, err := b.claimBackupHelperAdmission(41); !errors.Is(err, errBackupHelperNotReserved) {
+			t.Fatalf("claim error = %v, want %v", err, errBackupHelperNotReserved)
+		}
+	})
+
+	t.Run("wrong pid does not consume exact reservation", func(t *testing.T) {
+		reservation := readyBackupSpawnReservation(42)
+		b := New("test", nil)
+		b.backup = &backupHelper{spawnDone: make(chan struct{}), reservation: reservation, process: &os.Process{Pid: 42}}
+
+		if _, err := b.claimBackupHelperAdmission(41); !errors.Is(err, errBackupHelperPeerMismatch) {
+			t.Fatalf("wrong-pid claim error = %v, want %v", err, errBackupHelperPeerMismatch)
+		}
+		if _, err := b.claimBackupHelperAdmission(42); err != nil {
+			t.Fatalf("exact-pid claim: %v", err)
+		}
+		if _, err := b.claimBackupHelperAdmission(42); !errors.Is(err, errBackupHelperReservationUsed) {
+			t.Fatalf("replayed claim error = %v, want %v", err, errBackupHelperReservationUsed)
+		}
+	})
+
+	t.Run("failed spawn is rejected", func(t *testing.T) {
+		reservation := readyBackupSpawnReservation(0)
+		reservation.startErr = errors.New("synthetic start failure")
+		b := New("test", nil)
+		b.backup = &backupHelper{spawnDone: make(chan struct{}), reservation: reservation}
+		if _, err := b.claimBackupHelperAdmission(42); !errors.Is(err, errBackupHelperReservationFailed) {
+			t.Fatalf("claim error = %v, want %v", err, errBackupHelperReservationFailed)
+		}
+	})
+}
+
+func TestBackupHelperAdmissionConcurrentClaimIsSingleUse(t *testing.T) {
+	reservation := readyBackupSpawnReservation(42)
+	b := New("test", nil)
+	b.backup = &backupHelper{spawnDone: make(chan struct{}), reservation: reservation, process: &os.Process{Pid: 42}}
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := b.claimBackupHelperAdmission(42)
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	var accepted, replayed int
+	for err := range errs {
+		switch {
+		case err == nil:
+			accepted++
+		case errors.Is(err, errBackupHelperReservationUsed):
+			replayed++
+		default:
+			t.Fatalf("unexpected claim error: %v", err)
+		}
+	}
+	if accepted != 1 || replayed != 1 {
+		t.Fatalf("accepted=%d replayed=%d, want 1/1", accepted, replayed)
+	}
+}
+
+func TestBackupHelperAdmissionWaitsForSpawnedPIDPublication(t *testing.T) {
+	reservation := &backupSpawnReservation{ready: make(chan struct{})}
+	b := New("test", nil)
+	b.backup = &backupHelper{spawnDone: make(chan struct{}), reservation: reservation}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := b.claimBackupHelperAdmission(42)
+		errCh <- err
+	}()
+
+	b.backup.mu.Lock()
+	b.backup.process = &os.Process{Pid: 42}
+	reservation.pid = 42
+	reservation.published = true
+	close(reservation.ready)
+	b.backup.mu.Unlock()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("claim after PID publication: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("claim did not resume after PID publication")
+	}
+}
+
+func TestBackupSessionRegistrationRequiresClaimedReservation(t *testing.T) {
+	reservation := readyBackupSpawnReservation(42)
+	b := New("test", nil)
+	b.backup = &backupHelper{spawnDone: make(chan struct{}), reservation: reservation, process: &os.Process{Pid: 42}}
+
+	unclaimed, unclaimedClient := newPairedSession(t, "unclaimed", "0")
+	defer unclaimedClient.Close()
+	unclaimed.HelperRole = backupipc.HelperRoleBackup
+	if err := b.registerNonLifecycleSession("0", backupipc.HelperRoleBackup, unclaimed, reservation); !errors.Is(err, errBackupHelperNotReserved) {
+		t.Fatalf("unclaimed registration error = %v, want %v", err, errBackupHelperNotReserved)
+	}
+
+	claimed, err := b.claimBackupHelperAdmission(42)
+	if err != nil {
+		t.Fatalf("claim exact reservation: %v", err)
+	}
+	accepted, acceptedClient := newPairedSession(t, "accepted", "0")
+	defer acceptedClient.Close()
+	accepted.HelperRole = backupipc.HelperRoleBackup
+	if err := b.registerNonLifecycleSession("0", backupipc.HelperRoleBackup, accepted, claimed); err != nil {
+		t.Fatalf("claimed registration: %v", err)
+	}
+	if b.backup.session != accepted || !reservation.committed {
+		t.Fatal("claimed reservation did not publish the exact backup session")
+	}
+
+	replay, replayClient := newPairedSession(t, "replay", "0")
+	defer replayClient.Close()
+	replay.HelperRole = backupipc.HelperRoleBackup
+	if err := b.registerNonLifecycleSession("0", backupipc.HelperRoleBackup, replay, claimed); !errors.Is(err, errBackupHelperNotReserved) {
+		t.Fatalf("replayed registration error = %v, want %v", err, errBackupHelperNotReserved)
+	}
+}
+
+func TestBackupSessionRegistrationDoesNotReplaceLiveOwner(t *testing.T) {
+	reservation := readyBackupSpawnReservation(42)
+	existing := &Session{SessionID: "existing"}
+	b := New("test", nil)
+	b.backup = &backupHelper{
+		spawnDone:   make(chan struct{}),
+		reservation: reservation,
+		process:     &os.Process{Pid: 42},
+		session:     existing,
+	}
+	claimed, err := b.claimBackupHelperAdmission(42)
+	if err != nil {
+		t.Fatalf("claim exact reservation: %v", err)
+	}
+
+	replacement, replacementClient := newPairedSession(t, "replacement", "0")
+	defer replacementClient.Close()
+	replacement.HelperRole = backupipc.HelperRoleBackup
+	if err := b.registerNonLifecycleSession("0", backupipc.HelperRoleBackup, replacement, claimed); !errors.Is(err, errBackupHelperAlreadyConnected) {
+		t.Fatalf("replacement registration error = %v, want %v", err, errBackupHelperAlreadyConnected)
+	}
+	if b.backup.session != existing {
+		t.Fatal("rejected replacement changed the live backup owner")
 	}
 }
 
