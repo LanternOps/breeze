@@ -11,6 +11,7 @@ const {
   authorizeAssignmentTargetMock,
   getAssignmentMock,
   canManagePartnerWideMock,
+  mfaState,
 } = vi.hoisted(() => ({
   getConfigPolicyMock: vi.fn(),
   assignPolicyMock: vi.fn(),
@@ -21,6 +22,7 @@ const {
   authorizeAssignmentTargetMock: vi.fn(),
   getAssignmentMock: vi.fn(),
   canManagePartnerWideMock: vi.fn(),
+  mfaState: { satisfied: true },
 }));
 
 vi.mock('../../services/configurationPolicy', async (importOriginal) => {
@@ -54,6 +56,10 @@ vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    if (!mfaState.satisfied) return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+    await next();
+  }),
 }));
 
 import { assignmentRoutes } from './assignments';
@@ -94,6 +100,7 @@ describe('configurationPolicies assignment routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mfaState.satisfied = true;
     // SR5-07 site sub-axis: default to "allowed" so existing (unrestricted)
     // cases are unaffected; individual tests override to assert denial. The real
     // helper is a no-op for callers without allowedSiteIds, so mocking it keeps
@@ -107,6 +114,38 @@ describe('configurationPolicies assignment routes', () => {
       await next();
     });
     app.route('/', assignmentRoutes);
+  });
+
+  describe('MFA boundary for assignment mutations', () => {
+    beforeEach(() => {
+      mfaState.satisfied = false;
+    });
+
+    it('denies assignment before policy, target, mutation, cache, or audit work', async () => {
+      const res = await app.request(`/${POLICY_ID}/assignments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ level: 'device', targetId: DEVICE_ID }),
+      });
+
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(getConfigPolicyMock).not.toHaveBeenCalled();
+      expect(validateAssignmentTargetMock).not.toHaveBeenCalled();
+      expect(assignPolicyMock).not.toHaveBeenCalled();
+    });
+
+    it('denies unassignment before reading or deleting the assignment', async () => {
+      const res = await app.request(`/${POLICY_ID}/assignments/77777777-7777-7777-7777-777777777777`, {
+        method: 'DELETE',
+      });
+
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(getConfigPolicyMock).not.toHaveBeenCalled();
+      expect(getAssignmentMock).not.toHaveBeenCalled();
+      expect(unassignPolicyMock).not.toHaveBeenCalled();
+    });
   });
 
   it('filters policy assignment reads through target site authorization', async () => {

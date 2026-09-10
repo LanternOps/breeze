@@ -33,6 +33,7 @@ vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
+  requireMfa: vi.fn(() => (_c: any, next: any) => next()),
   hasSatisfiedMfa: vi.fn(() => true),
 }));
 

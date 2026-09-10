@@ -2,7 +2,7 @@ import { db } from '../db';
 import { ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
 import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments, automationPolicyCompliance } from '../db/schema';
 import { eq, and, desc, isNull, isNotNull, inArray, SQL } from 'drizzle-orm';
-import type { AuthContext } from '../middleware/auth';
+import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import {
   alertRuleInlineSettingsSchema,
@@ -41,6 +41,23 @@ import {
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+}
+
+const MFA_REQUIRED_ERROR = JSON.stringify({ error: 'MFA required' });
+
+/**
+ * Match the HTTP `requireMfa()` boundary for config-policy mutations reached
+ * through AI or MCP instead of a Hono route. Interactive user sessions must
+ * carry the live MFA claim. Autonomous agents cannot substitute an approval
+ * envelope for that claim, just as `requireMfa()` rejects an `ai_agent`
+ * principal before inspecting its token. API-key and OAuth MCP callers retain
+ * the product-wide `ENABLE_2FA=false` behavior through `hasSatisfiedMfa`.
+ */
+function configPolicyMutationMfaError(auth: AuthContext): string | null {
+  if (auth.principal?.kind === 'ai_agent' || !hasSatisfiedMfa(auth)) {
+    return MFA_REQUIRED_ERROR;
+  }
+  return null;
 }
 
 /**
@@ -327,6 +344,9 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('apply_configuration_policy', async (input, auth) => {
+      const mfaError = configPolicyMutationMfaError(auth);
+      if (mfaError) return mfaError;
+
       // Dual-axis reader so a partner-scoped caller can reach a partner-OWNED
       // policy (org_id NULL) to assign it — auth.orgCondition alone hid these.
       const conditions: SQL[] = [eq(configurationPolicies.id, input.configPolicyId as string)];
@@ -422,6 +442,9 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('remove_configuration_policy_assignment', async (input, auth) => {
+      const mfaError = configPolicyMutationMfaError(auth);
+      if (mfaError) return mfaError;
+
       // Verify the assignment belongs to a policy the caller can see. The
       // dual-axis reader keeps partner-OWNED policies (org_id NULL) reachable
       // for partner-scoped callers; policyOrgId is selected so the partner-wide
@@ -524,9 +547,13 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('manage_configuration_policy', async (input, auth) => {
+      const mfaError = configPolicyMutationMfaError(auth);
+      if (mfaError) return mfaError;
+
       if (!canMutateOrgWideGovernance(auth)) {
         return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
       }
+
       const action = input.action as string;
 
       if (action === 'create') {
@@ -843,6 +870,11 @@ For link-only types, set featurePolicyId instead of inlineSettings:
     handler: safeHandler('manage_policy_feature_link', async (input, auth) => {
       const action = input.action as string;
       const configPolicyId = input.configPolicyId as string;
+
+      if (action === 'add' || action === 'update' || action === 'remove') {
+        const mfaError = configPolicyMutationMfaError(auth);
+        if (mfaError) return mfaError;
+      }
 
       // Reads (list) are not gated by the site-ceiling — only add/update/remove.
       if (action !== 'list' && !canMutateOrgWideGovernance(auth)) {

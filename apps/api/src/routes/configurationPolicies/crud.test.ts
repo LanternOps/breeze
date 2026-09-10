@@ -11,7 +11,6 @@ const {
   assignPolicyMock,
   dbSelectMock,
   listEligibleParentPoliciesMock,
-  getParentLinkFeatureTypesMock,
   mfaState,
 } = vi.hoisted(() => ({
   listConfigPoliciesMock: vi.fn(),
@@ -22,7 +21,6 @@ const {
   assignPolicyMock: vi.fn(),
   dbSelectMock: vi.fn(),
   listEligibleParentPoliciesMock: vi.fn(),
-  getParentLinkFeatureTypesMock: vi.fn(),
   // Mutable so a single test can flip MFA off without re-mocking the module.
   mfaState: { satisfied: true },
 }));
@@ -40,7 +38,6 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
     deleteConfigPolicy: deleteConfigPolicyMock,
     assignPolicy: assignPolicyMock,
     listEligibleParentPolicies: listEligibleParentPoliciesMock,
-    getParentLinkFeatureTypes: getParentLinkFeatureTypesMock,
   };
 });
 
@@ -70,6 +67,10 @@ vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    if (!mfaState.satisfied) return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+    await next();
+  }),
   hasSatisfiedMfa: vi.fn(() => mfaState.satisfied),
 }));
 
@@ -123,7 +124,6 @@ describe('configurationPolicies CRUD routes', () => {
     // auto-assign error-path test leaks into later cases.
     assignPolicyMock.mockResolvedValue({ id: 'assignment-1' });
     deleteConfigPolicyMock.mockResolvedValue({ id: POLICY_ID });
-    getParentLinkFeatureTypesMock.mockResolvedValue([]);
     listEligibleParentPoliciesMock.mockResolvedValue([]);
     mfaState.satisfied = true;
     mockOrgExists(true); // default: system-scope org-existence check passes
@@ -134,6 +134,29 @@ describe('configurationPolicies CRUD routes', () => {
       await next();
     });
     app.route('/', crudRoutes);
+  });
+
+  describe('MFA boundary for effective policy mutations', () => {
+    beforeEach(() => {
+      mfaState.satisfied = false;
+    });
+
+    it.each([
+      ['create', '/', 'POST', { name: 'Must not persist' }, createConfigPolicyMock],
+      ['update', `/${POLICY_ID}`, 'PATCH', { status: 'inactive' }, updateConfigPolicyMock],
+      ['delete', `/${POLICY_ID}`, 'DELETE', undefined, deleteConfigPolicyMock],
+    ] as const)('denies %s before any policy service or success audit', async (_name, path, method, body, sink) => {
+      const res = await app.request(path, {
+        method,
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(sink).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
   });
 
   // ============================================
@@ -749,10 +772,7 @@ describe('configurationPolicies CRUD routes', () => {
       expect(await res.json()).toMatchObject({ error: 'INVALID_PARENT_POLICY' });
     });
 
-    // MFA follows effectiveness: inheriting a gated link enables it on the new
-    // policy, the same capability POST /:id/features already gates.
-    it('POST requires MFA when the parent carries a gated link', async () => {
-      getParentLinkFeatureTypesMock.mockResolvedValue(['maintenance']);
+    it('POST with a parent requires MFA before resolving or creating the policy', async () => {
       mfaState.satisfied = false;
 
       const res = await app.request('/', {
@@ -766,21 +786,7 @@ describe('configurationPolicies CRUD routes', () => {
       expect(createConfigPolicyMock).not.toHaveBeenCalled();
     });
 
-    it('POST allows an ungated parent without MFA', async () => {
-      getParentLinkFeatureTypesMock.mockResolvedValue(['event_log']);
-      mfaState.satisfied = false;
-      createConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'Child', orgId: ORG_ID });
-
-      const res = await app.request('/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Child', parentPolicyId: PARENT_ID }),
-      });
-
-      expect(res.status).toBe(201);
-    });
-
-    it('POST without a parent never consults the parent MFA gate', async () => {
+    it('POST without a parent also requires MFA before policy creation', async () => {
       mfaState.satisfied = false;
       createConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'Root', orgId: ORG_ID });
 
@@ -790,8 +796,8 @@ describe('configurationPolicies CRUD routes', () => {
         body: JSON.stringify({ name: 'Root' }),
       });
 
-      expect(res.status).toBe(201);
-      expect(getParentLinkFeatureTypesMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      expect(createConfigPolicyMock).not.toHaveBeenCalled();
     });
 
     it('DELETE maps PolicyHasChildrenError to 409 with the children', async () => {
