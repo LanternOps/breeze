@@ -6,6 +6,7 @@ import {
   Command,
   Terminal,
   FilePlus2,
+  HardDrive,
   Plus,
   Pencil,
   Trash2,
@@ -20,7 +21,10 @@ import {
   FieldError,
   PathList,
 } from "../configurationPolicies/featureTabs/backupTabPrimitives";
-import { createOsPresets } from "../configurationPolicies/featureTabs/backupTabPresets";
+import {
+  createOsPresets,
+  createWholeMachinePresets,
+} from "../configurationPolicies/featureTabs/backupTabPresets";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 export type BackupProfile = {
@@ -122,6 +126,17 @@ function createTemplates(): Template[] {
   const macos = byId.get("macos");
   const linux = byId.get("linux");
   return [
+    ...createWholeMachinePresets().map((preset) => ({
+      id: preset.id,
+      icon: HardDrive,
+      title: preset.title,
+      description: preset.summary,
+      build: (): DraftSelections => ({
+        ...emptySelections(),
+        file: { enabled: true, paths: [...preset.paths], excludes: [...preset.excludes] },
+        system_image: { enabled: true, includeSystemState: true },
+      }),
+    })),
     {
       id: "server",
       icon: Server,
