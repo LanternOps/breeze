@@ -101,3 +101,30 @@ describe('navigateTo same-origin guard', () => {
     });
   });
 });
+
+describe('navigateTo reports which path it took', () => {
+  beforeEach(() => {
+    navigateMock.mockReset();
+    navigateMock.mockResolvedValue(undefined);
+  });
+
+  it("resolves 'soft' when the view-transition router handled it", async () => {
+    await expect(navigateTo('/devices')).resolves.toBe('soft');
+  });
+
+  it("resolves 'hard' when it had to fall back to a full navigation", async () => {
+    navigateMock.mockRejectedValue(new Error('no router'));
+    const assign = vi.fn();
+    const original = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true, writable: true,
+      value: { ...original, assign, replace: vi.fn() },
+    });
+    try {
+      await expect(navigateTo('/devices')).resolves.toBe('hard');
+      expect(assign).toHaveBeenCalledWith('/devices');
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, writable: true, value: original });
+    }
+  });
+});

@@ -27,7 +27,12 @@ export function OrgRequiredState({ description }: { description?: string }) {
   const pick = async (orgId: string, name: string) => {
     if (switchingId) return;
     setSwitchingId(orgId);
-    await applyOrgSwitch(orgId, t('layout.org.toast.switched', { name }));
+    try {
+      await applyOrgSwitch(orgId, t('layout.org.toast.switched', { name }));
+    } finally {
+      // Normally unmounted by the soft navigation; guards the no-op case.
+      setSwitchingId(null);
+    }
   };
 
   return (
