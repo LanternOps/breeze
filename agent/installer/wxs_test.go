@@ -48,21 +48,25 @@ func TestOsFloorDoesNotUseShimmedVersionProperties(t *testing.T) {
 		t.Fatal("no <Launch> conditions found")
 	}
 	for _, c := range conds {
-		for _, banned := range []string{"VersionNT ", "VersionNT>", "VersionNT<", "VersionNT=", "WindowsBuild"} {
-			if strings.Contains(c, banned) {
-				t.Errorf("launch condition %q derives the OS floor from a shimmable Windows Installer property", c)
-			}
+		// VersionNT64 (the bitness check) is the only allowed use; any other
+		// VersionNT or WindowsBuild reference, however escaped, is banned.
+		stripped := strings.ReplaceAll(c, "VersionNT64", "")
+		if strings.Contains(stripped, "VersionNT") || strings.Contains(stripped, "WindowsBuild") {
+			t.Errorf("launch condition %q derives the OS floor from a shimmed Windows Installer property", c)
 		}
 	}
 	// The RegistrySearch must sit directly under a <Property>, and that
 	// property's Id must be what the Launch condition reads; otherwise the
 	// condition evaluates an always-empty property and refuses every install.
-	propRe := regexp.MustCompile(`(?s)<Property\s+Id="([A-Z_0-9]+)"[^>]*>\s*<RegistrySearch\s+[^>]*Key="SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"[^>]*Name="CurrentMajorVersionNumber"`)
+	propRe := regexp.MustCompile(`(?s)<Property\s+Id="([A-Za-z_0-9]+)"[^>]*>\s*<RegistrySearch\s+[^>]*Key="SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"[^>]*Name="CurrentMajorVersionNumber"`)
 	pm := propRe.FindStringSubmatch(wxs)
 	if pm == nil {
 		t.Fatal("expected a <Property> wrapping a RegistrySearch on HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\CurrentMajorVersionNumber to provide the Windows 10 / Server 2016 floor")
 	}
 	prop := pm[1]
+	if strings.ToUpper(prop) == prop {
+		t.Errorf("property %q is public (all uppercase) and could be preset on the msiexec command line to defeat the floor; use a private mixed-case Id", prop)
+	}
 	found := false
 	for _, c := range conds {
 		if c == "Installed OR "+prop {
@@ -74,9 +78,10 @@ func TestOsFloorDoesNotUseShimmedVersionProperties(t *testing.T) {
 	}
 }
 
-// AppSearch is sequenced after LaunchConditions by default (400 vs 100), so
-// a registry-backed launch condition silently sees an empty property unless
-// AppSearch is pulled forward in BOTH sequences.
+// In the stock InstallExecuteSequence AppSearch (400) runs after
+// LaunchConditions (100), so a silent install would evaluate an empty
+// property. InstallUISequence already orders them correctly (50 vs 100);
+// we schedule explicitly in both so the ordering is never implicit.
 func TestAppSearchRunsBeforeLaunchConditionsInBothSequences(t *testing.T) {
 	wxs := readWxs(t)
 	for _, seq := range []string{"InstallUISequence", "InstallExecuteSequence"} {
