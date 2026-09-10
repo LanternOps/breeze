@@ -4,7 +4,6 @@ package securefs
 
 import (
 	"crypto/rand"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -451,30 +450,53 @@ func setBasicInfo(handle windows.Handle, info *fileBasicInfo) error {
 		(*byte)(unsafe.Pointer(info)), uint32(unsafe.Sizeof(*info)))
 }
 
+// fileRenameInformation mirrors FILE_RENAME_INFORMATION. Go lays this out
+// exactly as the NT ABI does on x64: the union at 0, four bytes of padding,
+// RootDirectory at 8, FileNameLength at 16 and FileName at 20.
+type fileRenameInformation struct {
+	ReplaceIfExists uint32
+	RootDirectory   windows.Handle
+	FileNameLength  uint32
+	FileName        [1]uint16
+}
+
 // renameRelative publishes the open file at handle as name under parent,
-// atomically replacing whatever name currently refers to. This is
-// FILE_RENAME_INFO with RootDirectory set to the pinned parent handle, so the
-// destination is resolved relative to a directory we hold open — never from a
-// path string the kernel would re-resolve.
+// atomically replacing whatever name currently refers to. RootDirectory is the
+// pinned parent handle, so the destination is resolved relative to a directory
+// we hold open — never from a path string the kernel would re-resolve.
 //
-// FILE_RENAME_INFO on 64-bit Windows is: ReplaceIfExists/Flags (DWORD) at 0,
-// 4 bytes of padding, RootDirectory (HANDLE) at 8, FileNameLength (DWORD, in
-// BYTES) at 16, and the WCHAR name from 20.
+// This deliberately uses the NATIVE NtSetInformationFile(FileRenameInformation)
+// rather than Win32's SetFileInformationByHandle(FileRenameInfo). The Win32
+// wrapper does not honour a non-NULL RootDirectory — it expects FileName to be
+// a fully qualified path and returns ERROR_INVALID_PARAMETER otherwise, which
+// is exactly how the first handle-relative attempt failed on a Windows Server
+// 2022 lab host. Only the native call gives us the handle-relative rename that
+// makes this the equivalent of renameat.
+//
+// FileNameLength is in BYTES and excludes the terminator; the buffer is
+// offsetof(FileName) + FileNameLength.
 func renameRelative(handle, parent windows.Handle, name string) error {
 	nameUTF16, err := windows.UTF16FromString(name)
 	if err != nil {
 		return err
 	}
-	nameUTF16 = nameUTF16[:len(nameUTF16)-1] // FileName is not NUL-terminated
-	const headerLen = 20
-	buf := make([]byte, headerLen+len(nameUTF16)*2)
-	binary.LittleEndian.PutUint32(buf[0:], 1) // ReplaceIfExists
-	binary.LittleEndian.PutUint64(buf[8:], uint64(parent))
-	binary.LittleEndian.PutUint32(buf[16:], uint32(len(nameUTF16)*2))
-	for i, c := range nameUTF16 {
-		binary.LittleEndian.PutUint16(buf[headerLen+i*2:], c)
+	nameLen := len(nameUTF16)*2 - 2
+	if nameLen <= 0 {
+		return errors.New("publication name is empty")
 	}
-	return windows.SetFileInformationByHandle(handle, windows.FileRenameInfo, &buf[0], uint32(len(buf)))
+	var layout fileRenameInformation
+	headerLen := int(unsafe.Offsetof(layout.FileName))
+	buf := make([]byte, headerLen+nameLen)
+	info := (*fileRenameInformation)(unsafe.Pointer(&buf[0]))
+	// Class 10 reads only the BOOLEAN low byte of this union; the Ex class
+	// (65) is the one that takes flags, and it needs Windows 10 / Server 2016.
+	info.ReplaceIfExists = windows.FILE_RENAME_REPLACE_IF_EXISTS
+	info.RootDirectory = parent
+	info.FileNameLength = uint32(nameLen)
+	copy((*[windows.MAX_LONG_PATH]uint16)(unsafe.Pointer(&info.FileName[0]))[:nameLen/2:nameLen/2], nameUTF16)
+
+	var iosb windows.IO_STATUS_BLOCK
+	return windows.NtSetInformationFile(handle, &iosb, &buf[0], uint32(len(buf)), windows.FileRenameInformation)
 }
 
 func deleteRelative(parent windows.Handle, name string) error {

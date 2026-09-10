@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -283,6 +284,7 @@ func TestInstallFileConcurrentReplacement(t *testing.T) {
 		}
 	}()
 
+	var succeeded atomic.Int64
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
@@ -290,11 +292,18 @@ func TestInstallFileConcurrentReplacement(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 25; j++ {
 				source := writeSource(t, fmt.Sprintf("payload-%d-%d", i, j))
-				_, _ = InstallFile(base, "file.txt", source, 0, time.Time{})
+				if _, err := InstallFile(base, "file.txt", source, 0, time.Time{}); err == nil {
+					succeeded.Add(1)
+				}
 			}
 		}(i)
 	}
 	wg.Wait()
+	// Without this the whole test passes vacuously when every publish fails:
+	// the seed file simply stays put and the assertions below still hold.
+	if succeeded.Load() != 200 {
+		t.Fatalf("only %d of 200 concurrent installs succeeded; publication is broken", succeeded.Load())
+	}
 	close(stop)
 	readerWG.Wait()
 
@@ -436,12 +445,21 @@ func TestInstallFileResistsConcurrentComponentSwap(t *testing.T) {
 		}
 	}()
 
+	succeeded := 0
 	for i := 0; i < 200; i++ {
 		source := writeSource(t, fmt.Sprintf("content-%d", i))
-		_, _ = InstallFile(base, filepath.Join("parent", fmt.Sprintf("file-%d", i)), source, 0, time.Time{})
+		if _, err := InstallFile(base, filepath.Join("parent", fmt.Sprintf("file-%d", i)), source, 0, time.Time{}); err == nil {
+			succeeded++
+		}
 	}
 	close(stop)
 	wg.Wait()
+	// Losing every iteration to the attacker's rename is a fail-closed outcome,
+	// but it would also hide a publication that never works at all. The racer
+	// only holds the directory away for a moment, so most iterations must land.
+	if succeeded == 0 {
+		t.Fatal("no install succeeded at all; publication is broken, not merely racing")
+	}
 
 	entries, err := os.ReadDir(outside)
 	if err != nil {
@@ -483,5 +501,69 @@ func TestEnsurePrivateDirTightensAPermissiveProtectedDACL(t *testing.T) {
 	}
 	if strings.Contains(got.String(), "(A;OICI;FA;;;WD)") {
 		t.Fatalf("permissive Everyone ACE survived EnsurePrivateDir: %s", got.String())
+	}
+}
+
+// The publish primitive on its own. installFile's other steps all worked on the
+// lab host while this one returned ERROR_INVALID_PARAMETER, which made three
+// higher-level tests fail and three concurrency tests pass vacuously. Exercise
+// it directly so the failure is unambiguous and cannot hide again.
+func TestRenameRelativePublishesUnderThePinnedParent(t *testing.T) {
+	cases := []struct {
+		name        string
+		destination string
+		seed        string
+	}{
+		{"replaces an existing destination", "target.txt", "old"},
+		{"creates a destination that does not exist", "fresh.txt", ""},
+		{"handles a long unicode name", "réstauré-ünïcode-name.txt", "old"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			dest := filepath.Join(base, tc.destination)
+			if tc.seed != "" {
+				if err := os.WriteFile(dest, []byte(tc.seed), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			chain, err := openVerifiedDir(base, false, nil, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer chain.close()
+
+			handle, err := openRelativeComponent(chain.leaf(), "staged.tmp",
+				windows.GENERIC_WRITE|windows.DELETE|windows.FILE_WRITE_ATTRIBUTES|windows.FILE_READ_ATTRIBUTES,
+				windows.FILE_CREATE, ntFileOptions, nil)
+			if err != nil {
+				t.Fatalf("create relative temp: %v", err)
+			}
+			temp := os.NewFile(uintptr(handle), "staged.tmp")
+			if _, err := temp.WriteString("published"); err != nil {
+				t.Fatal(err)
+			}
+			if err := temp.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			if err := renameRelative(handle, chain.leaf(), tc.destination); err != nil {
+				_ = temp.Close()
+				t.Fatalf("renameRelative failed: %v", err)
+			}
+			if err := temp.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := os.ReadFile(dest)
+			if err != nil {
+				t.Fatalf("destination missing after publish: %v", err)
+			}
+			if string(got) != "published" {
+				t.Fatalf("destination content = %q, want published", got)
+			}
+			if _, err := os.Stat(filepath.Join(base, "staged.tmp")); !os.IsNotExist(err) {
+				t.Fatalf("temporary name still exists after the rename: %v", err)
+			}
+		})
 	}
 }
