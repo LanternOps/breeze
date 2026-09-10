@@ -361,7 +361,16 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'agent_rollback:create',
       // Tenant variables (#3409): managing the definitions is an admin task;
       // running a script that USES one only needs scripts:execute.
-      'variables:read', 'variables:manage'
+      'variables:read', 'variables:manage',
+      // Workspace and partner connected-app permissions were introduced with
+      // no built-in role grant except Partner Admin's wildcard, which would
+      // have silently dropped this access for every existing Org Admin on
+      // upgrade. Org Admin gets every new key by default; the routes for
+      // connected_apps additionally require partner scope, so this literal
+      // grant is inert for an org-scoped token until that boundary is
+      // crossed deliberately.
+      'workspace:read', 'workspace:write', 'workspace:credentials', 'workspace:execute',
+      'connected_apps:read', 'connected_apps:manage'
     ]
   },
   {
