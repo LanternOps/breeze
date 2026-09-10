@@ -200,7 +200,7 @@ func fetchFirstInstallBytes(client *http.Client, rawURL, label string, max int64
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", label, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch %s: status %d", label, resp.StatusCode)
 	}
@@ -289,7 +289,7 @@ func hashFile(path string) (string, int64, error) {
 	if err != nil {
 		return "", 0, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		return "", 0, fmt.Errorf("artifact is not a regular file")
@@ -376,8 +376,8 @@ func secureTempFor(destPath string) (*os.File, error) {
 		return nil, err
 	}
 	if err := f.Chmod(0o755); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		_ = f.Close()
+		_ = os.Remove(f.Name())
 		return nil, err
 	}
 	return f, nil
@@ -392,11 +392,11 @@ func writeVerifiedFirstInstallFile(destPath string, asset firstInstallManifestAs
 	cleanup := func() { _ = os.Remove(tmpPath) }
 	defer cleanup()
 	if err := copyBody(tmp); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
@@ -417,7 +417,7 @@ func copyVerifiedFirstInstallFile(sourcePath, destPath string, asset firstInstal
 		if err != nil {
 			return err
 		}
-		defer src.Close()
+		defer func() { _ = src.Close() }()
 		_, err = io.Copy(dst, io.LimitReader(src, maxFirstInstallArtifact+1))
 		return err
 	})
@@ -433,23 +433,23 @@ func copyProtectedPackagedSibling(sourcePath, destPath string) error {
 	if err != nil {
 		return err
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 	tmp, err := secureTempFor(destPath)
 	if err != nil {
 		return err
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 	n, copyErr := io.Copy(tmp, io.LimitReader(src, maxFirstInstallArtifact+1))
 	if copyErr != nil || n < releaseAssetMinSize || n > maxFirstInstallArtifact {
-		tmp.Close()
+		_ = tmp.Close()
 		if copyErr != nil {
 			return copyErr
 		}
 		return fmt.Errorf("protected packaged sibling size is outside the allowed range")
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
@@ -463,7 +463,7 @@ func downloadVerifiedFirstInstallFile(client *http.Client, rawURL, destPath stri
 	if err != nil {
 		return fmt.Errorf("fetch release artifact: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("fetch release artifact: status %d", resp.StatusCode)
 	}

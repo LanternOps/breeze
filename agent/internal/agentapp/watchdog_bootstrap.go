@@ -86,7 +86,7 @@ func bootstrapWatchdog(opts bootstrapOptions) error {
 	if err != nil {
 		return fmt.Errorf("create protected watchdog staging directory: %w", err)
 	}
-	defer os.RemoveAll(secureDir)
+	defer func() { _ = os.RemoveAll(secureDir) }()
 	watchdogPath := filepath.Join(secureDir, watchdogBinaryName(opts.goos))
 	assetURL := opts.urlOverride
 	if assetURL == "" {
