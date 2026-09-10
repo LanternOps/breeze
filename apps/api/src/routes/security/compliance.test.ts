@@ -23,7 +23,15 @@ vi.mock('../../middleware/auth', async () => {
   return { ...actual, requireScope: vi.fn(() => async (_c: any, next: any) => next()) };
 });
 
-const { listStatusRowsMock } = vi.hoisted(() => ({ listStatusRowsMock: vi.fn() }));
+const { listStatusRowsMock, getUserPermissionsMock } = vi.hoisted(() => ({
+  listStatusRowsMock: vi.fn(),
+  getUserPermissionsMock: vi.fn(),
+}));
+
+vi.mock('../../services/permissions', async () => {
+  const actual = await vi.importActual<any>('../../services/permissions');
+  return { ...actual, getUserPermissions: getUserPermissionsMock };
+});
 
 vi.mock('./helpers', async () => {
   const actual = await vi.importActual<any>('./helpers');
@@ -74,7 +82,13 @@ function mockEscrowRows(deviceIds: string[]) {
 }
 
 describe('GET /encryption', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      allowedSiteIds: undefined,
+    });
+  });
 
   it('reports real escrow status, not the old heuristic', async () => {
     listStatusRowsMock.mockResolvedValue([

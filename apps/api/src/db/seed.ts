@@ -120,6 +120,14 @@ export const DEFAULT_PERMISSIONS = [
 
   { resource: 'agent_rollback', action: 'create', description: 'Authorize a signed agent rollback' },
 
+  // Built-in Workspace extension. No non-wildcard system role receives these
+  // implicitly: operators must deliberately assign the least privilege a role
+  // needs; Partner Admin retains access through its existing *:* grant.
+  { resource: 'workspace', action: 'read', description: 'View Workspace sources and processing status' },
+  { resource: 'workspace', action: 'write', description: 'Configure Workspace sources and settings' },
+  { resource: 'workspace', action: 'credentials', description: 'Manage Workspace source credentials' },
+  { resource: 'workspace', action: 'execute', description: 'Run Workspace crawling and content processing' },
+
   // Network topology (discovery topology view + saved layout)
   { resource: 'topology', action: 'read', description: 'View network topology and saved layout' },
   { resource: 'topology', action: 'write', description: 'Persist topology node layout (drag-to-save)' },
@@ -185,6 +193,11 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'organizations', action: 'read', description: 'View organizations' },
   { resource: 'organizations', action: 'write', description: 'Create and edit organizations' },
   { resource: 'organizations', action: 'delete', description: 'Delete organizations' },
+
+  // Partner-wide OAuth/MCP connected applications. Partner Admin satisfies
+  // these through its wildcard; custom roles must be granted them explicitly.
+  { resource: 'connected_apps', action: 'read', description: 'View partner connected OAuth applications' },
+  { resource: 'connected_apps', action: 'manage', description: 'Disconnect partner connected OAuth applications' },
 
   // Sites
   { resource: 'sites', action: 'read', description: 'View sites' },

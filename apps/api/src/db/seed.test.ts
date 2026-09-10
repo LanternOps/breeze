@@ -134,6 +134,15 @@ describe('agent rollback RBAC', () => {
   });
 });
 
+describe('billing-role device isolation', () => {
+  it.each(['Partner Billing', 'Partner Billing Viewer'])('%s does not grant devices:read', (roleName) => {
+    const role = SYSTEM_ROLES.find((candidate) => candidate.name === roleName);
+
+    expect(role).toBeDefined();
+    expect(role?.permissions).not.toContain('devices:read');
+  });
+});
+
 describe('ticket mailbox permissions', () => {
   it('registers and seeds the ticket mailbox permissions', () => {
     expect(PERMISSION_GRANTS.TICKET_MAILBOX_READ).toEqual({ resource: 'ticket_mailbox', action: 'read' });
@@ -381,5 +390,26 @@ describe('system role MFA posture (RMM-QA-164)', () => {
 
   it('forces MFA for Partner Admin and for no other system role (D9: Org Admin stays MSP opt-in)', () => {
     expect(SYSTEM_ROLES.filter((role) => role.forceMfa).map((role) => role.name)).toEqual(['Partner Admin']);
+  });
+});
+
+describe('Workspace extension permissions', () => {
+  const workspaceKeys = ['workspace:read', 'workspace:write', 'workspace:credentials', 'workspace:execute'];
+
+  it('seeds every closed Workspace capability so custom roles can receive it', () => {
+    const seeded = new Set(DEFAULT_PERMISSIONS.map((permission) =>
+      `${permission.resource}:${permission.action}`));
+    for (const permission of workspaceKeys) expect(seeded.has(permission)).toBe(true);
+  });
+
+  it('does not grandfather accidental Workspace authority to non-admin roles', () => {
+    for (const role of SYSTEM_ROLES) {
+      if (role.name === 'Partner Admin') continue;
+      for (const permission of workspaceKeys) {
+        expect(role.permissions, `${role.name} received ${permission}`).not.toContain(permission);
+      }
+    }
+    expect(SYSTEM_ROLES.find((role) => role.name === 'Partner Admin')?.permissions)
+      .toContain('*:*');
   });
 });
