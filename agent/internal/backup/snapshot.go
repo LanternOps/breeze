@@ -567,6 +567,46 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}()
 	}
 
+	// upload.lease heartbeat (D18 §3.4): refresh a tiny marker object every
+	// uploadLeaseInterval while uploading, so GC's manifest-less-prefix
+	// window keeps extending for a legitimately slow multi-day single-file
+	// upload. leaseCtx (derived from ctx) is cancelled by stopLeaseRefresh —
+	// called exactly once via leaseStopOnce, on completion or ctx
+	// cancellation — which immediately interrupts any in-flight refresh
+	// rather than waiting out its 60s bound. Skipped entirely by the
+	// resume-already-published shortcut above, since that path returns
+	// before this point.
+	leaseKey := path.Join(prefix, "upload.lease")
+	leaseCtx, leaseCancel := context.WithCancel(ctx)
+	leaseDone := make(chan struct{})
+	var leaseStopOnce sync.Once
+	stopLeaseRefresh := func() {
+		leaseStopOnce.Do(func() {
+			leaseCancel()
+			<-leaseDone
+		})
+	}
+	go func() {
+		defer close(leaseDone)
+		ticker := time.NewTicker(uploadLeaseInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-leaseCtx.Done():
+				return
+			case <-ticker.C:
+				// Each refresh is bounded to 60s AND tied to leaseCtx, so
+				// stopLeaseRefresh's leaseCancel() unblocks it immediately
+				// instead of this goroutine sitting in a stalled PUT for up
+				// to 60s after the caller asked it to stop.
+				refreshCtx, cancel := context.WithTimeout(leaseCtx, 60*time.Second)
+				refreshUploadLease(refreshCtx, provider, leaseKey)
+				cancel()
+			}
+		}
+	}()
+	defer stopLeaseRefresh()
+
 	// Resume matching: build the full matched set up front (rather than
 	// deciding file-by-file inside the loop below) so filesDone/bytesDone
 	// can be pre-seeded with the resumed totals and reported in one jump
@@ -677,6 +717,10 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			"filesUploaded", len(snapshot.Files),
 			"filesTotal", filesTotal,
 		)
+		stopLeaseRefresh()
+		if delErr := provider.Delete(leaseKey); delErr != nil {
+			log.Warn("failed to remove upload.lease after partial publish", "key", leaseKey, "error", delErr.Error())
+		}
 		return snapshot, detail
 	}
 
@@ -912,6 +956,11 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		completed = true
 	}
 
+	stopLeaseRefresh()
+	if delErr := provider.Delete(leaseKey); delErr != nil {
+		log.Warn("failed to remove upload.lease after publish", "key", leaseKey, "error", delErr.Error())
+	}
+
 	return snapshot, nil
 }
 
@@ -956,6 +1005,29 @@ func fetchPublishedManifest(ctx context.Context, provider providers.BackupProvid
 		return nil, fmt.Errorf("failed to decode resume manifest %s: %w", manifestKey, err)
 	}
 	return &snapshot, nil
+}
+
+// refreshUploadLease best-effort writes the current UTC time (RFC3339) to
+// leaseKey. Failure is logged, never fatal — see the upload.lease doc
+// comment in createSnapshotWithProgress.
+func refreshUploadLease(ctx context.Context, provider providers.BackupProvider, leaseKey string) {
+	tempFile, err := os.CreateTemp("", "upload-lease-*.txt")
+	if err != nil {
+		log.Warn("failed to create upload lease temp file", "error", err.Error())
+		return
+	}
+	tempPath := tempFile.Name()
+	if _, err := tempFile.WriteString(time.Now().UTC().Format(time.RFC3339)); err != nil {
+		_ = tempFile.Close()
+		os.Remove(tempPath)
+		log.Warn("failed to write upload lease content", "error", err.Error())
+		return
+	}
+	_ = tempFile.Close()
+	defer os.Remove(tempPath)
+	if err := uploadSnapshotFile(ctx, provider, tempPath, leaseKey); err != nil {
+		log.Warn("failed to refresh upload lease", "key", leaseKey, "error", err.Error())
+	}
 }
 
 // publishSnapshotManifest serializes snapshot's manifest and uploads it under

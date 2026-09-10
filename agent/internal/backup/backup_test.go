@@ -293,8 +293,13 @@ func TestRunBackupContext_StaleJournalDiscardedWithoutRemoteCleanup(t *testing.T
 		t.Fatal("a stale journal must never resume the old snapshot ID")
 	}
 
-	if len(provider.deleteCalls) != 0 {
-		t.Fatalf("expected zero Delete calls for a discarded stale journal, got: %v", provider.deleteCalls)
+	// The only legitimate delete is the NEW run's own upload.lease heartbeat
+	// (Task 7), removed after its own successful publish — never anything
+	// tied to the discarded stale journal's snapshot id.
+	for _, key := range provider.deleteCalls {
+		if !strings.HasSuffix(key, "/upload.lease") || strings.Contains(key, staleSnapshotID) {
+			t.Fatalf("expected deletes to be limited to the new run's own upload.lease, got: %s (all: %v)", key, provider.deleteCalls)
+		}
 	}
 	if _, stillThere := provider.files[orphanKey]; !stillThere {
 		t.Fatal("the stale journal's orphan object must survive — the agent no longer cleans it up (GC's manifest-less rule is the backstop)")

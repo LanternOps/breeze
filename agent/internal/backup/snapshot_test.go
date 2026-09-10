@@ -2027,3 +2027,71 @@ func TestCreateSnapshot_ResumeWithAlreadyPublishedManifest_SkipsUploadAndDelete(
 		t.Fatalf("expected zero deletes on an already-published resume, got %v", provider.deleteCalls)
 	}
 }
+
+// setUploadLeaseIntervalForTest overrides uploadLeaseInterval so tests don't
+// wait 15 real minutes. Mirrors setJournalMaxAgeForTest's pattern.
+func setUploadLeaseIntervalForTest(d time.Duration) (restore func()) {
+	old := uploadLeaseInterval
+	uploadLeaseInterval = d
+	return func() { uploadLeaseInterval = old }
+}
+
+// slowFirstUploadProvider wraps mockProvider and sleeps for `delay` on the
+// FIRST call to Upload/UploadContext only (the real file, not the
+// upload.lease refreshes or the final manifest), so a test can force the
+// upload loop to sit still long enough for the lease-refresh ticker to fire
+// at least once without depending on real wall-clock file I/O.
+type slowFirstUploadProvider struct {
+	*mockProvider
+	delay    time.Duration
+	slowOnce sync.Once
+}
+
+func (p *slowFirstUploadProvider) Upload(localPath, remotePath string) error {
+	p.slowOnce.Do(func() { time.Sleep(p.delay) })
+	return p.mockProvider.Upload(localPath, remotePath)
+}
+
+func (p *slowFirstUploadProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	p.slowOnce.Do(func() { time.Sleep(p.delay) })
+	return p.mockProvider.Upload(localPath, remotePath)
+}
+
+func TestCreateSnapshot_UploadLease_RefreshedDuringUploadThenDeletedAfterPublish(t *testing.T) {
+	restore := setUploadLeaseIntervalForTest(10 * time.Millisecond)
+	defer restore()
+
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content")
+	backing := newMockProvider()
+	provider := &slowFirstUploadProvider{mockProvider: backing, delay: 50 * time.Millisecond}
+
+	files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 7, modTime: time.Now()}}
+	snap, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	leaseKey := "snapshots/" + snap.ID + "/upload.lease"
+	sawLeaseUpload := false
+	for _, call := range backing.uploadCalls {
+		if call.remotePath == leaseKey {
+			sawLeaseUpload = true
+		}
+	}
+	if !sawLeaseUpload {
+		t.Error("expected at least one upload.lease refresh during a slow upload")
+	}
+	if _, stillThere := backing.files[leaseKey]; stillThere {
+		t.Error("expected upload.lease to be deleted after a successful publish")
+	}
+	sawLeaseDelete := false
+	for _, key := range backing.deleteCalls {
+		if key == leaseKey {
+			sawLeaseDelete = true
+		}
+	}
+	if !sawLeaseDelete {
+		t.Error("expected exactly one Delete call for upload.lease after publish")
+	}
+}
