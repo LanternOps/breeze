@@ -635,13 +635,9 @@ export function cfAccessTrustsMfa(): boolean {
   return envFlag('CF_ACCESS_TRUSTS_MFA');
 }
 
-// Browser authentication transition rollout. Both switches are deliberately
-// read at call time and default off; validation prevents terminal preparation
-// from being enabled before transition enforcement.
-export function authBrowserTransitionsEnforced(): boolean {
-  return envFlag('AUTH_BROWSER_TRANSITIONS_ENFORCED', false);
-}
-
+// Browser authentication transition enforcement is unconditional. Terminal
+// logout preparation remains independently staged until every supported
+// client has adopted that separate completion protocol.
 export function authBrowserTerminalPreparationEnabled(): boolean {
   return envFlag('AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED', false);
 }

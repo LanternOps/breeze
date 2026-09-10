@@ -40,6 +40,7 @@ const renderProfile = () =>
         name: 'Casey Admin',
         email: 'casey@example.com',
         mfaEnabled: true,
+        mfaMethod: 'totp',
       }}
     />,
   );
@@ -91,6 +92,7 @@ describe('ProfilePage passkey delete confirmation (#5314)', () => {
 
   it('sends the DELETE once the confirmation is accepted', async () => {
     seedOnePasskey();
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: '20000000-0000-4000-8000-000000000009' }));
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({ success: true, tokens: { accessToken: 'reissued', expiresInSeconds: 900 } }),
     );
@@ -100,15 +102,23 @@ describe('ProfilePage passkey delete confirmation (#5314)', () => {
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
+    fireEvent.change(screen.getByLabelText(/Current MFA code/i), { target: { value: '123456' } });
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
     await screen.findByText('Passkey deleted');
     expect(fetchWithAuthMock.mock.calls[1]).toEqual([
+      '/auth/mfa/step-up',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ method: 'totp', code: '123456', operation: 'delete_passkey', passkeyId: 'credential-1' }),
+      }),
+    ]);
+    expect(fetchWithAuthMock.mock.calls[2]).toEqual([
       '/auth/passkeys/credential-1',
       expect.objectContaining({
         method: 'DELETE',
-        body: JSON.stringify({ currentPassword: 'current-password' }),
+        body: JSON.stringify({ currentPassword: 'current-password', stepUpGrantId: '20000000-0000-4000-8000-000000000009' }),
       }),
     ]);
   });

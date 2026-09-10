@@ -479,6 +479,7 @@
       "selectSite": "Seleziona sito"
     },
     "paused": "In pausa",
+    "scheduleBlocked": "Scansione ricorrente in pausa: è necessaria una nuova approvazione",
     "permissionManage": "Le azioni di modifica sono disabilitate dopo il mancato superamento del controllo delle autorizzazioni. È richiesta `devices:write`.",
     "placeholders": {
       "subnet": "192.168.1.0/24"

@@ -34,7 +34,7 @@ import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { devices } from '../../db/schema/devices';
 import { checkToolPermission } from '../aiGuardrails';
 import { loadPartnerPolicy, isEnforcing } from '../authenticatorPolicy';
-import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../permissions';
+import { getUserPermissions, hasPermission, userCanDecideApprovals, canAccessOrg } from '../permissions';
 import { createPamDecisionIntent } from '../pamActuationLifecycle';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
 import type { RiskTier, ApprovalProof } from '@breeze/shared';
@@ -349,6 +349,62 @@ export async function decideApprovalRequest(
   }
   if (existing.expiresAt <= new Date()) {
     return { httpStatus: 410, body: { error: 'Expired', finalStatus: 'expired' } };
+  }
+
+  // §6C (fix/pam-dedicated-permissions): the PAM mobile-bridge elevation
+  // branch (elevationRequestId set — approval_requests_one_source_chk makes
+  // this mutually exclusive with intentId) used to carry NO live permission
+  // check at all — it fell straight through to the assurance ladder and CAS
+  // write below. A row is fanned out to every eligible approver at REQUEST
+  // time (services/pamApprovers.ts); nothing re-checked that the decider
+  // STILL held PAM authority at DECIDE time, so a demoted technician (or one
+  // who never should have been eligible) could approve or deny it. Checked
+  // for BOTH approve and deny — unlike the four_eyes/action-intents gates
+  // below (which only re-check on 'approved', because a deny there is
+  // harmless), denying a PAM elevation is itself a PAM decision and requires
+  // the same authority as approving one. Resolved the same way
+  // `routes/approvals.ts`'s `makeOrgDecideAuthorizer` does: a bare
+  // `withSystemDbAccessContext` from inside the ambient request context is a
+  // no-op passthrough (db/index.ts), so `runOutsideDbContext` is required to
+  // actually elevate.
+  if (existing.elevationRequestId && !existing.intentId) {
+    const elevationOrgId = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const [row] = await db
+          .select({ orgId: elevationRequests.orgId })
+          .from(elevationRequests)
+          .where(eq(elevationRequests.id, existing.elevationRequestId as string));
+        return row?.orgId ?? null;
+      }),
+    );
+    if (!elevationOrgId) {
+      // Should be unreachable (ON DELETE SET NULL leaves elevationRequestId
+      // null rather than dangling), but fail closed rather than proceed blind.
+      return { httpStatus: 404, body: { error: 'elevation_not_found' } };
+    }
+
+    const deciderPerms = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        getUserPermissions(userId, {
+          partnerId: input.auth.partnerId ?? undefined,
+          orgId: elevationOrgId,
+        }),
+      ),
+    );
+    // hasPermission alone doesn't establish that the permission reaches THIS
+    // org: getUserPermissions falls back to the partner axis when the decider
+    // has no organization_users row for elevationOrgId, so a partner-scope
+    // decider with org_access='selected' that doesn't cover elevationOrgId
+    // would otherwise still pass. canAccessOrg closes that, mirroring the
+    // intentId/four_eyes branch's `canAccessOrg(deciderPerms, linkedIntent.orgId)`
+    // check below.
+    if (
+      !deciderPerms ||
+      !canAccessOrg(deciderPerms, elevationOrgId) ||
+      !hasPermission(deciderPerms, 'pam', 'approve')
+    ) {
+      return { httpStatus: 403, body: { error: 'pam_approve_required' } };
+    }
   }
 
   // Action intents (spec docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md

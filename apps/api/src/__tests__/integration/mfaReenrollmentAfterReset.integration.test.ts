@@ -99,8 +99,12 @@ describe('admin reset → password-only TOTP re-enrollment (RMM-QA-166 I-3)', ()
   it('rejects old access, refresh, TOTP, recovery and passkey login authority after reset', async () => {
     const partner = await createPartner();
     const target = await createUser({ partnerId: partner.id, password: PASSWORD, withMembership: true, status: 'active' });
+    // Login is a session-issuance path and requires a durable binding cookie;
+    // a successful login never rotates it, so one bootstrapped binding covers
+    // every login() call below.
+    const binding = await browserBindingCookie();
     const login = () => loginRoutes.request('/login', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', cookie: binding },
       body: JSON.stringify({ email: target.email, password: PASSWORD }),
     });
     const initial = await login();

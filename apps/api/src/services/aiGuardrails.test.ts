@@ -1268,3 +1268,52 @@ describe('manage_policy_feature_link maintenance escalation (RMM-QA-176 D9)', ()
     expect(check.description).toContain('maintenance');
   });
 });
+
+describe('checkToolPermission — revoke_elevation requires pam.approve (fix/pam-dedicated-permissions)', () => {
+  const auth = {
+    user: { id: 'user-1' },
+    token: { roleId: 'technician', scope: 'organization' },
+    orgId: 'org-1',
+    partnerId: null,
+  } as any;
+
+  it('denies revoke_elevation for a caller with devices.execute but no pam.approve', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'technician' } as any);
+    vi.mocked(hasPermission).mockImplementation((_perms, resource, action) => {
+      // Org Technician shape: devices:execute granted, pam:approve NOT.
+      return resource === 'devices' && action === 'execute';
+    });
+
+    const result = await checkToolPermission(
+      'revoke_elevation',
+      { elevationRequestId: '11111111-1111-1111-1111-111111111111', reason: 'no longer needed' },
+      auth,
+    );
+
+    expect(result).not.toBeNull();
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'pam', 'approve');
+  });
+
+  it('allows revoke_elevation for a caller holding pam.approve', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'admin' } as any);
+    vi.mocked(hasPermission).mockImplementation((_perms, resource, action) => resource === 'pam' && action === 'approve');
+
+    const result = await checkToolPermission(
+      'revoke_elevation',
+      { elevationRequestId: '11111111-1111-1111-1111-111111111111', reason: 'no longer needed' },
+      auth,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it('leaves request_elevation and get_elevation_history on their unchanged permissions', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'technician' } as any);
+    vi.mocked(hasPermission).mockImplementation((_perms, resource, action) => {
+      return (resource === 'devices' && (action === 'execute' || action === 'read'));
+    });
+
+    expect(await checkToolPermission('request_elevation', {}, auth)).toBeNull();
+    expect(await checkToolPermission('get_elevation_history', {}, auth)).toBeNull();
+  });
+});

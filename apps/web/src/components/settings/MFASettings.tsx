@@ -66,7 +66,8 @@ type MFASettingsProps = {
    */
   onEnable?: (code: string, currentPassword: string) => void | boolean | Promise<void | boolean>;
   onDisable?: (code: string, currentPassword: string) => void | boolean | Promise<void | boolean>;
-  onGenerateRecoveryCodes?: (currentPassword: string) => void | boolean | Promise<void | boolean>;
+  onGenerateRecoveryCodes?: (currentPassword: string, currentFactorCode: string) => void | boolean | Promise<void | boolean>;
+  onSendRecoveryStepUpCode?: () => void | boolean | Promise<void | boolean>;
   onRequestSetup?: (currentPassword: string) => Promise<boolean> | boolean;
   onVerifyPhone?: (phoneNumber: string, currentPassword: string) => Promise<{ success: boolean; error?: string }>;
   onConfirmPhone?: (phoneNumber: string, code: string, currentPassword: string) => Promise<{ success: boolean; error?: string }>;
@@ -101,6 +102,7 @@ export default function MFASettings({
   onEnable,
   onDisable,
   onGenerateRecoveryCodes,
+  onSendRecoveryStepUpCode,
   onRequestSetup,
   onVerifyPhone,
   onConfirmPhone,
@@ -148,6 +150,7 @@ export default function MFASettings({
   const [currentPassword, setCurrentPassword] = useState('');
   const [disablePassword, setDisablePassword] = useState('');
   const [recoveryPassword, setRecoveryPassword] = useState('');
+  const [recoveryFactorCode, setRecoveryFactorCode] = useState('');
   const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
   const phoneInputRefs = useRef<Array<HTMLInputElement | null>>([]);
 
@@ -353,6 +356,11 @@ export default function MFASettings({
       setConfirmRegenerateOpen(false);
       return;
     }
+    if ((currentMethod === 'totp' || currentMethod === 'sms') && recoveryFactorCode.length !== DIGIT_COUNT) {
+      setLocalError(t('mFASettings.currentMfaCodeRequired', { defaultValue: 'A current MFA code is required' }));
+      setConfirmRegenerateOpen(false);
+      return;
+    }
 
     try {
       setIsSubmitting(true);
@@ -360,7 +368,7 @@ export default function MFASettings({
       // #4414: only reveal on a confirmed success. The old unconditional
       // `setShowCodes(true)` re-displayed the PREVIOUS set after a failed
       // regeneration, which reads as "here are your new codes".
-      if ((await onGenerateRecoveryCodes?.(recoveryPassword)) !== false) {
+      if ((await onGenerateRecoveryCodes?.(recoveryPassword, recoveryFactorCode)) !== false) {
         // `displayCodes` prefers `smsRecoveryCodes`, and a regeneration only
         // refreshes the `recoveryCodes` PROP. Leaving the SMS set in place
         // would keep rendering the codes this call just invalidated.
@@ -374,6 +382,7 @@ export default function MFASettings({
       // The field is on this same screen, so re-typing costs one action —
       // cheap next to leaving a plaintext password in component state.
       setRecoveryPassword('');
+      setRecoveryFactorCode('');
       setConfirmRegenerateOpen(false);
     }
   };
@@ -1170,6 +1179,38 @@ export default function MFASettings({
           {t('mFASettings.eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat')}</div>
 
         <div className="space-y-2">
+          <label className="text-sm font-medium" htmlFor="mfa-recovery-factor-code">
+            {currentMethod === 'passkey'
+              ? t('mFASettings.currentPasskeyRequired', { defaultValue: 'Your current passkey will be requested' })
+              : t('mFASettings.currentMfaCode', { defaultValue: 'Current MFA code' })}
+          </label>
+          {currentMethod !== 'passkey' && (
+            <input
+              id="mfa-recovery-factor-code"
+              data-testid="mfa-recovery-factor-code"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={DIGIT_COUNT}
+              value={recoveryFactorCode}
+              onChange={e => setRecoveryFactorCode(e.target.value.replace(/\D/g, '').slice(0, DIGIT_COUNT))}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              disabled={isLoading}
+            />
+          )}
+          {currentMethod === 'sms' && (
+            <button
+              type="button"
+              data-testid="mfa-recovery-send-sms"
+              onClick={() => { void onSendRecoveryStepUpCode?.(); }}
+              disabled={isLoading}
+              className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {t('mFASettings.sendVerificationCode', { defaultValue: 'Send verification code' })}
+            </button>
+          )}
+        </div>
+
+        <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="mfa-recovery-password">
             {t('mFASettings.currentPassword')}</label>
           <input
@@ -1191,6 +1232,7 @@ export default function MFASettings({
             type="button"
             onClick={() => {
               setRecoveryPassword('');
+              setRecoveryFactorCode('');
               setView('status');
             }}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
@@ -1203,7 +1245,10 @@ export default function MFASettings({
             type="button"
             data-testid="mfa-recovery-regenerate"
             onClick={() => setConfirmRegenerateOpen(true)}
-            disabled={isLoading || !recoveryPassword}
+            disabled={isLoading || !recoveryPassword || (
+              (currentMethod === 'totp' || currentMethod === 'sms')
+              && recoveryFactorCode.length !== DIGIT_COUNT
+            )}
             className="inline-flex h-10 items-center justify-center rounded-md border border-destructive/40 bg-destructive/10 px-4 text-sm font-medium text-destructive transition hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isLoading ? t('mFASettings.generating') : t('mFASettings.regenerateCodes')}

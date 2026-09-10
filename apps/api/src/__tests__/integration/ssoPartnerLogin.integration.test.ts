@@ -37,7 +37,7 @@ import { decodeJwt } from 'jose';
 import { and, eq } from 'drizzle-orm';
 import { createHmac, randomUUID } from 'crypto';
 import { getTestDb } from './setup';
-import { ssoProviders, ssoSessions, userSsoIdentities, users, refreshTokenFamilies } from '../../db/schema';
+import { partners, ssoProviders, ssoSessions, userSsoIdentities, users, refreshTokenFamilies } from '../../db/schema';
 import {
   createPartner,
   createOrganization,
@@ -50,6 +50,7 @@ import { encryptSecret } from '../../services/secretCrypto';
 import { createAccessToken } from '../../services/jwt';
 import { loginRoutes } from '../../routes/auth/login';
 import { beginAuthIssuance, cancelAuthIssuance } from '../../services/authBrowserTransition';
+import { clearPartnerAllowlistCache } from '../../services/ipAllowlist';
 
 vi.mock('../../services/sso', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/sso')>();
@@ -628,7 +629,7 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
     expect(cb2.headers.get('location')).toContain('#ssoCode=');
   });
 
-  it('org-axis callback: full login succeeds and mints a scope:organization token (regression lock for both axes)', async () => {
+  it('org-axis callback admission cannot deliver tokens after the owning partner allowlist changes', async () => {
     // This is the ORG-axis sibling of the callback's shared-plumbing fixes:
     // both the "Get provider" read AND the org-membership read (org branch
     // of the token-payload switch) were bare `db` reads that 0-rowed under
@@ -714,19 +715,24 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
     expect(claimedSession).toBeUndefined();
 
     const ssoCode = extractSsoCodeFromLocation(location!);
+
+    // The callback admitted while the owning partner had an empty allowlist.
+    // Make that policy restrictive before the one-time browser handoff. A
+    // request without a trustable peer must now fail closed even though the
+    // organization JWT deliberately carries partnerId=null for RLS purposes.
+    await db
+      .update(partners)
+      .set({ settings: { security: { ipAllowlist: ['203.0.113.5/32'] } } })
+      .where(eq(partners.id, partner.id));
+    clearPartnerAllowlistCache(partner.id);
     const exchangeRes = await app.request('/sso/exchange', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code: ssoCode }),
     });
-    expect(exchangeRes.status).toBe(200);
-    const exchangeBody = await exchangeRes.json();
-    const payload = decodeJwt(exchangeBody.accessToken);
-    expect(payload.scope).toBe('organization');
-    expect(payload.orgId).toBe(org.id);
-    expect(payload.partnerId).toBeNull();
-    expect(payload.roleId).toBe(role.id);
-    expect(payload.sub).toBe(user.id);
+    expect(exchangeRes.status).toBe(403);
+    expect(await exchangeRes.json()).toMatchObject({ code: 'ip_not_allowed' });
+    expect(exchangeRes.headers.get('set-cookie')).toBeNull();
 
     const [identity] = await db
       .select()
@@ -812,7 +818,7 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
 
     const res = await app.request('/auth/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: await browserBindingCookie() },
       body: JSON.stringify({ email: user.email, password }),
     });
     expect(res.status).toBe(200);
@@ -872,6 +878,7 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
     const payload = decodeJwt((await exchangeRes.json()).accessToken);
     expect(payload.scope).toBe('organization');
     expect(payload.orgId).toBe(org.id);
+    expect(payload.partnerId).toBeNull();
     expect(payload.sub).toBe(user.id);
   });
 

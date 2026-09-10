@@ -27,7 +27,9 @@ import { emitAlertStateFeedback } from './mlFeedbackEmitters';
 import {
   encryptNotificationChannelConfig,
   decryptNotificationChannelConfig,
+  isMaskedIntegrationSecret,
 } from './notificationChannelSecrets';
+import { webhookOriginChangeWouldRetainAuthorization } from './credentialOriginBinding';
 import { validateNotificationChannelConfig } from '../routes/alerts/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
 
@@ -591,6 +593,18 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
         if (input.config !== undefined && input.config !== null) {
+          if (
+            existing.type === 'webhook'
+            && webhookOriginChangeWouldRetainAuthorization(
+              decryptNotificationChannelConfig(existing.type, existing.config),
+              input.config,
+              isMaskedIntegrationSecret,
+            )
+          ) {
+            return JSON.stringify({
+              error: 'Webhook authorization and custom headers must be re-entered or explicitly cleared when changing the endpoint origin',
+            });
+          }
           // Mirror the HTTP PUT route: merge incoming config with the existing
           // encrypted config (preserving masked/preserved secret fields), then
           // decrypt to validate the resolved config, then re-encrypt for storage.

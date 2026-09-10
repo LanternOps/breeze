@@ -46,6 +46,7 @@ import { resetAllFactorsAndInvalidate, sweepPendingFactorArtifacts } from '../se
 import { neutralizeUserIfOrphaned } from '../services/userNeutralization';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { requestPendingEmailChange } from '../services/pendingEmail';
+import { resolveDelegatedSiteIds } from '../services/organizationMembershipDelegation';
 
 export const userRoutes = new Hono();
 const supportedLocales = SUPPORTED_LOCALES;
@@ -1228,6 +1229,19 @@ userRoutes.post(
     }
 
     const result = await db.transaction(async (tx) => {
+      // The membership row is the authoritative live site ceiling. Lock and
+      // re-read it inside the SAME transaction that creates the invitee link:
+      // a request snapshot alone would let a concurrent scope reduction race
+      // an unrestricted invitation. Partner invitations use their independent
+      // full-partner gate above and do not carry an organization site axis.
+      const delegatedSiteIds = scopeContext.scope === 'organization'
+        ? await resolveDelegatedSiteIds(tx, {
+            inviterUserId: auth.user.id,
+            orgId: scopeContext.orgId,
+            requestedSiteIds: data.siteIds,
+          })
+        : undefined;
+
       const [existingUser] = await tx
         .select()
         .from(users)
@@ -1315,7 +1329,7 @@ userRoutes.post(
           .limit(1);
 
         if (existingLink) {
-          return { user, linkCreated: false };
+          return { user, linkCreated: false, delegatedSiteIds };
         }
 
         const orgAccess = data.orgAccess ?? 'none';
@@ -1332,7 +1346,7 @@ userRoutes.post(
           })
           .returning();
 
-        return { user, linkCreated: true, link };
+        return { user, linkCreated: true, link, delegatedSiteIds };
       }
 
       const [existingLink] = await tx
@@ -1342,7 +1356,7 @@ userRoutes.post(
         .limit(1);
 
       if (existingLink) {
-        return { user, linkCreated: false };
+        return { user, linkCreated: false, delegatedSiteIds };
       }
 
       const [link] = await tx
@@ -1351,12 +1365,12 @@ userRoutes.post(
           orgId: scopeContext.orgId,
           userId: user.id,
           roleId: data.roleId,
-          siteIds: data.siteIds ?? null,
+          siteIds: delegatedSiteIds,
           deviceGroupIds: data.deviceGroupIds ?? null
         })
         .returning();
 
-      return { user, linkCreated: true, link };
+      return { user, linkCreated: true, link, delegatedSiteIds };
     });
 
     if (!result.linkCreated) {
@@ -1381,7 +1395,7 @@ userRoutes.post(
         scope: scopeContext.scope,
         orgAccess: scopeContext.scope === 'partner' ? data.orgAccess ?? 'none' : undefined,
         orgIds: scopeContext.scope === 'partner' ? data.orgIds ?? [] : undefined,
-        siteIds: scopeContext.scope === 'organization' ? data.siteIds ?? [] : undefined,
+        siteIds: scopeContext.scope === 'organization' ? result.delegatedSiteIds : undefined,
         deviceGroupIds: scopeContext.scope === 'organization' ? data.deviceGroupIds ?? [] : undefined,
         inviteEmailSent: invite.inviteEmailSent
       }

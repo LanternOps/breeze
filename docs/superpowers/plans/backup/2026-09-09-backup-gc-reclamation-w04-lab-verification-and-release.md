@@ -175,7 +175,7 @@ git commit -m "docs(backup-assurance): close D18 — R4 PASS on MinIO, pin/lease
 **Backup storage is now reclaimed.** Retention previously deleted only the database record of an expired snapshot; its objects stayed in the bucket forever. Expired snapshots' exclusive objects are now removed by the 6-hourly GC. Two things to know:
 - Reclamation on a destination only activates once every device backing up to it runs the backup helper from this release or newer (older helpers choose their own dedupe base and cannot be pinned). The API logs `reclamation deferred: legacy helper <device>` until then.
 - Deleting a device or organisation now also reclaims its backups after the orphan window (default 9 days). Previously those objects leaked.
-New env knobs (all optional): `BACKUP_BASE_LEASE_MS` (7 d), `BACKUP_PUBLISH_MARGIN_MS` (1 h), `BACKUP_RESTORE_PIN_LINGER_MS` (7 d), `BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS` (9 d). Migrations `2026-10-15-150301` and `-150302` add the pin columns and the `backup_snapshot_retirements` table; the backfill is batched and safe on large tables.
+New env knobs (all optional): `BACKUP_BASE_LEASE_MS` (7 d), `BACKUP_PUBLISH_MARGIN_MS` (1 h), `BACKUP_RESTORE_PIN_LINGER_MS` (7 d), `BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS` (9 d). Migrations `2026-10-15-160011` and `-160012` add the pin columns and the `backup_snapshot_retirements` table; the backfill is batched and safe on large tables.
 ```
 
 - [ ] **Step 2: Re-read both docs pages after W02 merged; remove any remaining "storage is not reclaimed" sentence; add the legacy-helper deferral and the device-deletion behaviour.**

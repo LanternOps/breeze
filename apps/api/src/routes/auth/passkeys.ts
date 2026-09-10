@@ -19,10 +19,7 @@ import {
   AuthIssuanceConflictError,
   AuthIssuanceCapabilityError,
   issueUserSession,
-  issueUserSessionLegacyDuringTransition,
   bindIssuedUserSession,
-  authBrowserTransitionsEnforced,
-  recordAuthTransitionLegacyIssuer,
   completeAdditionalMfaFactorEnrollment,
   completeInitialMfaEnrollment,
   completeMfaFactorRemoval,
@@ -42,7 +39,9 @@ import {
 } from '../../services/passkeys';
 import { carryForwardBinding, readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
+import { passkeyRemovalResourceDigest } from '../../services/mfaStepUpGrant';
 import { captureException } from '../../services/sentry';
+import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../../services/ipAllowlist';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { type Tx } from '../../services/authLifecycle';
 import { ENABLE_2FA } from './schemas';
@@ -60,21 +59,14 @@ import {
   rejectProof,
   MFA_PROOF_INVALID,
   installAuthorizedUserSessionCookies,
-  installLegacyUserSessionCookiesDuringTransition,
   toPublicTokens,
   userRequiresSetup,
   writeAuthAudit,
-  isAuthTransitionV1Request,
-  authClientUpgradeRequiredResponse,
   hashRecoveryCodes,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 
 const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
-
-function authTransitionClientClass(c: Context): 'web' | 'native' {
-  return readMobileDeviceId(c) ? 'native' : 'web';
-}
 
 function authIssuanceAdmissionError(c: Context, error: unknown): Response | null {
   if (error instanceof AuthBindingRotationRequiredError) {
@@ -169,8 +161,14 @@ const renamePasskeySchema = z.object({
   name: passkeyNameSchema
 });
 const deletePasskeySchema = z.object({
-  currentPassword: z.string().min(1).max(256)
+  currentPassword: z.string().min(1).max(256),
+  // Optional at validation so a stale client receives the stable security
+  // boundary response (`existing_factor_step_up_required`) rather than a
+  // generic schema error. The handler still fails closed when it is absent.
+  stepUpGrantId: z.string().uuid().optional(),
 });
+
+class LastRequiredMfaFactorError extends Error {}
 
 // A pending MFA session may use the passkey endpoints when passkey is either
 // the account's primary method OR an available alternate factor. Both /options
@@ -506,6 +504,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
     }
   });
 
+  if (replacement) c.header('Cache-Control', 'no-store');
   return c.json({
     success: true,
     passkey: toPublicPasskey(inserted),
@@ -538,6 +537,7 @@ passkeyRoutes.post('/mfa/step-up/options', authMiddleware, async (c) => {
     passkeys: passkeys.map(toStoredCredential)
   });
 
+  c.header('Cache-Control', 'no-store');
   return c.json({ options });
 });
 
@@ -675,11 +675,6 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
   if (!pendingAllowsPasskey(pending)) {
     return c.json({ error: 'Invalid MFA code' }, 401);
   }
-  const transitionV1 = isAuthTransitionV1Request(c);
-  if (!transitionV1 && authBrowserTransitionsEnforced()) {
-    return authClientUpgradeRequiredResponse(c);
-  }
-
   // Rate limit assertion attempts, mirroring the TOTP path in mfa.ts.
   const rateCheck = await rateLimiter(redis, `mfa:${pending.userId}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
   if (!rateCheck.allowed) {
@@ -721,21 +716,19 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
   }
 
   let capability: AuthIssuanceCapability | null = null;
-  if (transitionV1) {
-    try {
-      capability = await beginAuthIssuance(requestAuthBinding(c));
-      if (
-        capability.transitionId !== pending.transitionId
-        || capability.generation !== pending.browserGeneration
-      ) {
-        await cancelAuthIssuance(capability);
-        return c.json({ error: 'Invalid or expired MFA session' }, 409);
-      }
-    } catch (error) {
-      const response = authIssuanceAdmissionError(c, error);
-      if (!response) throw error;
-      return response;
+  try {
+    capability = await beginAuthIssuance(requestAuthBinding(c));
+    if (
+      capability.transitionId !== pending.transitionId
+      || capability.generation !== pending.browserGeneration
+    ) {
+      await cancelAuthIssuance(capability);
+      return c.json({ error: 'Invalid or expired MFA session' }, 409);
     }
+  } catch (error) {
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
   }
 
   let verification;
@@ -768,6 +761,24 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
   let context;
   try {
     context = await resolveCurrentUserTokenContext(user.id);
+    let ipDecision;
+    try {
+      ipDecision = await enforceIpAllowlist(c, {
+        partnerId: context.partnerId,
+        isPlatformAdmin: user.isPlatformAdmin === true,
+        actorId: user.id,
+        actorEmail: user.email,
+      });
+    } catch (error) {
+      if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+      console.error('[auth] IP allowlist check failed during passkey MFA completion:', error);
+      captureException(error, c);
+      return c.json({ code: 'ip_check_failed', error: 'Access temporarily unavailable' }, 503);
+    }
+    if (isBlocked(ipDecision)) {
+      if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+      return c.json(IP_NOT_ALLOWED_BODY, 403);
+    }
     const livePolicy = await getEffectiveMfaPolicy({
       scope: context.scope,
       userId: user.id,
@@ -852,11 +863,10 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
 
   let tokens: ReturnType<typeof toPublicTokens>;
   let installSessionCookies: () => void;
-  if (capability) {
-    const guardedCapability = capability;
-    let issued: AuthorizedUserSession;
-    try {
-      issued = await finishAuthIssuance(guardedCapability, async (tx) => {
+  const guardedCapability = capability;
+  let issued: AuthorizedUserSession;
+  try {
+    issued = await finishAuthIssuance(guardedCapability, async (tx) => {
         const session = await issueUserSession(identity, {
           tx,
           capability: guardedCapability,
@@ -877,40 +887,16 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
           .set({ lastLoginAt: new Date() })
           .where(eq(users.id, user.id));
         return session;
-      });
-    } catch (error) {
-      await cancelAuthIssuance(guardedCapability).catch(() => undefined);
-      const response = authIssuanceAdmissionError(c, error);
-      if (!response) throw error;
-      return response;
-    }
-    await bindIssuedUserSession(issued);
-    tokens = toPublicTokens(issued);
-    installSessionCookies = () => installAuthorizedUserSessionCookies(c, issued);
-  } else {
-    await withSystemDbAccessContext(() =>
-      db
-        .update(userPasskeys)
-        .set({
-          counter: updateFields.counter,
-          deviceType: updateFields.deviceType,
-          backedUp: updateFields.backedUp,
-          lastUsedAt: updateFields.lastUsedAt,
-          updatedAt: new Date(),
-        })
-        .where(eq(userPasskeys.id, passkey.id))
-    );
-    recordAuthTransitionLegacyIssuer('passkey', authTransitionClientClass(c));
-    const issued = await issueUserSessionLegacyDuringTransition(identity);
-    await withSystemDbAccessContext(() =>
-      db
-        .update(users)
-        .set({ lastLoginAt: new Date() })
-        .where(eq(users.id, user.id))
-    );
-    tokens = toPublicTokens(issued);
-    installSessionCookies = () => installLegacyUserSessionCookiesDuringTransition(c, issued);
+    });
+  } catch (error) {
+    await cancelAuthIssuance(guardedCapability).catch(() => undefined);
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
   }
+  await bindIssuedUserSession(issued);
+  tokens = toPublicTokens(issued);
+  installSessionCookies = () => installAuthorizedUserSessionCookies(c, issued);
 
   // Single-use only after session authority commits.
   await redis.del(`mfa:pending:${tempToken}`);
@@ -970,7 +956,7 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
 
   const auth = c.get('auth');
   const id = c.req.param('id');
-  const { currentPassword } = c.req.valid('json');
+  const { currentPassword, stepUpGrantId } = c.req.valid('json');
 
   if (auth.token?.mfa !== true) {
     return c.json({ error: 'MFA verification is required to delete a passkey' }, 403);
@@ -981,6 +967,14 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
   });
   if (passwordError) return passwordError;
 
+  const resourceDigest = passkeyRemovalResourceDigest(id);
+  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, {
+    consume: false,
+    operation: 'delete_passkey',
+    resourceDigest,
+  });
+  if (stepUpError) return stepUpError;
+
   const [passkey] = await findOwnedPasskey(id, auth.user.id);
   if (!passkey) {
     return c.json({ error: 'Passkey not found' }, 404);
@@ -988,9 +982,9 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
 
   const factorState = await getMfaFactorState(auth);
   const remainingFactorCount =
-    Math.max(0, factorState.passkeyCount - 1)
-    + (factorState.hasTotp ? 1 : 0)
-    + (factorState.hasSms ? 1 : 0);
+    (factorState.allowedMethods.passkey ? Math.max(0, factorState.passkeyCount - 1) : 0)
+    + (factorState.allowedMethods.totp && factorState.hasTotp ? 1 : 0)
+    + (factorState.allowedMethods.sms && factorState.hasSms ? 1 : 0);
 
   if (factorState.mfaRequired && remainingFactorCount === 0) {
     return c.json({ error: 'Cannot remove the last MFA factor while your role or organization requires MFA' }, 403);
@@ -1011,6 +1005,17 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
     if (!response) throw error;
     return response;
   }
+
+  const stepUpConsumeError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, {
+    consume: true,
+    operation: 'delete_passkey',
+    resourceDigest,
+  });
+  if (stepUpConsumeError) {
+    await cancelAuthIssuance(capability).catch(() => undefined);
+    return stepUpConsumeError;
+  }
+
   let result;
   try {
     result = await completeMfaFactorRemoval({
@@ -1022,12 +1027,7 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
         orgId: auth.orgId ?? null,
         partnerId: auth.partnerId ?? null,
         scope: auth.scope,
-        // Carried forward, never elevated. This route already requires an
-        // MFA-assured caller, and a fresh login after the LAST factor is gone
-        // would mint `mfa` true vacuously anyway.
         mfa: auth.token?.mfa === true,
-        // SR-001: the binding comes from the previously-signed `mdid` claim,
-        // never the forgeable request header.
         mobileDeviceId: carryForwardBinding(auth.token ?? {}),
       },
       capability,
@@ -1035,34 +1035,74 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
       expectedMfaEpoch: auth.token?.mep as number,
       revokeReason: 'passkey-delete',
       persistFactor: async (tx) => {
-        await tx
-          .delete(userPasskeys)
-          .where(eq(userPasskeys.id, id));
+        // Recompute under the same user-row lock and epoch predicate as the
+        // removal. Two concurrent deletes cannot both rely on the same stale
+        // count and remove the final policy-required factors.
+        const [live] = await tx
+          .select({
+            passkeyCount: sql<number>`(
+              SELECT COUNT(*)::int FROM user_passkeys
+              WHERE user_id = ${auth.user.id} AND disabled_at IS NULL
+            )`,
+            hasTotp: sql<boolean>`${users.mfaSecret} IS NOT NULL`,
+            hasSms: sql<boolean>`${users.mfaMethod} = 'sms' AND ${users.phoneVerified} = true`,
+            currentMfaMethod: users.mfaMethod,
+          })
+          .from(users)
+          .where(eq(users.id, auth.user.id))
+          .limit(1);
 
-        if (remainingFactorCount === 0) {
-          await tx
-            .update(users)
-            .set({
-              mfaEnabled: false,
-              mfaMethod: null,
-              updatedAt: new Date()
-            })
-            .where(eq(users.id, auth.user.id));
-        } else if (factorState.currentMfaMethod === 'passkey' && factorState.passkeyCount - 1 === 0) {
-          await tx
-            .update(users)
-            .set({
-              mfaEnabled: true,
-              mfaMethod: factorState.hasTotp ? 'totp' : 'sms',
-              updatedAt: new Date()
-            })
-            .where(eq(users.id, auth.user.id));
+        if (!live) throw new Error('Passkey owner disappeared');
+        const allowedPasskeys = factorState.allowedMethods.passkey ? Number(live.passkeyCount) : 0;
+        const allowedTotp = factorState.allowedMethods.totp && live.hasTotp ? 1 : 0;
+        const allowedSms = factorState.allowedMethods.sms && live.hasSms ? 1 : 0;
+        if (factorState.mfaRequired && Math.max(0, allowedPasskeys - 1) + allowedTotp + allowedSms === 0) {
+          throw new LastRequiredMfaFactorError();
         }
+
+        const deleted = await tx
+          .delete(userPasskeys)
+          .where(and(eq(userPasskeys.id, id), eq(userPasskeys.userId, auth.user.id), isNull(userPasskeys.disabledAt)))
+          .returning({ id: userPasskeys.id });
+        if (deleted.length !== 1) throw new AuthIssuanceConflictError();
+
+        const remainingPasskeys = Math.max(0, Number(live.passkeyCount) - 1);
+        const remainingAllowedFactorCount = remainingPasskeys + allowedTotp + allowedSms;
+        const currentMethodRemainsUsable =
+          (live.currentMfaMethod === 'passkey' && remainingPasskeys > 0)
+          || (live.currentMfaMethod === 'totp' && allowedTotp > 0)
+          || (live.currentMfaMethod === 'sms' && allowedSms > 0);
+        const nextMethod = currentMethodRemainsUsable
+          ? live.currentMfaMethod
+          : remainingPasskeys > 0
+            ? 'passkey'
+            : allowedTotp > 0
+              ? 'totp'
+              : allowedSms > 0
+                ? 'sms'
+                : null;
+        const updated = await tx
+          .update(users)
+          .set({
+            mfaEnabled: remainingAllowedFactorCount > 0,
+            mfaMethod: remainingAllowedFactorCount > 0 ? nextMethod : null,
+            // A password-only account must not retain a latent login factor.
+            // Enrollment/rotation always replaces the complete code set, but
+            // clearing here makes that invariant explicit at the downgrade.
+            ...(remainingAllowedFactorCount === 0 ? { mfaRecoveryCodes: null } : {}),
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, auth.user.id))
+          .returning({ id: users.id });
+        if (updated.length !== 1) throw new Error('Passkey owner disappeared');
         return undefined;
       },
     });
   } catch (error) {
     await cancelAuthIssuance(capability).catch(() => undefined);
+    if (error instanceof LastRequiredMfaFactorError) {
+      return c.json({ error: 'Cannot remove the last MFA factor while your role or organization requires MFA' }, 403);
+    }
     const response = authIssuanceAdmissionError(c, error);
     if (!response) throw error;
     return response;
@@ -1081,10 +1121,11 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
       passkeyId: id,
       mfaEpoch: result.mfaEpoch,
       teardownFailed: result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED,
-      sessionInstalled
+      sessionInstalled,
     }
   });
 
+  c.header('Cache-Control', 'no-store');
   return c.json({
     success: true,
     ...(sessionInstalled ? { tokens: toPublicTokens(result.issued) } : {}),
@@ -1121,6 +1162,7 @@ async function getMfaFactorState(auth: AuthContext): Promise<{
   hasSms: boolean;
   currentMfaMethod: 'totp' | 'sms' | 'passkey' | null;
   mfaRequired: boolean;
+  allowedMethods: { totp: boolean; sms: boolean; passkey: boolean };
 }> {
   // I3/SR2-05: mfaRequired now comes from the resolver so a partner-set
   // requireMfa (partner-inherited, invisible to the old org-only EXISTS
@@ -1130,7 +1172,7 @@ async function getMfaFactorState(auth: AuthContext): Promise<{
     userId: auth.user.id,
     orgId: auth.orgId ?? null,
     partnerId: auth.partnerId ?? null,
-  }, { failClosed: true });
+  }, { failClosed: true, failClosedMethods: true });
 
   // This runs inside the DELETE handler's request (user-scoped) context, where
   // a bare `withSystemDbAccessContext` would be a no-op. Escape the active
@@ -1159,7 +1201,8 @@ async function getMfaFactorState(auth: AuthContext): Promise<{
     hasTotp: Boolean(state?.hasTotp),
     hasSms: Boolean(state?.hasSms),
     currentMfaMethod: state?.currentMfaMethod ?? null,
-    mfaRequired: policy.required
+    mfaRequired: policy.required,
+    allowedMethods: policy.allowedMethods,
   };
 }
 

@@ -594,6 +594,50 @@ describe('backup result persistence', () => {
     }));
   });
 
+  it('persists layoutManifest and the bare-metal verdict on the snapshot row', async () => {
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{ id: 'job-1', orgId: 'org-1', configId: 'config-1', backupType: null, backupMode: 'system_image' }]) as any)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([]) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null, deviceId: 'device-1' }]) as any);
+    vi.mocked(db.insert).mockReturnValueOnce(chainMock([{ id: 'snapshot-db-1', jobId: 'job-1', snapshotId: 'provider-snap-1' }]) as any);
+    vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+    vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+    vi.mocked(computeExpiresAt).mockReturnValue(null);
+
+    const layoutManifest = { schemaVersion: 1, platform: 'linux', bootMode: 'uefi', disks: [] };
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 1, layoutManifest, bareMetal: { restorable: false, reasons: ['boot mode is BIOS/MBR; only UEFI with GPT is supported'] } } as any,
+    });
+    const insertValues = vi.mocked(db.insert).mock.results[0]?.value?.values;
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      layoutManifest,
+      bareMetalRestorable: false,
+      bareMetalReasons: ['boot mode is BIOS/MBR; only UEFI with GPT is supported'],
+    }));
+  });
+
+  it('leaves the bare-metal verdict NULL (unknown) when the result carries none', async () => {
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{ id: 'job-1', orgId: 'org-1', configId: 'config-1', backupType: null, backupMode: 'file' }]) as any)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([]) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null, deviceId: 'device-1' }]) as any);
+    vi.mocked(db.insert).mockReturnValueOnce(chainMock([{ id: 'snapshot-db-1', jobId: 'job-1', snapshotId: 'provider-snap-1' }]) as any);
+    vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+    vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+    vi.mocked(computeExpiresAt).mockReturnValue(null);
+
+    await applyBackupCommandResultToJob({ jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed', result: { snapshotId: 'provider-snap-1', filesBackedUp: 1 } as any });
+    const insertValues = vi.mocked(db.insert).mock.results[0]?.value?.values;
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ layoutManifest: null, bareMetalRestorable: null, bareMetalReasons: null }));
+  });
+
   it('does not mislabel a file backup: no backupType, non-system_image mode → file', async () => {
     // Regression guard: the system_image derivation must not leak onto file
     // jobs. A file backup_run sends no backupType and backupMode='file', so the
@@ -1143,6 +1187,15 @@ describe('backup result persistence', () => {
               backupPath: 'snapshots/snap-1/files/x.gz',
               size: 123,
             },
+            // W02: a content-less entry (symlink) carries an empty backupPath —
+            // it must still be indexed (browse/selective-restore need to know
+            // it exists), just with backupPath persisted as ''.
+            {
+              sourcePath: '/bin',
+              backupPath: '',
+              kind: 'symlink',
+              linkTarget: 'usr/bin',
+            },
           ],
         },
       },
@@ -1153,6 +1206,10 @@ describe('backup result persistence', () => {
       expect.objectContaining({
         sourcePath: 'C:\\assure\\src\\x',
         backupPath: 'snapshots/snap-1/files/x.gz',
+      }),
+      expect.objectContaining({
+        sourcePath: '/bin',
+        backupPath: '',
       }),
     ]);
   });

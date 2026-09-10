@@ -386,6 +386,119 @@ describe('pax8 routes', () => {
     });
   });
 
+  it('does not carry stored client credentials to a changed Pax8 origin', async () => {
+    const existing = {
+      id: INTEGRATION_ID,
+      partnerId: authState.partnerId,
+      name: 'Pax8',
+      clientIdEncrypted: 'enc:stored-client',
+      clientSecretEncrypted: 'enc:stored-secret',
+      accessTokenEncrypted: 'enc:old-origin-access-token',
+      accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      webhookSecretEncrypted: null,
+      apiBaseUrl: 'https://api.pax8.com',
+      tokenUrl: 'https://login.pax8.com/oauth/token',
+      isActive: true,
+    };
+    mockSelectOnce([existing]);
+
+    const res = await app.request('/pax8/integration', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Pax8',
+        apiBaseUrl: existing.apiBaseUrl,
+        tokenUrl: 'https://attacker.example/oauth/token',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringMatching(/clientId.*clientSecret|credentials.*re-entered/i),
+    });
+    expect(db.update).not.toHaveBeenCalled();
+    expect(enqueuePax8Sync).not.toHaveBeenCalled();
+  });
+
+  it('allows a changed Pax8 origin only with replacement client credentials', async () => {
+    const existing = {
+      id: INTEGRATION_ID,
+      partnerId: authState.partnerId,
+      name: 'Pax8',
+      clientIdEncrypted: 'enc:stored-client',
+      clientSecretEncrypted: 'enc:stored-secret',
+      accessTokenEncrypted: 'enc:old-origin-access-token',
+      accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      webhookSecretEncrypted: null,
+      apiBaseUrl: 'https://api.pax8.com',
+      tokenUrl: 'https://login.pax8.com/oauth/token',
+      isActive: true,
+    };
+    mockSelectOnce([existing]);
+    const setSpy = vi.fn((values: Record<string, unknown>) => ({
+      where: vi.fn(() => ({ returning: vi.fn(async () => [{ ...existing, ...values }]) })),
+    }));
+    vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+
+    const res = await app.request('/pax8/integration', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Pax8',
+        tokenUrl: 'https://replacement.example/oauth/token',
+        clientId: 'replacement-client',
+        clientSecret: 'replacement-secret',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({
+      apiBaseUrl: existing.apiBaseUrl,
+      tokenUrl: 'https://replacement.example/oauth/token',
+      clientIdEncrypted: 'enc:replacement-client',
+      clientSecretEncrypted: 'enc:replacement-secret',
+      accessTokenEncrypted: null,
+      accessTokenExpiresAt: null,
+    }));
+  });
+
+  it('clears the cached access token when client credentials rotate on the same origins', async () => {
+    const existing = {
+      id: INTEGRATION_ID,
+      partnerId: authState.partnerId,
+      name: 'Pax8',
+      clientIdEncrypted: 'enc:stored-client',
+      clientSecretEncrypted: 'enc:stored-secret',
+      accessTokenEncrypted: 'enc:cached-token',
+      accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      webhookSecretEncrypted: null,
+      apiBaseUrl: 'https://api.pax8.com',
+      tokenUrl: 'https://login.pax8.com/oauth/token',
+      isActive: true,
+    };
+    mockSelectOnce([existing]);
+    const setSpy = vi.fn((values: Record<string, unknown>) => ({
+      where: vi.fn(() => ({ returning: vi.fn(async () => [{ ...existing, ...values }]) })),
+    }));
+    vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+
+    const res = await app.request('/pax8/integration', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Pax8',
+        clientId: 'replacement-client',
+        clientSecret: 'replacement-secret',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({
+      accessTokenEncrypted: null,
+      accessTokenExpiresAt: null,
+    }));
+  });
+
   it('rejects company mapping to an inaccessible organization', async () => {
     authState.canAccessOrg = false;
     mockSelectOnce([{

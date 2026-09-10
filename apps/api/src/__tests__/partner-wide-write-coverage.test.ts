@@ -161,6 +161,8 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // reasoning already recorded for timeSuggestionService.ts and orgArchive.ts.
   'services/mfaFactorReset.ts':
     "clears ONE target user's factor columns and user_passkeys rows; routes/users.ts gates reset with USERS_WRITE + requireMfa + tenant-scoped getScopedUser, and tombstone reinvite with USERS_INVITE + requireMfa + tenant-scoped email visibility. Neutralization callers enforce membership-removal authority. Never writes partner-wide config; gating here would block organization admins from resetting their own users",
+  'services/mfaAssurance.ts':
+    "revokes Office bindings for exactly ONE factor-changing user id in the same transaction as that user's MFA epoch advance; the binding partner_id is only the RLS axis, never caller-selected partner-wide configuration. Self-service and scoped admin factor authority is established by each caller before this primitive",
   'services/userNeutralization.ts':
     "disables ONE orphaned user (status, disabled_reason, password_hash) after their LAST membership is removed, then delegates the factor wipe to mfaFactorReset; both callers are gated one layer up — routes/users.ts DELETE /:id by USERS_DELETE + requireMfa(), routes/accessReviews.ts by canManagePartnerWidePolicies itself. Per-user account lifecycle, never partner-wide config",
 
@@ -168,7 +170,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/contacts/compat.ts': 'updates one org\'s legacy billing-contact blob by org id',
   'services/invoiceService.ts': 'org billing settings + time-entry billing status, org-axis authority',
   'services/orgCurrencyService.ts': 'updates the selected organization\'s currency by org id',
-  'services/orgImport/index.ts': 'org import creates org-axis rows; gated by organizations:write on the route',
+  'services/orgImport/index.ts': 'org import creates org-axis rows across the resolved partner under system context; every HTTP entry point requires canManagePartnerWidePolicies, while mutating and CSV/PSA preview routes additionally require organizations:write and sites:write',
   'services/quickSupportOrg.ts': 'quick-support provisioning creates an org-axis container',
   'services/softwareDownloadPolicy.ts': 'writes one org\'s encrypted settings by org id',
   'services/softwarePolicyService.ts': 'flagged table is append-only policy audit evidence, not config',

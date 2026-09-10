@@ -1,14 +1,16 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { fetchWithAuthMock, createPasskeyCredentialMock } = vi.hoisted(() => ({
+const { fetchWithAuthMock, createPasskeyCredentialMock, getPasskeyCredentialMock } = vi.hoisted(() => ({
   fetchWithAuthMock: vi.fn(),
   createPasskeyCredentialMock: vi.fn(),
+  getPasskeyCredentialMock: vi.fn(),
 }));
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: fetchWithAuthMock,
   createPasskeyCredential: createPasskeyCredentialMock,
+  getPasskeyCredential: getPasskeyCredentialMock,
   useAuthStore: Object.assign(
     (selector: any) => selector({ updateUser: vi.fn() }),
     { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitReissuedSessionIfCurrent: vi.fn(() => true) }) },
@@ -132,11 +134,13 @@ describe('ProfilePage passkey management', () => {
     await waitFor(() => expect(screen.getByText('MacBook Touch ID')).toBeTruthy());
   });
 
-  it('sends currentPassword when deleting a passkey', async () => {
+  it('proves the current TOTP factor and sends an exact-resource grant when deleting a passkey', async () => {
+    const passkeyId = '10000000-0000-4000-8000-000000000009';
     fetchWithAuthMock
       .mockResolvedValueOnce(makeJsonResponse({
-        passkeys: [{ id: 'credential-1', name: 'MacBook Touch ID', lastUsedAt: null }],
+        passkeys: [{ id: passkeyId, name: 'MacBook Touch ID', lastUsedAt: null }],
       }))
+      .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: '20000000-0000-4000-8000-000000000009' }))
       // #5038: the delete now returns a replacement session too.
       .mockResolvedValueOnce(makeJsonResponse({
         success: true,
@@ -150,6 +154,7 @@ describe('ProfilePage passkey management', () => {
           name: 'Casey Admin',
           email: 'casey@example.com',
           mfaEnabled: true,
+          mfaMethod: 'totp',
         }}
       />,
     );
@@ -158,6 +163,9 @@ describe('ProfilePage passkey management', () => {
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
+    fireEvent.change(screen.getByLabelText(/Current MFA code/i), {
+      target: { value: '123456' },
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     // #5314: the passkey Delete now opens a confirmation first.
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
@@ -165,10 +173,71 @@ describe('ProfilePage passkey management', () => {
     await screen.findByText('Passkey deleted');
 
     expect(fetchWithAuthMock.mock.calls[1]).toEqual([
-      '/auth/passkeys/credential-1',
+      '/auth/mfa/step-up',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ method: 'totp', code: '123456', operation: 'delete_passkey', passkeyId }),
+      }),
+    ]);
+    expect(fetchWithAuthMock.mock.calls[2]).toEqual([
+      `/auth/passkeys/${passkeyId}`,
       expect.objectContaining({
         method: 'DELETE',
-        body: JSON.stringify({ currentPassword: 'current-password' }),
+        body: JSON.stringify({
+          currentPassword: 'current-password',
+          stepUpGrantId: '20000000-0000-4000-8000-000000000009',
+        }),
+      }),
+    ]);
+  });
+
+  it('uses a current WebAuthn assertion before deleting a passkey-primary factor', async () => {
+    const passkeyId = '30000000-0000-4000-8000-000000000009';
+    const assertion = { id: 'browser-credential', response: { signature: 'sig' } };
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({
+        passkeys: [{ id: passkeyId, name: 'Security key', lastUsedAt: null }],
+      }))
+      .mockResolvedValueOnce(makeJsonResponse({ options: { challenge: 'step-up-challenge' } }))
+      .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: '40000000-0000-4000-8000-000000000009' }))
+      .mockResolvedValueOnce(makeJsonResponse({ success: true, tokens: { accessToken: 'reissued-access-token', expiresInSeconds: 900 } }));
+    getPasskeyCredentialMock.mockResolvedValueOnce(assertion);
+
+    render(
+      <ProfilePage initialUser={{
+        id: 'user-1',
+        name: 'Casey Admin',
+        email: 'casey@example.com',
+        mfaEnabled: true,
+        mfaMethod: 'passkey',
+      }} />,
+    );
+
+    await screen.findByText('Security key');
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(getPasskeyCredentialMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
+    await screen.findByText('Passkey deleted');
+
+    expect(getPasskeyCredentialMock).toHaveBeenCalledWith({ challenge: 'step-up-challenge' });
+    expect(fetchWithAuthMock.mock.calls[2]).toEqual([
+      '/auth/mfa/step-up',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ method: 'passkey', credential: assertion, operation: 'delete_passkey', passkeyId }),
+      }),
+    ]);
+    expect(fetchWithAuthMock.mock.calls[3]).toEqual([
+      `/auth/passkeys/${passkeyId}`,
+      expect.objectContaining({
+        method: 'DELETE',
+        body: JSON.stringify({
+          currentPassword: 'current-password',
+          stepUpGrantId: '40000000-0000-4000-8000-000000000009',
+        }),
       }),
     ]);
   });

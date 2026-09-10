@@ -1,7 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
-import { authBrowserTransitionsEnforced } from '../config/env';
-export { authBrowserTransitionsEnforced } from '../config/env';
 import { users } from '../db/schema/users';
 import type { Tx as AuthLifecycleTransaction } from './authLifecycle';
 import {
@@ -10,7 +8,6 @@ import {
   bindAuthIssuanceSession,
   type AuthIssuanceCapability,
 } from './authBrowserTransition';
-import { getUserEpochs } from './authEpochs';
 import { createTokenPair } from './jwt';
 import {
   bindRefreshJtiToFamily,
@@ -20,7 +17,6 @@ import {
 } from './refreshTokenFamily';
 
 const AUTHORIZED_USER_SESSION: unique symbol = Symbol('AuthorizedUserSession');
-const LEGACY_USER_SESSION_DURING_TRANSITION: unique symbol = Symbol('LegacyUserSessionDuringTransition');
 
 export type UserSessionIdentity = Readonly<{
   userId: string;
@@ -31,8 +27,6 @@ export type UserSessionIdentity = Readonly<{
   scope: 'system' | 'partner' | 'organization';
   mfa: boolean;
   mobileDeviceId?: string;
-  /** Temporary rollout-only family carry-forward used by legacy /refresh. */
-  legacyFamilyId?: string;
 }>;
 
 type TokenPair = Awaited<ReturnType<typeof createTokenPair>>;
@@ -42,11 +36,6 @@ export type AuthorizedUserSession = Readonly<TokenPair & {
   transitionId: string;
   generation: number;
   readonly [AUTHORIZED_USER_SESSION]: true;
-}>;
-
-export type LegacyUserSessionDuringTransition = Readonly<TokenPair & {
-  familyId: string;
-  readonly [LEGACY_USER_SESSION_DURING_TRANSITION]: true;
 }>;
 
 export type UserSessionEpochSnapshot = Readonly<{
@@ -125,7 +114,10 @@ export async function issueUserSession(
     });
     familyId = options.familyId;
   } else {
-    familyId = await mintRefreshTokenFamily(identity.userId, refreshJti, { tx: options.tx });
+    familyId = await mintRefreshTokenFamily(identity.userId, refreshJti, {
+      tx: options.tx,
+      mobileDeviceId: identity.mobileDeviceId,
+    });
   }
 
   const tokens = await createTokenPair({
@@ -154,40 +146,6 @@ export async function issueUserSession(
     transitionId: options.capability.transitionId,
     generation: options.capability.generation,
     [AUTHORIZED_USER_SESSION]: true as const,
-  });
-}
-
-/**
- * Temporary pre-W07 behavior for the source-contract-frozen rollout callers.
- * W07-F removes this export after telemetry proves supported clients are drained.
- */
-export async function issueUserSessionLegacyDuringTransition(
-  identity: UserSessionIdentity,
-): Promise<LegacyUserSessionDuringTransition> {
-  if (authBrowserTransitionsEnforced()) {
-    throw new Error('Legacy user-session issuance is disabled');
-  }
-
-  const familyId = identity.legacyFamilyId ?? await mintRefreshTokenFamily(identity.userId);
-  const epochs = await getUserEpochs(identity.userId);
-  if (!epochs) throw new Error('Cannot issue session for missing user');
-  const tokens = await createTokenPair({
-    sub: identity.userId,
-    email: identity.email,
-    roleId: identity.roleId,
-    orgId: identity.orgId,
-    partnerId: identity.partnerId,
-    scope: identity.scope,
-    mfa: identity.mfa,
-    aep: epochs.authEpoch,
-    mep: epochs.mfaEpoch,
-    mdid: identity.mobileDeviceId,
-  }, { refreshFam: familyId });
-  await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
-  return Object.freeze({
-    ...tokens,
-    familyId,
-    [LEGACY_USER_SESSION_DURING_TRANSITION]: true as const,
   });
 }
 

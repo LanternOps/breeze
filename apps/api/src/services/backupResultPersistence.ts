@@ -1275,6 +1275,12 @@ export async function applyBackupCommandResultToJob(params: {
     result.backupType ?? derivedBackupType ?? updatedJob.backupType ?? 'file';
   const systemStateManifest = result.systemStateManifest ?? null;
   const hardwareProfile = systemStateManifest?.hardwareProfile ?? null;
+  // Bare-metal recovery (W01): disk layout + guard verdict. Both stay NULL
+  // ("never assessed") when the result carries none — a file-only run or an
+  // agent predating W01 — never defaulted to a false "not restorable".
+  const layoutManifest = result.layoutManifest ?? null;
+  const bareMetalRestorable = result.bareMetal?.restorable ?? null;
+  const bareMetalReasons = result.bareMetal?.reasons ?? null;
   const snapshotMetadata: Record<string, unknown> = {
     ...metadata,
     hasIndexedFiles: Boolean(result.snapshot?.files?.length),
@@ -1331,6 +1337,9 @@ export async function applyBackupCommandResultToJob(params: {
     // NOT recomputed from the config — so GC groups by the identity the run
     // actually wrote to, even if the config's destination has since changed.
     storageIdentity: updatedJob.storageIdentity ?? null,
+    layoutManifest,
+    bareMetalRestorable,
+    bareMetalReasons,
   } as const;
 
   const [existingSnapshot] = await db
@@ -1371,7 +1380,10 @@ export async function applyBackupCommandResultToJob(params: {
         // selection. No separate column for the raw shadow path: it has no
         // browsing/restore value once the shadow copy is released.
         sourcePath: file.originalPath ?? file.sourcePath,
-        backupPath: file.backupPath,
+        // W02: content-less entries (symlinks/directories) carry no object —
+        // backupPath is '' for those (backup_snapshot_files.backup_path is
+        // NOT NULL, so '' is the documented value, not a missing column).
+        backupPath: file.backupPath ?? '',
         size: file.size ?? null,
         modifiedAt: file.modTime ? new Date(file.modTime) : null,
       }));

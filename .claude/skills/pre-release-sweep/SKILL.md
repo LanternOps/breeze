@@ -130,7 +130,10 @@ Both go in the doc: `Fixes applied` (commit SHA) and `Issues filed` (#).
 Summary table (group → PASS/PARTIAL/FAIL/BLOCKED counts), "Top findings"
 (systemic patterns beat single bugs), the oldest PR reached, and what a
 release cut still needs (flags to enable, BLOCKED rows needing a live agent).
-Open one PR: the fixes + the tracking doc. `pnpm wt-stack down` when done.
+Open one PR: the fixes + the tracking doc. Then tear down: `pnpm wt-stack down`
+from this worktree, and `docker compose ls -a` to confirm nothing from the sweep
+is still up — sweep agents' `pnpm test-stack` copies included (`worktree-stack`
+skill → "Tear down when done"). Report anything you left running and why.
 
 ## Model tiering
 

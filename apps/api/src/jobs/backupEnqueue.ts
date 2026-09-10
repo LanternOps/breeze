@@ -100,6 +100,10 @@ export interface ProcessResultsResult {
   // forward them or the snapshot loses its type label + BMR restore manifest.
   backupType?: 'file' | 'system_image' | 'database' | 'application';
   systemStateManifest?: Record<string, unknown> | null;
+  // Bare-metal recovery (W01): disk layout + guard verdict, same forwarding
+  // rationale as systemStateManifest above.
+  layoutManifest?: Record<string, unknown> | null;
+  bareMetal?: { restorable: boolean; reasons: string[] } | null;
   // Windows VSS diagnostics (#3027). Must ride the queue payload for the same
   // reason the manifest does: the persistence layer only writes what arrives
   // here, and dropping it leaves backup_jobs.vss_metadata permanently NULL.
@@ -114,6 +118,10 @@ export interface ProcessResultsResult {
       backupPath: string;
       size?: number;
       modTime?: string;
+      // W02 fidelity: content-less entries (symlinks/directories) — see
+      // backupSnapshotFileResultSchema / backupSnapshotFileSchema.
+      kind?: 'symlink' | 'dir';
+      linkTarget?: string;
     }>;
     // D18 (#5429/§3.1): must mirror backupSnapshotSummarySchema, or
     // agentWs.ts's caller can construct a ProcessResultsResult carrying these

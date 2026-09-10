@@ -339,6 +339,12 @@ describe('durable SSO exchange authority', () => {
     expect(results.filter(Boolean)).toHaveLength(1);
     expect(results.find(Boolean)).toEqual(expect.objectContaining({
       refreshToken: fixture.issued.refreshToken,
+      identity: {
+        userId: fixture.user.id,
+        email: fixture.user.email,
+        partnerId: fixture.user.partnerId,
+        isPlatformAdmin: fixture.user.isPlatformAdmin,
+      },
     }));
     await expect(consumeDurableSsoExchangeGrant(fixture.code)).resolves.toBeNull();
   });

@@ -299,7 +299,7 @@ export const backupJobs = pgTable(
       .on(table.snapshotId)
       .where(sql`snapshot_id IS NOT NULL`),
     createdAtIdx: index('backup_jobs_created_at_idx').on(table.createdAt),
-    // D18 W01 (#5429/§3.1): matches migration 150301's
+    // D18 W01 (#5429/§3.1): matches migration 160011's
     // backup_jobs_base_snapshot_id_idx.
     baseSnapshotIdIdx: index('backup_jobs_base_snapshot_id_idx')
       .on(table.baseSnapshotId)
@@ -357,6 +357,11 @@ export const backupSnapshots = pgTable(
     // — the W02 sweep self-heals a NULL row from the storage listing; there
     // is no follow-up NOT NULL migration.
     storageIdentity: text('storage_identity'),
+    // Bare-metal recovery (W01): disk layout captured at run time and the
+    // guard verdict. NULL verdict = not assessed (file-only run / old agent).
+    layoutManifest: jsonb('layout_manifest'),
+    bareMetalRestorable: boolean('bare_metal_restorable'),
+    bareMetalReasons: text('bare_metal_reasons').array(),
   },
   (table) => ({
     orgIdIdx: index('backup_snapshots_org_id_idx').on(table.orgId),

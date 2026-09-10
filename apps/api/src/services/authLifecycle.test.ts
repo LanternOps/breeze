@@ -16,6 +16,7 @@ import {
   advanceUserEpochs,
   lockActiveRefreshFamiliesForUsers,
   revokeAllRefreshFamilies,
+  revokeMobileDeviceRefreshFamilies,
   revokeRefreshFamilyById,
   runPostCommitCleanup,
 } from './authLifecycle';
@@ -25,18 +26,19 @@ import { revokeAllUserOauthArtifacts } from '../oauth/grantRevocation';
 import { captureException } from './sentry';
 // NOT mocked — the real pg-core table object, so captured set/where args can be
 // compared against the real column references by identity.
+import { users } from '../db/schema';
 import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
 
-function makeTx() {
+function makeTx(returningRows: Record<string, unknown>[] = [
+  { authEpoch: 2, mfaEpoch: 1, emailEpoch: 1, passwordResetEpoch: 1 },
+]) {
   const setCalls: Record<string, unknown>[] = [];
   const whereCalls: unknown[] = [];
   const updateTables: unknown[] = [];
   const updateChain = {
     set: (v: Record<string, unknown>) => { setCalls.push(v); return updateChain; },
     where: (w: unknown) => { whereCalls.push(w); return updateChain; },
-    returning: () => Promise.resolve([
-      { authEpoch: 2, mfaEpoch: 1, emailEpoch: 1, passwordResetEpoch: 1 },
-    ]),
+    returning: () => Promise.resolve(returningRows),
     // The revoke* helpers end their chain at .where() and await it — mirror the
     // real Drizzle update builder, which is thenable.
     then: (resolve: (v: unknown) => void) => resolve(undefined),
@@ -71,7 +73,9 @@ function sqlText(v: unknown): string {
 function extractParamValues(v: unknown): unknown[] {
   const out: unknown[] = [];
   for (const c of (v as SQL).queryChunks as unknown[]) {
-    if (typeof c === 'string' || typeof c === 'number') {
+    if (c instanceof SQL) {
+      out.push(...extractParamValues(c));
+    } else if (typeof c === 'string' || typeof c === 'number') {
       out.push(c);
     } else if (
       c && typeof c === 'object' && 'value' in c
@@ -103,6 +107,26 @@ describe('advanceUserEpochs', () => {
     expect(set.mfaEpoch).toBeUndefined();
     expect(set.emailEpoch).toBeUndefined();
     expect(set.passwordResetEpoch).toBeUndefined();
+  });
+
+  it('binds a password transition to every supplied authorizing fact', async () => {
+    const { tx, whereCalls } = makeTx();
+    await advanceUserEpochs(
+      tx,
+      'u1',
+      { auth: true, passwordReset: true },
+      {
+        authEpoch: 7,
+        passwordResetEpoch: 11,
+        email: 'user@example.test',
+      },
+    );
+
+    const predicate = whereCalls[0];
+    expect(sqlContainsChunk(predicate, users.id)).toBe(true);
+    expect(sqlContainsChunk(predicate, users.authEpoch)).toBe(true);
+    expect(sqlContainsChunk(predicate, users.passwordResetEpoch)).toBe(true);
+    expect(sqlContainsChunk(predicate, users.email)).toBe(true);
   });
 });
 
@@ -184,6 +208,31 @@ describe('revokeRefreshFamilyById', () => {
     const { tx, setCalls } = makeTx();
     await revokeRefreshFamilyById(tx, 'fam-1', 'y'.repeat(65));
     expect(extractParamValues(setCalls[0]!.revokedReason)).toEqual(['y'.repeat(64)]);
+  });
+});
+
+describe('revokeMobileDeviceRefreshFamilies', () => {
+  it('revokes and returns only live families for the exact user and signed installation', async () => {
+    const { tx, setCalls, whereCalls, updateTables } = makeTx([
+      { familyId: 'family-mobile-1' },
+      { familyId: 'family-mobile-2' },
+    ]);
+
+    await expect(revokeMobileDeviceRefreshFamilies(
+      tx,
+      'user-1',
+      'installation-1',
+      'mobile-device-blocked',
+    )).resolves.toEqual(['family-mobile-1', 'family-mobile-2']);
+
+    expect(updateTables).toEqual([refreshTokenFamilies]);
+    expect(setCalls[0]!.revokedAt).toBeInstanceOf(SQL);
+    expect(extractParamValues(setCalls[0]!.revokedReason)).toEqual(['mobile-device-blocked']);
+    const predicate = whereCalls[0] as SQL;
+    expect(sqlContainsChunk(predicate, refreshTokenFamilies.userId)).toBe(true);
+    expect(sqlContainsChunk(predicate, refreshTokenFamilies.mobileDeviceId)).toBe(true);
+    expect(sqlContainsChunk(predicate, refreshTokenFamilies.revokedAt)).toBe(true);
+    expect(extractParamValues(predicate)).toEqual(['user-1', 'installation-1']);
   });
 });
 

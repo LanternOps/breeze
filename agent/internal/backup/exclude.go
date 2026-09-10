@@ -19,6 +19,9 @@ import (
 //     so "node_modules/**" excludes every node_modules directory, not just
 //     one at the backup root. A pattern that matches a directory excludes
 //     the whole subtree (the walker returns fs.SkipDir).
+//   - "/proc/**", "/swapfile"            — leading slash: root-anchored, matched
+//     only from the selection root (gitignore semantics). Without the slash a
+//     pattern matches at any depth.
 //
 // Matching is case-insensitive on Windows (case-insensitive filesystems) and
 // case-sensitive elsewhere. Invalid glob patterns are logged and skipped
@@ -26,6 +29,7 @@ import (
 type excludeMatcher struct {
 	baseName        []string   // patterns without "/" — base-name globs
 	relPath         [][]string // patterns with "/" — pre-split path segments
+	anchored        []bool     // parallel to relPath: true when the raw pattern began with "/"
 	caseInsensitive bool
 }
 
@@ -41,6 +45,7 @@ func newExcludeMatcherForOS(patterns []string, caseInsensitive bool) *excludeMat
 		// Normalize Windows-style separators so "AppData\Local" works; after
 		// this, backslash escape sequences no longer exist in patterns.
 		p := strings.ReplaceAll(strings.TrimSpace(raw), "\\", "/")
+		anchored := strings.HasPrefix(p, "/")
 		p = strings.Trim(p, "/")
 		if p == "" {
 			continue
@@ -53,15 +58,22 @@ func newExcludeMatcherForOS(patterns []string, caseInsensitive bool) *excludeMat
 		// runtime exactly: slash patterns are matched per segment, so they
 		// are validated per segment too (e.g. "a[x/y]b" is a valid glob as a
 		// full string but splits into malformed segments).
-		if strings.Contains(p, "/") {
+		if anchored || strings.Contains(p, "/") {
 			segs := strings.Split(p, "/")
 			if !validGlobSegments(segs) {
 				log.Warn("ignoring invalid exclusion pattern", "pattern", raw)
 				continue
 			}
-			// Implicit leading "**/" so patterns match at any depth
-			// (consecutive "**" segments are collapsed by matchSegments).
-			m.relPath = append(m.relPath, append([]string{"**"}, segs...))
+			if anchored {
+				// Root-anchored: match only from the selection root, so no
+				// implicit leading "**/".
+				m.relPath = append(m.relPath, segs)
+			} else {
+				// Implicit leading "**/" so patterns match at any depth
+				// (consecutive "**" segments are collapsed by matchSegments).
+				m.relPath = append(m.relPath, append([]string{"**"}, segs...))
+			}
+			m.anchored = append(m.anchored, anchored)
 		} else {
 			if _, err := path.Match(p, "probe"); err != nil {
 				log.Warn("ignoring invalid exclusion pattern", "pattern", raw, "error", err.Error())

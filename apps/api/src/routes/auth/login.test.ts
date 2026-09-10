@@ -39,6 +39,7 @@ vi.mock('../../db/schema', () => ({
     lastLoginAt: 'users.lastLoginAt',
     authEpoch: 'users.authEpoch',
     mfaEpoch: 'users.mfaEpoch',
+    isPlatformAdmin: 'users.isPlatformAdmin',
   },
 }));
 
@@ -115,7 +116,15 @@ vi.mock('../../services', () => {
   getUserEpochs,
   getRefreshFamily: vi.fn(async () => ({ revokedAt: null, absoluteExpiresAt: new Date(Date.now() + 86_400_000) })),
   beginAuthIssuance: vi.fn(async () => ({ transitionId: 'transition-1', generation: 1 })),
-  finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => Promise<unknown>) => callback({})),
+  finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => Promise<unknown>) => callback({
+    update: vi.fn(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn(async () => [{ id: 'user-1' }]),
+        })),
+      })),
+    })),
+  })),
   cancelAuthIssuance: vi.fn(async () => undefined),
   assertAuthIssuanceCapability: vi.fn(async () => undefined),
   AuthBindingRotationRequiredError,
@@ -123,15 +132,30 @@ vi.mock('../../services', () => {
   AuthIssuanceConflictError,
   AuthIssuanceCapabilityError,
   RefreshTokenCurrentnessError,
-  issueUserSession: vi.fn(async () => ({
-    accessToken: 'guarded-access-token',
-    refreshToken: 'guarded-refresh-token',
-    refreshJti: 'guarded-refresh-jti',
-    expiresInSeconds: 900,
-    familyId: 'guarded-family-id',
-    transitionId: 'transition-1',
-    generation: 1,
-  })),
+  issueUserSession: vi.fn(async (identity: any, options: {
+    familyId?: string;
+    expectedEpochs: { authEpoch: number; mfaEpoch: number };
+  }) => {
+    const familyId = options.familyId ?? await mintRefreshTokenFamily();
+    const tokens = await createTokenPair({
+      sub: identity.userId,
+      email: identity.email,
+      roleId: identity.roleId,
+      orgId: identity.orgId,
+      partnerId: identity.partnerId,
+      scope: identity.scope,
+      mfa: identity.mfa,
+      aep: options.expectedEpochs.authEpoch,
+      mep: options.expectedEpochs.mfaEpoch,
+      mdid: identity.mobileDeviceId,
+    }, { refreshFam: familyId });
+    return {
+      ...tokens,
+      familyId,
+      transitionId: 'transition-1',
+      generation: 1,
+    };
+  }),
   issueUserSessionLegacyDuringTransition: legacyIssuer,
   bindIssuedUserSession: vi.fn(async () => undefined),
   authBrowserTransitionsEnforced: vi.fn(() => process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED === 'true'),
@@ -299,6 +323,19 @@ vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
+const mobileBlockMocks = vi.hoisted(() => ({
+  getBoundMobileDeviceBlock: vi.fn(async (): Promise<{ reason: string | null } | null> => null),
+}));
+
+vi.mock('../../middleware/mobileDeviceBlocked', () => ({
+  getBoundMobileDeviceBlock: mobileBlockMocks.getBoundMobileDeviceBlock,
+  mobileDeviceBlockedResponse: (c: any, block: { reason: string | null }) => c.json({
+    error: 'This device has been deactivated. Please re-pair to continue.',
+    code: 'device_blocked',
+    reason: block.reason,
+  }, 403),
+}));
+
 import { loginRoutes } from './login';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
@@ -309,6 +346,7 @@ import {
   revokeFamily,
   revokeRefreshTokenJti,
   markRefreshTokenJtiRotated,
+  touchFamilyLastUsed,
   revokeAllUserTokens,
   bindRefreshJtiToFamily,
   isTokenIssuedBeforePasswordChange,
@@ -324,7 +362,6 @@ import {
   beginAuthIssuance,
   finishAuthIssuance,
   issueUserSession,
-  issueUserSessionLegacyDuringTransition,
   bindIssuedUserSession,
   recordAuthTransitionLegacyIssuer,
   AuthBindingRotationRequiredError,
@@ -370,10 +407,18 @@ function updateChain() {
   };
 }
 
-async function postLogin(body: { email: string; password: string }, extraHeaders: Record<string, string> = {}) {
+async function postLogin(
+  body: { email: string; password: string },
+  extraHeaders: Record<string, string> = {},
+  transitionCapable = true,
+) {
   return loginRoutes.request('/login', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...extraHeaders },
+    headers: {
+      'content-type': 'application/json',
+      ...(transitionCapable ? { 'x-breeze-auth-transition': 'v1' } : {}),
+      ...extraHeaders,
+    },
     body: JSON.stringify(body),
   });
 }
@@ -432,7 +477,6 @@ describe('POST /login — IP allowlist', () => {
     expect(res.status).toBe(200);
     expect(beginAuthIssuance).toHaveBeenCalledTimes(1);
     expect(issueUserSession).toHaveBeenCalledTimes(1);
-    expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
     expect(bindIssuedUserSession).toHaveBeenCalledTimes(1);
     expect(res.headers.get('set-cookie')).toContain('breeze_refresh_token=');
   });
@@ -441,18 +485,18 @@ describe('POST /login — IP allowlist', () => {
     ['web', {}],
     ['native', { 'x-breeze-mobile-device-id': 'install-1' }],
   ] as const)(
-    'keeps enforcement-false %s clients on the measured legacy seam',
-    async (clientClass, headers) => {
+    'uses guarded issuance for a headerless %s client and never admits a downgrade',
+    async (_clientClass, headers) => {
       const res = await postLogin(
         { email: 'admin@msp.com', password: 'correct-horse' },
         headers,
+        false,
       );
 
       expect(res.status).toBe(200);
-      expect(issueUserSessionLegacyDuringTransition).toHaveBeenCalledTimes(1);
-      expect(recordAuthTransitionLegacyIssuer).toHaveBeenCalledWith('password', clientClass);
-      expect(beginAuthIssuance).not.toHaveBeenCalled();
-      expect(issueUserSession).not.toHaveBeenCalled();
+      expect(beginAuthIssuance).toHaveBeenCalledTimes(1);
+      expect(issueUserSession).toHaveBeenCalledTimes(1);
+      expect(bindIssuedUserSession).toHaveBeenCalledTimes(1);
     },
   );
 
@@ -470,7 +514,6 @@ describe('POST /login — IP allowlist', () => {
     expect(res.status).toBe(428);
     expect(res.headers.get('set-cookie')).toContain('breeze_auth_binding=');
     expect(issueUserSession).not.toHaveBeenCalled();
-    expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
   });
 
   it('rejects logout-pending after admission without irreversible login effects', async () => {
@@ -488,14 +531,18 @@ describe('POST /login — IP allowlist', () => {
     expect(res.headers.get('set-cookie')).toBeNull();
   });
 
-  it('returns 426 without invoking the legacy seam once enforcement is enabled', async () => {
-    process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED = 'true';
+  it('ignores the retired enforcement override and still uses guarded issuance', async () => {
+    process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED = 'false';
+    const res = await postLogin(
+      { email: 'admin@msp.com', password: 'correct-horse' },
+      {},
+      false,
+    );
 
-    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
-
-    expect(res.status).toBe(426);
-    await expect(res.json()).resolves.toMatchObject({ reason: 'auth_client_upgrade_required' });
-    expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(beginAuthIssuance).toHaveBeenCalledTimes(1);
+    expect(issueUserSession).toHaveBeenCalledTimes(1);
+    expect(bindIssuedUserSession).toHaveBeenCalledTimes(1);
     delete process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED;
   });
 
@@ -662,31 +709,16 @@ describe('POST /login — last_login_at write runs under system DB context (#137
     }]) as any);
   });
 
-  it('performs the users update only while inside withSystemDbAccessContext', async () => {
-    let insideSystemContext = false;
-    let updateRanInsideContext: boolean | null = null;
-
-    vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn: () => Promise<unknown>) => {
-      insideSystemContext = true;
-      try {
-        return await fn();
-      } finally {
-        insideSystemContext = false;
-      }
-    });
-
-    vi.mocked(db.update).mockImplementation((() => {
-      // Capture context state at the moment the write is issued. A bare
-      // `db.update(...)` (the bug) would record `false` here.
-      updateRanInsideContext = insideSystemContext;
-      return updateChain() as any;
-    }) as any);
+  it('performs the users update through the guarded issuance transaction', async () => {
+    const txUpdate = vi.fn(() => updateChain());
+    vi.mocked(finishAuthIssuance).mockImplementationOnce(async (_capability, callback) =>
+      callback({ update: txUpdate } as any));
 
     const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
 
     expect(res.status).toBe(200);
-    expect(db.update).toHaveBeenCalled();
-    expect(updateRanInsideContext).toBe(true);
+    expect(txUpdate).toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
   });
 });
 
@@ -707,25 +739,31 @@ describe('POST /login — mints aep/mep/sid from the live user row', () => {
       mfaMethod: null,
       phoneNumber: null,
       avatarUrl: null,
+      authEpoch: 4,
+      mfaEpoch: 2,
     }]) as any);
     vi.mocked(db.update).mockReturnValue(updateChain() as any);
     vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 4, mfaEpoch: 2 });
   });
 
-  it('passes the live epochs and the family id to createTokenPair', async () => {
+  it('passes the verified row epochs through guarded issuance', async () => {
     const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
     expect(res.status).toBe(200);
-    expect(getUserEpochs).toHaveBeenCalledWith('user-1');
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({ expectedEpochs: { authEpoch: 4, mfaEpoch: 2 } }),
+    );
+    expect(getUserEpochs).not.toHaveBeenCalled();
     expect(createTokenPair).toHaveBeenCalledWith(
       expect.objectContaining({ aep: 4, mep: 2 }),
       { refreshFam: 'family-id' }
     );
   });
 
-  it('fails closed with a generic 401 when the epoch read returns null', async () => {
-    vi.mocked(getUserEpochs).mockResolvedValue(null);
+  it('fails closed when the guarded issuer rejects a changed epoch snapshot', async () => {
+    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new AuthIssuanceCapabilityError());
     const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(409);
     expect(createTokenPair).not.toHaveBeenCalled();
   });
 });
@@ -982,7 +1020,7 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
   async function postRefresh() {
     return loginRoutes.request('/refresh', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-breeze-auth-transition': 'v1' },
     });
   }
 
@@ -998,6 +1036,7 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
       id: 'user-1',
       email: 'admin@msp.com',
       status: 'active',
+      isPlatformAdmin: false,
     }]) as any);
     vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
     vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
@@ -1008,6 +1047,7 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
       orgId: null,
       scope: 'partner',
     } as any);
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
   });
 
   it('rejects a verified refresh token that has no fam claim with 401 and clears the cookie', async () => {
@@ -1049,16 +1089,76 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
     expect(createTokenPair).toHaveBeenCalledTimes(1);
     // Family propagates into the rotated token and the jti→family binding.
     expect(vi.mocked(createTokenPair).mock.calls[0]?.[1]).toEqual({ refreshFam: 'family-42' });
-    expect(bindRefreshJtiToFamily).toHaveBeenCalledWith('refresh-jti', 'family-42');
+    expect(bindIssuedUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ refreshJti: 'refresh-jti', familyId: 'family-42' }),
+    );
     expect(revokeFamily).not.toHaveBeenCalled();
   });
+
+  it('denies refresh rotation outside the partner IP allowlist before minting a successor', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1', email: 'admin@msp.com', type: 'refresh', jti: 'jti-current',
+      fam: 'family-42',
+    } as any);
+    vi.mocked(enforceIpAllowlist).mockResolvedValueOnce({ decision: 'deny', reason: 'not_in_list' });
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({ code: 'ip_not_allowed' });
+    expect(enforceIpAllowlist).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      partnerId: 'partner-1', actorId: 'user-1',
+    }));
+    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+  });
+
+  it('fails closed without rotating the family when the refresh allowlist read fails', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1', email: 'admin@msp.com', type: 'refresh', jti: 'jti-current', fam: 'family-42',
+    } as any);
+    vi.mocked(enforceIpAllowlist).mockRejectedValueOnce(new Error('allowlist unavailable'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(503);
+    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+  it('revokes and rejects the family before rotation when its signed mobile binding is blocked', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-blocked',
+      fam: 'family-blocked',
+      mdid: 'lost-installation',
+    } as any);
+    mobileBlockMocks.getBoundMobileDeviceBlock.mockResolvedValueOnce({ reason: 'lost phone' });
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'device_blocked', reason: 'lost phone' });
+    expect(mobileBlockMocks.getBoundMobileDeviceBlock).toHaveBeenCalledWith(
+      'user-1',
+      'lost-installation'
+    );
+    expect(revokeFamily).toHaveBeenCalledWith('family-blocked', 'mobile-device-blocked');
+    expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    expect(isRefreshTokenJtiRevoked).not.toHaveBeenCalled();
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
 });
 
 describe('POST /refresh — epoch and absolute-expiry gates', () => {
   async function postRefresh() {
     return loginRoutes.request('/refresh', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-breeze-auth-transition': 'v1' },
     });
   }
 
@@ -1109,15 +1209,14 @@ describe('POST /refresh — epoch and absolute-expiry gates', () => {
     );
   });
 
-  it('does not count a legacy issuer when the Redis rotation claim loses', async () => {
-    vi.mocked(revokeRefreshTokenJti).mockResolvedValueOnce(false);
+  it('does not count a legacy issuer when the durable rotation claim loses', async () => {
+    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new RefreshTokenCurrentnessError());
 
     const res = await postRefresh();
 
     expect(res.status).toBe(401);
     await expect(res.json()).resolves.toMatchObject({ reason: 'refresh_raced' });
     expect(recordAuthTransitionLegacyIssuer).not.toHaveBeenCalled();
-    expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
   });
 
   it('returns refresh_raced without clearing a winning sibling cookie when durable CAS loses', async () => {
@@ -1136,6 +1235,26 @@ describe('POST /refresh — epoch and absolute-expiry gates', () => {
     expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
     expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
     expect(bindIssuedUserSession).not.toHaveBeenCalled();
+  });
+
+  it('does not return a committed successor when its predecessor revocation marker cannot be written', async () => {
+    vi.mocked(revokeRefreshTokenJti).mockRejectedValueOnce(new Error('redis write rejected'));
+
+    const res = await loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-breeze-auth-transition': 'v1',
+      },
+    });
+
+    expect(res.status).toBe(401);
+    await expect(res.json()).resolves.toEqual({ error: 'Invalid refresh token' });
+    expect(issueUserSession).toHaveBeenCalledTimes(1);
+    expect(bindIssuedUserSession).toHaveBeenCalledTimes(1);
+    expect(clearRefreshTokenCookie).toHaveBeenCalledTimes(1);
+    expect(res.headers.get('set-cookie')).toBeNull();
+    expect(touchFamilyLastUsed).not.toHaveBeenCalled();
   });
 
   // #4097's per-binding issuance lease rejects the LOSER of two concurrent
@@ -1287,7 +1406,7 @@ describe('POST /refresh — per-family rate limiting (#3696)', () => {
   function postRefresh() {
     return loginRoutes.request('/refresh', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-breeze-auth-transition': 'v1' },
     });
   }
 
@@ -1741,7 +1860,11 @@ describe('authenticatorRegisterGrantId login mint (#2707)', () => {
     } as any);
     return loginRoutes.request('/refresh', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...(opts.headers ?? {}) },
+      headers: {
+        'content-type': 'application/json',
+        'x-breeze-auth-transition': 'v1',
+        ...(opts.headers ?? {}),
+      },
     });
   }
 

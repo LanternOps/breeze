@@ -371,6 +371,45 @@ describe('snapshot routes', () => {
     });
   });
 
+  it('returns the bare-metal restorability verdict on snapshot responses', async () => {
+    selectMock.mockReturnValueOnce(chainMock([
+      makeSnapshot({
+        bareMetalRestorable: false,
+        bareMetalReasons: ['LVM volumes are not supported'],
+      }),
+    ]));
+
+    const res = await app.request('/backup/snapshots', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0]).toMatchObject({
+      bareMetalRestorable: false,
+      bareMetalReasons: ['LVM volumes are not supported'],
+    });
+  });
+
+  it('returns a null bare-metal verdict (never assessed) as null + empty reasons, not false', async () => {
+    selectMock.mockReturnValueOnce(chainMock([
+      makeSnapshot({ bareMetalRestorable: null, bareMetalReasons: null }),
+    ]));
+
+    const res = await app.request('/backup/snapshots', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0]).toMatchObject({
+      bareMetalRestorable: null,
+      bareMetalReasons: [],
+    });
+  });
+
   it('applies legal hold with a required reason', async () => {
     selectMock.mockReturnValueOnce(chainMock([makeSnapshot()]));
     updateMock.mockReturnValueOnce(chainMock([

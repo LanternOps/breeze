@@ -16,7 +16,6 @@ const OAUTH_ENV_KEYS = [
   'MFA_FORCE_FOR_PARTNER_ADMIN',
   'M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED',
   'M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED',
-  'AUTH_BROWSER_TRANSITIONS_ENFORCED',
   'AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED',
 ] as const;
 
@@ -39,21 +38,16 @@ describe('config env', () => {
     expect(mod.MCP_OAUTH_ENABLED).toBe(false);
   });
 
-  it('keeps browser transition enforcement and terminal preparation disabled by default', async () => {
+  it('keeps terminal preparation disabled by default', async () => {
     const mod = await loadEnv();
-    expect(mod.authBrowserTransitionsEnforced()).toBe(false);
     expect(mod.authBrowserTerminalPreparationEnabled()).toBe(false);
   });
 
-  it('reads browser transition rollout flags at call time', async () => {
+  it('reads the terminal preparation rollout flag at call time', async () => {
     const mod = await loadEnv();
-    process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED = 'true';
     process.env.AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED = 'true';
-    expect(mod.authBrowserTransitionsEnforced()).toBe(true);
     expect(mod.authBrowserTerminalPreparationEnabled()).toBe(true);
-    process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED = 'false';
     process.env.AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED = 'false';
-    expect(mod.authBrowserTransitionsEnforced()).toBe(false);
     expect(mod.authBrowserTerminalPreparationEnabled()).toBe(false);
   });
 

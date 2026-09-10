@@ -1031,12 +1031,14 @@
       "loadWithStatus": "No se pudieron cargar las reglas (HTTP {{status}})",
       "load": "No se pudieron cargar las reglas",
       "updateRule": "No se pudo actualizar la regla",
-      "deleteRule": "No se pudo eliminar la regla"
+      "deleteRule": "No se pudo eliminar la regla",
+      "reapproveRule": "No se pudo volver a aprobar la regla"
     },
     "toasts": {
       "defaultVerdictSet": "Veredicto predeterminado establecido en {{verdict}}",
       "ruleToggled": "Regla \"{{name}}\" {{state}}",
-      "ruleDeleted": "Regla \"{{name}}\" eliminada"
+      "ruleDeleted": "Regla \"{{name}}\" eliminada",
+      "ruleReapproved": "Regla \"{{name}}\" aprobada de nuevo: aprobación automática restaurada"
     },
     "states": {
       "disabled": "desactivado",
@@ -1044,7 +1046,8 @@
     },
     "description": "Las políticas de software se evalúan primero: una coincidencia entre la lista permitida y la lista bloqueada decide antes que estas reglas. Luego, las reglas se ejecutan en orden de prioridad (las más bajas primero); el primer partido decide.",
     "actions": {
-      "addRule": "Agregar regla"
+      "addRule": "Agregar regla",
+      "reapprove": "Volver a aprobar"
     },
     "defaultVerdict": {
       "label": "Veredicto predeterminado",
@@ -1075,6 +1078,10 @@
       "label": "Obsoleto",
       "tooltip": "El nivel de riesgo {{tier}} ya no coincide con nada que esta regla pueda seleccionar, por lo que nunca podrá coincidir.",
       "tooltipWithTiers": "El nivel de riesgo {{tier}} ya no coincide con nada que esta regla pueda seleccionar, por lo que nunca podrá coincidir. Niveles actualmente en uso: {{tiers}}."
+    },
+    "suspendedBadge": {
+      "label": "Aprobación automática suspendida",
+      "tooltip": "Esta regla aprobaba automáticamente antes de la actualización. Ahora requiere aprobación humana hasta que un administrador la vuelva a aprobar."
     }
   },
   "pamPamSignerGroupsTab": {

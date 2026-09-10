@@ -76,6 +76,34 @@ describe('mfaStepUpSchema operation field', () => {
     expect(parsed.operation).toBe('register_approver_device');
   });
 
+  it('accepts rotate_recovery_codes as a distinct purpose', () => {
+    const parsed = mfaStepUpSchema.parse({
+      method: 'totp',
+      code: '123456',
+      operation: 'rotate_recovery_codes',
+    });
+    expect(parsed.operation).toBe('rotate_recovery_codes');
+  });
+
+  it('accepts delete_passkey only with a UUID resource identifier', () => {
+    const parsed = mfaStepUpSchema.parse({
+      method: 'totp',
+      code: '123456',
+      operation: 'delete_passkey',
+      passkeyId: '10000000-0000-4000-8000-000000000009',
+    });
+    expect(parsed).toMatchObject({
+      operation: 'delete_passkey',
+      passkeyId: '10000000-0000-4000-8000-000000000009',
+    });
+    expect(() => mfaStepUpSchema.parse({
+      method: 'totp',
+      code: '123456',
+      operation: 'delete_passkey',
+      passkeyId: 'not-a-uuid',
+    })).toThrow();
+  });
+
   it('rejects unknown operations', () => {
     expect(() =>
       mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'admin_takeover' })

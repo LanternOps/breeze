@@ -32,6 +32,7 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
     authState: {
       scope: 'partner' as 'partner' | 'system' | 'organization',
       partnerId: '11111111-1111-1111-1111-111111111111' as string | null,
+      partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
       mfa: true,
       // Finding D: PATCH /settings must gate pullPayments/pushMode on the same
       // invoices:write the push routes use, so the suite needs a REVOCABLE
@@ -106,6 +107,7 @@ vi.mock('../../middleware/auth', () => ({
     c.set('auth', {
       scope: authState.scope,
       partnerId: authState.partnerId,
+      partnerOrgAccess: authState.partnerOrgAccess,
       orgId: null,
       accessibleOrgIds: [],
       canAccessOrg: vi.fn(() => true),
@@ -122,8 +124,10 @@ vi.mock('../../middleware/auth', () => ({
     if (!authState.mfa) return c.json({ error: 'MFA required' }, 403);
     return next();
   }),
-  // The customer routes are permission-gated (organizations:write +
-  // sites:write); this suite covers the OAuth/settings routes, so grant those.
+  // The customer import route is permission-gated (organizations:write +
+  // sites:write); the read-only customer list instead uses the full-partner
+  // capability without those write permissions. This suite covers the
+  // OAuth/settings routes, so grant the import permissions here.
   // `invoices:write` is separately revocable — see authState.invoicesWrite.
   requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
     if (resource === 'invoices' && action === 'write' && !authState.invoicesWrite) {
@@ -206,6 +210,7 @@ describe('accounting routes', () => {
     vi.clearAllMocks();
     authState.scope = 'partner';
     authState.partnerId = '11111111-1111-1111-1111-111111111111';
+    authState.partnerOrgAccess = 'all';
     authState.mfa = true;
     authState.invoicesWrite = true;
     app = new Hono();

@@ -168,6 +168,34 @@ export const PERMISSION_GRANTS = {
   // pending action-intent approval, distinct from creating/reading intents.
   APPROVALS_DECIDE: { resource: 'approvals', action: 'decide' },
 
+  // Privileged Access Management (PAM) — dedicated capabilities split off the
+  // generic device grants (security review wave 7, SR1-13/SR1-14). Approving/
+  // denying an elevation and authoring PAM policy are both HIGH-TRUST actions
+  // that must not ride on devices:execute/devices:write — an ordinary
+  // technician holding those (to run scripts, remote in, etc.) must not
+  // thereby gain the authority to grant standing admin or write the rules
+  // that decide who gets it automatically. Only Org Admin (and Partner Admin
+  // via its `*:*` wildcard) hold these by default; existing custom roles gain
+  // neither automatically.
+  PAM_APPROVE: { resource: 'pam', action: 'approve' },
+  PAM_MANAGE_POLICY: { resource: 'pam', action: 'manage_policy' },
+
+  // Accounting / QuickBooks integration (SEC-2026-09-05-057). The interactive
+  // QuickBooks routes used to gate on partner authority alone, so any
+  // full-partner member — however low their role — could read the shared
+  // provider realm (customers, entity mappings, income accounts, remote
+  // candidates) and, with MFA, reach realm lifecycle and settings mutations.
+  // These two capabilities make that authority explicit and separately
+  // grantable: `accounting:read` for provider reads, `accounting:manage` for
+  // connect/disconnect, settings, mapping writes and synchronization.
+  // Route-specific requirements (organizations:write + sites:write on customer
+  // import, invoices:write on invoice push, catalog:write on item mappings,
+  // and MFA) remain cumulative on top. Only Org Admin (and Partner Admin via
+  // its `*:*` wildcard) hold these by default; existing custom roles gain
+  // neither automatically.
+  ACCOUNTING_READ: { resource: 'accounting', action: 'read' },
+  ACCOUNTING_MANAGE: { resource: 'accounting', action: 'manage' },
+
   // Admin
   ADMIN_ALL: { resource: '*', action: '*' },
 } as const;
