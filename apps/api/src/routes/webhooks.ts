@@ -18,6 +18,7 @@ import {
   redactWebhookHeaders,
 } from '../services/notificationChannelSecrets';
 import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders } from '../services/outboundHeaders';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 
 export const webhookRoutes = new Hono();
 
@@ -32,6 +33,7 @@ type RouteAuth = {
   partnerId: string | null;
   orgId: string | null;
   accessibleOrgIds: string[] | null;
+  allowedSiteIds?: string[];
   canAccessOrg: (orgId: string) => boolean;
   user: { id: string; email?: string };
 };
@@ -374,6 +376,9 @@ webhookRoutes.post(
   zValidator('json', createWebhookSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const data = c.req.valid('json');
 
     let orgId = data.orgId;
@@ -475,6 +480,9 @@ webhookRoutes.patch(
   zValidator('json', updateWebhookSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id: webhookId } = c.req.valid('param');
     const data = c.req.valid('json');
 
@@ -552,6 +560,9 @@ webhookRoutes.delete(
   zValidator('param', webhookIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id: webhookId } = c.req.valid('param');
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
@@ -639,6 +650,9 @@ webhookRoutes.post(
   zValidator('json', testWebhookSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id: webhookId } = c.req.valid('param');
     const data = c.req.valid('json');
 
@@ -737,6 +751,9 @@ webhookRoutes.post(
   zValidator('param', webhookRetryParamSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
 const { id: webhookId, deliveryId } = c.req.valid('param');
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
