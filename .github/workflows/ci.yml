@@ -1516,6 +1516,12 @@ jobs:
         working-directory: agent
         run: CGO_ENABLED=0 go test -v -coverprofile=coverage.out ./...
 
+      - name: Rebuild engine loopback test (root)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends gdisk dosfstools e2fsprogs
+          cd agent && sudo -E env "PATH=$PATH" BREEZE_REBUILD_LOOP_TEST=1 go test -run TestRun_LoopbackRealSystem ./internal/backup/rebuild/ -v
+
       - name: Test build-edition.sh (edition fail-closed matrix + real build)
         run: agent/scripts/build-edition_test.sh
 
