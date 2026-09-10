@@ -10,7 +10,7 @@ import { captureException } from './sentry';
 // `failed`) are intentionally excluded: matching them (e.g. via
 // `ne(status,'disconnected')`) would also sweep historical `failed` rows and
 // overwrite their `endedAt`, corrupting session history for no benefit.
-const ACTIVE_REMOTE_SESSION_STATUSES = ['pending', 'connecting', 'active'] as const;
+export const ACTIVE_REMOTE_SESSION_STATUSES = ['pending', 'connecting', 'active'] as const;
 
 /** A session row a teardown has just marked `disconnected`. */
 type DisconnectedSession = { id: string; type: string; deviceId: string };
