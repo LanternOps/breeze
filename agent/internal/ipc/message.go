@@ -328,9 +328,27 @@ type DesktopStartRequest struct {
 	ClipboardViewerToHost   *bool `json:"clipboardViewerToHost,omitempty"`
 	IdleTimeoutMinutes      int   `json:"idleTimeoutMinutes,omitempty"`
 	MaxSessionDurationHours int   `json:"maxSessionDurationHours,omitempty"`
+	// RevocationLease is the server-issued lease this session must keep alive.
+	// The agent process (the only one holding the command WebSocket) performs
+	// the renewals and forwards a revocation to the helper as TypeDesktopStop;
+	// the helper still needs the lease so its own watchdog enforces the hard
+	// deadline and the expiry+grace cutoff locally. Nil is refused by
+	// validateDesktopStartRequest — a session with no lease is unrevokable.
+	RevocationLease *RevocationLease `json:"revocationLease,omitempty"`
 	// Prompt carries the consent/notification configuration for the session.
 	// Nil means no prompt or banner is requested (legacy behaviour).
 	Prompt *DesktopPrompt `json:"prompt,omitempty"`
+}
+
+// RevocationLease is the wire form of a desktop session's revocation lease.
+// Times are epoch milliseconds and intervals are whole seconds so the JSON is
+// identical to what the API ships in the start_desktop payload.
+type RevocationLease struct {
+	Token              string `json:"token"`
+	ExpiresAtUnixMs    int64  `json:"expiresAtUnixMs"`
+	HardDeadlineUnixMs int64  `json:"hardDeadlineUnixMs"`
+	RenewEverySec      int64  `json:"renewEverySec"`
+	GraceSec           int64  `json:"graceSec"`
 }
 
 // DesktopStartResponse is returned by the user helper after creating the

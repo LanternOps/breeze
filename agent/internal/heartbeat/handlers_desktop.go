@@ -29,7 +29,11 @@ const (
 	// these bounds, whereas the IPC path REJECTS out-of-range input with an
 	// error. Either way the agent can't be pushed past these. 0 = disabled.
 	maxIdleTimeoutMinutes   = 1440 // 24h
-	maxSessionDurationHours = 168  // 7d
+	maxSessionDurationHours = 12   // hard cap; 0 and >12 both resolve to this
+
+	// Fallback grace window when the server omits graceSec. Matches the API's
+	// REVOCATION_LEASE_GRACE_MS.
+	defaultRevocationLeaseGrace = 90 * time.Second
 )
 
 var desktopInputTypes = map[string]struct{}{
@@ -164,6 +168,13 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	policy := parseDesktopSessionPolicy(cmd.Payload)
+	if policy.RevocationLease == nil {
+		// Fail closed. Without a lease the control plane has no way to end this
+		// session once the operator's authorization changes, and the API refuses
+		// to dispatch a start to an agent that has not declared the capability —
+		// so reaching here means a malformed or downgraded payload.
+		return tools.NewErrorResult(desktop.ErrRevocationLeaseRequired, time.Since(start).Milliseconds())
+	}
 
 	// Explicit per-session target (multi-session hosts): the Windows session
 	// this connect is shadowing, if any. Recorded before the consent gate so
@@ -315,19 +326,66 @@ func parseDesktopSessionPolicy(payload map[string]any) desktop.SessionPolicy {
 	}
 	// Clamp the lifetime fields defensively. The server already clamps these
 	// (remoteAccessPolicy.ts), but this direct-mode decoder must never trust a
-	// hostile/buggy value verbatim: a <=0 value means "disabled" (matching the
-	// IPC decoder ResolveSessionPolicyFromIPC), and an over-cap value is clamped
-	// to the same maxima the IPC path rejects at — so it can't push the agent
-	// into never-idle-out / never-expire territory. NOTE the mechanism differs:
-	// the IPC path (userhelper.validateDesktopStartRequest) returns an error on
-	// out-of-range input; this map decoder has no error channel, so it clamps.
+	// hostile/buggy value verbatim.
+	//
+	// idleTimeoutMinutes: <=0 still means "disabled"; over-cap clamps down.
+	// maxSessionDurationHours: 0 no longer means "unlimited" — it, and anything
+	// over the 12h cap, resolves to the cap. Both decoders funnel through
+	// desktop.clampMaxDuration (via DefaultSessionPolicy + the assignment
+	// below) so they cannot drift apart the way they did while "0" meant two
+	// different things on the two paths.
 	if v, ok := payload["idleTimeoutMinutes"].(float64); ok && v > 0 {
 		policy.IdleTimeout = time.Duration(math.Min(v, maxIdleTimeoutMinutes)) * time.Minute
 	}
-	if v, ok := payload["maxSessionDurationHours"].(float64); ok && v > 0 {
-		policy.MaxDuration = time.Duration(math.Min(v, maxSessionDurationHours)) * time.Hour
+	if v, ok := payload["maxSessionDurationHours"].(float64); ok {
+		// desktop.ClampMaxDuration is the SHARED clamp both decoders use, so 0
+		// (formerly "unlimited"), a negative value and anything over 12h all
+		// resolve identically here and on the IPC path.
+		policy.MaxDuration = desktop.ClampMaxDuration(time.Duration(v * float64(time.Hour)))
 	}
+	policy.RevocationLease = parseRevocationLease(payload)
 	return policy
+}
+
+// parseRevocationLease extracts the server-issued revocation lease from a
+// start_desktop payload. Returns nil when the block is absent or unusable —
+// the caller refuses the start rather than running unrevokable.
+func parseRevocationLease(payload map[string]any) *desktop.RevocationLease {
+	raw, ok := payload["revocationLease"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	lease := &desktop.RevocationLease{}
+	if v, ok := raw["token"].(string); ok {
+		lease.Token = v
+	}
+	if v, ok := raw["expiresAt"].(float64); ok && v > 0 {
+		lease.ExpiresAt = time.UnixMilli(int64(v))
+	}
+	if v, ok := raw["hardDeadline"].(float64); ok && v > 0 {
+		lease.HardDeadline = time.UnixMilli(int64(v))
+	}
+	if v, ok := raw["renewEverySec"].(float64); ok && v > 0 {
+		lease.RenewEvery = time.Duration(v) * time.Second
+	}
+	if v, ok := raw["graceSec"].(float64); ok && v > 0 {
+		lease.Grace = time.Duration(v) * time.Second
+	}
+	// A lease with no expiry or no renew cadence cannot be kept alive, so it is
+	// no lease at all. Fail closed rather than start a session whose watchdog
+	// would never fire.
+	if lease.ExpiresAt.IsZero() || lease.RenewEvery <= 0 {
+		return nil
+	}
+	// A missing hard deadline falls back to the local 12h cap from now, so the
+	// absolute ceiling always exists even against an older/partial server.
+	if lease.HardDeadline.IsZero() {
+		lease.HardDeadline = time.Now().Add(desktop.MaxSessionDurationCap)
+	}
+	if lease.Grace <= 0 {
+		lease.Grace = defaultRevocationLeaseGrace
+	}
+	return lease
 }
 
 func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {

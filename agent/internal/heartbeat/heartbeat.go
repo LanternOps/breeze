@@ -209,10 +209,14 @@ type SecurityCapabilities struct {
 	// Device-control protocols are independently versioned and intentionally
 	// omitted when unsupported. The API treats omission, zero, malformed, and
 	// unknown values as capability 0 on every heartbeat.
-	PeripheralPolicyProtocolVersion int                      `json:"peripheralPolicyProtocolVersion,omitempty"`
-	RollbackProtocolVersion         int                      `json:"rollbackProtocolVersion,omitempty"`
-	PamLifetimeProtocolVersion      int                      `json:"pamLifetimeProtocolVersion,omitempty"`
-	PamReconciliation               *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
+	PeripheralPolicyProtocolVersion int `json:"peripheralPolicyProtocolVersion,omitempty"`
+	RollbackProtocolVersion         int `json:"rollbackProtocolVersion,omitempty"`
+	PamLifetimeProtocolVersion      int `json:"pamLifetimeProtocolVersion,omitempty"`
+	// RevocationLeaseProtocolVersion declares that this build keeps a desktop
+	// session's revocation lease alive and stops streaming when it lapses. The
+	// API refuses to start a desktop session against an agent reporting 0.
+	RevocationLeaseProtocolVersion int                      `json:"revocationLeaseProtocolVersion,omitempty"`
+	PamReconciliation              *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -1072,6 +1076,12 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		}
 	}
 
+	// The desktop watchdog has no transport of its own — this process owns the
+	// command socket, so it drives every lease renewal. Registered
+	// unconditionally (not only in direct mode): the service process runs the
+	// renewals for helper-hosted sessions too.
+	h.desktopMgr.RequestRevocationLeaseRenew = h.requestRevocationLeaseRenew
+
 	// Clean up any orphaned Screen Sharing left running from a previous crash.
 	h.tunnelMgr.CleanupOrphanedVNC()
 	h.initializeRollbackController()
@@ -1100,6 +1110,63 @@ func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 		// isn't silently lost after SendResult already reported success. The
 		// next reconnect's OnConnected flush redelivers it. (FIX 3)
 		ws.OnResultWriteFailed = h.preserveUndeliveredResult
+		// Revocation-lease answers from the control plane. This process owns the
+		// command socket, so it performs every renewal — including for sessions
+		// whose capture actually runs in a user helper, which is told to stop
+		// over IPC (handleStopDesktop) rather than talking to the API itself.
+		ws.OnRevocationLease = h.applyRevocationLeaseAnswer
+	}
+}
+
+// applyRevocationLeaseAnswer routes the server's answer to a lease renewal.
+//
+// A revocation stops the session through the SAME path an operator stop takes
+// (handleStopDesktop), so the IPC-helper case is covered without a second
+// teardown implementation: state-based routing sends TypeDesktopStop to the
+// helper that owns the session, and falls back to the direct manager otherwise.
+func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMessage) {
+	if msg.SessionID == "" {
+		return
+	}
+	if !msg.Revoked {
+		var expiresAt, hardDeadline time.Time
+		if msg.ExpiresAtUnixMs > 0 {
+			expiresAt = time.UnixMilli(msg.ExpiresAtUnixMs)
+		}
+		if msg.HardDeadlineUnixMs > 0 {
+			hardDeadline = time.UnixMilli(msg.HardDeadlineUnixMs)
+		}
+		h.desktopMgr.ApplyRevocationLease(msg.SessionID, expiresAt, hardDeadline)
+		return
+	}
+
+	log.Warn("remote desktop session revoked by the control plane",
+		"sessionId", msg.SessionID, "reason", msg.Reason)
+	// Mark it revoked first so the local watchdog stops it even if the helper
+	// stop below fails, then run the normal stop path.
+	h.desktopMgr.RevokeSession(msg.SessionID, msg.Reason)
+	result := handleStopDesktop(h, Command{
+		ID:      "desk-stop-" + msg.SessionID,
+		Type:    "stop_desktop",
+		Payload: map[string]any{"sessionId": msg.SessionID},
+	})
+	if result.Status != "completed" {
+		log.Warn("failed to stop revoked desktop session",
+			"sessionId", msg.SessionID, "error", result.Error)
+	}
+}
+
+// requestRevocationLeaseRenew is the desktop manager's outbound half: it asks
+// the control plane to revalidate and extend a session's lease. Fire-and-forget
+// — the answer lands asynchronously in applyRevocationLeaseAnswer, and a
+// control plane that never answers is exactly what the grace window covers.
+func (h *Heartbeat) requestRevocationLeaseRenew(sessionID string) {
+	if h.wsClient == nil {
+		return
+	}
+	if err := h.wsClient.SendRevocationLeaseRenew(sessionID); err != nil {
+		log.Debug("revocation lease renew request not sent",
+			"sessionId", sessionID, "error", err.Error())
 	}
 }
 
@@ -4165,12 +4232,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		// so it always declares version 1. Unconditional (not gated on any
 		// runtime check): the enforcement is compiled in, not a runtime
 		// toggle.
-		SecurityCapabilities: SecurityCapabilities{
-			OutboundNetworkPolicyVersion:    1,
-			ScriptSecretEnvVersion:          1,
-			PeripheralPolicyProtocolVersion: 2,
-			RollbackProtocolVersion:         1,
-		},
+		SecurityCapabilities: compiledSecurityCapabilities(),
 	}
 	payload.SecurityCapabilities.PamLifetimeProtocolVersion = h.pamLifetimeProtocolVersion()
 	pamReconciliation := h.pamReconciliationStatus()
@@ -7178,4 +7240,23 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	// overwriting the new version in the database. Block forever so the
 	// service manager kills us.
 	select {}
+}
+
+// compiledSecurityCapabilities is the capability set THIS build implements.
+//
+// Every value here is compiled in, not a runtime toggle, and the server writes
+// them non-sticky on every beat — so a downgrade correctly reports back down
+// and each dispatch gate stops trusting a stale claim. Extracted from
+// sendHeartbeat so the declared set is directly testable: the API refuses to
+// start a remote desktop session against an agent reporting
+// revocationLeaseProtocolVersion 0, which makes a silently dropped declaration
+// a fleet-wide outage rather than a degraded feature.
+func compiledSecurityCapabilities() SecurityCapabilities {
+	return SecurityCapabilities{
+		OutboundNetworkPolicyVersion:    1,
+		ScriptSecretEnvVersion:          1,
+		PeripheralPolicyProtocolVersion: 2,
+		RollbackProtocolVersion:         1,
+		RevocationLeaseProtocolVersion:  1,
+	}
 }
