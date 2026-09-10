@@ -65,16 +65,6 @@ func buildBackupQuery(database, backupFile, backupType string, includeCompressio
 	)
 }
 
-// queryEdition returns the instance's SERVERPROPERTY('Edition') value,
-// e.g. "Express Edition (64-bit)".
-func queryEdition(serverName string) (string, error) {
-	out, err := runSqlcmd(serverName, "SELECT SERVERPROPERTY('Edition')")
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(parseSqlcmdSingleValue(out)), nil
-}
-
 // executeBackupStatement issues a BACKUP DATABASE/LOG statement via
 // sqlcmd. If includeCompression is set and SQL Server responds with Msg
 // 1844 (compression unsupported), it retries exactly once without

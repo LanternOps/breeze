@@ -265,3 +265,14 @@ func ListBackups(instance, database string, limit int) ([]BackupResult, error) {
 
 	return results, nil
 }
+
+// queryEdition (windows-only caller side, kept here so non-Windows lint does not
+// flag it unused) returns the instance's SERVERPROPERTY('Edition') value,
+// e.g. "Express Edition (64-bit)".
+func queryEdition(serverName string) (string, error) {
+	out, err := runSqlcmd(serverName, "SELECT SERVERPROPERTY('Edition')")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(parseSqlcmdSingleValue(out)), nil
+}
