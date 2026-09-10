@@ -466,6 +466,24 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
     // ever reached.
     expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledTimes(1);
   });
+
+  it('handles cleanup-expired-snapshots OUTSIDE the blanket runWithSystemDbAccess wrap (D18 W01 §3.7)', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const source = fs.readFileSync(path.resolve(__dirname, './backupWorker.ts'), 'utf-8');
+
+    const cleanupBranchIndex = source.indexOf("data.type === 'cleanup-expired-snapshots'");
+    const blanketWrapIndex = source.indexOf('return runWithSystemDbAccess(async () => {');
+    const switchCleanupCaseIndex = source.indexOf("case 'cleanup-expired-snapshots':");
+
+    expect(cleanupBranchIndex).toBeGreaterThan(-1);
+    expect(blanketWrapIndex).toBeGreaterThan(-1);
+    // The special-cased branch must appear BEFORE the blanket wrap.
+    expect(cleanupBranchIndex).toBeLessThan(blanketWrapIndex);
+    // The switch inside the blanket wrap must no longer have its own
+    // 'cleanup-expired-snapshots' case.
+    expect(switchCleanupCaseIndex).toBe(-1);
+  });
 });
 
 // #3000: `processResults` is the queue-side hop that carries the agent's own

@@ -101,6 +101,20 @@ function createBackupWorker(): Worker<BackupQueueJobData> {
         // deliberate operator retry is NOT suppressed by this.)
         return await processDispatchBackup(data, { redelivered: job.attemptsStarted > 1 });
       }
+      // cleanup-expired-snapshots is ALSO handled outside the blanket
+      // context (D18 §3.7): its own retention pass must open one real
+      // system-DB transaction PER CANDIDATE ROW so a retirement commits
+      // durably before the next row is even considered, and the GC sweep
+      // that follows must run in its own separate context so a sweep
+      // failure can never roll back a retirement already committed.
+      // processCleanupExpiredSnapshots (below) manages both of those
+      // contexts itself — nesting it inside runWithSystemDbAccess here would
+      // silently collapse every one of those into the single ambient
+      // transaction this task exists to eliminate.
+      if (data.type === 'cleanup-expired-snapshots') {
+        assertQueueJobName(BACKUP_QUEUE, job, 'cleanup-expired-snapshots');
+        return await processCleanupExpiredSnapshots();
+      }
       return runWithSystemDbAccess(async () => {
         switch (data.type) {
           case 'check-schedules':
@@ -109,9 +123,6 @@ function createBackupWorker(): Worker<BackupQueueJobData> {
           case 'expire-recovery-tokens':
             assertQueueJobName(BACKUP_QUEUE, job, 'expire-recovery-tokens');
             return await processExpireRecoveryTokens();
-          case 'cleanup-expired-snapshots':
-            assertQueueJobName(BACKUP_QUEUE, job, 'cleanup-expired-snapshots');
-            return await processCleanupExpiredSnapshots();
           case 'process-results':
             assertQueueJobName(BACKUP_QUEUE, job, 'process-results');
             return await processResults(data);
@@ -342,9 +353,13 @@ export async function processCleanupExpiredSnapshots(): Promise<{
   // manifest — the distinct signal of a possible non-self-healing storage leak.
   gcBlockedIdentities: number;
 }> {
-  const orgRows = await db
-    .selectDistinct({ orgId: backupSnapshots.orgId })
-    .from(backupSnapshots);
+  // D18 §3.7: this whole function now runs with NO ambient DB context (it is
+  // called directly from the worker, no longer inside the blanket wrap) — the
+  // read below and cleanupExpiredSnapshots's own per-row work each open their
+  // OWN context explicitly.
+  const orgRows = await runWithSystemDbAccess(() =>
+    db.selectDistinct({ orgId: backupSnapshots.orgId }).from(backupSnapshots)
+  );
 
   let deleted = 0;
   let skipped = 0;
@@ -352,6 +367,10 @@ export async function processCleanupExpiredSnapshots(): Promise<{
   let failed = 0;
 
   for (const { orgId } of orgRows) {
+    // cleanupExpiredSnapshots (backupRetention.ts) opens its OWN per-
+    // candidate-row system context internally — deliberately NOT wrapped
+    // here, so each row's retirement-insert + delete commits independently
+    // of every other row and of the sweep below.
     const result = await cleanupExpiredSnapshots(orgId);
     deleted += result.deleted;
     skipped += result.skippedLegalHold + result.skippedImmutable;
@@ -367,11 +386,20 @@ export async function processCleanupExpiredSnapshots(): Promise<{
   // all; GC is the only thing that does). A GC failure must never fail this
   // job: row-level retention already succeeded, and BullMQ would otherwise
   // retry/re-log the whole run over an unrelated object-storage problem.
+  //
+  // D18 §3.7 (authoritative shape for W02): ONE shared context for the whole
+  // sweep — matches today's read shape, so sweepUnreferencedBackupObjects's
+  // existing internal db.select(...) calls keep the working GUCs they rely on
+  // (it has no context management of its own). This runs strictly AFTER
+  // every row's retention has already committed independently (Task 9), so a
+  // GC failure here can never roll back a retirement that already committed.
+  // W02 replaces this single wrap with genuinely separate per-identity
+  // contexts managed inside sweepUnreferencedBackupObjects itself.
   let gcDeleted = 0;
   let gcSkippedIdentities = 0;
   let gcBlockedIdentities = 0;
   try {
-    const gcResult = await sweepUnreferencedBackupObjects();
+    const gcResult = await runWithSystemDbAccess(() => sweepUnreferencedBackupObjects());
     gcDeleted = gcResult.deleted;
     gcSkippedIdentities = gcResult.skippedIdentities;
     gcBlockedIdentities = gcResult.blockedIdentities;
