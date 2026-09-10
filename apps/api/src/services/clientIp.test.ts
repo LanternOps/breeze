@@ -160,6 +160,23 @@ describe('clientIp', () => {
       expect(ip).toBe('unknown');
     });
 
+    it('attributes a direct request to its socket peer while ignoring spoofed forwarded headers', () => {
+      process.env.TRUST_PROXY_HEADERS = 'false';
+      const ip = getTrustedClientIp(
+        makeContext({
+          'cf-connecting-ip': '203.0.113.10',
+          'x-forwarded-for': '198.51.100.1',
+          'x-real-ip': '192.0.2.44',
+        }, '198.51.100.77'),
+      );
+      expect(ip).toBe('198.51.100.77');
+    });
+
+    it('keeps the caller fallback only when direct-mode socket metadata is unavailable', () => {
+      process.env.TRUST_PROXY_HEADERS = 'false';
+      expect(getTrustedClientIp(makeContext({}), 'audit-unavailable')).toBe('audit-unavailable');
+    });
+
     it('returns the fallback when configured trusted proxy CIDRs do not include the immediate peer', () => {
       process.env.TRUSTED_PROXY_CIDRS = '172.30.0.11/32';
       const ip = getTrustedClientIp(
@@ -501,6 +518,14 @@ describe('clientIp', () => {
         makeContext({ 'cf-connecting-ip': '203.0.113.10' }),
       );
       expect(ip).toBeUndefined();
+    });
+
+    it('returns the unspoofable socket peer in direct mode', () => {
+      process.env.TRUST_PROXY_HEADERS = 'false';
+      const ip = getTrustedClientIpOrUndefined(
+        makeContext({ 'x-forwarded-for': '203.0.113.10' }, '198.51.100.77'),
+      );
+      expect(ip).toBe('198.51.100.77');
     });
   });
 

@@ -2918,7 +2918,6 @@ jobs:
       AUTO_MIGRATE: 'false'
       API_PORT: '3005'
       FORCE_HTTPS: 'false'
-      AUTH_BROWSER_TRANSITIONS_ENFORCED: 'true'
       AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: 'true'
       CF_ACCESS_TRUST_ENABLED: 'true'
       CF_ACCESS_TEAM_DOMAIN: ci-browser-contract.cloudflareaccess.com

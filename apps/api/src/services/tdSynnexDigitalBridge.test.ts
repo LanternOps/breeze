@@ -123,6 +123,7 @@ describe('tdSynnexDigitalBridge service', () => {
 
   it('preserves existing encrypted credentials when masked values are submitted', async () => {
     mocks.db.select.mockReturnValueOnce(selectChain([{
+      baseUrl: 'https://digitalbridge.test',
       credentials: { apiKey: 'enc(old-key)', apiSecret: 'enc(old-secret)' },
       settings: { searchPath: '/old-search' },
     }]));
@@ -191,6 +192,69 @@ describe('tdSynnexDigitalBridge service', () => {
 
     const insert = mocks.db.insert.mock.results[0]!.value;
     const values = insert.values.mock.calls[0]![0];
+    expect(values.credentials).toEqual({});
+  });
+
+  it('refuses to carry masked credentials to a changed endpoint origin', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([{
+      baseUrl: 'https://old.example.test/api',
+      credentials: { apiKey: 'enc(old-key)', apiSecret: 'enc(old-secret)' },
+      settings: {},
+    }]));
+
+    await expect(saveTdSynnexDigitalBridgeConfig({
+      environment: 'sandbox',
+      region: 'US',
+      baseUrl: 'https://replacement.example.test/api',
+      authType: 'api_key',
+      enabled: true,
+      credentials: { apiKey: TD_SYNNEX_MASKED_SECRET, apiSecret: TD_SYNNEX_MASKED_SECRET },
+    }, actor)).rejects.toMatchObject({
+      code: 'TD_SYNNEX_CREDENTIALS_INVALID',
+      status: 400,
+    });
+    expect(mocks.db.insert).not.toHaveBeenCalled();
+  });
+
+  it('allows a changed endpoint origin with full replacement credentials', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([{
+      baseUrl: 'https://old.example.test/api',
+      credentials: { apiKey: 'enc(old-key)', apiSecret: 'enc(old-secret)' },
+      settings: {},
+    }]));
+    mocks.db.insert.mockReturnValueOnce(insertChain([{ ...enabledRow }]));
+
+    await saveTdSynnexDigitalBridgeConfig({
+      environment: 'sandbox',
+      region: 'US',
+      baseUrl: 'https://replacement.example.test/api',
+      authType: 'api_key',
+      enabled: true,
+      credentials: { apiKey: 'new-key', apiSecret: 'new-secret' },
+    }, actor);
+
+    const values = mocks.db.insert.mock.results[0]!.value.values.mock.calls[0]![0];
+    expect(values.credentials).toEqual({ apiKey: 'enc(new-key)', apiSecret: 'enc(new-secret)' });
+  });
+
+  it('allows stored credentials to be explicitly cleared on an origin change', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([{
+      baseUrl: 'https://old.example.test/api',
+      credentials: { apiKey: 'enc(old-key)', apiSecret: 'enc(old-secret)' },
+      settings: {},
+    }]));
+    mocks.db.insert.mockReturnValueOnce(insertChain([{ ...enabledRow, credentials: {} }]));
+
+    await saveTdSynnexDigitalBridgeConfig({
+      environment: 'sandbox',
+      region: 'US',
+      baseUrl: 'https://replacement.example.test/api',
+      authType: 'api_key',
+      enabled: false,
+      credentials: { apiKey: null, apiSecret: null },
+    }, actor);
+
+    const values = mocks.db.insert.mock.results[0]!.value.values.mock.calls[0]![0];
     expect(values.credentials).toEqual({});
   });
 

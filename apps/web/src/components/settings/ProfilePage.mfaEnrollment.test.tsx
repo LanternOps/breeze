@@ -186,6 +186,9 @@ describe('ProfilePage — MFA enrollment rejects a wrong TOTP (#4413)', () => {
       if (String(url) === '/auth/mfa/disable') {
         return makeJsonResponse(rejectedProof('Invalid MFA code'), false, 400);
       }
+      if (String(url) === '/auth/mfa/step-up') {
+        return makeJsonResponse({ stepUpGrantId: 'rotate-grant-1' });
+      }
       if (String(url) === '/auth/mfa/recovery-codes') {
         return makeJsonResponse({ recoveryCodes: ['NEW-0001'] });
       }
@@ -196,6 +199,7 @@ describe('ProfilePage — MFA enrollment rejects a wrong TOTP (#4413)', () => {
 
     // Recovery codes: regenerate, behind its confirm.
     fireEvent.click(await screen.findByTestId('mfa-recovery-regenerate-start'));
+    fireEvent.change(screen.getByTestId('mfa-recovery-factor-code'), { target: { value: '123456' } });
     const recoveryPassword = document.getElementById('mfa-recovery-password') as HTMLInputElement;
     fireEvent.change(recoveryPassword, { target: { value: 'hunter2-pw' } });
     fireEvent.click(screen.getByTestId('mfa-recovery-regenerate'));

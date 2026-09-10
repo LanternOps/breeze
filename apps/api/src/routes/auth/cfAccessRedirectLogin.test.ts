@@ -105,6 +105,21 @@ vi.mock('../../services/mfaPolicy', () => ({
   })),
 }));
 
+const ipAllowlistState = vi.hoisted(() => ({
+  decision: { decision: 'allow' as 'allow' | 'deny', reason: 'matched' },
+  error: null as Error | null,
+  calls: [] as Array<Record<string, unknown>>,
+}));
+
+vi.mock('../../services/ipAllowlist', () => ({
+  isBlocked: (decision: { decision: string }) => decision.decision === 'deny',
+  enforceIpAllowlist: vi.fn(async (_c: unknown, params: Record<string, unknown>) => {
+    ipAllowlistState.calls.push(params);
+    if (ipAllowlistState.error) throw ipAllowlistState.error;
+    return ipAllowlistState.decision;
+  }),
+}));
+
 const verifyState = vi.hoisted(() => ({
   next: undefined as
     | { kind: 'claims'; claims: Record<string, unknown> }
@@ -379,6 +394,9 @@ describe('GET /cf-access-login', () => {
     envState.audience = 'aud-app-1234567890abcdef';
     envState.trustsMfa = false;
     policyState.required = false;
+    ipAllowlistState.decision = { decision: 'allow', reason: 'matched' };
+    ipAllowlistState.error = null;
+    ipAllowlistState.calls = [];
     verifyState.next = undefined;
     dbState.userRow = null;
     dbState.lastLoginUpdated = false;
@@ -554,7 +572,7 @@ describe('GET /cf-access-login', () => {
     expect(transitionState.legacyMetrics).toEqual([]);
   });
 
-  it('uses the frozen legacy seam for a missing binding only while enforcement is false', async () => {
+  it('uses guarded issuance for a missing binding regardless of the retired enforcement setting', async () => {
     envState.enabled = true;
     verifyState.next = {
       kind: 'claims',
@@ -566,11 +584,12 @@ describe('GET /cf-access-login', () => {
     const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
 
     expect(res.status).toBe(302);
-    expect(transitionState.cookieKind).toBe('legacy');
-    expect(transitionState.legacyMetrics).toEqual(['cf_access_redirect']);
+    expect(transitionState.cookieKind).toBe('guarded');
+    expect(transitionState.events).toContain('issue-guarded');
+    expect(transitionState.legacyMetrics).toEqual([]);
   });
 
-  it('rejects a missing binding before authority effects when enforcement is true', async () => {
+  it('cannot restore legacy issuance by changing the retired enforcement setting', async () => {
     envState.enabled = true;
     transitionState.enforcement = true;
     verifyState.next = {
@@ -582,10 +601,11 @@ describe('GET /cf-access-login', () => {
 
     const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
 
-    expect(res.status).toBe(426);
-    expect(dbState.lastLoginUpdated).toBe(false);
-    expect(servicesState.mintCalls).toEqual([]);
-    expect(cookieState.set).toBeNull();
+    expect(res.status).toBe(302);
+    expect(dbState.lastLoginUpdated).toBe(true);
+    expect(transitionState.cookieKind).toBe('guarded');
+    expect(transitionState.events).not.toContain('issue-legacy');
+    expect(transitionState.legacyMetrics).toEqual([]);
   });
 
   it('maps an invalid presented binding to the exact 428 replacement response', async () => {
@@ -646,7 +666,7 @@ describe('GET /cf-access-login', () => {
         country: 'CA',
       },
     };
-    dbState.userRow = { ...activeUser };
+    dbState.userRow = { ...activeUser, authEpoch: 1, mfaEpoch: 1 };
     const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
     expect(res.status).toBe(302);
     expect(res.headers.get('Location')).toMatch(/^\/\?cf-access-login=success$/);
@@ -660,7 +680,46 @@ describe('GET /cf-access-login', () => {
     });
   });
 
-  it('binds the minted refresh token to a fresh family (reuse-detection invariant)', async () => {
+  it('redirects a disallowed federated identity before session mint or cookie installation', async () => {
+    envState.enabled = true;
+    ipAllowlistState.decision = { decision: 'deny', reason: 'not_in_list' };
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience, iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser };
+
+    const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('Location')).toContain('reason=ip-not-allowed');
+    expect(ipAllowlistState.calls).toEqual([expect.objectContaining({ partnerId: 'partner-1', actorId: activeUser.id })]);
+    expect(servicesState.mintCalls).toEqual([]);
+    expect(cookieState.set).toBeNull();
+    expect(dbState.lastLoginUpdated).toBe(false);
+  });
+
+  it('fails closed before redirect-login effects when the IP allowlist cannot be read', async () => {
+    envState.enabled = true;
+    ipAllowlistState.error = new Error('allowlist unavailable');
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience, iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('Location')).toContain('reason=ip-check-failed');
+    expect(servicesState.mintCalls).toEqual([]);
+    expect(cookieState.set).toBeNull();
+    expect(dbState.lastLoginUpdated).toBe(false);
+    errorSpy.mockRestore();
+  });
+
+  it('passes the guarded capability and live epochs to the shared session issuer', async () => {
     envState.enabled = true;
     verifyState.next = {
       kind: 'claims',
@@ -673,15 +732,15 @@ describe('GET /cf-access-login', () => {
         iat: 1,
       },
     };
-    dbState.userRow = { ...activeUser };
+    dbState.userRow = { ...activeUser, authEpoch: 1, mfaEpoch: 1 };
     const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
     expect(res.status).toBe(302);
-    // 1. A fresh family was minted for this user.
     expect(servicesState.mintCalls).toEqual([activeUser.id]);
-    // 2. createTokenPair received the family id via refreshFam.
-    expect(servicesState.lastTokenOptions).toMatchObject({ refreshFam: 'fam-1' });
-    // 3. The minted refresh jti was bound to the family in Redis.
-    expect(servicesState.bindCalls).toEqual([{ jti: 'jti-new', familyId: 'fam-1' }]);
+    expect(servicesState.lastTokenOptions).toMatchObject({
+      capability: expect.objectContaining({ transitionId: 'transition-1', generation: 1 }),
+      expectedEpochs: { authEpoch: 1, mfaEpoch: 1 },
+    });
+    expect(transitionState.cookieKind).toBe('guarded');
   });
 
   // PR3 carry-forward: this mint site used to compute

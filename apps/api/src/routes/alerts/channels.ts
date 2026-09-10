@@ -14,6 +14,7 @@ import {
 import {
   decryptNotificationChannelConfig,
   encryptNotificationChannelConfig,
+  isMaskedIntegrationSecret,
   redactNotificationChannelConfig,
   scrubChannelTestError,
 } from '../../services/notificationChannelSecrets';
@@ -41,6 +42,7 @@ import {
   validatePushoverChannelInheritance,
 } from './helpers';
 import { PERMISSIONS } from '../../services/permissions';
+import { webhookOriginChangeWouldRetainAuthorization } from '../../services/credentialOriginBinding';
 
 export const channelsRoutes = new Hono();
 const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
@@ -279,6 +281,18 @@ channelsRoutes.put(
     }
 
     if (data.config !== undefined) {
+      if (channel.type === 'webhook') {
+        const existingConfig = decryptNotificationChannelConfig(channel.type, channel.config);
+        if (webhookOriginChangeWouldRetainAuthorization(
+          existingConfig,
+          data.config,
+          isMaskedIntegrationSecret,
+        )) {
+          return c.json({
+            error: 'Webhook authorization and custom headers must be re-entered or explicitly cleared when changing the endpoint origin',
+          }, 400);
+        }
+      }
       const configForValidation = decryptNotificationChannelConfig(
         channel.type,
         encryptNotificationChannelConfig(channel.type, data.config, channel.config)

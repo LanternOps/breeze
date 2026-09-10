@@ -15,12 +15,15 @@
  *     src/__tests__/integration/mfaFactorReset.integration.test.ts
  */
 import './setup';
+import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { refreshTokenFamilies, userPasskeys, users } from '../../db/schema';
+import { officeAddinUserBindings, refreshTokenFamilies, userPasskeys, users } from '../../db/schema';
 import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
 import { MfaFactorResetContextError, resetAllFactors, resetAllFactorsAndInvalidate } from '../../services/mfaFactorReset';
+import { getRedis } from '../../services/redis';
+import { getTechSession, mintTechSession } from '../../services/officeAddin/techSession';
 import { mintRefreshTokenFamily } from '../../services/refreshTokenFamily';
 import { createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
@@ -79,9 +82,18 @@ describe('resetAllFactors — RLS guard, atomicity, disabled rows (RMM-QA-166)',
   });
 
   it('I-5: a failure after the factor write rolls back passkeys, columns, mfa_epoch and the family together', async () => {
-    const { user } = await seedProtectedUser();
+    const { partner, user } = await seedProtectedUser();
     const familyId = await mintRefreshTokenFamily(user.id);
     const before = await readUser(user.id);
+    const [binding] = await getTestDb().insert(officeAddinUserBindings).values({
+      entraTenantId: randomUUID(),
+      entraOid: randomUUID(),
+      userId: user.id,
+      partnerId: partner.id,
+      boundAuthEpoch: before.authEpoch,
+      boundMfaEpoch: before.mfaEpoch,
+      mfaVerifiedAt: new Date(),
+    }).returning();
     const boom = new Error('injected failure after resetAllFactors');
 
     await expect(
@@ -99,6 +111,39 @@ describe('resetAllFactors — RLS guard, atomicity, disabled rows (RMM-QA-166)',
     expect(after).toMatchObject({ mfaEnabled: true, mfaMethod: 'totp', mfaSecret: 'enc:seed', mfaEpoch: before.mfaEpoch });
     const [family] = await getTestDb().select().from(refreshTokenFamilies).where(eq(refreshTokenFamilies.familyId, familyId)).limit(1);
     expect(family?.revokedAt).toBeNull();
+    const [bindingAfter] = await getTestDb().select().from(officeAddinUserBindings).where(eq(officeAddinUserBindings.id, binding!.id));
+    expect(bindingAfter?.revokedAt).toBeNull();
+  });
+
+  it('factor change atomically revokes the active Office binding', async () => {
+    const { partner, user } = await seedProtectedUser();
+    const before = await readUser(user.id);
+    const [binding] = await getTestDb().insert(officeAddinUserBindings).values({
+      entraTenantId: randomUUID(),
+      entraOid: randomUUID(),
+      userId: user.id,
+      partnerId: partner.id,
+      boundAuthEpoch: before.authEpoch,
+      boundMfaEpoch: before.mfaEpoch,
+      mfaVerifiedAt: new Date(),
+    }).returning();
+    const redis = getRedis();
+    if (!redis) throw new Error('integration Redis is required');
+    const { token } = await mintTechSession(redis, {
+      userId: user.id,
+      partnerId: partner.id,
+      bindingId: binding!.id,
+    });
+    expect(await getTechSession(redis, token)).not.toBeNull();
+
+    await withSystemDbAccessContext(() =>
+      invalidateMfaAssuranceAfterFactorChange(user.id, 'test-office-binding-revoke')
+    );
+
+    const [after] = await getTestDb().select().from(officeAddinUserBindings).where(eq(officeAddinUserBindings.id, binding!.id));
+    expect(after?.revokedAt).not.toBeNull();
+    expect(await getTechSession(redis, token)).toBeNull();
+    expect((await readUser(user.id)).mfaEpoch).toBe(before.mfaEpoch + 1);
   });
 
   it('I-6: deletes already-disabled passkey rows too and reports the full count', async () => {

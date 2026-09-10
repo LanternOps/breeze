@@ -63,7 +63,7 @@ describe('OpenAISessionManager.getOrCreate — auditSnapshot.ip via trusted reso
     delete process.env.TRUST_CF_CONNECTING_IP;
   });
 
-  it('records undefined, not a spoofed x-forwarded-for, when the peer is untrusted (SR2-16)', () => {
+  it('records the socket peer, not a spoofed x-forwarded-for, in direct mode (SR2-16)', () => {
     process.env.TRUST_PROXY_HEADERS = 'false';
     delete process.env.TRUSTED_PROXY_CIDRS;
 
@@ -71,10 +71,10 @@ describe('OpenAISessionManager.getOrCreate — auditSnapshot.ip via trusted reso
     const ctx = makeContext({ 'x-forwarded-for': '203.0.113.5' }, '198.51.100.77');
     const session = manager.getOrCreate('sess-untrusted-1', 'org-1', {} as AuthContext, ctx);
 
-    // GUARD-BITE: RED today — the raw header read persists the spoof
-    // '203.0.113.5' instead of the resolver's undefined fallback.
+    // Forwarded headers remain untrusted, while the transport peer is
+    // authentic request metadata and must remain available to the audit.
     expect(session.auditSnapshot.ip).not.toBe('203.0.113.5');
-    expect(session.auditSnapshot.ip).toBeUndefined();
+    expect(session.auditSnapshot.ip).toBe('198.51.100.77');
   });
 
   it('records the real trusted client IP when the peer is a trusted proxy (SR2-16)', () => {

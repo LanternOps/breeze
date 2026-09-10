@@ -12,6 +12,7 @@ import {
 import { getRedis } from '../services/redis';
 import { getEventDispatcher, type ClientEntry } from '../services/eventDispatcher';
 import { authMiddleware, resolveOrgAccess } from '../middleware/auth';
+import { getBoundMobileDeviceBlock } from '../middleware/mobileDeviceBlocked';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -53,19 +54,25 @@ export interface EventTicketV2 {
   expiresAt: number;
 }
 
+export interface EventTicketV3 extends Omit<EventTicketV2, 'version'> {
+  version: 3;
+  mobileDeviceId: string | null;
+}
+
 export type EventAuthorizationCheck =
-  | { ok: true; identity: EventTicketV2 }
+  | { ok: true; identity: EventTicketV3 }
   | {
       ok: false;
       reason:
         | 'user_inactive'
         | 'permission_epoch_mismatch'
         | 'membership_removed'
+        | 'mobile_device_blocked'
         | 'legacy_ticket_rejected'
         | 'live_state_unavailable';
     };
 
-type StoredTicketRecord = EventTicketV1 | EventTicketV2;
+type StoredTicketRecord = EventTicketV1 | EventTicketV2 | EventTicketV3;
 
 const ticketStore = new Map<string, StoredTicketRecord>();
 
@@ -93,7 +100,11 @@ export async function createEventWsTicket(
   userId: string,
   orgIdOrIds: string | string[],
   allowedSiteIds?: string[] | null,
-  authority?: { orgId?: string | null; partnerId?: string | null },
+  authority?: {
+    orgId?: string | null;
+    partnerId?: string | null;
+    mobileDeviceId?: string | null;
+  },
 ): Promise<{ ticket: string; expiresInSeconds: number }> {
   const orgIds = Array.isArray(orgIdOrIds) ? [...new Set(orgIdOrIds)] : [orgIdOrIds];
   if (orgIds.length === 0) {
@@ -137,14 +148,15 @@ export async function createEventWsTicket(
         : null;
 
   const ticket = randomBytes(32).toString('base64url');
-  const record: EventTicketV2 = {
-    version: 2,
+  const record: EventTicketV3 = {
+    version: 3,
     userId,
     orgId: authorityOrgId,
     partnerId: liveUser.partnerId,
     allowedOrgIds: orgIds,
     allowedSiteIds: normalisedSiteIds,
     permissionsEpoch: liveUser.permissionsEpoch,
+    mobileDeviceId: authority?.mobileDeviceId ?? null,
     expiresAt: Date.now() + TICKET_TTL_MS,
   };
 
@@ -283,8 +295,8 @@ async function resolveLegacyEventAuthorization(
         if (!membership?.roleId) {
           return { ok: false, reason: 'membership_removed' };
         }
-        const identity: EventTicketV2 = {
-          version: 2,
+        const identity: EventTicketV3 = {
+          version: 3,
           userId: record.userId,
           orgId: user.orgId,
           partnerId: user.partnerId,
@@ -292,6 +304,7 @@ async function resolveLegacyEventAuthorization(
           allowedSiteIds:
             membership.siteIds == null ? null : [...new Set(membership.siteIds)],
           permissionsEpoch: user.permissionsEpoch,
+          mobileDeviceId: null,
           expiresAt: record.expiresAt,
         };
         return { ok: true, identity };
@@ -333,14 +346,15 @@ async function resolveLegacyEventAuthorization(
       if (requestedOrgIds.some((orgId) => !currentOrgIds.has(orgId))) {
         return { ok: false, reason: 'membership_removed' };
       }
-      const identity: EventTicketV2 = {
-        version: 2,
+      const identity: EventTicketV3 = {
+        version: 3,
         userId: record.userId,
         orgId: null,
         partnerId: user.partnerId,
         allowedOrgIds: requestedOrgIds,
         allowedSiteIds: null,
         permissionsEpoch: user.permissionsEpoch,
+        mobileDeviceId: null,
         expiresAt: record.expiresAt,
       };
       return { ok: true, identity };
@@ -353,13 +367,19 @@ async function resolveLegacyEventAuthorization(
 export async function consumeTicket(
   ticket: string,
   mode: EventPermissionEpochMode = EVENT_PERMISSION_EPOCH_MODE,
-): Promise<EventTicketV2 | null> {
+): Promise<EventTicketV3 | null> {
   const peeked = await peekTicket(ticket);
   if (!peeked) return null;
 
   let resolved: EventAuthorizationCheck;
-  if (peeked.record.version === 2) {
+  if (peeked.record.version === 3) {
     resolved = await resolveLiveEventAuthorization(peeked.record);
+  } else if (peeked.record.version === 2) {
+    resolved = await resolveLiveEventAuthorization({
+      ...peeked.record,
+      version: 3,
+      mobileDeviceId: null,
+    });
   } else if (
     peeked.record.version === undefined ||
     peeked.record.version === 1
@@ -512,15 +532,21 @@ function equalStringSets(left: string[] | null, right: string[] | null): boolean
 }
 
 /**
- * Resolve the complete live authority for an already-consumed v2 ticket.
+ * Resolve the complete live authority for an already-consumed current ticket.
  * Every database read runs in one system context because the ticket path does
  * not carry a request JWT/RLS context. The result is deliberately bounded to
  * a reason enum; callers never expose database details or tenant identifiers.
  */
 export async function resolveLiveEventAuthorization(
-  ticket: EventTicketV2,
+  ticket: EventTicketV3,
 ): Promise<EventAuthorizationCheck> {
   try {
+    if (
+      ticket.mobileDeviceId &&
+      await getBoundMobileDeviceBlock(ticket.userId, ticket.mobileDeviceId)
+    ) {
+      return { ok: false, reason: 'mobile_device_blocked' };
+    }
     return await withSystemDbAccessContext(async (): Promise<EventAuthorizationCheck> => {
       const [user] = await db
         .select({
@@ -684,6 +710,7 @@ export function createEventWsTicketRoute(): Hono {
     const result = await createEventWsTicket(auth.user.id, orgIds, allowedSiteIds, {
       orgId: auth.orgId ?? null,
       partnerId: auth.partnerId ?? null,
+      mobileDeviceId: auth.token?.mdid ?? null,
     });
     return c.json(result);
   });
@@ -718,7 +745,7 @@ export function createEventWsRoutes(upgradeWebSocket: Function): Hono {
 interface EventWsHandlerOptions {
   jitterMs?: () => number;
   resolveAuthorization?: (
-    identity: EventTicketV2,
+    identity: EventTicketV3,
   ) => Promise<EventAuthorizationCheck>;
 }
 
@@ -781,7 +808,7 @@ export function createEventWsHandlers(
 
   function scheduleRevalidation(
     ws: WSContext,
-    identity: EventTicketV2,
+    identity: EventTicketV3,
     delayMs?: number,
   ) {
     const boundedJitter = Math.max(

@@ -22,9 +22,9 @@ const { redisMock, redisStore, ttls, getRedisMock } = vi.hoisted(() => {
 
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest } from './mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, passkeyRemovalResourceDigest } from './mfaStepUpGrant';
 
-const bind = (operation: 'add_factor' | 'register_approver_device') => ({
+const bind = (operation: 'add_factor' | 'rotate_recovery_codes' | 'register_approver_device') => ({
   userId: 'user-1',
   operation,
   authEpoch: 1,
@@ -80,6 +80,14 @@ describe('maintenanceResourceDigest', () => {
 
   it('emits the sha256: prefixed shape the grant store compares literally', () => {
     expect(maintenanceResourceDigest(base)).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+});
+
+describe('passkeyRemovalResourceDigest', () => {
+  it('is deterministic and isolates different passkey rows', () => {
+    const first = passkeyRemovalResourceDigest('10000000-0000-4000-8000-000000000009');
+    expect(first).toBe(passkeyRemovalResourceDigest('10000000-0000-4000-8000-000000000009'));
+    expect(first).not.toBe(passkeyRemovalResourceDigest('20000000-0000-4000-8000-000000000009'));
   });
 });
 
@@ -204,6 +212,16 @@ describe('mfaStepUpGrant operation isolation', () => {
     // grant, so even a subsequent same-operation validate below also fails.
     await expect(consumeStepUpGrant(register!, bind('add_factor'))).resolves.toBe(false);
     await expect(validateStepUpGrant(register!, bind('register_approver_device'))).resolves.toBe(false);
+  });
+
+  it('isolates recovery-code rotation from factor-addition grants', async () => {
+    const addFactor = await mintStepUpGrant(bind('add_factor'));
+    const rotate = await mintStepUpGrant(bind('rotate_recovery_codes'));
+
+    await expect(validateStepUpGrant(addFactor!, bind('rotate_recovery_codes'))).resolves.toBe(false);
+    await expect(validateStepUpGrant(rotate!, bind('add_factor'))).resolves.toBe(false);
+    await expect(consumeStepUpGrant(rotate!, bind('rotate_recovery_codes'))).resolves.toBe(true);
+    await expect(consumeStepUpGrant(rotate!, bind('rotate_recovery_codes'))).resolves.toBe(false);
   });
 
   it('validate is non-consuming', async () => {

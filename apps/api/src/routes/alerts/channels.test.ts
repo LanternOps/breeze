@@ -121,9 +121,13 @@ vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 // secrets pipeline (already covered by aiToolsAlerts.channelSecrets.test.ts
 // and the notificationChannelSecrets suite).
 vi.mock('../../services/notificationChannelSecrets', () => ({
-  encryptNotificationChannelConfig: vi.fn((_type: string, config: unknown) => config),
+  encryptNotificationChannelConfig: vi.fn((_type: string, config: unknown, existing?: unknown) => ({
+    ...(existing && typeof existing === 'object' ? existing : {}),
+    ...(config && typeof config === 'object' ? config : {}),
+  })),
   decryptNotificationChannelConfig: vi.fn((_type: string, config: unknown) => config),
   redactNotificationChannelConfig: vi.fn((_type: string, config: unknown) => config),
+  isMaskedIntegrationSecret: vi.fn((value: unknown) => typeof value === 'string' && /^\*+$/.test(value)),
   // Named export must exist or the route's import fails at module load. The
   // real scrubbing behaviour is covered by notificationChannelSecrets.test.ts
   // and the persist wiring by channels.testOutcomePersist.test.ts (#3697).
@@ -181,6 +185,138 @@ describe('notification channels — partner-wide gating (#2130)', () => {
   });
 
   describe('PUT /alerts/channels/:id', () => {
+    it('does not carry stored webhook authorization to a changed origin', async () => {
+      setPartnerAuth('all');
+      existingRowRef.current = {
+        ...PARTNER_WIDE_CHANNEL,
+        config: {
+          url: 'https://hooks.example.com/notify',
+          method: 'POST',
+          authType: 'bearer',
+          authToken: 'stored-token',
+          headers: { 'X-Custom-Authorization': 'stored-header' },
+        },
+      };
+
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          config: {
+            url: 'https://attacker.example/notify',
+            method: 'POST',
+            authType: 'bearer',
+          },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toMatchObject({
+        error: expect.stringMatching(/credentials.*re-entered|authorization.*re-entered/i),
+      });
+      expect(updateSetRef.current).toBeUndefined();
+    });
+
+    it('fails closed when assigning the first URL to stored webhook authorization', async () => {
+      const secrets = await import('../../services/notificationChannelSecrets');
+      setPartnerAuth('all');
+      existingRowRef.current = {
+        ...PARTNER_WIDE_CHANNEL,
+        config: {
+          method: 'POST',
+          authType: 'bearer',
+          authToken: 'stored-token',
+          headers: { Authorization: 'stored-header' },
+        },
+      };
+
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          config: {
+            url: 'https://replacement.example/notify',
+            method: 'POST',
+            authType: 'bearer',
+          },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(secrets.encryptNotificationChannelConfig).not.toHaveBeenCalled();
+      expect(updateSetRef.current).toBeUndefined();
+    });
+
+    it('allows a first URL with complete replacement authorization', async () => {
+      setPartnerAuth('all');
+      existingRowRef.current = {
+        ...PARTNER_WIDE_CHANNEL,
+        config: {
+          method: 'POST',
+          authType: 'bearer',
+          authToken: 'stored-token',
+          headers: { Authorization: 'stored-header' },
+        },
+      };
+
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          config: {
+            url: 'https://replacement.example/notify',
+            method: 'POST',
+            authType: 'bearer',
+            authToken: 'replacement-token',
+            headers: { Authorization: 'replacement-header' },
+          },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateSetRef.current?.config).toMatchObject({
+        url: 'https://replacement.example/notify',
+        authToken: 'replacement-token',
+        headers: { Authorization: 'replacement-header' },
+      });
+    });
+
+    it('allows an origin change when stored webhook authorization is explicitly cleared', async () => {
+      setPartnerAuth('all');
+      existingRowRef.current = {
+        ...PARTNER_WIDE_CHANNEL,
+        config: {
+          url: 'https://hooks.example.com/notify',
+          method: 'POST',
+          authType: 'bearer',
+          authToken: 'stored-token',
+          headers: { 'X-Custom-Authorization': 'stored-header' },
+        },
+      };
+
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          config: {
+            url: 'https://replacement.example/notify',
+            method: 'POST',
+            authType: 'none',
+            authToken: null,
+            headers: {},
+          },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateSetRef.current?.config).toMatchObject({
+        url: 'https://replacement.example/notify',
+        authType: 'none',
+        authToken: null,
+        headers: {},
+      });
+    });
+
     it('403s a partner-wide channel without the partner-wide capability (orgAccess selected)', async () => {
       setPartnerAuth('selected');
       existingRowRef.current = { ...PARTNER_WIDE_CHANNEL };

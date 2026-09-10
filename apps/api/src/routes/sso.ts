@@ -38,6 +38,7 @@ import {
   type OIDCConfig,
   type EmailVerifiedClaim
 } from '../services/sso';
+import { urlOriginChanged } from '../services/credentialOriginBinding';
 import { mintStepUpGrant } from '../services/mfaStepUpGrant';
 import {
   bindIssuedUserSession,
@@ -58,6 +59,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { captureException } from '../services/sentry';
+import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../services/ipAllowlist';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS, getUserPermissions } from '../services/permissions';
 import {
@@ -1104,6 +1106,9 @@ ssoRoutes.patch(
         orgId: ssoProviders.orgId,
         partnerId: ssoProviders.partnerId,
         issuer: ssoProviders.issuer,
+        tokenUrl: ssoProviders.tokenUrl,
+        clientSecret: ssoProviders.clientSecret,
+        configVersion: ssoProviders.configVersion,
         type: ssoProviders.type,
         status: ssoProviders.status,
         enforceSSO: ssoProviders.enforceSSO
@@ -1258,6 +1263,33 @@ ssoRoutes.patch(
     }
   }
 
+  const previousTokenUrl = existing.tokenUrl
+    ?? (existing.issuer ? `${existing.issuer}/oauth/token` : null);
+  const rediscoveredTokenUrl = typeof rediscovered.tokenUrl === 'string'
+    ? rediscovered.tokenUrl
+    : null;
+  const tokenOriginChanged = Boolean(
+    issuerChanged
+    && rediscoveredTokenUrl
+    && (!previousTokenUrl || urlOriginChanged(previousTokenUrl, rediscoveredTokenUrl)),
+  );
+  if (tokenOriginChanged && existing.clientSecret && body.clientSecret === undefined) {
+    writeRouteAudit(c, {
+      orgId: existing.orgId,
+      action: 'sso.provider.update.rejected',
+      resourceType: 'sso_provider',
+      resourceId: existing.id,
+      details: {
+        reason: 'oidc_token_origin_changed_without_secret_replacement',
+        partnerId: existing.partnerId,
+      },
+    });
+    return c.json({
+      error: 'The OIDC client secret must be re-entered or explicitly cleared when the token endpoint origin changes',
+      code: 'oidc_client_secret_reentry_required',
+    }, 400);
+  }
+
   const updates: Partial<typeof ssoProviders.$inferInsert> = {
     ...body,
     // SR2-14 (Task 7): must come AFTER ...body. `body` cannot carry endpoint
@@ -1286,11 +1318,18 @@ ssoRoutes.patch(
   const [updated] = await withAuthDbAccessContext(auth, () => db
     .update(ssoProviders)
     .set(updates)
-    .where(eq(ssoProviders.id, providerId))
+    // Config version is the optimistic generation for the whole provider
+    // receiver tuple. Discovery can perform network I/O, so a concurrent secret
+    // or endpoint editor must make this stale update lose rather than attach a
+    // credential entered for one token origin to another.
+    .where(and(
+      eq(ssoProviders.id, providerId),
+      eq(ssoProviders.configVersion, existing.configVersion),
+    ))
     .returning());
 
   if (!updated) {
-    return c.json({ error: 'Provider not found' }, 404);
+    return c.json({ error: 'SSO provider changed concurrently; reload and retry' }, 409);
   }
 
   writeRouteAudit(c, {
@@ -3251,6 +3290,15 @@ ssoRoutes.get('/callback', async (c) => {
           // delayed password/MFA finalizer must reclaim that generation before
           // it can issue a Breeze session.
           try {
+            const ipDecision = await enforceIpAllowlist(c, {
+              partnerId: byEmail.partnerId,
+              isPlatformAdmin: byEmail.isPlatformAdmin === true,
+              actorId: byEmail.id,
+              actorEmail: byEmail.email,
+            });
+            if (isBlocked(ipDecision)) {
+              throw new SsoLoginFinalizationError('/login?error=ip_not_allowed');
+            }
             const { rawToken } = await createSsoPendingLink({
               userId: byEmail.id,
               userEmail: byEmail.email,
@@ -3544,6 +3592,16 @@ ssoRoutes.get('/callback', async (c) => {
       };
     }
 
+    const ipDecision = await enforceIpAllowlist(c, {
+      partnerId: user.partnerId,
+      isPlatformAdmin: user.isPlatformAdmin === true,
+      actorId: user.id,
+      actorEmail: user.email,
+    });
+    if (isBlocked(ipDecision)) {
+      throw new SsoLoginFinalizationError('/login?error=ip_not_allowed');
+    }
+
     // Issue first to preserve transition -> user -> family ordering. Identity,
     // membership, last-login, and grant writes then share this same system
     // transaction, so any route-specific failure rolls authority back.
@@ -3766,6 +3824,27 @@ ssoRoutes.post('/exchange', zValidator('json', tokenExchangeSchema), async (c) =
     return c.json({ error: 'Invalid or expired token exchange code' }, 400);
   }
 
+  // The callback can admit this browser grant before an allowlist change.
+  // Re-evaluate against the user's live owning partner immediately before the
+  // refresh cookie/access-token handoff. The grant is already single-use, so a
+  // denied/error response cannot be replayed later to retrieve the tokens.
+  let ipDecision;
+  try {
+    ipDecision = await enforceIpAllowlist(c, {
+      partnerId: grant.identity.partnerId,
+      isPlatformAdmin: grant.identity.isPlatformAdmin,
+      actorId: grant.identity.userId,
+      actorEmail: grant.identity.email,
+    });
+  } catch (error) {
+    console.error('[sso/exchange] IP allowlist check failed:', error);
+    captureException(error, c);
+    return c.json({ code: 'ip_check_failed', error: 'Access temporarily unavailable' }, 503);
+  }
+  if (isBlocked(ipDecision)) {
+    return c.json(IP_NOT_ALLOWED_BODY, 403);
+  }
+
   setRefreshTokenCookie(c, grant.refreshToken);
 
   return c.json({
@@ -3962,6 +4041,24 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
     });
     await floorPromise;
     return c.json({ error: 'sso_link_expired' }, 401);
+  }
+
+  let ipDecision;
+  try {
+    ipDecision = await enforceIpAllowlist(c, {
+      partnerId: user.partnerId,
+      isPlatformAdmin: user.isPlatformAdmin === true,
+      actorId: user.id,
+      actorEmail: user.email,
+    });
+  } catch (err) {
+    console.error('[sso/link/confirm] IP allowlist check failed:', err);
+    await floorPromise;
+    return c.json({ code: 'ip_check_failed', error: 'Access temporarily unavailable' }, 503);
+  }
+  if (isBlocked(ipDecision)) {
+    await floorPromise;
+    return c.json(IP_NOT_ALLOWED_BODY, 403);
   }
 
   void clearAccountFailures(redis, normalizedEmail).catch((err) => {

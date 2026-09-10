@@ -15,6 +15,8 @@ export default defineConfig({
     include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
     exclude: [
       'src/__tests__/integration/**',
+      // Real bearer + PostgreSQL integration connection authority checks.
+      'src/routes/integrationConnectionScope.integration.test.ts',
       // Real-PostgreSQL exact request-pool role checks have a dedicated runner.
       'src/db/requestDatabaseRole.integration.test.ts',
       'src/db/auditRetentionDefault.integration.test.ts',

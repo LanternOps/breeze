@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const { permissionGate, mfaGate, permsState } = vi.hoisted(() => ({
-  permissionGate: { deny: false },
+  permissionGate: { deny: false, deniedPermission: null as string | null },
   mfaGate: { deny: false },
   permsState: { permissions: undefined as { allowedSiteIds?: string[] } | undefined }
 }));
@@ -54,13 +54,14 @@ vi.mock('../middleware/auth', () => ({
       orgId: '11111111-1111-1111-1111-111111111111',
       accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
       canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111',
+      orgCondition: () => undefined,
       user: { id: 'user-123', email: 'test@example.com' }
     });
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (c: any, next: any) => {
-    if (permissionGate.deny) {
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (permissionGate.deny || permissionGate.deniedPermission === `${resource}:${action}`) {
       return c.json({ error: 'Forbidden' }, 403);
     }
     // Mirror prod: requirePermission (not authMiddleware) populates `permissions`.
@@ -109,10 +110,63 @@ describe('dns security routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     permissionGate.deny = false;
+    permissionGate.deniedPermission = null;
     mfaGate.deny = false;
 
     app = new Hono();
     app.route('/dns-security', dnsSecurityRoutes);
+  });
+
+  describe('DNS configuration read permission', () => {
+    it('rejects integration configuration reads before database access when devices:read is denied', async () => {
+      permissionGate.deniedPermission = 'devices:read';
+
+      const res = await app.request('/dns-security/integrations');
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('rejects policy configuration reads before database access when devices:read is denied', async () => {
+      permissionGate.deniedPermission = 'devices:read';
+
+      const res = await app.request('/dns-security/policies');
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('allows integration configuration reads with devices:read', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: () => ({
+          where: () => ({
+            orderBy: () => Promise.resolve([{ id: 'integration-1', name: 'DNS Filter' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/dns-security/integrations');
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toEqual([{ id: 'integration-1', name: 'DNS Filter' }]);
+    });
+
+    it('allows policy configuration reads with devices:read', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: () => ({
+          innerJoin: () => ({
+            where: () => ({
+              orderBy: () => Promise.resolve([{ id: 'policy-1', name: 'Block malware' }])
+            })
+          })
+        })
+      } as any);
+
+      const res = await app.request('/dns-security/policies');
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toEqual([{ id: 'policy-1', name: 'Block malware' }]);
+    });
   });
 
   it('rejects integration creation when permission check fails', async () => {

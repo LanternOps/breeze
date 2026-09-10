@@ -8,8 +8,9 @@ import { sql } from 'drizzle-orm';
 // cascade/export registration). The binding is MFA-established
 // (mfa_verified_at) and is the ONLY path from an Entra identity to a
 // Breeze user — email is never an authorization identifier.
-// bound_auth_epoch snapshots users.auth_epoch at bind time; a later epoch
-// advance (password reset / forced logout) invalidates the binding.
+// bound_auth_epoch + bound_mfa_epoch snapshot both live user generations at
+// bind time. Password/status changes and every factor lifecycle change thus
+// invalidate the durable Entra binding independently of Redis session cleanup.
 export const officeAddinUserBindings = pgTable('office_addin_user_bindings', {
   id: uuid('id').primaryKey().defaultRandom(),
   entraTenantId: uuid('entra_tenant_id').notNull(),
@@ -17,6 +18,7 @@ export const officeAddinUserBindings = pgTable('office_addin_user_bindings', {
   userId: uuid('user_id').notNull().references(() => users.id),
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
   boundAuthEpoch: integer('bound_auth_epoch').notNull(),
+  boundMfaEpoch: integer('bound_mfa_epoch').notNull(),
   mfaVerifiedAt: timestamp('mfa_verified_at', { withTimezone: true }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),

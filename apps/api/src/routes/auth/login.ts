@@ -37,10 +37,7 @@ import {
   AuthIssuanceCapabilityError,
   RefreshTokenCurrentnessError,
   issueUserSession,
-  issueUserSessionLegacyDuringTransition,
   bindIssuedUserSession,
-  authBrowserTransitionsEnforced,
-  recordAuthTransitionLegacyIssuer,
   type AuthIssuanceCapability,
   type AuthorizedUserSession,
   type UserSessionIdentity,
@@ -60,7 +57,6 @@ import {
   getClientIP,
   getClientRateLimitKey,
   installAuthorizedUserSessionCookies,
-  installLegacyUserSessionCookiesDuringTransition,
   clearRefreshTokenCookie,
   resolveRefreshToken,
   validateCookieCsrfRequest,
@@ -76,8 +72,6 @@ import {
   userHasUsablePasskey,
   authResponseFloorPromise,
   mintLoginRegisterGrant,
-  isAuthTransitionV1Request,
-  authClientUpgradeRequiredResponse,
   validateStrictCookieCsrfRequest,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
@@ -86,6 +80,7 @@ import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDe
 import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../../services/ipAllowlist';
 import { captureException } from '../../services/sentry';
 import { cfAccessLoginMiddleware } from '../../middleware/cfAccessLogin';
+import { getBoundMobileDeviceBlock, mobileDeviceBlockedResponse } from '../../middleware/mobileDeviceBlocked';
 import { dbWriteExpectingRows } from '../../db/dbWriteExpectingRows';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { waitForAuthTransitionFinalizationTestBarrier } from './authTransitionTestControl';
@@ -126,10 +121,6 @@ function getDummyPasswordHash(): Promise<string> {
 // SR2-22 shares this exact equalizer (now `authResponseFloorPromise` in
 // ./helpers) with /forgot-password rather than defining a second one.
 const loginResponseFloorPromise = authResponseFloorPromise;
-
-function authTransitionClientClass(c: Context): 'web' | 'native' {
-  return readMobileDeviceId(c) ? 'native' : 'web';
-}
 
 function authIssuanceAdmissionError(c: Context, error: unknown): Response | null {
   if (error instanceof AuthBindingRotationRequiredError) {
@@ -269,12 +260,6 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   // branch awaits it too so attackers can't observationally distinguish
   // "Redis is down right now" from any other denial outcome.
   const floorPromise = loginResponseFloorPromise();
-  const transitionV1 = isAuthTransitionV1Request(c);
-  if (!transitionV1 && authBrowserTransitionsEnforced()) {
-    await floorPromise;
-    return authClientUpgradeRequiredResponse(c);
-  }
-
   // Rate limit by IP + email combination - fail closed for security
   // In E2E mode, skip rate limiting entirely
   const e2eMode = process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true';
@@ -512,18 +497,15 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     return c.json(IP_NOT_ALLOWED_BODY, 403);
   }
 
-  let capability: AuthIssuanceCapability | null = null;
-  if (transitionV1) {
-    try {
-      capability = await beginAuthIssuance(requestAuthBinding(c));
-      await waitForAuthTransitionFinalizationTestBarrier(c);
-    } catch (error) {
-      if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
-      const response = authIssuanceAdmissionError(c, error);
-      if (!response) throw error;
-      await floorPromise;
-      return response;
-    }
+  let capability: AuthIssuanceCapability;
+  try {
+    capability = await beginAuthIssuance(requestAuthBinding(c));
+    await waitForAuthTransitionFinalizationTestBarrier(c);
+  } catch (error) {
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    await floorPromise;
+    return response;
   }
 
   // Check if MFA is required. This happens after the SSO-only check so an
@@ -564,28 +546,26 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     const recoveryAvailable = Array.isArray(user.mfaRecoveryCodes)
       && user.mfaRecoveryCodes.length > 0;
     if (!allowedMethods.totp && !allowedMethods.sms && !allowedMethods.passkey && !recoveryAvailable) {
-      if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+      await cancelAuthIssuance(capability).catch(() => undefined);
       await floorPromise;
       return c.json(genericAuthError(), 401);
     }
-    let pendingTransition = { transitionId: 'legacy', browserGeneration: 0 };
-    if (capability) {
-      const guardedCapability = capability;
-      try {
-        pendingTransition = await finishAuthIssuance(guardedCapability, async (tx) => {
-          await assertAuthIssuanceCapability(tx, guardedCapability);
-          return {
-            transitionId: guardedCapability.transitionId,
-            browserGeneration: guardedCapability.generation,
-          };
-        });
-      } catch (error) {
-        await cancelAuthIssuance(guardedCapability).catch(() => undefined);
-        const response = authIssuanceAdmissionError(c, error);
-        if (!response) throw error;
-        await floorPromise;
-        return response;
-      }
+    const guardedCapability = capability;
+    let pendingTransition: { transitionId: string; browserGeneration: number };
+    try {
+      pendingTransition = await finishAuthIssuance(guardedCapability, async (tx) => {
+        await assertAuthIssuanceCapability(tx, guardedCapability);
+        return {
+          transitionId: guardedCapability.transitionId,
+          browserGeneration: guardedCapability.generation,
+        };
+      });
+    } catch (error) {
+      await cancelAuthIssuance(guardedCapability).catch(() => undefined);
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      await floorPromise;
+      return response;
     }
     const PENDING_TTL_SECONDS = 300;
     const pendingRecord = {
@@ -679,11 +659,10 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   let tokens: ReturnType<typeof toPublicTokens>;
   let familyId: string;
   let installSessionCookies: () => void;
-  if (capability) {
-    const guardedCapability = capability;
-    let issued: AuthorizedUserSession;
-    try {
-      issued = await finishAuthIssuance(guardedCapability, async (tx) => {
+  const guardedCapability = capability;
+  let issued: AuthorizedUserSession;
+  try {
+    issued = await finishAuthIssuance(guardedCapability, async (tx) => {
         const session = await issueUserSession(identity, {
           tx,
           capability: guardedCapability,
@@ -697,43 +676,18 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
             .returning({ id: users.id })
         );
         return session;
-      });
-    } catch (error) {
-      await cancelAuthIssuance(guardedCapability).catch(() => undefined);
-      const response = authIssuanceAdmissionError(c, error);
-      if (!response) throw error;
-      await floorPromise;
-      return response;
-    }
-    await bindIssuedUserSession(issued);
-    tokens = toPublicTokens(issued);
-    familyId = issued.familyId;
-    installSessionCookies = () => installAuthorizedUserSessionCookies(c, issued);
-  } else {
-    recordAuthTransitionLegacyIssuer('password', authTransitionClientClass(c));
-    let issued;
-    try {
-      issued = await issueUserSessionLegacyDuringTransition(identity);
-    } catch (error) {
-      if (error instanceof Error && error.message === 'Cannot issue session for missing user') {
-        await floorPromise;
-        return c.json(genericAuthError(), 401);
-      }
-      throw error;
-    }
-    await withSystemDbAccessContext(() =>
-      dbWriteExpectingRows('users.last_login_at', () =>
-        db
-        .update(users)
-        .set({ lastLoginAt: new Date() })
-        .where(eq(users.id, user.id))
-        .returning({ id: users.id })
-      )
-    );
-    tokens = toPublicTokens(issued);
-    familyId = issued.familyId;
-    installSessionCookies = () => installLegacyUserSessionCookiesDuringTransition(c, issued);
+    });
+  } catch (error) {
+    await cancelAuthIssuance(guardedCapability).catch(() => undefined);
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    await floorPromise;
+    return response;
   }
+  await bindIssuedUserSession(issued);
+  tokens = toPublicTokens(issued);
+  familyId = issued.familyId;
+  installSessionCookies = () => installAuthorizedUserSessionCookies(c, issued);
 
   // Task 10: clear the per-account failure counter on successful login so
   // a real user with one fat-finger doesn't slowly approach a lockout over
@@ -852,10 +806,6 @@ loginRoutes.post('/logout', authMiddleware, async (c) => {
 
 // Refresh token
 loginRoutes.post('/refresh', async (c) => {
-  const transitionV1 = isAuthTransitionV1Request(c);
-  if (!transitionV1 && authBrowserTransitionsEnforced()) {
-    return authClientUpgradeRequiredResponse(c);
-  }
   const refreshToken = resolveRefreshToken(c);
 
   if (!refreshToken) {
@@ -902,6 +852,19 @@ loginRoutes.post('/refresh', async (c) => {
     recordFailedLogin('refresh_fam_missing');
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
+  }
+
+  // Refresh is pre-auth and therefore does not pass through authMiddleware.
+  // Enforce the signed installation binding before rate limiting, replay
+  // checks, rotation or issuance, and durably revoke the presented family so
+  // the block remains terminal even if a later code path misses the live row.
+  if (payload.mdid) {
+    const block = await getBoundMobileDeviceBlock(payload.sub, payload.mdid);
+    if (block) {
+      await revokeFamily(payload.fam, 'mobile-device-blocked');
+      clearRefreshTokenCookie(c);
+      return mobileDeviceBlockedResponse(c, block);
+    }
   }
 
   // Rate limit per refresh-token FAMILY (one browser profile's session chain —
@@ -1028,6 +991,7 @@ loginRoutes.post('/refresh', async (c) => {
         passwordChangedAt: users.passwordChangedAt,
         authEpoch: users.authEpoch,
         mfaEpoch: users.mfaEpoch,
+        isPlatformAdmin: users.isPlatformAdmin,
       })
       .from(users)
       .where(eq(users.id, payload.sub))
@@ -1065,23 +1029,37 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
-  let capability: AuthIssuanceCapability | null = null;
-  if (transitionV1) {
-    try {
-      capability = await beginAuthIssuance(requestAuthBinding(c));
-      await waitForAuthTransitionFinalizationTestBarrier(c);
-    } catch (error) {
-      if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
-      const response = refreshIssuanceAdmissionError(c, error);
-      if (!response) throw error;
-      return response;
-    }
+  let ipDecision;
+  try {
+    ipDecision = await enforceIpAllowlist(c, {
+      partnerId: context.partnerId,
+      isPlatformAdmin: user.isPlatformAdmin === true,
+      actorId: user.id,
+      actorEmail: user.email,
+    });
+  } catch (err) {
+    console.error('[auth] IP allowlist check failed during refresh:', err);
+    captureException(err, c);
+    return c.json({ code: 'ip_check_failed', error: 'Access temporarily unavailable' }, 503);
+  }
+  if (isBlocked(ipDecision)) {
+    return c.json(IP_NOT_ALLOWED_BODY, 403);
   }
 
-  // Transition-aware refresh uses the durable family current-JTI CAS below as
-  // the authority decision. Redis rotated/revoked markers are only accelerators
-  // and are populated after that transaction commits. The frozen legacy path
-  // retains its pre-W07 Redis claim ordering until enforcement retires it.
+  let capability: AuthIssuanceCapability;
+  try {
+    capability = await beginAuthIssuance(requestAuthBinding(c));
+    await waitForAuthTransitionFinalizationTestBarrier(c);
+  } catch (error) {
+    const response = refreshIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
+  }
+
+  // Refresh uses the durable family current-JTI CAS below as the authority
+  // decision. Redis rotated/revoked markers accelerate replay classification
+  // after commit; a failed predecessor revocation marker must still prevent
+  // delivery of the committed successor below.
   const identity: UserSessionIdentity = {
     userId: user.id,
     email: user.email,
@@ -1094,16 +1072,14 @@ loginRoutes.post('/refresh', async (c) => {
     // token. Deliberately NOT re-read from the header — a refresh must not be
     // able to drop the binding by omitting it.
     mobileDeviceId: carryForwardBinding(payload),
-    legacyFamilyId: familyId,
   };
 
   let tokens: ReturnType<typeof toPublicTokens>;
   let installSessionCookies: () => void;
-  if (capability) {
-    const guardedCapability = capability;
-    let issued: AuthorizedUserSession;
-    try {
-      issued = await finishAuthIssuance(guardedCapability, (tx) =>
+  const guardedCapability = capability;
+  let issued: AuthorizedUserSession;
+  try {
+    issued = await finishAuthIssuance(guardedCapability, (tx) =>
         issueUserSession(identity, {
           tx,
           capability: guardedCapability,
@@ -1113,44 +1089,36 @@ loginRoutes.post('/refresh', async (c) => {
             presentedJti: payload.jti!,
           },
         })
-      );
-    } catch (error) {
-      await cancelAuthIssuance(guardedCapability).catch(() => undefined);
-      if (error instanceof RefreshTokenCurrentnessError) {
-        return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
-      }
-      const response = refreshIssuanceAdmissionError(c, error);
-      if (!response) throw error;
-      return response;
-    }
-    await bindIssuedUserSession(issued);
-    await markRefreshTokenJtiRotated(payload.jti).catch((error) => {
-      console.error('[auth] Failed to write post-commit refresh rotation marker:', error);
-    });
-    await revokeRefreshTokenJti(payload.jti).catch((error) => {
-      console.error('[auth] Failed to write post-commit refresh revocation marker:', error);
-      return false;
-    });
-    tokens = toPublicTokens(issued);
-    installSessionCookies = () => installAuthorizedUserSessionCookies(c, issued);
-  } else {
-    await markRefreshTokenJtiRotated(payload.jti);
-    let claimedRevocation: boolean;
-    try {
-      claimedRevocation = await revokeRefreshTokenJti(payload.jti);
-    } catch (error) {
-      console.error('[auth] Refusing to mint refresh token — old jti revocation failed:', error);
-      clearRefreshTokenCookie(c);
-      return c.json({ error: 'Invalid refresh token' }, 401);
-    }
-    if (!claimedRevocation) {
+    );
+  } catch (error) {
+    await cancelAuthIssuance(guardedCapability).catch(() => undefined);
+    if (error instanceof RefreshTokenCurrentnessError) {
       return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
     }
-    recordAuthTransitionLegacyIssuer('refresh', authTransitionClientClass(c));
-    const issued = await issueUserSessionLegacyDuringTransition(identity);
-    tokens = toPublicTokens(issued);
-    installSessionCookies = () => installLegacyUserSessionCookiesDuringTransition(c, issued);
+    const response = refreshIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
   }
+  await bindIssuedUserSession(issued);
+  await markRefreshTokenJtiRotated(payload.jti).catch((error) => {
+      console.error('[auth] Failed to write post-commit refresh rotation marker:', error);
+  });
+  try {
+    await revokeRefreshTokenJti(payload.jti);
+  } catch (error) {
+    // The durable CAS above has already advanced the family to `issued`, but
+    // that credential has not left this process yet. If the predecessor
+    // marker cannot be recorded, returning the successor would let a stolen
+    // predecessor lose its only reuse-detection evidence. Strand the
+    // unreturned successor and terminate this browser session instead. A
+    // later login creates a fresh family; retrying the old cookie cannot mint
+    // because it no longer matches current_refresh_jti_digest.
+    console.error('[auth] Refusing to return refresh successor — old jti revocation failed:', error);
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
+  tokens = toPublicTokens(issued);
+  installSessionCookies = () => installAuthorizedUserSessionCookies(c, issued);
 
   // Telemetry: bump lastUsedAt on the family row. Fire-and-forget — never
   // blocks the refresh.

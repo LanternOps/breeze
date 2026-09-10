@@ -83,7 +83,7 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     name: 'Casey Admin',
     email: 'casey@example.com',
     mfaEnabled: true,
-    mfaMethod: 'totp',
+    mfaMethod: 'totp' as const,
   };
 
   function callsTo(url: string) {
