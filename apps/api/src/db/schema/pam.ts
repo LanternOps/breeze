@@ -246,8 +246,10 @@ export const pamRules = pgTable(
     /**
      * Quarantine of a pre-existing auto_approve rule (fix/pam-dedicated-permissions
      * §6B). Set by the 2026-10-15-150200 migration for every rule that was
-     * `verdict='auto_approve' AND enabled` at upgrade time: the migration
-     * copies the rule's original verdict here and forces `verdict` itself to
+     * `verdict='auto_approve'` at upgrade time, regardless of `enabled` (a
+     * disabled rule is quarantined too, so re-enabling it later can never
+     * skip re-approval): the migration copies the rule's original verdict
+     * here and forces `verdict` itself to
      * `require_approval`, so the rule KEEPS MATCHING (unlike setting
      * `enabled=false`, which `pamRuleEngine.ts` skips entirely and falls
      * through to a lower-priority rule or the org's `default_unmatched_verdict`

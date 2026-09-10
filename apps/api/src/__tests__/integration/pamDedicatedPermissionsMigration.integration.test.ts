@@ -11,11 +11,13 @@
  *      (partner_id IS NULL) AND a per-partner is_system Org Admin clone
  *      (§6A) — but never a custom role merely named "Org Admin"
  *      (is_system = false).
- *   4. A pre-existing enabled auto_approve pam_rules row is quarantined:
- *      verdict -> require_approval, suspended_verdict preserves the
- *      original verdict, enabled stays TRUE (§6B — NOT disabled, since
- *      pamRuleEngine.ts skips disabled rules and falls through), and
- *      re-running is idempotent (no double-quarantine).
+ *   4. A pre-existing auto_approve pam_rules row is quarantined regardless
+ *      of `enabled` (PR review fix — a disabled legacy auto_approve rule
+ *      must also require re-approval before it can ever start matching
+ *      again): verdict -> require_approval, suspended_verdict preserves the
+ *      original verdict, `enabled` itself is left untouched (§6B — NEVER
+ *      set enabled=false, since pamRuleEngine.ts skips disabled rules and
+ *      falls through), and re-running is idempotent (no double-quarantine).
  */
 import './setup';
 import { describe, it, expect, afterAll } from 'vitest';
@@ -181,7 +183,14 @@ describe.skipIf(!RUN)('migration: 2026-10-15-150200-pam-dedicated-permissions', 
     expect(after2).toEqual({ verdict: 'require_approval', suspended_verdict: 'auto_approve' });
   });
 
-  it('does NOT quarantine a disabled auto_approve rule, or an enabled non-auto_approve rule', async () => {
+  // PR review fix: the original cut left `AND enabled` on the quarantine
+  // WHERE clause, so a disabled legacy auto_approve rule stayed
+  // verdict='auto_approve' with no suspended_verdict — re-enabling it later
+  // (a plain `enabled: true` PATCH) would let it start auto-approving again
+  // with NO re-approval ceremony, silently bypassing the whole §6B upgrade
+  // path. Quarantine must apply on `verdict = 'auto_approve'` alone,
+  // independent of `enabled`, matching the docs/upgrade note.
+  it('ALSO quarantines a disabled auto_approve rule (enabled is left untouched); leaves an enabled non-auto_approve rule alone', async () => {
     await replay();
 
     const partnerId = await makePartner('PAM Quarantine Negative Test');
@@ -203,7 +212,9 @@ describe.skipIf(!RUN)('migration: 2026-10-15-150200-pam-dedicated-permissions', 
     const [afterDisabled] = await adminSql`
       select verdict, suspended_verdict, enabled from pam_rules where id = ${disabledRule!.id}
     `;
-    expect(afterDisabled).toEqual({ verdict: 'auto_approve', suspended_verdict: null, enabled: false });
+    // Quarantined exactly like an enabled rule would be — `enabled` itself
+    // is never touched by this migration, in either direction.
+    expect(afterDisabled).toEqual({ verdict: 'require_approval', suspended_verdict: 'auto_approve', enabled: false });
 
     const [afterRequireApproval] = await adminSql`
       select verdict, suspended_verdict from pam_rules where id = ${requireApprovalRule!.id}

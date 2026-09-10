@@ -126,6 +126,13 @@ END $$;
 -- `PATCH /pam/rules/:id { reapprove: true }` (requires pam:manage_policy +
 -- MFA), which is the ONLY path that clears suspended_verdict.
 --
+-- Quarantine on `verdict = 'auto_approve'` ALONE, deliberately NOT gated on
+-- `enabled` (PR review fix): a DISABLED legacy auto_approve rule must also be
+-- quarantined, otherwise re-enabling it later via a plain `enabled: true`
+-- PATCH would let it resume auto-approving with no re-approval ceremony at
+-- all — silently bypassing this entire upgrade path. `enabled` itself is
+-- never touched by this migration in either direction.
+--
 -- Idempotent: a rule already migrated has verdict='require_approval', so it
 -- no longer matches `WHERE verdict = 'auto_approve'` on re-apply — 0 rows,
 -- reported honestly below.
@@ -157,7 +164,7 @@ BEGIN
   SET suspended_verdict = verdict,
       verdict = 'require_approval',
       updated_at = now()
-  WHERE verdict = 'auto_approve' AND enabled;
+  WHERE verdict = 'auto_approve';
   GET DIAGNOSTICS n = ROW_COUNT;
   -- Always report, including 0: a 0 here on a fresh install (no pre-existing
   -- auto_approve rules) is expected, not evidence the UPDATE silently no-op'd
