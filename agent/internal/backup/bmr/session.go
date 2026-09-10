@@ -85,12 +85,31 @@ func RunRecoveryWithTokenContext(ctx context.Context, cfg RecoveryConfig) (*Reco
 	if len(effectiveCfg.TargetPaths) == 0 {
 		effectiveCfg.TargetPaths = targetPathsFromConfig(bootstrap.TargetConfig)
 	}
+	if bootstrap.Snapshot != nil {
+		effectiveCfg.ExpectSystemState = hasSystemStateManifest(bootstrap.Snapshot.SystemStateManifest)
+	}
 
 	runResult, runErr := runRecovery(ctx, effectiveCfg, provider)
 	if runResult != nil {
 		result = runResult
 	}
 	return completeAndReturn(runErr)
+}
+
+// hasSystemStateManifest reports whether raw (bootstrap.Snapshot's
+// SystemStateManifest field) represents an actual manifest rather than an
+// absent/null value. json.RawMessage is nil (len 0) when the server omits
+// the field entirely, and literal "null" when the server sends the field
+// with a SQL NULL jsonb column (see recoveryBootstrap.ts /
+// routes/backup/bmr.ts, which both populate this from
+// backup_snapshots.system_state_manifest) — both mean "no system state was
+// captured for this snapshot", not "system state exists".
+func hasSystemStateManifest(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return false
+	}
+	return !bytes.Equal(trimmed, []byte("null"))
 }
 
 func authenticateRecoverySession(serverURL, token string) (*BootstrapResponse, error) {
