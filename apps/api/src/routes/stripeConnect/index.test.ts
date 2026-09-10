@@ -105,6 +105,8 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: new Date('2026-08-22T00:00:00.000Z'),
+      financialEventLastPolledAt: null,
+      financialEventLastError: null,
       cacheState: 'fresh',
       error: null,
     });
@@ -130,6 +132,7 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: '2026-08-22T00:00:00.000Z',
+      reconciliation: { state: 'pending', lastPolledAt: null, error: null },
     });
     expect(savePartnerStripeKey).toHaveBeenCalledWith({
       partnerId: 'partner-1',
@@ -169,6 +172,7 @@ describe('stripe-connect (API-key) routes', () => {
       cacheState: 'fresh',
       stale: false,
       error: null,
+      reconciliation: { state: 'pending', lastPolledAt: null, error: null },
     });
     expect(getPartnerStripeAccountSnapshot).toHaveBeenCalledWith('partner-1');
   });
@@ -182,6 +186,8 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'USD',
       accountCountry: 'US',
       accountRefreshedAt: new Date('2026-08-01T00:00:00.000Z'),
+      financialEventLastPolledAt: null,
+      financialEventLastError: null,
       cacheState: 'stale',
       error: { code: 'STRIPE_UNAVAILABLE', message: 'Could not reach Stripe right now — try again in a moment.' },
     });
@@ -198,6 +204,7 @@ describe('stripe-connect (API-key) routes', () => {
       cacheState: 'stale',
       stale: true,
       error: { code: 'STRIPE_UNAVAILABLE', message: 'Could not reach Stripe right now — try again in a moment.' },
+      reconciliation: { state: 'pending', lastPolledAt: null, error: null },
     });
   });
 
@@ -210,6 +217,8 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'USD',
       accountCountry: 'US',
       accountRefreshedAt: new Date('2026-08-01T00:00:00.000Z'),
+      financialEventLastPolledAt: null,
+      financialEventLastError: null,
       cacheState: 'reconnect_required',
       error: { code: 'INVALID_STRIPE_KEY', message: 'Stripe rejected the stored key — reconnect Stripe.' },
     });

@@ -874,7 +874,8 @@
     "couldNotRefresh": "Stripe hesap bilgileri yenilenemedi.",
     "notCached": "Para birimi henüz önbelleğe alınmadı — Stripe'tan almak için yenileyin.",
     "staleCache": "Stripe'a ulaşılamadı — önbelleğe alınan son hesap ayrıntıları gösteriliyor.",
-    "reconnectRequired": "Kayıtlı Stripe anahtarınız (•••• {{last4}}) artık çalışmıyor: {{reason}} Yeniden bağlanmak için yeni bir anahtar yapıştırın; o zamana kadar çevrimiçi ödemeler başarısız olur."
+    "reconnectRequired": "Kayıtlı Stripe anahtarınız (•••• {{last4}}) artık çalışmıyor: {{reason}} Yeniden bağlanmak için yeni bir anahtar yapıştırın; o zamana kadar çevrimiçi ödemeler başarısız olur.",
+    "reconciliationError": "Ödeme ters ibraz mutabakatı çalışmıyor: {{reason}} Stripe anahtarını Olayları okuyabilen bir anahtarla değiştirin."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Site eşlemeleri kaydedilemedi.",
