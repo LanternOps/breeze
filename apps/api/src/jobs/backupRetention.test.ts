@@ -1166,7 +1166,7 @@ describe('sweepUnreferencedBackupObjects', () => {
     });
   });
 
-  describe('NULL-identity rows are ALWAYS roots of I, resolved or not (§3.6 v3)', () => {
+  describe('a NULL-identity row becomes a root of I the moment it resolves; unresolved contributes only to deferral (§3.6 v3)', () => {
     it('fetches (and requires) the manifest of an UNRESOLVED NULL row too, and defers the whole identity if it is not found in the listing', async () => {
       pushRunLevel([destination]);
       pushIdentity({

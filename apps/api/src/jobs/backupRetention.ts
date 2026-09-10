@@ -624,8 +624,12 @@ export function computeExpiresAt(
 //             (snapshots/<id>/manifest.json (+ system-state/ for D15)) is
 //             shared by every mode, so scoping is by identity, not type), PLUS
 //             every backup_snapshots row with storage_identity IS NULL whose
-//             config_id maps here (unconditionally a root — "resolved" only
-//             gates self-heal/deferral, never root membership, see §3.6 v3).
+//             config_id maps here AND whose manifest is found in THIS run's
+//             fresh listing ("resolved") — self-healed by row id at that
+//             point. A NULL row that never resolves contributes no root (its
+//             object isn't in this bucket to protect) but still counts
+//             toward the deferral gate below, since GC cannot yet rule out
+//             that a later run's listing will resolve it.
 //   Retired:  a snapshot with a backup_snapshot_retirements row (sweptAt IS
 //             NULL) for this identity is NEVER a root regardless of age, and
 //             is reclaimed via the two-phase (non-manifest, then manifest)
