@@ -59,6 +59,14 @@ RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTs
 
 This is a public key (also embedded in the agent and CI), so it is safe to commit. Only override it if you build and sign your own binaries. The API refuses to start in production without it. During a signing-key rotation you can trust multiple keys at once by comma-separating them (`RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=old,new`).
 
+<Aside type="caution" title="Rotation on the server doesn't retire trust on agents">
+  Comma-separating keys makes the *server* trust both. Each agent still only
+  trusts the key(s) it pinned at enrollment and keeps trusting a retired key
+  indefinitely — there's no remote revocation yet. Treat rotation as a fleet
+  re-enrollment: see [Key
+  rotation](/deploy/sign-your-own-packages/#key-rotation).
+</Aside>
+
 #### Unsigned signing inputs
 
 Official releases also publish `*-unsigned` build outputs with manifest entries marked `intendedUse: "signing-input"` and `platformTrust: "none"`. These exist solely as inputs for self-signing and are never registrable or downloadable through the API.

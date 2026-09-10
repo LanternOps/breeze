@@ -399,6 +399,22 @@ any other instance. See
   `docs/operations/agent-network-and-manifest-rollout.md`.
 </Aside>
 
+### Key rotation
+
+<Aside type="caution" title="Rotation adds trust — it doesn't remove it">
+  Agents pin the manifest public key(s) they were installed or last enrolled
+  under (`RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`). Generating a new manifest
+  key and updating your instance's env var adds trust in the new key, but
+  agents that enrolled under the retired key keep trusting that key too —
+  there is no remote mechanism today to revoke it from already-enrolled
+  agents. Treat a rotation as a fleet re-enrollment: afterwards, reinstall or
+  re-enroll your fleet so agents pin only the current key, and keep the
+  retired private key protected as a long-lived secret (or destroy it)
+  rather than assuming rotation alone retires it. A signed key-retirement
+  mechanism is planned so a future rotation won't require a full
+  re-enrollment — no timeline yet.
+</Aside>
+
 ---
 
 ## Troubleshooting
