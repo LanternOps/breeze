@@ -1,7 +1,7 @@
 # Desired-state software install (`autoInstall` remediation)
 
-Status: design drafted 2026-09-10, awaiting review. Not implemented.
-Tracking: TBD — register via feature-lifecycle once approved.
+Status: approved 2026-09-10. Not implemented.
+Tracking: LanternOps/breeze#5505 (waves #5506-#5510).
 Prerequisite for: `device-lifecycle/2026-09-10-hp-warranty-cmsl-design.md`.
 
 ## Problem
@@ -259,3 +259,91 @@ before opening the PR.
 4. UI: arm/disarm with dry-run count, `catalogId` authoring warning, policy-owned
    deployments labelled as such in the deployment list.
 5. AI guardrails + tool schema decisions.
+
+## Corrections after ground-truth verification (2026-09-10)
+
+The design above is unchanged; these are citation and fact corrections found by
+re-opening every file cited, after the spec was approved. Wave plans carry the
+corrected citations — prefer this section over the body where they disagree.
+
+- **`isPolicyArmedForRemediation` does not exist.** The real API is
+  `evaluateSoftwarePolicyArming(policy)` (`softwarePolicyService.ts:177-206`),
+  returning `SoftwarePolicyArmingState`, with the helper
+  `readSoftwarePolicyAutoUninstall` (`:172-175`) and the reason union
+  `SoftwarePolicyUnarmedReason = 'audit_mode' | 'enforce_mode_off' | 'auto_uninstall_off'`
+  (`:159`). The three refusal messages are at `:184`, `:192-193`, `:201-202` and
+  all three say "uninstall" explicitly — none is verb-neutral. Only two non-test
+  callers: `softwareRemediationWorker.ts:318`, `aiToolsCompliance.ts:509`.
+- **The compliance worker does not use that helper at all** — it re-derives the
+  gate inline at `softwareComplianceWorker.ts:423-427` from its own local
+  `readRemediationOptions` (`:136-162`). That duplication is why the two places
+  can drift; the install work unifies them rather than adding a third copy.
+- **The remediation gate is at `softwareComplianceWorker.ts:423-444`**, not
+  `398-404`. `shouldQueueAutoRemediation` is at `:184-212` (correct) and its sole
+  call site is `:429`. Line `:427` requires at least one `unauthorized`
+  violation, so a device with only `missing` violations is unreachable today —
+  that line, not just the `autoUninstallEnabled` check, is the blocker.
+- **The grace-period clock is unauthorized-only.**
+  `readEarliestUnauthorizedDetection` (`:164-182`) hard-filters
+  `typed.type !== 'unauthorized'` at `:171`, so a `missing` violation contributes
+  nothing to grace today. It must be generalised per verb, not reused as-is.
+- **NEW GAP — a `missing` violation carries no `catalogId`.** The emission at
+  `softwarePolicyService.ts:333-347` writes only
+  `rule: { name, minVersion, maxVersion }` — no `catalogId`, no `software`
+  object, no `reason`, even though `SoftwarePolicyRuleDefinition.catalogId`
+  exists (`softwarePolicies.ts:30`). §4 of this spec assumes `catalogId` is
+  reachable from the violation; it is not. The fix is to add `catalogId` to the
+  emitted `rule` object and to the `SoftwarePolicyViolation['rule']` type
+  (`softwarePolicies.ts:55-60`) — `violations` is jsonb and
+  `software_compliance_status` is in no export or org-cascade registry, so this
+  needs no migration and no registration. Matching a violation back to its rule
+  by name instead is rejected: rule names are not unique.
+- `software_compliance_status` is defined in
+  `apps/api/src/db/schema/softwarePolicies.ts:114-129`, not its own file. Its
+  upsert conflict target is the unique index
+  `software_compliance_device_policy_unique` on `(device_id, policy_id)` (`:128`).
+  It is registered in `CORE_DEVICE_CASCADE_DELETE_TABLES` at
+  `apps/api/src/routes/devices/core.ts:511` (not `:507`); its absence from the
+  org-cascade order and the export registry is confirmed (zero occurrences in
+  either file).
+- **The `sw-install-<deployment>-<device>-<attempt>` id is gone.** #5128 replaced
+  it with the persisted `device_commands` UUID;
+  `dispatchSoftwareInstallToDevice` (`softwareDeployment.ts:126-165`) no longer
+  constructs one, and the attempt number travels in `payload.retryCount`. The
+  shape survives only as the legacy parser `SW_INSTALL_COMMAND_ID_REGEX`
+  (`softwareDeploymentResult.ts:16`). The coupling the spec describes is still
+  real — the function only UPDATEs a `deployment_results` row that must already
+  exist — but for that reason, not the id.
+- **Cascade ordering is not achieved by array position.**
+  `software_deployments` is at `tenantCascade.ts:597` and `software_policies` at
+  `:600` (alphabetical). Correct child-before-parent ordering comes from explicit
+  pre-clear steps at `:841-851` (org) and `:1485-1506` (partner), because
+  `deployment_results` has no `org_id` and is absent from the array entirely.
+  The export-policy entry for `software_deployments` is at
+  `tenantExportPolicyRegistry.ts:434`.
+- **Authorization is closer than the spec implies.** `software.ts:1754` is a DB
+  query inside a handler, not a route; the deployment-create route is
+  `software.ts:1882-1888` (`requireScope` + `devices:execute` + `requireMfa()`).
+  Software-policy create (`softwarePolicies.ts:291-296`) and update (`:517-525`)
+  **already** require `devices:write` + `requireMfa()` plus the in-handler
+  `canMutateOrgWideGovernance` site-ceiling check. So the delta needed to reach
+  deployment-grade authorization is `devices.execute` alone, not MFA as well.
+- `remediationOptionsSchema` (`softwarePolicies.ts:79-85`) is a non-strict
+  `z.object`, so an `autoInstall` field is silently **stripped**, not rejected,
+  until it is added there. The AI SDK registration is worse:
+  `aiAgentSdkTools.ts:2251` types `remediationOptions` as
+  `z.record(z.string(), z.unknown())`, so the AI can pass arbitrary keys — the
+  refusal has to live at the four AI write sites
+  (`aiToolsCompliance.ts:287,356-357`, `aiToolsPolicyPrereqs.ts:441,496`), not
+  in the schema.
+- There is **no bulk or import path** that writes `remediation_options`; six
+  single-policy write sites exist in total (the two HTTP routes above plus those
+  four AI sites).
+- `software_policy_audit.action` has **no enum or const** — it is a bare
+  `varchar(50)` (`softwarePolicies.ts:142`) written as `action: string`
+  (`softwarePolicyService.ts:542`). The only enforced invariant is that at least
+  one owner axis is set (`:548-550`). New install actions therefore need their
+  own exported constants; there is no existing set to extend.
+- `summarizeEnforcementChange` (`aiToolsSoftwarePolicyAudit.ts:76-84`) hoists
+  `autoUninstall` to a top-level greppable audit key. An `autoInstall` field
+  needs its own line there or it stays buried inside the blob.

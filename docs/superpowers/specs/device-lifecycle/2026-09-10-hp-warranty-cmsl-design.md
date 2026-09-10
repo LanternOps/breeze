@@ -1,7 +1,7 @@
 # HP warranty via HP CMSL (agent-collected)
 
-Status: design drafted 2026-09-10, awaiting review. Not implemented.
-Tracking: TBD — register via feature-lifecycle once approved.
+Status: approved 2026-09-10. Not implemented.
+Tracking: LanternOps/breeze#5511 (waves #5512-#5516).
 Depends on: `vuln-patch/2026-09-10-desired-state-software-install-design.md`
 (the `autoInstall` remediation half of software policies). Only wave 4 below
 needs it; waves 1-3 and 5 are independent and can run in parallel with that work.
