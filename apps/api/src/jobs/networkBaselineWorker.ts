@@ -109,7 +109,7 @@ function createNetworkBaselineWorker(): Worker<NetworkBaselineJobData> {
   );
 }
 
-async function processScheduleScans(): Promise<{ enqueued: number }> {
+async function processScheduleScans(): Promise<{ enqueued: number; blocked: number }> {
   const now = new Date();
 
   const dueBaselines = await db
@@ -133,7 +133,7 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
     );
 
   if (dueBaselines.length === 0) {
-    return { enqueued: 0 };
+    return { enqueued: 0, blocked: 0 };
   }
 
   const queue = getNetworkBaselineQueue();

@@ -33,8 +33,13 @@ import {
 import { replayMigration } from './replayMigration';
 import { getTestDb } from './setup';
 
+function must<T>(value: T | undefined | null, what: string): T {
+  if (value === undefined || value === null) throw new Error(`fixture: missing ${what}`);
+  return value;
+}
+
 const MIGRATION = '2026-10-15-150600-network-baseline-recurring-authority.sql';
-const SCHEDULE = { enabled: true, intervalHours: 4, nextScanAt: null };
+const SCHEDULE = { enabled: true, intervalHours: 4, nextScanAt: new Date(0).toISOString() };
 
 type Fixture = Awaited<ReturnType<typeof seedArmedBaseline>>;
 
@@ -60,6 +65,7 @@ async function seedArmedBaseline(options: { allowedSiteIds?: string[] | null } =
     .from(users)
     .where(eq(users.id, user.id))
     .limit(1);
+  if (!fresh) throw new Error('seeded user disappeared');
 
   const [baseline] = await seed
     .insert(networkBaselines)
@@ -85,7 +91,7 @@ async function seedArmedBaseline(options: { allowedSiteIds?: string[] | null } =
     })
     .returning();
 
-  return { partner, org, site, user, role, baseline };
+  return { partner, org, site, user, role, baseline: must(baseline, 'baseline') };
 }
 
 /**
@@ -111,8 +117,8 @@ async function resyncArmedEpochs(fixture: Fixture) {
   await seed
     .update(networkBaselines)
     .set({
-      authorityPermissionsEpoch: current.permissionsEpoch,
-      authorityMfaEpoch: current.mfaEpoch,
+      authorityPermissionsEpoch: must(current, 'current epochs').permissionsEpoch,
+      authorityMfaEpoch: must(current, 'current epochs').mfaEpoch,
     })
     .where(eq(networkBaselines.id, fixture.baseline.id));
 }
@@ -125,7 +131,7 @@ async function gate(fixture: Fixture, expectedGeneration: number | null = 1) {
       .from(networkBaselines)
       .where(eq(networkBaselines.id, fixture.baseline.id))
       .limit(1);
-    return resolveBaselineDispatchAuthority(row, { expectedGeneration });
+    return resolveBaselineDispatchAuthority(must(row, 'baseline row'), { expectedGeneration });
   });
 }
 
@@ -167,7 +173,7 @@ describe('recurring network-baseline authority against real PostgreSQL', () => {
       .from(networkBaselines)
       .where(eq(networkBaselines.id, fixture.baseline.id))
       .limit(1);
-    expect(row.authorityUserId).toBeNull();
+    expect(must(row, 'row').authorityUserId).toBeNull();
 
     await expect(gate(fixture)).resolves.toEqual({
       allowed: false,
@@ -258,11 +264,12 @@ describe('recurring network-baseline authority against real PostgreSQL', () => {
       })
       .returning();
 
-    expect(legacy.authorityUserId).toBeNull();
-    expect(legacy.authorityGeneration).toBe(0);
+    const legacyRow = must(legacy, 'legacy baseline');
+    expect(legacyRow.authorityUserId).toBeNull();
+    expect(legacyRow.authorityGeneration).toBe(0);
 
     const decision = await withSystemDbAccessContext(() =>
-      resolveBaselineDispatchAuthority(legacy, { expectedGeneration: legacy.authorityGeneration }),
+      resolveBaselineDispatchAuthority(legacyRow, { expectedGeneration: legacyRow.authorityGeneration }),
     );
     expect(decision).toEqual({ allowed: false, reason: BASELINE_BLOCKED_REASON.REAPPROVAL_REQUIRED });
   });
@@ -278,7 +285,8 @@ describe('recurring network-baseline authority against real PostgreSQL', () => {
         .where(eq(networkBaselines.id, fixture.baseline.id))
         .limit(1)
         .for('update');
-      expect(locked.authorityUserId).toBe(fixture.user.id);
+      const lockedRow = must(locked, 'locked baseline');
+      expect(lockedRow.authorityUserId).toBe(fixture.user.id);
 
       // 2. A separate connection revokes the creator's membership and COMMITS
       //    while the lock is held. The revocation touches organization_users,
@@ -293,7 +301,9 @@ describe('recurring network-baseline authority against real PostgreSQL', () => {
       //    epoch check runs first, so that is the reason reported; either value
       //    is a revocation, and what matters for the finding is that dispatch
       //    is denied rather than proceeding on the row it locked.
-      return resolveBaselineDispatchAuthority(locked, { expectedGeneration: locked.authorityGeneration });
+      return resolveBaselineDispatchAuthority(lockedRow, {
+        expectedGeneration: lockedRow.authorityGeneration,
+      });
     });
 
     expect(decision.allowed).toBe(false);
@@ -306,14 +316,14 @@ describe('recurring network-baseline authority against real PostgreSQL', () => {
     const jobs = await seed.execute(
       sql`SELECT count(*)::int AS n FROM discovery_jobs WHERE org_id = ${fixture.org.id}`,
     );
-    expect((jobs as unknown as Array<{ n: number }>)[0].n).toBe(0);
+    expect(must((jobs as unknown as Array<{ n: number }>)[0], 'job count').n).toBe(0);
 
     const [after] = await seed
       .select({ lastScanJobId: networkBaselines.lastScanJobId })
       .from(networkBaselines)
       .where(eq(networkBaselines.id, fixture.baseline.id))
       .limit(1);
-    expect(after.lastScanJobId).toBeNull();
+    expect(must(after, 'baseline after').lastScanJobId).toBeNull();
   });
 
   it('resolves a partner-scope armer through the partner axis', async () => {
@@ -344,9 +354,10 @@ describe('recurring network-baseline authority against real PostgreSQL', () => {
       .from(networkBaselines)
       .where(eq(networkBaselines.id, fixture.baseline.id))
       .limit(1);
-    expect(row.authorityUserId).toBe(fixture.user.id);
-    expect(row.authorityGeneration).toBe(1);
-    expect(row.scheduleBlockedReason).toBeNull();
+    const replayed = must(row, 'baseline after replay');
+    expect(replayed.authorityUserId).toBe(fixture.user.id);
+    expect(replayed.authorityGeneration).toBe(1);
+    expect(replayed.scheduleBlockedReason).toBeNull();
   });
 
   it('the migration quarantines a legacy enabled schedule with reapproval_required', async () => {
@@ -362,16 +373,16 @@ describe('recurring network-baseline authority against real PostgreSQL', () => {
         updatedAt: new Date(),
       })
       .returning();
-    expect(legacy.scheduleBlockedReason).toBeNull();
+    expect(must(legacy, 'legacy baseline').scheduleBlockedReason).toBeNull();
 
     await replayMigration(MIGRATION);
 
     const [after] = await seed
       .select({ scheduleBlockedReason: networkBaselines.scheduleBlockedReason })
       .from(networkBaselines)
-      .where(eq(networkBaselines.id, legacy.id))
+      .where(eq(networkBaselines.id, must(legacy, 'legacy baseline').id))
       .limit(1);
-    expect(after.scheduleBlockedReason).toBe('reapproval_required');
+    expect(must(after, 'legacy after').scheduleBlockedReason).toBe('reapproval_required');
 
     // The armed row is untouched by the quarantine sweep.
     const [armed] = await seed
@@ -379,6 +390,6 @@ describe('recurring network-baseline authority against real PostgreSQL', () => {
       .from(networkBaselines)
       .where(eq(networkBaselines.id, fixture.baseline.id))
       .limit(1);
-    expect(armed.scheduleBlockedReason).toBeNull();
+    expect(must(armed, 'armed after').scheduleBlockedReason).toBeNull();
   });
 });
