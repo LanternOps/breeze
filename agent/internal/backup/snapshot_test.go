@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
+	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
 // mockProvider implements providers.BackupProvider for testing.
@@ -1652,7 +1653,7 @@ func TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles(t
 		{sourcePath: f2, snapshotPath: "path_0/f2.txt", size: 3, modTime: modTime},
 		{sourcePath: f3, snapshotPath: "path_0/f3.txt", size: 5, modTime: modTime},
 	}
-	snapshot1, err := createSnapshotWithProgress(context.Background(), provider, run1Files, nil, nil, nil, nil, "test-device")
+	snapshot1, err := createSnapshotWithProgress(context.Background(), provider, run1Files, nil, nil, nil, nil, withRunIdentity("test-device"))
 	if err != nil {
 		t.Fatalf("run 1 failed: %v", err)
 	}
@@ -1692,7 +1693,7 @@ func TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles(t
 		{sourcePath: f2, snapshotPath: "path_0/f2.txt", size: int64(len("TWO-CHANGED")), modTime: newModTime}, // changed
 		// f3 deliberately absent — deleted from disk before this run's walk.
 	}
-	snapshot2, err := createSnapshotWithProgress(context.Background(), provider, run2Files, nil, nil, prev, nil, "test-device")
+	snapshot2, err := createSnapshotWithProgress(context.Background(), provider, run2Files, nil, nil, prev, nil, withRunIdentity("test-device"))
 	if err != nil {
 		t.Fatalf("run 2 failed: %v", err)
 	}
@@ -2195,5 +2196,74 @@ func TestAbortSourceGone_StopsLeaseRefreshBeforeCleanup_NoOrphanLeaseAfterAbort(
 		if strings.HasSuffix(key, "/upload.lease") {
 			t.Fatalf("upload.lease was resurrected after abort cleanup ran: %s", key)
 		}
+	}
+}
+
+// TestPublishSystemState_SkipsUploadingSymlinkArtifacts pins the D15 Wave 1
+// fix (finding #5): a symlink artifact (LinkTarget set) has no independent
+// file content — publishSystemState must record it in the manifest but NOT
+// try to upload anything for its key, unlike an ordinary artifact.
+func TestPublishSystemState_SkipsUploadingSymlinkArtifacts(t *testing.T) {
+	stagingDir := t.TempDir()
+	regularContent := []byte("hello")
+	if err := os.WriteFile(pathpkg.Join(stagingDir, "real.txt"), regularContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The symlink artifact's Path need not exist as a real file in staging
+	// for this to matter — publishSystemState must not even stat/open it as
+	// a regular file — but stage the actual link too, matching what
+	// collectArtifactsInDir would have produced from a real copyTree run.
+	if err := os.Symlink("real.txt", pathpkg.Join(stagingDir, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := &systemstate.SystemStateManifest{
+		Platform: "test",
+		Artifacts: []systemstate.Artifact{
+			{Name: "real.txt", Category: "config", Path: "real.txt", SizeBytes: int64(len(regularContent))},
+			{Name: "link.txt", Category: "config", Path: "link.txt", LinkTarget: "real.txt"},
+		},
+	}
+
+	provider := newMockProvider()
+	snapshotID := "snap-1"
+	if err := publishSystemState(context.Background(), provider, snapshotID, stagingDir, manifest); err != nil {
+		t.Fatalf("publishSystemState: %v", err)
+	}
+
+	wantRegularKey := path.Join("snapshots", snapshotID, "system-state", "real.txt")
+	wantSymlinkKey := path.Join("snapshots", snapshotID, "system-state", "link.txt")
+	wantManifestKey := path.Join("snapshots", snapshotID, "system-state", "manifest.json")
+
+	if _, ok := provider.files[wantRegularKey]; !ok {
+		t.Errorf("expected the regular artifact to upload to %q, got keys %v", wantRegularKey, providerKeys(provider))
+	}
+	if _, ok := provider.files[wantSymlinkKey]; ok {
+		t.Errorf("symlink artifact must NOT be uploaded as its own object (manifest-only), but found %q", wantSymlinkKey)
+	}
+	for _, c := range provider.uploadCalls {
+		if c.remotePath == wantSymlinkKey {
+			t.Errorf("publishSystemState issued an upload call for the symlink artifact %q, want none", wantSymlinkKey)
+		}
+	}
+	if _, ok := provider.files[wantManifestKey]; !ok {
+		t.Errorf("expected system-state manifest uploaded to %q, got keys %v", wantManifestKey, providerKeys(provider))
+	}
+
+	var gotManifest systemstate.SystemStateManifest
+	if err := json.Unmarshal(provider.files[wantManifestKey], &gotManifest); err != nil {
+		t.Fatalf("decode published manifest: %v", err)
+	}
+	var gotLink *systemstate.Artifact
+	for i := range gotManifest.Artifacts {
+		if gotManifest.Artifacts[i].Name == "link.txt" {
+			gotLink = &gotManifest.Artifacts[i]
+		}
+	}
+	if gotLink == nil {
+		t.Fatal("published manifest is missing the symlink artifact entry")
+	}
+	if gotLink.LinkTarget != "real.txt" {
+		t.Errorf("published symlink artifact LinkTarget = %q, want %q", gotLink.LinkTarget, "real.txt")
 	}
 }

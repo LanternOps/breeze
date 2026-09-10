@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -106,6 +105,17 @@ type BackupConfig struct {
 	// snapshot it is either way. Fail-open to a full backup, the same safe
 	// default as every other dedupe failure mode in this package.
 	AgentID string
+
+	// AgentVersion is stamped onto a collected system state manifest's
+	// CollectorVersion field (see systemstate.SystemStateManifest) so a
+	// restore can tell which agent/helper build produced it. The systemstate
+	// package itself has no notion of "the agent version" — it collects OS
+	// state, not agent identity — so this is wired through BackupConfig the
+	// same way AgentID is (see that field's doc comment): the caller
+	// populates it from the running binary's version string (e.g. breeze-
+	// backup's `version` build var). Empty means the manifest carries no
+	// CollectorVersion, e.g. an older caller that hasn't wired this through.
+	AgentVersion string
 
 	// VSSProvider overrides where a VSS-enabled run gets its provider from.
 	// Nil — the production case, and what every real caller sets — means
@@ -624,19 +634,13 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 
 	// System state collection: gather OS config, hardware profile, etc.
 	var systemStateErr error
-	// systemStateStagingIdx marks the staging dir's slot in backupPaths so the
-	// VSS rewrite below can leave it alone — it is created after the snapshot
-	// and therefore only exists on the live volume (#3026). Because it is never
-	// rewritten, systemStateStagingDir is simply the path collectSystemState
-	// returned, and it is the same prefix collectBackupFilesFromPaths produces
-	// for markSystemStateFiles to match on.
-	//
-	// The index is POSITIONAL and captured immediately before the append below.
-	// Nothing may insert into, reorder, filter or dedupe backupPaths between
-	// that append and rewritePathsForVSS, or the exclusion lands on a real user
-	// path — which would then read live with its warning suppressed, i.e. the
-	// #2999 class this file works to keep visible. If backupPaths ever needs
-	// post-processing, append the staging dir after it instead of moving this.
+	// systemStateStagingIdx is always noStagingIdx now: the staging dir is
+	// published separately (see publishSystemState) rather than appended to
+	// backupPaths, so there is never an entry in backupPaths for the VSS
+	// rewrite below to protect. Kept as a named constant purely so
+	// rewritePathsForVSS/reportableLiveReads (D8/D12's VSS machinery, out of
+	// scope for this change) keep their existing "no staging dir" signature
+	// unchanged.
 	var systemStateStagingDir string
 	systemStateStagingIdx := noStagingIdx
 	if m.config.SystemStateEnabled {
@@ -656,6 +660,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			// failed, i.e. the capture would not boot at restore time.
 			appendWarning(job, "system state was not collected: "+ssErr.Error())
 		} else {
+			manifest.CollectorVersion = m.config.AgentVersion
 			job.SystemStateManifest = manifest
 			// Collection succeeded on all *required* artifacts (missing a
 			// required class returns an error above and fails the run). Any
@@ -681,12 +686,14 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 				appendWarning(job, incomplete)
 				log.Warn("system state collection incomplete", "warning", incomplete)
 			}
-			// Append the staging dir to the walked paths so its artifacts land
-			// in the backup manifest. NOT in the VSS shadow copy — the rewrite
-			// below deliberately skips this entry (see rewritePathsForVSS).
-			systemStateStagingIdx = len(backupPaths)
+			// The staging dir is published to snapshots/<id>/system-state/ as
+			// its own step (see publishSystemState in snapshot.go), never
+			// appended to backupPaths — Option A of the D15 bare-metal-recovery
+			// contract (see docs/superpowers/plans/backup/
+			// 2026-09-09-bmr-system-state-contract.md). Record it so the
+			// publish step(s) below can find it, and clean it up once this run
+			// is done with it either way.
 			systemStateStagingDir = stagingDir
-			backupPaths = append(backupPaths, stagingDir)
 			defer func() {
 				if removeErr := os.RemoveAll(stagingDir); removeErr != nil {
 					log.Warn("failed to clean up system state staging dir", "dir", stagingDir, "error", removeErr.Error())
@@ -777,42 +784,58 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// backupFile.originalPath doc comment.
 		originalPathsForVSS(files, vssSession.ShadowPaths)
 	}
-	if systemStateArtifactsMissing(job.SystemStateManifest, markSystemStateFiles(files, systemStateStagingDir)) {
-		// Reached only when the manifest and the collected files disagree, so
-		// it cannot fire on a healthy run.
-		//
-		// Warning rather than failure for the JOB: the file-path portion is
-		// still valid and restorable, so failing would throw away good data.
-		// But a warning alone is not enough, because unlike job.VSSMetadata the
-		// manifest DOES survive the trip — it is persisted to
-		// backup_snapshots.system_state_manifest and handed to the bare-metal
-		// recovery paths. Left intact it would advertise a complete system
-		// state on a restore point that holds none of it, which is the #3026
-		// symptom rather than a report of it. So drop the artifact list it can
-		// no longer vouch for, and keep the rest of the manifest (platform, OS
-		// version, hardware profile) — that is inline collector output, still
-		// accurate, and the hardware profile is persisted from here for
-		// recovery planning.
-		artifactCount := len(job.SystemStateManifest.Artifacts)
-		log.Warn("system state manifest was recorded but none of its artifacts were captured; "+
-			"the restore point does not contain the system state it describes",
-			"jobId", job.ID,
-			"artifacts", artifactCount,
-			"stagingDir", systemStateStagingDir,
-		)
-		job.SystemStateManifest.Artifacts = nil
-		appendWarning(job, "system state artifacts were not captured: the manifest described "+
-			strconv.Itoa(artifactCount)+" artifacts but none reached the snapshot")
+	// NOTE: system-state artifacts are no longer part of `files` at all (see
+	// the SystemStateEnabled block above) — they are uploaded by
+	// publishSystemState from job.SystemStateManifest/systemStateStagingDir
+	// directly, below and after createSnapshotWithProgress. That function
+	// reads each artifact straight from disk and fails loudly if one is
+	// missing or unreadable, which is a strictly stronger guarantee than the
+	// old "did the file walk happen to see it" proxy check this replaced —
+	// see the plan doc's Wave 1 section for why the old check (markSystem-
+	// StateFiles/systemStateArtifactsMissing) is now dead code and was
+	// removed rather than left inert.
+	// Gate manifest publication whenever server-owned mode is on (D18
+	// §3.1) — keyed on BaseSnapshotID being present, NOT on the lease
+	// being non-zero (P1 fix): Task 1's payload validation guarantees a
+	// non-zero lease whenever BaseSnapshotID is set, but the gate's
+	// INSTALLATION must not itself depend on that value, or a payload that
+	// somehow slipped validation with a zero lease would run completely
+	// ungated instead of hitting checkPublish's fail-closed zero-lease
+	// branch. Legacy servers (nil BaseSnapshotID) get the unwrapped
+	// provider and fully unchanged behavior. Applies to full runs too, not
+	// just incremental ones — the server fences every dispatched run's
+	// late-result window this way.
+	//
+	// Built BEFORE the len(files)==0 branch below (moved here on the D15
+	// merge) because that branch's state-only-zero-files publish path
+	// (publishSystemState + publishSnapshotManifest, D15 Wave 1) also
+	// writes snapshots/<id>/system-state/manifest.json and
+	// snapshots/<id>/manifest.json directly — isManifestPath matches both
+	// by basename, so leaseGate fences that path exactly like the ordinary
+	// createSnapshotWithProgress call below. Using the raw m.config.Provider
+	// there instead would let a state-only run publish past its lease with
+	// no fence at all.
+	uploadProvider := m.config.Provider
+	if m.config.BaseSnapshotID != nil {
+		uploadProvider = &leaseGate{
+			BackupProvider:        m.config.Provider,
+			publishLeaseExpiresAt: m.config.PublishLeaseExpiresAt,
+			journal:               journal,
+		}
 	}
+
 	if len(files) == 0 {
 		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
 		}
-		// A system-state-only run (no configured file paths) that produced
-		// nothing is a hard failure, not a no-op skip: there are no files to
-		// fall back on, so a green empty snapshot would silently protect
-		// nothing. Surface the collection error (or a synthetic one).
-		if m.config.SystemStateEnabled && len(m.config.Paths) == 0 {
+		stateHasArtifacts := systemStateStagingDir != "" && job.SystemStateManifest != nil && len(job.SystemStateManifest.Artifacts) > 0
+		if !stateHasArtifacts && m.config.SystemStateEnabled && len(m.config.Paths) == 0 {
+			// A system-state-only run (no configured file paths) that
+			// collected nothing: success depends entirely on what was
+			// collected above, since there is no ordinary-files fallback.
+			// Nothing to publish (collection failed, or produced a manifest
+			// with zero artifacts) is a hard failure — a green empty
+			// snapshot would silently protect nothing.
 			runErr := systemStateErr
 			if runErr == nil {
 				runErr = errors.New("system state collection produced no artifacts")
@@ -821,6 +844,61 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			job.CompletedAt = time.Now().UTC()
 			job.Error = errors.Join(scanErr, runErr)
 			return job, job.Error
+		}
+		if stateHasArtifacts {
+			// State was collected with at least one artifact — publish it
+			// even though the ordinary file walk yielded nothing.
+			// Deliberately NOT gated on len(m.config.Paths)==0: a MIXED run
+			// (SystemStateEnabled with configured file paths too) can walk
+			// zero files just as easily — an empty directory, everything
+			// excluded, or a stale configured path — and losing the
+			// already-collected state in that case is exactly as silent a
+			// failure as the pure state-only case this branch was written
+			// for. Publish it as its own snapshot: system-state/ artifacts +
+			// manifest, plus the ordinary (empty-files) manifest.json so the
+			// snapshot-id group stays "manifest-bearing" for GC (see
+			// markLiveBackupObjects in apps/api/src/jobs/backupRetention.ts).
+			// A publish failure here is a hard job failure, not `completed`
+			// — there is no ordinary-files fallback for this snapshot.
+			snapshot := &Snapshot{
+				ID:        newSnapshotID(),
+				Timestamp: time.Now().UTC(),
+				// Files must be a non-nil empty slice, not the zero value: the
+				// field has no `omitempty` (a genuine empty-files manifest
+				// must still round-trip as "files":[]), and a nil slice
+				// encodes as `"files":null`, which the API's resultSchemas/
+				// queueSchemas reject (z.array(...).optional() accepts a
+				// missing key or [] but not null) — that silently drops the
+				// whole job result server-side.
+				Files:          []SnapshotFile{},
+				BackupIdentity: m.runBackupIdentity(),
+			}
+			prefix := path.Join(snapshotRootDir, snapshot.ID)
+			if pubErr := publishSystemState(runCtx, uploadProvider, snapshot.ID, systemStateStagingDir, job.SystemStateManifest); pubErr != nil {
+				job.Status = jobStatusFailed
+				job.CompletedAt = time.Now().UTC()
+				job.Error = fmt.Errorf("system state publish failed: %w", pubErr)
+				return job, job.Error
+			}
+			if pubErr := publishSnapshotManifest(runCtx, uploadProvider, snapshot, prefix); pubErr != nil {
+				job.Status = jobStatusFailed
+				job.CompletedAt = time.Now().UTC()
+				job.Error = fmt.Errorf("system state publish failed: %w", pubErr)
+				return job, job.Error
+			}
+			job.Snapshot = snapshot
+			job.BytesBackedUp = 0
+			job.CompletedAt = time.Now().UTC()
+			job.Status = jobStatusCompleted
+			log.Info("backup run finished with state artifacts but zero walked files",
+				"status", job.Status,
+				"jobId", job.ID,
+				"snapshotId", snapshot.ID,
+				"artifacts", len(job.SystemStateManifest.Artifacts),
+				"configuredPaths", len(m.config.Paths),
+				"elapsedMs", time.Since(job.StartedAt).Milliseconds(),
+			)
+			return job, nil
 		}
 		job.Status = jobStatusSkipped
 		job.CompletedAt = time.Now().UTC()
@@ -840,11 +918,15 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// and a full run — dedupe is strictly an optimization and must never
 	// fail or block a backup (see previousManifest's doc comment).
 	//
-	// Skipped entirely for a system-state-only run (no configured file
-	// paths): every one of its files is staging-dir and therefore already
-	// excluded from reference decisions by markSystemStateFiles above, so
-	// there is nothing eligible to dedupe against — the extra remote
-	// list+manifest-download would be pure waste.
+	// A system-state-only run (SystemStateEnabled with no configured file
+	// paths) never reaches this line at all — see the len(files)==0 branch
+	// above, which returns before this point since system-state artifacts
+	// are no longer part of `files` (they are published separately by
+	// publishSystemState). So len(m.config.Paths) > 0 always holds by the
+	// time we get here; this expression is kept as an explicit guard rather
+	// than assumed, so a future change to the branches above fails safe
+	// (skips dedupe) instead of silently building a reference index off an
+	// unintended run shape.
 	var prevSnapshot *Snapshot
 	incrementalDedupeActive := !m.config.SystemStateEnabled || len(m.config.Paths) > 0
 	if incrementalDedupeActive {
@@ -899,31 +981,26 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		progressFn(0, len(files), 0, bytesTotal, "")
 	}
 
-	// Gate manifest publication whenever server-owned mode is on (D18
-	// §3.1) — keyed on BaseSnapshotID being present, NOT on the lease
-	// being non-zero (P1 fix): Task 1's payload validation guarantees a
-	// non-zero lease whenever BaseSnapshotID is set, but the gate's
-	// INSTALLATION must not itself depend on that value, or a payload that
-	// somehow slipped validation with a zero lease would run completely
-	// ungated instead of hitting checkPublish's fail-closed zero-lease
-	// branch. Legacy servers (nil BaseSnapshotID) get the unwrapped
-	// provider and fully unchanged behavior. Applies to full runs too, not
-	// just incremental ones — the server fences every dispatched run's
-	// late-result window this way.
-	uploadProvider := m.config.Provider
-	if m.config.BaseSnapshotID != nil {
-		uploadProvider = &leaseGate{
-			BackupProvider:        m.config.Provider,
-			publishLeaseExpiresAt: m.config.PublishLeaseExpiresAt,
-			journal:               journal,
-		}
+	// D18 W03 hoisted the journal-open (and its stale-journal handling) to
+	// before VSS/scan, and removed the agent-side stale-journal remote
+	// cleanup entirely (D18 §3.5) — see that block earlier in this
+	// function. D15's snapshotOpts/withSystemState wiring is independent of
+	// that and slots in here unchanged.
+	snapshotOpts := []createSnapshotOption{withRunIdentity(runIdentity)}
+	if m.config.SystemStateEnabled && systemStateStagingDir != "" && job.SystemStateManifest != nil && len(job.SystemStateManifest.Artifacts) > 0 {
+		// Publish system state under this call's own snapshot ID, BEFORE its
+		// ordinary manifest.json — see withSystemState's doc comment. This
+		// replaces a separate publishSystemState call this function used to
+		// make AFTER createSnapshotWithProgress returned, which published the
+		// ordinary manifest first (wrong order — D15 Wave 1 finding #4).
+		snapshotOpts = append(snapshotOpts, withSystemState(systemStateStagingDir, job.SystemStateManifest))
 	}
 	// Ownership of the journal's fd lifecycle transfers to
 	// createSnapshotWithProgress from here on (it has its own
 	// completed/Abandon defer) — this function's defer above must not also
 	// Abandon() it out from under that call.
 	journalOwned = true
-	snapshot, snapErr := createSnapshotWithProgress(runCtx, uploadProvider, files, progressFn, journal, prevSnapshot, sourceLiveness, runIdentity)
+	snapshot, snapErr := createSnapshotWithProgress(runCtx, uploadProvider, files, progressFn, journal, prevSnapshot, sourceLiveness, snapshotOpts...)
 	if errors.Is(snapErr, errBackupStopped) {
 		return stopBackupRun()
 	}
@@ -958,6 +1035,17 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		job.Error = combinedErr
 		return job, combinedErr
 	}
+
+	// A run with BOTH configured file paths and system state (SystemStateEnabled
+	// with len(m.config.Paths) > 0 — the state-only case above already handled
+	// SystemStateEnabled with no configured paths) already published its
+	// collected system state INSIDE createSnapshotWithProgress above, via the
+	// withSystemState option — before its ordinary manifest, per D15 Wave 1
+	// finding #4. A publish failure there surfaces as snapErr (checked
+	// above), which fails the job loudly: a system_image-shaped run that
+	// reports `completed` while its state silently never reached the
+	// snapshot is exactly the bug this fixes, so a partial success (files
+	// ok, state missing) must not read as `completed`.
 
 	// Per-file upload failures on a PARTIAL success (some files uploaded,
 	// some skipped/stalled/retry-exhausted): the job still completes — the
@@ -1235,12 +1323,6 @@ type backupFile struct {
 	// copy device path every run), so keying the journal on it would make
 	// resume silently never match on Windows-with-VSS.
 	originalPath string
-	// systemState marks a file collected from the run's system-state
-	// staging directory (see markSystemStateFiles / collectSystemState's
-	// call site in RunBackupContext). decideFile always uploads these —
-	// they are never reference candidates, see markSystemStateFiles's doc
-	// comment for why this is explicit rather than incidental.
-	systemState bool
 }
 
 func (m *BackupManager) collectBackupFiles() ([]backupFile, error) {
@@ -1443,6 +1525,15 @@ func summarizeLiveReads(paths []string) string {
 
 // rewritePathsForVSS rewrites source paths to use VSS shadow copy device paths.
 // e.g., "C:\\Users\\data" with shadow "C:" -> "\\\\?\\GLOBALROOT\\...\\Users\\data"
+//
+// NOTE: as of Wave 1 of the D15 bare-metal-recovery contract, the caller
+// (RunBackupContext) never appends the system-state staging dir into
+// backupPaths anymore — it is published separately (see
+// snapshot.go's publishSystemState) — so stagingIdx is always noStagingIdx in
+// production today. The parameter and the exclusion logic below are kept
+// (rather than removed) because this function's own tests exercise it
+// directly, and because a future caller that DOES need to walk a directory
+// alongside VSS-rewritten paths can still opt in without re-deriving this.
 //
 // stagingIdx (noStagingIdx when the run has none) is the index of the
 // system-state staging directory, which is excluded from the rewrite. It is

@@ -195,6 +195,7 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 			SystemStateEnabled:    true,
 			VSSEnabled:            vssEnabled,
 			AgentID:               helperAgentID,
+			AgentVersion:          version,
 			BaseSnapshotID:        p.BaseSnapshotID,
 			PublishLeaseExpiresAt: publishLeaseExpiresAt,
 		}), nil
@@ -215,6 +216,7 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		Retention:             0,
 		VSSEnabled:            vssEnabled,
 		AgentID:               helperAgentID,
+		AgentVersion:          version,
 		BaseSnapshotID:        p.BaseSnapshotID,
 		PublishLeaseExpiresAt: publishLeaseExpiresAt,
 	}), nil

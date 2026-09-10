@@ -492,14 +492,26 @@ func TestRunBackup_SystemImage_NoPathsAllowed(t *testing.T) {
 	// system-state staging dir is the whole snapshot, so the "backup paths are
 	// required" guard must NOT fire.
 	stagingDir := t.TempDir()
-	if err := os.WriteFile(pathpkg.Join(stagingDir, "services.txt"), []byte("svc"), 0o600); err != nil {
+	content := []byte("svc")
+	if err := os.WriteFile(pathpkg.Join(stagingDir, "services.txt"), content, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
-		return &systemstate.SystemStateManifest{Platform: "test"}, stagingDir, nil
+		return &systemstate.SystemStateManifest{
+			Platform: "test",
+			Artifacts: []systemstate.Artifact{{
+				Name: "services", Category: "services", Path: "services.txt",
+				SizeBytes: int64(len(content)),
+				// sha256("svc") — a real collector fills this in at collection
+				// time (systemstate.artifactFromFile); this fixture stands in
+				// for that.
+				Checksum: "348c658682ae8701d3e9d21f191872491cf15e6acbb1681770b1cb787c1cf7ff",
+			}},
+		}, stagingDir, nil
 	})
 
-	mgr := NewBackupManager(BackupConfig{Provider: newMockProvider(), SystemStateEnabled: true})
+	provider := newMockProvider()
+	mgr := NewBackupManager(BackupConfig{Provider: provider, SystemStateEnabled: true})
 	job, err := mgr.RunBackup()
 	if err != nil {
 		t.Fatalf("system-state-only run should succeed with collected artifacts: %v", err)
@@ -507,6 +519,189 @@ func TestRunBackup_SystemImage_NoPathsAllowed(t *testing.T) {
 	if job.Status != jobStatusCompleted {
 		t.Fatalf("status = %q, want completed", job.Status)
 	}
+	if job.Snapshot == nil {
+		t.Fatal("a state-only success must still produce a snapshot")
+	}
+	wantArtifactKey := path.Join("snapshots", job.Snapshot.ID, "system-state", "services.txt")
+	wantManifestKey := path.Join("snapshots", job.Snapshot.ID, "system-state", "manifest.json")
+	wantOrdinaryManifestKey := path.Join("snapshots", job.Snapshot.ID, "manifest.json")
+	if _, ok := provider.files[wantArtifactKey]; !ok {
+		t.Errorf("expected artifact uploaded to %q, got keys %v", wantArtifactKey, providerKeys(provider))
+	}
+	if _, ok := provider.files[wantManifestKey]; !ok {
+		t.Errorf("expected system-state manifest uploaded to %q, got keys %v", wantManifestKey, providerKeys(provider))
+	}
+	if _, ok := provider.files[wantOrdinaryManifestKey]; !ok {
+		t.Errorf("expected ordinary (empty-files) manifest uploaded to %q, got keys %v", wantOrdinaryManifestKey, providerKeys(provider))
+	}
+
+	var ordinaryManifest Snapshot
+	if err := json.Unmarshal(provider.files[wantOrdinaryManifestKey], &ordinaryManifest); err != nil {
+		t.Fatalf("decode ordinary manifest: %v", err)
+	}
+	if len(ordinaryManifest.Files) != 0 {
+		t.Errorf("ordinary manifest.files = %d, want 0 (state-only run)", len(ordinaryManifest.Files))
+	}
+	// len()==0 can't distinguish a nil slice ("files":null) from an empty one
+	// ("files":[]) — the API's resultSchemas/queueSchemas reject null (they're
+	// z.array(...).optional(), which accepts a missing key or [] but not
+	// null) and silently drop the whole job result. Assert the raw wire shape,
+	// not just the decoded length.
+	var rawOrdinaryManifest map[string]json.RawMessage
+	if err := json.Unmarshal(provider.files[wantOrdinaryManifestKey], &rawOrdinaryManifest); err != nil {
+		t.Fatalf("decode ordinary manifest as raw JSON: %v", err)
+	}
+	if rawFiles := string(rawOrdinaryManifest["files"]); rawFiles != "[]" {
+		t.Errorf(`ordinary manifest raw "files" = %s, want "[]" (not null) — API schemas reject null`, rawFiles)
+	}
+	if ordinaryManifest.ID != job.Snapshot.ID {
+		t.Errorf("ordinary manifest ID = %q, want %q (must share the state prefix's snapshot ID)", ordinaryManifest.ID, job.Snapshot.ID)
+	}
+
+	var stateManifest systemstate.SystemStateManifest
+	if err := json.Unmarshal(provider.files[wantManifestKey], &stateManifest); err != nil {
+		t.Fatalf("decode system state manifest: %v", err)
+	}
+	if stateManifest.SchemaVersion != 1 {
+		t.Errorf("system state manifest schemaVersion = %d, want 1", stateManifest.SchemaVersion)
+	}
+	if len(stateManifest.Artifacts) != 1 || stateManifest.Artifacts[0].Checksum == "" {
+		t.Errorf("published system state manifest should carry the artifact's checksum, got %+v", stateManifest.Artifacts)
+	}
+}
+
+func TestRunBackup_SystemState_MixedRunZeroWalkedFilesStillPublishesState(t *testing.T) {
+	// A MIXED run (SystemStateEnabled AND configured file paths) whose walk
+	// yields zero files — an empty directory, everything excluded, or a stale
+	// configured path — must not lose already-collected system state. The
+	// state-only special case used to be gated on len(m.config.Paths)==0, so
+	// this exact shape (Paths configured, walk empty, state collected) fell
+	// through to jobStatusSkipped, which removes the staging dir and
+	// discards the state silently.
+	emptyDir := t.TempDir()
+
+	stagingDir := t.TempDir()
+	content := []byte("svc")
+	if err := os.WriteFile(pathpkg.Join(stagingDir, "services.txt"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return &systemstate.SystemStateManifest{
+			Platform: "test",
+			Artifacts: []systemstate.Artifact{{
+				Name: "services", Category: "services", Path: "services.txt",
+				SizeBytes: int64(len(content)),
+				Checksum:  "348c658682ae8701d3e9d21f191872491cf15e6acbb1681770b1cb787c1cf7ff",
+			}},
+		}, stagingDir, nil
+	})
+
+	provider := newMockProvider()
+	mgr := NewBackupManager(BackupConfig{
+		Provider:           provider,
+		Paths:              []string{emptyDir},
+		SystemStateEnabled: true,
+	})
+	job, err := mgr.RunBackup()
+	if err != nil {
+		t.Fatalf("mixed run with collected state should succeed despite an empty walk: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("status = %q, want %q", job.Status, jobStatusCompleted)
+	}
+	if job.Snapshot == nil {
+		t.Fatal("collected state must still produce a snapshot even though the walk found nothing")
+	}
+
+	wantArtifactKey := path.Join("snapshots", job.Snapshot.ID, "system-state", "services.txt")
+	wantManifestKey := path.Join("snapshots", job.Snapshot.ID, "system-state", "manifest.json")
+	wantOrdinaryManifestKey := path.Join("snapshots", job.Snapshot.ID, "manifest.json")
+	if _, ok := provider.files[wantArtifactKey]; !ok {
+		t.Errorf("expected artifact uploaded to %q, got keys %v", wantArtifactKey, providerKeys(provider))
+	}
+	if _, ok := provider.files[wantManifestKey]; !ok {
+		t.Errorf("expected system-state manifest uploaded to %q, got keys %v", wantManifestKey, providerKeys(provider))
+	}
+	if _, ok := provider.files[wantOrdinaryManifestKey]; !ok {
+		t.Errorf("expected ordinary (empty-files) manifest uploaded to %q, got keys %v", wantOrdinaryManifestKey, providerKeys(provider))
+	}
+}
+
+func TestRunBackup_SystemState_PublishOrderStateBeforeOrdinaryManifest(t *testing.T) {
+	// A mixed run (ordinary files + system state) must publish the
+	// system-state artifact(s), then the system-state manifest, and ONLY
+	// THEN the ordinary manifest.json — the ordinary manifest is the "commit
+	// point" a concurrent GC sweep uses to decide a snapshot-id group is
+	// "manifest-bearing" (markLiveBackupObjects, backupRetention.ts). If the
+	// ordinary manifest lands first, a GC sweep racing in between sees a
+	// manifest-bearing group whose system-state/* objects aren't marked live
+	// yet and can reap them under the per-object grace rule.
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "single.txt", "single file backup")
+
+	stagingDir := t.TempDir()
+	content := []byte("svc")
+	if err := os.WriteFile(pathpkg.Join(stagingDir, "services.txt"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return &systemstate.SystemStateManifest{
+			Platform: "test",
+			Artifacts: []systemstate.Artifact{{
+				Name: "services", Category: "services", Path: "services.txt",
+				SizeBytes: int64(len(content)),
+				Checksum:  "348c658682ae8701d3e9d21f191872491cf15e6acbb1681770b1cb787c1cf7ff",
+			}},
+		}, stagingDir, nil
+	})
+
+	provider := newMockProvider()
+	mgr := NewBackupManager(BackupConfig{
+		Provider:           provider,
+		Paths:              []string{file1},
+		SystemStateEnabled: true,
+	})
+	job, err := mgr.RunBackup()
+	if err != nil {
+		t.Fatalf("RunBackup failed: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("status = %q, want %q", job.Status, jobStatusCompleted)
+	}
+
+	wantArtifactKey := path.Join("snapshots", job.Snapshot.ID, "system-state", "services.txt")
+	wantStateManifestKey := path.Join("snapshots", job.Snapshot.ID, "system-state", "manifest.json")
+	wantOrdinaryManifestKey := path.Join("snapshots", job.Snapshot.ID, "manifest.json")
+
+	indexOf := func(remotePath string) int {
+		for i, c := range provider.uploadCalls {
+			if c.remotePath == remotePath {
+				return i
+			}
+		}
+		return -1
+	}
+	artifactIdx := indexOf(wantArtifactKey)
+	stateManifestIdx := indexOf(wantStateManifestKey)
+	ordinaryManifestIdx := indexOf(wantOrdinaryManifestKey)
+	if artifactIdx == -1 || stateManifestIdx == -1 || ordinaryManifestIdx == -1 {
+		t.Fatalf("missing expected upload(s): artifact=%d stateManifest=%d ordinaryManifest=%d, calls=%+v",
+			artifactIdx, stateManifestIdx, ordinaryManifestIdx, provider.uploadCalls)
+	}
+	if artifactIdx >= stateManifestIdx || stateManifestIdx >= ordinaryManifestIdx {
+		t.Errorf("wrong publish order: artifact=%d, stateManifest=%d, ordinaryManifest=%d (want artifact < stateManifest < ordinaryManifest)",
+			artifactIdx, stateManifestIdx, ordinaryManifestIdx)
+	}
+}
+
+// providerKeys returns the sorted list of remote keys the mock provider has
+// stored, for readable test failure messages.
+func providerKeys(p *mockProvider) []string {
+	keys := make([]string, 0, len(p.files))
+	for k := range p.files {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 func TestRunBackup_SystemImage_CollectionFailureFailsLoud(t *testing.T) {
@@ -602,13 +797,14 @@ func TestRunBackup_SystemImage_PartialCollectionWarns(t *testing.T) {
 	// missing *required* class returns an error from the collector and fails the
 	// run instead — see TestRunBackup_SystemImage_CollectionFailureFailsLoud.)
 	stagingDir := t.TempDir()
-	if err := os.WriteFile(pathpkg.Join(stagingDir, "services.txt"), []byte("svc"), 0o600); err != nil {
+	content := []byte("svc")
+	if err := os.WriteFile(pathpkg.Join(stagingDir, "services.txt"), content, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
 		return &systemstate.SystemStateManifest{
 			Platform:        "test",
-			Artifacts:       []systemstate.Artifact{{Name: "services", Category: "services"}},
+			Artifacts:       []systemstate.Artifact{{Name: "services", Category: "services", Path: "services.txt", SizeBytes: int64(len(content))}},
 			IncompleteSteps: []string{"certs", "iis"},
 		}, stagingDir, nil
 	})
@@ -626,26 +822,33 @@ func TestRunBackup_SystemImage_PartialCollectionWarns(t *testing.T) {
 	}
 }
 
-// TestRunBackup_SystemStateManifestWithoutArtifactsWarnsAndDropsArtifacts is
-// the end-to-end guard for #3026's symptom, at the level the bug actually
-// presented: a run that ALSO has configured file paths, so the len(files)==0
-// hard-failure guard never fires and the job completes green.
+// TestRunBackup_MixedRun_SystemStatePublishFailureFailsLoud is the end-to-end
+// guard for #3026/D15's symptom, at the level the bug actually presented: a
+// run that ALSO has configured file paths, so the len(files)==0 hard-failure
+// guard never fires on its own.
 //
-// The staging dir is empty here, which is what the walk saw when VSS had
-// rewritten the staging path onto a shadow-device path that predated the
-// snapshot. The manifest still claims two artifacts. That combination must not
-// produce an unqualified success: the operator has to be told, and the manifest
-// must stop advertising artifacts the restore point does not contain — it is
-// persisted server-side and drives the bare-metal recovery paths.
-func TestRunBackup_SystemStateManifestWithoutArtifactsWarnsAndDropsArtifacts(t *testing.T) {
+// The manifest claims two artifacts, but neither exists in the staging dir
+// handed to publishSystemState (a stand-in for #3026's actual cause — a
+// staging dir rewritten onto a shadow-device path that predated the
+// snapshot — and any other way the collected bytes fail to reach the
+// snapshot). That combination must NOT produce an unqualified `completed`:
+// per the D15 contract, a job whose system state silently never reached the
+// snapshot must fail loud, even though the ordinary file-path portion
+// succeeded — this is the exact bug the old "warn and drop the artifact
+// list" behavior papered over.
+func TestRunBackup_MixedRun_SystemStatePublishFailureFailsLoud(t *testing.T) {
 	tmpDir := t.TempDir()
 	file1 := createTempFile(t, tmpDir, "doc.txt", "user data that backed up fine")
 
-	// Collection reports artifacts, but nothing of theirs is on disk to walk.
+	// Collection reports artifacts, but nothing of theirs is on disk in the
+	// staging dir handed back (a different, empty temp dir).
 	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
 		return &systemstate.SystemStateManifest{
-			Platform:  "test",
-			Artifacts: []systemstate.Artifact{{Name: "registry"}, {Name: "boot"}},
+			Platform: "test",
+			Artifacts: []systemstate.Artifact{
+				{Name: "registry", Path: "registry.dat", SizeBytes: 4},
+				{Name: "boot", Path: "boot.cfg", SizeBytes: 4},
+			},
 		}, t.TempDir(), nil
 	})
 
@@ -655,24 +858,14 @@ func TestRunBackup_SystemStateManifestWithoutArtifactsWarnsAndDropsArtifacts(t *
 		SystemStateEnabled: true,
 	})
 	job, err := mgr.RunBackup()
-	if err != nil {
-		t.Fatalf("the file-path portion is still valid, so the run should complete: %v", err)
+	if err == nil {
+		t.Fatal("a system state publish failure must fail the job, not complete green")
 	}
-	if job.Status != jobStatusCompleted {
-		t.Fatalf("status = %q, want completed", job.Status)
+	if job == nil || job.Status != jobStatusFailed {
+		t.Fatalf("status = %v, want %q", job, jobStatusFailed)
 	}
-	if !strings.Contains(job.Warning, "system state artifacts were not captured") {
-		t.Errorf("job completed with no warning about the missing system state; warning = %q", job.Warning)
-	}
-	if job.SystemStateManifest == nil {
-		t.Fatal("the manifest should be retained (platform/hardware profile are still accurate), not dropped wholesale")
-	}
-	if len(job.SystemStateManifest.Artifacts) != 0 {
-		t.Errorf("manifest still advertises %d artifacts that never reached the snapshot",
-			len(job.SystemStateManifest.Artifacts))
-	}
-	if job.SystemStateManifest.Platform != "test" {
-		t.Errorf("platform = %q, want the collector's value retained", job.SystemStateManifest.Platform)
+	if !strings.Contains(err.Error(), "system state publish failed") {
+		t.Errorf("expected a clear 'system state publish failed' reason, got: %v", err)
 	}
 }
 
@@ -683,18 +876,20 @@ func TestRunBackup_SystemStateCapturedProducesNoWarning(t *testing.T) {
 	file1 := createTempFile(t, tmpDir, "doc.txt", "user data")
 
 	stagingDir := t.TempDir()
-	if err := os.WriteFile(pathpkg.Join(stagingDir, "registry.dat"), []byte("hive"), 0o600); err != nil {
+	content := []byte("hive")
+	if err := os.WriteFile(pathpkg.Join(stagingDir, "registry.dat"), content, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
 		return &systemstate.SystemStateManifest{
 			Platform:  "test",
-			Artifacts: []systemstate.Artifact{{Name: "registry"}},
+			Artifacts: []systemstate.Artifact{{Name: "registry", Path: "registry.dat", SizeBytes: int64(len(content))}},
 		}, stagingDir, nil
 	})
 
+	provider := newMockProvider()
 	mgr := NewBackupManager(BackupConfig{
-		Provider:           newMockProvider(),
+		Provider:           provider,
 		Paths:              []string{file1},
 		SystemStateEnabled: true,
 	})
@@ -702,11 +897,18 @@ func TestRunBackup_SystemStateCapturedProducesNoWarning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunBackup failed: %v", err)
 	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("status = %q, want completed", job.Status)
+	}
 	if job.Warning != "" {
 		t.Errorf("healthy system-state run produced warning %q, want none", job.Warning)
 	}
 	if len(job.SystemStateManifest.Artifacts) != 1 {
 		t.Errorf("a captured artifact list must be left intact, got %d", len(job.SystemStateManifest.Artifacts))
+	}
+	wantArtifactKey := path.Join("snapshots", job.Snapshot.ID, "system-state", "registry.dat")
+	if _, ok := provider.files[wantArtifactKey]; !ok {
+		t.Errorf("expected artifact uploaded to %q, got keys %v", wantArtifactKey, providerKeys(provider))
 	}
 }
 
@@ -1410,15 +1612,29 @@ func TestBackupNeverDeletesRemoteObjects_RetentionConfigured(t *testing.T) {
 	// fixed path across iterations would make run #2 fail to stat it — a
 	// real collision with production cleanup behavior, not this test's
 	// concern (see the plan's Task 5 note that this bug was a plan defect).
+	svcContent := []byte("svc")
 	newStagingDir := func() string {
 		dir := t.TempDir()
-		if err := os.WriteFile(pathpkg.Join(dir, "services.txt"), []byte("svc"), 0o600); err != nil {
+		if err := os.WriteFile(pathpkg.Join(dir, "services.txt"), svcContent, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		return dir
 	}
 	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
-		return &systemstate.SystemStateManifest{Platform: "test"}, newStagingDir(), nil
+		// D15 Wave 1: system state now publishes only what the manifest's
+		// Artifacts describe (publishSystemState), not whatever the file
+		// walk happened to see — a manifest with zero artifacts is a hard
+		// failure (RunBackupContext's "system state collection produced no
+		// artifacts" branch), so this fixture must declare the staged file
+		// as an artifact, matching TestRunBackup_SystemImage_NoPathsAllowed's
+		// pattern above.
+		return &systemstate.SystemStateManifest{
+			Platform: "test",
+			Artifacts: []systemstate.Artifact{{
+				Name: "services", Category: "services", Path: "services.txt",
+				SizeBytes: int64(len(svcContent)),
+			}},
+		}, newStagingDir(), nil
 	})
 
 	provider := newMockProvider()
@@ -1442,6 +1658,56 @@ func TestBackupNeverDeletesRemoteObjects_RetentionConfigured(t *testing.T) {
 	for _, key := range provider.deleteCalls {
 		if !strings.HasSuffix(key, "/upload.lease") {
 			t.Fatalf("expected deletes to be limited to each run's own upload.lease, got: %s (all: %v)", key, provider.deleteCalls)
+		}
+	}
+}
+
+// TestRunBackupContext_StateOnlyZeroFiles_ExpiredLease_RefusesToPublish
+// proves the D15-merge fix: D15 Wave 1's state-only-zero-walked-files
+// publish path (backup.go, "backup run finished with state artifacts but
+// zero walked files") writes snapshots/<id>/system-state/manifest.json and
+// snapshots/<id>/manifest.json directly, OUTSIDE createSnapshotWithProgress
+// — it must still go through the SAME leaseGate-wrapped provider as every
+// other publish path (D18 §3.1), not the raw m.config.Provider. Before the
+// fix (uploadProvider built after this branch instead of before it), this
+// exact scenario would silently publish past an already-expired lease.
+func TestRunBackupContext_StateOnlyZeroFiles_ExpiredLease_RefusesToPublish(t *testing.T) {
+	svcContent := []byte("svc")
+	stagingDir := t.TempDir()
+	if err := os.WriteFile(pathpkg.Join(stagingDir, "services.txt"), svcContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return &systemstate.SystemStateManifest{
+			Platform: "test",
+			Artifacts: []systemstate.Artifact{{
+				Name: "services", Category: "services", Path: "services.txt",
+				SizeBytes: int64(len(svcContent)),
+			}},
+		}, stagingDir, nil
+	})
+
+	provider := newMockProvider()
+	baseID := "" // full run — the lease fences state-only publishes too, not just ordinary ones
+	mgr := NewBackupManager(BackupConfig{
+		Provider:              provider,
+		SystemStateEnabled:    true,
+		StagingDir:            t.TempDir(),
+		AgentID:               "test-device",
+		BaseSnapshotID:        &baseID,
+		PublishLeaseExpiresAt: time.Now().Add(-1 * time.Hour), // already expired
+	})
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if !errors.Is(err, ErrPublishLeaseExpired) {
+		t.Fatalf("err = %v, want ErrPublishLeaseExpired", err)
+	}
+	if job.Status != jobStatusFailed {
+		t.Fatalf("job.Status = %q, want %q", job.Status, jobStatusFailed)
+	}
+	for key := range provider.files {
+		if isManifestPath(key) {
+			t.Fatalf("a manifest was published (state-only zero-files path) despite an expired lease: %s", key)
 		}
 	}
 }

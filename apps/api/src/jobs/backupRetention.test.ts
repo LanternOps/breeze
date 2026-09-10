@@ -33,7 +33,31 @@ const mockDb = {
 
 vi.mock('../db', () => ({ db: mockDb }));
 
-const fetchBackupObjectTextMock = vi.fn();
+// notFoundError mirrors what isBackupObjectNotFound (backupSnapshotStorage.ts)
+// recognizes as "object absent" (S3's NoSuchKey / local's ENOENT) — used
+// below as fetchBackupObjectTextMock's DEFAULT (base) implementation.
+function notFoundError(): Error {
+  return Object.assign(new Error('not found'), { name: 'NoSuchKey' });
+}
+
+// fetchBackupObjectTextMock's base implementation always rejects "not found".
+// markLiveBackupObjects now fetches TWO keys per snapshot — the ordinary
+// manifest, then (D15) the system-state manifest — and the vast majority of
+// tests in this file only care about the ordinary one. vi.fn()'s queued
+// `.mockResolvedValueOnce`/`.mockRejectedValueOnce` calls are consumed
+// strictly in CALL order regardless of the key argument, so as long as each
+// test queues exactly one entry per snapshot's ORDINARY manifest fetch (the
+// existing, unchanged convention), the interleaved system-state fetch calls
+// fall through to this base implementation and resolve as "no system state
+// for this snapshot" — the routine, expected case for a file-mode snapshot —
+// without every pre-existing test needing to queue a second entry. Tests that
+// DO care about system-state behavior override this per-call via
+// `mockImplementation`/explicit `.Once` queuing, same as any other vi.fn().
+const fetchBackupObjectTextMock = vi.fn<
+  (input: { provider: string | null | undefined; providerConfig: unknown; key: string }) => Promise<string>
+>(async () => {
+  throw notFoundError();
+});
 const listBackupObjectsUnderPrefixMock = vi.fn();
 const deleteBackupObjectKeysMock = vi.fn();
 
@@ -58,6 +82,7 @@ const {
   normalizeStorageIdentity,
   BACKUP_GC_GRACE_MS,
   BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS,
+  isRetainableBackupTypeForGc,
 } = await import('./backupRetention');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -594,9 +619,20 @@ describe('sweepUnreferencedBackupObjects', () => {
       // different config's snapshot, same bucket) references an object that
       // physically lives under A's prefix — the cross-config reference the
       // identity-scoped mark protects.
-      fetchBackupObjectTextMock
-        .mockResolvedValueOnce(manifestJson([])) // manifest for A
-        .mockResolvedValueOnce(manifestJson([{ backupPath: 'snapshots/A/files/shared.dat' }])); // manifest for B
+      //
+      // Dispatched by key (not a positional .mockResolvedValueOnce chain):
+      // markLiveBackupObjects now fetches TWO keys per snapshot (ordinary +
+      // D15's system-state probe), which would otherwise misalign a
+      // positional queue across multiple snapshots — see the failure this
+      // fixture originally hit before switching to key dispatch.
+      fetchBackupObjectTextMock.mockImplementation(async (input: { key: string }) => {
+        if (input.key === 'snapshots/A/manifest.json') return manifestJson([]);
+        if (input.key === 'snapshots/B/manifest.json') {
+          return manifestJson([{ backupPath: 'snapshots/A/files/shared.dat' }]);
+        }
+        if (input.key.endsWith('/system-state/manifest.json')) throw notFoundError();
+        throw new Error(`unexpected manifest fetch: ${input.key}`);
+      });
 
       const old = new Date(Date.now() - 10 * DAY_MS);
       listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
@@ -667,9 +703,12 @@ describe('sweepUnreferencedBackupObjects', () => {
     selectQueue.push([destination]); // destinations
     selectQueue.push([]); // retained snapshots for the identity — NONE (row never persisted)
 
-    // Only ONE manifest fetch expected: snapshot NEW is picked up purely from
-    // the listing (not from a retained row), and NEW is the only snapshot in
-    // this bucket at all.
+    // ONE ordinary-manifest fetch expected: snapshot NEW is picked up purely
+    // from the listing (not from a retained row), and NEW is the only
+    // snapshot in this bucket at all. markLiveBackupObjects also probes for a
+    // system-state manifest per snapshot (D15) — that second call falls
+    // through to fetchBackupObjectTextMock's default "not found" (this
+    // snapshot has none), so it isn't queued here.
     fetchBackupObjectTextMock.mockResolvedValueOnce(
       manifestJson([{ backupPath: 'snapshots/OLD/files/base.dat' }]),
     );
@@ -683,9 +722,12 @@ describe('sweepUnreferencedBackupObjects', () => {
 
     const result = await sweepUnreferencedBackupObjects();
 
-    expect(fetchBackupObjectTextMock).toHaveBeenCalledTimes(1);
+    expect(fetchBackupObjectTextMock).toHaveBeenCalledTimes(2);
     expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(
       expect.objectContaining({ key: 'snapshots/NEW/manifest.json' }),
+    );
+    expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'snapshots/NEW/system-state/manifest.json' }),
     );
     expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
     expect(result).toEqual({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
@@ -720,6 +762,11 @@ describe('sweepUnreferencedBackupObjects', () => {
         if (input.key === 'snapshots/OLDER/manifest.json') {
           return manifestJson([{ backupPath: 'snapshots/BASE/files/base.dat' }]);
         }
+        // Neither snapshot has system state — this test predates D15 and
+        // isn't about it. markLiveBackupObjects probes for it unconditionally
+        // per snapshot, so it must resolve as "absent" (routine case), not an
+        // unexpected-key failure.
+        if (input.key.endsWith('/system-state/manifest.json')) throw notFoundError();
         throw new Error(`unexpected manifest fetch: ${input.key}`);
       });
 
@@ -744,20 +791,41 @@ describe('sweepUnreferencedBackupObjects', () => {
     });
   });
 
+  // D15 Wave 1 finding #3: retainedSnapshotIds' backupType allowlist must
+  // include system_image (it now shares the ordinary snapshots/<id>/
+  // manifest.json layout, per backup.go's Option A publish paths) while
+  // still excluding backupTypes that write their manifest elsewhere
+  // (hyperv's 'application', mssql's 'database') — including one of THOSE
+  // would 404 markLiveBackupObjects's unconditional ordinary-manifest fetch
+  // and fail-close the whole identity, exactly the FIX 6 regression below.
+  describe('isRetainableBackupTypeForGc', () => {
+    it.each([
+      ['file', true],
+      ['system_image', true],
+      [null, true], // legacy rows predating the backupType column
+      ['application', false], // hyperv — different manifest namespace
+      ['database', false], // mssql — different manifest namespace
+    ] as const)('backupType %s → %s', (backupType, want) => {
+      expect(isRetainableBackupTypeForGc(backupType)).toBe(want);
+    });
+  });
+
   // FIX 6 — the mark phase only fetches snapshots/<id>/manifest.json for
-  // FILE-type snapshots. A non-file snapshot (system_image / hyperv / mssql)
+  // backupTypes in BACKUP_GC_RETAINED_MANIFEST_BACKUP_TYPES (plus NULL). A
+  // snapshot of some OTHER type (hyperv's 'application' / mssql's 'database')
   // sharing a storage identity writes its manifest to a DIFFERENT key and
   // never appears under snapshots/<id>/manifest.json, so including it in the
   // retained set used to 404 the fetch and fail-close the WHOLE identity
-  // forever. The retained-rows query now filters to backupType file / NULL.
+  // forever. The retained-rows query filters to that allowlist (plus NULL).
   describe('non-file snapshots no longer wedge the file-backup sweep (FIX 6)', () => {
-    it('does not fail-close the identity when a non-file snapshot shares the bucket', async () => {
-      // The retained-rows query (filtered to file-type in SQL) returns only the
-      // FILE snapshot; the system_image snapshot's row is excluded and so its
-      // non-existent snapshots/IMG1/manifest.json is never fetched. (The SQL
-      // WHERE clause itself is exercised by the integration suite — the mocked
-      // query builder here can't filter, so we assert the downstream behavior
-      // the filter produces: only the file manifest is fetched, no fail-close.)
+    it('does not fail-close the identity when a non-file, non-system_image snapshot shares the bucket', async () => {
+      // The retained-rows query (filtered in SQL) returns only the
+      // FILE snapshot; a hyperv (backupType 'application') snapshot's row is
+      // excluded and so its non-existent snapshots/HYPERV1/manifest.json is
+      // never fetched. (The SQL WHERE clause itself is exercised by the
+      // integration suite — the mocked query builder here can't filter, so
+      // we assert the downstream behavior the filter produces: only the file
+      // manifest is fetched, no fail-close.)
       selectQueue.push([]); // unattributedRows
       selectQueue.push([destination]); // destinations
       selectQueue.push([{ snapshotId: 'FILE1' }]); // retained FILE-type snapshots ONLY (non-file filtered out)
@@ -771,14 +839,22 @@ describe('sweepUnreferencedBackupObjects', () => {
 
       const result = await sweepUnreferencedBackupObjects();
 
-      // Only the file manifest is fetched; the system_image manifest key is
-      // never touched, so the identity is NOT blocked.
-      expect(fetchBackupObjectTextMock).toHaveBeenCalledTimes(1);
+      // Only FILE1's manifests are fetched (ordinary + D15's system-state
+      // probe, which falls through to "not found" since this fixture has
+      // none); the hyperv snapshot's keys are never touched at all, so the
+      // identity is NOT blocked.
+      expect(fetchBackupObjectTextMock).toHaveBeenCalledTimes(2);
       expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(
         expect.objectContaining({ key: 'snapshots/FILE1/manifest.json' }),
       );
+      expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'snapshots/FILE1/system-state/manifest.json' }),
+      );
       expect(fetchBackupObjectTextMock).not.toHaveBeenCalledWith(
-        expect.objectContaining({ key: 'snapshots/IMG1/manifest.json' }),
+        expect.objectContaining({ key: 'snapshots/HYPERV1/manifest.json' }),
+      );
+      expect(fetchBackupObjectTextMock).not.toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'snapshots/HYPERV1/system-state/manifest.json' }),
       );
       expect(result).toEqual({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
       expect(captureExceptionMock).not.toHaveBeenCalled();
@@ -924,6 +1000,150 @@ describe('sweepUnreferencedBackupObjects', () => {
     it('sweeps a manifest-less prefix whose newest object is 1ms past the 9-day threshold', async () => {
       const result = await sweepManifestlessPrefixAtNewestAge(BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS + 1);
       expect(result.deleted).toBe(1);
+    });
+  });
+
+  // D15 bare-metal-recovery contract (Option A): a system_image snapshot
+  // publishes system-state/manifest.json + system-state/<artifact.path>
+  // alongside (or instead of) the ordinary manifest.files[] — see
+  // docs/superpowers/plans/backup/2026-09-09-bmr-system-state-contract.md.
+  // markLiveBackupObjects must mark those objects live too, or GC deletes
+  // every system_image snapshot's bare-metal-recovery state 48h after upload.
+  describe('D15 system-state GC (Option A)', () => {
+    it('keeps system-state objects live when referenced by system-state/manifest.json', async () => {
+      selectQueue.push([]); // unattributedRows
+      selectQueue.push([destination]); // destinations
+      selectQueue.push([{ snapshotId: 'B' }]); // retained
+
+      fetchBackupObjectTextMock.mockImplementation(async (input: { key: string }) => {
+        if (input.key === 'snapshots/B/manifest.json') return manifestJson([]);
+        if (input.key === 'snapshots/B/system-state/manifest.json') {
+          return JSON.stringify({ artifacts: [{ path: 'registry/SYSTEM' }, { path: 'boot/grub.cfg' }] });
+        }
+        throw new Error(`unexpected manifest fetch: ${input.key}`);
+      });
+
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/B/manifest.json', lastModified: old },
+        { key: 'snapshots/B/system-state/manifest.json', lastModified: old },
+        // Both old enough to sweep on age alone if NOT marked live by the
+        // system-state manifest's artifacts[] — the thing under test.
+        { key: 'snapshots/B/system-state/registry/SYSTEM', lastModified: old },
+        { key: 'snapshots/B/system-state/boot/grub.cfg', lastModified: old },
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result).toEqual({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
+    });
+
+    it('deletes system-state objects under an expired/unretained snapshot the same way ordinary file objects are', async () => {
+      // Snapshot B is retained and references nothing; snapshot EXPIRED is
+      // NOT retained and not in the listing's manifest set either (it has
+      // aged out / its row is gone) — both its ordinary-shaped loose object
+      // and its system-state artifact are old, unreferenced, manifest-less,
+      // and past the 9-day manifest-less-prefix window, so BOTH must sweep.
+      selectQueue.push([]); // unattributedRows
+      selectQueue.push([destination]); // destinations
+      selectQueue.push([{ snapshotId: 'B' }]); // retained
+
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([])); // B's ordinary manifest; B has no system-state manifest (falls through to "not found")
+
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/B/manifest.json', lastModified: old },
+        { key: 'snapshots/EXPIRED/system-state/registry/SYSTEM', lastModified: old },
+      ]);
+
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({
+        deletedKeys: ['snapshots/EXPIRED/system-state/registry/SYSTEM'],
+        failedKeys: [],
+      });
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      const deletedArg = deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] };
+      expect(deletedArg.keys).toEqual(['snapshots/EXPIRED/system-state/registry/SYSTEM']);
+      expect(result.deleted).toBe(1);
+    });
+
+    it('does NOT sweep the group when the system-state manifest fetch fails with a non-404 error (fail-closed)', async () => {
+      selectQueue.push([]); // unattributedRows
+      selectQueue.push([destination]); // destinations
+      selectQueue.push([{ snapshotId: 'B' }]); // retained
+
+      fetchBackupObjectTextMock.mockImplementation(async (input: { key: string }) => {
+        if (input.key === 'snapshots/B/manifest.json') return manifestJson([]);
+        if (input.key === 'snapshots/B/system-state/manifest.json') {
+          throw new Error('S3 500 fetching system state manifest');
+        }
+        throw new Error(`unexpected manifest fetch: ${input.key}`);
+      });
+
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/B/manifest.json', lastModified: old },
+        { key: 'snapshots/B/system-state/registry/SYSTEM', lastModified: old }, // would be deletable if the abort didn't protect it
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      // A non-"not found" fetch failure cannot prove liveness one way or the
+      // other, so the WHOLE identity is fail-closed — same contract as an
+      // unfetchable ordinary manifest.
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result).toEqual({ deleted: 0, skippedIdentities: 1, blockedIdentities: 1 });
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    });
+
+    // D15 Wave 1 finding #3: a retained system_image row used to be excluded
+    // from retainedSnapshotIds outright (see the FIX 6 describe block above,
+    // now updated to use an 'application'/'database' example instead), so its
+    // system-state/* objects had NO db-side protection at all — only the
+    // listing's own manifest.json presence decided their fate. Now that
+    // system_image rows are included, this proves a retained system_image
+    // snapshot's system-state prefix is NOT deleted even in the (defensive,
+    // not routine — see the publish-ordering fix in backup.go) case where the
+    // ordinary snapshots/<id>/manifest.json object itself is missing from the
+    // bucket, with its system-state objects older than the manifest-less
+    // prefix's max-age window (which would otherwise sweep them at PREFIX
+    // granularity on age alone).
+    it('protects a retained system_image snapshot whose ordinary manifest object is absent from the bucket', async () => {
+      selectQueue.push([]); // unattributedRows
+      selectQueue.push([destination]); // destinations
+      // Post-fix: the retained-rows query includes system_image (not just
+      // file/null) — IMG1 here stands in for that DB row.
+      selectQueue.push([{ snapshotId: 'IMG1' }]);
+
+      // IMG1's ordinary manifest is genuinely absent from the bucket — the
+      // mock's base implementation (module-level default) already rejects
+      // any unconfigured key as "not found", so no explicit queuing is
+      // needed here to model that; this test asserts the CONSEQUENCE.
+
+      const old = EVEN_FURTHER_PAST_MANIFESTLESS_THRESHOLD();
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        // No snapshots/IMG1/manifest.json entry at all — group.manifestItem
+        // is null, so this group is classified manifest-less (protected at
+        // PREFIX granularity by age alone) UNLESS the retained-row lookup
+        // changes the outcome.
+        { key: 'snapshots/IMG1/system-state/manifest.json', lastModified: old },
+        { key: 'snapshots/IMG1/system-state/registry/SYSTEM', lastModified: old },
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      // markLiveBackupObjects has no not-found tolerance on the ORDINARY
+      // manifest fetch (only the system-state fetch does) — a retained
+      // snapshot whose ordinary manifest can't be fetched fails the WHOLE
+      // identity closed, exactly like the pre-existing "still fail-closes...
+      // when a genuine FILE manifest is unfetchable" contract above. That is
+      // a STRONGER guarantee than per-group protection: nothing in the
+      // identity deletes this run, so IMG1's system-state objects survive.
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result).toEqual({ deleted: 0, skippedIdentities: 1, blockedIdentities: 1 });
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     });
   });
 });

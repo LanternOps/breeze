@@ -1,9 +1,10 @@
 ---
 title: Bare-metal recovery system-state contract (D15)
-status: plan drafted, not started
+status: in progress (W01 #5445, W03 #5444 in review; W02, W04 in flight)
 date: 2026-09-09
 source: docs/testing/backup-assurance/2026-09-09-backup-assurance-campaign.md (D15, O10, B1-sys)
 author: Claude (Sonnet plan agent), reviewed by Fable
+tracking_issue: LanternOps/breeze#5439
 ---
 
 # Bare-Metal Recovery System-State Contract — Implementation Plan
