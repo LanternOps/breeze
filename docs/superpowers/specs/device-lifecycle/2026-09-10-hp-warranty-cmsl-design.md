@@ -335,3 +335,149 @@ No `device_warranty` migration is needed: `entitlements` is jsonb and
    that keeps it installed.)*
 5. **Cleanup + docs.** Delete `hpProvider.ts` and the dead flag, update the docs
    page, UI labels.
+
+## Corrections after ground-truth verification (2026-09-10)
+
+Every file this spec cites was re-opened after approval. The design holds, with
+one substantive correction (T0's transport) and a set of citation fixes. Wave
+plans carry the corrected citations — prefer this section where they disagree.
+
+### Substantive: the agent has no WMI binding, so T0 uses PowerShell
+
+Layer 5 claims "the agent already vendors `go-ole` v1.2.6 and
+`yusufpapurcu/wmi` v1.2.4, so this needs no PowerShell". That is wrong:
+
+- `yusufpapurcu/wmi` is an **indirect** dependency (`agent/go.mod:112`), pulled
+  in by gopsutil. Zero agent files import it — `wmi.Query` / `wmi.QueryNamespace`
+  appear nowhere outside `go.mod`/`go.sum`.
+- `go-ole` is direct (`agent/go.mod:18`) but drives only the Windows Update
+  Agent COM API (`agent/internal/patching/windows.go:11-12,240`) and VSS
+  (`agent/internal/backup/vss/vss_windows.go:16,358,767`). Neither does WMI.
+- **Every WMI read in the agent today goes through PowerShell
+  `Get-CimInstance`.** The canonical precedent batches four classes into one
+  spawn: `agent/internal/collectors/hardware_windows.go:82-121`, with its
+  `Get-WmiSafe` fallback helper (`:89-98`), `wmicTimeout = 15s` (`:14`), and
+  invocation via `runCollectorOutput(...)` + `utf8PowerShellCommand(...)`
+  (`agent/internal/collectors/command_limits.go:30,34,41`). Eight more
+  `Get-CimInstance` call sites exist across collectors, security and backup.
+
+Decision: **T0 reads `root/HP/InstrumentedServices/v1` with
+`Get-CimInstance -Namespace`, through `runCollectorOutput` +
+`utf8PowerShellCommand`, matching `hardware_windows.go`.** Promoting
+`yusufpapurcu/wmi` to a direct dependency to avoid the spawn is rejected: it
+would be the agent's only Go-side WMI call, with its own COM-threading
+behaviour and no existing test seam, to save a few hundred milliseconds on a
+collection that runs at most daily. The tiering is unaffected — T0 is still the
+cheap local read (no network, no CMSL invocation, no 30-day cache write); only
+its transport changes.
+
+### Citation corrections
+
+- Apple warranty: collector entry `CollectAppleWarranty()` in
+  `agent/internal/collectors/warranty_darwin.go:45` (stub
+  `warranty_other.go:20`); sender `sendAppleWarrantyInfo` at
+  `agent/internal/heartbeat/heartbeat.go:2405-2435`, registered in the 15-minute
+  `sendInventory` fan-out at `:2129`. `sendInventoryData` is at `:2154-2185`
+  and takes the endpoint as its FIRST argument plus a label as its third.
+- **`applyConfigUpdate` is at `heartbeat.go:2851`, and a new key MUST be
+  dispatched above line 2918.** Everything from `:2918` is the policy-probe
+  path, which hits an unconditional `return` at `:2928-2930` when no probes are
+  present — a warranty key added below that line is silently unreachable on
+  most heartbeats. Every existing key checks snake_case first, then camelCase
+  (`:2857`, `:2867`, `:2879`, `:2889`, `:2901`, `:2910`).
+- `patch_source.go` has no file header comment; the doc comments sit on the two
+  symbols, and **neither is exported**: `var applyWinUpdate = winupdate.Apply`
+  (`:12`, a package-level var — the swap point tests override) and
+  `func (h *Heartbeat) applyPatchSourceConfig(raw any)` (`:18`). The dual-key
+  parse is `:26-29`; note it checks **camelCase first**, the reverse of
+  `applyConfigUpdate`'s outer keys.
+- `buildPatchSourceConfigUpdate` is `helpers.ts:2860-2863`, its revocation
+  contract comment `:2852-2859`, its settings type `:2841-2850`.
+- `PolicyConfigUpdates` is `heartbeat.ts:1921-1926` and is **function-local, not
+  exported**; the four builders share one `withSystemDbAccessContext` at `:1934`
+  with per-builder try/catch (`:1944-1982`); the camelCase→snake_case wire
+  assembly is `:1993-2004`. `pamSettings` is resolved but deliberately not
+  merged there.
+- `MFA_GATED_FEATURE_TYPES` is `featureLinks.ts:91`, not `:86`. Its in-handler
+  MFA checks are at `:145-147` (create), `:340-341` (update), `:525-526`
+  (delete) — so a feature-type-conditional, in-handler gate is the established
+  pattern here, not a new one. All four link routes require only
+  `requireConfigPolicyWrite` = `devices.write` (`:47-48`).
+- The warranty alert resolver is `resolveWarrantySettings` at
+  `warrantyAlertEvaluator.ts:58-186` (not exported); its level-priority sort is
+  `:158-172` and it returns `DISABLED_SETTINGS` when no policy resolves (`:156`),
+  so alerting is opt-in.
+- `configFeatureInlineSettingsSchema` is
+  `packages/shared/src/validators/index.ts:595-604`; its only rule is a
+  reserved-key scan. `warranty` is absent from
+  `assertDecomposableInlineSettings`, so warranty inline settings receive **no**
+  server-side shape validation today.
+- `useEdrReadiness` lives at `apps/web/src/components/software/useEdrReadiness.ts`
+  (not `src/hooks/`); the hardcoded two-key seed is `:132-135`. The unguarded
+  dereference is `SoftwareCatalog.tsx:637-640` and again at `:828`.
+  `providerBranding.ts:5` is `INTEGRATION_PROVIDERS` (the single source the
+  union and type guard both derive from); the `BRANDING` map is `:18` and is not
+  exported — `getProviderBranding` (`:35`) is the accessor.
+- `software_catalog_integration_provider_chk` is
+  `apps/api/migrations/2026-07-02-builtin-catalog-partner-read-rls.sql:13-25`.
+  `installMethodBodySchema` is `softwareInstallMethods.ts:39-53` (fields
+  `platform`, `kind`, `packageId`, `enabled`; no `linux` platform); the built-in
+  rejection is `:112-114`.
+- winget SYSTEM scan args are `winget_system.go:73-76`; the **parse lives in a
+  different file**, `agent/internal/patching/winget_parse.go:66-115`, and is a
+  fixed-width parse of the English headers `Name`/`Id`/`Version`/`Available` —
+  localized output yields `errWingetNoTable` → `ErrScanSkipped`. The user-scope
+  refusal is `winget_system.go:186-194`, called from `Install` (`:208`) and
+  `Uninstall` (`:227`). Package id retention is `heartbeat.go:3437`; the
+  winget→`third_party` mapping is `:3581-3582`; note `default: "custom"`
+  (`:3586`), and `custom` does NOT qualify for ring third-party auto-approval.
+  The dual-consent condition is `patchApprovalEvaluator.ts:616-629`.
+- `device_warranty` is `apps/api/src/db/schema/warranty.ts:29-69`. Confirmed:
+  `entitlements` is jsonb NOT NULL default `[]` (`:49`); `data_source` is
+  `varchar(50)` nullable default `'provider'` (`:50`) with **no CHECK or enum**;
+  there are TWO partial unique indexes (`:60-65`), so every upsert needs its
+  `targetWhere`.
+- `agentWarrantyInfoSchema` is `schemas.ts:658-675`; the handler is
+  `inventory.ts:306-343` with explicit field selection at `:331-339`. Note the
+  serial number is taken from `device_hardware` (`:334`), never from the agent
+  payload, and `deviceName` is accepted then discarded.
+- `AgentWarrantyData` is `warrantySync.ts:315-331` — a **single coverage
+  window**, with no entitlements, service-level or product-number field. An HP
+  payload with N entitlements cannot be expressed without widening it.
+- The two verified defects are confirmed at `warrantySync.ts:153` (the
+  preservation branch is string-keyed to `'agent_plist'`) and `:367`
+  (`provider: 'apple' as const`). `upsertAgentWarranty` is `:341-423`; the sweep
+  selector is `:454-484`; the `targetWhere` guard is `:399`.
+- Manual refresh is `devices/warranty.ts:42-67`. It already requires
+  `devices.write` + `requireMfa()` and always passes `force: true`; it enqueues
+  a BullMQ job and never reaches the agent.
+- `DeviceWarrantyCard.tsx:60-67` is the label map; unknown sources render as the
+  raw string, so `agent_cmsl` would display literally until extended.
+- `filterEngine.ts` confirms `osType` (`:88`) and `hardware.manufacturer`
+  (`:94`). There is no warranty-related filter field at all.
+
+### Two additional defects found while verifying (both in scope)
+
+1. **CSV import can stomp agent-owned warranty rows.**
+   `apps/api/src/services/customFields/import/warrantyTarget.ts` guards only
+   against `'provider'` rows (`:181`, `:238` —
+   `data_source IS DISTINCT FROM 'provider'`), so an import overwrites an
+   `agent_plist` row today and would overwrite `agent_cmsl` too. The
+   `isAgentOwnedWarrantySource` generalisation must be applied here as well, not
+   only in `warrantySync.ts`. Owner: W01.
+2. **A `warranty` feature link sent with a `featurePolicyId` yields a 500, not a
+   400.** `warranty` is missing from the inline-only guard list at
+   `configurationPolicy.ts:2656-2662`, so it falls through to the generic
+   whole-policy path and is rejected by the
+   `config_policy_feature_links_reference_integrity` trigger. The code's own
+   comment (`:2665-2669`) describes exactly this failure. The UI never sends one
+   (`WarrantyTab.tsx:51,65` hardcode `featurePolicyId: null`), so this is
+   API-surface only. Verified by reading, not reproduced at runtime. Owner: W02.
+
+### Also noted, not blocking
+
+`ensureBuiltinPackage` hardcodes `originalFileName: 'HuntressInstaller.exe'`
+(`builtinDeploymentPackages.ts:112`) inside an otherwise provider-generic
+branch. HP takes the winget path and creates no version row, so it is not hit —
+but W04 should guard or fix it rather than leave the trap for the next
+derivable-URL package.
