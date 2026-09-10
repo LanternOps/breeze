@@ -174,10 +174,14 @@ know which base an in-flight run depends on and must keep them all.
 - recovery pin: `EXISTS recovery_tokens WHERE snapshot_id = row.id AND (status IN
   ('active','authenticated') OR completed_at IS NULL AND expires_at > now() - linger)`
   (columns per `schema/recoveryTokens.ts:10-16`; no `session_status` column exists);
-- `legal_hold` / immutability, as today.
+- `legal_hold` / immutability, **re-read under the row lock** (a hold set after candidate
+  enumeration must win);
+- `storage_identity IS NULL` (§3.6): the row cannot be tombstoned on an identity, so it is
+  skipped (`skippedUnresolved`) until the sweep self-heals it — never retired blind.
 
 Otherwise, in the same transaction: insert `backup_snapshot_retirements` (§3.3) and delete
-the row. Counts gain `skippedPinned`. `deleteSnapshotRow`'s docstring is rewritten to this.
+the row. Every lookup of a base or retired snapshot by storage `snapshot_id` is scoped by
+`storage_identity` (the id is not unique across identities, `schema/backup.ts:330`). Counts gain `skippedPinned`. `deleteSnapshotRow`'s docstring is rewritten to this.
 
 ### 3.3 Durable retirement (DB tombstone) — new table `backup_snapshot_retirements`
 
@@ -303,6 +307,9 @@ objects are gone. Required shape:
 2. Sweep: a separate system context per identity for the DB reads, with every storage call at
    depth 0 (outside any transaction), mirroring the dispatch phase split at `:508-528`.
 3. The D17 `failed > 0` throw stays last and can no longer undo anything.
+
+W01 delivers 1 and 3 and calls the sweep under one system context (today's shape, so
+`sweepUnreferencedBackupObjects` keeps working reads); W02 replaces that with 2.
 
 Retirement rows therefore commit strictly before any object they cover is deleted, and an
 object is deleted only for a snapshot whose retirement is already durable.
