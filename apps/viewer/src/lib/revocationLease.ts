@@ -64,10 +64,20 @@ function leaseRenewUrl(apiUrl: string, sessionId: string): string {
   return `${base}/api/v1/desktop-ws/${encodeURIComponent(sessionId)}/viewer/lease/renew`;
 }
 
-/** One renewal round trip. Never throws: a network error is `unavailable`. */
+/**
+ * One renewal round trip. Never throws: a network error — or a request that
+ * outlives `timeoutMs` and is aborted — is `unavailable`, exactly like any
+ * other inconclusive answer, so it rides the grace window and still counts
+ * toward the consecutive-failure budget.
+ *
+ * The default budget is one renew interval: a request that has not answered by
+ * the time the next tick is due can no longer be useful, and letting it hang
+ * would stall the loop past its own cadence.
+ */
 export async function renewRevocationLeaseOnce(
   params: RevocationLeaseParams,
   fetchFn: typeof fetch = fetch,
+  timeoutMs: number = LEASE_RENEW_EVERY_MS,
 ): Promise<LeaseRenewOutcome> {
   let response: Response;
   try {
@@ -77,6 +87,7 @@ export async function renewRevocationLeaseOnce(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${params.accessToken}`,
       },
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     return { kind: 'unavailable' };
@@ -130,6 +141,15 @@ export function startRevocationLeaseRenewal(
   const graceMs = deps.graceMs ?? LEASE_GRACE_MS;
 
   let stopped = false;
+  // A renew that outlives its own interval must not have a second request piled
+  // on top of it every tick: the extra requests cannot answer any sooner, and
+  // each one that later fails would inflate the consecutive-failure count. A
+  // tick that lands while a renew is in flight is skipped outright — a skip is
+  // NOT a failure, so it neither opens nor consumes the grace window. The
+  // in-flight request keeps its own timeout, so a hung control plane still
+  // produces a failure roughly every `renewEveryMs` and the fail-closed
+  // behaviour is preserved.
+  let inFlight = false;
   let consecutiveFailures = 0;
   let firstFailureAt: number | null = null;
   let handle: unknown;
@@ -141,8 +161,14 @@ export function startRevocationLeaseRenewal(
   };
 
   const tick = async () => {
-    if (stopped) return;
-    const outcome = await renewRevocationLeaseOnce(params, deps.fetchFn);
+    if (stopped || inFlight) return;
+    inFlight = true;
+    let outcome: LeaseRenewOutcome;
+    try {
+      outcome = await renewRevocationLeaseOnce(params, deps.fetchFn, renewEveryMs);
+    } finally {
+      inFlight = false;
+    }
     if (stopped) return;
 
     if (outcome.kind === 'revoked') {

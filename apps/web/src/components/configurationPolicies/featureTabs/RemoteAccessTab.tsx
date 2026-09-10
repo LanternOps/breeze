@@ -56,6 +56,27 @@ const idleTimeoutOptions = [1, 2, 5, 10, 15, 30];
 // 12 is rejected by the policy routes. Keep the picker inside the range so the
 // UI cannot offer a setting the backend will refuse.
 const maxSessionOptions = [1, 2, 4, 8, 12];
+const MIN_MAX_SESSION_DURATION_HOURS = 1;
+const MAX_MAX_SESSION_DURATION_HOURS = 12;
+/**
+ * Stored policies predate the [1, 12] bound and can hold `0` ("unlimited") or
+ * anything up to 168. Feeding those straight into component state renders a
+ * select with no matching option AND makes an unrelated save fail write-time
+ * validation on a field the operator never touched, so clamp on the way in.
+ *
+ * Mirrors `clampSettings` in apps/api/src/services/remoteAccessPolicy.ts:
+ * non-finite, zero, or negative resolves to the 12 h cap (0 is no longer an
+ * "unlimited" sentinel), anything above 12 clamps down to 12.
+ */
+function clampMaxSessionDurationHours(value: unknown): number {
+  const truncated = typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : NaN;
+  if (!Number.isFinite(truncated) || truncated <= 0)
+    return MAX_MAX_SESSION_DURATION_HOURS;
+  return Math.min(
+    Math.max(truncated, MIN_MAX_SESSION_DURATION_HOURS),
+    MAX_MAX_SESSION_DURATION_HOURS,
+  );
+}
 function ToggleRow({
   label,
   description,
@@ -106,6 +127,9 @@ export default function RemoteAccessTab({
     const merged = { ...defaults, ...stored };
     if (!Array.isArray(merged.defaultAllowedPorts))
       merged.defaultAllowedPorts = [...defaults.defaultAllowedPorts];
+    merged.maxSessionDurationHours = clampMaxSessionDurationHours(
+      merged.maxSessionDurationHours,
+    );
     return merged;
   });
   const [newPort, setNewPort] = useState("");
@@ -119,6 +143,9 @@ export default function RemoteAccessTab({
         };
         if (!Array.isArray(merged.defaultAllowedPorts))
           merged.defaultAllowedPorts = [...defaults.defaultAllowedPorts];
+        merged.maxSessionDurationHours = clampMaxSessionDurationHours(
+          merged.maxSessionDurationHours,
+        );
         return merged;
       });
     }

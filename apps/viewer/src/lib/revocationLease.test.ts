@@ -224,3 +224,155 @@ describe('startRevocationLeaseRenewal', () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 });
+
+describe('renew request timeout', () => {
+  it('passes an abort signal so a hung renew cannot outlive its own cadence', async () => {
+    const fetchFn = vi.fn(async () => new Response('{}', { status: 200 }));
+    await renewRevocationLeaseOnce(PARAMS, fetchFn as never);
+
+    const [, init] = fetchFn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.signal?.aborted).toBe(false);
+  });
+
+  it('reports a timed-out renew as unavailable — never as a revocation', async () => {
+    // A fetch that only ever settles when the caller's signal aborts.
+    const fetchFn = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () =>
+            reject(new DOMException('The operation was aborted.', 'TimeoutError')),
+          );
+        }),
+    );
+
+    const outcome = await renewRevocationLeaseOnce(PARAMS, fetchFn as never, 10);
+    expect(outcome).toEqual({ kind: 'unavailable' });
+  });
+});
+
+describe('startRevocationLeaseRenewal — in-flight guard', () => {
+  /** A rig whose fetch hangs until the test releases it. */
+  function hangingRig(opts: { graceMs?: number } = {}) {
+    let tickFn: (() => void) | null = null;
+    let clock = 0;
+    const pending: Array<(status: number) => void> = [];
+    const fetchFn = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          pending.push((status) => resolve(new Response('{}', { status })));
+        }),
+    );
+    const onRevoked = vi.fn();
+    const onLost = vi.fn();
+    const stop = startRevocationLeaseRenewal(
+      PARAMS,
+      { onRevoked, onLost },
+      {
+        fetchFn: fetchFn as never,
+        now: () => clock,
+        setIntervalFn: (fn) => {
+          tickFn = fn;
+          return 'handle';
+        },
+        clearIntervalFn: () => {
+          tickFn = null;
+        },
+        graceMs: opts.graceMs ?? LEASE_GRACE_MS,
+      },
+    );
+    const settle = () => new Promise((r) => setTimeout(r, 0));
+    return {
+      fetchFn,
+      onRevoked,
+      onLost,
+      stop,
+      advance: (ms: number) => {
+        clock += ms;
+      },
+      tick: async () => {
+        tickFn?.();
+        await settle();
+      },
+      /** Resolve every outstanding renew with `status`. */
+      release: async (status: number) => {
+        const waiting = pending.splice(0, pending.length);
+        for (const resolve of waiting) resolve(status);
+        await settle();
+      },
+      isRunning: () => tickFn !== null,
+    };
+  }
+
+  it('skips a tick while a renew is still in flight instead of stacking requests', async () => {
+    const r = hangingRig();
+
+    await r.tick();
+    expect(r.fetchFn).toHaveBeenCalledTimes(1);
+
+    // Three more ticks land while the first request is still outstanding.
+    r.advance(LEASE_RENEW_EVERY_MS);
+    await r.tick();
+    r.advance(LEASE_RENEW_EVERY_MS);
+    await r.tick();
+    r.advance(LEASE_RENEW_EVERY_MS);
+    await r.tick();
+    expect(r.fetchFn).toHaveBeenCalledTimes(1);
+
+    // Once it settles, the next tick issues a fresh request.
+    await r.release(200);
+    r.advance(LEASE_RENEW_EVERY_MS);
+    await r.tick();
+    expect(r.fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('a skipped tick is not a failure — it must not consume the grace budget', async () => {
+    const r = hangingRig();
+
+    await r.tick(); // in flight
+    r.advance(LEASE_GRACE_MS * 5);
+    await r.tick(); // skipped
+    await r.tick(); // skipped
+
+    expect(r.onLost).not.toHaveBeenCalled();
+    expect(r.isRunning()).toBe(true);
+  });
+
+  it('a slow renew that fails still counts toward the failure budget', async () => {
+    const r = hangingRig();
+
+    await r.tick();
+    await r.release(503); // failure 1, window opens at clock 0
+
+    r.advance(LEASE_GRACE_MS);
+    await r.tick();
+    await r.release(503); // failure 2, past the grace window
+
+    expect(r.onLost).toHaveBeenCalledTimes(1);
+    expect(r.onRevoked).not.toHaveBeenCalled();
+    expect(r.isRunning()).toBe(false);
+  });
+
+  it('a slow renew that comes back revoked still ends the session', async () => {
+    const r = hangingRig();
+
+    await r.tick();
+    r.advance(LEASE_RENEW_EVERY_MS);
+    await r.tick(); // skipped
+    await r.release(403);
+
+    expect(r.onRevoked).toHaveBeenCalledTimes(1);
+    expect(r.isRunning()).toBe(false);
+  });
+
+  it('clears the in-flight flag after a stop so nothing leaks', async () => {
+    const r = hangingRig();
+
+    await r.tick();
+    r.stop();
+    await r.release(200);
+
+    expect(r.onRevoked).not.toHaveBeenCalled();
+    expect(r.onLost).not.toHaveBeenCalled();
+  });
+});
