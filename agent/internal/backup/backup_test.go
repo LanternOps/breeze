@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/layout"
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
@@ -1776,5 +1777,144 @@ func TestRunBackupContext_ResumeWithPublishedManifest_SucceedsEvenIfSourceGone(t
 	}
 	if job.Snapshot == nil || job.Snapshot.ID != journal.snapshotID {
 		t.Fatalf("expected the already-published snapshot back, got %+v", job.Snapshot)
+	}
+}
+
+func stubCollectLayout(t *testing.T, fn func(context.Context) (*layout.Manifest, error)) {
+	t.Helper()
+	orig := collectLayout
+	t.Cleanup(func() { collectLayout = orig })
+	collectLayout = fn
+}
+
+func restorableLayout() *layout.Manifest {
+	return &layout.Manifest{
+		SchemaVersion: layout.SchemaVersion, Platform: "linux", BootMode: layout.BootModeUEFI,
+		Disks: []layout.Disk{{Name: "/dev/sda", TableType: "gpt", SizeBytes: 64 << 30, IsSystem: true, Partitions: []layout.Partition{
+			{Number: 1, Name: "/dev/sda1", TypeGUID: layout.GUIDEFISystem, Filesystem: "vfat", MountPoint: "/boot/efi", Role: layout.RoleEFI, Encryption: layout.EncryptionNone},
+			{Number: 2, Name: "/dev/sda2", Filesystem: "ext4", MountPoint: "/", Role: layout.RoleRoot, Encryption: layout.EncryptionNone},
+		}}},
+	}
+}
+
+func TestRunBackup_Layout_PublishedBeforeOrdinaryManifestAndCarriedOnJob(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "single.txt", "single file backup")
+	stagingDir := t.TempDir()
+	if err := os.WriteFile(pathpkg.Join(stagingDir, "services.txt"), []byte("svc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return &systemstate.SystemStateManifest{Platform: "test", Artifacts: []systemstate.Artifact{{Name: "services", Category: "services", Path: "services.txt", SizeBytes: 3, Checksum: "348c658682ae8701d3e9d21f191872491cf15e6acbb1681770b1cb787c1cf7ff"}}}, stagingDir, nil
+	})
+	stubCollectLayout(t, func(context.Context) (*layout.Manifest, error) { return restorableLayout(), nil })
+
+	provider := newMockProvider()
+	mgr := NewBackupManager(BackupConfig{Provider: provider, Paths: []string{file1}, SystemStateEnabled: true})
+	job, err := mgr.RunBackup()
+	if err != nil {
+		t.Fatalf("RunBackup failed: %v", err)
+	}
+	if job.LayoutManifest == nil || job.BareMetal == nil || !job.BareMetal.Restorable {
+		t.Fatalf("job layout=%v bareMetal=%+v", job.LayoutManifest != nil, job.BareMetal)
+	}
+	if job.Warning != "" {
+		t.Errorf("unexpected warning %q", job.Warning)
+	}
+	layoutKey := path.Join("snapshots", job.Snapshot.ID, "layout.json")
+	stateKey := path.Join("snapshots", job.Snapshot.ID, "system-state", "manifest.json")
+	ordinaryKey := path.Join("snapshots", job.Snapshot.ID, "manifest.json")
+	idx := func(k string) int {
+		for i, c := range provider.uploadCalls {
+			if c.remotePath == k {
+				return i
+			}
+		}
+		return -1
+	}
+	li, si, oi := idx(layoutKey), idx(stateKey), idx(ordinaryKey)
+	if li == -1 || si == -1 || oi == -1 || si >= li || li >= oi {
+		t.Fatalf("publish order state=%d layout=%d ordinary=%d (want state < layout < ordinary); keys=%v", si, li, oi, providerKeys(provider))
+	}
+	var stored layout.Manifest
+	if err := json.Unmarshal(provider.files[layoutKey], &stored); err != nil || stored.SchemaVersion != layout.SchemaVersion || len(stored.Disks) != 1 {
+		t.Fatalf("stored layout.json = %s err=%v", provider.files[layoutKey], err)
+	}
+	// The result JSON the helper ships to the server carries both fields.
+	data, _ := json.Marshal(job)
+	var wire map[string]json.RawMessage
+	_ = json.Unmarshal(data, &wire)
+	if _, ok := wire["layoutManifest"]; !ok {
+		t.Error("layoutManifest missing from job JSON")
+	}
+	if _, ok := wire["bareMetal"]; !ok {
+		t.Error("bareMetal missing from job JSON")
+	}
+}
+
+func TestRunBackup_Layout_NotRestorableAppendsWarning(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "a.txt", "x")
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return &systemstate.SystemStateManifest{Platform: "test"}, t.TempDir(), nil
+	})
+	stubCollectLayout(t, func(context.Context) (*layout.Manifest, error) {
+		m := restorableLayout()
+		m.BootMode = layout.BootModeBIOS
+		return m, nil
+	})
+	provider := newMockProvider()
+	job, err := NewBackupManager(BackupConfig{Provider: provider, Paths: []string{file1}, SystemStateEnabled: true}).RunBackup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.BareMetal == nil || job.BareMetal.Restorable || job.BareMetal.Reasons[0] != layout.ReasonBIOSBoot {
+		t.Fatalf("bareMetal = %+v", job.BareMetal)
+	}
+	if !strings.Contains(job.Warning, "not bare-metal restorable: "+layout.ReasonBIOSBoot) {
+		t.Errorf("warning = %q", job.Warning)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Errorf("status = %q", job.Status)
+	}
+}
+
+func TestRunBackup_Layout_CollectFailureIsWarningNotFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "a.txt", "x")
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return &systemstate.SystemStateManifest{Platform: "test"}, t.TempDir(), nil
+	})
+	stubCollectLayout(t, func(context.Context) (*layout.Manifest, error) { return nil, errors.New("lsblk: exit 1") })
+	provider := newMockProvider()
+	job, err := NewBackupManager(BackupConfig{Provider: provider, Paths: []string{file1}, SystemStateEnabled: true}).RunBackup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.LayoutManifest != nil || job.BareMetal == nil || job.BareMetal.Restorable || !strings.Contains(job.BareMetal.Reasons[0], "lsblk: exit 1") {
+		t.Fatalf("job layout=%v bareMetal=%+v", job.LayoutManifest, job.BareMetal)
+	}
+	if !strings.Contains(job.Warning, "disk layout was not captured: lsblk: exit 1") {
+		t.Errorf("warning = %q", job.Warning)
+	}
+	for _, c := range provider.uploadCalls {
+		if strings.HasSuffix(c.remotePath, "/layout.json") {
+			t.Fatalf("layout.json must not be uploaded when collection failed: %v", providerKeys(provider))
+		}
+	}
+}
+
+func TestRunBackup_FileOnlyRunNeverCollectsLayout(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "a.txt", "x")
+	called := false
+	stubCollectLayout(t, func(context.Context) (*layout.Manifest, error) { called = true; return restorableLayout(), nil })
+	provider := newMockProvider()
+	job, err := NewBackupManager(BackupConfig{Provider: provider, Paths: []string{file1}}).RunBackup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called || job.LayoutManifest != nil || job.BareMetal != nil {
+		t.Fatalf("file-only run touched layout: called=%v job=%+v", called, job)
 	}
 }

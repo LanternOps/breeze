@@ -67,6 +67,12 @@ export const backupProcessResultSchema = z.object({
   // still must be declared here or the whole job fails validation.
   backupType: z.enum(['file', 'system_image', 'database', 'application']).optional(),
   systemStateManifest: z.record(z.string(), z.unknown()).nullish(),
+  // Bare-metal recovery (W01): disk layout + guard verdict, forwarded the same
+  // way systemStateManifest is — open record for the manifest, closed shape
+  // for the verdict. See routes/backup/resultSchemas.ts's twins for the
+  // rationale.
+  layoutManifest: z.record(z.string(), z.unknown()).nullish(),
+  bareMetal: z.object({ restorable: z.boolean(), reasons: z.array(z.string()) }).nullish(),
   // Windows VSS diagnostics (#3027), forwarded so persistence can write
   // backup_jobs.vss_metadata. `z.unknown()` rather than a record for the same
   // reason as the ingress schema (routes/backup/resultSchemas.ts): this parse

@@ -322,6 +322,40 @@ describe('sweepUnreferencedBackupObjects', () => {
     expect(result).toEqual({ deleted: 1, skippedIdentities: 0, blockedIdentities: 0 });
   });
 
+  it('marks snapshots/<id>/layout.json live without fetching it, so the sweep never deletes a retained layout manifest', async () => {
+    selectQueue.push([]); // unattributedRows
+    selectQueue.push([destination]); // destinations
+    selectQueue.push([{ snapshotId: 'A' }]); // retained
+
+    fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+
+    const old = new Date(Date.now() - 10 * DAY_MS);
+    listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+      { key: 'snapshots/A/manifest.json', lastModified: old },
+      { key: 'snapshots/A/layout.json', lastModified: old },
+      { key: 'snapshots/ORPHAN/layout.json', lastModified: old },
+    ]);
+
+    deleteBackupObjectKeysMock.mockResolvedValueOnce({
+      deletedKeys: ['snapshots/ORPHAN/layout.json'],
+      failedKeys: [],
+    });
+
+    const result = await sweepUnreferencedBackupObjects();
+
+    // markLiveBackupObjects marks layout.json live unconditionally (no
+    // round-trip fetch of it) — only the ordinary manifest and the
+    // system-state manifest are ever fetched per snapshot.
+    for (const call of fetchBackupObjectTextMock.mock.calls) {
+      expect((call[0] as { key: string }).key).not.toBe('snapshots/A/layout.json');
+    }
+    expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1);
+    const deletedArg = deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] };
+    expect(deletedArg.keys).toEqual(['snapshots/ORPHAN/layout.json']);
+    expect(deletedArg.keys).not.toContain('snapshots/A/layout.json');
+    expect(result).toEqual({ deleted: 1, skippedIdentities: 0, blockedIdentities: 0 });
+  });
+
   it('keeps a loose unreferenced object under a manifest-bearing prefix that is still inside the 48h grace window', async () => {
     selectQueue.push([]);
     selectQueue.push([destination]);

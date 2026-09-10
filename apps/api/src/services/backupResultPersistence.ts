@@ -1133,6 +1133,12 @@ export async function applyBackupCommandResultToJob(params: {
     result.backupType ?? derivedBackupType ?? updatedJob.backupType ?? 'file';
   const systemStateManifest = result.systemStateManifest ?? null;
   const hardwareProfile = systemStateManifest?.hardwareProfile ?? null;
+  // Bare-metal recovery (W01): disk layout + guard verdict. Both stay NULL
+  // ("never assessed") when the result carries none — a file-only run or an
+  // agent predating W01 — never defaulted to a false "not restorable".
+  const layoutManifest = result.layoutManifest ?? null;
+  const bareMetalRestorable = result.bareMetal?.restorable ?? null;
+  const bareMetalReasons = result.bareMetal?.reasons ?? null;
   const snapshotMetadata: Record<string, unknown> = {
     ...metadata,
     hasIndexedFiles: Boolean(result.snapshot?.files?.length),
@@ -1159,6 +1165,9 @@ export async function applyBackupCommandResultToJob(params: {
     backupType: snapshotBackupType,
     systemStateManifest,
     hardwareProfile,
+    layoutManifest,
+    bareMetalRestorable,
+    bareMetalReasons,
   } as const;
 
   const [existingSnapshot] = await db

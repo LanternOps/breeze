@@ -64,6 +64,22 @@ export const backupSystemStateManifestResultSchema = z
   })
   .passthrough();
 
+// Disk layout for bare-metal rebuilds (W01). Open for the same F13 reason as
+// the system-state manifest: a newer agent must never fail the whole result.
+export const backupLayoutManifestResultSchema = z
+  .object({
+    schemaVersion: z.number().int().optional(),
+    platform: z.string().optional(),
+    bootMode: z.string().optional(),
+    disks: z.array(z.record(z.string(), z.unknown())).optional(),
+  })
+  .passthrough();
+
+export const backupBareMetalResultSchema = z.object({
+  restorable: z.boolean(),
+  reasons: z.array(z.string().max(1000)).max(64),
+});
+
 export const backupCommandResultSchema = z.object({
   jobId: z.string().optional(),
   snapshotId: z.string().optional(),
@@ -104,6 +120,8 @@ export const backupCommandResultSchema = z.object({
   referencedFiles: z.number().int().nonnegative().optional(),
   backupType: z.enum(['file', 'system_image', 'database', 'application']).optional(),
   systemStateManifest: backupSystemStateManifestResultSchema.optional(),
+  layoutManifest: backupLayoutManifestResultSchema.optional(),
+  bareMetal: backupBareMetalResultSchema.optional(),
   // Windows VSS diagnostics (#3027), persisted to backup_jobs.vss_metadata.
   // Absent on non-Windows, on a run with VSS disabled, and on any run whose VSS
   // session failed to start outright — so absence is NOT evidence of a clean

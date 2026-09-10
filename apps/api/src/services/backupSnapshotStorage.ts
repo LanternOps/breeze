@@ -178,6 +178,15 @@ export function backupSystemStateArtifactKey(snapshotId: string, artifactPath: s
   return `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}/${BACKUP_SYSTEM_STATE_DIR}/${artifactPath}`;
 }
 
+// Mirrors agent/internal/backup/snapshot.go layoutManifestKey exactly
+// (bare-metal recovery W01): the disk-layout manifest lives beside the
+// ordinary manifest, never inside manifest.files[].
+export const BACKUP_LAYOUT_MANIFEST_KEY = 'layout.json';
+
+export function backupLayoutManifestKey(snapshotId: string): string {
+  return `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}/${BACKUP_LAYOUT_MANIFEST_KEY}`;
+}
+
 // ── GC support: list objects with last-modified ──────────────────────────────
 
 async function listS3ObjectsWithLastModified(
