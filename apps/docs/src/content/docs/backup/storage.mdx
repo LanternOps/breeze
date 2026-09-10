@@ -50,13 +50,18 @@ The storage configuration wizard walks you through four steps:
    Optionally enable encryption. This is only enforceable for S3 destinations with server-side encryption (SSE-S3 or SSE-KMS) configured — see [Encryption](/backup/encryption/) for details. Local/NAS destinations do not support enabling this toggle.
 
    <Aside type="note" title="What retention removes today">
-     When a restore point passes its retention window it is removed from Breeze: it no longer appears in the
-     snapshot list and can no longer be restored or verified. The objects it wrote to the storage target are
-     handled by a separate background sweep that only deletes data no remaining restore point references,
-     after a 48-hour grace period. In the current release that sweep does not yet reclaim the data of expired
-     restore points themselves, so bucket usage does not shrink when restore points expire. This is tracked in
-     [issue #5429](https://github.com/LanternOps/breeze/issues/5429); plan bucket capacity for growth until it
-     lands.
+     When a restore point passes its retention window, Breeze removes it from the snapshot list — it can no
+     longer be restored or verified — and marks its data for reclamation. A background storage sweep then
+     deletes the restore point's exclusive data from the storage target on its next scheduled run, after a
+     short safety grace period (48 hours by default) that protects any object still mid-upload. Data another
+     surviving restore point still depends on (for example, a file shared with an incremental backup) is never
+     deleted, no matter how old it is. An upload that never finished, or whose record could not be reconciled,
+     is reclaimed once it has sat idle for about 9 days — giving Breeze time to recognize and finish adopting
+     it first.
+
+     If a device's Breeze backup helper predates version 0.112.0, storage reclamation beyond an expired
+     snapshot's own row stays deferred on that device's destination until every device sharing it has
+     upgraded — update the agent to enable full reclamation.
    </Aside>
 </Steps>
 
