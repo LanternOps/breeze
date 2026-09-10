@@ -5,9 +5,7 @@ import { Hono } from 'hono';
 // (`accounting:read` / `accounting:manage`, SEC-2026-09-05-057 Option A).
 //
 // Every interactive QuickBooks route is listed exactly once below with the
-// accounting capability it requires (or `null` where the route deliberately
-// keeps only its pre-existing route-specific permission — customer import and
-// the two invoice-push routes). The parameterized cases prove, for every
+// accounting capability it requires. The parameterized cases prove, for every
 // route: denial for a caller holding no accounting grant, correct separation
 // of read-only vs manage-only, that full-partner authority is still required
 // regardless of grant, that MFA remains cumulative on mutations, and that
@@ -196,15 +194,18 @@ const routes: RouteCase[] = [
     body: { breezeEntityType: 'org', breezeEntityId: ENTITY_ID }, effect: 'syncMapping',
     requires: 'accounting:manage', mfa: true,
   },
-  // --- routes that keep only their pre-existing route-specific permission --
-  {
-    name: 'customer import', method: 'POST', path: '/quickbooks/customers/import',
-    body: { customerIds: ['remote-1'] }, effect: 'importCustomers', requires: null, mfa: true,
-  },
-  { name: 'invoice push', method: 'POST', path: `/quickbooks/invoices/${ENTITY_ID}/push`, effect: 'pushInvoice', requires: null, mfa: true },
+  // --- invoice push writes into the shared realm, so it is manage-gated too --
+  { name: 'invoice push', method: 'POST', path: `/quickbooks/invoices/${ENTITY_ID}/push`, effect: 'pushInvoice', requires: 'accounting:manage', mfa: true },
   {
     name: 'bulk invoice push', method: 'POST', path: '/quickbooks/invoices/push-bulk',
-    body: { invoiceIds: [ENTITY_ID] }, effect: 'enqueueInvoice', requires: null, mfa: true,
+    body: { invoiceIds: [ENTITY_ID] }, effect: 'enqueueInvoice', requires: 'accounting:manage', mfa: true,
+  },
+  // --- customer import reads the realm (it returns remote displayNames for
+  //     caller-supplied ids) on top of creating orgs + sites, so it carries
+  //     accounting:read cumulatively with organizations:write + sites:write. ---
+  {
+    name: 'customer import', method: 'POST', path: '/quickbooks/customers/import',
+    body: { customerIds: ['remote-1'] }, effect: 'importCustomers', requires: 'accounting:read', mfa: true,
   },
 ];
 
@@ -281,9 +282,9 @@ describe('accounting permission family — route matrix', () => {
   it('covers every interactive accounting route exactly once', () => {
     expect(new Set(routes.map((route) => route.name)).size).toBe(routes.length);
     expect(routes).toHaveLength(15);
-    expect(readRoutes).toHaveLength(5);
-    expect(manageRoutes).toHaveLength(7);
-    expect(ungatedRoutes).toHaveLength(3);
+    expect(readRoutes).toHaveLength(6);
+    expect(manageRoutes).toHaveLength(9);
+    expect(ungatedRoutes).toHaveLength(0);
   });
 
   it.each(gatedRoutes)(
@@ -331,14 +332,13 @@ describe('accounting permission family — route matrix', () => {
     expect(effects[route.effect], route.name).toHaveBeenCalled();
   });
 
-  it.each(ungatedRoutes)(
-    'leaves $name on its pre-existing route-specific permission only',
-    async (route) => {
-      const response = await request(route);
-      expect(response.status, route.name).not.toBe(403);
-      expect(effects[route.effect], route.name).toHaveBeenCalled();
-    },
-  );
+  it('leaves no interactive accounting route ungated by the permission family', () => {
+    // PR review finding: customer import and both invoice-push routes used to
+    // sit here on their write permission alone. Invoice push writes into the
+    // shared provider realm and import reads remote displayNames out of it, so
+    // every interactive route now carries an accounting capability.
+    expect(ungatedRoutes).toEqual([]);
+  });
 });
 
 describe('accounting permission family — cumulative with existing gates', () => {

@@ -100,7 +100,17 @@ function partnerScopedPermission(...guards: MiddlewareHandler[]): MiddlewareHand
   };
 }
 
-const requireImportPermissions = partnerScopedPermission(requireOrgWrite, requireSiteWrite);
+// NOTE: the accounting:read guard is folded INTO this composition rather than
+// listed separately on the route. The import route's middleware chain is
+// already at Hono's variadic-inference limit — adding a 10th handler collapses
+// the handler's `c.req.valid(...)` types to `never`. Composing keeps the chain
+// length unchanged and the ordering identical (system scope is exempt from all
+// three for the reason documented on partnerScopedPermission).
+const requireImportPermissions = partnerScopedPermission(
+  requirePermission(PERMISSIONS.ACCOUNTING_READ.resource, PERMISSIONS.ACCOUNTING_READ.action),
+  requireOrgWrite,
+  requireSiteWrite,
+);
 
 /**
  * Dedicated accounting capabilities (SEC-2026-09-05-057). Before these, every
@@ -115,6 +125,11 @@ const requireImportPermissions = partnerScopedPermission(requireOrgWrite, requir
  * the same reason the import/invoice guards are: a system-scope token carries
  * no partner or org membership, so `requirePermission` can resolve no role for
  * it (see that helper's comment above).
+ *
+ * `accounting:manage` also covers BOTH invoice-push routes (PR review
+ * finding): a push writes an invoice into the shared provider realm, exactly
+ * like a mapping sync or a reconcile trigger, so it belongs on the same
+ * capability rather than on `invoices:write` alone.
  *
  * These are ADDITIVE. Every pre-existing route requirement — MFA,
  * organizations:write + sites:write on customer import, invoices:write on
@@ -763,6 +778,10 @@ accountingRoutes.get('/:provider/customers', authMiddleware, partnerScopes, requ
 });
 
 // Import selected QuickBooks customers as orgs + sites. Write + MFA-gated.
+// Carries `accounting:read` cumulatively (PR review finding): the response
+// echoes remote QuickBooks displayNames for the caller-supplied ids, so this
+// route reads the shared provider realm as well as creating tenants. That
+// guard lives inside `requireImportPermissions` — see its comment.
 accountingRoutes.post('/:provider/customers/import', authMiddleware, partnerScopes, requireFullPartnerOrgImportAccess, requireAccountingPartnerAuthority, requireImportPermissions, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', importCustomersSchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
@@ -1098,6 +1117,7 @@ accountingRoutes.post(
   authMiddleware,
   partnerScopes,
   requireAccountingPartnerAuthority,
+  requireAccountingManage,
   requireMfa(),
   requireInvoicePush,
   zValidator('param', invoicePushParamSchema),
@@ -1146,6 +1166,7 @@ accountingRoutes.post(
   authMiddleware,
   partnerScopes,
   requireAccountingPartnerAuthority,
+  requireAccountingManage,
   requireMfa(),
   requireInvoicePush,
   zValidator('param', providerParamSchema),
@@ -1197,8 +1218,10 @@ accountingRoutes.post(
 
 // Remote candidate search (Phase B follow-up, surfaced by Task 5): replaces
 // manual remote-ID entry in the mapping workbench. Read-only — same gate
-// shape as GET /:provider/customers above (no MFA/permission; see that
-// route's comment for why). Makes a real outbound QuickBooks call via
+// shape as GET /:provider/customers above: full-partner authority plus
+// `accounting:read`, and no MFA (reads are not step-up gated) and no write
+// permission (it creates nothing in Breeze). Makes a real outbound QuickBooks
+// call via
 // `resolveConnectionAndToken` + `listRemoteCustomers`/`listRemoteItems`, so it
 // carries the same SELF_MANAGED_DB_CONTEXT_ROUTES + `runInDbContext` runner
 // treatment as the push route above. Wraps its response in `{ data }` —
