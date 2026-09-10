@@ -53,6 +53,17 @@ vi.mock('../../db/schema', () => ({
     provider: 'backup_configs.provider',
     providerConfig: 'backup_configs.provider_config',
   },
+  backupSnapshots: {
+    id: 'backup_snapshots.id',
+    configId: 'backup_snapshots.config_id',
+  },
+}));
+
+vi.mock('../../jobs/backupRetention', () => ({
+  // D18 W01 (§3.6): faithful enough for these tests -- identity is
+  // provider + endpoint + bucket (or local path), excluding any prefix.
+  normalizeStorageIdentity: (provider: string, cfg: Record<string, unknown>) =>
+    `${provider}::${cfg.endpoint ?? ''}::${cfg.bucket ?? cfg.path ?? ''}`,
 }));
 
 vi.mock('../../services/backupSnapshotStorage', () => ({
@@ -1018,6 +1029,69 @@ describe('backup config routes', () => {
       );
       expect(sets).toContainEqual(expect.objectContaining({ isDefault: false }));
       expect(sets).toContainEqual(expect.objectContaining({ isDefault: true }));
+    });
+  });
+
+  describe('D18 W01 -- storage_identity_changed warning', () => {
+    it('warns (does not block) when an s3 endpoint edit changes storage identity for a config with snapshots', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([makeConfig({
+          provider: 's3',
+          providerConfig: { bucket: 'b', region: 'us-east-1', endpoint: 'old.example.com' },
+        })])) // current
+        .mockReturnValueOnce(chainMock([{ id: 'snap-1' }])); // existingSnapshot check
+      updateMock.mockReturnValueOnce(chainMock([makeConfig({
+        provider: 's3',
+        providerConfig: { bucket: 'b', region: 'us-east-1', endpoint: 'new.example.com' },
+      })]));
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ details: { bucket: 'b', region: 'us-east-1', endpoint: 'new.example.com' } }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.warnings).toEqual(['storage_identity_changed']);
+    });
+
+    it('always includes warnings (empty) when the edit does not change storage identity', async () => {
+      selectMock.mockReturnValueOnce(chainMock([makeConfig()]));
+      updateMock.mockReturnValueOnce(chainMock([makeConfig({ name: 'Renamed' })]));
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.warnings).toEqual([]);
+    });
+
+    it('omits the warning when identity changed but the config has no snapshot rows', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([makeConfig({
+          provider: 's3',
+          providerConfig: { bucket: 'b', region: 'us-east-1', endpoint: 'old.example.com' },
+        })])) // current
+        .mockReturnValueOnce(chainMock([])); // existingSnapshot check -- none
+      updateMock.mockReturnValueOnce(chainMock([makeConfig({
+        provider: 's3',
+        providerConfig: { bucket: 'b', region: 'us-east-1', endpoint: 'new.example.com' },
+      })]));
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ details: { bucket: 'b', region: 'us-east-1', endpoint: 'new.example.com' } }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.warnings).toEqual([]);
     });
   });
 });
