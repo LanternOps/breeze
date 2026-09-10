@@ -718,11 +718,34 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	var prevSnapshot *Snapshot
 	incrementalDedupeActive := !m.config.SystemStateEnabled || len(m.config.Paths) > 0
 	if incrementalDedupeActive {
-		prev, reason := previousManifest(runCtx, m.config.Provider, runIdentity)
-		if prev == nil {
-			log.Info("running full backup, no reference dedupe", "reason", reason)
+		if m.config.BaseSnapshotID != nil {
+			// Server-owned mode (D18 §3.1): the protocol switch is presence
+			// of baseSnapshotId in the backup_run payload (see
+			// exec_backup.go). The agent never lists the bucket to choose a
+			// base in this mode.
+			prev, reason := fetchServerOwnedBase(runCtx, m.config.Provider, *m.config.BaseSnapshotID, runIdentity)
+			if prev == nil {
+				log.Info("running full backup, no reference dedupe",
+					"mode", "server-owned",
+					"baseSnapshotId", *m.config.BaseSnapshotID,
+					"reason", reason,
+				)
+			} else {
+				prevSnapshot = prev
+				log.Info("using server-selected base for incremental reference dedupe",
+					"mode", "server-owned",
+					"baseSnapshotId", prev.ID,
+				)
+			}
 		} else {
-			prevSnapshot = prev
+			// Legacy mode: server predates the field, fall back to the
+			// original bucket-listing lookup.
+			prev, reason := previousManifest(runCtx, m.config.Provider, runIdentity)
+			if prev == nil {
+				log.Info("running full backup, no reference dedupe", "mode", "legacy", "reason", reason)
+			} else {
+				prevSnapshot = prev
+			}
 		}
 	}
 

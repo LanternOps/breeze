@@ -536,3 +536,67 @@ func TestSystemStateArtifactsMissing(t *testing.T) {
 		})
 	}
 }
+
+func TestFetchServerOwnedBase(t *testing.T) {
+	const myIdentity = "s3|bucket-1|device-a|file"
+
+	t.Run("valid base with matching identity", func(t *testing.T) {
+		provider := newMockProvider()
+		base := &Snapshot{
+			ID:             "snap-base",
+			Timestamp:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			BackupIdentity: myIdentity,
+			Files:          []SnapshotFile{{SourcePath: "/data/a.txt", BackupPath: "snapshots/snap-base/files/a.txt.gz", Size: 1}},
+		}
+		storeManifest(t, provider, base)
+
+		snap, reason := fetchServerOwnedBase(context.Background(), provider, "snap-base", myIdentity)
+		if snap == nil {
+			t.Fatalf("expected a matching snapshot, got nil (reason: %s)", reason)
+		}
+		if snap.ID != "snap-base" {
+			t.Fatalf("fetchServerOwnedBase picked %q, want %q", snap.ID, "snap-base")
+		}
+	})
+
+	t.Run("identity mismatch falls back to full run", func(t *testing.T) {
+		provider := newMockProvider()
+		base := &Snapshot{
+			ID:             "snap-base",
+			Timestamp:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			BackupIdentity: "s3|bucket-1|device-b|file",
+			Files:          []SnapshotFile{{SourcePath: "/data/a.txt", BackupPath: "snapshots/snap-base/files/a.txt.gz", Size: 1}},
+		}
+		storeManifest(t, provider, base)
+
+		snap, reason := fetchServerOwnedBase(context.Background(), provider, "snap-base", myIdentity)
+		if snap != nil {
+			t.Fatalf("expected nil on identity mismatch, got %+v", snap)
+		}
+		if reason == "" {
+			t.Error("expected a non-empty reason")
+		}
+	})
+
+	t.Run("empty baseSnapshotId means full run", func(t *testing.T) {
+		provider := newMockProvider()
+		snap, reason := fetchServerOwnedBase(context.Background(), provider, "", myIdentity)
+		if snap != nil {
+			t.Fatalf("expected nil for empty baseSnapshotId, got %+v", snap)
+		}
+		if reason == "" {
+			t.Error("expected a non-empty reason")
+		}
+	})
+
+	t.Run("404 (manifest never uploaded) falls back to full run", func(t *testing.T) {
+		provider := newMockProvider()
+		snap, reason := fetchServerOwnedBase(context.Background(), provider, "snap-missing", myIdentity)
+		if snap != nil {
+			t.Fatalf("expected nil on download failure, got %+v", snap)
+		}
+		if reason == "" {
+			t.Error("expected a non-empty reason")
+		}
+	})
+}
