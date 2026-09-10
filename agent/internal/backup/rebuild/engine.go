@@ -22,7 +22,6 @@ type runState struct {
 	SnapshotID string         `json:"snapshotId"`
 	TargetKey  string         `json:"targetKey"`
 	Plan       *Plan          `json:"plan"`
-	Disk       string         `json:"disk,omitempty"` // attached device (disk targets); images re-attach on resume
 	Completed  map[Phase]bool `json:"completed"`
 	UpdatedAt  time.Time      `json:"updatedAt"`
 }
@@ -185,14 +184,19 @@ func (r *run) loadState() {
 		}
 		r.state = &s
 		r.result.Plan = s.Plan
-		r.disk = s.Disk
+		// r.disk is deliberately NOT restored from persisted state: a
+		// TargetImage's loop device does not survive across Run() calls
+		// (teardown always detaches it, even on failure — see teardown's
+		// doc comment), so trusting a persisted device path here would mean
+		// mounting a stale or foreign loop device on resume. reattach()
+		// always re-derives it (cheap recompute for TargetDisk, a fresh
+		// AttachImage for TargetImage) whenever r.disk == "".
 	}
 }
 
 func (r *run) saveState() {
 	r.state.UpdatedAt = time.Now().UTC()
 	r.state.Plan = r.result.Plan
-	r.state.Disk = r.disk
 	if err := os.MkdirAll(filepath.Dir(r.statePath), 0o700); err != nil {
 		return
 	}

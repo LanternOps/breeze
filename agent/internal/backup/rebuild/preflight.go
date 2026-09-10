@@ -11,6 +11,41 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/layout"
 )
 
+// deviceBelongsTo reports whether dev names disk itself or one of its
+// partitions. A bare strings.HasPrefix(dev, disk) is not enough — disk
+// "/dev/sda" is a STRING prefix of the unrelated disk "/dev/sdaa1" too — so
+// this checks the suffix left after the prefix matches partitionDevice's
+// own naming rule: a disk whose name ends in a digit (nvme0n1, mmcblk0,
+// loop0) always gets a "p" infix before the partition number, so anything
+// else immediately after the prefix (including a bare digit, as in
+// "/dev/nvme0n10" — a DIFFERENT nvme namespace, not a partition of
+// nvme0n1) does not belong to it; a disk ending in a letter (sda, vda)
+// never gets that infix, so the suffix must be digits directly.
+func deviceBelongsTo(disk, dev string) bool {
+	if dev == disk {
+		return true
+	}
+	if !strings.HasPrefix(dev, disk) {
+		return false
+	}
+	rest := dev[len(disk):]
+	if n := len(disk); n > 0 && disk[n-1] >= '0' && disk[n-1] <= '9' {
+		if !strings.HasPrefix(rest, "p") {
+			return false
+		}
+		rest = rest[1:]
+	}
+	if rest == "" {
+		return false
+	}
+	for _, c := range rest {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // preflight verifies everything it can before any write happens: the
 // layout is restorable by this engine, the target is big enough and not in
 // use / not the running system, and the ordinary manifest + system state
@@ -45,13 +80,13 @@ func preflight(ctx context.Context, r *run) error {
 			return err
 		}
 		for _, m := range mounted {
-			if m == r.opts.Target.Path || strings.HasPrefix(m, r.opts.Target.Path) {
+			if deviceBelongsTo(r.opts.Target.Path, m) {
 				return &RefusalError{Reason: fmt.Sprintf("target disk %s is in use (%s is mounted)", r.opts.Target.Path, m)}
 			}
 		}
 		roots, _ := r.sys.RootSources()
 		for _, m := range roots {
-			if m == r.opts.Target.Path || strings.HasPrefix(m, r.opts.Target.Path) {
+			if deviceBelongsTo(r.opts.Target.Path, m) {
 				return &RefusalError{Reason: fmt.Sprintf("target disk %s backs the running system (%s)", r.opts.Target.Path, m)}
 			}
 		}
@@ -96,7 +131,7 @@ func preflight(ctx context.Context, r *run) error {
 		if errors.Is(err, bmr.ErrNoSystemState) {
 			r.warn("snapshot has no system state; only files will be restored")
 		} else {
-			return &RefusalError{Reason: "system state verification failed: " + err.Error()}
+			return &RefusalError{Reason: "system state could not be verified: " + err.Error()}
 		}
 	} else {
 		r.warnings = append(r.warnings, warnings...)

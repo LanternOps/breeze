@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,6 +18,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
 	"github.com/breeze-rmm/agent/internal/backup/layout"
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
@@ -83,7 +86,14 @@ func hasBmrCall(calls []bmrCall, full string) bool {
 	return false
 }
 
-type memProvider struct{ files map[string][]byte }
+type memProvider struct {
+	files map[string][]byte
+	// failKey, when set for a given remote key, makes Download return that
+	// error verbatim instead of consulting files — for simulating a
+	// transport failure (as opposed to a confirmed-absent object) on a
+	// specific object.
+	failKey map[string]error
+}
 
 func (m *memProvider) Upload(local, remote string) error {
 	b, err := os.ReadFile(local)
@@ -94,9 +104,17 @@ func (m *memProvider) Upload(local, remote string) error {
 	return nil
 }
 func (m *memProvider) Download(remote, local string) error {
+	if m.failKey != nil {
+		if err, ok := m.failKey[remote]; ok {
+			return err
+		}
+	}
 	b, ok := m.files[remote]
 	if !ok {
-		return os.ErrNotExist
+		// Mirrors providers.LocalProvider/S3Provider: wrap with
+		// ErrObjectNotFound only when positively confirming absence — see
+		// providers.ErrObjectNotFound's doc comment.
+		return fmt.Errorf("%w: %s", providers.ErrObjectNotFound, remote)
 	}
 	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
 		return err
@@ -216,6 +234,30 @@ func TestRun_PreflightRefusals(t *testing.T) {
 				t.Fatalf("refusal must not write: %s", sys.dump())
 			}
 		})
+	}
+}
+
+// TestRun_PreflightRefusesOnSystemStateTransportError proves the review fix
+// for bmr.DownloadSystemState: a mere transport failure fetching
+// system-state/manifest.json (NOT a confirmed-absent object) must refuse
+// the whole run rather than being silently treated as "this snapshot has
+// no system state, proceed with files only."
+func TestRun_PreflightRefusesOnSystemStateTransportError(t *testing.T) {
+	dir := t.TempDir()
+	sys := newFakeSystem(dir, 100*GiB)
+	p := seedSnapshot(t, "snap-1", testLayout())
+	p.failKey = map[string]error{
+		"snapshots/snap-1/system-state/manifest.json": errors.New("timeout talking to storage"),
+	}
+	res, err := Run(context.Background(), Options{SnapshotID: "snap-1", Provider: p, Target: Target{Kind: TargetDisk, Path: "/dev/sdb"}, Identity: IdentityNew, StateDir: dir, StagingRoot: filepath.Join(dir, "mnt"), System: sys})
+	if err == nil {
+		t.Fatalf("expected refusal, got %+v", res)
+	}
+	if res == nil || res.Status != "refused" || !strings.Contains(res.Refusal, "system state could not be verified") || !strings.Contains(res.Refusal, "timeout talking to storage") || res.PhaseReached != PhasePreflight {
+		t.Fatalf("res = %+v err=%v", res, err)
+	}
+	if sys.has("sgdisk") || sys.has("mkfs") || sys.has("mount") {
+		t.Fatalf("refusal must not write: %s", sys.dump())
 	}
 }
 
@@ -345,6 +387,79 @@ func TestRun_ResumeSkipsProvisionAndReusesPlan(t *testing.T) {
 	// State file is removed after success.
 	if m, _ := filepath.Glob(filepath.Join(dir, "rebuild-snap-1-*.json")); len(m) != 0 {
 		t.Errorf("state file left behind: %v", m)
+	}
+}
+
+// TestRun_ResumeImageTargetReattachesLoop proves the review fix: an image
+// target's loop device does NOT survive across Run() calls (teardown always
+// detaches it on exit, even on failure), so a resumed run must re-attach a
+// FRESH loop device rather than trusting a persisted device path — which
+// could by then be stale, freed, or reused by something else entirely.
+func TestRun_ResumeImageTargetReattachesLoop(t *testing.T) {
+	skipUnlessLinuxSystemState(t)
+	resetBmrCalls()
+	dir := t.TempDir()
+	sys := newFakeSystem(dir, 100*GiB)
+	sys.fail["chroot"] = os.ErrPermission // first run dies in boot
+	p := seedSnapshot(t, "snap-1", testLayout())
+	img := filepath.Join(dir, "t.img")
+	opts := Options{SnapshotID: "snap-1", Provider: p, Target: Target{Kind: TargetImage, Path: img, ImageSizeBytes: 100 * GiB}, Identity: IdentityNew, StateDir: dir, StagingRoot: filepath.Join(dir, "mnt"), System: sys}
+	res, err := Run(context.Background(), opts)
+	if err == nil || res.Status != "failed" || res.PhaseReached != PhaseBoot {
+		t.Fatalf("first run = %+v err=%v", res, err)
+	}
+
+	sys2 := newFakeSystem(dir, 100*GiB)
+	opts.System = sys2
+	res2, err := Run(context.Background(), opts)
+	if err != nil || res2.Status != "completed" || !res2.Resumed {
+		t.Fatalf("second run = %+v err=%v\n%s", res2, err, sys2.dump())
+	}
+	if sys2.has("sgdisk") || sys2.has("mkfs") {
+		t.Fatalf("resume re-provisioned the disk\n%s", sys2.dump())
+	}
+	losetupIdx := sys2.indexOf("losetup --find --show --partscan " + img)
+	if losetupIdx < 0 {
+		t.Fatalf("resume did not re-attach the image via losetup\n%s", sys2.dump())
+	}
+	mountIdx := -1
+	for i, c := range sys2.cmds {
+		if strings.HasPrefix(c, "mount ") || strings.HasPrefix(c, "mount -") {
+			mountIdx = i
+			break
+		}
+	}
+	if mountIdx < 0 {
+		t.Fatalf("resume never mounted anything\n%s", sys2.dump())
+	}
+	if mountIdx < losetupIdx {
+		t.Fatalf("mount happened before the loop device was re-attached\n%s", sys2.dump())
+	}
+}
+
+// TestRun_ResumeDiskTargetNeverCallsLosetup is TestRun_ResumeImageTargetReattachesLoop's
+// disk-target sibling: a disk target never goes through losetup at all, on
+// a fresh run or a resumed one.
+func TestRun_ResumeDiskTargetNeverCallsLosetup(t *testing.T) {
+	skipUnlessLinuxSystemState(t)
+	resetBmrCalls()
+	dir := t.TempDir()
+	sys := newFakeSystem(dir, 100*GiB)
+	sys.fail["chroot"] = os.ErrPermission
+	p := seedSnapshot(t, "snap-1", testLayout())
+	opts := Options{SnapshotID: "snap-1", Provider: p, Target: Target{Kind: TargetDisk, Path: "/dev/sdb"}, Identity: IdentityNew, StateDir: dir, StagingRoot: filepath.Join(dir, "mnt"), System: sys}
+	if _, err := Run(context.Background(), opts); err == nil {
+		t.Fatal("expected the first run to fail in boot")
+	}
+
+	sys2 := newFakeSystem(dir, 100*GiB)
+	opts.System = sys2
+	res2, err := Run(context.Background(), opts)
+	if err != nil || res2.Status != "completed" {
+		t.Fatalf("second run = %+v err=%v\n%s", res2, err, sys2.dump())
+	}
+	if sys2.has("losetup") {
+		t.Errorf("a disk target must never call losetup\n%s", sys2.dump())
 	}
 }
 

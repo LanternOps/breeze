@@ -60,6 +60,11 @@ func (s realSystem) AttachImage(path string, sizeBytes int64) (string, func() er
 
 func (realSystem) PartitionDevice(disk string, n int) string { return partitionDevice(disk, n) }
 
+func (realSystem) Exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func (s realSystem) Rescan(ctx context.Context, disk string) error {
 	if out, err := s.Run(ctx, "partprobe", disk); err != nil {
 		return fmt.Errorf("partprobe %s: %s: %w", disk, strings.TrimSpace(string(out)), err)

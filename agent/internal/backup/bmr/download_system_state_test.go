@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
@@ -19,7 +21,14 @@ import (
 // LocalProvider writes to disk, which is fine for the existing
 // applySystemState fixtures but awkward for a "corrupt this one object"
 // test).
-type memStateProvider struct{ files map[string][]byte }
+type memStateProvider struct {
+	files map[string][]byte
+	// failErr, when set, makes every Download call return this error
+	// verbatim instead of consulting files — for asserting how
+	// DownloadSystemState classifies a transport failure (NOT a confirmed
+	// absence) differently from a genuine not-found.
+	failErr error
+}
 
 func (m *memStateProvider) Upload(local, remote string) error {
 	b, err := os.ReadFile(local)
@@ -30,9 +39,15 @@ func (m *memStateProvider) Upload(local, remote string) error {
 	return nil
 }
 func (m *memStateProvider) Download(remote, local string) error {
+	if m.failErr != nil {
+		return m.failErr
+	}
 	b, ok := m.files[remote]
 	if !ok {
-		return os.ErrNotExist
+		// Mirrors providers.LocalProvider/S3Provider: wrap with
+		// ErrObjectNotFound only when positively confirming absence — see
+		// providers.ErrObjectNotFound's doc comment.
+		return fmt.Errorf("%w: %s", providers.ErrObjectNotFound, remote)
 	}
 	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
 		return err
@@ -109,5 +124,39 @@ func TestDownloadSystemState_NoManifest_ExpectTrue_Fatal(t *testing.T) {
 	_, _, err := DownloadSystemState(context.Background(), provider, "nope", true, t.TempDir())
 	if err == nil || errors.Is(err, ErrNoSystemState) {
 		t.Fatalf("err = %v, want a hard (non-sentinel) error", err)
+	}
+}
+
+// TestDownloadSystemState_ClassifiesManifestDownloadErrors proves the
+// review fix: ErrNoSystemState is returned ONLY when the provider
+// positively confirms the manifest object doesn't exist
+// (errors.Is(dlErr, providers.ErrObjectNotFound)) — never for an ordinary
+// transport failure, which preflight must refuse on rather than silently
+// treat as "no system state, proceed."
+func TestDownloadSystemState_ClassifiesManifestDownloadErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		dlErr        error
+		wantSentinel bool
+	}{
+		{"confirmed not found", fmt.Errorf("%w: manifest.json", providers.ErrObjectNotFound), true},
+		{"transport timeout", errors.New("timeout"), false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := &memStateProvider{files: map[string][]byte{}, failErr: tt.dlErr}
+			_, _, err := DownloadSystemState(context.Background(), provider, "snap", false, t.TempDir())
+			if tt.wantSentinel {
+				if !errors.Is(err, ErrNoSystemState) {
+					t.Fatalf("err = %v, want ErrNoSystemState", err)
+				}
+				return
+			}
+			if errors.Is(err, ErrNoSystemState) {
+				t.Fatalf("err = %v, must NOT be ErrNoSystemState for a transport failure", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "timeout") {
+				t.Fatalf("err = %v, want it to contain %q", err, "timeout")
+			}
+		})
 	}
 }

@@ -4,7 +4,43 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
+
+// partitionDeviceWaitTimeout bounds how long provision/reattach will poll
+// for a partition's device node to appear after a Rescan (partprobe). A
+// package var, not a const, so a test could shrink it (none currently need
+// to — the fake System's Exists always reports true immediately).
+var partitionDeviceWaitTimeout = 10 * time.Second
+
+// waitForPartitionDevices polls for every planned partition's device node
+// to exist before any mkfs/mount touches it. sgdisk/partprobe tell the
+// kernel about a new partition table; the /dev entry itself is materialized
+// asynchronously by udev — proceeding before it exists is exactly how a
+// "no such file or directory" mkfs/mount failure happens on a slow or
+// udev-less host (see the CI loopback job).
+func waitForPartitionDevices(ctx context.Context, r *run) error {
+	if r.result.Plan == nil {
+		return nil
+	}
+	deadline := time.Now().Add(partitionDeviceWaitTimeout)
+	for _, p := range r.result.Plan.Partitions {
+		if p.Filesystem == "" {
+			continue // MSR-style partitions carry no filesystem and are never formatted/mounted
+		}
+		dev := r.sys.PartitionDevice(r.disk, p.Number)
+		for !r.sys.Exists(dev) {
+			if ctx != nil && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("partition device %s did not appear within %s of rescan", dev, partitionDeviceWaitTimeout)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	return nil
+}
 
 // provision partitions and formats the target per r.result.Plan: sgdisk lays
 // down the GPT (type + partition GUIDs so the restored fstab/GRUB config
@@ -38,6 +74,9 @@ func provision(ctx context.Context, r *run) error {
 		}
 	}
 	if err := r.sys.Rescan(ctx, r.disk); err != nil {
+		return err
+	}
+	if err := waitForPartitionDevices(ctx, r); err != nil {
 		return err
 	}
 	for i, p := range plan.Partitions {
@@ -94,7 +133,11 @@ func provision(ctx context.Context, r *run) error {
 	return nil
 }
 
-// attach resolves r.disk: the block device itself, or the loop device for an image.
+// attach resolves r.disk: the block device itself, or a freshly attached
+// loop device for an image target. Called both by provision() (first run)
+// and reattach() (resume) — for TargetImage this ALWAYS performs a new
+// losetup, never reuses a device path from a previous call, because a loop
+// device does not survive across Run() calls (teardown always detaches it).
 func (r *run) attach(ctx context.Context) error {
 	switch r.opts.Target.Kind {
 	case TargetDisk:
@@ -106,15 +149,26 @@ func (r *run) attach(ctx context.Context) error {
 		}
 		r.disk, r.detach = dev, detach
 	}
-	r.state.Disk = r.disk
 	return nil
 }
 
-// reattach is used on resume: attach (images) and mount the planned
-// partitions without touching the partition table or filesystems.
+// reattach is used on resume: re-attach the target (always a fresh losetup
+// for an image — see attach's doc comment — then a Rescan and a wait for
+// the partition device nodes, since a resumed process's kernel/udev state
+// is otherwise unknown; a disk target's real block device nodes need
+// neither, they persist independently of this process) and mount the
+// planned partitions without touching the partition table or filesystems.
 func (r *run) reattach(ctx context.Context) error {
 	if r.disk == "" {
 		if err := r.attach(ctx); err != nil {
+			return err
+		}
+		if r.opts.Target.Kind == TargetImage {
+			if err := r.sys.Rescan(ctx, r.disk); err != nil {
+				return err
+			}
+		}
+		if err := waitForPartitionDevices(ctx, r); err != nil {
 			return err
 		}
 	}

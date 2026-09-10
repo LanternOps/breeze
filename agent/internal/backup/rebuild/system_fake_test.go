@@ -56,6 +56,11 @@ func (f *fakeSystem) AttachImage(path string, size int64) (string, func() error,
 	return "/dev/loop7", func() error { _, _ = f.record("losetup", "-d", "/dev/loop7"); return nil }, nil
 }
 func (f *fakeSystem) PartitionDevice(disk string, n int) string { return partitionDevice(disk, n) }
+
+// Exists always reports true: fakeSystem has no real device nodes, and no
+// current test needs to simulate a partition device node that never
+// appears (the loopback test, real-Linux-only, is what proves that path).
+func (f *fakeSystem) Exists(string) bool { return true }
 func (f *fakeSystem) Rescan(_ context.Context, disk string) error {
 	_, err := f.record("partprobe", disk)
 	return err

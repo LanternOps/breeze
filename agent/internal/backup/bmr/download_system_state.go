@@ -45,10 +45,22 @@ func DownloadSystemState(ctx context.Context, provider providers.BackupProvider,
 	defer func() { _ = os.Remove(tmpPath) }()
 
 	if dlErr := provider.Download(stateManifestKey, tmpPath); dlErr != nil {
-		if expect {
-			return nil, nil, fmt.Errorf("bmr: snapshot advertises system state but system-state/manifest.json is missing: %w", dlErr)
+		// ErrNoSystemState means "this snapshot never captured system
+		// state" — a legitimate, common outcome preflight treats as a soft
+		// warning. That can ONLY be concluded when the provider positively
+		// confirms the object doesn't exist (errors.Is ErrObjectNotFound —
+		// see its doc comment). Any other error (timeout, auth failure,
+		// network blip, ...) is NOT "confirmed absent": returning the
+		// sentinel for it would make preflight silently proceed into
+		// destructive phases after a mere transport failure, exactly the
+		// fail-open bug ErrObjectNotFound exists to prevent.
+		if errors.Is(dlErr, providers.ErrObjectNotFound) {
+			if expect {
+				return nil, nil, fmt.Errorf("bmr: snapshot advertises system state but system-state/manifest.json is missing: %w", dlErr)
+			}
+			return nil, nil, ErrNoSystemState
 		}
-		return nil, nil, ErrNoSystemState
+		return nil, nil, fmt.Errorf("bmr: download system-state manifest: %w", dlErr)
 	}
 
 	data, readErr := os.ReadFile(tmpPath)

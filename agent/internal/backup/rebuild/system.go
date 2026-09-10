@@ -26,8 +26,14 @@ type System interface {
 	AttachImage(path string, sizeBytes int64) (device string, detach func() error, err error)
 	PartitionDevice(disk string, number int) string // /dev/sda1, /dev/nvme0n1p1, /dev/loop0p1
 	Rescan(ctx context.Context, disk string) error  // partprobe + udevadm settle
-	MountedSources() ([]string, error)              // every SOURCE in /proc/self/mounts
-	RootSources() ([]string, error)                 // devices backing / and /run/live/medium (findmnt -no SOURCE)
+	// Exists reports whether path exists on the filesystem — used to poll
+	// for a partition device node to actually appear after Rescan, since
+	// sgdisk/partprobe telling the kernel about a new partition table and
+	// udev materializing the corresponding /dev entry are two separate,
+	// asynchronous steps.
+	Exists(path string) bool
+	MountedSources() ([]string, error) // every SOURCE in /proc/self/mounts
+	RootSources() ([]string, error)    // devices backing / and /run/live/medium (findmnt -no SOURCE)
 	Mount(ctx context.Context, device, dir, fstype string, opts ...string) error
 	BindMount(ctx context.Context, src, dir string) error
 	Unmount(ctx context.Context, dir string) error
