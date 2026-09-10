@@ -33,7 +33,7 @@ import {
   sweepUnreferencedBackupObjects,
 } from './backupRetention';
 import * as backupEnqueue from './backupEnqueue';
-import { resolveBackupStorageEncryptionPlan } from '../services/backupEncryption';
+import { buildBackupWriteCommandDestination } from '../services/backupProviderConfig';
 import { backupCommandResultSchema } from '../routes/backup/resultSchemas';
 import { describeZodIssues } from '../lib/zodIssues';
 import { getDueOccurrenceKey } from '../routes/backup/helpers';
@@ -669,21 +669,18 @@ async function prepareBackupDispatchTargets(
     return { status: 'done', result: { dispatched: false } };
   }
 
-  const providerConfig = config.providerConfig as Record<string, unknown>;
-  const encryptionPlan = resolveBackupStorageEncryptionPlan({
-    encryption: config.encryption,
-    provider: config.provider,
-    providerConfig,
-  });
-  if (encryptionPlan.required && encryptionPlan.status === 'unsupported') {
-    await markJobFailed(data.jobId, encryptionPlan.reason);
+  // D20b item A: this destination-payload shape (provider + providerConfig +
+  // storageEncryption, with the encryption-plan logic applied) is the
+  // reference builder the on-demand mssql/hyperv backup routes now reuse via
+  // resolveBackupWriteCommandDestination (apps/api/src/services/
+  // backupProviderConfig.ts) so a manual mssql_backup/hyperv_backup carries
+  // the same fields a profile-scheduled one does.
+  const destinationResult = buildBackupWriteCommandDestination(config);
+  if (!destinationResult.ok) {
+    await markJobFailed(data.jobId, destinationResult.message);
     return { status: 'done', result: { dispatched: false } };
   }
-
-  const commandProviderConfig =
-    encryptionPlan.required && encryptionPlan.status === 'enforced'
-      ? { ...providerConfig, ...encryptionPlan.providerConfigPatch }
-      : providerConfig;
+  const { destination } = destinationResult;
 
   const prepared: PreparedBackupTarget[] = [];
   const preFailedTargets: string[] = [];
@@ -745,18 +742,9 @@ async function prepareBackupDispatchTargets(
       payload: {
         jobId: commandJobId,
         configId: data.configId,
-        provider: config.provider,
-        providerConfig: commandProviderConfig,
-        storageEncryption: encryptionPlan.required
-          ? {
-              required: true,
-              mode: encryptionPlan.mode,
-              keyReference: encryptionPlan.keyReference,
-            }
-          : {
-              required: false,
-              mode: 'disabled',
-            },
+        provider: destination.provider,
+        providerConfig: destination.providerConfig,
+        storageEncryption: destination.storageEncryption,
         ...target.payload,
       },
     };
