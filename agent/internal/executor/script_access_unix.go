@@ -34,12 +34,12 @@ func prepareScriptForRunAs(scriptPath, runAs string) error {
 	if err != nil {
 		return fmt.Errorf("open private script directory without following links: %w", err)
 	}
-	defer unix.Close(dirFD)
+	defer func() { _ = unix.Close(dirFD) }()
 	fileFD, err := unix.Openat(dirFD, filepath.Base(scriptPath), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return fmt.Errorf("open private script file without following links: %w", err)
 	}
-	defer unix.Close(fileFD)
+	defer func() { _ = unix.Close(fileFD) }()
 	var stat unix.Stat_t
 	if err := unix.Fstat(fileFD, &stat); err != nil {
 		return fmt.Errorf("inspect private script file: %w", err)

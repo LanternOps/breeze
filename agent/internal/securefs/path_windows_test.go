@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,12 +28,20 @@ func writeSource(t *testing.T, content string) string {
 // local identity CAN create (unlike a symlink, which needs
 // SeCreateSymbolicLinkPrivilege or developer mode). It is therefore the
 // realistic planting primitive for this finding on Windows.
+//
+// It FAILS rather than skips: every reparse-point assertion in this file is
+// load-bearing, CI runs `go test` without -v, and a skip is indistinguishable
+// from a pass there.
 func mkJunction(t *testing.T, link, target string) {
 	t.Helper()
 	out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput()
 	if err != nil {
-		t.Skipf("cannot create a junction on this host: %v (%s)", err, out)
+		t.Fatalf("cannot create a junction, so the reparse-point boundary is unproven: %v (%s)", err, out)
 	}
+}
+
+func tryJunction(link, target string) bool {
+	return exec.Command("cmd", "/c", "mklink", "/J", link, target).Run() == nil
 }
 
 func TestInstallFilePositiveControl(t *testing.T) {
@@ -357,5 +366,122 @@ func TestPrivateDirSecurityAttributesCarriesAProtectedDescriptor(t *testing.T) {
 	}
 	if control&windows.SE_DACL_PROTECTED == 0 {
 		t.Fatal("security descriptor DACL is not protected against inheritance")
+	}
+}
+
+// A staging root created by an earlier agent version — or by any ordinary
+// MkdirAll — already exists with an INHERITED DACL. EnsurePrivateDir must
+// repair it in place (the unix implementation does the same thing with an
+// unconditional fchmod) rather than refuse, or restore breaks on upgrade the
+// first time the work root is reused.
+func TestEnsurePrivateDirRepairsAnExistingInheritedDACL(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "restore-work")
+	if err := os.MkdirAll(filepath.Join(path, "child"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyPrivateDir(path); err == nil {
+		t.Fatal("fixture is not discriminating: the pre-created directory already verified")
+	}
+	if err := EnsurePrivateDir(path); err != nil {
+		t.Fatalf("EnsurePrivateDir refused an existing directory: %v", err)
+	}
+	if err := VerifyPrivateDir(path); err != nil {
+		t.Fatalf("EnsurePrivateDir did not repair the DACL: %v", err)
+	}
+	// Repair must not destroy what the directory already held.
+	if _, err := os.Stat(filepath.Join(path, "child")); err != nil {
+		t.Fatalf("existing content was lost during repair: %v", err)
+	}
+	// And it must be idempotent.
+	if err := EnsurePrivateDir(path); err != nil {
+		t.Fatalf("EnsurePrivateDir is not idempotent: %v", err)
+	}
+}
+
+// The pinned-handle boundary: an unprivileged local identity can loop
+// rmdir + "mklink /J" on a directory it owns, trying to win the window between
+// the walk and the write. Because every component handle stays open (and is not
+// shared for delete) and the temp create + rename are resolved relative to the
+// pinned parent handle, a swap must either be refused or land inside the
+// directory object we already pinned. Nothing may ever appear outside.
+func TestInstallFileResistsConcurrentComponentSwap(t *testing.T) {
+	base := t.TempDir()
+	outside := t.TempDir()
+	parent := filepath.Join(base, "parent")
+	held := filepath.Join(base, "parent-held")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			// Rename rather than rmdir: a pinned handle blocks both, and this
+			// exercises the "component moved away" case too.
+			if os.Rename(parent, held) == nil {
+				if tryJunction(parent, outside) {
+					_ = os.Remove(parent)
+				}
+				_ = os.Rename(held, parent)
+			}
+		}
+	}()
+
+	for i := 0; i < 200; i++ {
+		source := writeSource(t, fmt.Sprintf("content-%d", i))
+		_, _ = InstallFile(base, filepath.Join("parent", fmt.Sprintf("file-%d", i)), source, 0, time.Time{})
+	}
+	close(stop)
+	wg.Wait()
+
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("concurrent component swap wrote outside the pinned hierarchy: %v", entries)
+	}
+}
+
+// A pre-existing directory whose DACL is protected but PERMISSIVE must still be
+// tightened: "protected" only means "not inheriting", not "restrictive".
+func TestEnsurePrivateDirTightensAPermissiveProtectedDACL(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "restore-work")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// D:PAI(A;OICI;FA;;;WD) — protected, but Everyone has full control.
+	sd, err := windows.SecurityDescriptorFromString("D:PAI(A;OICI;FA;;;WD)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil, nil, dacl, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsurePrivateDir(path); err != nil {
+		t.Fatalf("EnsurePrivateDir: %v", err)
+	}
+	got, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got.String(), "(A;OICI;FA;;;WD)") {
+		t.Fatalf("permissive Everyone ACE survived EnsurePrivateDir: %s", got.String())
 	}
 }

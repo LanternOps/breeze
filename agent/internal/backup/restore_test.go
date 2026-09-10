@@ -1022,3 +1022,23 @@ func TestMoveFile_ReadOnlyDestination_CopyFallbackPath(t *testing.T) {
 		t.Fatalf("src still exists after copyAndDelete: err=%v", statErr)
 	}
 }
+
+// Without a target and without a work root, the default target used to live
+// inside an ephemeral work root that the same call removes on return — the
+// restore would delete exactly what it wrote. It must refuse instead.
+func TestRestoreFromSnapshot_RefusesEphemeralTarget(t *testing.T) {
+	provider, snapID := setupRestoreTestSnapshot(t, map[string]string{"a.txt": "x"})
+
+	_, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapID}, nil)
+	if err == nil {
+		t.Fatal("restore with neither TargetPath nor WorkRoot was accepted")
+	}
+
+	// Control: either one on its own is still fine.
+	if _, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapID, WorkRoot: t.TempDir()}, nil); err != nil {
+		t.Fatalf("restore with a configured work root failed: %v", err)
+	}
+	if _, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapID, TargetPath: t.TempDir(), WorkRoot: t.TempDir()}, nil); err != nil {
+		t.Fatalf("restore with a target path failed: %v", err)
+	}
+}

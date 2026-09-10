@@ -70,25 +70,25 @@ func walkComponents(fd int, components []string, create bool, mode uint32, depth
 		component := components[i]
 		if create {
 			if err := unix.Mkdirat(fd, component, mode); err != nil && err != unix.EEXIST {
-				unix.Close(fd)
+				_ = unix.Close(fd)
 				return -1, err
 			}
 		}
 		next, openErr := unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if openErr == nil {
-			unix.Close(fd)
+			_ = unix.Close(fd)
 			fd = next
 			continue
 		}
 		// The final component is the pinned boundary: never resolved through a
 		// link, so a planted base symlink fails closed here.
 		if i == len(components)-1 {
-			unix.Close(fd)
+			_ = unix.Close(fd)
 			return -1, openErr
 		}
 		target, trustErr := trustedLinkTarget(fd, component, depth)
 		if trustErr != nil {
-			unix.Close(fd)
+			_ = unix.Close(fd)
 			return -1, fmt.Errorf("open path component %q: %w", component, trustErr)
 		}
 		remaining := append(splitComponents(target), components[i+1:]...)
@@ -99,7 +99,7 @@ func walkComponents(fd int, components []string, create bool, mode uint32, depth
 		} else {
 			nextFD, err = unix.Dup(fd)
 		}
-		unix.Close(fd)
+		_ = unix.Close(fd)
 		if err != nil {
 			return -1, err
 		}
@@ -112,6 +112,9 @@ func walkComponents(fd int, components []string, create bool, mode uint32, depth
 // symlink that a less-privileged local identity could not have planted or
 // replaced. Anything else is an error, so the caller fails closed.
 func trustedLinkTarget(dirFD int, component string, depth int) (string, error) {
+	if !trustedIntermediateLinksAllowed {
+		return "", errors.New("path component is a symbolic link")
+	}
 	if depth >= maxTrustedLinkDepth {
 		return "", errors.New("too many symbolic links in path")
 	}
@@ -149,7 +152,16 @@ func trustedLinkTarget(dirFD int, component string, depth int) (string, error) {
 	if n <= 0 || n >= len(buf) {
 		return "", errors.New("unreadable path component link")
 	}
-	return string(buf[:n]), nil
+	target := string(buf[:n])
+	// A trusted link may not climb: ".." in the target would let the walk move
+	// above the position it had reached, which is outside what the trust check
+	// covers.
+	for _, component := range splitComponents(target) {
+		if component == ".." {
+			return "", errors.New("path component link escapes upwards")
+		}
+	}
+	return target, nil
 }
 
 func openRelativeDir(baseFD int, relative string, create bool, mode uint32) (int, error) {
@@ -163,12 +175,12 @@ func openRelativeDir(baseFD int, relative string, create bool, mode uint32) (int
 	for _, component := range strings.Split(relative, string(filepath.Separator)) {
 		if create {
 			if err := unix.Mkdirat(fd, component, mode); err != nil && err != unix.EEXIST {
-				unix.Close(fd)
+				_ = unix.Close(fd)
 				return -1, err
 			}
 		}
 		next, err := unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-		unix.Close(fd)
+		_ = unix.Close(fd)
 		if err != nil {
 			return -1, err
 		}
@@ -182,7 +194,7 @@ func ensureDir(path string, mode os.FileMode, private bool) error {
 	if err != nil {
 		return err
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 	if private {
 		var stat unix.Stat_t
 		if err := unix.Fstat(fd, &stat); err != nil {
@@ -201,26 +213,30 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	if err != nil {
 		return nil, fmt.Errorf("open target base: %w", err)
 	}
-	defer unix.Close(baseFD)
+	defer func() { _ = unix.Close(baseFD) }()
 
 	parentFD, err := openRelativeDir(baseFD, filepath.Dir(relative), true, 0o755)
 	if err != nil {
 		return nil, fmt.Errorf("open target parent: %w", err)
 	}
-	defer unix.Close(parentFD)
+	defer func() { _ = unix.Close(parentFD) }()
 
 	src, err := os.Open(source)
 	if err != nil {
 		return nil, fmt.Errorf("open staging file: %w", err)
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	var random [12]byte
 	if _, err := rand.Read(random[:]); err != nil {
 		return nil, fmt.Errorf("generate temporary name: %w", err)
 	}
 	tempName := ".breeze-restore-" + hex.EncodeToString(random[:])
-	tempFD, err := unix.Openat(parentFD, tempName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o666)
+	// Created 0600, never 0666-and-umask: the file is publishable content that
+	// may be a secret, and the copy below would otherwise leave it readable by
+	// everyone for its whole duration. The manifest's own mode is applied
+	// afterwards, widening it if that is what the manifest says.
+	tempFD, err := unix.Openat(parentFD, tempName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("create target temporary file: %w", err)
 	}
@@ -237,10 +253,15 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 		return nil, fmt.Errorf("copy staging file: %w", err)
 	}
 	var warnings []error
-	if mode != 0 {
-		if err := unix.Fchmod(tempFD, uint32(mode.Perm())); err != nil {
-			warnings = append(warnings, fmt.Errorf("apply file mode: %w", err))
-		}
+	// A pre-checksum manifest carries Mode == 0 ("no recorded mode"). Those
+	// used to land at 0644 via the create mode and umask; keep that, rather
+	// than silently tightening every legacy restore to 0600.
+	applied := mode.Perm()
+	if mode == 0 {
+		applied = 0o644
+	}
+	if err := unix.Fchmod(tempFD, uint32(applied)); err != nil {
+		warnings = append(warnings, fmt.Errorf("apply file mode: %w", err))
 	}
 	if !modTime.IsZero() {
 		times := []unix.Timeval{unix.NsecToTimeval(modTime.UnixNano()), unix.NsecToTimeval(modTime.UnixNano())}
@@ -269,17 +290,17 @@ func statFile(base, relative string) (os.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer unix.Close(baseFD)
+	defer func() { _ = unix.Close(baseFD) }()
 	parentFD, err := openRelativeDir(baseFD, filepath.Dir(relative), false, 0)
 	if err != nil {
 		return nil, err
 	}
-	defer unix.Close(parentFD)
+	defer func() { _ = unix.Close(parentFD) }()
 	fd, err := unix.Openat(parentFD, filepath.Base(relative), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
 	f := os.NewFile(uintptr(fd), filepath.Base(relative))
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return f.Stat()
 }

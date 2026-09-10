@@ -60,13 +60,20 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	if err := validateSnapshotID(cfg.SnapshotID); err != nil {
 		return nil, err
 	}
+	// Without a target AND without a work root there is nowhere durable to put
+	// the result: the work root would be an ephemeral MkdirTemp that this
+	// function removes on return, and the default target lives inside it, so
+	// the restore would delete exactly what it just wrote. Fail loudly instead.
+	if cfg.TargetPath == "" && cfg.WorkRoot == "" {
+		return nil, errors.New("restore requires a target path or a configured work root")
+	}
 	securefs.LogLegacyStagingTrees(slog.Warn)
 	workRoot, ephemeralWorkRoot, err := prepareRestoreWorkRoot(cfg.WorkRoot)
 	if err != nil {
 		return nil, fmt.Errorf("prepare restore work root: %w", err)
 	}
 	if ephemeralWorkRoot {
-		defer os.RemoveAll(workRoot)
+		defer func() { _ = os.RemoveAll(workRoot) }()
 	}
 	targetBase := cfg.TargetPath
 	if targetBase == "" {

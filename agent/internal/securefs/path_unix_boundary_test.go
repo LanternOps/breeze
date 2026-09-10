@@ -146,3 +146,33 @@ func TestEnsurePrivateDirAcceptsSelfOwnedControl(t *testing.T) {
 		t.Fatalf("private directory mode = %v, want 0700", info.Mode().Perm())
 	}
 }
+
+// A restored file must never be world-readable while it is being written, even
+// briefly: the staging copy can be a secret. The published mode is the
+// manifest's, or 0644 when the manifest records none.
+func TestInstallFilePublishesWithTheManifestMode(t *testing.T) {
+	cases := []struct {
+		name string
+		mode os.FileMode
+		want os.FileMode
+	}{
+		{"private secret stays private", 0o600, 0o600},
+		{"executable keeps its bits", 0o750, 0o750},
+		{"no recorded mode falls back to 0644", 0, 0o644},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			if _, err := InstallFile(base, "file.txt", writeSource(t, "payload"), tc.mode, time.Time{}); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(filepath.Join(base, "file.txt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != tc.want {
+				t.Fatalf("published mode = %v, want %v", info.Mode().Perm(), tc.want)
+			}
+		})
+	}
+}

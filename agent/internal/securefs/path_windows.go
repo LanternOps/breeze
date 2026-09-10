@@ -4,6 +4,7 @@ package securefs
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -17,29 +18,40 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Windows has no openat(2), so a path cannot be pinned component by component
-// through descriptors the way the unix implementation does. The equivalent
-// Win32 boundary is:
+// Windows has no openat(2) in the Win32 surface, but NtCreateFile does: an
+// OBJECT_ATTRIBUTES with RootDirectory set to an already-open directory handle
+// resolves ObjectName RELATIVE to that handle, with no re-resolution from the
+// volume root. That makes the same boundary the unix implementation gets from
+// openat/O_NOFOLLOW available here:
 //
-//   - every component of the walked path is opened with
-//     FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS and rejected
-//     when it carries FILE_ATTRIBUTE_REPARSE_POINT. Redirection on NTFS can
-//     only happen through a reparse point (symlink, junction, mount point) —
-//     there are no directory hard links — so a walk that refuses every
-//     reparse point cannot be redirected out of the intended tree;
-//   - the resulting directory handle is then re-checked against the requested
-//     path with GetFinalPathNameByHandle. A component swapped underneath the
-//     walk shows up as a different final path, so the race fails closed
-//     instead of silently resolving somewhere else;
-//   - files are published with MoveFileEx(MOVEFILE_REPLACE_EXISTING |
-//     MOVEFILE_WRITE_THROUGH), which replaces the destination NAME atomically.
-//     The destination is never removed first, so there is no window in which
-//     the caller's data is gone, and a destination that is itself a symlink is
-//     replaced rather than written through.
+//   - the walk opens one component at a time, each relative to the previous
+//     component's handle, with FILE_OPEN_REPARSE_POINT, and rejects anything
+//     carrying FILE_ATTRIBUTE_REPARSE_POINT. NTFS redirection can only happen
+//     through a reparse point (symlink, junction, mount point) and there are no
+//     directory hard links, so a walk that refuses every reparse point cannot be
+//     redirected out of the intended tree;
+//   - EVERY component handle stays open until the operation completes, and none
+//     of them is shared for delete (no FILE_SHARE_DELETE). A pinned component
+//     therefore cannot be renamed or removed out from under the operation, so
+//     the rmdir+"mklink /J" race fails closed instead of being won;
+//   - the temporary file is created relative to the pinned parent handle
+//     (FILE_CREATE — the exclusive create) and published with
+//     SetFileInformationByHandle(FileRenameInfo) whose RootDirectory is that
+//     same pinned parent handle and whose ReplaceIfExists is TRUE. No path
+//     string reaches the kernel after the walk, and the destination is NEVER
+//     removed first, so there is no window in which the caller's data is gone.
+//     A destination that is itself a link is replaced by NAME rather than
+//     written through, exactly like renameat on unix.
+//
+// Only the volume root ("C:\") is opened by path, which cannot be a reparse
+// point.
 const (
-	openDirFlags     = windows.FILE_FLAG_BACKUP_SEMANTICS | windows.FILE_FLAG_OPEN_REPARSE_POINT
-	openFileNoFollow = windows.FILE_FLAG_OPEN_REPARSE_POINT
-	shareAll         = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE | windows.FILE_SHARE_DELETE
+	// Directory and file handles held across an operation are deliberately NOT
+	// shared for delete: that is what pins the component.
+	shareNoDelete = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE
+
+	ntDirOptions  = windows.FILE_DIRECTORY_FILE | windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT
+	ntFileOptions = windows.FILE_NON_DIRECTORY_FILE | windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT
 
 	// privateDirSDDLPrefix restricts a staging directory to SYSTEM and the
 	// local Administrators group. "PAI" makes the DACL protected: inheritance
@@ -48,9 +60,9 @@ const (
 	privateDirSDDLPrefix = "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
 )
 
-// fileBasicInfo mirrors FILE_BASIC_INFO. Layout on every Windows ABI is four
-// LARGE_INTEGERs followed by a DWORD, padded to an 8-byte multiple, which is
-// exactly what Go lays out for this struct.
+// fileBasicInfo mirrors FILE_BASIC_INFO: four LARGE_INTEGERs then a DWORD,
+// padded to an 8-byte multiple, which is exactly what Go lays out here. A zero
+// timestamp means "leave unchanged".
 type fileBasicInfo struct {
 	CreationTime   int64
 	LastAccessTime int64
@@ -58,6 +70,130 @@ type fileBasicInfo struct {
 	ChangeTime     int64
 	FileAttributes uint32
 	_              uint32
+}
+
+// dirChain is a pinned path: one open handle per component, volume root first,
+// target directory last. Every handle stays open for the life of the chain, so
+// no component can be renamed or deleted while the operation runs.
+type dirChain struct {
+	handles []windows.Handle
+}
+
+func (c *dirChain) leaf() windows.Handle { return c.handles[len(c.handles)-1] }
+
+func (c *dirChain) close() {
+	for i := len(c.handles) - 1; i >= 0; i-- {
+		_ = windows.CloseHandle(c.handles[i])
+	}
+	c.handles = nil
+}
+
+// openRelativeComponent is the openat equivalent: name is resolved relative to
+// parent, never from the volume root.
+func openRelativeComponent(parent windows.Handle, name string, access uint32, disposition uint32, options uint32, sa *windows.SecurityAttributes) (windows.Handle, error) {
+	objectName, err := windows.NewNTUnicodeString(name)
+	if err != nil {
+		return windows.InvalidHandle, err
+	}
+	oa := &windows.OBJECT_ATTRIBUTES{
+		RootDirectory: parent,
+		ObjectName:    objectName,
+		Attributes:    windows.OBJ_CASE_INSENSITIVE,
+	}
+	if sa != nil {
+		oa.SecurityDescriptor = sa.SecurityDescriptor
+	}
+	oa.Length = uint32(unsafe.Sizeof(*oa))
+	var handle windows.Handle
+	var iosb windows.IO_STATUS_BLOCK
+	if err := windows.NtCreateFile(&handle, access|windows.SYNCHRONIZE, oa, &iosb, nil,
+		windows.FILE_ATTRIBUTE_NORMAL, shareNoDelete, disposition, options, 0, 0); err != nil {
+		return windows.InvalidHandle, err
+	}
+	return handle, nil
+}
+
+func rejectReparseOrNonDir(handle windows.Handle, name string) error {
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
+		return err
+	}
+	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return fmt.Errorf("path component is a reparse point: %q", name)
+	}
+	if info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 {
+		return fmt.Errorf("path component is not a directory: %q", name)
+	}
+	return nil
+}
+
+func splitWindowsComponents(rest string) []string {
+	var out []string
+	for _, component := range strings.Split(rest, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		out = append(out, component)
+	}
+	return out
+}
+
+// openVerifiedDir walks path one component at a time, each relative to the
+// previous component's handle, and returns the whole pinned chain. finalSA,
+// when non-nil, is applied only to the LAST component if this call creates it:
+// intermediate parents keep their inherited descriptor so an agent-data tree
+// stays usable, while the staging directory itself is locked down.
+func openVerifiedDir(path string, create bool, finalSA *windows.SecurityAttributes, finalAccess uint32) (*dirChain, error) {
+	if !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("directory must be absolute: %q", path)
+	}
+	path = filepath.Clean(path)
+	volume := filepath.VolumeName(path)
+	if volume == "" {
+		return nil, fmt.Errorf("directory must name a volume: %q", path)
+	}
+	// The volume root is the one component that must be opened by path. It
+	// cannot be a reparse point.
+	rootWide, err := windows.UTF16PtrFromString(volume + string(filepath.Separator))
+	if err != nil {
+		return nil, err
+	}
+	root, err := windows.CreateFile(rootWide, windows.FILE_READ_ATTRIBUTES|windows.FILE_LIST_DIRECTORY,
+		shareNoDelete|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open volume root %q: %w", volume, err)
+	}
+	chain := &dirChain{handles: []windows.Handle{root}}
+
+	components := splitWindowsComponents(strings.Trim(path[len(volume):], `\/`))
+	for i, component := range components {
+		if component == ".." {
+			chain.close()
+			return nil, fmt.Errorf("path component escapes the target directory: %q", path)
+		}
+		access := uint32(windows.FILE_READ_ATTRIBUTES | windows.READ_CONTROL | windows.FILE_LIST_DIRECTORY | windows.FILE_TRAVERSE)
+		var sa *windows.SecurityAttributes
+		if i == len(components)-1 {
+			access |= finalAccess
+			sa = finalSA
+		}
+		disposition := uint32(windows.FILE_OPEN)
+		if create {
+			disposition = windows.FILE_OPEN_IF
+		}
+		handle, err := openRelativeComponent(chain.leaf(), component, access, disposition, ntDirOptions, sa)
+		if err != nil {
+			chain.close()
+			return nil, fmt.Errorf("open path component %q: %w", component, err)
+		}
+		chain.handles = append(chain.handles, handle)
+		if err := rejectReparseOrNonDir(handle, component); err != nil {
+			chain.close()
+			return nil, err
+		}
+	}
+	return chain, nil
 }
 
 // PrivateDirSecurityAttributes builds SECURITY_ATTRIBUTES carrying an explicit,
@@ -74,20 +210,17 @@ func PrivateDirSecurityAttributes() (*windows.SecurityAttributes, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build private directory security descriptor: %w", err)
 	}
-	sa := &windows.SecurityAttributes{
-		SecurityDescriptor: sd,
-		InheritHandle:      0,
-	}
+	sa := &windows.SecurityAttributes{SecurityDescriptor: sd}
 	sa.Length = uint32(unsafe.Sizeof(*sa))
 	return sa, nil
 }
 
 func ownAccountSID() (string, error) {
-	token, err := windows.OpenCurrentProcessToken()
-	if err != nil {
+	var token windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &token); err != nil {
 		return "", err
 	}
-	defer token.Close()
+	defer func() { _ = token.Close() }()
 	user, err := token.GetTokenUser()
 	if err != nil {
 		return "", err
@@ -95,11 +228,20 @@ func ownAccountSID() (string, error) {
 	return user.User.Sid.String(), nil
 }
 
-// VerifyPrivateDirHandle confirms, from the handle alone, that dir is a real
-// directory (not a reparse point), is owned by SYSTEM, Administrators or the
-// agent's own account, and carries a protected DACL so nothing is inherited.
-// Exported for the executor's script staging directory.
+// VerifyPrivateDirHandle confirms, from the handle alone, that the directory is
+// a real directory (not a reparse point), is owned by SYSTEM, Administrators or
+// the agent's own account, and carries a protected DACL so nothing is
+// inherited. Exported for the executor's script staging directory.
 func VerifyPrivateDirHandle(handle windows.Handle) error {
+	if err := verifyPrivateDirOwner(handle); err != nil {
+		return err
+	}
+	return verifyPrivateDirDACLProtected(handle)
+}
+
+// verifyPrivateDirOwner is the half that must NEVER be repaired away: adopting
+// a directory another local identity owns is the whole finding.
+func verifyPrivateDirOwner(handle windows.Handle) error {
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
 		return fmt.Errorf("inspect private directory: %w", err)
@@ -110,17 +252,9 @@ func VerifyPrivateDirHandle(handle windows.Handle) error {
 	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		return errors.New("private staging path is a reparse point")
 	}
-	sd, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT,
-		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	sd, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
 	if err != nil {
-		return fmt.Errorf("read private directory security descriptor: %w", err)
-	}
-	control, _, err := sd.Control()
-	if err != nil {
-		return fmt.Errorf("read private directory control flags: %w", err)
-	}
-	if control&windows.SE_DACL_PROTECTED == 0 {
-		return errors.New("private staging directory DACL is not protected against inheritance")
+		return fmt.Errorf("read private directory owner: %w", err)
 	}
 	owner, _, err := sd.Owner()
 	if err != nil {
@@ -138,172 +272,90 @@ func VerifyPrivateDirHandle(handle windows.Handle) error {
 	return fmt.Errorf("private staging directory is owned by %s", owner.String())
 }
 
+func verifyPrivateDirDACLProtected(handle windows.Handle) error {
+	sd, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return fmt.Errorf("read private directory security descriptor: %w", err)
+	}
+	control, _, err := sd.Control()
+	if err != nil {
+		return fmt.Errorf("read private directory control flags: %w", err)
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		return errors.New("private staging directory DACL is not protected against inheritance")
+	}
+	return nil
+}
+
+// applyPrivateDACL replaces the directory's DACL with the explicit restrictive
+// one and clears inheritance, through the pinned handle. It is applied
+// UNCONDITIONALLY for a private directory — symmetric with the unix side's
+// unconditional Fchmod — because "protected" only means "not inheriting": a
+// pre-existing directory could carry a protected DACL that still grants
+// Everyone full control. The owner is deliberately left alone: changing it
+// needs SeRestorePrivilege, and a foreign owner is rejected before we get here.
+func applyPrivateDACL(handle windows.Handle) error {
+	sa, err := PrivateDirSecurityAttributes()
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sa.SecurityDescriptor.DACL()
+	if err != nil {
+		return fmt.Errorf("read protected DACL: %w", err)
+	}
+	if err := windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil, nil, dacl, nil); err != nil {
+		return fmt.Errorf("apply protected DACL: %w", err)
+	}
+	return nil
+}
+
 // VerifyPrivateDir opens path without following a reparse point and applies
 // VerifyPrivateDirHandle to the resulting handle. Callers use it right after an
 // exclusive CreateDirectory to confirm the directory they just created really
 // is a locked-down directory before anything privileged is written into it.
 func VerifyPrivateDir(path string) error {
-	wide, err := windows.UTF16PtrFromString(path)
+	chain, err := openVerifiedDir(path, false, nil, 0)
 	if err != nil {
 		return err
 	}
-	handle, err := windows.CreateFile(wide,
-		windows.FILE_READ_ATTRIBUTES|windows.READ_CONTROL, shareAll, nil,
-		windows.OPEN_EXISTING, openDirFlags, 0)
-	if err != nil {
-		return fmt.Errorf("open private staging directory: %w", err)
-	}
-	defer windows.CloseHandle(handle)
-	return VerifyPrivateDirHandle(handle)
-}
-
-func splitWindowsComponents(rest string) []string {
-	var out []string
-	for _, component := range strings.Split(rest, string(filepath.Separator)) {
-		if component == "" || component == "." {
-			continue
-		}
-		out = append(out, component)
-	}
-	return out
-}
-
-// openVerifiedDir walks path one component at a time. finalSA, when non-nil, is
-// applied only to the LAST component if this call creates it: intermediate
-// parents keep their inherited descriptor so an agent-data tree stays usable,
-// while the staging directory itself is locked down.
-func openVerifiedDir(path string, create bool, finalSA *windows.SecurityAttributes) (windows.Handle, error) {
-	if !filepath.IsAbs(path) {
-		return windows.InvalidHandle, fmt.Errorf("directory must be absolute: %q", path)
-	}
-	path = filepath.Clean(path)
-	volume := filepath.VolumeName(path)
-	if volume == "" {
-		return windows.InvalidHandle, fmt.Errorf("directory must name a volume: %q", path)
-	}
-	current := volume + string(filepath.Separator)
-	handle, err := openDirComponent(current, false, nil)
-	if err != nil {
-		return windows.InvalidHandle, err
-	}
-	components := splitWindowsComponents(strings.Trim(path[len(volume):], `\/`))
-	for i, component := range components {
-		current = filepath.Join(current, component)
-		var sa *windows.SecurityAttributes
-		if i == len(components)-1 {
-			sa = finalSA
-		}
-		next, err := openDirComponent(current, create, sa)
-		windows.CloseHandle(handle)
-		if err != nil {
-			return windows.InvalidHandle, err
-		}
-		handle = next
-	}
-	if err := verifyHandleStillAtPath(handle, path); err != nil {
-		windows.CloseHandle(handle)
-		return windows.InvalidHandle, err
-	}
-	return handle, nil
-}
-
-func openDirComponent(path string, create bool, sa *windows.SecurityAttributes) (windows.Handle, error) {
-	wide, err := windows.UTF16PtrFromString(path)
-	if err != nil {
-		return windows.InvalidHandle, err
-	}
-	if create {
-		if err := windows.CreateDirectory(wide, sa); err != nil && err != windows.ERROR_ALREADY_EXISTS {
-			return windows.InvalidHandle, fmt.Errorf("create %q: %w", path, err)
-		}
-	}
-	handle, err := windows.CreateFile(wide,
-		windows.FILE_READ_ATTRIBUTES|windows.READ_CONTROL|windows.FILE_LIST_DIRECTORY,
-		shareAll, nil, windows.OPEN_EXISTING, openDirFlags, 0)
-	if err != nil {
-		return windows.InvalidHandle, fmt.Errorf("open %q: %w", path, err)
-	}
-	var info windows.ByHandleFileInformation
-	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
-		windows.CloseHandle(handle)
-		return windows.InvalidHandle, err
-	}
-	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		windows.CloseHandle(handle)
-		return windows.InvalidHandle, fmt.Errorf("path component is a reparse point: %q", path)
-	}
-	if info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 {
-		windows.CloseHandle(handle)
-		return windows.InvalidHandle, fmt.Errorf("path component is not a directory: %q", path)
-	}
-	return handle, nil
-}
-
-// verifyHandleStillAtPath fails closed when the directory the walk pinned is no
-// longer the directory the requested path names — the Win32 answer to a
-// component renamed, or replaced by a junction, between two of the walk's
-// opens.
-//
-// The check compares OBJECT IDENTITY (volume serial + file index), not path
-// strings: %TEMP% and other real-world paths are frequently handed to a process
-// in 8.3 short form, so a textual comparison against GetFinalPathNameByHandle
-// would reject perfectly legitimate paths. The re-open deliberately does NOT
-// pass FILE_FLAG_OPEN_REPARSE_POINT for intermediate components, so if a
-// component was swapped for a junction the re-open lands somewhere else and the
-// identities differ. (File indices are unique per volume on NTFS; on ReFS they
-// are 128-bit and the low 64 bits are still what Win32 reports here.)
-func verifyHandleStillAtPath(handle windows.Handle, path string) error {
-	wide, err := windows.UTF16PtrFromString(path)
-	if err != nil {
-		return err
-	}
-	recheck, err := windows.CreateFile(wide, windows.FILE_READ_ATTRIBUTES, shareAll, nil,
-		windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
-	if err != nil {
-		return fmt.Errorf("re-open pinned directory: %w", err)
-	}
-	defer windows.CloseHandle(recheck)
-	same, err := sameObject(handle, recheck)
-	if err != nil {
-		return err
-	}
-	if !same {
-		return fmt.Errorf("pinned directory %q was replaced during the walk", path)
-	}
-	return nil
-}
-
-func sameObject(a, b windows.Handle) (bool, error) {
-	var infoA, infoB windows.ByHandleFileInformation
-	if err := windows.GetFileInformationByHandle(a, &infoA); err != nil {
-		return false, err
-	}
-	if err := windows.GetFileInformationByHandle(b, &infoB); err != nil {
-		return false, err
-	}
-	return infoA.VolumeSerialNumber == infoB.VolumeSerialNumber &&
-		infoA.FileIndexHigh == infoB.FileIndexHigh &&
-		infoA.FileIndexLow == infoB.FileIndexLow, nil
+	defer chain.close()
+	return VerifyPrivateDirHandle(chain.leaf())
 }
 
 func ensureDir(path string, mode os.FileMode, private bool) error {
-	var sa *windows.SecurityAttributes
-	if private {
-		built, err := PrivateDirSecurityAttributes()
+	if !private {
+		chain, err := openVerifiedDir(path, true, nil, 0)
 		if err != nil {
 			return err
 		}
-		sa = built
+		chain.close()
+		return nil
 	}
-	handle, err := openVerifiedDir(path, true, sa)
+	sa, err := PrivateDirSecurityAttributes()
 	if err != nil {
 		return err
 	}
-	defer windows.CloseHandle(handle)
-	if private {
-		return VerifyPrivateDirHandle(handle)
+	// WRITE_DAC is requested on the final component so an already-existing
+	// directory can be repaired through the same pinned handle rather than by
+	// reopening a pathname. A directory's owner always holds WRITE_DAC
+	// implicitly, so this does not narrow which directories we can adopt.
+	chain, err := openVerifiedDir(path, true, sa, windows.WRITE_DAC)
+	if err != nil {
+		return err
 	}
-	return nil
+	defer chain.close()
+
+	// The owner check comes first and is never repaired: it is what stops the
+	// agent adopting a directory another local identity created.
+	if err := verifyPrivateDirOwner(chain.leaf()); err != nil {
+		return err
+	}
+	if err := applyPrivateDACL(chain.leaf()); err != nil {
+		return err
+	}
+	return verifyPrivateDirDACLProtected(chain.leaf())
 }
 
 func installFile(base, relative, source string, mode os.FileMode, modTime time.Time) ([]error, error) {
@@ -311,36 +363,32 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	if dir := filepath.Dir(relative); dir != "." {
 		parent = filepath.Join(base, dir)
 	}
-	handle, err := openVerifiedDir(parent, true, nil)
+	// The chain stays open for the whole operation, including the publish, so
+	// no component can be swapped between the walk and the write.
+	chain, err := openVerifiedDir(parent, true, nil, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open target parent: %w", err)
 	}
-	defer windows.CloseHandle(handle)
+	defer chain.close()
+	parentHandle := chain.leaf()
 
 	var random [12]byte
 	if _, err := rand.Read(random[:]); err != nil {
 		return nil, fmt.Errorf("generate temporary name: %w", err)
 	}
-	tempPath := filepath.Join(parent, ".breeze-restore-"+hex.EncodeToString(random[:]))
-	tempWide, err := windows.UTF16PtrFromString(tempPath)
-	if err != nil {
-		return nil, err
-	}
-	// CREATE_NEW is the exclusive create: a squatted name fails instead of
-	// being reused, and OPEN_REPARSE_POINT means a planted link is never
-	// written through.
-	tempHandle, err := windows.CreateFile(tempWide,
-		windows.GENERIC_WRITE|windows.FILE_WRITE_ATTRIBUTES, 0, nil,
-		windows.CREATE_NEW, openFileNoFollow, 0)
+	tempName := ".breeze-restore-" + hex.EncodeToString(random[:])
+	tempHandle, err := openRelativeComponent(parentHandle, tempName,
+		windows.GENERIC_WRITE|windows.DELETE|windows.FILE_WRITE_ATTRIBUTES|windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_CREATE, ntFileOptions, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create target temporary file: %w", err)
 	}
-	temp := os.NewFile(uintptr(tempHandle), tempPath)
+	temp := os.NewFile(uintptr(tempHandle), tempName)
 	committed := false
 	defer func() {
 		_ = temp.Close()
 		if !committed {
-			_ = os.Remove(tempPath)
+			_ = deleteRelative(parentHandle, tempName)
 		}
 	}()
 
@@ -374,13 +422,22 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	if err := temp.Sync(); err != nil {
 		return nil, fmt.Errorf("sync target temporary file: %w", err)
 	}
-	if err := temp.Close(); err != nil {
-		return nil, fmt.Errorf("close target temporary file: %w", err)
-	}
 
-	destination := filepath.Join(parent, filepath.Base(relative))
-	if err := replaceAtomically(tempPath, destination); err != nil {
-		return nil, err
+	destination := filepath.Base(relative)
+	if err := renameRelative(tempHandle, parentHandle, destination); err != nil {
+		if !errors.Is(err, windows.ERROR_ACCESS_DENIED) && !errors.Is(err, windows.STATUS_ACCESS_DENIED) {
+			return nil, fmt.Errorf("publish target file: %w", err)
+		}
+		// A destination carrying FILE_ATTRIBUTE_READONLY (very common for
+		// restored app config, D19) refuses to be replaced. Clear the attribute
+		// through a handle opened relative to the SAME pinned parent, so this
+		// retry cannot be redirected either, then rename exactly once more.
+		if clearErr := clearReadOnlyRelative(parentHandle, destination); clearErr != nil {
+			return nil, fmt.Errorf("publish target file: %w", err)
+		}
+		if retryErr := renameRelative(tempHandle, parentHandle, destination); retryErr != nil {
+			return nil, fmt.Errorf("publish target file: %w", retryErr)
+		}
 	}
 	committed = true
 	if err := os.Remove(source); err != nil && !os.IsNotExist(err) {
@@ -394,53 +451,51 @@ func setBasicInfo(handle windows.Handle, info *fileBasicInfo) error {
 		(*byte)(unsafe.Pointer(info)), uint32(unsafe.Sizeof(*info)))
 }
 
-// replaceAtomically publishes temp over destination without ever unlinking
-// destination first. MOVEFILE_REPLACE_EXISTING makes the name swap atomic and
-// MOVEFILE_WRITE_THROUGH does not return until the change is on disk, so an
-// interruption leaves either the old file or the new one — never neither.
+// renameRelative publishes the open file at handle as name under parent,
+// atomically replacing whatever name currently refers to. This is
+// FILE_RENAME_INFO with RootDirectory set to the pinned parent handle, so the
+// destination is resolved relative to a directory we hold open — never from a
+// path string the kernel would re-resolve.
 //
-// A destination carrying FILE_ATTRIBUTE_READONLY (very common for restored app
-// config, D19) makes the rename fail with ERROR_ACCESS_DENIED. The attribute is
-// then cleared through a handle opened with OPEN_REPARSE_POINT — so a planted
-// link is not followed — and the rename retried exactly once.
-func replaceAtomically(temp, destination string) error {
-	from, err := windows.UTF16PtrFromString(temp)
+// FILE_RENAME_INFO on 64-bit Windows is: ReplaceIfExists/Flags (DWORD) at 0,
+// 4 bytes of padding, RootDirectory (HANDLE) at 8, FileNameLength (DWORD, in
+// BYTES) at 16, and the WCHAR name from 20.
+func renameRelative(handle, parent windows.Handle, name string) error {
+	nameUTF16, err := windows.UTF16FromString(name)
 	if err != nil {
 		return err
 	}
-	to, err := windows.UTF16PtrFromString(destination)
-	if err != nil {
-		return err
+	nameUTF16 = nameUTF16[:len(nameUTF16)-1] // FileName is not NUL-terminated
+	const headerLen = 20
+	buf := make([]byte, headerLen+len(nameUTF16)*2)
+	binary.LittleEndian.PutUint32(buf[0:], 1) // ReplaceIfExists
+	binary.LittleEndian.PutUint64(buf[8:], uint64(parent))
+	binary.LittleEndian.PutUint32(buf[16:], uint32(len(nameUTF16)*2))
+	for i, c := range nameUTF16 {
+		binary.LittleEndian.PutUint16(buf[headerLen+i*2:], c)
 	}
-	const flags = windows.MOVEFILE_REPLACE_EXISTING | windows.MOVEFILE_WRITE_THROUGH
-	err = windows.MoveFileEx(from, to, flags)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
-		return fmt.Errorf("publish target file: %w", err)
-	}
-	if clearErr := clearReadOnlyAttribute(destination); clearErr != nil {
-		return fmt.Errorf("publish target file: %w", err)
-	}
-	if err := windows.MoveFileEx(from, to, flags); err != nil {
-		return fmt.Errorf("publish target file: %w", err)
-	}
-	return nil
+	return windows.SetFileInformationByHandle(handle, windows.FileRenameInfo, &buf[0], uint32(len(buf)))
 }
 
-func clearReadOnlyAttribute(path string) error {
-	wide, err := windows.UTF16PtrFromString(path)
+func deleteRelative(parent windows.Handle, name string) error {
+	handle, err := openRelativeComponent(parent, name, windows.DELETE, windows.FILE_OPEN, ntFileOptions, nil)
 	if err != nil {
 		return err
 	}
-	handle, err := windows.CreateFile(wide,
-		windows.FILE_READ_ATTRIBUTES|windows.FILE_WRITE_ATTRIBUTES, shareAll, nil,
-		windows.OPEN_EXISTING, openFileNoFollow, 0)
+	defer func() { _ = windows.CloseHandle(handle) }()
+	// FILE_DISPOSITION_INFO is a single BOOLEAN DeleteFile, padded to 4 bytes.
+	buf := make([]byte, 4)
+	buf[0] = 1
+	return windows.SetFileInformationByHandle(handle, windows.FileDispositionInfo, &buf[0], uint32(len(buf)))
+}
+
+func clearReadOnlyRelative(parent windows.Handle, name string) error {
+	handle, err := openRelativeComponent(parent, name,
+		windows.FILE_READ_ATTRIBUTES|windows.FILE_WRITE_ATTRIBUTES, windows.FILE_OPEN, ntFileOptions, nil)
 	if err != nil {
 		return err
 	}
-	defer windows.CloseHandle(handle)
+	defer func() { _ = windows.CloseHandle(handle) }()
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
 		return err
@@ -464,30 +519,26 @@ func statFile(base, relative string) (os.FileInfo, error) {
 	if dir := filepath.Dir(relative); dir != "." {
 		parent = filepath.Join(base, dir)
 	}
-	handle, err := openVerifiedDir(parent, false, nil)
+	chain, err := openVerifiedDir(parent, false, nil, 0)
 	if err != nil {
 		return nil, err
 	}
-	windows.CloseHandle(handle)
+	defer chain.close()
 
-	path := filepath.Join(parent, filepath.Base(relative))
-	wide, err := windows.UTF16PtrFromString(path)
+	name := filepath.Base(relative)
+	handle, err := openRelativeComponent(chain.leaf(), name, windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_OPEN, ntFileOptions, nil)
 	if err != nil {
 		return nil, err
 	}
-	fileHandle, err := windows.CreateFile(wide, windows.FILE_READ_ATTRIBUTES, shareAll, nil,
-		windows.OPEN_EXISTING, openFileNoFollow, 0)
-	if err != nil {
-		return nil, err
-	}
-	f := os.NewFile(uintptr(fileHandle), path)
-	defer f.Close()
+	f := os.NewFile(uintptr(handle), filepath.Join(parent, name))
+	defer func() { _ = f.Close() }()
 	var info windows.ByHandleFileInformation
-	if err := windows.GetFileInformationByHandle(fileHandle, &info); err != nil {
+	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
 		return nil, err
 	}
 	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		return nil, fmt.Errorf("target is a link: %q", path)
+		return nil, fmt.Errorf("target is a link: %q", name)
 	}
 	return f.Stat()
 }

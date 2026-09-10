@@ -194,7 +194,7 @@ func TestRestore(provider providers.BackupProvider, snapshotID, workRoot string,
 		return nil, fmt.Errorf("prepare test-restore work root: %w", err)
 	}
 	if ephemeral {
-		defer os.RemoveAll(operationRoot)
+		defer func() { _ = os.RemoveAll(operationRoot) }()
 	}
 
 	// Download and parse manifest
@@ -334,7 +334,7 @@ func CleanupRestoreDir(dirPath, workRoot string) error {
 		return err
 	}
 	if ephemeral {
-		defer os.RemoveAll(operationRoot)
+		defer func() { _ = os.RemoveAll(operationRoot) }()
 		return errors.New("cleanup requires a configured restore work root")
 	}
 	relative, err := filepath.Rel(operationRoot, filepath.Clean(dirPath))
