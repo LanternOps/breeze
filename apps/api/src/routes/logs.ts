@@ -29,6 +29,7 @@ import {
   correlationResultWithinCurrentDeviceCeiling,
   currentLogReadSiteCeiling,
   intersectLogReadSiteCeilings,
+  LogReadAuthorityDeniedError,
   resolveCurrentLogReadDeviceIds,
   revalidateLogReadAuthority,
 } from '../services/logReadAuthority';
@@ -383,7 +384,15 @@ logsRoutes.post(
           return c.json({ error: 'orgId is required for this scope' }, 400);
         }
 
-        const authority = captureLogReadAuthority(auth, orgId);
+        let authority;
+        try {
+          authority = captureLogReadAuthority(auth, orgId);
+        } catch (authorityError) {
+          if (authorityError instanceof LogReadAuthorityDeniedError) {
+            return c.json({ error: 'Access denied' }, 403);
+          }
+          throw authorityError;
+        }
         try {
           const jobId = await enqueueAdHocPatternCorrelationDetection({
             orgId,
@@ -492,34 +501,41 @@ logsRoutes.get(
     if (correlationSiteIds?.length === 0) {
       return c.json({ data: [], limit: query.limit ?? 100, offset: query.offset ?? 0, total: 0 });
     }
-    const currentDeviceExists = (element: SQL) => sql`EXISTS (
-      SELECT 1 FROM ${devices} AS current_correlation_device
-      WHERE current_correlation_device.id::text = ${element}->>'deviceId'
-        AND current_correlation_device.org_id = ${logCorrelations.orgId}
-        ${correlationSiteIds === null
-          ? sql``
-          : sql`AND current_correlation_device.site_id IN (${sql.join(correlationSiteIds.map((id) => sql`${id}`), sql`, `)})`}
-    )`;
-    // Correlations are indivisible historical resources. Validate every
+    // Correlations are indivisible historical resources: validate every
     // affected/sample device against its current row inside the list/count
     // statement, before pagination. Text comparison makes malformed UUIDs a
     // clean non-match rather than a cast error, and avoids a fleet-sized bind
     // list or a stale pre-query device snapshot.
-    conditions.push(sql`
-      jsonb_typeof(${logCorrelations.affectedDevices}) = 'array'
-      AND jsonb_array_length(${logCorrelations.affectedDevices}) > 0
-      AND jsonb_typeof(${logCorrelations.sampleLogs}) = 'array'
-      AND NOT EXISTS (
-        SELECT 1
-        FROM jsonb_array_elements(${logCorrelations.affectedDevices}) AS affected(device)
-        WHERE NOT (${currentDeviceExists(sql`affected.device`)})
-      )
-      AND NOT EXISTS (
-        SELECT 1
-        FROM jsonb_array_elements(${logCorrelations.sampleLogs}) AS sample(log)
-        WHERE NOT (${currentDeviceExists(sql`sample.log`)})
-      )
-    `);
+    //
+    // Emitted ONLY for a site-restricted caller. The affected/sample device ids
+    // live in JSONB with no FK, so a device delete leaves them dangling — for an
+    // unrestricted caller this filter would permanently hide every historical
+    // correlation that names a since-deleted device, which is silent data loss,
+    // not tenancy enforcement. Org isolation on this list is RLS's job.
+    if (correlationSiteIds !== null) {
+      const currentDeviceExists = (element: SQL) => sql`EXISTS (
+        SELECT 1 FROM ${devices} AS current_correlation_device
+        WHERE current_correlation_device.id::text = ${element}->>'deviceId'
+          AND current_correlation_device.org_id = ${logCorrelations.orgId}
+          AND current_correlation_device.site_id IN (${sql.join(correlationSiteIds.map((id) => sql`${id}`), sql`, `)})
+      )`;
+      // No jsonb_array_length floor: an empty affected/sample list trivially
+      // satisfies "names no device outside my ceiling" and must stay visible.
+      conditions.push(sql`
+        jsonb_typeof(${logCorrelations.affectedDevices}) = 'array'
+        AND jsonb_typeof(${logCorrelations.sampleLogs}) = 'array'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(${logCorrelations.affectedDevices}) AS affected(device)
+          WHERE NOT (${currentDeviceExists(sql`affected.device`)})
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(${logCorrelations.sampleLogs}) AS sample(log)
+          WHERE NOT (${currentDeviceExists(sql`sample.log`)})
+        )
+      `);
+    }
 
     const limit = query.limit ?? 100;
     const offset = query.offset ?? 0;

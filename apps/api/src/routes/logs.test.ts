@@ -83,7 +83,12 @@ vi.mock('../jobs/logCorrelation', () => ({
   getLogCorrelationDetectionJob: getLogCorrelationDetectionJobMock,
 }));
 
+const { LogReadAuthorityDeniedErrorStub } = vi.hoisted(() => ({
+  LogReadAuthorityDeniedErrorStub: class LogReadAuthorityDeniedError extends Error {},
+}));
+
 vi.mock('../services/logReadAuthority', () => ({
+  LogReadAuthorityDeniedError: LogReadAuthorityDeniedErrorStub,
   captureLogReadAuthority: captureLogReadAuthorityMock,
   correlationResultWithinCurrentDeviceCeiling: correlationResultWithinCurrentDeviceCeilingMock,
   currentLogReadSiteCeiling: vi.fn((auth, orgId) => auth.canAccessOrg(orgId)
@@ -148,6 +153,20 @@ vi.mock('../middleware/auth', () => ({
 import { logsRoutes } from './logs';
 import { authMiddleware } from '../middleware/auth';
 import { db } from '../db';
+
+/**
+ * Walk a Drizzle SQL tree and concatenate every string it contains. The schema
+ * is module-mocked with plain strings here, so PgDialect cannot compile the
+ * condition — this asserts on the raw fragments instead.
+ */
+function collectSqlText(node: unknown, seen = new WeakSet<object>()): string {
+  if (typeof node === 'string') return node;
+  if (!node || typeof node !== 'object') return '';
+  if (seen.has(node)) return '';
+  seen.add(node);
+  const values = Array.isArray(node) ? node : Object.values(node as Record<string, unknown>);
+  return values.map((value) => collectSqlText(value, seen)).join(' ');
+}
 
 describe('logs routes', () => {
   let app: Hono;
@@ -245,6 +264,47 @@ describe('logs routes', () => {
       deviceIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
       allowedDeviceIds: [],
     }));
+  });
+
+  it('emits the correlation device-existence filter only for a site-restricted caller', async () => {
+    // JSONB affected/sample device ids carry no FK, so a deleted device leaves
+    // them dangling. For an unrestricted caller the filter would permanently
+    // hide those historical correlations — data loss, not tenancy enforcement.
+    const captureCorrelationWhere = async (allowedSiteIds: string[] | undefined) => {
+      const wheres: unknown[] = [];
+      const chain: Record<string, unknown> = {};
+      for (const method of ['from', 'leftJoin', 'orderBy', 'limit', 'offset']) {
+        chain[method] = vi.fn(() => chain);
+      }
+      chain.where = vi.fn((condition: unknown) => { wheres.push(condition); return chain; });
+      chain.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve);
+      vi.mocked(db.select).mockReturnValue(chain as never);
+
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          orgId: '11111111-1111-1111-1111-111111111111',
+          accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+          user: { id: 'user-1' },
+          allowedSiteIds,
+          canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111',
+          orgCondition: () => undefined,
+        });
+        return next();
+      });
+
+      const res = await app.request('/logs/correlation');
+      expect(res.status).toBe(200);
+      expect(wheres.length).toBeGreaterThan(0);
+      return collectSqlText(wheres);
+    };
+
+    expect(await captureCorrelationWhere(undefined)).not.toContain('jsonb_array_elements');
+    const restricted = await captureCorrelationWhere(['44444444-4444-4444-8444-444444444444']);
+    expect(restricted).toContain('jsonb_array_elements');
+    expect(restricted).toContain('current_correlation_device');
+    // An empty affected/sample list trivially names no out-of-ceiling device.
+    expect(restricted).not.toContain('jsonb_array_length');
   });
 
   it('applies the same current ceiling to aggregation and trends', async () => {

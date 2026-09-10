@@ -91,6 +91,7 @@ describe('fleet log current-site boundary — real PostgreSQL and Redis', () => 
       orgId: env.organization.id, name: `rule-${suffix}`, pattern: 'synthetic',
     }).returning({ id: logCorrelationRules.id }));
     const visibleCorrelationId = randomUUID();
+    const deviceLessCorrelationId = randomUUID();
     const deletedDeviceId = randomUUID();
     await withDbAccessContext(SYSTEM_CTX, () => db.insert(logCorrelations).values([
       {
@@ -122,6 +123,7 @@ describe('fleet log current-site boundary — real PostgreSQL and Redis', () => 
         affectedDevices: [{ deviceId: 'not-a-uuid', hostname: 'malformed', count: 1 }], sampleLogs: [],
       },
       {
+        id: deviceLessCorrelationId,
         orgId: env.organization.id, ruleId: rule!.id, pattern: 'device-less-newest',
         firstSeen: now, lastSeen: new Date(now.getTime() + 3_000), occurrences: 1,
         affectedDevices: [], sampleLogs: [],
@@ -171,13 +173,24 @@ describe('fleet log current-site boundary — real PostgreSQL and Redis', () => 
     expect(trends.status, await trends.clone().text()).toBe(200);
     expect(JSON.stringify(await trends.json())).not.toContain(hiddenDeviceId);
 
-    // Hidden/deleted/mixed rows are removed before total and LIMIT, so the
-    // older visible correlation fills page one.
+    // Hidden/deleted/malformed/hidden-sample rows are removed before total AND
+    // before LIMIT, so page one is the newest row that survives the ceiling —
+    // not merely the newest row that happens to land on the page.
     const correlations = await request('/correlation?limit=1');
     expect(correlations.status, await correlations.clone().text()).toBe(200);
     await expect(correlations.json()).resolves.toMatchObject({
-      data: [{ id: visibleCorrelationId }], total: 1, limit: 1, offset: 0,
+      data: [{ id: deviceLessCorrelationId }], total: 2, limit: 1, offset: 0,
     });
+    // A correlation naming NO device names no device outside the ceiling, so it
+    // stays visible: the filter excludes out-of-ceiling devices, it does not
+    // require a non-empty affected list.
+    const allCorrelations = await request('/correlation?limit=50');
+    expect(allCorrelations.status, await allCorrelations.clone().text()).toBe(200);
+    const allCorrelationsBody = await allCorrelations.json() as { data: Array<{ id: string }>; total: number };
+    expect(allCorrelationsBody.data.map((row) => row.id)).toEqual([
+      deviceLessCorrelationId, visibleCorrelationId,
+    ]);
+    expect(allCorrelationsBody.total).toBe(2);
     const saved = await request('/queries');
     expect(saved.status, await saved.clone().text()).toBe(200);
     await expect(saved.json()).resolves.toMatchObject({ data: [{ filters: {
@@ -260,8 +273,11 @@ describe('fleet log current-site boundary — real PostgreSQL and Redis', () => 
     });
     expect(afterMove.status).toBe(200);
     expect((await afterMove.json() as { results: unknown[] }).results).toHaveLength(0);
+    // Every device-BEARING correlation is now out of ceiling. The device-less
+    // row survives because it references no device at all — see the limit=50
+    // assertion above.
     await expect((await request('/correlation?limit=1')).json()).resolves.toMatchObject({
-      data: [], total: 0, limit: 1, offset: 0,
+      data: [{ id: deviceLessCorrelationId }], total: 1, limit: 1, offset: 0,
     });
 
     // Deterministic TOCTOU regression: carry the pre-move device-id snapshot

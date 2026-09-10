@@ -129,14 +129,25 @@ export interface PersistedCorrelationResult {
 
 type CorrelationRuleRecord = typeof logCorrelationRulesTable.$inferSelect;
 
+/**
+ * Statement-local device authorization predicate for the *site* axis.
+ *
+ * Returns null for an unrestricted caller (`null`/`undefined` ceiling). The
+ * subquery would be tautological for them — `device_event_logs.device_id` is a
+ * NOT NULL FK into `devices` and `org_id` is the moveOrg-maintained denormalized
+ * copy — but it is not free: `devices` carries a non-LEAKPROOF
+ * `breeze_has_org_access` RLS policy, so Postgres cannot fold the probe into an
+ * index condition and pays it per candidate row of the largest table in the
+ * fleet, unbounded on aggregation/trends/pattern detection. Emit it only when it
+ * can actually exclude something.
+ */
 function currentDeviceAuthorizationCondition(
   allowedSiteIds: string[] | null | undefined,
-): SQL {
-  const siteCondition = allowedSiteIds === null || allowedSiteIds === undefined
-    ? sql``
-    : allowedSiteIds.length > 0
-      ? sql`and authorized_log_device.site_id in (${sql.join(allowedSiteIds.map((id) => sql`${id}`), sql`, `)})`
-      : sql`and false`;
+): SQL | null {
+  if (allowedSiteIds === null || allowedSiteIds === undefined) return null;
+  const siteCondition = allowedSiteIds.length > 0
+    ? sql`and authorized_log_device.site_id in (${sql.join(allowedSiteIds.map((id) => sql`${id}`), sql`, `)})`
+    : sql`and false`;
   return sql`exists (
     select 1 from ${devices} as authorized_log_device
     where authorized_log_device.id = ${deviceEventLogs.deviceId}
@@ -268,7 +279,8 @@ export function mergeSavedLogSearchFilters(
   };
 }
 
-function buildSearchConditions(
+/** Exported for unit tests only — see logSearch.test.ts. */
+export function buildSearchConditions(
   auth: AuthContext,
   filters: LogSearchInput,
   timeRange: { start: Date; end: Date },
@@ -330,7 +342,8 @@ function buildSearchConditions(
         : sql`false`,
     );
   }
-  conditions.push(currentDeviceAuthorizationCondition(filters.allowedSiteIds));
+  const currentDeviceAuthz = currentDeviceAuthorizationCondition(filters.allowedSiteIds);
+  if (currentDeviceAuthz) conditions.push(currentDeviceAuthz);
 
   return conditions;
 }
@@ -573,7 +586,8 @@ export async function getLogAggregation(auth: AuthContext, input: LogAggregation
         : sql`false`,
     );
   }
-  conditions.push(currentDeviceAuthorizationCondition(input.allowedSiteIds));
+  const currentDeviceAuthz = currentDeviceAuthorizationCondition(input.allowedSiteIds);
+  if (currentDeviceAuthz) conditions.push(currentDeviceAuthz);
 
   const bucketExpr = bucket === 'day'
     ? sql`date_trunc('day', ${deviceEventLogs.timestamp})`
@@ -684,7 +698,8 @@ export async function getLogTrends(auth: AuthContext, input: LogTrendsInput) {
         : sql`false`,
     );
   }
-  conditions.push(currentDeviceAuthorizationCondition(input.allowedSiteIds));
+  const currentDeviceAuthz = currentDeviceAuthorizationCondition(input.allowedSiteIds);
+  if (currentDeviceAuthz) conditions.push(currentDeviceAuthz);
 
   const whereCondition = and(...conditions);
 
@@ -883,12 +898,14 @@ async function runPatternDetection(
         ? inArray(deviceEventLogs.deviceId, allowedDeviceIds)
         : sql`false`;
 
+  const currentDeviceAuthz = currentDeviceAuthorizationCondition(allowedSiteIds);
+
   const whereCondition = and(
     eq(deviceEventLogs.orgId, orgId),
     gte(deviceEventLogs.timestamp, since),
     condition,
     ...(siteScopeCondition ? [siteScopeCondition] : []),
-    currentDeviceAuthorizationCondition(allowedSiteIds),
+    ...(currentDeviceAuthz ? [currentDeviceAuthz] : []),
   );
 
   const [summaryRows, affectedDeviceRows, sampleRows] = await Promise.all([

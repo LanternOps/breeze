@@ -27,18 +27,33 @@ function normalizedSiteIds(siteIds: string[] | undefined): string[] | null {
   return siteIds === undefined ? null : Array.from(new Set(siteIds)).sort();
 }
 
+/**
+ * Unkeyed integrity check, NOT a signature: it only proves the envelope's
+ * fields have not been edited in transit through the queue. Authenticity comes
+ * entirely from `revalidateLogReadAuthority`, which re-reads the live `users`
+ * row (status, partner, auth/MFA epochs) and re-runs `canAccessOrg` +
+ * `devices:execute` against uncached permissions before any read is authorized.
+ */
 function fingerprintAuthority(authority: UnsignedEnvelope): string {
   return createHash('sha256').update(JSON.stringify(authority)).digest('hex');
 }
 
+/** Thrown when a caller may not open a deferred log read. Routes map this to 403. */
+export class LogReadAuthorityDeniedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LogReadAuthorityDeniedError';
+  }
+}
+
 export function captureLogReadAuthority(auth: AuthContext, orgId: string): LogReadAuthorityEnvelope {
   if (!isInteractiveUserSession(auth) || !auth.canAccessOrg(orgId) || !hasSatisfiedMfa(auth)) {
-    throw new Error('Log detection authority denied');
+    throw new LogReadAuthorityDeniedError('Log detection authority denied');
   }
   const authEpoch = auth.token?.aep;
   const mfaEpoch = auth.token?.mep;
   if (!Number.isSafeInteger(authEpoch) || !Number.isSafeInteger(mfaEpoch)) {
-    throw new Error('Log detection authority is missing current authentication state');
+    throw new LogReadAuthorityDeniedError('Log detection authority is missing current authentication state');
   }
   const unsigned: UnsignedEnvelope = {
     version: 1,
