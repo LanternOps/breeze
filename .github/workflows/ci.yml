@@ -1516,6 +1516,23 @@ jobs:
         working-directory: agent
         run: CGO_ENABLED=0 go test -v -coverprofile=coverage.out ./...
 
+      - name: Rebuild engine loopback test (root)
+        if: runner.os == 'Linux'
+        run: |
+          set -o pipefail
+          sudo apt-get install -y --no-install-recommends gdisk dosfstools e2fsprogs xfsprogs parted util-linux udev
+          sudo udevadm settle || true
+          cd agent
+          sudo -E env "PATH=$PATH" BREEZE_REBUILD_LOOP_TEST=1 go test -count=1 -run TestRun_LoopbackRealSystem ./internal/backup/rebuild/ -v 2>&1 | tee /tmp/rebuild-loopback.log
+          # A t.Skip (missing root, missing BREEZE_REBUILD_LOOP_TEST, or a
+          # missing tool) must never read as a pass here — the whole point
+          # of this step is to prove provisioning against a real loop
+          # device, not merely that `go test` exited 0.
+          if grep -q -- '--- SKIP' /tmp/rebuild-loopback.log; then
+            echo "::error::TestRun_LoopbackRealSystem was SKIPPED, not proven — see the skip reason logged above. Fix the environment (root/BREEZE_REBUILD_LOOP_TEST/missing tool), don't let this step go green on a skip."
+            exit 1
+          fi
+
       - name: Test build-edition.sh (edition fail-closed matrix + real build)
         run: agent/scripts/build-edition_test.sh
 
