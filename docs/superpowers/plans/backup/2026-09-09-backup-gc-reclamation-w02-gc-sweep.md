@@ -91,6 +91,70 @@ Verified against `backup-gc-5429` worktree, current `main`-based state (i.e. **b
 - Consumes: `resolveMsKnob(name: string, defaultMs: number, productionFloorMs?: number): number` from `../services/backupGcKnobs` (W01).
 - Produces: `resolveBackupGcGraceMs(): number` (kept, now a thin wrapper), removes the module-load `export const BACKUP_GC_GRACE_MS` and `export const BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS`; adds `resolveBackupManifestlessPrefixMaxAgeMs(): number` (exported, per-run).
 
+- [ ] Step 0: Extend the test mock harness up front — every later task (through Task 7) needs DB primitives the current `chainable`/`mockDb` (`backupRetention.test.ts:1-34`) doesn't provide (`selectDistinct`, `.groupBy()`, `.set()`, `.returning()`) and two new `../db` exports (`withSystemDbAccessContext`, `assertOutsideHeldDbContext`) the current `vi.mock('../db', () => ({ db: mockDb }))` doesn't stub. Doing this once, now, avoids re-touching the mock setup piecemeal in Tasks 4/7. Replace the top-of-file mock block:
+
+```typescript
+function chainable(rows: unknown[]) {
+  const obj: Record<string, unknown> = {
+    from: () => obj,
+    where: () => obj,
+    leftJoin: () => obj,
+    innerJoin: () => obj,
+    orderBy: () => obj,
+    groupBy: () => obj,
+    limit: () => obj,
+    set: () => obj, // db.update(...).set({...}) — returns itself so .where()/.returning() still chain
+    returning: () => obj, // db.delete(...).returning() / db.update(...).returning()
+    then: (resolve: (v: unknown[]) => unknown, reject?: (e: unknown) => unknown) =>
+      Promise.resolve(rows).then(resolve, reject),
+  };
+  return obj;
+}
+
+const selectQueue: unknown[][] = [];
+
+const mockDb = {
+  select: vi.fn(() => chainable(selectQueue.shift() ?? [])),
+  // selectDistinct shares the SAME selectQueue as select — from the test's
+  // perspective they're both just "the next db read in source order"; Task 7's
+  // capability-gate query is the only selectDistinct call site.
+  selectDistinct: vi.fn(() => chainable(selectQueue.shift() ?? [])),
+  delete: vi.fn(() => chainable([])),
+  update: vi.fn(() => chainable([])),
+};
+
+vi.mock('../db', () => ({ db: mockDb }));
+```
+
+  Note this REPLACES the plain `db: mockDb` mock with the same shape (no `withSystemDbAccessContext`/`assertOutsideHeldDbContext` yet — those are added in the SAME `vi.mock('../db', ...)` call, but wait until Task 7 needs them; add both exports here anyway so this task's edit is the only place the mock's shape changes):
+
+```typescript
+const assertOutsideHeldDbContextMock = vi.fn();
+vi.mock('../db', () => ({
+  db: mockDb,
+  withSystemDbAccessContext: (fn: () => unknown) => fn(), // pass-through under the mock — no real context to open
+  assertOutsideHeldDbContext: assertOutsideHeldDbContextMock,
+}));
+```
+
+  Also fix the age-fixture helpers at `:67-70` (`JUST_PAST_MANIFESTLESS_THRESHOLD`/`EVEN_FURTHER_PAST_MANIFESTLESS_THRESHOLD`), which currently read the module-load `BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS` export this task removes:
+
+```typescript
+// BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS is no longer a module-load export
+// (Task 1) — its default (9 days) is a fixture constant here, independent of
+// the real per-run resolver under test. The frozen-time boundary tests later
+// in this file exercise the resolver's actual output directly; these two
+// helpers only need "comfortably past the default" for tests that don't care
+// about the exact boundary.
+const MANIFESTLESS_WINDOW_MS_DEFAULT = 9 * DAY_MS;
+const JUST_PAST_MANIFESTLESS_THRESHOLD = () =>
+  new Date(Date.now() - MANIFESTLESS_WINDOW_MS_DEFAULT - DAY_MS);
+const EVEN_FURTHER_PAST_MANIFESTLESS_THRESHOLD = () =>
+  new Date(Date.now() - MANIFESTLESS_WINDOW_MS_DEFAULT - 2 * DAY_MS);
+```
+
+  Run `cd apps/api && npx vitest run src/jobs/backupRetention.test.ts` after this step alone to confirm the existing (unmodified) tests still pass against the extended mock before continuing to Step 1 — this step is pure test-infra, no source change yet.
+
 - [ ] Step 1: Write the failing test — replace the module-reset tests at `backupRetention.test.ts:497-540` (they `await import('./backupRetention')` with mutated `process.env` to catch a module-load constant; that pattern breaks once resolution moves off module load):
 
 ```typescript
@@ -423,6 +487,11 @@ async function logUnreachableStorageIdentities(
 
   let unreachable = 0;
   for (const row of usage) {
+    // A NULL storage_identity is not "unreachable" — it's an unresolved row
+    // the self-heal path (Task 7) owns, and `row.storageIdentity` is
+    // `string | null` here, so a naive `identities.has(null)` would be a type
+    // error and — if coerced — could misreport "unreachable identity null".
+    if (row.storageIdentity === null) continue;
     if (identities.has(row.storageIdentity)) continue;
     unreachable++;
     console.warn(`[BackupGC] unreachable identity ${row.storageIdentity}: ${row.count} rows`);
@@ -715,7 +784,23 @@ async function loadGcFailedKeySkipSet(identityKey: string): Promise<Set<string>>
   }
 }
 
-/** Best-effort; a Redis failure here must never fail the sweep that already ran. */
+/**
+ * Best-effort; a Redis failure here must never fail the sweep that already
+ * ran. Called from EVERY delete branch (rooted, manifest-less, retired/orphan
+ * non-manifest phase, retired/orphan manifest phase) — see Task 7 — not just
+ * the retired/orphan path, so a persistently-locked object anywhere stops
+ * burning cap budget on repeat attempts every run.
+ *
+ * ACCEPTED APPROXIMATION (documented, not fixed): `EXPIRE` sets a TTL on the
+ * whole per-identity SET, refreshed to a full 7 days on every call that adds
+ * a new key — Redis SETs have no native per-member TTL. On a busy identity
+ * that keeps failing DIFFERENT keys, an older failed key can therefore stay
+ * excluded from the cap for longer than 7 days. This is accepted because it
+ * only ever makes the sweep MORE conservative (skips more, never deletes
+ * something it shouldn't); a precise per-member TTL would need a Redis hash
+ * of `key -> expiresAt` plus a separate pruning pass, which is unwarranted
+ * complexity for a purely advisory cap-fairness mechanism.
+ */
 async function recordGcFailedKeys(
   identityKey: string,
   failedKeys: { key: string; error: string }[],
@@ -739,33 +824,31 @@ async function recordGcFailedKeys(
 
 - [ ] Step 5: Commit: `git add apps/api/src/jobs/backupRetention.ts apps/api/src/jobs/backupRetention.test.ts && git commit -m "feat(backup-gc): add Redis-backed failed-key skip set for delete-cap fairness"`
 
-### Task 7: Rewrite `sweepStorageIdentity` + `sweepUnreferencedBackupObjects` — NULL-identity self-heal, ORPHAN_WINDOW, stronger manifest-last rule, capability gate, and §3.7 transaction-boundary split
+### Task 7: Rewrite `sweepStorageIdentity` + `sweepUnreferencedBackupObjects` — NULL rows always roots, deferral runs today's algorithm, cap/skip-set correctness, §3.7 transaction-boundary split
 
-**IMPORTANT — supersedes earlier tasks' test scaffolding.** Tasks 3-6 added tests against an interim shape of `sweepUnreferencedBackupObjects` that queried the DB with a fixed, flat sequence of `db.select(...)` calls (matched 1:1 by `selectQueue.push(...)` in test order). This task changes that sequence for real (see the finalized per-identity query order below) **and** splits every DB access into its own short `withSystemDbAccessContext` call per §3.7, which the hand-rolled `chainable`/`selectQueue` mock does not distinguish from an un-wrapped call (the mock replaces `db` itself, not the context wrapper, so `withSystemDbAccessContext(fn)` calling straight through to `fn()` under the mock is transparent — no mock changes needed for the context wrapping itself). This step's implementation, once done, requires going back through every `selectQueue.push(...)` sequence added in Tasks 3-6 and updating it to match the **finalized per-identity read order**:
+**Spec amendment applied (re-read spec §3.4 "Capability gate" / "Unknown-identity rows" before implementing):** deferral (legacy helper OR any unresolved NULL-identity row) does **not** mean "rooted rule only" — it means run **exactly today's (pre-D18) algorithm**: every listed manifest (rooted or not, retired or not) is marked live via the pre-existing mark path, so only loose objects under a manifest-bearing prefix (48h grace) and manifest-less prefixes (9-day rule) are ever touched. No retired/orphan reclamation runs at all while deferred. Separately, **every** `backup_snapshots` row with `storage_identity IS NULL` mapped to identity `I` (via `configId`) is a root of `I` unconditionally (its manifest is fetched by the mark phase; a fetch failure aborts `I` fail-closed like any other root) — "resolved" (self-healed) is a narrower, independent signal (its manifest was found in *this run's listing*) that only gates (a) whether `storage_identity` gets backfilled and (b) whether that row counts toward the identity being deferred.
+
+**IMPORTANT — supersedes earlier tasks' test scaffolding.** Tasks 3-6 added tests against an interim shape of `sweepUnreferencedBackupObjects` that queried the DB with a fixed, flat sequence of `db.select(...)` calls (matched 1:1 by `selectQueue.push(...)` in test order). This task changes that sequence for real (see the finalized per-identity query order below) **and** splits every DB access into its own short `withSystemDbAccessContext` call per §3.7 (mocked as a transparent pass-through since Task 1, Step 0). This step's implementation, once done, requires going back through every `selectQueue.push(...)` sequence added in Tasks 3-6 and updating it to match the **finalized per-identity read order**:
 1. `unattributedRows` (run-level, once).
 2. `destinations` (run-level, once).
 3. `identityUsage` — the `GROUP BY storageIdentity` query for `logUnreachableStorageIdentities` (run-level, once).
-4. Per identity, in this order: (a) `retainedRows` (`storageIdentity = I`), (b) `nullIdentityRows` (`storageIdentity IS NULL AND configId IN I.configIds`), (c) `retirementRows` (`storageIdentity = I AND sweptAt IS NULL`), (d) `capabilityRows` (the legacy-helper job/device join).
-Do this fix-up as part of this task's Step 1 (the new tests below already use the finalized order; go back and add the missing `selectQueue.push([])` calls for the NULL-identity-rows query — step (b) above — to every test from Tasks 3, 5, and 6 that currently pushes only 4 per-identity-adjacent items instead of 5, or re-run the full suite after Step 3's implementation and fix whatever the mismatch count reveals).
+4. Per identity, in this order: (a) `retainedRows` (`storageIdentity = I`), (b) `nullIdentityRows` — `{id, snapshotId}` pairs, `storageIdentity IS NULL AND configId IN I.configIds` (note: **two columns**, not just `snapshotId` — the self-heal write-back needs the primary key, see the P1 fix below), (c) `retirementRows` (`storageIdentity = I AND sweptAt IS NULL`), (d) `capabilityRows` (the legacy-helper job/device join).
+
+Do this fix-up as part of this task's Step 1: go back and add the missing `selectQueue.push([])` calls for the NULL-identity-rows query (step 4b above) to every test from Tasks 3, 5, and 6 that currently pushes only 4 per-identity-adjacent items instead of 5, then re-run the full suite (`cd apps/api && npx vitest run src/jobs/backupRetention.test.ts`) and fix whatever mismatch the run reveals — given how many tasks compound this ordering, treat "run and fix" as mandatory, not optional, before moving to Step 2 below.
 
 **Files:** Modify `apps/api/src/jobs/backupRetention.ts:873-1110` (full rewrite of both functions plus the `BackupGcResult` type at `~550`).
 
 **Interfaces:**
-- Consumes: `backupSnapshotRetirements` from `../db/schema` (W01), `devices` from `../db/schema`, `backupHelperSupportsServerBase` from `../services/backupHelperCapabilities`, `withSystemDbAccessContext` from `../db`, `resolveBackupBaseLeaseMs` from `../services/backupGcKnobs`, everything from Tasks 1-6.
+- Consumes: `backupSnapshotRetirements` from `../db/schema` (W01), `devices` from `../db/schema`, `backupHelperSupportsServerBase` from `../services/backupHelperCapabilities`, `withSystemDbAccessContext`, `assertOutsideHeldDbContext` from `../db`, `resolveBackupBaseLeaseMs` from `../services/backupGcKnobs`, everything from Tasks 1-6.
 - Produces: `export type BackupGcResult = { deleted: number; skippedIdentities: number; blockedIdentities: number; retiredSwept: number; orphansSwept: number; deferredIdentities: number; unreachableIdentities: number };`, a `sweepStorageIdentity` that is now a **pure storage-and-compute function with zero DB calls** (all DB reads/writes happen in its caller, split into short contexts), and the same `export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult>` — internally phase-split per §3.7, but its name and signature are unchanged so W01's `backupWorker.ts` call site (`const gcResult = await sweepUnreferencedBackupObjects();`) needs no edit.
 
-- [ ] Step 1: Write the failing test — first extend the file's existing `vi.mock('../db', () => ({ db: mockDb }));` (top of `backupRetention.test.ts`) to also provide the two new `../db` imports this task adds, so the mock doesn't throw `withSystemDbAccessContext is not a function`:
+**Two accepted-and-stated approximations (per review — pick, don't leave ambiguous):**
+1. **Redis skip-set TTL is per-identity-SET, not per-member.** `EXPIRE` on `backup-gc:failed:<hash>` is refreshed to a full 7 days every time ANY new key is added to that set (Redis `SET`s have no native per-member TTL). A busy identity accumulating new failures can therefore keep an OLDER failed key excluded from the cap for longer than 7 days. Accepted: this only ever makes the sweep MORE conservative (skips more, never deletes something it shouldn't) — a per-member-TTL design (a Redis hash of `key -> expiresAt` plus a separate pruning pass) would be more precise but adds real complexity for a purely advisory cap-fairness mechanism. Not implemented; documented in code.
+2. **`orphansSwept` is a best-effort per-run metric, not a durable "confirmed swept" count** (unlike `retiredSwept`, which is durable via `swept_at` and therefore held to the stricter "confirmed absent from a fresh listing" bar below). An orphan has no DB row to mark, so there is nothing to protect against double-counting or a stale confirmation — it is purely observability. Counted here when at least one object was actually deleted for that old-orphan prefix this run.
 
-```typescript
-const assertOutsideHeldDbContextMock = vi.fn();
-vi.mock('../db', () => ({
-  db: mockDb,
-  withSystemDbAccessContext: (fn: () => unknown) => fn(), // pass-through under the mock — no real context to open
-  assertOutsideHeldDbContext: assertOutsideHeldDbContextMock,
-}));
-```
+**P1 fix — `swept_at` is never inferred from this run's own delete bookkeeping.** The previous draft of this task computed "prefix empty" from `this run's items minus this run's deletedKeys` and set `swept_at` in the SAME pass as the deletes. That's fragile (a delete provider that lies, a concurrent write, a missed edge) and conflates two different questions. Corrected rule: a retirement's `swept_at` is set **only when this run's fresh `listBackupObjectsUnderPrefix` listing has NO group at all for that `snapshotId`** — i.e., the prefix is confirmed **already** gone (covers a retirement whose objects were already fully removed by an earlier run, or that were never fully written) or, on a **later** run, confirmed gone **after** an earlier run's real deletes landed. This decouples "did I just delete some stuff" from "is the prefix actually empty" — the latter always comes from an independent, fresh listing.
 
-  Then add a small tripwire test proving the guard is wired (mirrors `apps/api/src/services/urlSafety.tripwire.test.ts`'s pattern — spy on the guard, assert it fires before the storage call):
+- [ ] Step 1: Write the failing test — the `../db` mock (`withSystemDbAccessContext`, `assertOutsideHeldDbContext`, `selectDistinct`, `.groupBy()`/`.set()`/`.returning()` on `chainable`) was already extended in Task 1, Step 0; nothing further to add to the mock here. First add a small tripwire test proving the guard is wired (mirrors `apps/api/src/services/urlSafety.tripwire.test.ts`'s pattern — spy on the guard, assert it fires before the storage call):
 
 ```typescript
 describe('§3.7 held-context tripwire', () => {
@@ -784,123 +867,95 @@ describe('§3.7 held-context tripwire', () => {
     await sweepUnreferencedBackupObjects();
 
     expect(assertOutsideHeldDbContextMock).toHaveBeenCalledWith('backupGC.sweepStorageIdentity');
-    // The guard is a no-op under the mock (it doesn't throw), so the sweep still
-    // completes — this test only proves the call site exists, not the guard's
-    // real held-context detection (that's exercised by db/index.ts's own suite).
   });
 });
 ```
 
-  Now add these scenarios to `backupRetention.test.ts` (the earlier tasks' tests already exercise pieces of this; these close the remaining gaps: retirement-immediate deletion, the stronger manifest-last rule, the capability gate, the NULL-identity self-heal, and the unresolved-rows gate). Every test below pushes 5 per-identity queries in the finalized order: retained rows, NULL-identity rows, retirements, capability rows — see this task's header note:
+  Now add the scenarios below (the earlier tasks' tests already exercise the pieces unaffected by this task's changes — orphan-window boundaries, Redis skip-set exclusion itself, etc.). These close the P1/P2 gaps: NULL rows are ALWAYS roots (not just resolved ones), deferral runs today's full algorithm (not "rooted only"), self-heal by row `id`, cap accounting charges failed attempts, skip-set is fed from every branch, and `swept_at` is a two-pass, listing-confirmed fact:
 
 ```typescript
-describe('retirement-aware sweep (§3.4 v3)', () => {
-  it('reclaims a retired prefix immediately regardless of age, and marks the retirement swept once empty', async () => {
+describe('NULL-identity rows are ALWAYS roots of I, resolved or not (§3.6 v3 P1)', () => {
+  it('fetches (and requires) the manifest of an UNRESOLVED NULL row too, and defers the whole identity if it is not found in the listing', async () => {
     selectQueue.push([]); // unattributedRows
     selectQueue.push([destination]); // destinations
     selectQueue.push([{ storageIdentity: normalizeStorageIdentity(destination.provider, destination.providerConfig), count: 1 }]); // identityUsage
-    selectQueue.push([]); // retained snapshots — the row was already deleted by retention
-    selectQueue.push([]); // NULL-identity rows for this identity — none
-    selectQueue.push([{ id: 'retirement-1', snapshotId: 'RETIRED1' }]); // retirements for this identity, sweptAt IS NULL
-    selectQueue.push([]); // legacy-helper capability check — no jobs on this identity -> not deferred
+    selectQueue.push([]); // retained — none
+    selectQueue.push([{ id: 'row-neverwritten', snapshotId: 'NEVERWRITTEN' }]); // NULL-identity row mapped here
+    selectQueue.push([{ id: 'retirement-5', snapshotId: 'RETIRED5' }]); // a genuine retirement, different snapshot
+    selectQueue.push([]); // capability check
 
-    const veryRecent = new Date(Date.now() - 1000); // 1 second old — would be protected under every OTHER rule
+    // NEVERWRITTEN never appears in the listing at all — its manifest fetch is
+    // therefore never attempted (markLiveBackupObjects only fetches ids it's
+    // given; a NULL-identity root whose object plainly isn't in this bucket
+    // would 404 if fetched, but here it simply never shows up — the "not
+    // found in the listing" signal, not a fetch failure).
+    const t = new Date(Date.now() - 1000);
     listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
-      { key: 'snapshots/RETIRED1/manifest.json', lastModified: veryRecent },
-      { key: 'snapshots/RETIRED1/files/x.dat', lastModified: veryRecent },
+      { key: 'snapshots/RETIRED5/manifest.json', lastModified: t },
+      { key: 'snapshots/RETIRED5/files/x.dat', lastModified: t },
     ]);
-    deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/RETIRED1/files/x.dat'], failedKeys: [] });
-    deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/RETIRED1/manifest.json'], failedKeys: [] });
+    // Deferred (today's algorithm): RETIRED5's manifest IS listed, so it's
+    // marked live via the "every listed manifest" path, and fetched.
+    fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
 
-    const result = await sweepUnreferencedBackupObjects();
-
-    expect(result.deleted).toBe(2);
-    expect(result.retiredSwept).toBe(1);
-    // Non-manifest phase first, manifest phase second.
-    expect(deleteBackupObjectKeysMock.mock.calls[0][0].keys).toEqual(['snapshots/RETIRED1/files/x.dat']);
-    expect(deleteBackupObjectKeysMock.mock.calls[1][0].keys).toEqual(['snapshots/RETIRED1/manifest.json']);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await sweepUnreferencedBackupObjects();
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled(); // today's algorithm: nothing unrooted is touched
+      expect(result.retiredSwept).toBe(0); // never confirmed gone — it's still fully listed
+      expect(warn.mock.calls.some(([msg]) => String(msg).includes('identity deferred: 1 unresolved rows'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
-  it('does NOT delete the manifest when a non-manifest key is skip-set-excluded, even though none FAILED this run (stronger v3 rule)', async () => {
+  it('fetch failure for an UNRESOLVED NULL row still aborts the identity fail-closed (it is a root regardless of resolution)', async () => {
     selectQueue.push([]);
     selectQueue.push([destination]);
     selectQueue.push([{ storageIdentity: normalizeStorageIdentity(destination.provider, destination.providerConfig), count: 1 }]);
     selectQueue.push([]); // retained
-    selectQueue.push([]); // NULL-identity rows
-    selectQueue.push([{ id: 'retirement-2', snapshotId: 'RETIRED2' }]);
+    selectQueue.push([{ id: 'row-badfetch', snapshotId: 'BADFETCH' }]); // NULL row, and its manifest IS listed
+    selectQueue.push([]); // retirements
     selectQueue.push([]); // capability check
-
-    redisSmembersMock.mockResolvedValueOnce(['snapshots/RETIRED2/files/skipme.dat']); // already in the failed-key skip set
 
     const t = new Date(Date.now() - 1000);
     listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
-      { key: 'snapshots/RETIRED2/manifest.json', lastModified: t },
-      { key: 'snapshots/RETIRED2/files/skipme.dat', lastModified: t },
+      { key: 'snapshots/BADFETCH/manifest.json', lastModified: t },
     ]);
-    // The skip-set-excluded key is never even attempted, so deleteBackupObjectKeys
-    // is called zero times for the non-manifest phase — nothing to delete once
-    // the sole candidate is filtered out — and the manifest phase never runs
-    // because a deletable-but-skipped key still "remains" in the prefix.
-    deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: [], failedKeys: [] });
+    // BADFETCH resolves (found in listing) but its manifest fetch fails —
+    // markLiveBackupObjects fetches every rooted id regardless of resolution.
+    fetchBackupObjectTextMock.mockRejectedValueOnce(new Error('S3 500'));
 
     const result = await sweepUnreferencedBackupObjects();
-
-    expect(deleteBackupObjectKeysMock).not.toHaveBeenCalledWith(
-      expect.objectContaining({ keys: expect.arrayContaining(['snapshots/RETIRED2/manifest.json']) }),
-    );
-    expect(result.retiredSwept).toBe(0);
+    expect(result.blockedIdentities).toBe(1);
+    expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
   });
+});
 
-  it('does NOT delete the manifest when the delete cap truncates the non-manifest phase (stronger v3 rule: capped, not just failed)', async () => {
-    selectQueue.push([]);
-    selectQueue.push([destination]);
-    selectQueue.push([{ storageIdentity: normalizeStorageIdentity(destination.provider, destination.providerConfig), count: 1 }]);
-    selectQueue.push([]);
-    selectQueue.push([]);
-    selectQueue.push([{ id: 'retirement-4', snapshotId: 'RETIRED4' }]);
-    selectQueue.push([]);
-
-    const prevCap = process.env.BACKUP_GC_MAX_DELETES_PER_RUN;
-    process.env.BACKUP_GC_MAX_DELETES_PER_RUN = '1'; // only 1 delete allowed this whole run
-    try {
-      const t = new Date(Date.now() - 1000);
-      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
-        { key: 'snapshots/RETIRED4/manifest.json', lastModified: t },
-        { key: 'snapshots/RETIRED4/files/a.dat', lastModified: t },
-        { key: 'snapshots/RETIRED4/files/b.dat', lastModified: t }, // capped out — never attempted this run
-      ]);
-      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/RETIRED4/files/a.dat'], failedKeys: [] });
-
-      const result = await sweepUnreferencedBackupObjects();
-
-      expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1); // manifest phase never runs — cap exhausted, b.dat still present
-      expect(result.retiredSwept).toBe(0);
-    } finally {
-      if (prevCap === undefined) delete process.env.BACKUP_GC_MAX_DELETES_PER_RUN; else process.env.BACKUP_GC_MAX_DELETES_PER_RUN = prevCap;
-    }
-  });
-
-  it('defers reclamation on an identity with a legacy (pre-server-base) helper on a PENDING job of any age, running only the rooted rule', async () => {
+describe('deferral runs EXACTLY today\'s algorithm, not "rooted only" (§3.4 v3 P1)', () => {
+  it('legacy-helper deferral marks EVERY listed manifest live (including a retired one) and only reclaims loose/manifest-less objects', async () => {
     selectQueue.push([]); // unattributedRows
     selectQueue.push([destination]);
     selectQueue.push([{ storageIdentity: normalizeStorageIdentity(destination.provider, destination.providerConfig), count: 1 }]);
     selectQueue.push([]); // retained
     selectQueue.push([]); // NULL-identity rows
     selectQueue.push([{ id: 'retirement-3', snapshotId: 'RETIRED3' }]); // a retirement exists...
-    // ...but a PENDING job (any age, per v3's widened criteria) on this
-    // identity is still served by a pre-0.112.0 helper.
-    selectQueue.push([{ deviceId: 'device-legacy', backupVersion: '0.109.0' }]);
+    selectQueue.push([{ deviceId: 'device-legacy', backupVersion: '0.109.0' }]); // ...but a legacy helper defers the identity
 
     const t = new Date(Date.now() - 1000);
     listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
       { key: 'snapshots/RETIRED3/manifest.json', lastModified: t },
       { key: 'snapshots/RETIRED3/files/x.dat', lastModified: t },
     ]);
+    // Deferred path fetches EVERY listed manifest, including RETIRED3's —
+    // without this mock, the mark phase 404s and fail-closes the identity.
+    fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const result = await sweepUnreferencedBackupObjects();
-      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(expect.objectContaining({ key: 'snapshots/RETIRED3/manifest.json' }));
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled(); // both objects are 1s old — inside the 48h rooted grace
       expect(result.deferredIdentities).toBe(1);
       expect(result.retiredSwept).toBe(0);
       expect(warn.mock.calls.some(([msg]) => String(msg).includes('reclamation deferred: legacy helper device-legacy 0.109.0'))).toBe(true);
@@ -908,65 +963,186 @@ describe('retirement-aware sweep (§3.4 v3)', () => {
       warn.mockRestore();
     }
   });
-});
 
-describe('NULL storage_identity self-heal and unresolved-rows gate (§3.6/§3.4 v3)', () => {
-  it('self-heals a NULL-identity row once its manifest is found in the listing, and treats it as rooted this run', async () => {
-    selectQueue.push([]); // unattributedRows
-    selectQueue.push([destination]); // destinations
-    selectQueue.push([{ storageIdentity: normalizeStorageIdentity(destination.provider, destination.providerConfig), count: 1 }]); // identityUsage
-    selectQueue.push([]); // retained (storageIdentity = I) — none yet, this row is still NULL
-    selectQueue.push([{ snapshotId: 'HEALME' }]); // NULL-identity rows mapped to this identity's configIds
-    selectQueue.push([]); // retirements — none
-    selectQueue.push([]); // capability check — no legacy helper
+  it('a deferred identity STILL reclaims a manifest-less prefix older than 9 days (that rule is unconditional)', async () => {
+    selectQueue.push([]);
+    selectQueue.push([destination]);
+    selectQueue.push([{ storageIdentity: normalizeStorageIdentity(destination.provider, destination.providerConfig), count: 1 }]);
+    selectQueue.push([]); // retained
+    selectQueue.push([]); // NULL-identity rows
+    selectQueue.push([]); // retirements
+    selectQueue.push([{ deviceId: 'device-legacy', backupVersion: '0.109.0' }]); // legacy helper -> deferred
 
-    fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
-    const t = new Date(Date.now() - DAY_MS);
+    const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
     listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
-      { key: 'snapshots/HEALME/manifest.json', lastModified: t }, // found — resolvable
+      { key: 'snapshots/ORPHANPARTIAL/files/partial.dat', lastModified: old }, // no manifest.json at all
     ]);
+    deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/ORPHANPARTIAL/files/partial.dat'], failedKeys: [] });
 
     const result = await sweepUnreferencedBackupObjects();
-
-    expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(expect.objectContaining({ key: 'snapshots/HEALME/manifest.json' }));
-    expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled(); // rooted -> protected, not swept
+    expect(result.deleted).toBe(1);
+    expect(result.deferredIdentities).toBe(1);
   });
+});
 
-  it('defers ALL retired/orphan reclamation on an identity with an unresolved NULL-identity row, even though a retirement exists', async () => {
+describe('self-heal writes by row id, guarded by storage_identity IS NULL (§3.6 v3 P1)', () => {
+  it('resolves a NULL row (found in listing) and reclaims a co-located retirement in the SAME run once nothing is unresolved', async () => {
     selectQueue.push([]); // unattributedRows
     selectQueue.push([destination]);
     selectQueue.push([{ storageIdentity: normalizeStorageIdentity(destination.provider, destination.providerConfig), count: 1 }]);
-    selectQueue.push([]); // retained — none
-    selectQueue.push([{ snapshotId: 'NEVERWRITTEN' }]); // a NULL row mapped here, but its manifest never shows up in the listing
-    selectQueue.push([{ id: 'retirement-5', snapshotId: 'RETIRED5' }]); // a genuine retirement, on a DIFFERENT snapshot
-    selectQueue.push([]); // capability check — no legacy helper
+    selectQueue.push([]); // retained
+    selectQueue.push([{ id: 'row-healme', snapshotId: 'HEALME' }]); // resolves this run
+    selectQueue.push([{ id: 'retirement-6', snapshotId: 'RETIRED6' }]); // retired, same identity
+    selectQueue.push([]); // capability check
+
+    fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([])); // HEALME's manifest, fetched as a root
+    const t = new Date(Date.now() - 1000);
+    listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+      { key: 'snapshots/HEALME/manifest.json', lastModified: t }, // found -> resolves
+      { key: 'snapshots/RETIRED6/manifest.json', lastModified: t },
+      { key: 'snapshots/RETIRED6/files/r.dat', lastModified: t },
+    ]);
+    deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/RETIRED6/files/r.dat'], failedKeys: [] });
+    deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/RETIRED6/manifest.json'], failedKeys: [] });
+
+    const result = await sweepUnreferencedBackupObjects();
+
+    // Not deferred (HEALME resolved, no unresolved rows left) -> normal
+    // retired reclaim runs against RETIRED6.
+    expect(result.deleted).toBe(2);
+    expect(mockDb.update).toHaveBeenCalledWith(backupSnapshots);
+    // Self-heal write targets the ROW ID, not the snapshot id.
+    // (Assert via the update/.set/.where mock call chain if the chainable mock
+    // records call args — otherwise assert indirectly via a second run's
+    // retainedRows push showing HEALME now returns from the storageIdentity=I
+    // query; either is acceptable, pick one and document which.)
+    expect(result.retiredSwept).toBe(0); // NOT yet confirmed by a fresh listing — see the two-pass test below
+  });
+});
+
+describe('swept_at is set only once a FRESH listing confirms the prefix is gone (two-pass, §3.4 v3 P2)', () => {
+  it('does not set swept_at in the same pass as the deletes, but does on a later run once the listing shows it gone', async () => {
+    // Pass 1: RETIRED1 is fully listed; both its objects get deleted.
+    selectQueue.push([]); selectQueue.push([destination]);
+    selectQueue.push([{ storageIdentity: normalizeStorageIdentity(destination.provider, destination.providerConfig), count: 1 }]);
+    selectQueue.push([]); selectQueue.push([]); // retained, NULL rows
+    selectQueue.push([{ id: 'retirement-1', snapshotId: 'RETIRED1' }]);
+    selectQueue.push([]); // capability
 
     const t = new Date(Date.now() - 1000);
     listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
-      { key: 'snapshots/RETIRED5/manifest.json', lastModified: t },
-      { key: 'snapshots/RETIRED5/files/x.dat', lastModified: t },
-      // Note: 'snapshots/NEVERWRITTEN/...' never appears — its NULL row stays unresolved.
+      { key: 'snapshots/RETIRED1/manifest.json', lastModified: t },
+      { key: 'snapshots/RETIRED1/files/x.dat', lastModified: t },
     ]);
+    deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/RETIRED1/files/x.dat'], failedKeys: [] });
+    deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/RETIRED1/manifest.json'], failedKeys: [] });
 
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const firstRun = await sweepUnreferencedBackupObjects();
+    expect(firstRun.deleted).toBe(2);
+    expect(firstRun.retiredSwept).toBe(0); // NOT confirmed this pass, even though everything was just deleted
+
+    // Pass 2: a fresh listing (real deletes from pass 1 already landed) shows
+    // NOTHING at all for RETIRED1's prefix — confirmed gone.
+    selectQueue.push([]); selectQueue.push([destination]);
+    selectQueue.push([{ storageIdentity: normalizeStorageIdentity(destination.provider, destination.providerConfig), count: 1 }]);
+    selectQueue.push([]); selectQueue.push([]);
+    selectQueue.push([{ id: 'retirement-1', snapshotId: 'RETIRED1' }]); // still unswept in the DB
+    selectQueue.push([]);
+    listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([]); // RETIRED1 not present at all
+
+    const secondRun = await sweepUnreferencedBackupObjects();
+    expect(secondRun.deleted).toBe(0);
+    expect(secondRun.retiredSwept).toBe(1);
+  });
+
+  it('confirms swept_at IMMEDIATELY (first time it is ever swept) when a retirement is already fully absent from the listing', async () => {
+    selectQueue.push([]); selectQueue.push([destination]);
+    selectQueue.push([{ storageIdentity: normalizeStorageIdentity(destination.provider, destination.providerConfig), count: 1 }]);
+    selectQueue.push([]); selectQueue.push([]);
+    selectQueue.push([{ id: 'retirement-7', snapshotId: 'RETIRED7' }]);
+    selectQueue.push([]);
+    listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([]); // never had objects, or a manual cleanup already removed them
+
+    const result = await sweepUnreferencedBackupObjects();
+    expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+    expect(result.retiredSwept).toBe(1);
+  });
+
+  it('a manifest-less "retired remnant" (manifest already gone from a prior run) is reclaimed immediately, with no 9-day wait', async () => {
+    selectQueue.push([]); selectQueue.push([destination]);
+    selectQueue.push([{ storageIdentity: normalizeStorageIdentity(destination.provider, destination.providerConfig), count: 1 }]);
+    selectQueue.push([]); selectQueue.push([]);
+    selectQueue.push([{ id: 'retirement-8', snapshotId: 'RETIRED8' }]);
+    selectQueue.push([]);
+
+    const veryRecent = new Date(Date.now() - 1000); // would be fully protected under the ordinary 9-day manifest-less rule
+    listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+      { key: 'snapshots/RETIRED8/files/remnant.dat', lastModified: veryRecent }, // no manifest.json — already deleted
+    ]);
+    deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/RETIRED8/files/remnant.dat'], failedKeys: [] });
+
+    const result = await sweepUnreferencedBackupObjects();
+    expect(result.deleted).toBe(1); // reclaimed despite being 1 second old — retired status has no age gate
+  });
+});
+
+describe('delete-cap accounting and skip-set feeding (§3.4 v3 P2)', () => {
+  it('a FAILED delete attempt consumes the per-run cap, not just successful deletes', async () => {
+    selectQueue.push([]); selectQueue.push([destination]);
+    selectQueue.push([{ storageIdentity: normalizeStorageIdentity(destination.provider, destination.providerConfig), count: 1 }]);
+    selectQueue.push([{ snapshotId: 'B' }]); // retained (rooted)
+    selectQueue.push([]); selectQueue.push([]); selectQueue.push([]);
+
+    fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+    const prevCap = process.env.BACKUP_GC_MAX_DELETES_PER_RUN;
+    process.env.BACKUP_GC_MAX_DELETES_PER_RUN = '1';
     try {
-      const result = await sweepUnreferencedBackupObjects();
-      // Even though RETIRED5's retirement is real and its prefix is listed,
-      // the WHOLE identity is deferred to rooted-only this run because of the
-      // unresolved NULL row — RETIRED5 is untouched.
-      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result.retiredSwept).toBe(0);
-      expect(warn.mock.calls.some(([msg]) => String(msg).includes('identity deferred: 1 unresolved rows'))).toBe(true);
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/B/manifest.json', lastModified: old },
+        { key: 'snapshots/B/files/a.dat', lastModified: old }, // this one "fails" to delete
+        { key: 'snapshots/B/files/b.dat', lastModified: old }, // never attempted — cap already spent on a.dat's ATTEMPT
+      ]);
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({
+        deletedKeys: [],
+        failedKeys: [{ key: 'snapshots/B/files/a.dat', error: 'object-lock' }],
+      });
+
+      await sweepUnreferencedBackupObjects();
+      // Only ONE deleteBackupObjectKeys call happened at all — the cap was
+      // exhausted by the FAILED attempt, so b.dat was never even tried.
+      expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1);
     } finally {
-      warn.mockRestore();
+      if (prevCap === undefined) delete process.env.BACKUP_GC_MAX_DELETES_PER_RUN; else process.env.BACKUP_GC_MAX_DELETES_PER_RUN = prevCap;
     }
+  });
+
+  it('a rooted-branch delete failure is recorded into the Redis skip set too (not just the retired/orphan branch)', async () => {
+    selectQueue.push([]); selectQueue.push([destination]);
+    selectQueue.push([{ storageIdentity: normalizeStorageIdentity(destination.provider, destination.providerConfig), count: 1 }]);
+    selectQueue.push([{ snapshotId: 'B' }]);
+    selectQueue.push([]); selectQueue.push([]); selectQueue.push([]);
+
+    fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+    const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+    listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+      { key: 'snapshots/B/manifest.json', lastModified: old },
+      { key: 'snapshots/B/files/locked.dat', lastModified: old },
+    ]);
+    deleteBackupObjectKeysMock.mockResolvedValueOnce({
+      deletedKeys: [],
+      failedKeys: [{ key: 'snapshots/B/files/locked.dat', error: 'object-lock' }],
+    });
+
+    await sweepUnreferencedBackupObjects();
+    expect(redisSaddMock).toHaveBeenCalledWith(expect.stringMatching(/^backup-gc:failed:/), 'snapshots/B/files/locked.dat');
   });
 });
 ```
 
-- [ ] Step 2: Run it, expect FAIL: `cd apps/api && npx vitest run src/jobs/backupRetention.test.ts` — `result.retiredSwept`/`deferredIdentities` undefined, retirement/capability/NULL-identity queries never issued.
+- [ ] Step 2: Run it, expect FAIL: `cd apps/api && npx vitest run src/jobs/backupRetention.test.ts` — every new assertion above fails against the pre-Task-7 implementation (wrong deferral semantics, `retiredSwept` computed same-pass, cap counting successes only, skip-set fed from one branch).
 
-- [ ] Step 3: Implement — full replacement of `backupRetention.ts:550` (type) and `:873-1110` (both functions), split per §3.7 into short contexts for DB work and depth-0 storage calls:
+- [ ] Step 3: Implement — full replacement of `backupRetention.ts:550` (type) and `:873-1110` (both functions):
 
 ```typescript
 export type BackupGcResult = {
@@ -986,56 +1162,48 @@ async function deleteCandidatesWithCap(
   candidates: BackupObjectListing[],
   cap: number,
   skipSet: Set<string>,
-): Promise<{ deletedKeys: string[]; failedKeys: { key: string; error: string }[] }> {
+): Promise<{ deletedKeys: string[]; failedKeys: { key: string; error: string }[]; attempted: number }> {
   const eligible = candidates.filter((c) => !skipSet.has(c.key));
-  if (eligible.length === 0 || cap <= 0) return { deletedKeys: [], failedKeys: [] };
+  if (eligible.length === 0 || cap <= 0) return { deletedKeys: [], failedKeys: [], attempted: 0 };
   eligible.sort((a, b) => (a.lastModified?.getTime() ?? 0) - (b.lastModified?.getTime() ?? 0));
   const toDelete = eligible.slice(0, cap).map((c) => c.key);
-  return deleteBackupObjectKeys({ provider: identity.provider, providerConfig: identity.providerConfig, keys: toDelete });
+  const result = await deleteBackupObjectKeys({ provider: identity.provider, providerConfig: identity.providerConfig, keys: toDelete });
+  // `attempted` (not `deletedKeys.length`) is what the caller charges against
+  // the per-run cap — a failed attempt still cost a real provider call this
+  // run and must not be retried unboundedly within the same run (review item).
+  return { ...result, attempted: toDelete.length };
 }
 
 function manifestOlderThanWindow(item: BackupObjectListing, nowMs: number, windowMs: number): boolean {
-  if (!item.lastModified) return false; // unknown age -> not provably old; orphanManifestSnapshotIds already protects it
+  if (!item.lastModified) return false;
   return item.lastModified.getTime() <= nowMs - windowMs;
 }
 
 /**
- * §3.7: pure storage-and-compute — every DB read this needs (retained ids,
- * NULL-identity ids, retirement map, the legacy-helper verdict) is gathered
- * by the caller in a short DB context BEFORE this runs; every DB write this
- * produces (self-heal, retirement-swept) is applied by the caller in a
- * short DB context AFTER this returns. This function itself never touches
- * `db` — only `listBackupObjectsUnderPrefix` / `fetchBackupObjectText` /
- * `deleteBackupObjectKeys` (storage calls) and Redis (skip-set), so nothing
- * here can hold a Postgres transaction open across a slow S3 call.
+ * §3.7: pure storage-and-compute — every DB read this needs is gathered by
+ * the caller in a short DB context BEFORE this runs; every DB write this
+ * produces (self-heal, retirement-swept) is applied by the caller in a short
+ * DB context AFTER this returns. Never touches `db` itself.
  */
 async function sweepStorageIdentity(
   identity: { key: string; provider: string; providerConfig: unknown },
   retainedSnapshotIds: string[],
-  nullIdentitySnapshotIds: string[], // storage_identity IS NULL rows whose configId maps to this identity
+  nullIdentityRows: { id: string; snapshotId: string }[], // storage_identity IS NULL, configId maps to this identity
   retiredSnapshotIds: Map<string, string>, // snapshotId -> retirement row id, sweptAt IS NULL only
   nowMs: number,
   deletesRemaining: number,
   graceMs: number,
   orphanWindowMs: number,
   manifestlessWindowMs: number,
-  restrictToRootedOnly: boolean, // true if EITHER the capability gate OR the unresolved-NULL-rows gate applies
+  legacyHelperDeferred: boolean,
 ): Promise<{
   deleted: number;
-  retiredSwept: string[]; // retirement row ids to mark swept (caller writes these)
-  orphansSwept: number;
-  selfHealSnapshotIds: string[]; // NULL-identity snapshot ids whose manifest was found (caller writes storage_identity)
-  unresolvedNullIdentityCount: number; // NULL-identity rows that did NOT resolve this run
+  retiredSweptIds: string[]; // retirement row ids CONFIRMED fully gone from THIS run's fresh listing
+  orphansSwept: number; // best-effort metric — see the accepted-approximation note above
+  selfHealRowIds: string[]; // backup_snapshots.id values to self-heal
+  unresolvedNullIdentityCount: number;
   deletesUsed: number;
 }> {
-  // §3.7 guard: reuse the existing #1105 tripwire (apps/api/src/db/index.ts) —
-  // the same mechanism urlSafety.ts/bullmqQueue.ts already use before a slow
-  // network primitive — to catch (warn in prod, throw under
-  // DB_CONTEXT_TRIPWIRE_STRICT) a caller that invokes this function from
-  // inside an open withDbAccessContext/withSystemDbAccessContext. This is a
-  // defense-in-depth check on the consumed W01 interface (the worker calls
-  // sweepUnreferencedBackupObjects at depth 0), not a replacement for it —
-  // see "Depends on".
   assertOutsideHeldDbContext('backupGC.sweepStorageIdentity');
 
   const listing = await listBackupObjectsUnderPrefix({
@@ -1045,133 +1213,121 @@ async function sweepStorageIdentity(
   });
   const groups = groupListingBySnapshotId(listing);
 
-  // Self-heal resolution: a NULL-identity row is resolvable this run iff its
-  // manifest is present in the listing (proves it belongs to THIS identity).
-  // "Unresolved" can only be known AFTER the listing (not before), which is
-  // why the unresolved-rows gate below is computed HERE, not by the caller.
-  const selfHealSnapshotIds = nullIdentitySnapshotIds.filter((id) => groups.get(id)?.manifestItem);
-  const unresolvedNullIdentityCount = nullIdentitySnapshotIds.length - selfHealSnapshotIds.length;
-  // §3.6: while ANY NULL-identity row mapped to this identity is unresolved,
-  // the WHOLE identity runs rooted-only this run — combined with the
-  // capability gate via OR (either reason alone is sufficient to defer).
-  const runRootedOnly = restrictToRootedOnly || unresolvedNullIdentityCount > 0;
+  // §3.4/§3.6 P1: every NULL-identity row mapped to this identity is a root,
+  // unconditionally. "Resolved" is the narrower, independent question of
+  // whether THIS run's listing actually shows its manifest — that only
+  // decides self-heal eligibility and the deferral gate below, never whether
+  // the row counts as a root for the mark phase.
+  const nullIdentitySnapshotIds = nullIdentityRows.map((r) => r.snapshotId);
+  const alwaysRootedIds = new Set([...retainedSnapshotIds, ...nullIdentitySnapshotIds]);
+  const selfHealRowIds = nullIdentityRows.filter((r) => groups.get(r.snapshotId)?.manifestItem).map((r) => r.id);
+  const unresolvedNullIdentityCount = nullIdentityRows.length - selfHealRowIds.length;
 
-  const rootedIds = new Set([...retainedSnapshotIds, ...selfHealSnapshotIds]);
-  for (const id of orphanManifestSnapshotIds(groups, rootedIds, retiredSnapshotIds, nowMs, orphanWindowMs)) {
-    rootedIds.add(id);
-  }
+  // §3.4: EITHER condition defers the WHOLE identity to exactly today's
+  // (pre-D18) algorithm — no retired/orphan reclamation at all this run.
+  const deferred = legacyHelperDeferred || unresolvedNullIdentityCount > 0;
 
-  const liveSet = await markLiveBackupObjects(identity, rootedIds);
-  if (liveSet === null) {
-    throw new Error('mark phase failed — see prior log line for the specific snapshot/manifest');
-  }
-
-  const skipSet = await loadGcFailedKeySkipSet(identity.key);
   const graceThreshold = nowMs - graceMs;
   const manifestlessThreshold = nowMs - manifestlessWindowMs;
-
+  const skipSet = await loadGcFailedKeySkipSet(identity.key);
   let deleted = 0;
-  const retiredSwept: string[] = [];
   let orphansSwept = 0;
   let remaining = deletesRemaining;
 
-  for (const [snapshotId, group] of groups) {
-    if (remaining <= 0) break;
+  async function sweepRootedLoose(group: BackupGcSnapshotGroup, liveSet: Set<string>): Promise<void> {
+    const candidates = group.items.filter(
+      (item) => !liveSet.has(item.key) && item.lastModified && item.lastModified.getTime() <= graceThreshold,
+    );
+    const result = await deleteCandidatesWithCap(identity, candidates, remaining, skipSet);
+    deleted += result.deletedKeys.length;
+    remaining -= result.attempted;
+    if (result.failedKeys.length > 0) await recordGcFailedKeys(identity.key, result.failedKeys); // review: fed from EVERY branch now
+  }
 
-    if (rootedIds.has(snapshotId)) {
-      // Rooted prefix: unchanged per-object 48h grace rule.
-      const candidates = group.items.filter(
-        (item) => !liveSet.has(item.key) && item.lastModified && item.lastModified.getTime() <= graceThreshold,
-      );
-      const { deletedKeys } = await deleteCandidatesWithCap(identity, candidates, remaining, skipSet);
-      deleted += deletedKeys.length;
-      remaining -= deletedKeys.length;
-      continue;
+  async function sweepManifestless(group: BackupGcSnapshotGroup, liveSet: Set<string>): Promise<void> {
+    let newestMs: number | null = null;
+    let hasUnknownAge = false;
+    for (const item of group.items) {
+      if (!item.lastModified) { hasUnknownAge = true; break; }
+      const ms = item.lastModified.getTime();
+      if (newestMs === null || ms > newestMs) newestMs = ms;
     }
+    if (hasUnknownAge || newestMs === null || newestMs > manifestlessThreshold) return;
+    const candidates = group.items.filter((item) => !liveSet.has(item.key));
+    const result = await deleteCandidatesWithCap(identity, candidates, remaining, skipSet);
+    deleted += result.deletedKeys.length;
+    remaining -= result.attempted;
+    if (result.failedKeys.length > 0) await recordGcFailedKeys(identity.key, result.failedKeys);
+  }
 
-    if (!group.manifestItem) {
-      // Manifest-less (partial/resumable) prefix — unchanged prefix-granularity
-      // protection for the agent's journal lifetime, regardless of either gate
-      // (this rule predates and is independent of §3.4's new unrooted-prefix
-      // reclamation).
-      let newestMs: number | null = null;
-      let hasUnknownAge = false;
-      for (const item of group.items) {
-        if (!item.lastModified) { hasUnknownAge = true; break; }
-        const ms = item.lastModified.getTime();
-        if (newestMs === null || ms > newestMs) newestMs = ms;
-      }
-      if (hasUnknownAge || newestMs === null || newestMs > manifestlessThreshold) continue;
-      const candidates = group.items.filter((item) => !liveSet.has(item.key));
-      const { deletedKeys } = await deleteCandidatesWithCap(identity, candidates, remaining, skipSet);
-      deleted += deletedKeys.length;
-      remaining -= deletedKeys.length;
-      continue;
-    }
-
-    // Manifest-bearing, not rooted -> must be retired or an old orphan (an
-    // orphan younger than the window, or a resolved self-heal id, would
-    // already be in rootedIds above).
-    if (runRootedOnly) continue; // capability gate OR unresolved-rows gate: leave unrooted prefixes alone this run
-
-    const isRetired = retiredSnapshotIds.has(snapshotId);
-    const isOldOrphan = !isRetired && manifestOlderThanWindow(group.manifestItem, nowMs, orphanWindowMs);
-    if (!isRetired && !isOldOrphan) continue; // defensive; should be unreachable given rootedIds above
-
-    const manifestKey = group.manifestItem.key;
-    const nonLiveItems = group.items.filter((item) => !liveSet.has(item.key));
-    const nonManifestNonLive = nonLiveItems.filter((item) => item.key !== manifestKey);
-
+  // Retired (any age) OR old-orphan two-phase reclaim. Handles a
+  // "manifest-less retired remnant" too (manifest already gone from a prior
+  // run) — in that case there is no manifest-gating to do, just delete
+  // everything non-live in one phase. Never sets swept_at itself.
+  async function reclaimUnrooted(group: BackupGcSnapshotGroup, liveSet: Set<string>): Promise<void> {
+    const manifestKey = group.manifestItem?.key;
+    const nonManifestNonLive = group.items.filter((item) => !liveSet.has(item.key) && item.key !== manifestKey);
     const nonManifestResult = await deleteCandidatesWithCap(identity, nonManifestNonLive, remaining, skipSet);
     deleted += nonManifestResult.deletedKeys.length;
-    remaining -= nonManifestResult.deletedKeys.length;
-    if (nonManifestResult.failedKeys.length > 0) {
-      await recordGcFailedKeys(identity.key, nonManifestResult.failedKeys);
-    }
+    remaining -= nonManifestResult.attempted;
+    if (nonManifestResult.failedKeys.length > 0) await recordGcFailedKeys(identity.key, nonManifestResult.failedKeys);
 
-    // v3 manifest-last rule: NOT "zero failedKeys" — the manifest is a
-    // candidate only when NO deletable non-manifest key remains at all,
-    // whatever the reason (failed, cap-truncated, or skip-set-excluded).
-    const remainingNonManifest = nonManifestNonLive.filter(
-      (item) => !nonManifestResult.deletedKeys.includes(item.key),
-    );
+    if (!group.manifestItem) return; // manifest-less remnant — nothing further to gate
 
-    let manifestDeletedThisRun = false;
-    const manifestIsCandidate = remainingNonManifest.length === 0 && !liveSet.has(manifestKey) && remaining > 0;
-    if (manifestIsCandidate) {
+    // v3 manifest-last rule: candidate only when NO deletable non-manifest
+    // key remains — none failed, none capped, none skip-set-excluded.
+    const remainingNonManifest = nonManifestNonLive.filter((item) => !nonManifestResult.deletedKeys.includes(item.key));
+    if (remainingNonManifest.length === 0 && !liveSet.has(manifestKey!) && remaining > 0) {
       const manifestResult = await deleteCandidatesWithCap(identity, [group.manifestItem], remaining, skipSet);
       deleted += manifestResult.deletedKeys.length;
-      remaining -= manifestResult.deletedKeys.length;
-      manifestDeletedThisRun = manifestResult.deletedKeys.length > 0;
-      if (manifestResult.failedKeys.length > 0) {
-        await recordGcFailedKeys(identity.key, manifestResult.failedKeys);
-      }
-    }
-
-    const deletedThisPass = new Set([...nonManifestResult.deletedKeys, ...(manifestDeletedThisRun ? [manifestKey] : [])]);
-    const stillPresent = nonLiveItems.filter((item) => !deletedThisPass.has(item.key));
-    const prefixEmpty = stillPresent.length === 0;
-
-    if (isRetired && prefixEmpty) {
-      retiredSwept.push(retiredSnapshotIds.get(snapshotId)!);
-    } else if (!isRetired && isOldOrphan && prefixEmpty) {
-      orphansSwept++;
+      remaining -= manifestResult.attempted;
+      if (manifestResult.failedKeys.length > 0) await recordGcFailedKeys(identity.key, manifestResult.failedKeys);
     }
   }
 
-  return { deleted, retiredSwept, orphansSwept, selfHealSnapshotIds, unresolvedNullIdentityCount, deletesUsed: deletesRemaining - remaining };
+  if (deferred) {
+    // §3.4 amendment: exactly today's algorithm. EVERY listed manifest is a
+    // root, not just DB-rooted ids.
+    const everyListedManifestIds: string[] = [];
+    for (const [snapshotId, group] of groups) if (group.manifestItem) everyListedManifestIds.push(snapshotId);
+    const rootsForMark = new Set([...alwaysRootedIds, ...everyListedManifestIds]);
+    const liveSet = await markLiveBackupObjects(identity, rootsForMark);
+    if (liveSet === null) throw new Error('mark phase failed — see prior log line for the specific snapshot/manifest');
+
+    for (const [, group] of groups) {
+      if (remaining <= 0) break;
+      if (group.manifestItem) await sweepRootedLoose(group, liveSet);
+      else await sweepManifestless(group, liveSet);
+    }
+  } else {
+    const orphanIds = orphanManifestSnapshotIds(groups, alwaysRootedIds, retiredSnapshotIds, nowMs, orphanWindowMs);
+    const rootsForMark = new Set([...alwaysRootedIds, ...orphanIds]);
+    const liveSet = await markLiveBackupObjects(identity, rootsForMark);
+    if (liveSet === null) throw new Error('mark phase failed — see prior log line for the specific snapshot/manifest');
+
+    for (const [snapshotId, group] of groups) {
+      if (remaining <= 0) break;
+      if (rootsForMark.has(snapshotId)) { await sweepRootedLoose(group, liveSet); continue; }
+      if (retiredSnapshotIds.has(snapshotId)) { await reclaimUnrooted(group, liveSet); continue; }
+      if (!group.manifestItem) { await sweepManifestless(group, liveSet); continue; }
+      if (!manifestOlderThanWindow(group.manifestItem, nowMs, orphanWindowMs)) continue; // defensive; unreachable given rootsForMark
+      const before = deleted;
+      await reclaimUnrooted(group, liveSet);
+      if (deleted > before) orphansSwept++; // best-effort metric — see accepted approximation
+    }
+  }
+
+  // swept_at confirmation — independent of `deferred`, and independent of
+  // whatever this run deleted: a retirement is confirmed gone ONLY when
+  // THIS run's fresh listing has NO group at all for its snapshotId.
+  const retiredSweptIds: string[] = [];
+  for (const [snapshotId, retirementId] of retiredSnapshotIds) {
+    if (!groups.has(snapshotId)) retiredSweptIds.push(retirementId);
+  }
+
+  return { deleted, retiredSweptIds, orphansSwept, selfHealRowIds, unresolvedNullIdentityCount, deletesUsed: deletesRemaining - remaining };
 }
 
-/**
- * §3.4 capability gate: unrooted-prefix reclamation (retired + old-orphan
- * deletion) on an identity is enabled only when every device with a
- * `backup_jobs` row on this identity that is `pending`/`running` (ANY age —
- * a helper upgrade kills any run in progress, so the CURRENT version attests
- * the running helper) OR created in the last 30 days reports a helper >=
- * BACKUP_SERVER_BASE_MIN_HELPER_VERSION. A job is "on this identity" via its
- * own `storageIdentity` column (stamped at dispatch) when present, or by
- * `configId` membership for legacy jobs that predate that column.
- */
 async function identityHasLegacyHelper(
   identity: { key: string; configIds: string[] },
   nowMs: number,
@@ -1203,7 +1359,7 @@ async function loadIdentityGcState(
   nowMs: number,
 ): Promise<{
   retainedSnapshotIds: string[];
-  nullIdentitySnapshotIds: string[];
+  nullIdentityRows: { id: string; snapshotId: string }[];
   retiredSnapshotIds: Map<string, string>;
   legacyHelper: { deferred: boolean; deviceId?: string; version?: string | null };
 }> {
@@ -1213,8 +1369,12 @@ async function loadIdentityGcState(
       .from(backupSnapshots)
       .where(eq(backupSnapshots.storageIdentity, identity.key));
 
+    // P1 fix: fetch the primary key `id`, not just `snapshotId` — snapshot_id
+    // is NOT unique across identities (schema/backup.ts:330's index is a
+    // plain, non-unique index), so the self-heal write-back below must never
+    // match on snapshot_id alone.
     const nullIdentityRows = await db
-      .select({ snapshotId: backupSnapshots.snapshotId })
+      .select({ id: backupSnapshots.id, snapshotId: backupSnapshots.snapshotId })
       .from(backupSnapshots)
       .where(and(isNull(backupSnapshots.storageIdentity), inArray(backupSnapshots.configId, identity.configIds)));
 
@@ -1227,7 +1387,7 @@ async function loadIdentityGcState(
 
     return {
       retainedSnapshotIds: retainedRows.map((r) => r.snapshotId),
-      nullIdentitySnapshotIds: nullIdentityRows.map((r) => r.snapshotId),
+      nullIdentityRows,
       retiredSnapshotIds: new Map(retirementRows.map((r) => [r.snapshotId, r.id])),
       legacyHelper,
     };
@@ -1237,18 +1397,22 @@ async function loadIdentityGcState(
 /** Per-identity DB writes applied in ONE short system context, per §3.7 — always AFTER every storage call for this identity has already returned. */
 async function applyIdentityGcWriteBacks(
   identity: { key: string },
-  writeBacks: { retiredSwept: string[]; selfHealSnapshotIds: string[] },
+  writeBacks: { retiredSweptIds: string[]; selfHealRowIds: string[] },
 ): Promise<void> {
-  if (writeBacks.retiredSwept.length === 0 && writeBacks.selfHealSnapshotIds.length === 0) return;
+  if (writeBacks.retiredSweptIds.length === 0 && writeBacks.selfHealRowIds.length === 0) return;
   await withSystemDbAccessContext(async () => {
-    for (const retirementId of writeBacks.retiredSwept) {
+    for (const retirementId of writeBacks.retiredSweptIds) {
       await db.update(backupSnapshotRetirements).set({ sweptAt: new Date() }).where(eq(backupSnapshotRetirements.id, retirementId));
     }
-    if (writeBacks.selfHealSnapshotIds.length > 0) {
+    if (writeBacks.selfHealRowIds.length > 0) {
+      // P1 fix: heal by PRIMARY ROW ID, guarded by storage_identity IS NULL —
+      // matching on snapshot_id alone could re-stamp a DIFFERENT identity's
+      // row sharing the same agent-generated snapshot id; the IS NULL guard
+      // also protects against re-stamping a row a concurrent run just healed.
       await db
         .update(backupSnapshots)
         .set({ storageIdentity: identity.key })
-        .where(inArray(backupSnapshots.snapshotId, writeBacks.selfHealSnapshotIds));
+        .where(and(inArray(backupSnapshots.id, writeBacks.selfHealRowIds), isNull(backupSnapshots.storageIdentity)));
     }
   });
 }
@@ -1260,23 +1424,10 @@ async function pruneSweptRetirements(nowMs: number): Promise<void> {
       .delete(backupSnapshotRetirements)
       .where(and(isNotNull(backupSnapshotRetirements.sweptAt), lt(backupSnapshotRetirements.sweptAt, cutoff)))
       .returning({ id: backupSnapshotRetirements.id });
-    if (deleted.length > 0) {
-      console.log(`[BackupGC] Pruned ${deleted.length} swept retirement row(s) older than 30 days`);
-    }
+    if (deleted.length > 0) console.log(`[BackupGC] Pruned ${deleted.length} swept retirement row(s) older than 30 days`);
   });
 }
 
-/**
- * §3.7: this is the top-level entry the worker calls, and it must NEVER be
- * invoked from inside another DB transaction. W01 owns keeping the
- * `cleanup-expired-snapshots` case out of the worker's blanket
- * `runWithSystemDbAccess` wrap (consumed interface — see "Depends on"); this
- * function's job is only to honor that assumption internally: every DB
- * read/write happens in its own short `withSystemDbAccessContext` call, and
- * every storage call (inside `sweepStorageIdentity`, which asserts
- * `assertOutsideHeldDbContext` at its own top as a tripwire) runs at depth 0,
- * between those contexts, never nested inside one.
- */
 export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> {
   const nowMs = Date.now();
   const graceMs = resolveBackupGcGraceMs();
@@ -1304,7 +1455,6 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
       `resume on its next run.`;
     console.error(wedgeMessage);
     captureException(new Error(wedgeMessage));
-    console.log(`[BackupGC] Run complete: deleted 0 object(s), ${identities.size} identity/identities skipped`);
     return {
       deleted: 0, skippedIdentities: identities.size, blockedIdentities: 0,
       retiredSwept: 0, orphansSwept: 0, deferredIdentities: 0, unreachableIdentities,
@@ -1319,93 +1469,71 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
     ));
   }
 
-  let deleted = 0;
-  let skippedIdentities = 0;
-  let blockedIdentities = 0;
-  let retiredSwept = 0;
-  let orphansSwept = 0;
-  let deferredIdentities = 0;
+  let deleted = 0, skippedIdentities = 0, blockedIdentities = 0, retiredSwept = 0, orphansSwept = 0, deferredIdentities = 0;
   let deletesRemaining = resolveBackupGcMaxDeletesPerRun();
 
   for (const identity of identities.values()) {
-    if (deletesRemaining <= 0) {
-      console.log('[BackupGC] Deletion cap reached for this run — stopping cleanly; remaining identities resume next run');
-      break;
-    }
+    if (deletesRemaining <= 0) { console.log('[BackupGC] Deletion cap reached — stopping cleanly'); break; }
     if (suspiciousIdentityKeys.has(identity.key)) { skippedIdentities++; continue; }
     if (!BACKUP_GC_SUPPORTED_PROVIDERS.has(identity.provider)) {
       skippedIdentities++;
-      console.warn(`[BackupGC] Identity ${identity.key}: provider '${identity.provider}' has no GC listing support — skipping (fail-closed)`);
+      console.warn(`[BackupGC] Identity ${identity.key}: provider '${identity.provider}' has no GC listing support — skipping`);
       continue;
     }
 
     try {
-      // Phase: short DB context, reads only.
       const state = await loadIdentityGcState(identity, nowMs);
       if (state.legacyHelper.deferred) {
         deferredIdentities++;
         console.warn(`[BackupGC] reclamation deferred: legacy helper ${state.legacyHelper.deviceId} ${state.legacyHelper.version}`);
       }
 
-      // Phase: no DB context, storage calls only (depth 0). The
-      // unresolved-NULL-rows gate is computed INSIDE sweepStorageIdentity
-      // (it needs the listing to know which NULL rows resolve — see that
-      // function's comment), combined there with the capability gate via OR;
-      // `restrictToRootedOnly` here carries only the capability-gate half.
       const identityResult = await sweepStorageIdentity(
-        identity, state.retainedSnapshotIds, state.nullIdentitySnapshotIds, state.retiredSnapshotIds,
+        identity, state.retainedSnapshotIds, state.nullIdentityRows, state.retiredSnapshotIds,
         nowMs, deletesRemaining, graceMs, orphanWindowMs, manifestlessWindowMs,
         state.legacyHelper.deferred,
       );
 
       if (identityResult.unresolvedNullIdentityCount > 0) {
         console.warn(`[BackupGC] identity deferred: ${identityResult.unresolvedNullIdentityCount} unresolved rows`);
-        if (!state.legacyHelper.deferred) deferredIdentities++; // avoid double-counting if both gates fired
+        if (!state.legacyHelper.deferred) deferredIdentities++; // avoid double-counting one identity for both reasons
       }
 
       deleted += identityResult.deleted;
-      retiredSwept += identityResult.retiredSwept.length;
+      retiredSwept += identityResult.retiredSweptIds.length;
       orphansSwept += identityResult.orphansSwept;
       deletesRemaining -= identityResult.deletesUsed;
 
-      // Phase: short DB context, writes only — always after every storage
-      // call for this identity above has already completed.
       await applyIdentityGcWriteBacks(identity, {
-        retiredSwept: identityResult.retiredSwept,
-        selfHealSnapshotIds: identityResult.selfHealSnapshotIds,
+        retiredSweptIds: identityResult.retiredSweptIds,
+        selfHealRowIds: identityResult.selfHealRowIds,
       });
 
-      if (identityResult.deleted > 0) {
-        console.log(`[BackupGC] Identity ${identity.key}: deleted ${identityResult.deleted} unreferenced object(s)`);
-      } else {
-        console.debug(`[BackupGC] Identity ${identity.key}: 0 objects deleted`);
-      }
+      if (identityResult.deleted > 0) console.log(`[BackupGC] Identity ${identity.key}: deleted ${identityResult.deleted} object(s)`);
     } catch (error) {
-      skippedIdentities++;
-      blockedIdentities++;
+      skippedIdentities++; blockedIdentities++;
       console.error(`[BackupGC] Identity ${identity.key}: sweep failed — isolated, other identities proceed:`, error);
       captureException(error instanceof Error ? error : new Error(String(error)));
     }
   }
 
   console.log(
-    `[BackupGC] Run complete: deleted ${deleted} object(s), ${retiredSwept} retirement(s) fully swept, ` +
-    `${orphansSwept} orphan(s) swept, ${identities.size - skippedIdentities} identity/identities processed, ` +
-    `${skippedIdentities} skipped, ${deferredIdentities} deferred (legacy helper), ${unreachableIdentities} unreachable` +
-    (blockedIdentities > 0 ? ` (${blockedIdentities} blocked by unfetchable manifest — fail-closed)` : ''),
+    `[BackupGC] Run complete: deleted ${deleted} object(s), ${retiredSwept} retirement(s) confirmed swept, ` +
+    `${orphansSwept} orphan(s) swept, ${skippedIdentities} identity/identities skipped, ${deferredIdentities} deferred, ` +
+    `${unreachableIdentities} unreachable` + (blockedIdentities > 0 ? ` (${blockedIdentities} blocked)` : ''),
   );
 
   return { deleted, skippedIdentities, blockedIdentities, retiredSwept, orphansSwept, deferredIdentities, unreachableIdentities };
 }
 ```
 
-  Note the ordering that makes this correct: `unresolvedNullIdentityCount` is computed and applied **inside** `sweepStorageIdentity` itself (combined with the capability gate via OR, right after the self-heal filter and before the main per-group loop — see that function above), not by the caller after the fact. Computing it in the caller instead would be a chicken-and-egg bug: "unresolved" can only be known once the listing exists, but by the time the caller sees the result the sweep would already have run — so `sweepUnreferencedBackupObjects` above only *reads* `identityResult.unresolvedNullIdentityCount` to log and count `deferredIdentities`, it never uses it to decide whether to sweep.
+  Add to the top imports: `backupSnapshotRetirements`, `devices` to the `../db/schema` import list; `gte`, `isNotNull` to the `drizzle-orm` import list; `withSystemDbAccessContext`, `assertOutsideHeldDbContext` from `../db`; `resolveBackupOrphanManifestMaxAgeMs`, `resolveBackupBaseLeaseMs` from `../services/backupGcKnobs`; `backupHelperSupportsServerBase` from `../services/backupHelperCapabilities`.
 
-  Add to the top imports: `backupSnapshotRetirements`, `devices` to the `../db/schema` import list; `gte`, `isNotNull` to the `drizzle-orm` import list; `withSystemDbAccessContext`, `assertOutsideHeldDbContext` from `../db` (verify both export names against `apps/api/src/db/index.ts` — confirmed present as `export async function withSystemDbAccessContext` at `:610` and `export function assertOutsideHeldDbContext` at `:989` in the pre-W01 file; re-check after W01 lands in case it moves either); `resolveBackupOrphanManifestMaxAgeMs`, `resolveBackupBaseLeaseMs` from `../services/backupGcKnobs`; `backupHelperSupportsServerBase` from `../services/backupHelperCapabilities`.
+  **Honesty note for the implementer:** the exact `selectQueue` push sequence in every test above was hand-derived against the finalized query order, not verified by actually running vitest — given how many tasks compound this file's mock ordering, treat a mismatch as expected friction, not a sign the design is wrong. Run the suite, read the first failure's actual vs. expected call, and fix the test's push order (never the source) unless the source itself is what's wrong per this task's stated algorithm.
 
-- [ ] Step 4: Run, expect PASS (this is the point every test from Tasks 3, 5, 6 and this task's own tests should all go green together — fix up the `selectQueue` push counts in Tasks 3/5/6's tests per this task's header note first if they fail on an unexpected-shape mismatch): `cd apps/api && npx vitest run src/jobs/backupRetention.test.ts`
+- [ ] Step 4: Run, expect PASS (fix up `selectQueue` push counts per the note above as needed): `cd apps/api && npx vitest run src/jobs/backupRetention.test.ts`
 
-- [ ] Step 5: Commit: `git add apps/api/src/jobs/backupRetention.ts apps/api/src/jobs/backupRetention.test.ts && git commit -m "feat(backup-gc): retirement-aware two-phase sweep, NULL-identity self-heal, capability gate (D18 §3.4/§3.6)"`
+- [ ] Step 5: Commit: `git add apps/api/src/jobs/backupRetention.ts apps/api/src/jobs/backupRetention.test.ts && git commit -m "feat(backup-gc): NULL rows always roots, deferral runs today's algorithm, cap/skip-set/swept_at correctness (D18 §3.4/§3.6 v3)"`
 
 ### Task 8: `backupWorker.ts` — log the four new result fields (no worker restructuring — W01 owns that)
 
@@ -1492,9 +1620,57 @@ export async function processCleanupExpiredSnapshots(): Promise<{
 
 - [ ] Step 4: Run, expect PASS: `cd apps/api && npx vitest run src/jobs/backupWorker.test.ts`
 
-- [ ] Step 5: Commit: `git add apps/api/src/jobs/backupWorker.ts apps/api/src/jobs/backupWorker.test.ts && git commit -m "feat(backup-gc): surface retirement/orphan/deferred/unreachable counts from the worker"`
+- [ ] Step 4b: Add the depth-0 regression to the existing real-depth harness — `apps/api/src/jobs/backupWorker.dbcontext.test.ts` (review item: "the depth harness is `backupWorker.dbcontext.test.ts`"). This file already mocks `../db`'s `withSystemDbAccessContext` with REAL enter/exit depth tracking (`ctxState`, see its header comment) and already stubs `./backupRetention`'s `cleanupExpiredSnapshots`/`sweepUnreferencedBackupObjects` as plain `vi.fn()`s — replace those two stubs with implementations that record `ctxState.depth` when called, and add a describe block exercising `processCleanupExpiredSnapshots` (already exported, unchanged by this task's Step 3 beyond its return shape) directly:
 
-### Task 9: Integration test — real DB + real local filesystem, spec §6 scenarios (1)-(5) + self-heal scenario (6)
+```typescript
+// Replace the existing blanket stub:
+//   vi.mock('./backupRetention', () => ({
+//     cleanupExpiredSnapshots: vi.fn(),
+//     sweepUnreferencedBackupObjects: vi.fn(),
+//   }));
+// with recording versions so this file's real ctxState can prove WHERE each
+// call happens, mirroring how it already does this for dispatchCommandToAgent.
+const cleanupExpiredSnapshotsMock = vi.fn(async () => {
+  ctxState.events.push(`cleanupExpiredSnapshots@depth${ctxState.depth}`);
+  return { deleted: 0, skippedLegalHold: 0, skippedImmutable: 0, prunedByMaxVersions: 0, failed: 0 };
+});
+const sweepUnreferencedBackupObjectsMock = vi.fn(async () => {
+  ctxState.events.push(`sweepUnreferencedBackupObjects@depth${ctxState.depth}`);
+  return {
+    deleted: 0, skippedIdentities: 0, blockedIdentities: 0,
+    retiredSwept: 0, orphansSwept: 0, deferredIdentities: 0, unreachableIdentities: 0,
+  };
+});
+vi.mock('./backupRetention', () => ({
+  cleanupExpiredSnapshots: cleanupExpiredSnapshotsMock,
+  sweepUnreferencedBackupObjects: sweepUnreferencedBackupObjectsMock,
+}));
+
+describe('processCleanupExpiredSnapshots DB-context scoping (D18 §3.7)', () => {
+  beforeEach(() => {
+    ctxState.depth = 0;
+    ctxState.events = [];
+    mockDb.select.mockReturnValue({
+      from: () => ({ then: (resolve: (v: unknown[]) => unknown) => Promise.resolve([]).then(resolve) }),
+    });
+  });
+
+  it('calls sweepUnreferencedBackupObjects at depth 0 — never nested inside a held DB context', async () => {
+    const { processCleanupExpiredSnapshots } = await import('./backupWorker');
+    await processCleanupExpiredSnapshots();
+
+    expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledTimes(1);
+    const sweepEvent = ctxState.events.find((e) => e.startsWith('sweepUnreferencedBackupObjects@'));
+    expect(sweepEvent).toBe('sweepUnreferencedBackupObjects@depth0');
+  });
+});
+```
+
+  Note this test exercises `processCleanupExpiredSnapshots` directly — it does NOT invoke it through `createBackupWorker`'s job-dispatch switch (that carve-out is W01's to author and test; this file's existing `mockDb.select.mockReturnValue(...)` for the org-loop query may need adjusting to match whatever shape W01's actual per-org retention loop takes — treat the exact mock as illustrative and adapt to W01's real `processCleanupExpiredSnapshots` internals once merged, the way this task's Step 1/3 already do for the same reason).
+
+- [ ] Step 5: Commit: `git add apps/api/src/jobs/backupWorker.ts apps/api/src/jobs/backupWorker.test.ts apps/api/src/jobs/backupWorker.dbcontext.test.ts && git commit -m "feat(backup-gc): surface retirement/orphan/deferred/unreachable counts from the worker; assert depth-0 invocation"`
+
+### Task 9: Integration test — real DB + real local filesystem, spec §6 scenarios (1)-(5) + self-heal scenarios (6a/6b)
 
 **Files:** Create `apps/api/src/__tests__/integration/backupGcReclamation.integration.test.ts`.
 
@@ -1502,15 +1678,19 @@ export async function processCleanupExpiredSnapshots(): Promise<{
 - Consumes: `withSystemDbAccessContext`, `db` from `../../db`; `partners, organizations, sites, devices, backupConfigs, backupJobs, backupSnapshots, backupSnapshotRetirements` from `../../db/schema`; `sweepUnreferencedBackupObjects` from `../../jobs/backupRetention`.
 - Runs against: `providerConfig.path` pointing at `fs.mkdtempSync` temp dirs (provider `'local'`), real files written and aged via `fs.promises.utimes`.
 
+**Test database (P2 review — do not point this at the dev DB).** This suite runs against the **dedicated integration test database**, never `postgresql://breeze:breeze@localhost:5432/breeze` (that's the dev/wt-stack DB). `apps/api/src/__tests__/integration/setup.ts` (imported via `import './setup'`, same as `staleBackupReaper.integration.test.ts`) already resolves `DATABASE_URL`/`DATABASE_URL_APP` from `.env.test` (defaults: `postgresql://breeze_test:breeze_test@localhost:5433/breeze_test` — port **5433**, not 5432 — and the `breeze_app`-equivalent role) and calls `assertTestDatabaseUrlSafe` (`apps/api/src/testUtils/integrationDatabaseSafety.ts`) before opening any pool, which hard-refuses a non-`breeze_test(_*)`-named database, a non-allowlisted host, or the default port 5432. **Never pass an explicit `DATABASE_URL=...` override on the command line for this suite** — let `setup.ts` resolve it from `.env.test`, and stand up the test containers first with `pnpm test-stack up` (repo root) if they aren't already running, matching `setup.ts`'s own docstring.
+
+**Out of scope for this file (say so explicitly, per review) — these are W01's suite, not this wave's:** lease expiry / renewal (`base_lease_expires_at`/`publish_lease_expires_at`), the restore-pin linger window, and the concurrent-dispatch-vs-retention row-lock race. This wave's "pinned" scenario below only proves that a still-RETAINED row (one retention hasn't deleted — because W01's pin check blocked it, which is W01's own concern) is protected by the sweep like any other rooted row; it does not exercise or assert anything about how or when a row becomes pinned.
+
 - [ ] Step 1: Write the failing test (this whole file is new — "failing" means it doesn't exist / fails to compile until Task 7 is fully landed):
 
 ```typescript
 import './setup';
 
-import { mkdtemp, mkdir, writeFile, utimes, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, utimes, readdir, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, it } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
@@ -1551,7 +1731,7 @@ async function listAll(root: string, prefix = ''): Promise<string[]> {
   return out;
 }
 
-async function seedOrgDeviceConfig(unique: string, rootPath: string) {
+async function seedOrgDeviceConfig(unique: string, rootPath: string, backupVersion = '0.112.0') {
   const [partner] = await db.insert(partners).values({
     name: `GC Partner ${unique}`, slug: `gc-partner-${unique}`, type: 'msp', plan: 'pro', status: 'active',
   }).returning({ id: partners.id });
@@ -1562,7 +1742,7 @@ async function seedOrgDeviceConfig(unique: string, rootPath: string) {
   const [device] = await db.insert(devices).values({
     orgId: org!.id, siteId: site!.id, agentId: `gc-agent-${unique}`, hostname: `gc-host-${unique}`,
     osType: 'linux', osVersion: '1', architecture: 'x86_64', agentVersion: '0.0.0-test',
-    backupVersion: '0.112.0', status: 'online',
+    backupVersion, status: 'online',
   }).returning({ id: devices.id });
   const [config] = await db.insert(backupConfigs).values({
     orgId: org!.id, name: `GC Config ${unique}`, type: 'file', provider: 'local', providerConfig: { path: rootPath },
@@ -1572,7 +1752,8 @@ async function seedOrgDeviceConfig(unique: string, rootPath: string) {
 }
 
 async function insertSnapshotRow(params: {
-  orgId: string; deviceId: string; configId: string; snapshotId: string; identity: string; expiresAt?: Date | null;
+  orgId: string; deviceId: string; configId: string; snapshotId: string; identity: string;
+  expiresAt?: Date | null; backupType?: 'file' | 'system_image' | 'hyperv' | 'mssql';
 }) {
   const [job] = await db.insert(backupJobs).values({
     orgId: params.orgId, configId: params.configId, deviceId: params.deviceId, status: 'completed', snapshotId: params.snapshotId,
@@ -1580,26 +1761,32 @@ async function insertSnapshotRow(params: {
   await db.insert(backupSnapshots).values({
     orgId: params.orgId, jobId: job!.id, deviceId: params.deviceId, configId: params.configId,
     snapshotId: params.snapshotId, storageIdentity: params.identity, expiresAt: params.expiresAt ?? null,
+    backupType: params.backupType ?? 'file',
   });
 }
 
-runDb('scenario 1: expiring a base with an incremental child reclaims the base-exclusive object but keeps every backupPath the incremental references', async () => {
+runDb('scenario 1: expiring a base with an incremental child reclaims ONLY the base-exclusive object, keeping every shared backupPath the incremental references', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
 
-  const ctx = await withSystemDbAccessContext(async () => {
+  const seed = await withSystemDbAccessContext(async () => {
     const seed = await seedOrgDeviceConfig(unique, root);
 
-    // Base B: exclusive object X, still has a live row (not yet expired) so its
-    // own manifest survives; the row is deleted directly here to simulate
-    // retention already having run and written the retirement (W01's job —
-    // this test inserts the retirement row directly rather than re-driving
-    // cleanupExpiredSnapshots, which is out of this wave's scope).
-    await writeAged(root, 'snapshots/B/manifest.json', 1000, JSON.stringify({ files: [{ backupPath: 'snapshots/B/files/x.dat' }] }));
-    await writeAged(root, 'snapshots/B/files/x.dat', 1000); // B-exclusive
-    // Incremental C references B's object X plus its own file.
+    // Base B has an object exclusively its own (only-in-b.dat) AND a
+    // separately-tracked shared object (shared.dat) that C's manifest ALSO
+    // references. Retiring B must reclaim only-in-b.dat and B's manifest,
+    // never shared.dat — the previous draft of this scenario wrongly listed
+    // shared.dat as B's own exclusive object while ALSO having C reference
+    // it, then asserted it gone (a real data-loss bug in the TEST, not the
+    // implementation — fixed here per review).
+    await writeAged(root, 'snapshots/B/manifest.json', 1000, JSON.stringify({ files: [
+      { backupPath: 'snapshots/B/files/only-in-b.dat' },
+      { backupPath: 'snapshots/B/files/shared.dat' },
+    ] }));
+    await writeAged(root, 'snapshots/B/files/only-in-b.dat', 1000); // B-exclusive — must be deleted
+    await writeAged(root, 'snapshots/B/files/shared.dat', 1000); // referenced by C too — must survive
     await writeAged(root, 'snapshots/C/manifest.json', 1000, JSON.stringify({ files: [
-      { backupPath: 'snapshots/B/files/x.dat' },
+      { backupPath: 'snapshots/B/files/shared.dat' },
       { backupPath: 'snapshots/C/files/c.dat' },
     ] }));
     await writeAged(root, 'snapshots/C/files/c.dat', 1000);
@@ -1609,47 +1796,62 @@ runDb('scenario 1: expiring a base with an incremental child reclaims the base-e
       orgId: seed.orgId, configId: seed.configId, deviceId: seed.deviceId,
       snapshotId: 'B', storageIdentity: seed.identity, backupType: 'file', reason: 'expired', retiredAt: new Date(),
     });
-
     return seed;
   });
 
-  await sweepUnreferencedBackupObjects(); // manages its own short per-identity DB contexts internally (§3.7) — no outer wrap needed
+  await sweepUnreferencedBackupObjects();
 
-  const remaining = await listAll(root);
-  // B's manifest and exclusive object are gone; C's manifest, C's own file, and
-  // the SHARED object (still referenced by C's manifest) all survive.
-  expect(remaining.sort()).toEqual(['snapshots/C/files/c.dat', 'snapshots/C/manifest.json'].sort());
+  const afterFirstRun = await listAll(root);
+  expect(afterFirstRun).not.toContain('snapshots/B/files/only-in-b.dat');
+  expect(afterFirstRun).toContain('snapshots/B/files/shared.dat'); // still shared with C — must survive
+  expect(afterFirstRun).toContain('snapshots/C/manifest.json');
+  expect(afterFirstRun).toContain('snapshots/C/files/c.dat');
+  // B's manifest is only removable once nothing non-manifest remains under
+  // B's prefix; shared.dat is LIVE (referenced by C), so it is never a
+  // candidate — B's prefix therefore never reaches "everything non-manifest
+  // gone", and per the v3 manifest-last rule B's manifest is retained too.
+  // (This is intentional and matches spec §5's dedup-sharing row: a bucket
+  // holding a still-referenced object is not incorrectly reclaimed.)
+  expect(afterFirstRun).toContain('snapshots/B/manifest.json');
 
+  // swept_at is NEVER set in the same pass as the deletes (P2 review) — and
+  // in this case it will never be set at all while shared.dat stays live.
   const [retirementRow] = await withSystemDbAccessContext(() =>
-    db.select().from(backupSnapshotRetirements).where(eq(backupSnapshotRetirements.storageIdentity, ctx.identity)),
+    db.select().from(backupSnapshotRetirements).where(eq(backupSnapshotRetirements.storageIdentity, seed.identity)),
   );
-  expect(retirementRow!.sweptAt).not.toBeNull();
+  expect(retirementRow!.sweptAt).toBeNull();
 });
 
-runDb('scenario 2: a pinned (in-progress) prefix is never reclaimed even if retired', async () => {
+runDb('scenario 2: a still-retained (non-expired) row is protected regardless of age — including one referenced by an in-progress base pin', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
 
   await withSystemDbAccessContext(async () => {
     const seed = await seedOrgDeviceConfig(unique, root);
-    await writeAged(root, 'snapshots/PINNED/manifest.json', 1000, JSON.stringify({ files: [] }));
-    await writeAged(root, 'snapshots/PINNED/files/p.dat', 1000);
-    // No backup_snapshots row (row already deleted), but a running job still
-    // has base_snapshot_id = 'PINNED' with a live lease — simulated here by
-    // simply NOT writing a retirement row and keeping the manifest young
-    // enough to fall inside the default orphan-protection window, which is
-    // this wave's actual mechanism for "don't delete something that might
-    // still be needed" (the lease/pin itself is W01's mechanism and is
-    // exercised in W01's own suite, not here).
+    await writeAged(root, 'snapshots/PINNED/manifest.json', 30 * 24 * 60 * 60 * 1000, JSON.stringify({ files: [] })); // 30 days old
+    await writeAged(root, 'snapshots/PINNED/files/p.dat', 30 * 24 * 60 * 60 * 1000);
+    await insertSnapshotRow({ ...seed, snapshotId: 'PINNED' }); // retention has NOT deleted this row
+
+    // Realistic fixture for what W01's pin looks like on disk — an in-progress
+    // dispatch that picked PINNED as its dedupe base. Requires W01's
+    // `backup_jobs.base_snapshot_id`/`publish_lease_expires_at` columns; this
+    // integration suite is authored to run AFTER W01 merges, so they exist.
+    // This test does not exercise the LEASE mechanism itself (expiry,
+    // renewal) — that is W01's own suite; it only proves the sweep leaves a
+    // still-retained row alone regardless of how old its objects are.
+    await db.insert(backupJobs).values({
+      orgId: seed.orgId, configId: seed.configId, deviceId: seed.deviceId, status: 'running',
+      baseSnapshotId: 'PINNED', publishLeaseExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
   });
 
-  await sweepUnreferencedBackupObjects(); // manages its own short per-identity DB contexts internally (§3.7) — no outer wrap needed
+  await sweepUnreferencedBackupObjects();
 
   const remaining = await listAll(root);
   expect(remaining.sort()).toEqual(['snapshots/PINNED/files/p.dat', 'snapshots/PINNED/manifest.json'].sort());
 });
 
-runDb('scenario 3: an orphan manifest past the window with no row and no retirement is reclaimed', async () => {
+runDb('scenario 3: an orphan manifest past ORPHAN_WINDOW with no row and no retirement is reclaimed; younger than the window it is a root', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
   const TEN_DAYS_MS = 10 * 24 * 60 * 60 * 1000;
@@ -1660,75 +1862,95 @@ runDb('scenario 3: an orphan manifest past the window with no row and no retirem
     await writeAged(root, 'snapshots/ABANDONED/files/a.dat', TEN_DAYS_MS);
   });
 
-  await sweepUnreferencedBackupObjects(); // manages its own short per-identity DB contexts internally (§3.7) — no outer wrap needed
-
+  await sweepUnreferencedBackupObjects();
   expect(await listAll(root)).toEqual([]);
 });
 
-runDb('scenario 4: legacy helper on the identity defers reclamation of a retired prefix', async () => {
+runDb('scenario 3b: ORPHAN_WINDOW\'s lease-derived arm (BACKUP_BASE_LEASE_MS + BACKUP_GC_GRACE_MS) protects an orphan the 9-day default alone would already have swept', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
+  const NINE_DAYS_PLUS_MS = 9 * 24 * 60 * 60 * 1000 + 60 * 60 * 1000; // just past the 9-day default arm...
+
+  await withSystemDbAccessContext(async () => {
+    await seedOrgDeviceConfig(unique, root);
+    await writeAged(root, 'snapshots/LEASEWINDOW/manifest.json', NINE_DAYS_PLUS_MS, JSON.stringify({ files: [] }));
+  });
+
+  const prevLease = process.env.BACKUP_BASE_LEASE_MS;
+  process.env.BACKUP_BASE_LEASE_MS = String(9 * 24 * 60 * 60 * 1000); // ...but a widened lease makes the OTHER arm bigger
+  try {
+    await sweepUnreferencedBackupObjects();
+    // Still protected: max(9d default, 9d lease + 48h grace) > this object's age.
+    expect(await listAll(root)).toContain('snapshots/LEASEWINDOW/manifest.json');
+  } finally {
+    if (prevLease === undefined) delete process.env.BACKUP_BASE_LEASE_MS; else process.env.BACKUP_BASE_LEASE_MS = prevLease;
+  }
+});
+
+runDb('scenario 4: a legacy helper on the identity defers to EXACTLY today\'s algorithm — the retired prefix is fully protected, not just its manifest', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
 
   await withSystemDbAccessContext(async () => {
-    const seed = await seedOrgDeviceConfig(unique, root);
-    await db.update(devices).set({ backupVersion: '0.109.0' }).where(eq(devices.id, seed.deviceId));
+    const seed = await seedOrgDeviceConfig(unique, root, '0.109.0'); // pre-server-base helper
     await writeAged(root, 'snapshots/RETIREDLEGACY/manifest.json', 1000, JSON.stringify({ files: [] }));
     await writeAged(root, 'snapshots/RETIREDLEGACY/files/r.dat', 1000);
     await db.insert(backupSnapshotRetirements).values({
       orgId: seed.orgId, configId: seed.configId, deviceId: seed.deviceId,
       snapshotId: 'RETIREDLEGACY', storageIdentity: seed.identity, backupType: 'file', reason: 'expired', retiredAt: new Date(),
     });
-    // A backup_jobs row within the last 30 days on this config pins the
-    // identity's capability check to the legacy device version.
-    await db.insert(backupJobs).values({
-      orgId: seed.orgId, configId: seed.configId, deviceId: seed.deviceId, status: 'completed',
-    });
+    await db.insert(backupJobs).values({ orgId: seed.orgId, configId: seed.configId, deviceId: seed.deviceId, status: 'completed' });
   });
 
-  await sweepUnreferencedBackupObjects(); // manages its own short per-identity DB contexts internally (§3.7) — no outer wrap needed
+  await sweepUnreferencedBackupObjects();
 
   const remaining = await listAll(root);
   expect(remaining.sort()).toEqual(['snapshots/RETIREDLEGACY/files/r.dat', 'snapshots/RETIREDLEGACY/manifest.json'].sort());
 });
 
-runDb('scenario 5: an object still failing to delete blocks only the manifest for that prefix, not other prefixes', async () => {
-  // A local-provider ENOENT-on-delete is treated as success (rm force:true),
-  // so this scenario proves the two-phase gate using a genuinely undeletable
-  // path instead: a directory placed where a file key is expected causes
-  // deleteLocalObjectKeys' rm() to throw (EISDIR is NOT swallowed by force),
-  // landing in failedKeys.
+runDb('scenario 5: an undeletable object blocks only that prefix\'s manifest, not other prefixes', async () => {
+  // Local-provider delete is `rm(path, { force: true })`, which swallows
+  // ENOENT — an empty/missing FILE never fails. A DIRECTORY placed where a
+  // file key is expected also does NOT reach deletion: listLocalObjectsWithLastModified
+  // (backupSnapshotStorage.ts:213-256) RECURSES into directories, so an empty
+  // `blocked.dat/` dir simply contributes zero listed files — it's invisible
+  // to the sweep entirely, never a delete candidate (this was a fixture bug
+  // in the previous draft, per review). Induce a REAL, permanent delete
+  // failure instead: chmod the parent directory read+execute-only (0500)
+  // during the delete phase, so `unlink` inside it gets EACCES; restore
+  // permissions in `afterEach` so the temp dir can still be cleaned up.
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
+  const blockedDir = join(root, 'snapshots/RETIREDBLOCKED/files');
 
   await withSystemDbAccessContext(async () => {
     const seed = await seedOrgDeviceConfig(unique, root);
     await writeAged(root, 'snapshots/RETIREDBLOCKED/manifest.json', 1000, JSON.stringify({ files: [] }));
-    // Make the "file" a directory instead, so rm({force:true}) without
-    // recursive:true throws EISDIR — deleteLocalObjectKeys catches it into
-    // failedKeys rather than deleting it.
-    await mkdir(join(root, 'snapshots/RETIREDBLOCKED/files/blocked.dat'), { recursive: true });
+    await writeAged(root, 'snapshots/RETIREDBLOCKED/files/locked.dat', 1000);
     await db.insert(backupSnapshotRetirements).values({
       orgId: seed.orgId, configId: seed.configId, deviceId: seed.deviceId,
       snapshotId: 'RETIREDBLOCKED', storageIdentity: seed.identity, backupType: 'file', reason: 'expired', retiredAt: new Date(),
     });
   });
 
-  await sweepUnreferencedBackupObjects(); // manages its own short per-identity DB contexts internally (§3.7) — no outer wrap needed
+  await chmod(blockedDir, 0o500); // read+execute only — unlink() inside it fails EACCES
+  try {
+    await sweepUnreferencedBackupObjects();
+  } finally {
+    await chmod(blockedDir, 0o700); // restore before the temp-dir cleanup / next test
+  }
 
   // Manifest survives because the non-manifest phase had a failure.
   expect(await listAll(root)).toContain('snapshots/RETIREDBLOCKED/manifest.json');
 });
 
-runDb('scenario 6: a NULL storage_identity row self-heals when found, and blocks unrooted reclamation on the identity until every NULL row resolves', async () => {
+runDb('scenario 6a: a NULL-identity row whose manifest IS found resolves in this run and its identity reclaims normally (no longer deferred)', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
 
-  const ctx = await withSystemDbAccessContext(async () => {
+  const seed = await withSystemDbAccessContext(async () => {
     const seed = await seedOrgDeviceConfig(unique, root);
 
-    // HEALME: a real, still-published snapshot whose storage_identity was
-    // never backfilled (simulates a row written before W01's backfill ran,
-    // or one whose config was edited after publication per §3.6).
     await writeAged(root, 'snapshots/HEALME/manifest.json', 1000, JSON.stringify({ files: [] }));
     const [job] = await db.insert(backupJobs).values({
       orgId: seed.orgId, configId: seed.configId, deviceId: seed.deviceId, status: 'completed', snapshotId: 'HEALME',
@@ -1738,50 +1960,102 @@ runDb('scenario 6: a NULL storage_identity row self-heals when found, and blocks
       snapshotId: 'HEALME', storageIdentity: null, // deliberately unresolved
     });
 
-    // RETIRED6: a genuinely retired prefix on the SAME identity, which must
-    // stay untouched this run because HEALME hasn't resolved yet.
-    await writeAged(root, 'snapshots/RETIRED6/manifest.json', 1000, JSON.stringify({ files: [] }));
-    await writeAged(root, 'snapshots/RETIRED6/files/r.dat', 1000);
+    await writeAged(root, 'snapshots/RETIRED6A/manifest.json', 1000, JSON.stringify({ files: [] }));
+    await writeAged(root, 'snapshots/RETIRED6A/files/r.dat', 1000);
     await db.insert(backupSnapshotRetirements).values({
       orgId: seed.orgId, configId: seed.configId, deviceId: seed.deviceId,
-      snapshotId: 'RETIRED6', storageIdentity: seed.identity, backupType: 'file', reason: 'expired', retiredAt: new Date(),
+      snapshotId: 'RETIRED6A', storageIdentity: seed.identity, backupType: 'file', reason: 'expired', retiredAt: new Date(),
+    });
+    return seed;
+  });
+
+  // HEALME's manifest IS present in this run's listing -> resolves; with no
+  // unresolved rows left and no legacy helper, this identity is NOT deferred,
+  // so RETIRED6A reclaims its non-manifest objects in the SAME run (its
+  // swept_at confirmation still waits for the NEXT run's fresh listing, per
+  // the two-pass rule — asserted separately in the unit suite, Task 7).
+  await sweepUnreferencedBackupObjects();
+
+  const remaining = await listAll(root);
+  expect(remaining).not.toContain('snapshots/RETIRED6A/files/r.dat');
+  expect(remaining).toContain('snapshots/HEALME/manifest.json');
+
+  const [healedRow] = await withSystemDbAccessContext(() =>
+    db.select().from(backupSnapshots).where(eq(backupSnapshots.snapshotId, 'HEALME')),
+  );
+  expect(healedRow!.storageIdentity).toBe(seed.identity);
+});
+
+runDb('scenario 6b: a NULL-identity row whose manifest is NOT found defers the WHOLE identity to today\'s algorithm — nothing unrooted is deleted', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
+
+  await withSystemDbAccessContext(async () => {
+    const seed = await seedOrgDeviceConfig(unique, root);
+
+    // NEVERWRITTEN's row exists (mapped to this identity's config) but its
+    // object was never actually written to THIS bucket — never appears in
+    // the listing, so it can never resolve.
+    const [job] = await db.insert(backupJobs).values({
+      orgId: seed.orgId, configId: seed.configId, deviceId: seed.deviceId, status: 'completed', snapshotId: 'NEVERWRITTEN',
+    }).returning({ id: backupJobs.id });
+    await db.insert(backupSnapshots).values({
+      orgId: seed.orgId, jobId: job!.id, deviceId: seed.deviceId, configId: seed.configId,
+      snapshotId: 'NEVERWRITTEN', storageIdentity: null,
     });
 
+    await writeAged(root, 'snapshots/RETIRED6B/manifest.json', 1000, JSON.stringify({ files: [] }));
+    await writeAged(root, 'snapshots/RETIRED6B/files/r.dat', 1000);
+    await db.insert(backupSnapshotRetirements).values({
+      orgId: seed.orgId, configId: seed.configId, deviceId: seed.deviceId,
+      snapshotId: 'RETIRED6B', storageIdentity: seed.identity, backupType: 'file', reason: 'expired', retiredAt: new Date(),
+    });
+  });
+
+  await sweepUnreferencedBackupObjects();
+
+  // Deferred (unresolved NULL row) -> today's algorithm -> RETIRED6B's
+  // manifest is marked live (it's listed) and its loose object is only 1s
+  // old, well inside the 48h grace -> nothing deleted at all.
+  const remaining = await listAll(root);
+  expect(remaining.sort()).toEqual(['snapshots/RETIRED6B/files/r.dat', 'snapshots/RETIRED6B/manifest.json'].sort());
+});
+
+runDb('scenario 7: system_image, hyperv, and mssql rows are roots exactly like file rows (no backupType filter)', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
+
+  const seed = await withSystemDbAccessContext(async () => {
+    const seed = await seedOrgDeviceConfig(unique, root);
+    for (const [snapshotId, backupType] of [
+      ['IMG1', 'system_image'], ['HV1', 'hyperv'], ['SQL1', 'mssql'],
+    ] as const) {
+      await writeAged(root, `snapshots/${snapshotId}/manifest.json`, 20 * 24 * 60 * 60 * 1000, JSON.stringify({ files: [] }));
+      await insertSnapshotRow({ ...seed, snapshotId, backupType });
+    }
     return seed;
   });
 
   await sweepUnreferencedBackupObjects();
 
-  // Nothing was deleted: RETIRED6 is deferred because HEALME (mapped to the
-  // same identity via configId) was still unresolved when this run started.
-  const afterFirstRun = await listAll(root);
-  expect(afterFirstRun.sort()).toEqual([
-    'snapshots/HEALME/manifest.json',
-    'snapshots/RETIRED6/files/r.dat',
-    'snapshots/RETIRED6/manifest.json',
+  // All three survive despite being 20 days old — they're rooted DB rows,
+  // never filtered out by backupType (Task 3's fix), and their manifest
+  // fetch must succeed (proving the mark phase doesn't 404 on a non-file
+  // manifest key, since every mode publishes the same snapshots/<id>/manifest.json).
+  const remaining = await listAll(root);
+  expect(remaining.sort()).toEqual([
+    'snapshots/IMG1/manifest.json', 'snapshots/HV1/manifest.json', 'snapshots/SQL1/manifest.json',
   ].sort());
-
-  // But HEALME's row is now healed (its manifest WAS found in this run's
-  // listing), so a SECOND run has no unresolved rows left and reclaims
-  // RETIRED6 normally.
-  const [healedRow] = await withSystemDbAccessContext(() =>
-    db.select().from(backupSnapshots).where(eq(backupSnapshots.snapshotId, 'HEALME')),
-  );
-  expect(healedRow!.storageIdentity).toBe(ctx.identity);
-
-  await sweepUnreferencedBackupObjects();
-  const afterSecondRun = await listAll(root);
-  expect(afterSecondRun).toEqual(['snapshots/HEALME/manifest.json']);
 });
 ```
 
-- [ ] Step 2: Run it, expect FAIL until Task 7 lands: `DATABASE_URL=postgresql://breeze:breeze@localhost:5432/breeze cd apps/api && npx vitest run src/__tests__/integration/backupGcReclamation.integration.test.ts --config vitest.integration.config.ts`
+- [ ] Step 2: Run it, expect FAIL until Task 7 lands: `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/backupGcReclamation.integration.test.ts` (ensure the dedicated test stack is up first — `pnpm test-stack up` at the repo root, or `docker compose -f docker-compose.test.yml up -d` per `setup.ts`'s docstring; do **not** set `DATABASE_URL` on the command line — `setup.ts` resolves it from `.env.test`).
 
 - [ ] Step 3: Implement — no production code changes in this step; this task exists to prove Task 7's implementation against a real database and real filesystem. If any scenario fails, fix `backupRetention.ts` (not the test) unless the test itself has a bug — re-derive from spec §6 rather than loosening an assertion.
 
-- [ ] Step 4: Run, expect PASS: `DATABASE_URL=postgresql://breeze:breeze@localhost:5432/breeze pnpm --filter @breeze/api run test:integration --run src/__tests__/integration/backupGcReclamation.integration.test.ts` (verify the exact script name in `apps/api/package.json` first — grep `"test:integration"`; if absent, run `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/backupGcReclamation.integration.test.ts` directly, which sidesteps any pnpm passthrough).
+- [ ] Step 4: Run, expect PASS: `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/backupGcReclamation.integration.test.ts` (the `pnpm --filter @breeze/api run test:integration -- <path>` form is the CLAUDE.md `--` trap — it runs the WHOLE integration suite, not this one file; the direct `npx vitest run --config ...` form above sidesteps it entirely).
 
-- [ ] Step 5: Commit: `git add apps/api/src/__tests__/integration/backupGcReclamation.integration.test.ts && git commit -m "test(backup-gc): integration coverage for retirement/orphan/pin/legacy-helper/self-heal sweep rules"`
+- [ ] Step 5: Commit: `git add apps/api/src/__tests__/integration/backupGcReclamation.integration.test.ts && git commit -m "test(backup-gc): integration coverage for retirement/orphan/pin/legacy-helper/self-heal/cross-type sweep rules"`
 
 ### Task 10: Docs — storage.mdx and monitoring.mdx no longer say "not reclaimed"
 
@@ -1824,9 +2098,9 @@ If storage is growing faster than expected, check whether large datasets were re
 
 ### Task 11: Wave verification
 
-- [ ] Full targeted unit run: `cd apps/api && npx vitest run src/jobs/backupRetention.test.ts src/jobs/backupWorker.test.ts src/services/backupHelperCapabilities.test.ts src/services/backupAgentContract.test.ts`
+- [ ] Full targeted unit run: `cd apps/api && npx vitest run src/jobs/backupRetention.test.ts src/jobs/backupWorker.test.ts src/jobs/backupWorker.dbcontext.test.ts src/services/backupHelperCapabilities.test.ts src/services/backupAgentContract.test.ts`
 - [ ] Typecheck: `pnpm --filter @breeze/api exec tsc --noEmit` (no dedicated typecheck script in `apps/api/package.json` — confirmed via `grep -n '"test"\|"typecheck"\|"build"' apps/api/package.json`, which shows only `"build": "tsup"` and `"test": "vitest"`).
-- [ ] Integration suite (needs `DATABASE_URL=postgresql://breeze:breeze@localhost:5432/breeze` and a running dev DB): `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/backupGcReclamation.integration.test.ts src/__tests__/integration/staleBackupReaper.integration.test.ts`
+- [ ] Integration suite (needs the dedicated test stack up — `pnpm test-stack up` at the repo root — and resolves `DATABASE_URL`/`DATABASE_URL_APP` from `.env.test` automatically via `setup.ts`; **do not** pass an explicit `DATABASE_URL=...` override, and never point this at port 5432): `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/backupGcReclamation.integration.test.ts src/__tests__/integration/staleBackupReaper.integration.test.ts`
 - [ ] No schema changes in this wave, so `pnpm db:check-drift` is not expected to show new drift — run it anyway as a sanity check since W01 may have just landed: `pnpm db:check-drift`
 - [ ] Full API unit suite once the above are green: `pnpm --filter @breeze/api test --run` (NOT `-- --run`, see the CLAUDE.md `--` trap)
 - [ ] `pnpm lint`
@@ -1836,17 +2110,17 @@ If storage is growing faster than expected, check whether large datasets were re
   - [ ] Confirms `backupAgentContract.test.ts` is green (the 7-day journal literal contract).
   - [ ] Confirms the Redis skip-set uses the shared non-blocking client (`getRedis()`), never a blocking command on it.
   - [ ] Confirms the capability gate and the unresolved-NULL-rows gate each independently suppress ONLY the retired/orphan reclamation, never the pre-existing rooted-grace or manifest-less-prefix rules.
-  - [ ] Confirms no code path calls `sweepUnreferencedBackupObjects()` (or anything it calls) from inside another open `withSystemDbAccessContext`/`withDbAccessContext` — specifically that `backupWorker.ts`'s `cleanup-expired-snapshots` case runs OUTSIDE the blanket `runWithSystemDbAccess` wrap (§3.7).
-  - [ ] Confirms with whoever landed W01 that `processCleanupExpiredSnapshots`'s body and the `backupWorker.ts` switch-statement carve-out (both touched by this plan's Task 8) merged cleanly against W01's own retention-side short-context restructure — see the Open Questions entry on this.
+  - [ ] Confirms no code path calls `sweepUnreferencedBackupObjects()` (or anything it calls) from inside another open `withSystemDbAccessContext`/`withDbAccessContext` — verified two ways: `backupWorker.dbcontext.test.ts`'s new depth assertion (Task 8) proving THIS wave's `processCleanupExpiredSnapshots` edit calls it at depth 0, and confirming W01 actually landed the `cleanup-expired-snapshots` carve-out out of the blanket `runWithSystemDbAccess` wrap (consumed interface, not re-verified by this wave's own tests beyond the depth-0 assertion above).
   - [ ] No production migration in this PR (W01 owns migrations); `db:check-drift` clean.
   - [ ] Docs PR note: storage.mdx/monitoring.mdx no longer claim reclamation is unimplemented.
 
 ## Open questions / contradictions
 
-- **Cross-wave collision on `backupWorker.ts`'s `cleanup-expired-snapshots` handling.** Spec §3.7 assigns W01 the retention-side restructure (short context per candidate row inside `processCleanupExpiredSnapshots`) and this plan (Task 8) the worker-dispatch-side restructure (carving the whole case out of the blanket `runWithSystemDbAccess` wrap in `createBackupWorker`, `~99-118`). Both waves therefore touch `backupWorker.ts` — W01 inside the function body, W02 at its call site — which is likely fine (different regions of the same file) but should be confirmed rather than assumed; whichever branch merges second must rebase onto the other's changes to this file, not silently overwrite them. Flagged in the PR checklist above.
-- **"Prefix found empty" definition when a shared live object remains.** Spec §3.4 says "when the listing later shows the prefix empty, set `swept_at`" but doesn't define emptiness in the presence of a still-live shared object (e.g. a retired snapshot's manifest referenced no exclusive files, but one of its listed objects is still `liveSet`-protected because another rooted snapshot's manifest also references it). This plan's Task 7 implementation treats the prefix as "empty" once every **non-live** object it contained has been deleted (a permanently shared object never counts against emptiness). This is a reasonable reading but not explicitly stated in the spec — flag for confirmation; if wrong, the write-back call site needs the stricter "truly zero objects remain, live or not" definition instead (which would mean a retirement can never be swept while any dedup sharing continues, likely the wrong behavior — but worth an explicit sign-off).
-- **`orphansSwept` counting granularity.** The spec's `BackupGcResult` field list (§3.4/§6) doesn't define whether `orphansSwept` counts prefixes-fully-cleared (this plan's choice, mirroring `retiredSwept`) or every individual old-orphan prefix touched regardless of whether it fully cleared this run. Chose "fully cleared" for symmetry with `retiredSwept`; flag for confirmation.
-- **Two-phase manifest-delete cap interaction.** The v3 manifest-last rule ("no deletable non-manifest key remains — none failed, none capped, none skip-set-excluded") is more conservative than v2's "zero failedKeys": a single capped-out or skip-set-excluded non-manifest key now blocks the manifest for the WHOLE run, even if every other object in the prefix was cleanly deleted. This plan implements that literally (`remainingNonManifest.length === 0` gates the manifest phase). The spec doesn't explicitly discuss whether a capped-out key should behave differently from a skip-set-excluded one for this purpose (e.g. "cap will clear next run regardless" vs. "skip-set exclusion could persist for the full 7-day TTL") — this plan treats them identically per the literal spec wording; flag for confirmation if a different treatment was intended.
+- **`backupWorker.ts` ownership is now cleanly split (resolved).** Per coordinator decision, W01 owns the ENTIRE `cleanup-expired-snapshots` dispatch-switch carve-out; this wave's Task 8 only edits `processCleanupExpiredSnapshots`'s return type/logging, a small hunk inside a function W01 also touches. A rebase may still be needed if both waves land near-simultaneously, but the overlap is now small and well-scoped rather than a full dispatch-switch collision — no longer flagging this as unresolved, just noting the small-overlap merge risk in the PR checklist.
+- **"Prefix found empty"/`swept_at` timing (resolved by review, restated for traceability).** The corrected design (Task 7) never infers `swept_at` from the same run's own delete bookkeeping — it is set only when a FRESH listing shows no group at all for that `snapshotId`, which naturally handles both "already gone" (same run, zero storage calls needed) and "gone after this run's real deletes" (confirmed on the NEXT run). A snapshot still holding a live, shared object simply never reaches this state, indefinitely — which is correct, not a bug: the object is legitimately still needed elsewhere.
+- **`orphansSwept` is an explicitly accepted best-effort approximation (resolved by review — documented, not fixed).** See the "Two accepted-and-stated approximations" callout at the top of Task 7. Unlike `retiredSwept` (durable, DB-tracked, listing-confirmed), an orphan has no row to protect from double-counting, so this counter is observability-only.
+- **Redis skip-set TTL is a per-identity-SET approximation, not per-member (resolved by review — documented, not fixed).** See the same callout and the updated `recordGcFailedKeys` doc comment in Task 6/7. Accepted because it only ever makes the sweep MORE conservative.
+- **Deferred-identity double-counting in `deferredIdentities`.** When BOTH the legacy-helper gate and the unresolved-NULL-rows gate fire for the same identity in the same run, Task 7's caller increments `deferredIdentities` only once (`if (!state.legacyHelper.deferred) deferredIdentities++` guards the second increment) — but it still logs BOTH `reclamation deferred: legacy helper ...` and `identity deferred: N unresolved rows` as separate lines. This is a deliberate choice (both facts are independently true and operationally useful to know) but means the deferred-identity COUNT and the deferred-identity LOG LINE COUNT can differ for a doubly-deferred identity — flag for confirmation if a stricter 1:1 correspondence between the metric and the logs was expected.
 - **W01 interface drift risk.** This plan was written against the *assumed* W01 v3 deliverables listed under "Depends on" above, since W01 has not landed in this worktree at plan-authoring time. Every exact name (`resolveMsKnob`, `resolveBackupBaseLeaseMs`, `resolveBackupOrphanManifestMaxAgeMs`, `resolveBackupPublishMarginMs`, `backupSnapshotRetirements` column names, `backup_jobs.storage_identity`/`backup_snapshots.storage_identity` nullability and exact naming) **must be re-verified against W01's actual merged code before Task 1 starts** — if any signature differs, this plan's Task 1/6/7/9 code blocks need matching edits before they'll compile.
-- **Migration backfill predicate is untested by this wave.** Spec §3.6 says the migration backfills `backup_snapshots.storage_identity` "only when `backup_configs.updated_at <= backup_snapshots.timestamp`" — that's W01's migration, not this wave's code, but this wave's self-heal logic (Task 7) is the safety net for every row the backfill predicate deliberately leaves NULL. This plan's integration scenario 6 proves the self-heal mechanism works in isolation (a NULL row inserted directly) but does NOT exercise the actual migration/backfill predicate end-to-end — that boundary is W01's to test, flagged here only so it isn't assumed covered by this wave's suite.
+- **Migration backfill predicate is untested by this wave.** Spec §3.6 says the migration backfills `backup_snapshots.storage_identity` "only when `backup_configs.updated_at <= backup_snapshots.timestamp`" — that's W01's migration, not this wave's code, but this wave's self-heal logic (Task 7) is the safety net for every row the backfill predicate deliberately leaves NULL. This plan's integration scenarios 6a/6b prove the self-heal mechanism works in isolation (a NULL row inserted directly) but do NOT exercise the actual migration/backfill predicate end-to-end — that boundary is W01's to test, flagged here only so it isn't assumed covered by this wave's suite.
 - **`backupRetention.test.ts` exact line numbers and `selectQueue` push counts will drift as Tasks 1-7 compound.** The Ground Truth section's line numbers were re-verified against the current (pre-Task-1) file; each subsequent task's edits shift later line numbers, and Task 7 changes the per-identity query count/order from what Tasks 3/5/6 assumed (see Task 7's header note). Re-grep before each task and re-run the full suite after Task 7 to catch any stale `selectQueue` sequence, rather than trusting a fixed count once Tasks 1-7 start compounding edits within one PR branch.
