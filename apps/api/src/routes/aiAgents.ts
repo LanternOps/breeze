@@ -33,7 +33,7 @@ import {
   actionIntents, aiAgentGraduation, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
   reportRuns, reports, ticketDrafts, type AiAgentRow,
 } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { policyDecideEnabled } from '../config/env';
 import {
   canManagePartnerWidePolicies,
@@ -115,6 +115,29 @@ const scopes = requireScope('organization', 'partner', 'system');
 // audit row, so the route must record the human actor who initiated it.
 
 const UUID = z.string().guid();
+
+/**
+ * Site-axis visibility for historical run data. Organization RLS does not
+ * enforce sites, so a restricted caller sees a run only while its device
+ * still exists in the run's organization and is currently assigned to one of
+ * the caller's allowed sites. Null/deleted/device-less/moved-out runs fail
+ * closed. Callers must apply this in SQL before DISTINCT, LIMIT, or cursors.
+ */
+export function runSiteScopeCondition(
+  auth: Pick<AuthContext, 'allowedSiteIds'>,
+): SQL | undefined {
+  const allowed = auth.allowedSiteIds;
+  if (allowed === undefined) return undefined;
+  if (allowed.length === 0) return sql`false`;
+  const allowedSql = sql.join(allowed.map((siteId) => sql`${siteId}`), sql`, `);
+  return sql`EXISTS (
+    SELECT 1
+    FROM "devices" AS "run_scope_device"
+    WHERE "run_scope_device"."id" = ${aiAgentRuns.deviceId}
+      AND "run_scope_device"."org_id" = ${aiAgentRuns.orgId}
+      AND "run_scope_device"."site_id" IN (${allowedSql})
+  )`;
+}
 
 /**
  * A path id that is not a uuid must never reach a query. Postgres raises
@@ -310,7 +333,11 @@ async function loadLastRuns(
       queuedAt: aiAgentRuns.queuedAt,
     })
     .from(aiAgentRuns)
-    .where(and(inArray(aiAgentRuns.agentId, agentIds), auth.orgCondition(aiAgentRuns.orgId)))
+    .where(and(
+      inArray(aiAgentRuns.agentId, agentIds),
+      auth.orgCondition(aiAgentRuns.orgId),
+      runSiteScopeCondition(auth),
+    ))
     .orderBy(aiAgentRuns.agentId, desc(aiAgentRuns.queuedAt));
   return new Map(
     rows.map((row) => [
@@ -338,7 +365,9 @@ type LastRunProjection = {
 };
 
 /** Only the piece of the auth context `loadLastRuns` needs. */
-type AuthContextForRuns = { orgCondition: (column: typeof aiAgentRuns.orgId) => SQL | undefined };
+type AuthContextForRuns = Pick<AuthContext, 'allowedSiteIds'> & {
+  orgCondition: (column: typeof aiAgentRuns.orgId) => SQL | undefined;
+};
 
 aiAgentsRoutes.get(
   '/',
@@ -1107,7 +1136,10 @@ aiAgentsRoutes.get(
       return c.json({ error: 'Access to this organization denied' }, 403);
     }
 
-    const conditions: (SQL | undefined)[] = [auth.orgCondition(aiAgentRuns.orgId)];
+    const conditions: (SQL | undefined)[] = [
+      auth.orgCondition(aiAgentRuns.orgId),
+      runSiteScopeCondition(auth),
+    ];
     if (agentId) conditions.push(eq(aiAgentRuns.agentId, agentId));
     if (status) conditions.push(eq(aiAgentRuns.status, status));
     if (orgId) conditions.push(eq(aiAgentRuns.orgId, orgId));
@@ -1249,7 +1281,11 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     // 404ing (see buildRunTrace's `agent: RunTraceAgentInput | null` param).
     .leftJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
     .leftJoin(devices, eq(aiAgentRuns.deviceId, devices.id))
-    .where(and(eq(aiAgentRuns.id, runId), auth.orgCondition(aiAgentRuns.orgId)))
+    .where(and(
+      eq(aiAgentRuns.id, runId),
+      auth.orgCondition(aiAgentRuns.orgId),
+      runSiteScopeCondition(auth),
+    ))
     .limit(1);
   if (!run) return c.json({ error: 'Run not found' }, 404);
 
@@ -1684,7 +1720,11 @@ aiAgentsRoutes.get(
       })
       .from(aiAgentRuns)
       .leftJoin(organizations, eq(aiAgentRuns.orgId, organizations.id))
-      .where(and(eq(aiAgentRuns.agentId, row.id), auth.orgCondition(aiAgentRuns.orgId)))
+      .where(and(
+        eq(aiAgentRuns.agentId, row.id),
+        auth.orgCondition(aiAgentRuns.orgId),
+        runSiteScopeCondition(auth),
+      ))
       .orderBy(desc(aiAgentRuns.queuedAt))
       .limit(limit);
     // agentName comes from the already-loaded, RLS-visible `row` (this route
