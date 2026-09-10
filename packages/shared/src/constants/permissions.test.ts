@@ -13,3 +13,12 @@ describe('agent rollback grant', () => {
     expect(PERMISSION_GRANTS.AGENT_ROLLBACK_CREATE).toEqual({ resource: 'agent_rollback', action: 'create' });
   });
 });
+
+describe('Workspace extension grants', () => {
+  it('keeps read, configuration, credentials, and execution as distinct capabilities', () => {
+    expect(PERMISSION_GRANTS.WORKSPACE_READ).toEqual({ resource: 'workspace', action: 'read' });
+    expect(PERMISSION_GRANTS.WORKSPACE_WRITE).toEqual({ resource: 'workspace', action: 'write' });
+    expect(PERMISSION_GRANTS.WORKSPACE_CREDENTIALS).toEqual({ resource: 'workspace', action: 'credentials' });
+    expect(PERMISSION_GRANTS.WORKSPACE_EXECUTE).toEqual({ resource: 'workspace', action: 'execute' });
+  });
+});

@@ -134,6 +134,15 @@ describe('agent rollback RBAC', () => {
   });
 });
 
+describe('billing-role device isolation', () => {
+  it.each(['Partner Billing', 'Partner Billing Viewer'])('%s does not grant devices:read', (roleName) => {
+    const role = SYSTEM_ROLES.find((candidate) => candidate.name === roleName);
+
+    expect(role).toBeDefined();
+    expect(role?.permissions).not.toContain('devices:read');
+  });
+});
+
 describe('ticket mailbox permissions', () => {
   it('registers and seeds the ticket mailbox permissions', () => {
     expect(PERMISSION_GRANTS.TICKET_MAILBOX_READ).toEqual({ resource: 'ticket_mailbox', action: 'read' });
@@ -381,5 +390,63 @@ describe('system role MFA posture (RMM-QA-164)', () => {
 
   it('forces MFA for Partner Admin and for no other system role (D9: Org Admin stays MSP opt-in)', () => {
     expect(SYSTEM_ROLES.filter((role) => role.forceMfa).map((role) => role.name)).toEqual(['Partner Admin']);
+  });
+});
+
+describe('Workspace extension permissions', () => {
+  const workspaceKeys = ['workspace:read', 'workspace:write', 'workspace:credentials', 'workspace:execute'];
+
+  it('seeds every closed Workspace capability so custom roles can receive it', () => {
+    const seeded = new Set(DEFAULT_PERMISSIONS.map((permission) =>
+      `${permission.resource}:${permission.action}`));
+    for (const permission of workspaceKeys) expect(seeded.has(permission)).toBe(true);
+  });
+
+  it('does not grandfather accidental Workspace authority to non-admin roles', () => {
+    for (const role of SYSTEM_ROLES) {
+      if (role.name === 'Partner Admin' || role.name === 'Org Admin') continue;
+      for (const permission of workspaceKeys) {
+        expect(role.permissions, `${role.name} received ${permission}`).not.toContain(permission);
+      }
+    }
+    expect(SYSTEM_ROLES.find((role) => role.name === 'Partner Admin')?.permissions)
+      .toContain('*:*');
+  });
+});
+
+describe('Workspace and connected-app permission defaults on upgrade (fail-closed except Org Admin)', () => {
+  // Org Admin is the existing full-access-within-organization role. When the
+  // workspace:* and connected_apps:* permissions were introduced, they were
+  // granted to no built-in role except Partner Admin (via *:*) — silently
+  // dropping Workspace and connected-app access for every pre-existing Org
+  // Admin on upgrade. Org Admin must carry every new key explicitly; every
+  // other non-wildcard role stays fail-closed.
+  const newKeys = [
+    'workspace:read', 'workspace:write', 'workspace:credentials', 'workspace:execute',
+    'connected_apps:read', 'connected_apps:manage',
+  ];
+  const byName = (name: string) => SYSTEM_ROLES.find((role) => role.name === name);
+
+  it('every new key is seeded in DEFAULT_PERMISSIONS', () => {
+    const seeded = new Set(DEFAULT_PERMISSIONS.map((permission) =>
+      `${permission.resource}:${permission.action}`));
+    for (const key of newKeys) expect(seeded.has(key)).toBe(true);
+  });
+
+  it('grants Org Admin every new workspace:* and connected_apps:* permission', () => {
+    const orgAdminPermissions = byName('Org Admin')?.permissions ?? [];
+    for (const key of newKeys) {
+      expect(orgAdminPermissions, `Org Admin missing ${key}`).toContain(key);
+    }
+  });
+
+  it('does not grant the new permissions to Org Technician, Org Viewer, or partner non-admin roles', () => {
+    const roleNames = ['Org Technician', 'Org Viewer', 'Partner Technician', 'Partner Viewer', 'Partner Billing', 'Partner Billing Viewer'];
+    for (const roleName of roleNames) {
+      const permissions = byName(roleName)?.permissions ?? [];
+      for (const key of newKeys) {
+        expect(permissions, `${roleName} unexpectedly received ${key}`).not.toContain(key);
+      }
+    }
   });
 });

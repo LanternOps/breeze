@@ -213,7 +213,7 @@ The Helper can capture the user's screen and send it to the AI for analysis. Thi
 
 1. The AI invokes the `take_screenshot` tool during a chat conversation.
 
-2. The Helper captures the screen using platform-native APIs (DXGI on Windows, Core Graphics on macOS, X11/Wayland on Linux). These APIs are only available in the user session, not in Session 0 -- this is why the Helper exists.
+2. The Helper captures the screen using platform-native APIs (DXGI on Windows, Core Graphics on macOS, X11 on Linux -- Wayland-only sessions are not supported yet). These APIs are only available in the user session, not in Session 0 -- this is why the Helper exists.
 
 3. The screenshot is uploaded to the API via `POST /helper/screenshots` as a base64-encoded image.
 
@@ -519,7 +519,7 @@ The Helper enforces a rate limit of 30 messages per 60 seconds per device. Wait 
 The organization's AI budget may be exhausted or the budget service is temporarily unavailable. Contact your IT administrator to check the org AI budget in **Settings > AI Configuration**.
 
 **Screenshot capture fails.**
-Screen capture requires display access. On Windows, DXGI requires the Helper to be running in the user's desktop session (not Session 0). On Linux, the Helper needs access to the X11 or Wayland display. Check that `CanCapture` is `true` in the capabilities message logged at startup.
+Screen capture requires display access. On Windows, DXGI requires the Helper to be running in the user's desktop session (not Session 0). On Linux, the Helper needs access to an X11 display; Wayland-only sessions cannot be captured yet -- the device page shows **Wayland Unsupported**, or, where XWayland is running, capture attaches to it and shows only X11 application windows (see [Supported Linux Distributions](/agents/installation/#supported-linux-distributions)). Check that `CanCapture` is `true` in the capabilities message logged at startup.
 
 **Computer control actions have no effect.**
 Input injection requires the Helper to have appropriate permissions. On Windows, the Helper runs with a SYSTEM token that can `OpenInputDesktop(GENERIC_ALL)` for UAC and lock screen access. On Linux, `XTest` extension must be available. On macOS, the Helper needs Accessibility permissions in System Preferences > Privacy & Security > Accessibility.
