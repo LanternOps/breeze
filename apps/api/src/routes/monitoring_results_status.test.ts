@@ -21,6 +21,7 @@ vi.mock('../db/schema', () => ({
   },
   deviceSoftware: {},
   deviceChangeLog: {
+    deviceId: 'deviceChangeLog.deviceId',
     orgId: 'deviceChangeLog.orgId',
     changeType: 'deviceChangeLog.changeType',
     subject: 'deviceChangeLog.subject',
@@ -128,6 +129,7 @@ vi.mock('../services/permissions', () => ({
 
 import { monitoringRoutes } from './monitoring';
 import { db } from '../db';
+import { devices } from '../db/schema';
 
 const ORG_ID = 'org-111';
 const ASSET_ID = '11111111-1111-1111-1111-111111111111';
@@ -524,6 +526,53 @@ describe('monitoring routes', () => {
   // GET /known-services
   // ============================================
   describe('GET /monitoring/known-services', () => {
+    it('joins both name sources to current devices inside the selected-site ceiling', async () => {
+      const changeWhere = vi.fn().mockReturnValue({
+        groupBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ subject: 'allowed-service' }]),
+        }),
+      });
+      const changeJoin = vi.fn().mockReturnValue({ where: changeWhere });
+      const checkWhere = vi.fn().mockReturnValue({
+        groupBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ name: 'allowed-process', watchType: 'process' }]),
+        }),
+      });
+      const checkJoin = vi.fn().mockReturnValue({ where: checkWhere });
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ innerJoin: changeJoin }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ innerJoin: checkJoin }),
+        } as any);
+
+      const res = await app.request('/monitoring/known-services', {
+        headers: { Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.map((row: { name: string }) => row.name)).toEqual([
+        'allowed-process',
+        'allowed-service',
+      ]);
+      expect(changeJoin).toHaveBeenCalledWith(devices, expect.anything());
+      expect(checkJoin).toHaveBeenCalledWith(devices, expect.anything());
+      expect(JSON.stringify(changeWhere.mock.calls)).toContain(SITE_ALLOWED);
+      expect(JSON.stringify(checkWhere.mock.calls)).toContain(SITE_ALLOWED);
+    });
+
+    it('returns an empty autocomplete without database access for an empty site ceiling', async () => {
+      const res = await app.request('/monitoring/known-services', {
+        headers: { Authorization: 'Bearer token', 'x-restrict-site': ',' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ data: [] });
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
     it('returns deduplicated service names', async () => {
       // Change log query
       vi.mocked(db.select).mockReturnValueOnce({

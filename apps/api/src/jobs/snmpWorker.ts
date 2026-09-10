@@ -7,7 +7,7 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
-import { snmpDevices, snmpMetrics, snmpTemplates, devices } from '../db/schema';
+import { discoveredAssets, snmpDevices, snmpMetrics, snmpTemplates, devices } from '../db/schema';
 import { eq, and, or, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
@@ -219,7 +219,9 @@ type PollDispatchInputs =
   | { status: 'device-missing' }
   | { status: 'org-mismatch'; payloadOrgId: string; deviceOrgId: string }
   | { status: 'no-oids' }
-  | { status: 'no-agent'; orgId: string }
+  | { status: 'asset-missing'; assetId: string; orgId: string }
+  | { status: 'asset-site-missing'; assetId: string; orgId: string }
+  | { status: 'no-agent'; orgId: string; siteId: string | null }
   | {
       status: 'ok';
       device: typeof snmpDevices.$inferSelect;
@@ -291,29 +293,59 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
     return { status: 'no-oids' };
   }
 
-  // Find an online agent for this org — `device.orgId`, the live row, never the
-  // job payload (#3226).
+  // Asset-bound SNMP polls are a site-scoped operation. Resolve and lock the
+  // CURRENT asset row before selecting an executor so a concurrent site move
+  // cannot split the authorization read from the agent-selection read. The
+  // lock is released with this short phase-1 DB context, before connectivity,
+  // credential decryption, or WebSocket dispatch.
+  //
+  // Legacy SNMP rows without an assetId predate discovered-asset binding and
+  // retain their established org-wide executor selection. New route-created
+  // rows are always asset-bound.
+  let executionSiteId: string | null = null;
+  if (device.assetId) {
+    const assetRows = await db
+      .select({ siteId: discoveredAssets.siteId })
+      .from(discoveredAssets)
+      .where(and(
+        eq(discoveredAssets.id, device.assetId),
+        eq(discoveredAssets.orgId, device.orgId),
+      ))
+      .for('update');
+    const asset = assetRows[0];
+    if (!asset) {
+      return { status: 'asset-missing', assetId: device.assetId, orgId: device.orgId };
+    }
+    if (typeof asset.siteId !== 'string') {
+      return { status: 'asset-site-missing', assetId: device.assetId, orgId: device.orgId };
+    }
+    executionSiteId = asset.siteId;
+  }
+
+  // Find an online agent for this org — and, for asset-bound rows, the current
+  // asset site. `device.orgId` is the live row, never the job payload (#3226).
   //
   // Quick Support exclusion: ephemeral devices (`devices.isEphemeral`) live in
   // the hidden per-partner 'quick_support' org and are a stranger's personal
   // machine borrowed for one ~20-minute session. That org stays inside
   // technicians' accessibleOrgIds for RLS reasons, so a bare "any online device
   // in this org" pick could conscript a home PC into polling SNMP targets.
+  const agentConditions = [
+    eq(devices.orgId, device.orgId),
+    eq(devices.isEphemeral, false),
+    eq(devices.status, 'online'),
+  ];
+  if (executionSiteId) agentConditions.push(eq(devices.siteId, executionSiteId));
+
   const [onlineAgent] = await db
     .select({ agentId: devices.agentId })
     .from(devices)
-    .where(
-      and(
-        eq(devices.orgId, device.orgId),
-        eq(devices.isEphemeral, false),
-        eq(devices.status, 'online')
-      )
-    )
+    .where(and(...agentConditions))
     .limit(1);
 
   const agentId = onlineAgent?.agentId ?? null;
   if (!agentId) {
-    return { status: 'no-agent', orgId: device.orgId };
+    return { status: 'no-agent', orgId: device.orgId, siteId: executionSiteId };
   }
 
   return { status: 'ok', device, oids, agentId };
@@ -385,8 +417,16 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
     case 'no-oids':
       console.warn(`[SnmpWorker] No OIDs configured for device ${data.deviceId}`);
       return { dispatched: false, agentId: null };
+    case 'asset-missing':
+      console.warn(`[SnmpWorker] Asset ${inputs.assetId} not found in org ${inputs.orgId}; refusing asset-bound SNMP poll`);
+      return { dispatched: false, agentId: null };
+    case 'asset-site-missing':
+      console.warn(`[SnmpWorker] Asset ${inputs.assetId} has no site in org ${inputs.orgId}; refusing asset-bound SNMP poll`);
+      return { dispatched: false, agentId: null };
     case 'no-agent':
-      console.warn(`[SnmpWorker] No online agent for org ${inputs.orgId}`);
+      console.warn(inputs.siteId
+        ? `[SnmpWorker] No online agent for org ${inputs.orgId} in site ${inputs.siteId}`
+        : `[SnmpWorker] No online agent for org ${inputs.orgId}`);
       return { dispatched: false, agentId: null };
   }
 

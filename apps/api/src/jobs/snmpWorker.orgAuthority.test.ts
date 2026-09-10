@@ -86,6 +86,7 @@ vi.mock('../db/schema', () => ({
   snmpDevices: {
     id: 'snmpDevices.id',
     orgId: 'snmpDevices.orgId',
+    assetId: 'snmpDevices.assetId',
     isActive: 'snmpDevices.isActive',
     lastPolled: 'snmpDevices.lastPolled',
     lastPollAttemptedAt: 'snmpDevices.lastPollAttemptedAt',
@@ -103,8 +104,14 @@ vi.mock('../db/schema', () => ({
   devices: {
     agentId: 'devices.agentId',
     orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
     isEphemeral: 'devices.isEphemeral',
     status: 'devices.status',
+  },
+  discoveredAssets: {
+    id: 'discoveredAssets.id',
+    orgId: 'discoveredAssets.orgId',
+    siteId: 'discoveredAssets.siteId',
   },
 }));
 
@@ -132,12 +139,16 @@ const { processPollDevice } = __testables;
 const LIVE_ORG = '11111111-1111-1111-1111-111111111111';
 const STALE_ORG = '22222222-2222-2222-2222-222222222222';
 const DEVICE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+const ASSET_ID = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+const CURRENT_SITE = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+const PREVIOUS_SITE = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
 
 /** The `snmp_devices` row as the dispatch path sees it, with v2c + v3 secrets. */
-function deviceRow(orgId: string) {
+function deviceRow(orgId: string, assetId: string | null = null) {
   return {
     id: DEVICE_ID,
     orgId,
+    assetId,
     templateId: 'template-1',
     ipAddress: '10.0.0.1',
     port: 161,
@@ -157,6 +168,17 @@ function selectChain(rows: unknown[]) {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue(rows),
+      }),
+    }),
+  };
+}
+
+/** A `.select().from().where().for('update')` chain resolving to `rows`. */
+function selectForUpdateChain(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        for: vi.fn().mockResolvedValue(rows),
       }),
     }),
   };
@@ -193,6 +215,18 @@ function wireDispatchSelects(deviceOrgId: string, agentId: string) {
     .mockReturnValueOnce(selectChain([deviceRow(deviceOrgId)]) as never)
     .mockReturnValueOnce(selectChain([{ oids: [{ oid: '1.3.6.1.2.1.1.3.0' }] }]) as never)
     .mockReturnValueOnce(selectChain([{ agentId }]) as never);
+}
+
+/** Wire an asset-bound dispatch: SNMP row → template → current asset → site agent. */
+function wireAssetDispatch(
+  assetRows: unknown[],
+  agentRows: unknown[] = [{ agentId: 'agent-in-current-site' }],
+) {
+  mockDb.select
+    .mockReturnValueOnce(selectChain([deviceRow(LIVE_ORG, ASSET_ID)]) as never)
+    .mockReturnValueOnce(selectChain([{ oids: [{ oid: '1.3.6.1.2.1.1.3.0' }] }]) as never)
+    .mockReturnValueOnce(selectForUpdateChain(assetRows) as never)
+    .mockReturnValueOnce(selectChain(agentRows) as never);
 }
 
 describe('snmpWorker org authority (#3226)', () => {
@@ -345,6 +379,74 @@ describe('snmpWorker org authority (#3226)', () => {
       ];
       expect(agentId).toBe('agent-live');
       expect(command.type).toBe('snmp_poll');
+    });
+  });
+
+  describe('asset-bound polls use current site authority', () => {
+    it('selects the polling agent from the asset current site after a move before decrypting or dispatching', async () => {
+      wireAssetDispatch([{ siteId: CURRENT_SITE }]);
+
+      const result = await processPollDevice({
+        type: 'poll-device',
+        deviceId: DEVICE_ID,
+        orgId: LIVE_ORG,
+      });
+
+      expect(result).toEqual({ dispatched: true, agentId: 'agent-in-current-site' });
+      expect(eqCalls).toContainEqual(['discoveredAssets.id', ASSET_ID]);
+      expect(eqCalls).toContainEqual(['discoveredAssets.orgId', LIVE_ORG]);
+      expect(eqCalls).toContainEqual(['devices.siteId', CURRENT_SITE]);
+      expect(eqCalls).not.toContainEqual(['devices.siteId', PREVIOUS_SITE]);
+      expect(decryptMock).toHaveBeenCalled();
+      expect(agentRelayMock.dispatchCommandToAgent).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails closed when the asset was removed before dispatch', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      wireAssetDispatch([]);
+
+      const result = await processPollDevice({ type: 'poll-device', deviceId: DEVICE_ID, orgId: LIVE_ORG });
+
+      expect(result).toEqual({ dispatched: false, agentId: null });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Asset ${ASSET_ID} not found`));
+      expect(decryptMock).not.toHaveBeenCalled();
+      expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('fails closed when the current asset has no site', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      wireAssetDispatch([{ siteId: null }]);
+
+      const result = await processPollDevice({ type: 'poll-device', deviceId: DEVICE_ID, orgId: LIVE_ORG });
+
+      expect(result).toEqual({ dispatched: false, agentId: null });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Asset ${ASSET_ID} has no site`));
+      expect(decryptMock).not.toHaveBeenCalled();
+      expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('does not fall back across sites when no online agent exists in the current site', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      wireAssetDispatch([{ siteId: CURRENT_SITE }], []);
+
+      const result = await processPollDevice({ type: 'poll-device', deviceId: DEVICE_ID, orgId: LIVE_ORG });
+
+      expect(result).toEqual({ dispatched: false, agentId: null });
+      expect(eqCalls).toContainEqual(['devices.siteId', CURRENT_SITE]);
+      expect(decryptMock).not.toHaveBeenCalled();
+      expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('preserves established org-wide selection only for legacy non-asset rows', async () => {
+      wireDispatchSelects(LIVE_ORG, 'legacy-org-agent');
+
+      const result = await processPollDevice({ type: 'poll-device', deviceId: DEVICE_ID, orgId: LIVE_ORG });
+
+      expect(result).toEqual({ dispatched: true, agentId: 'legacy-org-agent' });
+      expect(eqCalls).not.toContainEqual(['devices.siteId', CURRENT_SITE]);
     });
   });
 

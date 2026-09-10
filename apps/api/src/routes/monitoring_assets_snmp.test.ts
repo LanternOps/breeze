@@ -94,6 +94,7 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
+    const siteHeader = c.req.header('x-restrict-site');
     c.set('auth', {
       user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
@@ -103,6 +104,11 @@ vi.mock('../middleware/auth', () => ({
       orgCondition: () => undefined,
       canAccessOrg: (id: string) => id === 'org-111',
     });
+    if (siteHeader) {
+      c.set('permissions', {
+        allowedSiteIds: siteHeader === '__empty__' ? [] : siteHeader.split(','),
+      });
+    }
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
@@ -126,6 +132,8 @@ const ORG_ID = 'org-111';
 const ASSET_ID = '11111111-1111-1111-1111-111111111111';
 const DEVICE_ID = '22222222-2222-2222-2222-222222222222';
 const SNMP_DEVICE_ID = '33333333-3333-3333-3333-333333333333';
+const SITE_ALLOWED = 'aaaaaaaa-0000-0000-0000-000000000001';
+const SITE_HIDDEN = 'bbbbbbbb-0000-0000-0000-000000000002';
 
 
 describe('monitoring routes', () => {
@@ -133,6 +141,10 @@ describe('monitoring routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    vi.mocked(db.update).mockReset();
+    vi.mocked(db.delete).mockReset();
     app = new Hono();
     app.route('/monitoring', monitoringRoutes);
   });
@@ -141,18 +153,73 @@ describe('monitoring routes', () => {
   // PUT /assets/:id/snmp
   // ============================================
   describe('PUT /monitoring/assets/:id/snmp', () => {
+    it('denies a hidden-site asset before credential or monitor writes', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockReturnValue({
+              for: vi.fn().mockResolvedValue([{
+                id: ASSET_ID,
+                orgId: ORG_ID,
+                siteId: SITE_HIDDEN,
+                hostname: 'hidden-switch',
+                ipAddress: '10.0.0.2',
+              }]),
+            }),
+          }),
+        }),
+      } as any).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
+        }),
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{
+          id: SNMP_DEVICE_ID,
+          snmpVersion: 'v2c',
+          port: 161,
+          community: 'enc:v1:mock',
+          username: null,
+          templateId: null,
+          pollingInterval: 300,
+          isActive: true,
+          lastPolled: null,
+          lastStatus: null,
+        }]) }),
+      } as any);
+
+      const res = await app.request(`/monitoring/assets/${ASSET_ID}/snmp`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token',
+          'x-restrict-site': SITE_ALLOWED,
+        },
+        body: JSON.stringify({ snmpVersion: 'v2c', community: 'secret' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     it('stores encrypted SNMP community strings for an asset', async () => {
       // Asset lookup
       vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{
-                id: ASSET_ID,
-                orgId: ORG_ID,
-                hostname: 'switch-01',
-                ipAddress: '10.0.0.1',
-              }]),
+              limit: vi.fn().mockReturnValue({
+                for: vi.fn().mockResolvedValue([{
+                  id: ASSET_ID,
+                  orgId: ORG_ID,
+                  siteId: SITE_ALLOWED,
+                  hostname: 'switch-01',
+                  ipAddress: '10.0.0.1',
+                }]),
+              }),
             }),
           }),
         } as any)
@@ -187,7 +254,11 @@ describe('monitoring routes', () => {
 
       const res = await app.request(`/monitoring/assets/${ASSET_ID}/snmp`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token',
+          'x-restrict-site': SITE_ALLOWED,
+        },
         body: JSON.stringify({ snmpVersion: 'v2c', community: 'public' }),
       });
 
@@ -338,6 +409,64 @@ describe('monitoring routes', () => {
   // PATCH /assets/:id/snmp
   // ============================================
   describe('PATCH /monitoring/assets/:id/snmp', () => {
+    it('denies an empty site ceiling before reading or changing SNMP configuration', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockReturnValue({
+              for: vi.fn().mockResolvedValue([{
+                id: ASSET_ID,
+                orgId: ORG_ID,
+                siteId: SITE_HIDDEN,
+              }]),
+            }),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/monitoring/assets/${ASSET_ID}/snmp`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token',
+          'x-restrict-site': '__empty__',
+        },
+        body: JSON.stringify({ isActive: false }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('denies a null-site asset to a site-restricted caller before SNMP reads', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockReturnValue({
+              for: vi.fn().mockResolvedValue([{
+                id: ASSET_ID,
+                orgId: ORG_ID,
+                siteId: null,
+              }]),
+            }),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/monitoring/assets/${ASSET_ID}/snmp`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token',
+          'x-restrict-site': SITE_ALLOWED,
+        },
+        body: JSON.stringify({ isActive: false }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     it('updates existing SNMP config', async () => {
       // Asset lookup
       vi.mocked(db.select)
@@ -516,6 +645,30 @@ describe('monitoring routes', () => {
   // DELETE /assets/:id
   // ============================================
   describe('DELETE /monitoring/assets/:id', () => {
+    it('denies a hidden-site asset before disabling SNMP or network monitors', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockReturnValue({
+              for: vi.fn().mockResolvedValue([{
+                id: ASSET_ID,
+                orgId: ORG_ID,
+                siteId: SITE_HIDDEN,
+              }]),
+            }),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/monitoring/assets/${ASSET_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     it('disables all monitoring for an asset', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
