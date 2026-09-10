@@ -255,9 +255,12 @@ All knobs are resolved **per run** with the existing production-floor/warn patte
   an unpublished prefix, and a published one is a root. (Codex F5.)
 - On resume, if `snapshots/<id>/manifest.json` already exists the run is treated as already
   published: no re-upload, no overwrite; report the existing manifest as the result.
-- `DeleteSnapshot`/`DeleteSnapshotContext` remain only for the explicit `backup_cleanup`
-  command path if one exists; otherwise removed. The helper's `providers.BackupProvider.Delete`
-  stays for `upload.lease` housekeeping only.
+- `DeleteSnapshot`/`DeleteSnapshotContext` are removed (`backup_cleanup` is local-only).
+  **Sole exceptions**, because they can never touch anything another manifest references: the
+  helper may delete objects under its **own current run prefix before its manifest is
+  published** (the journal-less abort paths at `snapshot.go:499` and `:544`, kept as-is) and
+  its own `upload.lease` after publication. Vault retention operates on the device-local vault
+  directory, not on a GC-managed identity, and is unchanged.
 
 ### 3.6 Snapshots carry their storage identity (Codex F7)
 
