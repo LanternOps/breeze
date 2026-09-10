@@ -1,7 +1,7 @@
 package bmr
 
 import (
-	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -77,38 +77,85 @@ func parseEnabledServices(data []byte) []string {
 	return services
 }
 
-// crontabSpoolEntries walks spoolDir — stagingDir/crontabs/spool, as
+// crontabSpoolEntries returns the absolute path of every per-user crontab
+// file found DIRECTLY under spoolDir — stagingDir/crontabs/spool, as
 // written by systemstate.LinuxCollector.collectCrontabs, which copies
-// /var/spool/cron verbatim — and returns the absolute path of every
-// regular file found, keyed by its base filename (the username the
-// crontab belongs to).
+// /var/spool/cron verbatim — keyed by its base filename (the username the
+// crontab belongs to). Anything skipped (a subdirectory that isn't a
+// per-user crontab store, or a dotfile/non-regular entry) is returned in
+// the second slice so the caller can log it, rather than silently
+// dropping it.
 //
-// It deliberately does not care how deep a file sits: Debian/Ubuntu nest
-// an extra "crontabs" directory (/var/spool/cron/crontabs/<user>), while
-// RHEL/Fedora do not (/var/spool/cron/<user>), so the same collector call
-// produces different nesting depending on the source distro. Walking
-// recursively and keying by base name handles both layouts without the
-// restorer needing to know which distro produced the backup.
+// It handles both spool layouts a collector run can produce, without
+// needing to know which distro produced the backup:
+//   - RHEL/Fedora: spoolDir/<user> — per-user files sit directly at the
+//     top level.
+//   - Debian/Ubuntu: spoolDir/crontabs/<user> — one level down, alongside
+//     sibling directories (atjobs/, atspool/, for at(1)'s job queues) and
+//     sometimes a lock file, all copied verbatim from /var/spool/cron.
+//
+// It ONLY ever descends into a "crontabs" subdirectory directly under
+// spoolDir — never atjobs/, atspool/, or anything else — and only takes
+// regular files there and at spoolDir's own top level, skipping any other
+// subdirectory, dotfiles, and non-regular entries. A prior implementation
+// walked every descendant recursively and used the basename as a
+// username, which handed `crontab -u .SEQ` (an at(1) sequence file) or
+// similar non-crontab entries to the crontab command and failed the whole
+// crontab restore step over something that was never a user crontab.
 //
 // It never looks at stagingDir/crontabs/crontab (the /etc/crontab copy):
-// that file lives at the crontabs/ root, one level above spool/, so a walk
-// rooted at spool/ never reaches it. Restoring it as a per-user crontab
-// named "crontab" would be wrong, and it's redundant with the /etc tree
-// restore anyway.
-func crontabSpoolEntries(spoolDir string) (map[string]string, error) {
-	entries := make(map[string]string)
-	err := filepath.WalkDir(spoolDir, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+// that file lives at the crontabs/ root, one level above spoolDir, so this
+// function — rooted at spoolDir — never reaches it regardless. Restoring
+// it as a per-user crontab named "crontab" would be wrong, and it's
+// redundant with the /etc tree restore anyway.
+func crontabSpoolEntries(spoolDir string) (entries map[string]string, skipped []string, err error) {
+	entries = make(map[string]string)
+
+	collect := func(dir string, isTopLevel bool) error {
+		dirEntries, readErr := os.ReadDir(dir)
+		if readErr != nil {
+			if os.IsNotExist(readErr) {
+				return nil
+			}
+			return readErr
 		}
-		if d.IsDir() {
-			return nil
+		for _, de := range dirEntries {
+			name := de.Name()
+			full := filepath.Join(dir, name)
+
+			if de.IsDir() {
+				// Only descend into a "crontabs" subdirectory directly
+				// under spoolDir (the Debian layout) — every other
+				// subdirectory (atjobs/, atspool/, anything else) is not
+				// a per-user crontab store and must not be walked.
+				if isTopLevel && name == "crontabs" {
+					continue
+				}
+				skipped = append(skipped, full+"/")
+				continue
+			}
+			if strings.HasPrefix(name, ".") {
+				skipped = append(skipped, full)
+				continue
+			}
+			info, infoErr := de.Info()
+			if infoErr != nil {
+				return infoErr
+			}
+			if !info.Mode().IsRegular() {
+				skipped = append(skipped, full)
+				continue
+			}
+			entries[name] = full
 		}
-		entries[d.Name()] = path
 		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
-	return entries, nil
+
+	if err = collect(spoolDir, true); err != nil {
+		return nil, nil, err
+	}
+	if err = collect(filepath.Join(spoolDir, "crontabs"), false); err != nil {
+		return nil, nil, err
+	}
+	return entries, skipped, nil
 }

@@ -85,6 +85,26 @@ func (r *linuxRestorer) InjectDrivers(_ string) (int, error) {
 // skipping anything matched by etcRestoreExcludes (restore_linux_logic.go).
 // It returns the list of relative paths skipped, purely so tests can assert
 // on it; RestoreSystemState itself only cares about the error.
+//
+// KNOWN CAVEAT (not fixed here — the producer side, systemstate/helpers.go
+// and state_linux.go, is a different wave's file): the collector's
+// copyFile hardcodes every staged file to mode 0600 with no os.Chown call,
+// and copyTree hardcodes every staged directory to 0700
+// (systemstate/helpers.go:62-76, state_linux.go's collectEtc via
+// copyTree). So the "staged mode/ownership" this function and
+// restoreEtcDir/restoreEtcRegularFile/chownBestEffort restore below is NOT
+// currently the real source /etc entry's mode/owner — it is the staging
+// copy's own incidental mode (always 0600/0700, owned by whichever uid
+// ran the collector). Restoring it therefore normalizes every /etc entry
+// this restore touches to 0600 (files, e.g. /etc/passwd, which needs to
+// stay world-readable) / 0700 (dirs) and root-equivalent ownership, rather
+// than preserving the true source permissions. The restore logic here is
+// still the right mechanism — once the collector is fixed to capture and
+// carry real stat info, this will restore correctly with no restorer-side
+// change — but until then, treat the mode/ownership fidelity this
+// function provides as inert/a no-op relative to the real source machine.
+// Tracked for a systemstate follow-up; do not assume restored /etc
+// permissions are trustworthy in the meantime.
 func (r *linuxRestorer) restoreEtcTree(stagingDir string) ([]string, error) {
 	srcDir := filepath.Join(stagingDir, "etc")
 	if _, err := os.Stat(srcDir); os.IsNotExist(err) {
@@ -153,7 +173,17 @@ func (r *linuxRestorer) restoreEtcTree(stagingDir string) ([]string, error) {
 // directory's exact mode, ownership, and mtime. MkdirAll's perm argument
 // alone is not sufficient — it's subject to umask — so mode is set again
 // explicitly via Chmod after creation.
+//
+// If dst currently exists as something other than a directory — a
+// symlink or a regular file — it's removed first. Without this, MkdirAll
+// on a path that is currently a symlink to a directory would silently
+// follow the link and reuse whatever it points at (os.Stat, which MkdirAll
+// checks internally, always follows symlinks) instead of replacing the
+// entry itself with a real directory matching the staged one.
 func restoreEtcDir(dst string, info fs.FileInfo) error {
+	if err := removeConflictingDst(dst, false); err != nil {
+		return fmt.Errorf("remove conflicting entry: %w", err)
+	}
 	if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
@@ -216,6 +246,14 @@ func restoreEtcSymlink(src, dst string, info fs.FileInfo) error {
 // (e.g. a fresh install's stock /etc/hosts) keeps its old mode otherwise —
 // so Chmod is called unconditionally afterward to guarantee dst ends up at
 // the staged file's exact mode either way.
+//
+// If dst currently exists as anything other than a regular file — most
+// notably a symlink, e.g. a fresh install's /etc/resolv.conf pointing at
+// systemd-resolved's live /run/systemd/resolve/stub-resolv.conf — it's
+// removed first. Without this, os.WriteFile (and the Chmod right after)
+// follow the symlink and mutate whatever it points at: a live runtime
+// target that has nothing to do with the backup, while the symlink itself
+// is left in place instead of being replaced by the staged file.
 func restoreEtcRegularFile(src, dst string, info fs.FileInfo) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
@@ -223,6 +261,9 @@ func restoreEtcRegularFile(src, dst string, info fs.FileInfo) error {
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return fmt.Errorf("mkdir parent: %w", err)
+	}
+	if err := removeConflictingDst(dst, true); err != nil {
+		return fmt.Errorf("remove conflicting entry: %w", err)
 	}
 	if err := os.WriteFile(dst, data, info.Mode().Perm()); err != nil {
 		return fmt.Errorf("write: %w", err)
@@ -235,6 +276,31 @@ func restoreEtcRegularFile(src, dst string, info fs.FileInfo) error {
 		slog.Warn("bmr: failed to restore file mtime", "path", dst, "error", err.Error())
 	}
 	return nil
+}
+
+// removeConflictingDst removes dst if it currently exists as the wrong
+// type for what's about to be written there. wantRegular selects the
+// direction: true (called from restoreEtcRegularFile, before writing a
+// regular file) removes dst unless it is already a regular file; false
+// (called from restoreEtcDir, before MkdirAll) removes dst unless it is
+// already a directory. os.Lstat never follows a symlink, so a symlink at
+// dst is caught and removed either way, rather than os.WriteFile/Chmod/
+// MkdirAll silently following it into whatever it points at.
+func removeConflictingDst(dst string, wantRegular bool) error {
+	info, err := os.Lstat(dst)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if wantRegular && info.Mode().IsRegular() {
+		return nil // already the right type; fine to overwrite in place
+	}
+	if !wantRegular && info.IsDir() {
+		return nil
+	}
+	return os.RemoveAll(dst)
 }
 
 // chownBestEffort applies the staged entry's uid/gid to dst via os.Lchown,
@@ -392,9 +458,17 @@ func (r *linuxRestorer) restoreCrontabs(stagingDir string) error {
 		return nil
 	}
 
-	entries, err := crontabSpoolEntries(spoolDir)
+	entries, skipped, err := crontabSpoolEntries(spoolDir)
 	if err != nil {
 		return fmt.Errorf("enumerate crontab spool: %w", err)
+	}
+	if len(skipped) > 0 {
+		// Not an error: atjobs/, atspool/, dotfiles, and lock files are
+		// expected siblings of the real per-user crontabs under a copy of
+		// /var/spool/cron — but operator-visible, since a real user
+		// crontab landing here by mistake would also show up this way.
+		slog.Info("bmr: skipped non-crontab entries under crontab spool",
+			"count", len(skipped), "paths", strings.Join(skipped, ", "))
 	}
 	if len(entries) == 0 {
 		slog.Info("bmr: crontab spool is empty, skipping crontab restore")

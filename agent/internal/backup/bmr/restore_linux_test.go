@@ -302,6 +302,107 @@ func TestRestoreEtcTreeRecreatesSymlinksIncludingDangling(t *testing.T) {
 	assertSymlink("editor-alt", "/usr/bin/vim.basic") // dangling, still recreated
 }
 
+// TestRestoreEtcRegularFileOverExistingSymlinkDoesNotClobberTarget covers
+// the canonical fresh-install case: /etc/resolv.conf on the recovery
+// target starts out as a symlink to systemd-resolved's live runtime stub
+// (/run/systemd/resolve/stub-resolv.conf), but the STAGED artifact is a
+// plain file (e.g. a source machine that ran resolvconf directly, or any
+// case where the backup captured a real file at that path). Writing
+// through os.WriteFile/os.Chmod on a path that is currently a symlink
+// follows the link and clobbers whatever it points at — here, a live
+// runtime target that has nothing to do with the backup — instead of
+// replacing the symlink itself.
+func TestRestoreEtcRegularFileOverExistingSymlinkDoesNotClobberTarget(t *testing.T) {
+	target := withEtcTarget(t)
+	fakeCommands(t, nil)
+
+	runtimeTarget := filepath.Join(t.TempDir(), "stub-resolv.conf")
+	mustWriteFile(t, runtimeTarget, "nameserver 127.0.0.53 (live runtime target)\n")
+
+	dst := filepath.Join(target, "resolv.conf")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(runtimeTarget, dst); err != nil {
+		t.Fatal(err)
+	}
+
+	staging := t.TempDir()
+	mustWriteFile(t, filepath.Join(staging, "etc", "resolv.conf"), "staged resolv.conf contents\n")
+
+	r := &linuxRestorer{}
+	if err := r.RestoreSystemState(staging); err != nil {
+		t.Fatalf("RestoreSystemState: %v", err)
+	}
+
+	info, err := os.Lstat(dst)
+	if err != nil {
+		t.Fatalf("Lstat(%s): %v", dst, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("%s is still a symlink, want the staged regular file to have replaced it", dst)
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "staged resolv.conf contents\n" {
+		t.Errorf("dst content = %q, want the staged content", data)
+	}
+
+	targetData, err := os.ReadFile(runtimeTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(targetData) != "nameserver 127.0.0.53 (live runtime target)\n" {
+		t.Errorf("the live runtime target was clobbered through the symlink: %q", targetData)
+	}
+}
+
+// TestRestoreEtcDirOverExistingSymlinkDoesNotFollowIt is the symmetric case
+// for a staged directory landing where dst currently is a symlink (or a
+// plain file) instead of a directory: MkdirAll must not silently follow it
+// into the wrong place, so the conflicting entry is removed first.
+func TestRestoreEtcDirOverExistingSymlinkDoesNotFollowIt(t *testing.T) {
+	target := withEtcTarget(t)
+	fakeCommands(t, nil)
+
+	elsewhere := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.MkdirAll(elsewhere, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(elsewhere, "sentinel"), "must not appear under the real target dir\n")
+
+	dst := filepath.Join(target, "cron.d")
+	if err := os.Symlink(elsewhere, dst); err != nil {
+		t.Fatal(err)
+	}
+
+	staging := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(staging, "etc", "cron.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &linuxRestorer{}
+	if err := r.RestoreSystemState(staging); err != nil {
+		t.Fatalf("RestoreSystemState: %v", err)
+	}
+
+	info, err := os.Lstat(dst)
+	if err != nil {
+		t.Fatalf("Lstat(%s): %v", dst, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("%s is still a symlink, want a real directory to have replaced it", dst)
+	}
+	if !info.IsDir() {
+		t.Fatalf("%s is not a directory after restore", dst)
+	}
+	if _, err := os.Stat(filepath.Join(elsewhere, "sentinel")); err != nil {
+		t.Errorf("the old symlink target's contents were disturbed: %v", err)
+	}
+}
+
 func TestRestoreEtcTreeChmodsExistingDestinationFile(t *testing.T) {
 	target := withEtcTarget(t)
 	fakeCommands(t, nil)

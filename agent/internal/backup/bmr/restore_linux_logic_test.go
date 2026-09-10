@@ -91,7 +91,7 @@ func TestCrontabSpoolEntriesFlatLayout(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "alice"), "* * * * * alice-job\n")
 	writeFile(t, filepath.Join(dir, "bob"), "* * * * * bob-job\n")
 
-	got, err := crontabSpoolEntries(dir)
+	got, _, err := crontabSpoolEntries(dir)
 	if err != nil {
 		t.Fatalf("crontabSpoolEntries: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestCrontabSpoolEntriesNestedDebianLayout(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(nested, "alice"), "* * * * * alice-job\n")
 
-	got, err := crontabSpoolEntries(dir)
+	got, _, err := crontabSpoolEntries(dir)
 	if err != nil {
 		t.Fatalf("crontabSpoolEntries: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestCrontabSpoolEntriesIgnoresEtcCrontabSibling(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(spool, "alice"), "* * * * * alice-job\n")
 
-	got, err := crontabSpoolEntries(spool)
+	got, _, err := crontabSpoolEntries(spool)
 	if err != nil {
 		t.Fatalf("crontabSpoolEntries: %v", err)
 	}
@@ -153,8 +153,67 @@ func TestCrontabSpoolEntriesIgnoresEtcCrontabSibling(t *testing.T) {
 	}
 }
 
+// TestCrontabSpoolEntriesSkipsAtJobsAndAtSpool covers the real Debian
+// /var/spool/cron layout, which the collector copies verbatim: besides
+// crontabs/<user>, it also contains atjobs/ and atspool/ (at(1) job
+// queues) and sometimes a lock file. Walking every descendant and taking
+// the basename as a username — the previous implementation's approach —
+// would try to run `crontab -u .SEQ` on an atjobs sequence file and fail
+// the whole crontab restore step over something that was never a user
+// crontab in the first place.
+func TestCrontabSpoolEntriesSkipsAtJobsAndAtSpool(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "crontabs", "alice"), "* * * * * alice-job\n")
+	writeFile(t, filepath.Join(dir, "atjobs", ".SEQ"), "1\n")
+	writeFile(t, filepath.Join(dir, "atspool", "x"), "at job payload\n")
+
+	got, skipped, err := crontabSpoolEntries(dir)
+	if err != nil {
+		t.Fatalf("crontabSpoolEntries: %v", err)
+	}
+	if len(got) != 1 || got["alice"] == "" {
+		t.Fatalf("crontabSpoolEntries() entries = %v, want exactly {alice: ...}", got)
+	}
+	if len(skipped) == 0 {
+		t.Error("expected atjobs/ and atspool/ to be reported as skipped, got none")
+	}
+}
+
+// TestCrontabSpoolEntriesSkipsDotfilesAndLockFiles covers a lock/state
+// file sitting directly alongside real per-user crontabs (e.g. Debian's
+// crontabs/.<something> lock convention) — it must never be handed to
+// `crontab -u` as if it were a username.
+func TestCrontabSpoolEntriesSkipsDotfilesAndLockFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "crontabs", "alice"), "* * * * * alice-job\n")
+	writeFile(t, filepath.Join(dir, "crontabs", ".lock"), "")
+
+	got, skipped, err := crontabSpoolEntries(dir)
+	if err != nil {
+		t.Fatalf("crontabSpoolEntries: %v", err)
+	}
+	if len(got) != 1 || got["alice"] == "" {
+		t.Fatalf("crontabSpoolEntries() entries = %v, want exactly {alice: ...}", got)
+	}
+	if _, ok := got[".lock"]; ok {
+		t.Fatal(`crontabSpoolEntries() treated ".lock" as a username, want it skipped`)
+	}
+	foundLockSkipped := false
+	for _, s := range skipped {
+		if filepath.Base(s) == ".lock" {
+			foundLockSkipped = true
+		}
+	}
+	if !foundLockSkipped {
+		t.Errorf("expected .lock to be reported as skipped, got %v", skipped)
+	}
+}
+
 func writeFile(t *testing.T, path, contents string) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir for %s: %v", path, err)
+	}
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
