@@ -384,6 +384,8 @@ One issue per root cause, each carrying the campaign evidence and the fix commit
 | [#5459](https://github.com/LanternOps/breeze/issues/5459) | [Agent][Backup] MSSQL backups fail with Msg 3201: BACKUP TO DISK targets C:\\Windows\\SystemTemp, unreadable by the SQL Server service account; Express rejects WITH COMPRESSION (D23) |
 | [#5460](https://github.com/LanternOps/breeze/issues/5460) | [Agent][Backup] Hyper-V backup leaves the full VM export in SystemTemp after upload; restore stages a second copy with no path override (D24) |
 | [#5465](https://github.com/LanternOps/breeze/issues/5465) | [Agent][Backup] MSSQL restore under a different database name fails with Msg 1834: no WITH MOVE clause (D25) |
+| [#5470](https://github.com/LanternOps/breeze/issues/5470) | [Agent][Backup] Windows BMR: apply only certificates and firewall; hives/BCD collected for reference (decision Option B) |
+| [#5479](https://github.com/LanternOps/breeze/issues/5479) | [API][Agent][Backup] Bare-metal recovery failure reason not persisted server-side; helper reports it only in warnings; service probe flags template/oneshot units (D15 follow-up) |
 
 ## 11. Phase 2 (2026-09-10): Windows bare-metal recovery, Windows 10 client, Hyper-V, SQL Server
 
