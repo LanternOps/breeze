@@ -377,3 +377,27 @@ One issue per root cause, each carrying the campaign evidence and the fix commit
 | [#5421](https://github.com/LanternOps/breeze/issues/5421) | [API][Backup] MSSQL chain stays active/healthy after retention deletes its full snapshot (D17 follow-up: `full_snapshot_id` SET NULL leaves `is_active`/health stale until the next differential) |
 | [#5429](https://github.com/LanternOps/breeze/issues/5429) | [API][Backup] Retention never reclaims storage: GC marks every manifest still in the bucket as a live root, so expired snapshots' objects are immortal (D18) |
 | [#5431](https://github.com/LanternOps/breeze/issues/5431) | [Agent][Backup] Windows restore over an existing read-only file fails with Access denied; job ends failed (D19) |
+| [#5447](https://github.com/LanternOps/breeze/issues/5447) | [API][Agent][Backup] MSSQL and Hyper-V on-demand backups fail with 500 and scheduled runs silently skip since the execution queue (#4925): queued ack parsed as the terminal result, stdout double-encoded, no job correlation (D20) |
+| [#5448](https://github.com/LanternOps/breeze/issues/5448) | [Agent][Backup] Bare-metal recovery downloads fail with 400 when the API and the S3 endpoint share a hostname: recovery token forwarded on the presigned-URL redirect (D21) |
+
+## 11. Phase 2 (2026-09-10): Windows bare-metal recovery, Windows 10 client, Hyper-V, SQL Server
+
+Approved by Todd 2026-09-09: new VMs on the Hyper-V host, agent on the host for the Hyper-V mode, SQL Server on WIN-A.
+
+**Lab additions.** Fresh Server 2022 VM `WIN-R` and Windows 10 Enterprise VM `WIN10-C` built on the Hyper-V host from local eval ISOs (DISM-applied VHDX + unattend, OpenSSH injected; the host's `bcdboot` cannot write boot files for a guest image, the guest's own `bcdboot.exe` must be used). WIN-A raised to 6 GB and SQL Server 2025 Express installed (`SQLEXPRESS`, mixed mode; setup must run as SYSTEM through a scheduled task because DPAPI is unavailable in an SSH session; the bundled `sqlcmd` (ODBC 18) needs `-C`). Test database `AssureDB`: 20,000 rows, `CHECKSUM_AGG` 852348786, FULL recovery. The Hyper-V host already runs a **production-enrolled** agent; an install script briefly replaced its binaries with the lab build (~2 min) before the release binaries were restored and the agent reconnected to production — the Hyper-V cell therefore uses a temporary, reversible swap of that agent to the lab, with the production state files backed up first.
+
+| Defect | Severity | Cell | Finding | Status |
+|---|---|---|---|---|
+| D20 | HIGH (ships in v0.111.x) | SQL S1 / Hyper-V H1 | `POST /backup/mssql/backup` → 500 `<root>: Invalid input: expected object, received string`; the helper's execution-queue ack `{"queued":true}` (double-encoded) is parsed by the route as the terminal result, the job is marked failed, the real unsolicited result is dropped because the command payload carries no `jobId`; `mssql/discover` persists nothing for the same encoding reason, so profile-based SQL runs generate zero commands. Regression from #4925; Hyper-V identical. | fix in flight; [#5447](https://github.com/LanternOps/breeze/issues/5447) |
+| D21 | HIGH (self-hosters with API + S3 on one host/domain) | Windows B1 | `bmr-recover` fails every download with 400: the API 302-redirects to a presigned S3 URL on the same host (different port) and Go forwards the `Authorization: Bearer <token>` header to it; S3/MinIO reject a request carrying two auth mechanisms. Linux B1 passed earlier only because the API and MinIO had different hosts. | fix in flight; [#5448](https://github.com/LanternOps/breeze/issues/5448) |
+
+### 11.1 Phase 2 ledger
+
+| Cell | Rig | Build | Result | Evidence |
+|---|---|---|---|---|
+| W10-F1 file backup | WIN10-C (Windows 10 Enterprise 21H2 eval, fresh VM) | agent+helper 0.112.5 | PASS — 10,045/10,046 files (the >260-char name cannot be seeded on NTFS without long-path support, as on WIN-A), 185,311,236 B | `phase2/win10-run1-job-*.json` |
+| W10-V integrity | WIN10-C | 0.112.5 | PASS — 10,045 verified, 0 failed | `phase2/win10-integrity.json` |
+| W10-F2 alternate-path restore | WIN10-C | 0.112.5 | PASS — `completed`, 10,045/10,045 BYTE-EXACT; only the known Windows attribute (O18), symlink/junction (O6) and empty-directory (O7) observations | `phase2/win10-F2-restore.json`, `win10-F2-compare.txt` |
+| W10-I1 unchanged run 2 | WIN10-C | 0.112.5 | PASS — `referencedFiles` 10,045 = all files, dedupe base scoped to the device (D6 fix holds on a client OS) | `phase2/win10-I1-job-*.json` |
+| **B1 Windows bare-metal recovery** | WIN-R (fresh Server 2022 VM, never enrolled) ← WIN-A snapshot `c4272501` | helper 0.112.5, token per attempt | PASS — reinstall-then-recover: `bmr-recover` → `completed`, 10,045 files / 185,311,236 B restored to the original `C:\assure\src`, 0 failed, `validated: true`, 10 m 48 s; restored tree BYTE-EXACT vs the WIN-A pre-hash (only O18 attributes, O6 links, O7 empty dirs). Required the D21 workaround (API reached via a hosts alias so its host differs from MinIO's); the plain-IP run fails every download with 400 until D21 lands. `stateApplied: false` as expected (D15). Each `authenticate` consumes the token, so a failed attempt needs a new token (O19). | `phase2/winr-bmr-run3.txt`, `winr-bmr-compare.txt` |
+
