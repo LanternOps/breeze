@@ -226,6 +226,13 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'approvals', action: 'decide',
     description: 'Decide (approve/deny) pending action-intent approvals' },
 
+  // Privileged Access Management (PAM) — dedicated capabilities, distinct from
+  // devices:execute/devices:write (security review wave 7, SR1-13/SR1-14).
+  { resource: 'pam', action: 'approve',
+    description: 'Approve or deny PAM elevation requests' },
+  { resource: 'pam', action: 'manage_policy',
+    description: 'Create, update, and delete PAM rules, signer groups, and org config' },
+
   // Admin
   { resource: '*', action: '*', description: 'Full administrative access' }
 ];
@@ -348,7 +355,11 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'agent_rollback:create',
       // Tenant variables (#3409): managing the definitions is an admin task;
       // running a script that USES one only needs scripts:execute.
-      'variables:read', 'variables:manage'
+      'variables:read', 'variables:manage',
+      // PAM (security review wave 7): dedicated, NOT implied by
+      // devices:execute/devices:write above — an Org Technician holds those
+      // for ordinary device work but must not thereby gain PAM authority.
+      'pam:approve', 'pam:manage_policy'
     ]
   },
   {

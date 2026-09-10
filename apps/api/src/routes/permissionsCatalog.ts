@@ -36,7 +36,8 @@ const RESOURCE_LABELS: Record<string, string> = {
   ai_sessions: 'AI Sessions',
   ai_agents: 'AI Agents',
   approvals: 'Approvals',
-  variables: 'Variables'
+  variables: 'Variables',
+  pam: 'Privileged Access'
 };
 
 const ACTION_LABELS: Record<string, string> = {
@@ -56,7 +57,9 @@ const ACTION_LABELS: Record<string, string> = {
   accept_risk: 'Accept Risk',
   read_all: 'Read All',
   decide: 'Decide',
-  create: 'Create'
+  create: 'Create',
+  approve: 'Approve',
+  manage_policy: 'Manage policy'
 };
 
 // GET /permissions/catalog - Returns the authoritative list of assignable

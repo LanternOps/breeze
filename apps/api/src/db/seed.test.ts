@@ -383,3 +383,67 @@ describe('system role MFA posture (RMM-QA-164)', () => {
     expect(SYSTEM_ROLES.filter((role) => role.forceMfa).map((role) => role.name)).toEqual(['Partner Admin']);
   });
 });
+
+describe('PAM dedicated permissions (pam:approve / pam:manage_policy)', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((r) => r.name === name);
+
+  it('defines pam:approve and pam:manage_policy in DEFAULT_PERMISSIONS', () => {
+    expect(
+      DEFAULT_PERMISSIONS.some((p) => p.resource === 'pam' && p.action === 'approve'),
+    ).toBe(true);
+    expect(
+      DEFAULT_PERMISSIONS.some((p) => p.resource === 'pam' && p.action === 'manage_policy'),
+    ).toBe(true);
+  });
+
+  it('registers pam:approve and pam:manage_policy in the shared PERMISSION_GRANTS registry', () => {
+    expect(PERMISSION_GRANTS.PAM_APPROVE).toEqual({ resource: 'pam', action: 'approve' });
+    expect(PERMISSION_GRANTS.PAM_MANAGE_POLICY).toEqual({ resource: 'pam', action: 'manage_policy' });
+  });
+
+  it('grants BOTH pam:approve and pam:manage_policy to Org Admin', () => {
+    expect(byName('Org Admin')?.permissions).toContain('pam:approve');
+    expect(byName('Org Admin')?.permissions).toContain('pam:manage_policy');
+  });
+
+  it('does NOT grant pam:approve or pam:manage_policy to Org Technician (holds devices:execute/write, but PAM authority is dedicated)', () => {
+    const perms = byName('Org Technician')?.permissions ?? [];
+    expect(perms).not.toContain('pam:approve');
+    expect(perms).not.toContain('pam:manage_policy');
+    // Sanity: the whole point is that devices:execute/write is NOT sufficient.
+    expect(perms).toContain('devices:execute');
+    expect(perms).toContain('devices:write');
+  });
+
+  it('does NOT grant PAM permissions to any other role (Partner Technician/Viewer/Billing, Org Viewer, approver roles)', () => {
+    for (const role of SYSTEM_ROLES.filter((r) => !['Partner Admin', 'Org Admin'].includes(r.name))) {
+      expect(role.permissions, `role "${role.name}"`).not.toContain('pam:approve');
+      expect(role.permissions, `role "${role.name}"`).not.toContain('pam:manage_policy');
+    }
+  });
+
+  it('Partner Admin covers PAM via the wildcard grant (does not need a redundant literal entry)', () => {
+    expect(byName('Partner Admin')?.permissions).toContain('*:*');
+  });
+});
+
+describe('permission-registry consistency: every SYSTEM_ROLES literal is seeded (§6G)', () => {
+  // seedRoles() drops any permission literal it can't resolve to a seeded
+  // permissions row (a console.warn + continue) — a role definition can
+  // reference a resource:action that was never added to DEFAULT_PERMISSIONS
+  // and the grant silently never lands. This is the same invariant as the
+  // "SYSTEM_ROLES ⊆ DEFAULT_PERMISSIONS" describe block above, restated as one
+  // assertion over the full closed set so a future permission addition can't
+  // slip past by only updating one of the two lists.
+  it('every non-wildcard permission literal referenced by any SYSTEM_ROLES role exists in DEFAULT_PERMISSIONS', () => {
+    const seededKeys = new Set(DEFAULT_PERMISSIONS.map((p) => `${p.resource}:${p.action}`));
+    const missing: string[] = [];
+    for (const role of SYSTEM_ROLES) {
+      for (const permKey of role.permissions) {
+        if (permKey === '*:*') continue;
+        if (!seededKeys.has(permKey)) missing.push(`${role.name}: ${permKey}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+});

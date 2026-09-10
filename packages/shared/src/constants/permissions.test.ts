@@ -13,3 +13,13 @@ describe('agent rollback grant', () => {
     expect(PERMISSION_GRANTS.AGENT_ROLLBACK_CREATE).toEqual({ resource: 'agent_rollback', action: 'create' });
   });
 });
+
+describe('PAM dedicated permissions (pam:approve / pam:manage_policy)', () => {
+  it('exposes a dedicated approve capability, distinct from devices:execute', () => {
+    expect(PERMISSION_GRANTS.PAM_APPROVE).toEqual({ resource: 'pam', action: 'approve' });
+  });
+
+  it('exposes a dedicated policy-management capability, distinct from devices:write', () => {
+    expect(PERMISSION_GRANTS.PAM_MANAGE_POLICY).toEqual({ resource: 'pam', action: 'manage_policy' });
+  });
+});

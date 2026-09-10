@@ -155,6 +155,18 @@ export const PERMISSION_GRANTS = {
   // pending action-intent approval, distinct from creating/reading intents.
   APPROVALS_DECIDE: { resource: 'approvals', action: 'decide' },
 
+  // Privileged Access Management (PAM) — dedicated capabilities split off the
+  // generic device grants (security review wave 7, SR1-13/SR1-14). Approving/
+  // denying an elevation and authoring PAM policy are both HIGH-TRUST actions
+  // that must not ride on devices:execute/devices:write — an ordinary
+  // technician holding those (to run scripts, remote in, etc.) must not
+  // thereby gain the authority to grant standing admin or write the rules
+  // that decide who gets it automatically. Only Org Admin (and Partner Admin
+  // via its `*:*` wildcard) hold these by default; existing custom roles gain
+  // neither automatically.
+  PAM_APPROVE: { resource: 'pam', action: 'approve' },
+  PAM_MANAGE_POLICY: { resource: 'pam', action: 'manage_policy' },
+
   // Admin
   ADMIN_ALL: { resource: '*', action: '*' },
 } as const;
