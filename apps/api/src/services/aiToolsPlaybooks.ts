@@ -14,7 +14,7 @@ import {
   playbookExecutions,
   users,
 } from '../db/schema';
-import { eq, and, desc, sql, SQL } from 'drizzle-orm';
+import { eq, and, desc, inArray, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { checkPlaybookRequiredPermissions } from './playbookPermissions';
@@ -292,6 +292,16 @@ registerTool({
   },
   handler: async (input, auth) => {
     try {
+      // The site axis is not enforced by RLS. History is attributable to the
+      // execution's current device, so restrict the joined device in SQL
+      // before ordering/LIMIT. Malformed runtime closures fail closed.
+      const allowedSiteIds = auth.allowedSiteIds === undefined
+        ? undefined
+        : Array.isArray(auth.allowedSiteIds) ? auth.allowedSiteIds : [];
+      if (allowedSiteIds?.length === 0) {
+        return JSON.stringify({ executions: [], count: 0 });
+      }
+
       const conditions: SQL[] = [];
       const orgCond = auth.orgCondition(playbookExecutions.orgId);
       if (orgCond) conditions.push(orgCond);
@@ -305,6 +315,7 @@ registerTool({
       if (typeof input.status === 'string') {
         conditions.push(eq(playbookExecutions.status, input.status as typeof playbookExecutions.status.enumValues[number]));
       }
+      if (allowedSiteIds) conditions.push(inArray(devices.siteId, allowedSiteIds));
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 20), 100);
 
