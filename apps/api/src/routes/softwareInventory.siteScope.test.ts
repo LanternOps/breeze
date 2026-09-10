@@ -88,7 +88,7 @@ describe('software inventory approve/deny/clear site-ceiling gate', () => {
     ['/deny', ['s1']],
     ['/clear', ['s1']],
   ] as const)('restricted caller on POST %s (%j) denied 403, no db access', async (route, allowedSiteIds) => {
-    authRef.current = orgAuth(allowedSiteIds as string[]);
+    authRef.current = orgAuth([...allowedSiteIds]);
     const res = await app().request(`/software-inventory${route}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

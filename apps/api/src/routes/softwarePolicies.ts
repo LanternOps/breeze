@@ -540,7 +540,7 @@ softwarePoliciesRoutes.patch(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
-    const updates: Partial<typeof softwarePolicies.$inferInsert> = {
+    const updates: Omit<Partial<typeof softwarePolicies.$inferInsert>, 'approvalGeneration'> & { approvalGeneration?: SQL } = {
       updatedAt: new Date(),
       // Site-ceiling gate contract §3: bump on every PATCH so a queued
       // compliance/remediation job carrying the OLD generation can tell it

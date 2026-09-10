@@ -564,6 +564,17 @@ async function loadBackupDispatchPrecheck(
     return { status: 'done', result: { dispatched: false } };
   }
 
+  // Site-ceiling gate contract §3: the job may carry a generation snapshot
+  // from enqueue time. If the config was edited since (approval_generation
+  // bumped on PATCH), this job's premise (dispatch against THAT config) no
+  // longer holds — fail closed rather than dispatch against a superseded
+  // destination/schedule. The scheduler's next check-schedules tick creates a
+  // fresh job and re-enqueues against the current generation.
+  if (data.configGeneration !== undefined && config.approvalGeneration !== data.configGeneration) {
+    await markJobFailed(data.jobId, 'backup_config_changed');
+    return { status: 'done', result: { dispatched: false } };
+  }
+
   if (await isBackupJobCancelled(data.jobId)) {
     return { status: 'done', result: { dispatched: false } };
   }

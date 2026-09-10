@@ -29,7 +29,7 @@ type WebhookDeliveryStatus = 'pending' | 'delivered' | 'failed' | 'retrying';
 type WebhookHeaders = Array<{ key: string; value: unknown }>;
 
 type RouteAuth = {
-  scope: 'organization' | 'partner' | 'system' | string;
+  scope: 'organization' | 'partner' | 'system';
   partnerId: string | null;
   orgId: string | null;
   accessibleOrgIds: string[] | null;
