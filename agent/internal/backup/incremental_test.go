@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
 // TestDecideFile is the decision-table unit test: table-driven coverage of
@@ -93,14 +91,6 @@ func TestDecideFile(t *testing.T) {
 			file: backupFile{sourcePath: missingPath, size: 5, modTime: laterTime},
 			prev: map[string]SnapshotFile{
 				missingPath: {SourcePath: missingPath, BackupPath: "snapshots/old/files/missing.gz", Size: 5, ModTime: baseTime, Checksum: "whatever"},
-			},
-			wantResult: decideUpload,
-		},
-		{
-			name: "system-state staging file never referenced, even with a matching entry",
-			file: backupFile{sourcePath: unchangedPath, size: int64(len("same content")), modTime: baseTime, systemState: true},
-			prev: map[string]SnapshotFile{
-				unchangedPath: {SourcePath: unchangedPath, BackupPath: "snapshots/old/files/unchanged.txt.gz", Size: int64(len("same content")), ModTime: baseTime, Checksum: unchangedSum},
 			},
 			wantResult: decideUpload,
 		},
@@ -430,109 +420,9 @@ func TestIsReferenceEntry(t *testing.T) {
 	}
 }
 
-// TestMarkSystemStateFiles proves the staging-dir exclusion flags exactly
-// the files under stagingDir, leaving everything else untouched.
-func TestMarkSystemStateFiles(t *testing.T) {
-	tmpDir := t.TempDir()
-	stagingDir := pathpkg.Join(tmpDir, "staging")
-	files := []backupFile{
-		{sourcePath: pathpkg.Join(stagingDir, "registry.dat")},
-		{sourcePath: pathpkg.Join(stagingDir, "sub", "boot.cfg")},
-		{sourcePath: pathpkg.Join(tmpDir, "unrelated", "doc.txt")},
-		// A sibling directory that merely shares stagingDir as a string
-		// prefix must NOT match (path-boundary correctness).
-		{sourcePath: stagingDir + "-not-actually-inside" + string(pathpkg.Separator) + "f.txt"},
-	}
-
-	if marked := markSystemStateFiles(files, stagingDir); marked != 2 {
-		t.Errorf("markSystemStateFiles marked %d files, want 2 — the count is what "+
-			"systemStateArtifactsMissing uses to detect an uncaptured manifest", marked)
-	}
-
-	if !files[0].systemState {
-		t.Error("file directly under stagingDir should be marked systemState")
-	}
-	if !files[1].systemState {
-		t.Error("file nested under stagingDir should be marked systemState")
-	}
-	if files[2].systemState {
-		t.Error("file outside stagingDir must not be marked systemState")
-	}
-	if files[3].systemState {
-		t.Error("a path that merely shares stagingDir as a string prefix must not be marked systemState")
-	}
-}
-
-// TestMarkSystemStateFiles_EmptyStagingDirNoOp proves the common case (no
-// system-state collection this run) leaves every file untouched.
-func TestMarkSystemStateFiles_EmptyStagingDirNoOp(t *testing.T) {
-	files := []backupFile{{sourcePath: "/data/a.txt"}}
-	if marked := markSystemStateFiles(files, ""); marked != 0 {
-		t.Errorf("markSystemStateFiles with an empty stagingDir marked %d files, want 0", marked)
-	}
-	if files[0].systemState {
-		t.Error("markSystemStateFiles with an empty stagingDir must not mark anything")
-	}
-}
-
-// TestSystemStateArtifactsMissing is the backstop for #3026's SYMPTOM rather
-// than its cause: a job that reports success while the restore point is missing
-// the system state its manifest advertises. #3026 was one route there; the
-// detector has to fire for any of them, and stay silent otherwise.
-func TestSystemStateArtifactsMissing(t *testing.T) {
-	withArtifacts := &systemstate.SystemStateManifest{
-		Artifacts: []systemstate.Artifact{{Name: "registry"}, {Name: "boot"}},
-	}
-
-	tests := []struct {
-		name        string
-		manifest    *systemstate.SystemStateManifest
-		markedFiles int
-		want        bool
-	}{
-		{
-			// The #3026 signature: manifest recorded, staging walk produced
-			// nothing that matched it.
-			name:        "manifest with artifacts but nothing captured is reported",
-			manifest:    withArtifacts,
-			markedFiles: 0,
-			want:        true,
-		},
-		{
-			name:        "manifest with artifacts and files captured is healthy",
-			manifest:    withArtifacts,
-			markedFiles: 2,
-			want:        false,
-		},
-		{
-			// Partial capture is a different problem and deliberately out of
-			// scope here — this detector only claims "none at all".
-			name:        "a single captured file is enough to clear the check",
-			manifest:    withArtifacts,
-			markedFiles: 1,
-			want:        false,
-		},
-		{
-			name:        "no system state collected this run is not a divergence",
-			manifest:    nil,
-			markedFiles: 0,
-			want:        false,
-		},
-		{
-			// Nothing to match, so reporting would fire on every such run and
-			// train operators to ignore the warning.
-			name:        "a manifest describing no artifacts is not a divergence",
-			manifest:    &systemstate.SystemStateManifest{},
-			markedFiles: 0,
-			want:        false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := systemStateArtifactsMissing(tt.manifest, tt.markedFiles); got != tt.want {
-				t.Errorf("systemStateArtifactsMissing = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
+// NOTE: TestMarkSystemStateFiles/TestMarkSystemStateFiles_EmptyStagingDirNoOp/
+// TestSystemStateArtifactsMissing used to live here, covering
+// markSystemStateFiles/isUnderDir/systemStateArtifactsMissing — all removed
+// in incremental.go (see the NOTE there) now that system-state artifacts are
+// published directly from the manifest (snapshot.go's publishSystemState)
+// rather than discovered via the ordinary file walk.

@@ -11,12 +11,14 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
+	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
 // sha256File streams a file through SHA-256 and returns the lowercase-hex
@@ -46,6 +48,21 @@ const (
 	snapshotRootDir     = "snapshots"
 	snapshotFilesDir    = "files"
 	snapshotManifestKey = "manifest.json"
+	// systemStateDir is the remote sub-prefix, under a snapshot, where system
+	// state artifacts and their own manifest live — a dedicated tree, never
+	// the ordinary files/ tree. This is Option A of the D15 bare-metal-
+	// recovery contract (docs/superpowers/plans/backup/
+	// 2026-09-09-bmr-system-state-contract.md): the consumer (agent/internal/
+	// backup/bmr/bmr.go's systemStatePath) already expects exactly this
+	// layout, so the value here MUST match that constant.
+	systemStateDir = "system-state"
+	// systemStateManifestKey mirrors snapshotManifestKey, scoped to
+	// systemStateDir.
+	systemStateManifestKey = "manifest.json"
+	// systemStateManifestSchemaVersion mirrors systemstate.manifestSchemaVersion
+	// (that package's own unexported constant) — see publishSystemState's
+	// doc comment for why the backup package also stamps it.
+	systemStateManifestSchemaVersion = 1
 )
 
 // Snapshot represents a point-in-time backup.
@@ -832,6 +849,111 @@ func publishSnapshotManifest(ctx context.Context, provider providers.BackupProvi
 		return fmt.Errorf("failed to upload snapshot manifest: %w", manifestUploadErr)
 	}
 	return nil
+}
+
+// publishSystemState uploads every artifact manifest describes (read from
+// stagingDir, where systemstate.CollectSystemState wrote them) to
+// snapshots/<snapshotID>/system-state/<artifact.Path>, then uploads manifest
+// itself to snapshots/<snapshotID>/system-state/manifest.json.
+//
+// Deliberately a SEPARATE remote prefix and a separate publish step from the
+// ordinary files/ tree and publishSnapshotManifest: mixing the two write
+// paths (appending the staging dir into the ordinary file walk) is exactly
+// the D15/O10 bug this function exists to fix — see the plan doc referenced
+// on systemStateDir. A caller invokes this using the SAME snapshot ID as the
+// rest of that run's snapshot (its own, for a state-only run; or the one
+// createSnapshotWithProgress already minted, for a run that also has
+// configured file paths), so bmr.go's bootstrap-driven lookup by snapshot ID
+// finds both trees under one prefix.
+//
+// Every artifact must exist in stagingDir at exactly the size the collector
+// recorded (SizeBytes) — a mismatch means the staging file was mutated or
+// truncated after collection, which is treated as a hard failure rather than
+// silently uploading corrupt/incomplete bytes. Checksums are computed by the
+// collector at collection time (systemstate.artifactFromFile /
+// collectArtifactsInDir) and carried through unchanged here; a downloading
+// consumer verifies against them.
+//
+// Returns nil for a nil manifest (nothing to publish) — callers gate this
+// off Artifacts being non-empty before calling, but staying a safe no-op
+// keeps this function usable standalone too.
+func publishSystemState(ctx context.Context, provider providers.BackupProvider, snapshotID, stagingDir string, manifest *systemstate.SystemStateManifest) error {
+	if manifest == nil {
+		return nil
+	}
+	// Belt-and-suspenders alongside systemstate.CollectSystemState (which
+	// already sets this on the real collection path): guarantees every
+	// manifest this function ever publishes carries a schema version, even
+	// one built by a test double or future caller that bypasses
+	// CollectSystemState.
+	manifest.SchemaVersion = systemStateManifestSchemaVersion
+	prefix := path.Join(snapshotRootDir, snapshotID, systemStateDir)
+
+	for i := range manifest.Artifacts {
+		art := &manifest.Artifacts[i]
+		localPath := filepath.Join(stagingDir, filepath.FromSlash(art.Path))
+
+		info, statErr := os.Stat(localPath)
+		if statErr != nil {
+			return fmt.Errorf("stat system state artifact %s: %w", art.Path, statErr)
+		}
+		if info.Size() != art.SizeBytes {
+			return fmt.Errorf("system state artifact %s changed size since collection (expected %d bytes, found %d)",
+				art.Path, art.SizeBytes, info.Size())
+		}
+
+		remoteKey := path.Join(prefix, art.Path)
+		attemptCtx, cancelAttempt := context.WithTimeout(ctx, uploadDeadline(info.Size()))
+		uploadErr := uploadSnapshotFile(attemptCtx, provider, localPath, remoteKey)
+		cancelAttempt()
+		if uploadErr != nil {
+			if errors.Is(uploadErr, errBackupStopped) {
+				return uploadErr
+			}
+			return fmt.Errorf("upload system state artifact %s: %w", art.Path, uploadErr)
+		}
+	}
+
+	manifestPath, manifestErr := writeSystemStateManifest(manifest)
+	if manifestErr != nil {
+		return manifestErr
+	}
+	defer os.Remove(manifestPath)
+
+	manifestKey := path.Join(prefix, systemStateManifestKey)
+	manifestInfo, statErr := os.Stat(manifestPath)
+	var manifestSize int64
+	if statErr == nil {
+		manifestSize = manifestInfo.Size()
+	}
+	attemptCtx, cancelAttempt := context.WithTimeout(ctx, uploadDeadline(manifestSize))
+	manifestUploadErr := uploadSnapshotFile(attemptCtx, provider, manifestPath, manifestKey)
+	cancelAttempt()
+	if manifestUploadErr != nil {
+		if errors.Is(manifestUploadErr, errBackupStopped) {
+			return manifestUploadErr
+		}
+		return fmt.Errorf("failed to upload system state manifest: %w", manifestUploadErr)
+	}
+	return nil
+}
+
+// writeSystemStateManifest serializes manifest to a temp file for upload,
+// mirroring writeSnapshotManifest.
+func writeSystemStateManifest(manifest *systemstate.SystemStateManifest) (string, error) {
+	tempFile, err := os.CreateTemp("", "system-state-manifest-*.json")
+	if err != nil {
+		return "", fmt.Errorf("failed to create system state manifest: %w", err)
+	}
+	encoder := json.NewEncoder(tempFile)
+	if err := encoder.Encode(manifest); err != nil {
+		_ = tempFile.Close()
+		return "", fmt.Errorf("failed to encode system state manifest: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return "", fmt.Errorf("failed to close system state manifest: %w", err)
+	}
+	return tempFile.Name(), nil
 }
 
 // attemptFileUpload runs a single upload attempt for file against a fresh
