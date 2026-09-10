@@ -252,6 +252,125 @@ func TestRestoreSystemStateEtcTreeHonoursExcludesAndCopiesTheRest(t *testing.T) 
 	}
 }
 
+func TestRestoreEtcTreeRecreatesSymlinksIncludingDangling(t *testing.T) {
+	target := withEtcTarget(t)
+	fakeCommands(t, nil)
+
+	staging := t.TempDir()
+	etcSrc := filepath.Join(staging, "etc")
+	if err := os.MkdirAll(etcSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A live symlink whose target also exists under the staged /etc — the
+	// systemd-resolved stub-resolv.conf pattern.
+	mustWriteFile(t, filepath.Join(etcSrc, "resolv-real.conf"), "nameserver 127.0.0.53\n")
+	if err := os.Symlink("resolv-real.conf", filepath.Join(etcSrc, "resolv.conf")); err != nil {
+		t.Fatal(err)
+	}
+	// A dangling symlink — the target was never captured (or doesn't exist
+	// on this machine), which must not make the restore error out.
+	if err := os.Symlink("/usr/bin/vim.basic", filepath.Join(etcSrc, "editor-alt")); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &linuxRestorer{}
+	if err := r.RestoreSystemState(staging); err != nil {
+		t.Fatalf("RestoreSystemState: %v", err)
+	}
+
+	assertSymlink := func(rel, wantTarget string) {
+		t.Helper()
+		dst := filepath.Join(target, rel)
+		info, err := os.Lstat(dst)
+		if err != nil {
+			t.Fatalf("Lstat(%s): %v", dst, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s was restored as a %s, want a symlink", dst, info.Mode())
+		}
+		got, err := os.Readlink(dst)
+		if err != nil {
+			t.Fatalf("Readlink(%s): %v", dst, err)
+		}
+		if got != wantTarget {
+			t.Errorf("Readlink(%s) = %q, want %q", dst, got, wantTarget)
+		}
+	}
+
+	assertSymlink("resolv.conf", "resolv-real.conf")
+	assertSymlink("editor-alt", "/usr/bin/vim.basic") // dangling, still recreated
+}
+
+func TestRestoreEtcTreeChmodsExistingDestinationFile(t *testing.T) {
+	target := withEtcTarget(t)
+	fakeCommands(t, nil)
+
+	// Pre-existing file at the destination with a mode that must NOT
+	// survive the restore — os.WriteFile alone only applies perm bits on
+	// create, so without an explicit chmod this stays 0644 forever.
+	dst := filepath.Join(target, "shadow-like")
+	mustWriteFile(t, dst, "old contents\n")
+	if err := os.Chmod(dst, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	staging := t.TempDir()
+	src := filepath.Join(staging, "etc", "shadow-like")
+	mustWriteFile(t, src, "new contents\n")
+	if err := os.Chmod(src, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &linuxRestorer{}
+	if err := r.RestoreSystemState(staging); err != nil {
+		t.Fatalf("RestoreSystemState: %v", err)
+	}
+
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", dst, err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Errorf("mode of pre-existing destination file = %o, want 0640 (staged mode must replace it)", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "new contents\n" {
+		t.Errorf("content = %q, want the staged content", data)
+	}
+}
+
+func TestRestoreEtcTreePreservesDirMode(t *testing.T) {
+	target := withEtcTarget(t)
+	fakeCommands(t, nil)
+
+	staging := t.TempDir()
+	srcDir := filepath.Join(staging, "etc", "ssl", "private")
+	if err := os.MkdirAll(srcDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(srcDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &linuxRestorer{}
+	if err := r.RestoreSystemState(staging); err != nil {
+		t.Fatalf("RestoreSystemState: %v", err)
+	}
+
+	dstDir := filepath.Join(target, "ssl", "private")
+	info, err := os.Stat(dstDir)
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", dstDir, err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Errorf("restored dir mode = %o, want 0700 (must not hardcode 0755)", info.Mode().Perm())
+	}
+}
+
 func TestRestoreSystemStateOptionalArtifactsMissingIsNotAnError(t *testing.T) {
 	withEtcTarget(t)
 	calls := fakeCommands(t, nil)

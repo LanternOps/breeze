@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // linuxRestorer applies Linux-specific system state during BMR.
@@ -113,13 +114,18 @@ func (r *linuxRestorer) restoreEtcTree(stagingDir string) ([]string, error) {
 			return nil
 		}
 		dst := filepath.Join(etcTargetDir, relPath)
+		info, infoErr := d.Info() // Lstat-based: does not follow symlinks
+		if infoErr != nil {
+			copyErrs = append(copyErrs, fmt.Errorf("%s: stat: %w", relPath, infoErr))
+			return nil
+		}
 		if d.IsDir() {
-			if mkErr := os.MkdirAll(dst, 0o755); mkErr != nil {
-				copyErrs = append(copyErrs, fmt.Errorf("mkdir %s: %w", relPath, mkErr))
+			if mkErr := restoreEtcDir(dst, info); mkErr != nil {
+				copyErrs = append(copyErrs, fmt.Errorf("%s: %w", relPath, mkErr))
 			}
 			return nil
 		}
-		if cpErr := copyEtcFile(path, dst); cpErr != nil {
+		if cpErr := restoreEtcEntry(path, dst, info); cpErr != nil {
 			copyErrs = append(copyErrs, fmt.Errorf("%s: %w", relPath, cpErr))
 		}
 		return nil
@@ -143,21 +149,112 @@ func (r *linuxRestorer) restoreEtcTree(stagingDir string) ([]string, error) {
 	return skipped, nil
 }
 
-// copyEtcFile copies a single staged /etc file to dst, preserving the
-// staged file's permission bits (cp -a's behavior for a regular file).
-func copyEtcFile(src, dst string) error {
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
+// restoreEtcDir creates dst (or ensures it exists) with the staged
+// directory's exact mode, ownership, and mtime. MkdirAll's perm argument
+// alone is not sufficient — it's subject to umask — so mode is set again
+// explicitly via Chmod after creation.
+func restoreEtcDir(dst string, info fs.FileInfo) error {
+	if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
 	}
-	data, err := os.ReadFile(src)
+	if err := os.Chmod(dst, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("chmod: %w", err)
+	}
+	chownBestEffort(dst, info)
+	if err := os.Chtimes(dst, info.ModTime(), info.ModTime()); err != nil {
+		slog.Warn("bmr: failed to restore dir mtime", "path", dst, "error", err.Error())
+	}
+	return nil
+}
+
+// restoreEtcEntry restores a single non-directory staged /etc entry to
+// dst: a symlink is recreated as a symlink (never dereferenced into a
+// regular-file copy of its target), a regular file is copied byte-for-byte
+// with mode/ownership/mtime restored, and any other type (socket, fifo,
+// device — none of which cp -a would meaningfully reproduce into a fresh
+// /etc anyway) is skipped with a logged note.
+func restoreEtcEntry(src, dst string, info fs.FileInfo) error {
+	switch mode := info.Mode(); {
+	case mode&fs.ModeSymlink != 0:
+		return restoreEtcSymlink(src, dst, info)
+	case mode.IsRegular():
+		return restoreEtcRegularFile(src, dst, info)
+	default:
+		slog.Info("bmr: skipping non-regular /etc entry", "path", dst, "type", mode.Type().String())
+		return nil
+	}
+}
+
+// restoreEtcSymlink reads the staged symlink's target (Readlink never
+// resolves it, so a dangling target restores fine) and recreates it at
+// dst, replacing whatever is already there. cp -a preserves symlinks
+// exactly this way; without this, os.Stat+ReadFile in the old
+// implementation dereferenced the link and either copied the *target's*
+// content as a plain file (e.g. /etc/resolv.conf's systemd-resolved stub)
+// or failed outright for a dangling link.
+func restoreEtcSymlink(src, dst string, info fs.FileInfo) error {
+	target, err := os.Readlink(src)
 	if err != nil {
-		return err
+		return fmt.Errorf("readlink: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
+		return fmt.Errorf("mkdir parent: %w", err)
 	}
-	return os.WriteFile(dst, data, info.Mode().Perm())
+	if rmErr := os.Remove(dst); rmErr != nil && !os.IsNotExist(rmErr) {
+		return fmt.Errorf("remove existing entry before symlink: %w", rmErr)
+	}
+	if err := os.Symlink(target, dst); err != nil {
+		return fmt.Errorf("symlink -> %s: %w", target, err)
+	}
+	chownBestEffort(dst, info) // os.Lchown: sets the link's own ownership, not the target's
+	return nil
+}
+
+// restoreEtcRegularFile copies a staged regular file to dst, then
+// explicitly restores mode/ownership/mtime. os.WriteFile's perm argument
+// only takes effect when it creates the file — an already-existing dst
+// (e.g. a fresh install's stock /etc/hosts) keeps its old mode otherwise —
+// so Chmod is called unconditionally afterward to guarantee dst ends up at
+// the staged file's exact mode either way.
+func restoreEtcRegularFile(src, dst string, info fs.FileInfo) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Errorf("read: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("mkdir parent: %w", err)
+	}
+	if err := os.WriteFile(dst, data, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	if err := os.Chmod(dst, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("chmod: %w", err)
+	}
+	chownBestEffort(dst, info)
+	if err := os.Chtimes(dst, info.ModTime(), info.ModTime()); err != nil {
+		slog.Warn("bmr: failed to restore file mtime", "path", dst, "error", err.Error())
+	}
+	return nil
+}
+
+// chownBestEffort applies the staged entry's uid/gid to dst via os.Lchown,
+// which acts on the entry itself rather than following a symlink — correct
+// for files, dirs, and symlinks alike. It never fails the restore: the
+// recovery agent may not be running as root, in which case chown to an
+// arbitrary uid/gid returns EPERM, and aborting the entire /etc restore
+// over an ownership bit is far worse than proceeding without it — but it
+// IS logged, because wrong ownership on e.g. /etc/shadow, /etc/sudoers, or
+// /etc/ssl/private is a real, operator-relevant difference from the
+// source machine, not a cosmetic one.
+func chownBestEffort(dst string, info fs.FileInfo) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return
+	}
+	if err := os.Lchown(dst, int(stat.Uid), int(stat.Gid)); err != nil {
+		slog.Warn("bmr: failed to restore ownership",
+			"path", dst, "uid", stat.Uid, "gid", stat.Gid, "error", err.Error())
+	}
 }
 
 // reinstallPackages reads the package selections list collected by
