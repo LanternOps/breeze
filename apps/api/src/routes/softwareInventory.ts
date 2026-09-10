@@ -17,6 +17,7 @@ import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { recordSoftwarePolicyAudit } from '../services/softwarePolicyService';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
+import { bumpApprovalGeneration } from '../services/approvalGeneration';
 import { escapeLike } from '../utils/sql';
 
 export const softwareInventoryRoutes = new Hono();
@@ -433,7 +434,14 @@ softwareInventoryRoutes.post('/approve', requireSoftwareInventoryWrite, requireM
       rules.software.push({ name: softwareName, vendor: vendor || undefined });
       await db
         .update(softwarePolicies)
-        .set({ rules, updatedAt: new Date() })
+        .set({
+          rules,
+          updatedAt: new Date(),
+          // Site-ceiling gate contract §3: editing the default allowlist/
+          // blocklist rules is a governing edit a queued compliance job
+          // needs to detect.
+          approvalGeneration: bumpApprovalGeneration(softwarePolicies.approvalGeneration),
+        })
         .where(eq(softwarePolicies.id, existing.id));
     }
 
@@ -556,7 +564,14 @@ softwareInventoryRoutes.post('/deny', requireSoftwareInventoryWrite, requireMfa(
       rules.software.push({ name: softwareName, vendor: vendor || undefined });
       await db
         .update(softwarePolicies)
-        .set({ rules, updatedAt: new Date() })
+        .set({
+          rules,
+          updatedAt: new Date(),
+          // Site-ceiling gate contract §3: editing the default allowlist/
+          // blocklist rules is a governing edit a queued compliance job
+          // needs to detect.
+          approvalGeneration: bumpApprovalGeneration(softwarePolicies.approvalGeneration),
+        })
         .where(eq(softwarePolicies.id, existing.id));
     }
 
@@ -681,7 +696,14 @@ softwareInventoryRoutes.post('/clear', requireSoftwareInventoryWrite, requireMfa
       cleared = true;
       await db
         .update(softwarePolicies)
-        .set({ rules, updatedAt: new Date() })
+        .set({
+          rules,
+          updatedAt: new Date(),
+          // Site-ceiling gate contract §3: editing the default allowlist/
+          // blocklist rules is a governing edit a queued compliance job
+          // needs to detect.
+          approvalGeneration: bumpApprovalGeneration(softwarePolicies.approvalGeneration),
+        })
         .where(eq(softwarePolicies.id, policy.id));
 
       recordSoftwarePolicyAudit({

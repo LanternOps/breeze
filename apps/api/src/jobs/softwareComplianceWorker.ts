@@ -618,6 +618,22 @@ export async function scheduleSoftwareComplianceCheck(
     ? Array.from(new Set(deviceIds.filter((id) => typeof id === 'string' && id.length > 0)))
     : undefined;
 
+  // Site-ceiling gate contract §3: most callers (create, /check,
+  // agents/helpers.ts, aiToolsCompliance.ts) don't have a fresh row in hand
+  // to pass a generation with — only the PATCH route does. Backfill from the
+  // current row here so the worker's mismatch comparison is armed for every
+  // enqueue path, not just PATCH. If the row can't be found, leave it
+  // undefined — existing (opt-out) behavior.
+  let resolvedGeneration = generation;
+  if (resolvedGeneration === undefined && policyId) {
+    const [current] = await db
+      .select({ approvalGeneration: softwarePolicies.approvalGeneration })
+      .from(softwarePolicies)
+      .where(eq(softwarePolicies.id, policyId))
+      .limit(1);
+    resolvedGeneration = current?.approvalGeneration;
+  }
+
   const job = await queue.add(
     policyId ? 'check-policy' : 'scan-policies',
     policyId
@@ -625,7 +641,7 @@ export async function scheduleSoftwareComplianceCheck(
         type: 'check-policy',
         policyId,
         deviceIds: uniqueDeviceIds,
-        generation,
+        generation: resolvedGeneration,
       }
       : {
         type: 'scan-policies',

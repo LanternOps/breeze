@@ -21,6 +21,7 @@ import { eq, and, desc, sql, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
+import { bumpApprovalGeneration } from './approvalGeneration';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
 import { evaluateSoftwarePolicyArming, normalizeSoftwarePolicyRules } from './softwarePolicyService';
@@ -341,7 +342,12 @@ registerTool({
         return JSON.stringify({ error: 'Modifying a partner-wide software policy requires full partner org access (orgAccess must be "all")' });
       }
 
-      const updates: Partial<typeof softwarePolicies.$inferInsert> = { updatedAt: new Date() };
+      const updates: Omit<Partial<typeof softwarePolicies.$inferInsert>, 'approvalGeneration'> & { approvalGeneration?: SQL } = {
+        updatedAt: new Date(),
+        // Site-ceiling gate contract §3: this AI-tool write bypasses
+        // routes/softwarePolicies.ts, so it needs its own bump.
+        approvalGeneration: bumpApprovalGeneration(softwarePolicies.approvalGeneration),
+      };
       if (typeof input.name === 'string') updates.name = input.name;
       if (typeof input.description === 'string') updates.description = input.description;
       if (typeof input.mode === 'string') updates.mode = input.mode as 'allowlist' | 'blocklist' | 'audit';
@@ -382,7 +388,9 @@ registerTool({
       // `updates` (not raw `input`) is the set of columns actually written —
       // `input` also carries routing keys like `action`/`policyId` that were
       // never persisted, which would make the trail overstate the change.
-      const updatedFields = Object.keys(updates).filter((field) => field !== 'updatedAt');
+      const updatedFields = Object.keys(updates).filter(
+        (field) => field !== 'updatedAt' && field !== 'approvalGeneration'
+      );
       auditSoftwarePolicyToolEvent(auth, 'manage_software_policy', {
         orgId: existing.orgId,
         partnerId: existing.partnerId,
@@ -426,7 +434,13 @@ registerTool({
       await db.transaction(async (tx) => {
         await tx
           .update(softwarePolicies)
-          .set({ isActive: false, updatedAt: new Date() })
+          .set({
+            isActive: false,
+            updatedAt: new Date(),
+            // Site-ceiling gate contract §3: a status flip (soft-delete) is
+            // exactly the kind of edit an in-flight job needs to detect.
+            approvalGeneration: bumpApprovalGeneration(softwarePolicies.approvalGeneration),
+          })
           .where(eq(softwarePolicies.id, existing.id));
 
         await tx

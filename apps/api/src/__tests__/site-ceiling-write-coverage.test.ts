@@ -83,6 +83,15 @@ const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
   // from an HTTP route or AI tool.
   'services/webhookDeliveryRecord.ts':
     'updates only successCount/failureCount/lastDeliveryAt after a delivery attempt, invoked from the delivery worker in system context (runWithSystemDbAccess) — no caller-scoped auth object reaches this path',
+
+  // configureDefaults creates a default notification channel as part of
+  // MCP-invite PARTNER BOOTSTRAP — the caller is a freshly-minted partner
+  // API key with no org-scoped `allowedSiteIds` at all (site ceilings only
+  // ever apply to organization-scope callers), and the tool always targets
+  // the org being bootstrapped, never one chosen by a site-restricted
+  // caller.
+  'modules/mcpInvites/tools/configureDefaults.ts':
+    'creates the default admin-email notification channel during MCP-invite partner bootstrap — the caller is a partner-bootstrap key, not a site-restricted org-scope caller, and the target org is fixed by the bootstrap context, not caller-chosen',
 };
 
 /**
@@ -101,11 +110,24 @@ function localIdentifiers(source: string, table: string): string[] {
   return [...identifiers];
 }
 
-/** Tables this file passes to `.insert()` / `.update()` / `.delete()`. */
+/**
+ * Tables this file passes to `.insert()` / `.update()` / `.delete()`.
+ *
+ * Matches both the bare identifier (`.update(webhooksTable)`) and a
+ * namespace-qualified reference (`.insert(schema.webhooks)`) — the latter
+ * has no current call site in this repo, but the check should not go blind
+ * to it the moment one appears.
+ *
+ * Out of reach by construction: a raw `sql`` UPDATE (e.g.
+ * `services/orgMergeCustomExecutors.ts`'s system-only `backup_configs`
+ * repoint during an org merge) never matches `.insert/.update/.delete(`, so
+ * this guard cannot see it. That's an accepted gap, not an oversight — org
+ * merge runs in system context with no caller-scoped auth to gate on.
+ */
 function mutatedTables(source: string, tableNames: readonly string[]): string[] {
   return tableNames.filter((table) =>
     localIdentifiers(source, table).some((id) =>
-      new RegExp(`\\.(insert|update|delete)\\(\\s*${id}\\s*[,)]`).test(source)
+      new RegExp(`\\.(insert|update|delete)\\(\\s*(?:\\w+\\.)?${id}\\s*[,)]`).test(source)
     )
   );
 }
@@ -128,6 +150,19 @@ function collectSourceFiles(): string[] {
   walk(join(API_SRC, 'services'));
   walk(join(API_SRC, 'jobs'));
   walk(join(API_SRC, 'workers'));
+  // Non-core write surfaces that can still reach a governance table: modules
+  // are self-contained feature packages (e.g. MCP-invite partner-bootstrap
+  // tools) and extensions are the ee/ built-in extension host. Both are
+  // optional dirs — skip silently if absent rather than requiring every
+  // checkout to have them.
+  for (const dir of ['modules', 'extensions']) {
+    const full = join(API_SRC, dir);
+    try {
+      if (statSync(full).isDirectory()) walk(full);
+    } catch {
+      // dir doesn't exist — nothing to walk.
+    }
+  }
   return files.sort();
 }
 
@@ -201,4 +236,70 @@ describe('site-ceiling write coverage (contract-site-ceiling-gate)', () => {
       expect(source.includes(CAPABILITY_FN), `${rel} lost its ${CAPABILITY_FN}() gate`).toBe(true);
     }
   });
+});
+
+/**
+ * Site-ceiling gate contract §3/§7E — in-flight job protection. Three of the
+ * ten governance tables (webhooks, softwarePolicies, backupConfigs) carry an
+ * `approval_generation` column that every caller-facing write must bump, so
+ * a job already queued against the OLD generation can tell it was
+ * superseded (see `services/approvalGeneration.ts`).
+ *
+ * This is the SAME kind of mechanical, textual check as the capability-gate
+ * guard above, on the orthogonal §3 axis: does the FILE that writes one of
+ * these three tables also reference `approvalGeneration`? It cannot prove
+ * every individual `.update().set()` call site in that file bumps it (a
+ * file with multiple update sites, only some of which bump, still passes) —
+ * only that the author was made to think about it. Real coverage comes from
+ * the per-route/service tests that assert on the actual `.set()` payload
+ * (e.g. `routes/webhooks.test.ts`, `services/aiToolsCompliance
+ * .auditAndArming.test.ts`).
+ */
+describe('approval_generation bump coverage (contract-site-ceiling-gate §3/§7E)', () => {
+  const GENERATION_TABLE_NAMES = ['webhooks', 'softwarePolicies', 'backupConfigs'] as const;
+  const GENERATION_TOKEN = 'approvalGeneration';
+
+  const ALLOWED_WITHOUT_GENERATION_BUMP: Record<string, string> = {
+    // Worker-side delivery-outcome bookkeeping — never a governing edit
+    // (enabled/url/secret/events) a queued job needs to detect. Same file,
+    // same reasoning as its entry in ALLOWED_WITHOUT_CEILING_CHECK above.
+    'services/webhookDeliveryRecord.ts':
+      'updates only successCount/failureCount/lastDeliveryAt after a delivery attempt — never a governing edit a queued job needs to detect',
+  };
+
+  it('every file that writes a generation-tracked table also references approvalGeneration', () => {
+    const violations: string[] = [];
+
+    for (const file of collectSourceFiles()) {
+      const source = readFileSync(file, 'utf8');
+      const tables = mutatedTables(source, GENERATION_TABLE_NAMES);
+      if (tables.length === 0) continue;
+
+      const rel = relative(API_SRC, file);
+      if (rel in ALLOWED_WITHOUT_GENERATION_BUMP) continue;
+      if (source.includes(GENERATION_TOKEN)) continue;
+
+      violations.push(`${rel} writes ${tables.join(', ')} without referencing ${GENERATION_TOKEN}`);
+    }
+
+    expect(
+      violations,
+      `Write sites missing an ${GENERATION_TOKEN} bump (contract §3/§7E).\n` +
+        'Bump it via services/approvalGeneration.ts\'s bumpApprovalGeneration(), or, if the write ' +
+        'genuinely never needs to be detected by a queued job, add the file to ' +
+        'ALLOWED_WITHOUT_GENERATION_BUMP with a reason.\n' +
+        violations.join('\n')
+    ).toEqual([]);
+  }, 30_000);
+
+  it('the generation-bump allowlist has no stale entries', () => {
+    const stillMutating = new Set(
+      collectSourceFiles()
+        .filter((file) => mutatedTables(readFileSync(file, 'utf8'), GENERATION_TABLE_NAMES).length > 0)
+        .map((file) => relative(API_SRC, file))
+    );
+
+    const stale = Object.keys(ALLOWED_WITHOUT_GENERATION_BUMP).filter((rel) => !stillMutating.has(rel));
+    expect(stale, `Remove these from ALLOWED_WITHOUT_GENERATION_BUMP: ${stale.join(', ')}`).toEqual([]);
+  }, 30_000);
 });

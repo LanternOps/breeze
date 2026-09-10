@@ -226,6 +226,7 @@ describe('scheduleSoftwareComplianceCheck jobId', () => {
   beforeEach(() => {
     addMock.mockClear();
     addMock.mockResolvedValue({ id: 'queued-job-1' });
+    mockPolicyReload({ id: POLICY_ID, approvalGeneration: 7 });
   });
 
   // Regression for "Custom Id cannot contain :" — BullMQ rejects a custom
@@ -239,5 +240,52 @@ describe('scheduleSoftwareComplianceCheck jobId', () => {
     expect(opts.jobId).toBeDefined();
     expect(String(opts.jobId)).not.toContain(':');
     expect(String(opts.jobId)).toMatch(/^software-compliance-policy-1-[a-z0-9]+-[a-z0-9]+$/);
+  });
+});
+
+// Finding 3 (site-ceiling gate contract §3): only the PATCH caller
+// (routes/softwarePolicies.ts) passes a generation explicitly today — create,
+// /check, agents/helpers.ts, and aiToolsCompliance.ts all call this scheduler
+// without one, which meant the worker's generation comparison was silently
+// skipped (`data.generation !== undefined` never true) for every one of
+// those enqueue paths. Backfilling from the current row here fixes all of
+// them at once without touching every call site.
+describe('scheduleSoftwareComplianceCheck approval_generation backfill (site-ceiling gate contract §3)', () => {
+  beforeEach(() => {
+    addMock.mockClear();
+    addMock.mockResolvedValue({ id: 'queued-job-1' });
+    dbSelectMock.mockClear();
+  });
+
+  it('backfills the policy current approvalGeneration when the caller does not pass one', async () => {
+    mockPolicyReload({ id: POLICY_ID, approvalGeneration: 7 });
+
+    await scheduleSoftwareComplianceCheck(POLICY_ID, ['device-1']);
+
+    const [, data] = addMock.mock.calls[0] as unknown as [string, { generation?: number }];
+    expect(data.generation).toBe(7);
+  });
+
+  it('keeps the caller-supplied generation and does not query the row', async () => {
+    await scheduleSoftwareComplianceCheck(POLICY_ID, ['device-1'], 3);
+
+    expect(dbSelectMock).not.toHaveBeenCalled();
+    const [, data] = addMock.mock.calls[0] as unknown as [string, { generation?: number }];
+    expect(data.generation).toBe(3);
+  });
+
+  it('does not query the row for a scan-policies job (no policyId)', async () => {
+    await scheduleSoftwareComplianceCheck();
+
+    expect(dbSelectMock).not.toHaveBeenCalled();
+  });
+
+  it('leaves generation undefined when the policy row cannot be found', async () => {
+    mockPolicyReload(undefined);
+
+    await scheduleSoftwareComplianceCheck(POLICY_ID, ['device-1']);
+
+    const [, data] = addMock.mock.calls[0] as unknown as [string, { generation?: number }];
+    expect(data.generation).toBeUndefined();
   });
 });

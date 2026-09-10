@@ -5,9 +5,14 @@ const { safeFetchMock, validateWebhookUrlSafetyWithDnsMock } = vi.hoisted(() => 
   validateWebhookUrlSafetyWithDnsMock: vi.fn(),
 }));
 
+const { getRedisConnectionMock, createBlockingRedisConnectionMock } = vi.hoisted(() => ({
+  getRedisConnectionMock: vi.fn(),
+  createBlockingRedisConnectionMock: vi.fn(),
+}));
+
 vi.mock('../services/redis', () => ({
-  getRedisConnection: vi.fn(),
-  createBlockingRedisConnection: vi.fn(),
+  getRedisConnection: getRedisConnectionMock,
+  createBlockingRedisConnection: createBlockingRedisConnectionMock,
 }));
 
 vi.mock('../services/eventBus', () => ({
@@ -45,7 +50,7 @@ vi.mock('../services/webhookConfig', () => ({
 }));
 
 import { SsrfBlockedError } from '../services/urlSafety';
-import { deliverWebhook, type WebhookDeliveryJob } from './webhookDelivery';
+import { deliverWebhook, getWebhookWorker, type WebhookDeliveryJob } from './webhookDelivery';
 import { MAX_OPERATOR_ERROR_LENGTH } from '../services/httpFailureMessage';
 
 function makeJob(overrides: Partial<WebhookDeliveryJob> = {}): WebhookDeliveryJob {
@@ -286,5 +291,72 @@ describe('deliverWebhook — new job shape (webhookId + generation, site-ceiling
     const result = await deliverWebhook(newShapeJob({ generation: undefined }));
 
     expect(result.success).toBe(true);
+  });
+});
+
+describe('DLQ entry (site-ceiling gate contract §7E, finding 4)', () => {
+  // A legacy-shaped job (pre-dating this deploy) embeds the full decrypted
+  // WebhookConfig — url/secret/headers — inline. `resolveDeliveryWebhookConfig`
+  // delivers from it once and never re-serializes it on RETRY (see the
+  // `retryJob` construction, which deliberately drops `webhook`), but before
+  // this fix the DLQ push re-serialized the raw `job` unchanged, so a
+  // legacy job that exhausted its retries on the very first attempt landed
+  // in the DLQ still carrying the decrypted secret at rest in Redis.
+  function legacyJob(overrides: Partial<WebhookDeliveryJob> = {}): WebhookDeliveryJob {
+    return {
+      id: 'delivery-1',
+      webhookId: 'webhook-1',
+      webhook: {
+        id: 'webhook-1',
+        orgId: 'org-1',
+        name: 'Webhook',
+        url: 'https://hooks.example.test/events',
+        secret: 'top-secret-value',
+        events: ['device.created'],
+        headers: { Authorization: 'Bearer legacy-token' },
+      },
+      event: {
+        id: 'event-1',
+        orgId: 'org-1',
+        type: 'device.created',
+        payload: { deviceId: 'device-1' },
+        metadata: { timestamp: '2026-05-02T00:00:00.000Z' },
+      } as any,
+      // MAX_RETRIES is 5 — attempts + 1 >= 5 routes straight to the DLQ.
+      attempts: 4,
+      createdAt: '2026-05-02T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    validateWebhookUrlSafetyWithDnsMock.mockResolvedValue([]);
+  });
+
+  it('never re-serializes the decrypted legacy webhook config into the DLQ entry', async () => {
+    const lpushMock = vi.fn(async (_key: string, _value: string) => 1);
+    const fakeRedis = {
+      lpush: lpushMock,
+      brpop: vi.fn(async () => ['breeze:webhooks:queue', JSON.stringify(legacyJob())]),
+    };
+    getRedisConnectionMock.mockReturnValue(fakeRedis);
+    createBlockingRedisConnectionMock.mockReturnValue(fakeRedis);
+    safeFetchMock.mockRejectedValueOnce(new Error('destination unreachable'));
+
+    const worker = getWebhookWorker();
+    await (worker as unknown as { processNextJob: () => Promise<void> }).processNextJob();
+
+    const dlqCall = lpushMock.mock.calls.find((call) => String(call[0]).includes('dlq'));
+    expect(dlqCall).toBeDefined();
+
+    const dlqEntry = JSON.parse(dlqCall![1] as string);
+    expect(dlqEntry.job.webhook).toBeUndefined();
+    const serialized = JSON.stringify(dlqEntry);
+    expect(serialized).not.toContain('top-secret-value');
+    expect(serialized).not.toContain('Bearer legacy-token');
+    // Identity fields must still make it through so the DLQ entry is usable.
+    expect(dlqEntry.job.webhookId).toBe('webhook-1');
+    expect(dlqEntry.job.id).toBe('delivery-1');
   });
 });

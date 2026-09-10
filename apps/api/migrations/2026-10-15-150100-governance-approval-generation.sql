@@ -17,13 +17,15 @@
 -- THE FIX. `approval_generation integer not null default 1` on the three
 -- tables whose workers need this comparison (webhooks, software_policies,
 -- backup_configs). Existing rows get generation 1 and keep working
--- unchanged. PATCH/enable routes bump the column; workers compare the
+-- unchanged. PATCH/enable routes (and their AI-tool write-path twins) bump
+-- the column via services/approvalGeneration.ts; workers compare the
 -- job-carried generation against the freshly-reloaded row's generation and
 -- drop/skip/fail-closed on mismatch instead of acting on stale config. See
 -- routes/webhooks.ts, routes/softwarePolicies.ts, routes/backup/configs.ts
 -- (write-side bump) and workers/webhookDelivery.ts,
--- jobs/softwareComplianceWorker.ts, jobs/softwareRemediationWorker.ts,
--- jobs/backupWorker.ts (read-side compare).
+-- jobs/softwareComplianceWorker.ts, jobs/backupWorker.ts (read-side
+-- compare). jobs/softwareRemediationWorker.ts reloads by id at dispatch and
+-- checks `isActive` only — it does not compare approval_generation.
 --
 -- Idempotent: ADD COLUMN IF NOT EXISTS. Re-applying is a no-op.
 

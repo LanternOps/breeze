@@ -648,8 +648,13 @@ class WebhookDeliveryWorker extends EventEmitter {
       if (job.attempts + 1 >= maxRetries) {
         // Move to dead letter queue
         console.log(`[WebhookWorker] Max retries reached for ${job.id}, moving to DLQ`);
+        // Site-ceiling gate contract §7E: a legacy job (embedded `webhook`)
+        // must not carry its decrypted url/secret/headers into the DLQ —
+        // same rationale as the retry path below. Strip it before
+        // re-serializing.
+        const { webhook: _legacy, ...dlqJob } = job;
         await redis.lpush(WEBHOOK_DLQ, JSON.stringify({
-          job,
+          job: dlqJob,
           lastResult: result2,
           movedAt: new Date().toISOString()
         }));

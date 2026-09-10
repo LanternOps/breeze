@@ -19,6 +19,7 @@ import {
 } from '../services/notificationChannelSecrets';
 import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders } from '../services/outboundHeaders';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
+import { bumpApprovalGeneration } from '../services/approvalGeneration';
 
 export const webhookRoutes = new Hono();
 
@@ -510,8 +511,13 @@ webhookRoutes.patch(
       }
     }
 
-    const updatePayload: Partial<typeof webhooksTable.$inferInsert> = {
-      updatedAt: new Date()
+    const updatePayload: Omit<Partial<typeof webhooksTable.$inferInsert>, 'approvalGeneration'> & { approvalGeneration?: SQL } = {
+      updatedAt: new Date(),
+      // Site-ceiling gate contract §3: bump on every PATCH so a queued
+      // delivery carrying the OLD generation can tell it has been
+      // superseded (edited or disabled) and drop rather than deliver
+      // against stale config.
+      approvalGeneration: bumpApprovalGeneration(webhooksTable.approvalGeneration),
     };
 
     if (data.name !== undefined) updatePayload.name = data.name;
@@ -661,6 +667,13 @@ webhookRoutes.post(
       return c.json({ error: 'Webhook not found' }, 404);
     }
 
+    // A non-active webhook's delivery would just be dropped by the worker's
+    // own generation/status check and recorded as superseded — reject up
+    // front with a clear message instead of queueing a job doomed to no-op.
+    if (webhook.status !== 'active') {
+      return c.json({ error: 'Cannot test a webhook that is not active' }, 409);
+    }
+
     const eventType = data.event ?? 'webhook.test';
     const payload = data.payload ?? {
       message: 'Test webhook from Breeze RMM',
@@ -759,6 +772,12 @@ const { id: webhookId, deliveryId } = c.req.valid('param');
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
     if (!webhook) {
       return c.json({ error: 'Webhook not found' }, 404);
+    }
+
+    // Same rationale as /test: a non-active webhook's retry would just be
+    // dropped by the worker as superseded — reject up front.
+    if (webhook.status !== 'active') {
+      return c.json({ error: 'Cannot retry delivery for a webhook that is not active' }, 409);
     }
 
     const [delivery] = await db
