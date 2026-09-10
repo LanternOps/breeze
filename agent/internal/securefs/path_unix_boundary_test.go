@@ -3,9 +3,12 @@
 package securefs
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -175,4 +178,68 @@ func TestInstallFilePublishesWithTheManifestMode(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A walk that fails for an ordinary reason must report that reason. The
+// trusted-link branch used to swallow every non-final open failure and relabel
+// it "path component is a symbolic link", which hides EACCES/ENOENT/EMFILE from
+// the caller and, on Linux, invented a message for a branch that is compiled
+// out there entirely.
+func TestWalkReportsTheRealErrorForNonLinkFailures(t *testing.T) {
+	root := t.TempDir()
+
+	t.Run("missing intermediate surfaces ENOENT", func(t *testing.T) {
+		_, err := StatFile(filepath.Join(root, "missing", "deeper"), "file.txt")
+		if err == nil {
+			t.Fatal("expected an error for a missing intermediate component")
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("error = %v, want a not-exist error", err)
+		}
+		if strings.Contains(err.Error(), "symbolic link") {
+			t.Fatalf("a missing directory was reported as a symlink: %v", err)
+		}
+	})
+
+	t.Run("unreadable intermediate surfaces EACCES", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root bypasses directory permissions")
+		}
+		locked := filepath.Join(root, "locked")
+		if err := os.Mkdir(locked, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(locked, "inner"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(locked, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+		_, err := StatFile(filepath.Join(locked, "inner"), "file.txt")
+		if err == nil {
+			t.Fatal("expected an error for an unreadable intermediate component")
+		}
+		if !errors.Is(err, fs.ErrPermission) {
+			t.Fatalf("error = %v, want a permission error", err)
+		}
+		if strings.Contains(err.Error(), "symbolic link") {
+			t.Fatalf("an unreadable directory was reported as a symlink: %v", err)
+		}
+	})
+
+	t.Run("a regular file as an intermediate component is not called a symlink", func(t *testing.T) {
+		file := filepath.Join(root, "regular")
+		if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := StatFile(filepath.Join(file, "inner"), "file.txt")
+		if err == nil {
+			t.Fatal("expected an error for a file used as a directory")
+		}
+		if strings.Contains(err.Error(), "symbolic link") {
+			t.Fatalf("a regular file was reported as a symlink: %v", err)
+		}
+	})
 }

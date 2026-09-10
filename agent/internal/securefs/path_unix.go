@@ -86,6 +86,17 @@ func walkComponents(fd int, components []string, create bool, mode uint32, depth
 			_ = unix.Close(fd)
 			return -1, openErr
 		}
+		// Only a failure that actually indicates "this is not a directory I can
+		// open without following a link" is a candidate for the trusted-link
+		// branch: ELOOP is what Linux reports for a symlink under O_NOFOLLOW,
+		// ENOTDIR is what darwin reports for the same, and for a non-directory
+		// on both. Anything else — EACCES, ENOENT, EMFILE — is the caller's
+		// real error and must be returned verbatim rather than relabelled as a
+		// symlink.
+		if !errors.Is(openErr, unix.ELOOP) && !errors.Is(openErr, unix.ENOTDIR) {
+			_ = unix.Close(fd)
+			return -1, openErr
+		}
 		target, trustErr := trustedLinkTarget(fd, component, depth)
 		if trustErr != nil {
 			_ = unix.Close(fd)
@@ -112,18 +123,22 @@ func walkComponents(fd int, components []string, create bool, mode uint32, depth
 // symlink that a less-privileged local identity could not have planted or
 // replaced. Anything else is an error, so the caller fails closed.
 func trustedLinkTarget(dirFD int, component string, depth int) (string, error) {
-	if !trustedIntermediateLinksAllowed {
-		return "", errors.New("path component is a symbolic link")
-	}
-	if depth >= maxTrustedLinkDepth {
-		return "", errors.New("too many symbolic links in path")
-	}
+	// Establish what the component actually IS before saying anything about
+	// it: ENOTDIR reaches here for a regular file as well as for a symlink on
+	// darwin, and calling a regular file a symlink misdirects whoever reads
+	// the error.
 	var linkStat unix.Stat_t
 	if err := unix.Fstatat(dirFD, component, &linkStat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return "", err
 	}
 	if linkStat.Mode&unix.S_IFMT != unix.S_IFLNK {
 		return "", errors.New("path component is not a directory")
+	}
+	if !trustedIntermediateLinksAllowed {
+		return "", errors.New("path component is a symbolic link")
+	}
+	if depth >= maxTrustedLinkDepth {
+		return "", errors.New("too many symbolic links in path")
 	}
 	euid := uint32(os.Geteuid())
 	if linkStat.Uid != 0 && linkStat.Uid != euid {
@@ -254,8 +269,9 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	}
 	var warnings []error
 	// A pre-checksum manifest carries Mode == 0 ("no recorded mode"). Those
-	// used to land at 0644 via the create mode and umask; keep that, rather
-	// than silently tightening every legacy restore to 0600.
+	// landed at 0644 before this file switched to a 0600 create; keep that
+	// result explicitly, rather than silently tightening every legacy restore
+	// to 0600.
 	applied := mode.Perm()
 	if mode == 0 {
 		applied = 0o644

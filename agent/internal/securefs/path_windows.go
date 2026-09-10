@@ -404,6 +404,10 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	defer func() {
 		_ = temp.Close()
 		if !committed {
+			// The temporary may already carry FILE_ATTRIBUTE_READONLY from the
+			// manifest mode, which would make the delete below refuse and
+			// orphan a .breeze-restore-<hex> file in the caller's tree.
+			_ = clearReadOnlyRelative(parentHandle, tempName)
 			_ = deleteRelative(parentHandle, tempName)
 		}
 	}()
@@ -497,11 +501,18 @@ func renameRelative(handle, parent windows.Handle, name string) error {
 		if err == nil {
 			return nil
 		}
-		if errors.Is(err, windows.STATUS_INVALID_INFO_CLASS) ||
-			errors.Is(err, windows.STATUS_NOT_SUPPORTED) ||
-			errors.Is(err, windows.STATUS_INVALID_PARAMETER) {
+		switch {
+		case errors.Is(err, windows.STATUS_INVALID_INFO_CLASS), errors.Is(err, windows.STATUS_NOT_SUPPORTED):
+			// The kernel does not know class 65 at all: latch, and never probe
+			// again in this process.
 			renameRelativeExUnsupported.Store(true)
-		} else {
+		case errors.Is(err, windows.STATUS_INVALID_PARAMETER):
+			// Ambiguous — some filesystems (SMB shares, FAT32) answer this for
+			// a class they cannot honour, but so does a genuinely malformed
+			// request. Fall back for THIS call without latching, since the
+			// latch is process-wide and one odd target must not downgrade
+			// every later publication.
+		default:
 			return err
 		}
 	}
