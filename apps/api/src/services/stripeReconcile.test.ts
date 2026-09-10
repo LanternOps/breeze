@@ -624,6 +624,20 @@ describe('Phase D2 — QuickBooks payment push/delete hooks', () => {
     await expect(recordStripePayment(captureInput())).resolves.toEqual({ invoiceId: 'inv1' });
   });
 
+  it('never 500s the webhook when applying pending reversals throws after the capture committed', async () => {
+    // The capture is already committed; a throw here would 500 the webhook and
+    // Stripe's retry short-circuits on the existing mapping, so the reversal
+    // would be skipped until the ten-minute sweep.
+    processPendingReversals.mockRejectedValue(new Error('reversal apply exploded'));
+    queueCapture();
+
+    await expect(recordStripePayment(captureInput())).resolves.toEqual({ invoiceId: 'inv1' });
+    expect(insertValues.calls.some((v) => (v as { method?: string }).method === 'card')).toBe(true);
+    expect(capture).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({
+      operation: 'stripe-settle-pending-reversals',
+    }));
+  });
+
   it('never 500s the webhook on a committed refund because Redis is down', async () => {
     requestPaymentDelete.mockResolvedValue('map-1');
     enqueuePaymentDelete.mockRejectedValue(new Error('redis down'));

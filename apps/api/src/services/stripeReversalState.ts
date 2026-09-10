@@ -25,7 +25,10 @@ export type NormalizedStripeFinancialEvent = {
   eventType: string;
   livemode: boolean;
   providerCreated: number;
-  paymentIntentId: string;
+  /** Null only for a quarantined event: a legacy charge with no PaymentIntent. */
+  paymentIntentId: string | null;
+  /** Set iff paymentIntentId is null — why the event cannot be bound. */
+  quarantineReason?: string | null;
   chargeId?: string | null;
   disputeId?: string | null;
   currency: string;
@@ -91,8 +94,11 @@ function exactNonNegativeInteger(value: number | null | undefined, field: string
 
 /** Persist before processing. A caller may acknowledge once this insert commits. */
 export async function ingestStripeFinancialEvent(event: NormalizedStripeFinancialEvent): Promise<ApplyResult> {
-  if (!event.stripeEventId || !event.stripeAccountId || !event.paymentIntentId) {
-    throw new Error('Stripe financial event is missing a durable identity or account/payment binding');
+  if (!event.stripeEventId || !event.stripeAccountId) {
+    throw new Error('Stripe financial event is missing a durable identity or account binding');
+  }
+  if (!event.paymentIntentId && !event.quarantineReason) {
+    throw new Error('Stripe financial event has no PaymentIntent binding and no quarantine reason');
   }
   if (!Number.isSafeInteger(event.providerCreated) || event.providerCreated < 0) {
     throw new Error('Stripe financial event has an invalid provider timestamp');
@@ -131,6 +137,11 @@ export async function ingestStripeFinancialEvent(event: NormalizedStripeFinancia
     disputeAmountMinor: exactNonNegativeInteger(event.disputeAmountMinor, 'dispute amount')?.toString() ?? null,
     disputeFundsWithdrawn: event.disputeFundsWithdrawn ?? null,
     payloadDigest,
+    ...(event.paymentIntentId ? {} : {
+      status: 'blocked' as const,
+      lastError: event.quarantineReason,
+      nextAttemptAt: null,
+    }),
   }).onConflictDoNothing({ target: stripeFinancialEvents.stripeEventId }));
 
   const [durable] = await withSystemDbAccessContext(() => db.select({
@@ -140,6 +151,16 @@ export async function ingestStripeFinancialEvent(event: NormalizedStripeFinancia
   }).from(stripeFinancialEvents).where(eq(stripeFinancialEvents.stripeEventId, event.stripeEventId)).limit(1));
   if (!durable || durable.partnerId !== event.partnerId || durable.stripeAccountId !== event.stripeAccountId || durable.payloadDigest !== payloadDigest) {
     throw new Error('Stripe event identity was reused with different financial data');
+  }
+
+  if (!event.paymentIntentId) {
+    // Durable, visible to operators, and permanently out of the retry loop:
+    // there is no PaymentIntent to bind an invoice payment to.
+    console.warn('[stripeFinancialEvents] quarantined event', {
+      partnerId: event.partnerId, stripeEventId: event.stripeEventId,
+      eventType: event.eventType, reason: event.quarantineReason,
+    });
+    return { state: 'blocked' };
   }
 
   return applyStripeFinancialEvent(event.stripeEventId);
@@ -170,6 +191,17 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
         processedAt: new Date(), updatedAt: new Date(),
       }).where(eq(stripeFinancialEvents.id, preEvent.id));
       return { state: 'ignored' };
+    }
+
+    if (preEvent.paymentIntentId == null) {
+      // A quarantined row that somehow re-entered the apply path (e.g. an
+      // operator reset its status). It can never bind to a payment mapping.
+      await db.update(stripeFinancialEvents).set({
+        status: 'blocked', attemptCount: preEvent.attemptCount + 1,
+        lastError: 'Event has no PaymentIntent binding', lastAttemptAt: new Date(), nextAttemptAt: null,
+        processedAt: new Date(), updatedAt: new Date(),
+      }).where(eq(stripeFinancialEvents.id, preEvent.id));
+      return { state: 'blocked' };
     }
 
     const mappings = await db.select().from(invoiceStripePayments).where(and(

@@ -174,10 +174,24 @@ export async function recordStripePayment(input: CaptureInput): Promise<{ invoic
     }
     // A refund/dispute may have arrived before the capture linked its payment.
     // Apply that durable inbox now, before announcing the invoice as paid.
-    const appliedReversals = await processPendingStripeFinancialEventsForPayment(
-      input.stripeAccountId,
-      input.stripePaymentIntentId,
-    );
+    // The capture has already committed. A throw here would 500 the webhook,
+    // and Stripe's retry short-circuits on the now-existing mapping — so the
+    // reversal would be skipped entirely until the ten-minute sweep. Continue
+    // as if zero reversals applied and let the sweep pick them up.
+    let appliedReversals = 0;
+    try {
+      appliedReversals = await processPendingStripeFinancialEventsForPayment(
+        input.stripeAccountId,
+        input.stripePaymentIntentId,
+      );
+    } catch (err) {
+      console.error('[stripeReconcile] pending reversal application failed after the capture committed',
+        `stripePaymentIntentId=${input.stripePaymentIntentId}`, err instanceof Error ? err.message : err);
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        partner_id: outcome.partnerId,
+        operation: 'stripe-settle-pending-reversals',
+      });
+    }
     let paidAfterReversals = outcome.paid;
     if (appliedReversals > 0) {
       const [current] = await withSystemDbAccessContext(() => db.select({ status: invoices.status })

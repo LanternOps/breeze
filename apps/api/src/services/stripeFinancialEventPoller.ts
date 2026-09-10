@@ -48,11 +48,16 @@ export async function normalizeStripeFinancialEvent(input: {
   if (event.type === 'charge.refunded') {
     const charge = event.data.object as Stripe.Charge;
     const paymentIntentId = idOf(charge.payment_intent);
-    if (!paymentIntentId) throw new Error(`Refund event ${event.id} has no PaymentIntent binding`);
     return {
       partnerId, stripeAccountId, stripeEventId: event.id, eventType: event.type,
       livemode: Boolean(event.livemode), providerCreated: event.created,
-      paymentIntentId, chargeId: charge.id, currency: charge.currency,
+      paymentIntentId,
+      // A legacy charge created without a PaymentIntent cannot be bound to an
+      // invoice. Throwing here would abort the poller's page loop before the
+      // cursor advance and wedge this partner's reversal channel permanently,
+      // so the event is quarantined as a `blocked` row instead.
+      quarantineReason: paymentIntentId ? null : `Refund event ${event.id} has no PaymentIntent binding`,
+      chargeId: charge.id, currency: charge.currency,
       chargeAmountMinor: charge.amount, refundedAmountMinor: charge.amount_refunded,
     };
   }
@@ -62,12 +67,11 @@ export async function normalizeStripeFinancialEvent(input: {
   const chargeId = idOf(dispute.charge);
   let paymentIntentId = idOf(dispute.payment_intent);
   if (!paymentIntentId && chargeId) {
-    const charge = requestOptions
-      ? await stripe.charges.retrieve(chargeId, {}, requestOptions)
-      : await stripe.charges.retrieve(chargeId);
+    const charge = await runOutsideDbContext(() => (requestOptions
+      ? stripe.charges.retrieve(chargeId, {}, requestOptions)
+      : stripe.charges.retrieve(chargeId)));
     paymentIntentId = idOf(charge.payment_intent);
   }
-  if (!paymentIntentId) throw new Error(`Dispute event ${event.id} has no PaymentIntent binding`);
 
   let disputeFundsWithdrawn: boolean | null = null;
   if (event.type === 'charge.dispute.funds_withdrawn') {
@@ -85,7 +89,10 @@ export async function normalizeStripeFinancialEvent(input: {
   return {
     partnerId, stripeAccountId, stripeEventId: event.id, eventType: event.type,
     livemode: Boolean(event.livemode), providerCreated: event.created,
-    paymentIntentId, chargeId, disputeId: dispute.id, currency: dispute.currency,
+    paymentIntentId,
+    // Same quarantine contract as the refund arm above.
+    quarantineReason: paymentIntentId ? null : `Dispute event ${event.id} has no PaymentIntent binding`,
+    chargeId, disputeId: dispute.id, currency: dispute.currency,
     disputeAmountMinor: dispute.amount, disputeFundsWithdrawn,
   };
 }

@@ -45,6 +45,32 @@ describe('normalizeStripeFinancialEvent', () => {
     expect(result).toMatchObject({ disputeFundsWithdrawn: null, disputeId: 'dp_warning' });
   });
 
+  it('quarantines a refund on a legacy charge with no PaymentIntent instead of throwing', async () => {
+    // A throw here happens inside the poller's page loop, before the cursor
+    // advance: one such event would wedge the partner's channel forever.
+    const result = await normalizeStripeFinancialEvent({ ...base, stripe: {} as any, event: {
+      id: 'evt_legacy_refund', type: 'charge.refunded', account: null, livemode: false, created: 104,
+      data: { object: { id: 'ch_legacy', payment_intent: null, amount: 10000, amount_refunded: 2500, currency: 'usd' } },
+    } as any });
+    expect(result).toMatchObject({
+      stripeEventId: 'evt_legacy_refund', paymentIntentId: null,
+      quarantineReason: expect.stringContaining('no PaymentIntent'),
+    });
+  });
+
+  it('quarantines a dispute whose charge also has no PaymentIntent binding', async () => {
+    const retrieve = vi.fn().mockResolvedValue({ id: 'ch_legacy', payment_intent: null });
+    const result = await normalizeStripeFinancialEvent({ ...base, stripe: { charges: { retrieve } } as any, event: {
+      id: 'evt_legacy_dispute', type: 'charge.dispute.funds_withdrawn', account: null, livemode: false, created: 105,
+      data: { object: { id: 'dp_legacy', payment_intent: null, charge: 'ch_legacy', amount: 10000, currency: 'usd', status: 'lost' } },
+    } as any });
+    expect(retrieve).toHaveBeenCalledWith('ch_legacy');
+    expect(result).toMatchObject({
+      stripeEventId: 'evt_legacy_dispute', paymentIntentId: null,
+      quarantineReason: expect.stringContaining('no PaymentIntent'),
+    });
+  });
+
   it('rejects an event attributed to a different account', async () => {
     await expect(normalizeStripeFinancialEvent({ ...base, stripe: {} as any, event: {
       id: 'evt_wrong', type: 'charge.refunded', account: 'acct_other', livemode: false, created: 103,

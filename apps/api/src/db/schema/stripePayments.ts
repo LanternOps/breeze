@@ -108,7 +108,7 @@ export const stripeFinancialEvents = pgTable('stripe_financial_events', {
   eventType: text('event_type').notNull(),
   livemode: boolean('livemode').notNull(),
   providerCreated: bigint('provider_created', { mode: 'number' }).notNull(),
-  paymentIntentId: text('payment_intent_id').notNull(),
+  paymentIntentId: text('payment_intent_id'),
   chargeId: text('charge_id'),
   disputeId: text('dispute_id'),
   currency: char('currency', { length: 3 }).notNull(),

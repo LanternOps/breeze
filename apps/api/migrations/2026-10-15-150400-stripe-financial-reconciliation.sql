@@ -25,6 +25,23 @@ ALTER TABLE invoice_stripe_payments
   ADD COLUMN IF NOT EXISTS last_dispute_event_id TEXT,
   ADD COLUMN IF NOT EXISTS payment_received_at DATE;
 
+-- Detection reads are blind under RLS without a system scope.
+SELECT set_config('breeze.scope', 'system', true);
+
+DO $$
+DECLARE n BIGINT;
+BEGIN
+  SELECT COUNT(*) INTO n FROM (
+    SELECT 1 FROM invoice_stripe_payments
+    WHERE stripe_payment_intent_id IS NOT NULL
+    GROUP BY stripe_account_id, stripe_payment_intent_id
+    HAVING COUNT(*) > 1
+  ) d;
+  IF n > 0 THEN
+    RAISE EXCEPTION 'invoice_stripe_payments has % duplicate (stripe_account_id, stripe_payment_intent_id) pairs; resolve them before applying the unique index', n;
+  END IF;
+END $$;
+
 CREATE UNIQUE INDEX IF NOT EXISTS invoice_stripe_payments_account_pi_uq
   ON invoice_stripe_payments (stripe_account_id, stripe_payment_intent_id)
   WHERE stripe_payment_intent_id IS NOT NULL;
@@ -38,7 +55,7 @@ CREATE TABLE IF NOT EXISTS stripe_financial_events (
   event_type TEXT NOT NULL,
   livemode BOOLEAN NOT NULL,
   provider_created BIGINT NOT NULL,
-  payment_intent_id TEXT NOT NULL,
+  payment_intent_id TEXT,
   charge_id TEXT,
   dispute_id TEXT,
   currency CHAR(3) NOT NULL,
@@ -56,6 +73,11 @@ CREATE TABLE IF NOT EXISTS stripe_financial_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- A dev/test database may already carry the pre-quarantine NOT NULL form.
+-- Refund/dispute events on legacy charges with no PaymentIntent are now
+-- quarantined as `blocked` rows rather than throwing inside the poll loop.
+ALTER TABLE stripe_financial_events ALTER COLUMN payment_intent_id DROP NOT NULL;
 
 ALTER TABLE stripe_financial_events
   ADD COLUMN IF NOT EXISTS stripe_connection_id UUID,

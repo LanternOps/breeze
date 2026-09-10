@@ -114,4 +114,39 @@ describe('direct-account Stripe financial event cursor (real PostgreSQL)', () =>
       .from(stripeConnectAccounts).where(isNull(stripeConnectAccounts.financialEventLastPolledAt)));
     expect(untouched).toHaveLength(0);
   });
+
+  runDb('quarantines a no-PaymentIntent event, ingests the rest of the page and advances the cursor', async () => {
+    const f = await seedConnection();
+    // Stripe lists newest-first; the poller applies the page oldest-first, so
+    // the legacy no-PaymentIntent event is the FIRST one processed.
+    eventsList.mockResolvedValueOnce({
+      has_more: false,
+      data: [
+        {
+          id: 'evt_normal', type: 'charge.refunded', account: null, livemode: false, created: 160,
+          data: { object: { id: 'ch_normal', payment_intent: 'pi_normal', amount: 10_000, amount_refunded: 1_000, currency: 'usd' } },
+        },
+        {
+          id: 'evt_legacy', type: 'charge.refunded', account: null, livemode: false, created: 150,
+          data: { object: { id: 'ch_legacy', payment_intent: null, amount: 10_000, amount_refunded: 2_000, currency: 'usd' } },
+        },
+      ],
+    });
+
+    expect(await pollPartnerStripeFinancialEvents(f.partnerId, new Date(200_000))).toBe(2);
+
+    const [legacy] = await withSystemDbAccessContext(() => db.select().from(stripeFinancialEvents)
+      .where(eq(stripeFinancialEvents.stripeEventId, 'evt_legacy')));
+    expect(legacy).toMatchObject({ status: 'blocked', paymentIntentId: null });
+    expect(legacy!.lastError).toMatch(/no PaymentIntent/);
+    const [normal] = await withSystemDbAccessContext(() => db.select().from(stripeFinancialEvents)
+      .where(eq(stripeFinancialEvents.stripeEventId, 'evt_normal')));
+    expect(normal).toMatchObject({ status: 'pending', paymentIntentId: 'pi_normal' });
+
+    const [connection] = await withSystemDbAccessContext(() => db.select().from(stripeConnectAccounts)
+      .where(eq(stripeConnectAccounts.partnerId, f.partnerId)));
+    expect(connection).toMatchObject({
+      financialEventCursorCreated: 200, financialEventPageAfter: null, financialEventScanUpperCreated: null,
+    });
+  });
 });
