@@ -42,6 +42,10 @@ const mockDb = {
 vi.mock('../db', () => ({
   db: mockDb,
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  // D18 §3.7 review fix: cleanupExpiredSnapshots asserts no ambient context
+  // is held on entry — a no-op here since this suite's mock has no context
+  // tracking (every call is "outside" by construction).
+  assertOutsideHeldDbContext: () => {},
 }));
 
 // notFoundError mirrors what isBackupObjectNotFound (backupSnapshotStorage.ts)

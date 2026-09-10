@@ -7,7 +7,7 @@
  */
 
 import { resolve as resolveLocalPath } from 'node:path';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, withSystemDbAccessContext, assertOutsideHeldDbContext } from '../db';
 import {
   backupSnapshots,
   backupPolicies,
@@ -394,8 +394,9 @@ async function tryDeleteSnapshotRow(snap: {
  * row through `tryDeleteSnapshotRow`, which opens its OWN per-row system
  * context (D18 section 3.7) -- legal hold / immutability are decided
  * ONLY inside that call, re-read under the row's FOR UPDATE lock; the
- * enumeration selects below fetch those columns only incidentally (for the
- * maxVersions grouping) and no longer branch on them directly.
+ * enumeration selects below no longer fetch legalHold/isImmutable/
+ * immutableUntil at all (review fix — the stale comment this replaces
+ * claimed they were still fetched "incidentally"; they are not).
  */
 function applyDeleteOutcome(result: RetentionCleanupResult, outcome: DeleteSnapshotOutcome | 'failed'): void {
   switch (outcome) {
@@ -411,6 +412,15 @@ function applyDeleteOutcome(result: RetentionCleanupResult, outcome: DeleteSnaps
 export async function cleanupExpiredSnapshots(
   orgId: string
 ): Promise<RetentionCleanupResult> {
+  // D18 §3.7 review fix: the whole per-row-commit contract this function
+  // exists to provide depends on being called with NO ambient DB context
+  // already held (jobs/backupWorker.ts:1069-1084's comment is the only
+  // other guard). If a future caller wraps this in `withSystemDbAccessContext`
+  // (or any `withDbAccessContext`), every "per-row transaction" below
+  // silently collapses into savepoints inside that ONE ambient transaction —
+  // exactly the D17 resurrection bug this wave fixes. Assert it explicitly
+  // rather than relying on a comment nobody re-reads.
+  assertOutsideHeldDbContext('cleanupExpiredSnapshots');
   const result: RetentionCleanupResult = {
     deleted: 0,
     skippedLegalHold: 0,

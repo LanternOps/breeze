@@ -680,19 +680,41 @@ async function stampDispatchPinAndIdentity(params: {
   const publishLeaseExpiresAt = new Date(Date.now() + leaseMs);
 
   return db.transaction(async (tx) => {
+    // Review fix (spec §3.1 selection criteria): "no retirement row" is part
+    // of the SELECTION itself, not a post-hoc check on whatever sorted first
+    // — a LEFT JOIN + IS NULL here means a retired newest snapshot simply
+    // isn't a candidate, so the next-newest eligible base (if any) still
+    // wins instead of dispatch falling back to a full run unnecessarily. The
+    // lock-time re-check below still exists to catch the narrow race where a
+    // retirement lands AFTER this select but before the FOR SHARE lock.
     const [candidate] = await tx
       .select({ id: backupSnapshots.id, snapshotId: backupSnapshots.snapshotId })
       .from(backupSnapshots)
       .innerJoin(backupJobs, eq(backupSnapshots.jobId, backupJobs.id))
+      .leftJoin(
+        backupSnapshotRetirements,
+        and(
+          eq(backupSnapshotRetirements.storageIdentity, storageIdentity),
+          eq(backupSnapshotRetirements.snapshotId, backupSnapshots.snapshotId),
+        ),
+      )
       .where(
         and(
           eq(backupSnapshots.deviceId, params.deviceId),
           eq(backupSnapshots.configId, params.configId),
+          // Review fix: scope by THIS dispatch's storage identity too. Without
+          // this, a config edit (§3.6) can leave the newest snapshot carrying
+          // the OLD identity while this job is stamped with the NEW one —
+          // dispatch would then pin a base whose row retention's pin check
+          // (scoped by storageIdentity) can never see, so retention would
+          // retire and delete it out from under an in-flight run.
+          eq(backupSnapshots.storageIdentity, storageIdentity),
           mode === 'system_image'
             ? eq(backupSnapshots.backupType, 'system_image')
             : or(eq(backupSnapshots.backupType, 'file'), isNull(backupSnapshots.backupType)),
           or(isNull(backupSnapshots.expiresAt), gt(backupSnapshots.expiresAt, publishLeaseExpiresAt)),
           eq(backupJobs.status, 'completed'),
+          isNull(backupSnapshotRetirements.id),
         ),
       )
       .orderBy(desc(backupSnapshots.timestamp))
@@ -916,15 +938,19 @@ async function prepareBackupDispatchTargets(
               required: false,
               mode: 'disabled',
             },
+        ...target.payload,
         // Payload fields stay file/system_image-only (spec §3.1) even though
-        // storage_identity is now stamped for every target above.
+        // storage_identity is now stamped for every target above. Spread
+        // LAST (review fix) so the server-owned dedupe-base pin/lease can
+        // never be silently shadowed by a same-named key in target.payload
+        // (resolveBackupTargets's file/system_image branches don't produce
+        // one today, but nothing enforces that going forward).
         ...(target.commandType === 'backup_run'
           ? {
               baseSnapshotId: dispatchPin.baseSnapshotId,
               publishLeaseExpiresAt: dispatchPin.publishLeaseExpiresAt!.toISOString(),
             }
           : {}),
-        ...target.payload,
       },
     };
 

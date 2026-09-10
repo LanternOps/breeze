@@ -148,7 +148,9 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       return {
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: limitFn }) }),
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: limitFn }) }),
+            }),
           }),
           where: vi.fn().mockReturnValue({ limit: limitFn, for: limitFn }),
         }),

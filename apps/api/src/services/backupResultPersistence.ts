@@ -768,6 +768,17 @@ async function reportBackupJobPredicateMiss(params: {
 }
 
 /**
+ * D18 §3.1: the two reasons the late-result fence below can reject a result.
+ * Exported (not a private string literal) so backupSnapshotReconcile.ts's
+ * "refuse to re-adopt an already-fenced job" check reads this SAME source of
+ * truth instead of a hand-copied regex — a prose edit to the errorLog
+ * message here can no longer silently desync the two and let reconcile
+ * resurrect a job this fence deliberately failed (review fix).
+ */
+export type LateResultFenceReason = 'publish_lease_expired' | 'base_retired';
+export const LATE_RESULT_FENCE_REASON_PATTERN: RegExp = /publish_lease_expired|base_retired/;
+
+/**
  * D18 §3.1 late-result fence: a result for a job already in the reaped
  * 'failed' terminal status (STALE_BACKUP_REAP_MARKER) is accepted only if its
  * publish_lease_expires_at is STRICTLY IN THE FUTURE (review fix: a NULL
@@ -784,7 +795,7 @@ async function checkLateResultBaseFence(job: {
   baseSnapshotId: string | null;
   publishLeaseExpiresAt: Date | null;
   storageIdentity: string | null;
-}): Promise<{ ok: true } | { ok: false; reason: 'publish_lease_expired' | 'base_retired' }> {
+}): Promise<{ ok: true } | { ok: false; reason: LateResultFenceReason }> {
   if (!job.publishLeaseExpiresAt || job.publishLeaseExpiresAt.getTime() <= Date.now()) {
     return { ok: false, reason: 'publish_lease_expired' };
   }
@@ -1087,17 +1098,38 @@ export async function applyBackupCommandResultToJob(params: {
   // backup_snapshots insert below still misattributes, because this function
   // deliberately is not one transaction (it makes S3 calls). This change shrinks
   // that window from enqueue-to-write (minutes) to a few statements.
+  const MAIN_UPDATE_RETURNING = {
+    id: backupJobs.id,
+    orgId: backupJobs.orgId,
+    configId: backupJobs.configId,
+    backupType: backupJobs.backupType,
+    backupMode: backupJobs.backupMode,
+    baseSnapshotId: backupJobs.baseSnapshotId,
+    publishLeaseExpiresAt: backupJobs.publishLeaseExpiresAt,
+    storageIdentity: backupJobs.storageIdentity,
+  } as const;
+
+  type MainUpdateRow = Pick<
+    typeof backupJobs.$inferSelect,
+    'id' | 'orgId' | 'configId' | 'backupType' | 'backupMode' | 'baseSnapshotId' | 'publishLeaseExpiresAt' | 'storageIdentity'
+  >;
+  let updatedJob: MainUpdateRow | undefined;
+
   if (source === 'agent' && isSuccessResult) {
-    // D18 §3.1 review fix: the whole read-decide-write sequence runs inside
-    // ONE transaction with a FOR UPDATE lock on the job row, so the status
-    // check, fence evaluation, and (on failure) the write are atomic against
-    // a concurrently running staleCommandReaper pass — without the lock, the
-    // reaper could re-decide the job's terminal state between this read and
-    // this write. The predicate mirrors this file's own #3036 tenant-scoping
-    // convention (eq(id) AND eq(deviceId) — see the main UPDATE below): job
-    // id alone is not trusted as a sufficient key anywhere else in this file,
-    // and this new code must not be the one exception.
-    const fenceOutcome = await db.transaction(async (tx) => {
+    // D18 §3.1 review fix: the fence's read-decide step AND the main UPDATE
+    // now run inside the SAME transaction, under the SAME FOR UPDATE lock on
+    // the job row — not two separate transactions. An earlier draft opened a
+    // fresh, unlocked `db.update(...)` for the main write once the fence
+    // transaction had already committed and released its lock, which left a
+    // window for a concurrently running staleCommandReaper pass to reap the
+    // job in between: the fence would see "not yet reaped" and allow, the
+    // reaper would then reap it, and the unlocked main UPDATE's own
+    // terminalJobGuard (which deliberately accepts a reaped-terminal job)
+    // would flip it to completed having never re-evaluated the fence against
+    // the now-current (reaped) state. Holding the lock across both steps
+    // closes that window: the reaper's own UPDATE blocks on this same row
+    // until this transaction commits or rolls back.
+    const outcome = await db.transaction(async (tx) => {
       const [currentJob] = await tx
         .select({
           status: backupJobs.status,
@@ -1115,46 +1147,50 @@ export async function applyBackupCommandResultToJob(params: {
         typeof currentJob.errorLog === 'string' &&
         currentJob.errorLog.includes(STALE_BACKUP_REAP_MARKER);
 
-      if (!isReapedTerminal) return null;
+      if (isReapedTerminal) {
+        const fence = await checkLateResultBaseFence(currentJob);
+        if (!fence.ok) {
+          const detail =
+            fence.reason === 'publish_lease_expired'
+              ? 'its publish lease had already expired'
+              : 'its dedupe base was reclaimed';
+          await tx
+            .update(backupJobs)
+            .set({
+              status: 'failed',
+              completedAt: new Date(),
+              updatedAt: new Date(),
+              errorLog: `${fence.reason}: late result rejected — ${detail} before this result arrived`,
+            })
+            .where(and(eq(backupJobs.id, jobId), eq(backupJobs.deviceId, deviceId)));
+          return { rejected: true as const };
+        }
+      }
 
-      const fence = await checkLateResultBaseFence(currentJob);
-      if (fence.ok) return null;
-
-      const detail =
-        fence.reason === 'publish_lease_expired'
-          ? 'its publish lease had already expired'
-          : 'its dedupe base was reclaimed';
-      await tx
+      // Not reaped-terminal, or the fence passed: proceed with the SAME
+      // write the non-fenced path below performs, inside this transaction
+      // (and therefore still holding the FOR UPDATE lock) so the decision
+      // just made cannot be invalidated by a reaper race before it commits.
+      const [row] = await tx
         .update(backupJobs)
-        .set({
-          status: 'failed',
-          completedAt: new Date(),
-          updatedAt: new Date(),
-          errorLog: `${fence.reason}: late result rejected — ${detail} before this result arrived`,
-        })
-        .where(and(eq(backupJobs.id, jobId), eq(backupJobs.deviceId, deviceId)));
-      return fence.reason;
+        .set(updateData)
+        .where(and(eq(backupJobs.id, jobId), eq(backupJobs.deviceId, deviceId), statusGuard))
+        .returning(MAIN_UPDATE_RETURNING);
+      return { rejected: false as const, row };
     });
 
-    if (fenceOutcome) {
+    if (outcome.rejected) {
       return { applied: true, snapshotDbId: null, providerSnapshotId };
     }
+    updatedJob = outcome.row;
+  } else {
+    const [row] = await db
+      .update(backupJobs)
+      .set(updateData)
+      .where(and(eq(backupJobs.id, jobId), eq(backupJobs.deviceId, deviceId), statusGuard))
+      .returning(MAIN_UPDATE_RETURNING);
+    updatedJob = row;
   }
-
-  const [updatedJob] = await db
-    .update(backupJobs)
-    .set(updateData)
-    .where(and(eq(backupJobs.id, jobId), eq(backupJobs.deviceId, deviceId), statusGuard))
-    .returning({
-      id: backupJobs.id,
-      orgId: backupJobs.orgId,
-      configId: backupJobs.configId,
-      backupType: backupJobs.backupType,
-      backupMode: backupJobs.backupMode,
-      baseSnapshotId: backupJobs.baseSnapshotId,
-      publishLeaseExpiresAt: backupJobs.publishLeaseExpiresAt,
-      storageIdentity: backupJobs.storageIdentity,
-    });
 
   if (!updatedJob) {
     // Narrowing the predicate above means a 0-row result now has one more

@@ -4,7 +4,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { backupConfigs, backupJobs, backupSnapshots, backupSnapshotRetirements } from '../db/schema';
 import { normalizeStorageIdentity } from '../jobs/backupRetention';
 import type { ParsedBackupCommandResult } from '../routes/backup/resultSchemas';
-import { applyBackupCommandResultToJob } from './backupResultPersistence';
+import { applyBackupCommandResultToJob, LATE_RESULT_FENCE_REASON_PATTERN } from './backupResultPersistence';
 import { captureException, captureMessage } from './sentry';
 import {
   BACKUP_SNAPSHOT_MANIFEST_KEY,
@@ -829,7 +829,7 @@ export async function reconcileOrphanedBackupSnapshots(params: {
       if (
         claimingJob.status === 'failed' &&
         typeof claimingJob.errorLog === 'string' &&
-        /publish_lease_expired|base_retired/.test(claimingJob.errorLog)
+        LATE_RESULT_FENCE_REASON_PATTERN.test(claimingJob.errorLog)
       ) {
         skip('late-result-fenced');
         continue;

@@ -109,6 +109,9 @@ const applyBackupCommandResultToJobMock = vi.fn();
 vi.mock('./backupResultPersistence', () => ({
   applyBackupCommandResultToJob: (...args: unknown[]) =>
     applyBackupCommandResultToJobMock(...(args as [])),
+  // D18 W01 review fix: reconcile's late-result-fenced check now imports
+  // this shared pattern instead of a hand-copied regex.
+  LATE_RESULT_FENCE_REASON_PATTERN: /publish_lease_expired|base_retired/,
 }));
 
 const captureExceptionMock = vi.fn();

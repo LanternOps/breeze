@@ -612,9 +612,11 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
       return {
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue(rows),
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue(rows),
+                }),
               }),
             }),
           }),
@@ -744,9 +746,11 @@ describe('prepareBackupDispatchTargets — base pin + storage identity (D18 W01)
       return {
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue(rows),
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue(rows),
+                }),
               }),
             }),
           }),

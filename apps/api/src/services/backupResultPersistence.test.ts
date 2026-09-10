@@ -12,25 +12,34 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // the transaction callback, `txSelect` would go uncalled and the assertions
 // below would fail. A shared spy would make that mistake invisible.
 const txSelect = vi.hoisted(() => vi.fn());
-// D18 W01: the late-result base fence (checkLateResultBaseFence's caller)
-// also opens a `db.transaction` and calls `tx.update(...)` on its fenced
-// branch — a second, distinct spy for the same "must go through tx, not the
-// ambient proxy" reason as txSelect above.
-const txUpdate = vi.hoisted(() => vi.fn());
 
-vi.mock('../db', () => ({
-  db: {
-    update: vi.fn(),
-    select: vi.fn(),
-    insert: vi.fn(),
-    delete: vi.fn(),
-    transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ select: txSelect, update: txUpdate })),
-  },
+vi.mock('../db', () => {
+  const dbUpdate = vi.fn();
+  return {
+    db: {
+      update: dbUpdate,
+      select: vi.fn(),
+      insert: vi.fn(),
+      delete: vi.fn(),
+      // D18 W01: the late-result base fence AND (on its accept path) the
+      // main job UPDATE both now run inside this ONE transaction, under the
+      // SAME FOR UPDATE lock — so `tx.update` is deliberately the SAME spy
+      // as the ambient `db.update` here: every existing test that configures
+      // `vi.mocked(db.update)...` for "the main update" keeps working
+      // whether that write happens to run through `tx` or the ambient
+      // proxy, which is the point (this mock cannot tell, and in real
+      // Postgres.js neither can the caller — a nested `tx` still commits
+      // through the same connection). `tx.select` stays a DISTINCT spy
+      // (txSelect) — that half of the "must go through tx, not the ambient
+      // proxy" assertion (#2189) is still meaningful and still tested.
+      transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ select: txSelect, update: dbUpdate })),
+    },
 
-  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-}));
+    runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  };
+});
 
 vi.mock('../db/schema', () => ({
   backupJobs: {
@@ -1189,7 +1198,7 @@ describe('backup result persistence', () => {
         baseSnapshotId: null, publishLeaseExpiresAt: new Date(Date.now() - 60 * 1000), storageIdentity: 's3::e::b',
       }]) as any);
       const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
-      vi.mocked(txUpdate).mockReturnValueOnce({ set: setSpy });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
 
       const result = await applyBackupCommandResultToJob({
         jobId: 'job-2', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
@@ -1203,8 +1212,11 @@ describe('backup result persistence', () => {
         status: 'failed',
         errorLog: expect.stringContaining('publish_lease_expired'),
       }));
-      // The fenced branch returns before the main job UPDATE ever runs.
-      expect(db.update).not.toHaveBeenCalled();
+      // The fenced branch returns before the ORDINARY main job UPDATE ever
+      // runs -- the one db.update() call that DID happen is the fence's own
+      // reject-write (captured above via setSpy), inside the same
+      // transaction/lock.
+      expect(db.update).toHaveBeenCalledTimes(1);
     });
 
     it('fails a late result with publish_lease_expired when the lease is NULL (review fix: no implicit pass)', async () => {
@@ -1213,7 +1225,7 @@ describe('backup result persistence', () => {
         baseSnapshotId: null, publishLeaseExpiresAt: null, storageIdentity: 's3::e::b',
       }]) as any);
       const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
-      vi.mocked(txUpdate).mockReturnValueOnce({ set: setSpy });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
 
       const result = await applyBackupCommandResultToJob({
         jobId: 'job-2b', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
@@ -1237,7 +1249,7 @@ describe('backup result persistence', () => {
       // FOR UPDATE lock read.
       vi.mocked(db.select).mockReturnValueOnce(chainMock([]) as any); // no live base row
       const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
-      vi.mocked(txUpdate).mockReturnValueOnce({ set: setSpy });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
 
       const result = await applyBackupCommandResultToJob({
         jobId: 'job-3', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
@@ -1267,7 +1279,11 @@ describe('backup result persistence', () => {
         source: 'agent',
       });
 
-      expect(txUpdate).not.toHaveBeenCalled();
+      // The fence never fires (not reaped-terminal), so the only update() is
+      // the ordinary main job UPDATE (which this test arranges to return 0
+      // rows) -- never the fence's OWN reject-write, which would be a SECOND
+      // call carrying a `base_retired`/`publish_lease_expired` errorLog.
+      expect(db.update).toHaveBeenCalledTimes(1);
       expect(result.applied).toBe(false);
     });
   });
