@@ -258,6 +258,18 @@ func referenceEntry(f backupFile, prevEntry SnapshotFile) SnapshotFile {
 // itself never needs extra reference-count fields (the manifest stays
 // clean — see the design's manifest-v2 section).
 func isReferenceEntry(entry SnapshotFile, snapshotID string) bool {
+	if entry.BackupPath == "" {
+		// A content-less entry (symlink/directory — see SnapshotFile.Kind)
+		// has no uploaded object at all, so it can never "belong to" any
+		// snapshot's prefix, older or otherwise: it is rebuilt fresh from
+		// the live filesystem on every run (decideFile always returns
+		// decideUpload for one). An empty BackupPath trivially fails the
+		// HasPrefix check below against ANY non-empty ownPrefix, which
+		// would otherwise misclassify it as a reference into some other
+		// snapshot — including on the very first run, which has no
+		// previous snapshot to reference at all (review finding, PR #5520).
+		return false
+	}
 	ownPrefix := path.Join(snapshotRootDir, snapshotID) + "/"
 	return !strings.HasPrefix(entry.BackupPath, ownPrefix)
 }

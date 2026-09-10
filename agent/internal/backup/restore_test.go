@@ -1082,3 +1082,120 @@ func TestRestore_RecreatesSymlinksDirsAndModes(t *testing.T) {
 		}
 	}
 }
+
+// Review finding #1 (PR #5520): a resumed restore's file pass must never
+// write THROUGH an ancestor that is a symlink. A prior (possibly
+// interrupted) run may have already recreated a directory-shaped manifest
+// entry as a symlink pointing outside the restore target; the NEXT run's
+// file pass must refuse to write underneath it rather than following it
+// out. Simulates exactly what a resumed run sees: the symlink is already on
+// disk BEFORE RestoreFromSnapshot is called.
+func TestRestore_ResumedRunDoesNotWriteThroughRestoredSymlink(t *testing.T) {
+	provider, snapshotID := setupRestoreTestSnapshot(t, map[string]string{"good.txt": "fine"})
+
+	manifestKey := filepath.ToSlash(filepath.Join("snapshots", snapshotID, "manifest.json"))
+	tmp := filepath.Join(t.TempDir(), "m.json")
+	if err := provider.Download(manifestKey, tmp); err != nil {
+		t.Fatal(err)
+	}
+	var snap Snapshot
+	data, _ := os.ReadFile(tmp)
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatal(err)
+	}
+
+	outside := t.TempDir()
+
+	// Upload the "pwned" object the attacker-shaped file entry would
+	// download — if the symlink-ancestor guard fails, this content lands at
+	// outside/pwned instead of being refused.
+	pwnedSrc := filepath.Join(t.TempDir(), "pwned")
+	if err := os.WriteFile(pwnedSrc, []byte("pwned content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pwnedBackupPath := filepath.ToSlash(filepath.Join("snapshots", snapshotID, "files", "pwned.gz"))
+	if err := provider.Upload(pwnedSrc, pwnedBackupPath); err != nil {
+		t.Fatal(err)
+	}
+
+	snap.Files = append(snap.Files,
+		SnapshotFile{SourcePath: "/escape", Kind: KindSymlink, LinkTarget: outside, ModTime: time.Now().UTC()},
+		SnapshotFile{SourcePath: "/escape/pwned", BackupPath: pwnedBackupPath, Size: int64(len("pwned content")), ModTime: time.Now().UTC()},
+	)
+	snap.FormatVersion = manifestFormatFidelity
+	out, _ := json.Marshal(snap)
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Upload(tmp, manifestKey); err != nil {
+		t.Fatal(err)
+	}
+
+	target := t.TempDir()
+	// Exactly what a resumed run sees: a prior run already recreated
+	// /escape as a symlink pointing OUTSIDE the restore target.
+	if err := os.Symlink(outside, filepath.Join(target, "escape")); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(outside, "pwned")); statErr == nil {
+		t.Fatal("restore wrote through the symlink into the outside directory")
+	}
+
+	failed := false
+	for _, f := range res.FailedFiles {
+		if f == "/escape/pwned" {
+			failed = true
+		}
+	}
+	if !failed {
+		t.Errorf("FailedFiles = %v, want /escape/pwned listed", res.FailedFiles)
+	}
+	warned := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "symlink") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("Warnings = %v, want one mentioning symlink", res.Warnings)
+	}
+
+	// The unrelated good file must still restore fine.
+	if _, statErr := os.Stat(filepath.Join(target, "original", "good.txt")); statErr != nil {
+		t.Errorf("good.txt not restored: %v", statErr)
+	}
+}
+
+// Review finding #2 (PR #5520): RestoreContentlessEntry's symlink branch
+// must never silently destroy an existing regular file (or directory) at
+// targetPath — only an existing SYMLINK may be replaced (the resume case:
+// re-running a completed pass 2 that already planted the correct or a
+// stale link). Anything else must be refused, not clobbered.
+func TestRestoreContentlessEntry_RefusesToReplaceRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "important")
+	if err := os.WriteFile(targetPath, []byte("do not delete me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := SnapshotFile{SourcePath: "/important", Kind: KindSymlink, LinkTarget: "elsewhere"}
+	err := RestoreContentlessEntry(targetPath, entry, false)
+	if err == nil || !strings.Contains(err.Error(), "not a symlink") {
+		t.Fatalf("err = %v, want an error mentioning \"not a symlink\"", err)
+	}
+
+	// The regular file must be untouched.
+	data, statErr := os.ReadFile(targetPath)
+	if statErr != nil {
+		t.Fatalf("regular file was removed: %v", statErr)
+	}
+	if string(data) != "do not delete me" {
+		t.Fatalf("regular file content changed: %q", data)
+	}
+}

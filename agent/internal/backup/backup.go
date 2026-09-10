@@ -572,7 +572,11 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			job.FilesBackedUp = len(existing.Files)
 			job.BytesBackedUp = existing.Size
 			for _, f := range existing.Files {
-				if isReferenceEntry(f, existing.ID) {
+				// A content-less entry (symlink/dir) is never a reference —
+				// isReferenceEntry already guards on BackupPath=="", this is
+				// belt-and-suspenders against the same miscount (review
+				// finding, PR #5520).
+				if f.HasContent() && isReferenceEntry(f, existing.ID) {
 					job.ReferencedFiles++
 					job.ReferencedBytes += f.Size
 				}
@@ -1015,7 +1019,9 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// reference-count fields (they're result/wire-only, not manifest
 		// content — see BackupJob.ReferencedFiles's doc comment).
 		for _, f := range snapshot.Files {
-			if isReferenceEntry(f, snapshot.ID) {
+			// See the identical guard/comment above: a content-less entry
+			// is never a reference (review finding, PR #5520).
+			if f.HasContent() && isReferenceEntry(f, snapshot.ID) {
 				job.ReferencedFiles++
 				job.ReferencedBytes += f.Size
 			}
