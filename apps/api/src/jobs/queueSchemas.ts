@@ -30,6 +30,12 @@ const backupSnapshotSummarySchema = z.object({
   timestamp: z.string().min(1).optional(),
   size: z.number().nonnegative().optional(),
   files: z.array(backupSnapshotFileSchema).optional(),
+  // D18 (#5429/§3.1): mirrors resultSchemas.ts's backupSnapshotResultSchema —
+  // must be added here too or `.strict()` drops/rejects these before
+  // backupWorker.ts's process-results handler ever sees them.
+  baseSnapshotId: z.string().optional(),
+  formatVersion: z.number().optional(),
+  backupIdentity: z.string().optional(),
 }).strict();
 
 export const backupProcessResultSchema = z.object({

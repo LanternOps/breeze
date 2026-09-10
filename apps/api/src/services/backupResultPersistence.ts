@@ -4,6 +4,7 @@ import {
   backupJobs,
   backupSnapshotFiles,
   backupSnapshots,
+  backupSnapshotRetirements,
   backupPolicies,
   configPolicyBackupSettings,
   backupConfigs,
@@ -766,6 +767,54 @@ async function reportBackupJobPredicateMiss(params: {
   }
 }
 
+/**
+ * D18 §3.1 late-result fence: a result for a job already in the reaped
+ * 'failed' terminal status (STALE_BACKUP_REAP_MARKER) is accepted only if its
+ * publish_lease_expires_at is STRICTLY IN THE FUTURE (review fix: a NULL
+ * lease is now a REJECT, not an implicit pass — every job this wave dispatches
+ * always carries one, so NULL on a reaped-terminal job is anomalous/legacy
+ * and must fail closed) AND (it has no base pin, or its base row still
+ * exists — scoped by the JOB's own storage_identity, since
+ * backup_snapshots.snapshot_id carries no uniqueness constraint,
+ * schema/backup.ts — and is not retired). Otherwise the caller must record
+ * the result as failed with a distinguishing reason instead of flipping the
+ * job to completed.
+ */
+async function checkLateResultBaseFence(job: {
+  baseSnapshotId: string | null;
+  publishLeaseExpiresAt: Date | null;
+  storageIdentity: string | null;
+}): Promise<{ ok: true } | { ok: false; reason: 'publish_lease_expired' | 'base_retired' }> {
+  if (!job.publishLeaseExpiresAt || job.publishLeaseExpiresAt.getTime() <= Date.now()) {
+    return { ok: false, reason: 'publish_lease_expired' };
+  }
+  if (!job.baseSnapshotId) return { ok: true };
+
+  const [baseRow] = await db
+    .select({ id: backupSnapshots.id })
+    .from(backupSnapshots)
+    .where(
+      and(
+        eq(backupSnapshots.snapshotId, job.baseSnapshotId),
+        eq(backupSnapshots.storageIdentity, job.storageIdentity ?? ''),
+      ),
+    )
+    .limit(1);
+  if (!baseRow) return { ok: false, reason: 'base_retired' };
+
+  const [retirement] = await db
+    .select({ id: backupSnapshotRetirements.id })
+    .from(backupSnapshotRetirements)
+    .where(
+      and(
+        eq(backupSnapshotRetirements.storageIdentity, job.storageIdentity ?? ''),
+        eq(backupSnapshotRetirements.snapshotId, job.baseSnapshotId),
+      ),
+    )
+    .limit(1);
+  return retirement ? { ok: false, reason: 'base_retired' } : { ok: true };
+}
+
 export async function applyBackupCommandResultToJob(params: {
   jobId: string;
   orgId: string;
@@ -1038,6 +1087,60 @@ export async function applyBackupCommandResultToJob(params: {
   // backup_snapshots insert below still misattributes, because this function
   // deliberately is not one transaction (it makes S3 calls). This change shrinks
   // that window from enqueue-to-write (minutes) to a few statements.
+  if (source === 'agent' && isSuccessResult) {
+    // D18 §3.1 review fix: the whole read-decide-write sequence runs inside
+    // ONE transaction with a FOR UPDATE lock on the job row, so the status
+    // check, fence evaluation, and (on failure) the write are atomic against
+    // a concurrently running staleCommandReaper pass — without the lock, the
+    // reaper could re-decide the job's terminal state between this read and
+    // this write. The predicate mirrors this file's own #3036 tenant-scoping
+    // convention (eq(id) AND eq(deviceId) — see the main UPDATE below): job
+    // id alone is not trusted as a sufficient key anywhere else in this file,
+    // and this new code must not be the one exception.
+    const fenceOutcome = await db.transaction(async (tx) => {
+      const [currentJob] = await tx
+        .select({
+          status: backupJobs.status,
+          errorLog: backupJobs.errorLog,
+          baseSnapshotId: backupJobs.baseSnapshotId,
+          publishLeaseExpiresAt: backupJobs.publishLeaseExpiresAt,
+          storageIdentity: backupJobs.storageIdentity,
+        })
+        .from(backupJobs)
+        .where(and(eq(backupJobs.id, jobId), eq(backupJobs.deviceId, deviceId)))
+        .for('update');
+
+      const isReapedTerminal =
+        currentJob?.status === 'failed' &&
+        typeof currentJob.errorLog === 'string' &&
+        currentJob.errorLog.includes(STALE_BACKUP_REAP_MARKER);
+
+      if (!isReapedTerminal) return null;
+
+      const fence = await checkLateResultBaseFence(currentJob);
+      if (fence.ok) return null;
+
+      const detail =
+        fence.reason === 'publish_lease_expired'
+          ? 'its publish lease had already expired'
+          : 'its dedupe base was reclaimed';
+      await tx
+        .update(backupJobs)
+        .set({
+          status: 'failed',
+          completedAt: new Date(),
+          updatedAt: new Date(),
+          errorLog: `${fence.reason}: late result rejected — ${detail} before this result arrived`,
+        })
+        .where(and(eq(backupJobs.id, jobId), eq(backupJobs.deviceId, deviceId)));
+      return fence.reason;
+    });
+
+    if (fenceOutcome) {
+      return { applied: true, snapshotDbId: null, providerSnapshotId };
+    }
+  }
+
   const [updatedJob] = await db
     .update(backupJobs)
     .set(updateData)
@@ -1048,6 +1151,9 @@ export async function applyBackupCommandResultToJob(params: {
       configId: backupJobs.configId,
       backupType: backupJobs.backupType,
       backupMode: backupJobs.backupMode,
+      baseSnapshotId: backupJobs.baseSnapshotId,
+      publishLeaseExpiresAt: backupJobs.publishLeaseExpiresAt,
+      storageIdentity: backupJobs.storageIdentity,
     });
 
   if (!updatedJob) {
@@ -1140,6 +1246,30 @@ export async function applyBackupCommandResultToJob(params: {
   };
   const snapshotLabel = buildSnapshotLabel(snapshotMetadata, timestamp);
 
+  let parentSnapshotId: string | null = null;
+  const baseSnapshotId = result.snapshot?.baseSnapshotId;
+  if (updatedJob.storageIdentity && baseSnapshotId) {
+    // Scoped by storageIdentity, not configId (review fix): snapshot_id
+    // carries no uniqueness constraint (schema/backup.ts), and identity —
+    // not configId — is the authoritative scope GC and every other lookup
+    // in this wave use. A config's identity can also drift after the base
+    // was written (§3.6), so configId is not even a reliable proxy here.
+    const [baseRow] = await db
+      .select({ id: backupSnapshots.id })
+      .from(backupSnapshots)
+      .where(
+        and(
+          eq(backupSnapshots.storageIdentity, updatedJob.storageIdentity),
+          eq(backupSnapshots.snapshotId, baseSnapshotId),
+        ),
+      )
+      .limit(1);
+    parentSnapshotId = baseRow?.id ?? null;
+  }
+  const isIncremental =
+    (result.referencedFiles !== undefined && result.referencedFiles > 0) ||
+    (result.snapshot?.formatVersion !== undefined && result.snapshot.formatVersion >= 2);
+
   const snapshotValues = {
     orgId: effectiveOrgId,
     jobId,
@@ -1159,6 +1289,12 @@ export async function applyBackupCommandResultToJob(params: {
     backupType: snapshotBackupType,
     systemStateManifest,
     hardwareProfile,
+    parentSnapshotId,
+    isIncremental,
+    // D18 §3.6: copied straight from the job's own stamped storageIdentity —
+    // NOT recomputed from the config — so GC groups by the identity the run
+    // actually wrote to, even if the config's destination has since changed.
+    storageIdentity: updatedJob.storageIdentity ?? null,
   } as const;
 
   const [existingSnapshot] = await db
