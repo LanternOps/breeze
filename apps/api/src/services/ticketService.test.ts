@@ -23,7 +23,7 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, as
     allocateMock: vi.fn().mockResolvedValue('T-2026-0042'),
     guardMock: vi.fn().mockResolvedValue(null),
     assigneeEligibleMock: vi.fn().mockResolvedValue(true),
-    dbMocks: { insertReturning, updateReturning, selectResult, txExecuteMock, txUpdateReturning },
+    dbMocks: { insertReturning, updateReturning, selectResult, txExecuteMock, txUpdateReturning, txPinnedOccurrences: vi.fn((): unknown[] => []) },
     // #3258 W03 review I6: SPIES, not passthrough arrows. The system-context
     // escape opens a SECOND pooled connection that cannot see the caller's
     // uncommitted rows, so "which reads take it" is a correctness property
@@ -197,12 +197,19 @@ vi.mock('../db', () => ({
         // INSIDE the transaction, so the tx stub needs a select chain that also
         // terminates on `.for('share')`.
         select: vi.fn(() => ({
-          from: vi.fn(() => ({
+          from: vi.fn((table: unknown) => ({
             where: vi.fn((w: unknown) => {
               selectWhereMock(w);
               return {
                 limit: vi.fn((l: unknown) => {
                   selectLimitMock(l);
+                  // #5573 W02: the deliverable-pin precondition reads
+                  // service_deliverable_occurrences; answer it from its own
+                  // queue (default: unpinned) so it never consumes a slot of
+                  // the org-lookup sequence the move tests queue up.
+                  if ((table as Record<symbol, unknown> | undefined)?.[Symbol.for('drizzle:Name')] === 'service_deliverable_occurrences') {
+                    return Promise.resolve(dbMocks.txPinnedOccurrences());
+                  }
                   const r = dbMocks.selectResult();
                   return Object.assign(Promise.resolve(r), { for: vi.fn(() => Promise.resolve(r)) });
                 }),
@@ -3731,6 +3738,24 @@ describe('moveTicketOrg', () => {
     // — same 6 tables as the 'moves ticket to a same-partner org' test below).
     expect(texts).toHaveLength(7);
     expect(texts.filter((t) => t === 'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED')).toHaveLength(1);
+  });
+
+  it('#5573 W02: refuses to move a ticket pinned to a deliverable occurrence, before the ticket UPDATE', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta Corp', currencyCode: 'USD' }
+      ]);
+    dbMocks.txPinnedOccurrences.mockReturnValueOnce([{ id: 'o1' }]);
+
+    await expect(moveTicketOrg('t1', 'oB', { userId: 'admin' }))
+      .rejects.toMatchObject({ status: 409, code: 'DELIVERABLE_TICKET_PINNED' });
+    expect(setMock).not.toHaveBeenCalled();
+    expect(executedTableNames()).toEqual([]);
+    expect(auditMock).not.toHaveBeenCalled();
   });
 
   it('moves ticket to a same-partner org, detaches device, re-stamps child org_id on 6 tables including ticket_email_links', async () => {

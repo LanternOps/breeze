@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { matchContactByEmail } from './contacts/crud';
 import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, contacts, ticketStatusEnum, ticketSourceEnum, ticketOutbox, ticketDrafts, actionIntents, aiAgentRuns, deviceVulnerabilities, type TicketOutboxEvent } from '../db/schema';
+import { serviceDeliverableOccurrences } from '../db/schema/serviceDeliverables';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
@@ -61,7 +62,10 @@ export type TicketServiceErrorCode =
   // tickets. Lowercase to match the wire code the web/AI surfaces branch on
   // (`ServiceManagementOffError.code`), unlike the UPPER_SNAKE codes above,
   // which are internal to the ticket service.
-  | 'service_management_off';
+  | 'service_management_off'
+  // #5573 W02 — the ticket is a service deliverable's work item; it cannot
+  // leave the deliverable's org.
+  | 'DELIVERABLE_TICKET_PINNED';
 
 export class TicketServiceError extends Error {
   constructor(
@@ -2305,6 +2309,34 @@ export interface MoveTicketOrgOptions {
   acceptCurrencyMismatch?: boolean;
 }
 
+export const DELIVERABLE_TICKET_PINNED_MESSAGE =
+  'This ticket is the work item for a service deliverable and cannot be moved to another organization. Unlink or reschedule the deliverable occurrence first.';
+
+/**
+ * #5573 spec §6. A deliverable occurrence pins its ticket to the
+ * deliverable's org. Lives here, not in the route, because moveTicketOrg has
+ * two doors (routes/tickets/moveOrg.ts and the manage_tickets AI tool).
+ * Defence in depth only: sd_occ_ticket_org_fk (ticket_id, org_id) ->
+ * tickets(id, org_id) has no ON UPDATE clause, so the move would raise 23503
+ * anyway — this turns an opaque FK violation into an explainable 409. That is
+ * also why service_deliverable_occurrences is deliberately NOT in
+ * TICKET_ORG_DENORMALIZED_TABLES: a pinned ticket never moves, so there is
+ * nothing to re-stamp.
+ */
+export async function assertTicketNotPinnedToDeliverable(
+  tx: Pick<typeof db, 'select'>,
+  ticketId: string
+): Promise<void> {
+  const linked = await tx
+    .select({ id: serviceDeliverableOccurrences.id })
+    .from(serviceDeliverableOccurrences)
+    .where(eq(serviceDeliverableOccurrences.ticketId, ticketId))
+    .limit(1);
+  if (linked.length > 0) {
+    throw new TicketServiceError(DELIVERABLE_TICKET_PINNED_MESSAGE, 409, 'DELIVERABLE_TICKET_PINNED');
+  }
+}
+
 export async function moveTicketOrg(
   ticketId: string,
   targetOrgId: string,
@@ -2398,6 +2430,8 @@ export async function moveTicketOrg(
     if (!sourceMeta || sourceMeta.partnerId !== targetMeta.partnerId) {
       throw new TicketServiceError('Tickets can only be moved between organizations of the same partner', 400);
     }
+    // #5573 W02: cheap precondition, before the ticket UPDATE burns anything.
+    await assertTicketNotPinnedToDeliverable(tx, ticketId);
     // Present by construction: the metadata rows above resolved, so the locks did too.
     const sourceOrg = { ...sourceMeta, currencyCode: lockedOrgs.get(ticket.orgId)!.currencyCode };
     const targetOrg = { ...targetMeta, currencyCode: lockedOrgs.get(targetOrgId)!.currencyCode };
