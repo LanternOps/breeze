@@ -21,3 +21,74 @@ export const SCRIPT_APPROVAL_METHODS = [
   'automation',
 ] as const;
 export type ScriptApprovalMethod = (typeof SCRIPT_APPROVAL_METHODS)[number];
+
+// ---------------------------------------------------------------------------
+// Proposal DTOs (W01b, spec §4.1). The API returns these; web, mobile and
+// helper read them.
+// ---------------------------------------------------------------------------
+
+export type ScriptProposalStatus =
+  | 'proposed' | 'scan_rejected' | 'review_failed' | 'reviewed'
+  | 'approved' | 'rejected' | 'changes_requested' | 'expired' | 'superseded'
+  | 'executed' | 'verified' | 'verification_failed' | 'promoted';
+
+export type ScriptProposalAuthorKind = 'chat_session' | 'agent_run';
+export type ScriptProposalReviewerKind = 'static_scan' | 'model';
+export type ScriptProposalReviewStatus = 'completed' | 'failed' | 'timeout';
+
+export interface ScriptProposal {
+  id: string;
+  orgId: string;
+  authorKind: ScriptProposalAuthorKind;
+  sessionId: string | null;
+  agentRunId: string | null;
+  language: string;
+  content: string;
+  contentDigest: string;
+  timeoutSeconds: number;
+  runAs: 'system' | 'user';
+  goal: string;
+  expectedEffect: string;
+  verification: unknown;
+  rollbackNote: string | null;
+  targetDeviceIds: string[];
+  scannerVersion: string;
+  basicHits: string[];
+  strictHits: string[];
+  touchClasses: string[];
+  status: ScriptProposalStatus;
+  revision: number;
+  supersedesId: string | null;
+  riskTier: string | null;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  decisionNote: string | null;
+  intentId: string | null;
+  verifiedAt: string | null;
+  verificationResult: unknown;
+  promotedScriptId: string | null;
+  promotedVersionId: string | null;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface ScriptProposalReview {
+  id: string;
+  orgId: string;
+  proposalId: string;
+  reviewerKind: ScriptProposalReviewerKind;
+  model: string | null;
+  reviewerPromptVersion: string | null;
+  status: ScriptProposalReviewStatus;
+  summary: string | null;
+  riskTier: string | null;
+  goalMatch: 'yes' | 'partial' | 'no' | null;
+  reversible: boolean | null;
+  verificationAdequate: boolean | null;
+  recommendedAction: 'approve' | 'changes' | 'reject' | null;
+  verdict: unknown;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  costCents: string | null;
+  createdAt: string;
+}
