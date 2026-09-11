@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { optionalQueryBoolean } from './queryParams';
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD');
 
@@ -56,7 +57,7 @@ export const updateDeliverableSchema = z
 
 export const listDeliverablesQuerySchema = z.object({
   contractId: z.string().guid().optional(),
-  includeInactive: z.coerce.boolean().optional(),
+  includeInactive: optionalQueryBoolean,
 });
 
 export const reportRunEvidenceRefSchema = z.object({
