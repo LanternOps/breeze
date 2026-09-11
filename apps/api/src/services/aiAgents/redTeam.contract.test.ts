@@ -760,8 +760,10 @@ describe('H. prompt text cannot reach authorization', () => {
     const fullPrompt = `${buildAgentRunSystemPrompt(ctx)}\n${buildAgentRunTaskPrompt(ctx)}`;
     expect(fullPrompt).toContain('manage_services:restart');
 
-    // Prose is not among these three parameters: tool name, input, policy.
-    expect(checkAgentGuardrails.length).toBe(3);
+    // Prose is not among these four parameters: tool name, input, policy, and
+    // the optional DB-free GuardrailContext (a persisted proposal risk tier,
+    // never model text — see services/scriptProposals/guardrailContext.ts).
+    expect(checkAgentGuardrails.length).toBe(4);
     const verdict = checkAgentGuardrails(
       'manage_services',
       { action: 'restart' },
