@@ -18,6 +18,7 @@ vi.mock('./contractService', () => ({
 
 import { registerContractTools } from './aiToolsContracts';
 import * as contractService from './contractService';
+import { getContract } from './contractService';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 

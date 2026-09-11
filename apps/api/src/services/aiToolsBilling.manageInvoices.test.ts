@@ -36,7 +36,13 @@ vi.mock('./contractService', () => ({
   }),
 }));
 
+vi.mock('./permissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./permissions')>()),
+  getUserPermissions: vi.fn(),
+}));
+
 import { registerBillingTools } from './aiToolsBilling';
+import { getUserPermissions } from './permissions';
 import * as invoiceService from './invoiceService';
 import * as contractService from './contractService';
 import type { AiTool } from './aiTools';
@@ -56,7 +62,13 @@ const nullSiteClosureAuth = { ...auth, allowedSiteIds: null } as any;
 const systemAuth = { ...auth, scope: 'system', partnerId: null, accessibleOrgIds: null } as any;
 
 const actor = { userId: 'u-1', partnerId: 'p-1', accessibleOrgIds: ['org-1'] };
+// Evidence the actor carries once resolved from the caller's REAL permissions.
 const contractActor = { ...actor, permissions: new Set(['contracts:read']) };
+/** A resolved permission set granting contracts:read (the happy path). */
+const contractReaderPerms = {
+  permissions: [{ resource: 'contracts', action: 'read' }],
+  partnerId: 'p-1', orgId: null, roleId: 'role-1', scope: 'partner',
+} as never;
 const now = new Date('2026-07-01T00:00:00.000Z');
 
 function contractRow(id = 'contract-1'): Awaited<ReturnType<typeof contractService.getContract>>['contract'] {
@@ -130,7 +142,10 @@ function getReadTool(name: 'get_invoice' | 'list_invoices'): AiTool {
 }
 
 describe('manage_invoices', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getUserPermissions).mockResolvedValue(contractReaderPerms);
+  });
 
   it('documents invoice-currency money inputs and non-blocking pay-link currency warnings', () => {
     const tool = getTool();
@@ -168,6 +183,54 @@ describe('manage_invoices', () => {
     expect(invoiceService.assembleDraftFromTicket).toHaveBeenCalledWith('t-1', actor, { currencyCode: 'EUR' });
     await getTool().handler({ action: 'assemble_from_ticket', ticketId: 't-1' }, auth);
     expect(invoiceService.assembleDraftFromTicket).toHaveBeenLastCalledWith('t-1', actor, { currencyCode: undefined });
+  });
+
+  it('add_contract_line denies a caller without contracts:read at the ACTOR level', async () => {
+    // The caller holds invoices:write (they reached the handler) but not
+    // contracts:read. The ContractActor is fail-closed BY CONSTRUCTION, so the
+    // evidence set must come from a REAL resolution — this used to be
+    // hard-coded to `new Set(['contracts:read'])`, which forged exactly the
+    // permission the contract service was relying on the actor to prove.
+    vi.mocked(getUserPermissions).mockResolvedValue({
+      permissions: [{ resource: 'invoices', action: 'write' }],
+      partnerId: 'p-1', orgId: null, roleId: 'role-1', scope: 'partner',
+    } as never);
+
+    const out = await getTool().handler(
+      { action: 'add_contract_line', invoiceId: 'inv-1', contractId: 'contract-1', contractLineId: 'contract-line-1' },
+      auth,
+    );
+
+    expect(JSON.parse(out)).toEqual({
+      error: 'Adding a contract line requires the contracts:read permission',
+      code: 'CONTRACTS_READ_REQUIRED',
+    });
+    // Denied BEFORE any lock, read or materialization.
+    expect(invoiceService.lockContractLineMaterializationSource).not.toHaveBeenCalled();
+    expect(contractService.getContract).not.toHaveBeenCalled();
+    expect(contractService.materializeContractLineOntoInvoice).not.toHaveBeenCalled();
+  });
+
+  it('add_contract_line passes REAL resolved permission evidence to the contract service', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({
+      permissions: [
+        { resource: 'contracts', action: 'read' },
+        { resource: 'contracts', action: 'write' },
+      ],
+      partnerId: 'p-1', orgId: null, roleId: 'role-1', scope: 'partner',
+    } as never);
+
+    await getTool().handler(
+      { action: 'add_contract_line', invoiceId: 'inv-1', contractId: 'contract-1', contractLineId: 'contract-line-1' },
+      auth,
+    );
+
+    expect(getUserPermissions).toHaveBeenCalledWith('u-1', expect.objectContaining({ partnerId: 'p-1' }));
+    // contracts:manage was NOT granted, so it must not appear in the evidence.
+    const passedActor = vi.mocked(contractService.getContract).mock.calls[0]?.[1];
+    expect(passedActor?.permissions?.has('contracts:read')).toBe(true);
+    expect(passedActor?.permissions?.has('contracts:write')).toBe(true);
+    expect(passedActor?.permissions?.has('contracts:manage')).toBe(false);
   });
 
   it('add_contract_line resolves authoritative contract line values before materializing it', async () => {
