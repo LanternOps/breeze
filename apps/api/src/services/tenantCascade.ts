@@ -506,6 +506,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // but the table is enumerated here per the cascade contract test's
   // requirement that every org_id-columned table be listed for auditability.
   'organization_external_links',
+  'organization_key_dates',
   'organization_users',
   'agent_rollback_events',
   'agent_rollback_directives',
@@ -585,6 +586,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'sensitive_data_findings',
   'sensitive_data_policies',
   'sensitive_data_scans',
+  // service_deliverable_* : evidence -> occurrences -> deliverables (children first);
+  // localeCompare puts '_e' < '_o' < 's', so alphabetical order IS FK order here.
+  'service_deliverable_evidence',
+  'service_deliverable_occurrences',
+  'service_deliverables',
   'service_principals',
   'service_process_check_results',
   'sites',
