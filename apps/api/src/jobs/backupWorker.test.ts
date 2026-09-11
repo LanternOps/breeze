@@ -10,6 +10,11 @@ const mockDb = {
   limit: vi.fn().mockResolvedValue([]),
   selectDistinct: vi.fn(),
   update: vi.fn(),
+  // D18 W01: stampDispatchPinAndIdentity opens `db.transaction(async (tx) =>
+  // ...)` — the mock transaction simply invokes the callback with mockDb
+  // itself as `tx`, so every existing select/update wiring in this file
+  // transparently covers the transactional path too.
+  transaction: vi.fn((cb: (tx: unknown) => unknown) => cb(mockDb)),
 };
 
 vi.mock('../db', () => ({
@@ -25,6 +30,17 @@ const sweepUnreferencedBackupObjectsMock = vi.fn();
 vi.mock('./backupRetention', () => ({
   cleanupExpiredSnapshots: cleanupExpiredSnapshotsMock,
   sweepUnreferencedBackupObjects: sweepUnreferencedBackupObjectsMock,
+  // D18 W01: real (not mocked) identity logic — a test double here would
+  // hide identity-scoping bugs stampDispatchPinAndIdentity depends on.
+  normalizeStorageIdentity: (provider: string, providerConfig: Record<string, unknown>): string => {
+    if (provider === 'local') {
+      const rawPath = typeof providerConfig.path === 'string' ? providerConfig.path : '';
+      return `local::${rawPath}`;
+    }
+    const endpoint = typeof providerConfig.endpoint === 'string' ? providerConfig.endpoint : '';
+    const bucket = typeof providerConfig.bucket === 'string' ? providerConfig.bucket : '';
+    return `${provider}::${endpoint}::${bucket}`;
+  },
 }));
 
 const captureExceptionMock = vi.fn();
@@ -556,6 +572,24 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
     // ever reached.
     expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledTimes(1);
   });
+
+  it('handles cleanup-expired-snapshots OUTSIDE the blanket runWithSystemDbAccess wrap (D18 W01 §3.7)', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const source = fs.readFileSync(path.resolve(__dirname, './backupWorker.ts'), 'utf-8');
+
+    const cleanupBranchIndex = source.indexOf("data.type === 'cleanup-expired-snapshots'");
+    const blanketWrapIndex = source.indexOf('return runWithSystemDbAccess(async () => {');
+    const switchCleanupCaseIndex = source.indexOf("case 'cleanup-expired-snapshots':");
+
+    expect(cleanupBranchIndex).toBeGreaterThan(-1);
+    expect(blanketWrapIndex).toBeGreaterThan(-1);
+    // The special-cased branch must appear BEFORE the blanket wrap.
+    expect(cleanupBranchIndex).toBeLessThan(blanketWrapIndex);
+    // The switch inside the blanket wrap must no longer have its own
+    // 'cleanup-expired-snapshots' case.
+    expect(switchCleanupCaseIndex).toBe(-1);
+  });
 });
 
 // #3000: `processResults` is the queue-side hop that carries the agent's own
@@ -676,13 +710,25 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
         rows = [{ agentId: 'agent-1' }]; // device -> agent lookup
       } else if (keys.includes('featureLinkId')) {
         rows = [{ featureLinkId: null, backupMode: 'file', modeTargets: { paths: ['/data'] } }]; // job mode lookup
+      } else if (keys.length === 2 && keys.includes('id') && keys.includes('snapshotId')) {
+        rows = []; // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup — no eligible base by default
       } else {
         throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
       }
       return {
         from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue(rows),
+                }),
+              }),
+            }),
+          }),
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue(rows),
+            for: vi.fn().mockResolvedValue(rows),
           }),
         }),
       };
@@ -772,6 +818,148 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
   });
 });
 
+describe('prepareBackupDispatchTargets — base pin + storage identity (D18 W01)', () => {
+  const DATA = { type: 'dispatch-backup' as const, jobId: 'job-1', configId: 'config-1', orgId: 'org-1', deviceId: 'device-1' };
+  const CONFIG_ROW = { id: 'config-1', provider: 'local', providerConfig: { path: '/tmp/gc-test' }, encryption: false };
+  const updateLog: Array<{ table: unknown; payload: Record<string, unknown> }> = [];
+
+  function wireUpdates() {
+    mockDb.update.mockImplementation(((table: unknown) => ({
+      set: (payload: Record<string, unknown>) => ({
+        where: async () => {
+          updateLog.push({ table, payload });
+        },
+      }),
+    })) as never);
+  }
+
+  // Common shape router for this describe block's dispatch flow: (1) config
+  // load (no arg), (2) isBackupJobCancelled (`status`), (3) device->agent
+  // lookup (`agentId`), (4) job mode lookup (`featureLinkId`), (5) the
+  // base-candidate lookup (`id`+`snapshotId`, ends in `.limit()`), (6) the
+  // FOR SHARE lock on backup_snapshots ALONE (`id`, ends in `.for()`), (7)
+  // the retirement-existence check (`id`, ends in `.limit()`).
+  function wireSelectsWithCandidate(candidateRows: unknown[], retirementRows: unknown[] = []) {
+    mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
+      const keys = cols ? Object.keys(cols) : [];
+      let rows: unknown[] = [];
+      if (keys.length === 0) rows = [CONFIG_ROW];
+      else if (keys.length === 1 && keys[0] === 'status') rows = [];
+      else if (keys.length === 1 && keys[0] === 'agentId') rows = [{ agentId: 'agent-1' }];
+      else if (keys.includes('featureLinkId')) rows = [{ featureLinkId: null, backupMode: 'file', modeTargets: { paths: ['/data'] } }];
+      else if (keys.length === 2 && keys.includes('id') && keys.includes('snapshotId')) rows = candidateRows;
+      else if (keys.length === 1 && keys[0] === 'id') rows = candidateRows; // locked row mirrors the candidate (same row, just re-selected under FOR SHARE)
+      return {
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue(rows),
+                }),
+              }),
+            }),
+          }),
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(keys.length === 1 && keys[0] === 'id' ? retirementRows : rows),
+            for: vi.fn().mockResolvedValue(rows),
+          }),
+        }),
+      };
+    }) as never);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    updateLog.length = 0;
+    wireUpdates();
+    agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(true);
+  });
+
+  it('pins a base snapshot and includes baseSnapshotId/publishLeaseExpiresAt in the backup_run payload', async () => {
+    let capturedCommand: { payload?: Record<string, unknown> } | undefined;
+    agentRelayMock.dispatchCommandToAgent.mockImplementation((async (_agentId: string, command: any) => {
+      capturedCommand = command;
+      return { status: 'sent', via: 'local' };
+    }) as any);
+
+    wireSelectsWithCandidate([{ id: 'base-row-id', snapshotId: 'base-snap-1' }], []);
+
+    await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(capturedCommand?.payload?.baseSnapshotId).toBe('base-snap-1');
+    expect(typeof capturedCommand?.payload?.publishLeaseExpiresAt).toBe('string');
+  });
+
+  it('sends baseSnapshotId "" and still sets publishLeaseExpiresAt when no eligible base exists', async () => {
+    let capturedCommand: { payload?: Record<string, unknown> } | undefined;
+    agentRelayMock.dispatchCommandToAgent.mockImplementation((async (_agentId: string, command: any) => {
+      capturedCommand = command;
+      return { status: 'sent', via: 'local' };
+    }) as any);
+
+    wireSelectsWithCandidate([]);
+
+    await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(capturedCommand?.payload?.baseSnapshotId).toBe('');
+    expect(typeof capturedCommand?.payload?.publishLeaseExpiresAt).toBe('string');
+  });
+
+  it('stamps storage_identity (but no lease/pin) directly via stampDispatchPinAndIdentity when mode is null (hyperv/mssql)', async () => {
+    await (__testOnly as any).stampDispatchPinAndIdentity({
+      deviceId: 'device-1',
+      configId: 'config-1',
+      jobId: 'job-hv-1',
+      mode: null,
+      provider: 'local',
+      providerConfig: { path: '/tmp/gc-test' },
+    });
+
+    const entry = updateLog.find((u) => u.payload.storageIdentity !== undefined);
+    expect(entry).toBeDefined();
+    expect(entry?.payload.storageIdentity).toBe('local::/tmp/gc-test');
+    expect(entry?.payload.publishLeaseExpiresAt).toBeUndefined();
+    expect(entry?.payload.baseSnapshotId).toBeUndefined();
+  });
+
+  // Interface contract confirmed against the merged agent implementation
+  // (W03, exec_backup.go): a backup_run payload is REJECTED by the helper if
+  // baseSnapshotId is present without publishLeaseExpiresAt, or vice versa --
+  // presence of the baseSnapshotId KEY (even "") is the server-owned-mode
+  // switch. Every backup_run dispatch must therefore always send BOTH keys
+  // together, and hyperv/mssql (never backup_run) must send NEITHER.
+  it('sends baseSnapshotId+publishLeaseExpiresAt together for backup_run, and neither for a hyperv_backup dispatch', async () => {
+    let capturedCommand: { type?: string; payload?: Record<string, unknown> } | undefined;
+    agentRelayMock.dispatchCommandToAgent.mockImplementation((async (_agentId: string, command: any) => {
+      capturedCommand = command;
+      return { status: 'sent', via: 'local' };
+    }) as any);
+
+    // Route the job-mode lookup to 'hyperv' and the hypervVms discovery
+    // select (`{vmName}`) to one VM, on top of this describe's existing
+    // shape router.
+    mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
+      const keys = cols ? Object.keys(cols) : [];
+      if (keys.length === 0) return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([CONFIG_ROW]) }) }) };
+      if (keys.length === 1 && keys[0] === 'status') return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }) };
+      if (keys.length === 1 && keys[0] === 'agentId') return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ agentId: 'agent-1' }]) }) }) };
+      if (keys.includes('featureLinkId')) return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ featureLinkId: null, backupMode: 'hyperv', modeTargets: {} }]) }) }) };
+      if (keys.length === 1 && keys[0] === 'vmName') return { from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ vmName: 'DC-01' }]) }) };
+      throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
+    }) as never);
+
+    await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(capturedCommand?.type).toBe('hyperv_backup');
+    expect(capturedCommand?.payload).not.toHaveProperty('baseSnapshotId');
+    expect(capturedCommand?.payload).not.toHaveProperty('publishLeaseExpiresAt');
+    // storage_identity is still stamped on the job row for a hyperv target.
+    const entry = updateLog.find((u) => u.payload.storageIdentity !== undefined);
+    expect(entry?.payload.storageIdentity).toBe('local::/tmp/gc-test');
+  });
+});
+
 describe('processDispatchBackup — approval_generation mismatch (site-ceiling gate contract §3)', () => {
   const CONFIG_ROW_GEN3 = { id: 'config-1', provider: 'local', providerConfig: {}, encryption: false, approvalGeneration: 3 };
   const updateLog: Array<{ table: unknown; payload: Record<string, unknown> }> = [];
@@ -788,12 +976,25 @@ describe('processDispatchBackup — approval_generation mismatch (site-ceiling g
         rows = [{ agentId: 'agent-1' }];
       } else if (keys.includes('featureLinkId')) {
         rows = [{ featureLinkId: null, backupMode: 'file', modeTargets: { paths: ['/data'] } }];
+      } else if (keys.length === 2 && keys.includes('id') && keys.includes('snapshotId')) {
+        // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup —
+        // no eligible base for these generation-gate tests (irrelevant to
+        // what this describe block asserts).
+        rows = [];
+      } else if (keys.length === 1 && keys[0] === 'id') {
+        rows = [];
       } else {
         throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
       }
+      const limitFn = vi.fn().mockResolvedValue(rows);
       return {
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+          innerJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: limitFn }) }),
+            }),
+          }),
+          where: vi.fn().mockReturnValue({ limit: limitFn, for: limitFn }),
         }),
       };
     }) as never);

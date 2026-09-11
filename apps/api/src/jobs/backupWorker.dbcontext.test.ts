@@ -24,16 +24,27 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { DispatchOutcome } from '../services/agentCommandRelay';
 
-const { mockDb, ctxState } = vi.hoisted(() => ({
-  mockDb: {
+const { mockDb, ctxState } = vi.hoisted(() => {
+  const db = {
     select: vi.fn(),
     update: vi.fn(),
     insert: vi.fn(),
-  },
-  // DB-access-context depth + an ordered event log, so a test can prove which
-  // work runs inside a held transaction and which runs after it closes.
-  ctxState: { depth: 0, events: [] as string[] },
-}));
+    // D18 W01: stampDispatchPinAndIdentity opens `db.transaction(...)` for a
+    // file/system_image target -- transparent passthrough, since this file's
+    // depth tracking is about withSystemDbAccessContext, not the transaction.
+    // Assigned below (self-reference) rather than inline so the object
+    // literal's own type isn't `unknown`.
+    transaction: vi.fn() as unknown as (cb: (tx: unknown) => unknown) => unknown,
+  };
+  db.transaction = vi.fn((cb: (tx: unknown) => unknown) => cb(db));
+  return {
+    mockDb: db,
+    // DB-access-context depth + an ordered event log, so a test can prove
+    // which work runs inside a held transaction and which runs after it
+    // closes.
+    ctxState: { depth: 0, events: [] as string[] },
+  };
+});
 
 vi.mock('../db', () => ({
   db: mockDb,
@@ -58,6 +69,17 @@ vi.mock('../db', () => ({
 vi.mock('./backupRetention', () => ({
   cleanupExpiredSnapshots: vi.fn(),
   sweepUnreferencedBackupObjects: vi.fn(),
+  // D18 W01: real (not mocked) identity logic -- stampDispatchPinAndIdentity
+  // calls this for every dispatched target.
+  normalizeStorageIdentity: (provider: string, providerConfig: Record<string, unknown>): string => {
+    if (provider === 'local') {
+      const rawPath = typeof providerConfig.path === 'string' ? providerConfig.path : '';
+      return `local::${rawPath}`;
+    }
+    const endpoint = typeof providerConfig.endpoint === 'string' ? providerConfig.endpoint : '';
+    const bucket = typeof providerConfig.bucket === 'string' ? providerConfig.bucket : '';
+    return `${provider}::${endpoint}::${bucket}`;
+  },
 }));
 
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
@@ -109,17 +131,28 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
         rows = [{ agentId: 'agent-1' }]; label = 'deviceSelect'; // device -> agent lookup
       } else if (keys.includes('featureLinkId')) {
         rows = [JOB_ROW]; label = 'jobSelect'; // job mode lookup
+      } else if (keys.length === 2 && keys.includes('id') && keys.includes('snapshotId')) {
+        // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup --
+        // no eligible base for these depth-scoping tests (irrelevant to what
+        // this file asserts).
+        rows = []; label = 'baseCandidateSelect';
+      } else if (keys.length === 1 && keys[0] === 'id') {
+        rows = []; label = 'baseLockOrRetirementSelect';
       } else {
         throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
       }
+      const limitFn = vi.fn().mockImplementation(async () => {
+        ctxState.events.push(`${label}@depth${ctxState.depth}`);
+        return rows;
+      });
       return {
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockImplementation(async () => {
-              ctxState.events.push(`${label}@depth${ctxState.depth}`);
-              return rows;
+          innerJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: limitFn }) }),
             }),
           }),
+          where: vi.fn().mockReturnValue({ limit: limitFn, for: limitFn }),
         }),
       };
     }) as never);
@@ -180,6 +213,11 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       'jobSelect@depth1',
       'cancelledSelect@depth1',
       'cancelledSelect@depth1',
+      // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup + the
+      // tentative identity/lease stamp UPDATE, both inside this same short
+      // context (no eligible base -> one candidate select, one update).
+      'baseCandidateSelect@depth1',
+      'update@depth1',
       'recordExpectation@depth1',
       'ctx:exit',
       // Phase 4: the actual send, NO context held. This is the #1105 fix —
@@ -262,6 +300,11 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       'jobSelect@depth1',
       'cancelledSelect@depth1',
       'cancelledSelect@depth1',
+      // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup + the
+      // tentative identity/lease stamp UPDATE, both inside this same short
+      // context (no eligible base -> one candidate select, one update).
+      'baseCandidateSelect@depth1',
+      'update@depth1',
       'recordExpectation@depth1',
       'ctx:exit',
       'wsDispatch@depth0',
