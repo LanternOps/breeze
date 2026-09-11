@@ -398,6 +398,14 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // 'custom_field' before the 'e' in 'customer' (the prefix-extension trap).
   'customer_email_domains',
   'delegant_m365_connections',
+  // Items before sets — children before parents (both branch FKs are
+  // ON DELETE CASCADE, but the cascade list deletes explicitly).
+  // localeCompare already orders them that way ('i' < 's'); both sort after
+  // 'delegant_m365_connections' ('e' < 'i') and before 'deployment_invites'
+  // ('l' < 'p'). Partner-wide rows carry org_id NULL, so an org erasure never
+  // touches them — only org-owned sets and their items.
+  'deliverable_template_items',
+  'deliverable_template_sets',
   'deployment_invites',
   'deployments',
   'device_agent_health_latest',
