@@ -2,11 +2,12 @@ import { Queue } from 'bullmq';
 import { getBullMQConnection } from './redis';
 import { captureException } from './sentry';
 
-// `contract-events` is an intentionally-unconsumed RESERVED bus (same pattern as
-// `invoice-events` / `catalog-events` / `time-entry-events`): emitContractEvent
-// publishes lifecycle events but nothing reads them yet. Future webhook / notification
-// delivery wires a Worker against this queue. Until then, jobs simply expire per the
-// removeOnComplete/removeOnFail retention below — there is no delivery today.
+// `contract-events` carries contract lifecycle events. Consumed since the
+// service-deliverables wave (#5573 W02 — jobs/deliverableWorker.ts's
+// contract-events Worker), which acts on `contract.cancelled` and ignores every
+// other type. Delivery is still best-effort: emitContractEvent never throws, so
+// a Redis hiccup during a cancel drops the event and the MSP closes the
+// deliverable's effective window by hand.
 export const CONTRACT_EVENTS_QUEUE = 'contract-events';
 
 export type ContractEvent = {

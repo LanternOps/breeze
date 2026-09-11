@@ -469,6 +469,36 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     patch: z.record(z.string(), z.unknown()).optional(),
   }),
 
+  // Service deliverables W02 (#5573 spec §10). Payload objects stay open
+  // records here; the handlers parse them with the HTTP routes' own schemas.
+  list_deliverables: z.object({
+    orgId: uuid,
+    contractId: uuid.optional(),
+    includeInactive: z.boolean().optional(),
+    occurrencesFor: uuid.optional(),
+  }),
+
+  manage_deliverables: z.object({
+    action: z.enum(['create', 'update', 'deactivate', 'deliver', 'waive', 'reopen', 'reschedule', 'link_evidence']),
+    orgId: uuid.optional(),
+    deliverableId: uuid.optional(),
+    occurrenceId: uuid.optional(),
+    input: z.record(z.string(), z.unknown()).optional(),
+    patch: z.record(z.string(), z.unknown()).optional(),
+    note: z.string().max(4000).optional(),
+    reason: z.string().max(2000).optional(),
+    dueAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    reportRunId: uuid.optional(),
+  }),
+
+  manage_key_dates: z.object({
+    action: z.enum(['list', 'create', 'update', 'delete']),
+    orgId: uuid,
+    keyDateId: uuid.optional(),
+    input: z.record(z.string(), z.unknown()).optional(),
+    patch: z.record(z.string(), z.unknown()).optional(),
+  }),
+
   // Review round 1 (IMPORTANT 5, P2-1): `suppress` and `suppressDuration`
   // were missing here even though the tool definition (aiToolsAlerts.ts)
   // has always supported them — an approved `suppress` action-intent

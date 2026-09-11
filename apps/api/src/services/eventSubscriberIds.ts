@@ -12,6 +12,9 @@ export const EVENT_SUBSCRIBER_IDS = [
   // Wave 6 PR 3 (#3828) — durable ticket-helpdesk admission subscriber.
   'ai-agent-ticket-helpdesk',
   'automation-worker',
+  // Service deliverables W02 (#5573 spec §6) — turns a real ticket resolution
+  // into a delivery record per the deliverable's completion policy.
+  'deliverable-status',
   'dns-threat-alerts',
   'notification-dispatcher',
   'policy-alert-bridge',
