@@ -1,7 +1,8 @@
 import type { PortalDocumentCategory, PortalDocumentsDto } from '@breeze/shared';
 import { FileText, Download } from 'lucide-react';
 import { portalApi } from '@/lib/api';
-import { cn, formatDate, formatDateTime } from '@/lib/utils';
+import { cn, formatDateTime } from '@/lib/utils';
+import { formatCalendarDate } from '@/lib/calendarDate';
 import {
   ROW,
   CELL,
@@ -102,7 +103,7 @@ export function DocumentLibrary({ documents }: { documents: PortalDocumentsDto }
                             'order-3 text-xs text-muted-foreground sm:text-right sm:text-sm',
                           )}
                         >
-                          {formatDate(doc.createdAt)}
+                          {formatCalendarDate(doc.createdAt, timezone)}
                         </td>
                         <td className={cn(CELL, 'order-4 basis-full sm:basis-auto')}>
                           <a

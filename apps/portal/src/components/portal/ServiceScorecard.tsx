@@ -13,7 +13,8 @@ import type {
 } from '@breeze/shared';
 import { Download } from 'lucide-react';
 import { portalApi } from '@/lib/api';
-import { cn, formatDate, formatDateTime } from '@/lib/utils';
+import { cn, formatDateTime } from '@/lib/utils';
+import { formatCalendarDate } from '@/lib/calendarDate';
 import {
   BTN_SECONDARY,
   CELL,
@@ -123,7 +124,7 @@ function DeliveredBlock({
   return (
     <div className="mt-1.5 text-sm text-muted-foreground">
       <p>
-        {`Delivered ${formatDate(last.at)} (${timezone})`}
+        {`Delivered ${formatCalendarDate(last.at, timezone)} (${timezone})`}
         {last.late && (
           <>
             {' '}
@@ -147,9 +148,9 @@ function OccurrenceHistory({ occurrences, deliverableId }: { occurrences: Portal
       {occurrences.map((o) => (
         <li key={o.id} data-testid={`portal-service-occurrence-row-${o.id}`} className="py-2 text-sm">
           <p className="font-medium text-foreground">
-            {formatDate(o.periodStart)} – {formatDate(o.periodEnd)}
+            {formatCalendarDate(o.periodStart)} – {formatCalendarDate(o.periodEnd)}
           </p>
-          <p className="mt-0.5 text-xs text-muted-foreground">{`Due ${formatDate(o.dueAt)}`}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{`Due ${formatCalendarDate(o.dueAt)}`}</p>
           <div className="mt-1 flex flex-wrap items-center gap-2">
             <StatusMark tone={OCCURRENCE_TONE[o.status]}>{OCCURRENCE_LABEL[o.status]}</StatusMark>
             {o.rescheduled && (
@@ -207,7 +208,7 @@ function DeliverableRow({
           {STATUS_LABEL[deliverable.status]}
         </StatusMark>
         <p className="mt-1 text-xs text-muted-foreground">
-          {`Next due: ${deliverable.nextDue ? formatDate(deliverable.nextDue) : 'Not scheduled'}`}
+          {`Next due: ${deliverable.nextDue ? formatCalendarDate(deliverable.nextDue) : 'Not scheduled'}`}
         </p>
       </td>
       <td className={cn(CELL, 'order-3 basis-full sm:basis-auto')}>
@@ -299,7 +300,7 @@ export function ServiceScorecard({ overview }: { overview: PortalServiceOverview
                   >
                     <span className="text-foreground">{kd.label}</span>
                     <span className="text-muted-foreground">
-                      {formatDate(kd.date)}
+                      {formatCalendarDate(kd.date)}
                       {kd.source === 'contract_end' && ' — Agreement ends'}
                     </span>
                   </li>
