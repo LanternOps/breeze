@@ -4,8 +4,8 @@ Status: **approved by Todd 2026-09-10** (after the D12–D14 additions).
 Advisor quorum: Fable position formed, codex gpt-6-astra xhigh read-only review
 received; two disagreements resolved in codex's favour on the evidence, one split
 resolved by tie-break. See "Quorum record" (§17).
-Tracking: to be registered via feature-lifecycle after approval.
-Plan: to be written with `writing-plans` after approval.
+Tracking: LanternOps/breeze#5573 (waves #5574 W01, #5575 W02, #5576 W03, #5577 W04, #5578 W05).
+Plan: `docs/superpowers/plans/billing/2026-09-10-service-deliverables.md` (index, one plan per wave).
 
 ## 1. Problem and goal
 
@@ -87,8 +87,9 @@ Out (v1):
 
 Every composite FK that references an `org_id` column is `DEFERRABLE INITIALLY
 IMMEDIATE` (org merge contract, CLAUDE.md). Dates are calendar dates; "today" in
-the sweep is computed in the partner's configured timezone, falling back to UTC,
-exactly as the billing sweep does (the plan pins the helper).
+the sweep is the UTC calendar date, exactly as the contract billing sweep computes
+it (`contractWorker.ts`; there is no partner-timezone helper in `contractMath.ts`).
+Partner-local due dates are a follow-up if a customer near the date line needs them.
 
 ### 4.1 `service_deliverables` — shape 1 (direct `org_id`)
 
