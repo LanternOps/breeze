@@ -397,11 +397,26 @@ export class BreezeOidcAdapter {
           // nukes the whole grant family. We deliberately KEEP the
           // grant-family revocation — genuine rotation replay is the
           // canonical token-theft signal and must stay fatal — and instead
-          // fix the known innocent trigger upstream (resource-alias
-          // normalization in routes/oauth.ts). The revoked_at / revoked_ms_ago
-          // context below lets on-call distinguish the two: an innocent
-          // post-failure retry presents within seconds of revocation, while
-          // theft replay typically surfaces much later.
+          // fix the known innocent trigger upstream: resource-alias
+          // normalization (`normalizeResourceParams` in
+          // oauth/resourceIndicators.ts, applied by routes/oauth.ts) stops an
+          // alias-only `resource` mismatch from failing the exchange in the
+          // first place.
+          //
+          // SUPPORT-VISIBLE CONSEQUENCE: that revocation is now DURABLE and
+          // IRREVERSIBLE. It used to be recorded only in the Redis grant
+          // marker, so a family effectively "recovered" once the marker
+          // expired (GRANT_REVOCATION_TTL_SECONDS). It now stamps
+          // oauth_grants.revoked_at and revokes every sibling refresh token,
+          // which is the whole point — a thief must not be able to wait the
+          // marker out — but it means an affected client CANNOT recover by
+          // retrying later. The user must re-consent. Runbooks should expect
+          // "re-authorize the connected app", not "wait and retry".
+          //
+          // The revoked_at / revoked_ms_ago context below lets on-call
+          // distinguish the two cases: an innocent post-failure retry presents
+          // within seconds of revocation, while theft replay typically
+          // surfaces much later.
           logOauthError({
             errorId: ERROR_IDS.OAUTH_REFRESH_TOKEN_REUSE,
             message: 'Revoked refresh token lookup detected',
