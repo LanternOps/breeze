@@ -8,8 +8,9 @@
  * lived only in route handlers with no service-layer chokepoint — this module
  * is that chokepoint. Do not add a second script-insert path that bypasses it.
  */
-import type { ScriptParameterDefinition } from '@breeze/shared';
+import type { ScriptOrigin, ScriptParameterDefinition } from '@breeze/shared';
 import { db } from '../db';
+import { cutScriptVersion, type ScriptVersionProvenance } from './scriptVersions';
 import { scripts } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import {
@@ -198,11 +199,23 @@ export type ScriptInsertInput = {
  * can NEVER produce an `isSystem: true` row — at any caller scope, including
  * system — which is deliberately stricter than `POST /scripts`.
  */
+export type ScriptInsertOptions = {
+  requestedIsSystem?: boolean;
+  /** Birth record for the version row this insert cuts. Defaults to 'system'
+   *  for a clamped system script and 'human' otherwise; the bundle importer
+   *  passes 'imported'. Ignored when `provenance` is given. */
+  origin?: ScriptOrigin;
+  /** Full provenance for the v1 row, for callers that have more than an origin
+   *  in hand (W03's promote passes the proposal's review evidence here rather
+   *  than cutting a second version on top of the create). */
+  provenance?: ScriptVersionProvenance;
+};
+
 export async function insertScriptRow(
   auth: Pick<AuthContext, 'scope' | 'user'>,
   scope: ScriptCreateScope,
   input: ScriptInsertInput,
-  opts: { requestedIsSystem?: boolean } = {}
+  opts: ScriptInsertOptions = {}
 ) {
   const isSystem = auth.scope === 'system' ? (opts.requestedIsSystem ?? false) : false;
 
@@ -216,7 +229,14 @@ export async function insertScriptRow(
     submitted: input.acknowledgedSecurityPatterns,
   });
 
-  const [script] = await db
+  // The row and its v1 version are one unit of work: a create that left no
+  // version behind would make headScriptVersion() null for a live script, and
+  // script_versions is append-only so it could not be repaired afterwards.
+  //
+  // `version: 0` is transient — cutScriptVersion locks the row, moves it to 1,
+  // and snapshots it. Nothing outside this transaction ever sees 0.
+  return db.transaction(async (tx) => {
+  const [script] = await tx
     .insert(scripts)
     .values({
       orgId: isSystem && !scope.orgId ? null : scope.orgId,
@@ -231,7 +251,7 @@ export async function insertScriptRow(
       timeoutSeconds: input.timeoutSeconds,
       runAs: input.runAs,
       isSystem,
-      version: 1,
+      version: 0,
       exitCodeSeverityMapping: input.exitCodeSeverityMapping ?? null,
       acknowledgedSecurityPatterns: acknowledgement.acknowledged,
       // Only stamp attribution when something was actually acknowledged; an
@@ -242,5 +262,19 @@ export async function insertScriptRow(
     })
     .returning();
 
-  return script;
+    if (!script) {
+      throw new Error('Script insert returned no row');
+    }
+
+    const cut = await cutScriptVersion(tx, {
+      scriptId: script.id,
+      provenance: opts.provenance ?? {
+        origin: opts.origin ?? (isSystem ? 'system' : 'human'),
+        changelog: 'Initial version',
+        createdBy: auth.user.id
+      }
+    });
+
+    return { ...script, version: cut.version };
+  });
 }

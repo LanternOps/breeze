@@ -217,6 +217,31 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/pax8SyncService.ts': 'every /pax8 route passes the global capability middleware in routes/pax8.ts',
   'services/policyEvaluationService.ts': 'partner-policy writes gated at routes/policyManagement/actions.ts; workers are system context',
   'services/scriptClone.ts': 'gated via resolveScriptCloneScope → resolveScriptCreateScope (services/scriptWrite.ts), which calls canManagePartnerWidePolicies before any partner-wide insert',
+  // W01a (#5612). cutScriptVersion's only write to `scripts` is
+  // `.set({ version, updatedAt })` on a row it just located by id and locked
+  // FOR UPDATE — it never reads or writes org_id/partner_id, so it can neither
+  // create a partner-wide row nor retarget an org row into one. It is a
+  // transaction-internal helper that takes a `tx`, not a request: there is no
+  // auth context for it to consult, and adding one would mean threading auth
+  // through a function whose whole job is to snapshot a row the caller has
+  // already authorized. Every caller is gated, verified by reading each:
+  //   - routes/scripts.ts POST / (create), PUT /:id, POST /import/:id
+  //     (org-clone) and POST /:id/clone: all four carry
+  //     requirePermission(SCRIPTS_WRITE) + requireMfa(); the create path
+  //     additionally runs resolveScriptCreateScope and the PUT/DELETE paths
+  //     partnerWideScriptWriteError, both of which call
+  //     canManagePartnerWidePolicies before a partner-wide row is written.
+  //   - services/scriptWrite.ts insertScriptRow: its two callers are that
+  //     POST / handler and the bundle importer, and it resolves scope through
+  //     resolveScriptCreateScope itself.
+  //   - services/scriptClone.ts: gated as its own entry above says.
+  //   - services/scriptBundle/index.ts: reached only from
+  //     routes/scriptBundle.ts POST /import — requirePermission(SCRIPTS_WRITE)
+  //     + requireMfa(), and partnerAvailabilityError (→
+  //     canManagePartnerWidePolicies) for availability 'partner'.
+  //   - services/systemScriptLibrary.ts: boot-time library sync, run under
+  //     runWithSystemDbAccess from index.ts with no request in scope.
+  'services/scriptVersions.ts': 'bumps only scripts.version/updatedAt on a row the caller already located and authorized (never org_id/partner_id, so it cannot create or retarget a partner-wide row); a transaction-internal helper with no request auth to consult, and every caller is gated — routes/scripts.ts create/PUT/org-clone/clone behind scripts:write + MFA plus resolveScriptCreateScope / partnerWideScriptWriteError, scriptBundle behind routes/scriptBundle.ts POST /import (scripts:write + MFA + partnerAvailabilityError), systemScriptLibrary is boot-time system context',
   'services/tdSynnexDigitalBridge.ts': 'credential config/test gated at routes/catalog/distributors.ts partnerWideGate; search caches tokens',
   'services/tdSynnexEcExpress.ts': 'credential config/test gated at routes/catalog/distributors.ts partnerWideGate',
   'services/tdSynnexSftpSync.ts': 'credential config/test/sync gated at routes/catalog/distributors.ts partnerWideGate; worker is system context',

@@ -224,7 +224,12 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
   { childTable: 'patch_policies', constraint: 'patch_policies_post_install_script_id_scripts_id_fk', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: true },
   { childTable: 'patch_policies', constraint: 'patch_policies_pre_install_script_id_scripts_id_fk', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: true },
   { childTable: 'script_to_tags', constraint: 'script_to_tags_script_id_scripts_id_fk', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: false },
-  { childTable: 'script_versions', constraint: 'script_versions_script_id_scripts_id_fk', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: false },
+  // script_versions -> scripts was `child-not-deleted` until W01a (#5612):
+  // 2026-10-16-100000-script-versions-immutable.sql re-added that FK with
+  // ON DELETE CASCADE, which is how a table with no org_id of its own erases
+  // with its tenant. The FK to users (approved_by, added by the same
+  // migration) ships ON DELETE SET NULL — a deleted approver nulls the
+  // attribution rather than blocking erasure — so it needs no entry either.
   { childTable: 'snmp_alert_thresholds', constraint: 'snmp_alert_thresholds_device_id_snmp_devices_id_fk', parentTable: 'snmp_devices', reason: 'child-not-deleted', allColumnsNullable: false },
   // Was `pre-cleared` until #5473: software_versions rows for a deleted org
   // used to have their own ASSOCIATED_SYSTEM_SCOPED_TABLES clearSql entry.

@@ -318,7 +318,7 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // D9): a template set is org-scoped (org_id set) OR partner-wide (partner_id
   // set, org_id NULL — one service tier applied across every org the MSP
   // manages). Created dual-axis from day one in
-  // 2026-10-15-170500-deliverable-templates. The org_id column means org-tenant
+  // 2026-10-16-100500-deliverable-templates. The org_id column means org-tenant
   // auto-discovery already asserts the breeze_has_org_access branch, so these
   // entries are what assert the breeze_has_partner_access (partner-wide)
   // branch. CHECKs <table>_one_owner_chk enforce exactly one axis. Functional
@@ -598,7 +598,7 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // left and should be deleted rather than patched.
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // deliverable_template_sets_one_owner_chk / deliverable_template_items_one_owner_chk
-  // ((org_id IS NULL) <> (partner_id IS NULL)), 2026-10-15-170500.
+  // ((org_id IS NULL) <> (partner_id IS NULL)), 2026-10-16-100500.
   'deliverable_template_sets',
   'deliverable_template_items',
   'access_reviews',
@@ -966,6 +966,30 @@ async function loadRlsState(): Promise<Map<string, boolean>> {
 }
 
 const REQUIRED_CMDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;
+
+/**
+ * Parent-FK children that are APPEND-ONLY by design and therefore carry only
+ * SELECT + INSERT policies. With no policy for a command, FORCE ROW LEVEL
+ * SECURITY denies it for every role including the owner — that absence is the
+ * control, so demanding four commands here would demand the bug back.
+ *
+ * script_versions (2026-10-16-100000-script-versions-immutable.sql): a version
+ * row is the immutable definition of an execution (spec §4.1). It is never
+ * updated, and it dies only through `script_id ... ON DELETE CASCADE`, which
+ * Postgres runs with force-RLS disabled.
+ *
+ * Adding a table here requires the absence of UPDATE/DELETE policies to be
+ * PROVEN behaviourally, not merely declared — see
+ * scriptVersionsImmutable.integration.test.ts.
+ */
+const APPEND_ONLY_PARENT_FK_TABLES: ReadonlySet<string> = new Set<string>(['script_versions']);
+
+/** Commands a parent-FK child must cover, given whether it is append-only. */
+function requiredCmdsFor(table: string): readonly Cmd[] {
+  return APPEND_ONLY_PARENT_FK_TABLES.has(table)
+    ? (['SELECT', 'INSERT'] as const)
+    : REQUIRED_CMDS;
+}
 
 interface TableRow {
   table_name: string;
@@ -1807,9 +1831,17 @@ describe('RLS coverage contract', () => {
 
       const row = rows[0];
       const covered = new Set<string>(row?.covered_cmds ?? []);
-      const missing = REQUIRED_CMDS.filter((cmd) => !covered.has(cmd));
+      const missing = requiredCmdsFor(table).filter((cmd) => !covered.has(cmd));
       if (!row || !row.rls_on || missing.length > 0) {
         offenders.push({ table, rls_on: Boolean(row?.rls_on), missing_cmds: missing });
+      }
+      // An append-only table must have NO update/delete policy at all. If one
+      // reappears, the exemption is stale and must be removed, not honoured.
+      if (APPEND_ONLY_PARENT_FK_TABLES.has(table)) {
+        const surplus = ['UPDATE', 'DELETE'].filter((cmd) => covered.has(cmd));
+        if (surplus.length > 0) {
+          offenders.push({ table, rls_on: Boolean(row?.rls_on), missing_cmds: surplus.map((c) => `unexpected:${c}`) });
+        }
       }
     }
 
@@ -1843,7 +1875,7 @@ describe('RLS coverage contract', () => {
         const rule: ParentRule = overlay?.[cmd]?.[slot] ?? { kind: 'any-of', parents };
         return predicateCoversParents(pred, rule);
       });
-      const missing = REQUIRED_CMDS.filter((cmd) => !covered.has(cmd));
+      const missing = requiredCmdsFor(table).filter((cmd) => !covered.has(cmd));
       const rlsOn = rlsState.get(table) ?? false;
       if (!rlsOn || missing.length > 0) offenders.push({ table, rls_on: rlsOn, missing_cmds: missing });
     }
@@ -4544,6 +4576,17 @@ describe('m365 communications-delegated RLS — structural enforcement', () => {
 // they guard against an over-tight policy; every negative row is RED on main.
 describe('script_versions / script_to_tags RLS — parent-join forge enforcement (Org A/B, Partner A/B)', () => {
   const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  // Execution-definition columns are NOT NULL since
+  // 2026-10-16-100000-script-versions-immutable.sql; the values are irrelevant
+  // to the RLS forge, only their presence.
+  const versionDef = {
+    language: 'powershell' as const,
+    timeoutSeconds: 300,
+    runAs: 'system' as const,
+    parameters: null,
+    contentDigest: 'f'.repeat(64),
+    origin: 'human' as const,
+  };
   let partnerAId: string;
   let partnerBId: string;
   let orgA1Id: string;
@@ -4599,8 +4642,8 @@ describe('script_versions / script_to_tags RLS — parent-join forge enforcement
 
       // created_by is nullable (0001-baseline.sql:5216) — no users rows needed.
       const seededVersions = await db.insert(scriptVersions).values([
-        { scriptId: sSysId, version: 1, content: 'echo sys-v1', changelog: 'seed', createdBy: null },
-        { scriptId: sPAId, version: 1, content: 'echo pa-v1', changelog: 'seed', createdBy: null },
+        { ...versionDef, scriptId: sSysId, version: 1, content: 'echo sys-v1', changelog: 'seed', createdBy: null },
+        { ...versionDef, scriptId: sPAId, version: 1, content: 'echo pa-v1', changelog: 'seed', createdBy: null },
       ]).returning({ id: scriptVersions.id });
       vSysId = seededVersions[0]!.id;
       vPAId = seededVersions[1]!.id;
@@ -4611,7 +4654,11 @@ describe('script_versions / script_to_tags RLS — parent-join forge enforcement
     if (!partnerAId) return;
     await withSystemDbAccessContext(async () => {
       const scriptIds = [sA1Id, sB1Id, sPAId, sSysId];
-      await db.delete(scriptVersions).where(inArray(scriptVersions.scriptId, scriptIds));
+      // script_versions rows are append-only as of
+      // 2026-10-16-100000-script-versions-immutable.sql — there is no DELETE
+      // policy, so an explicit delete matches zero rows even under system
+      // scope. The `delete(scripts)` below reaps them through
+      // script_versions_script_id_scripts_id_fk ON DELETE CASCADE.
       await db.delete(scriptToTags).where(inArray(scriptToTags.scriptId, scriptIds));
       await db.delete(scripts).where(inArray(scripts.id, scriptIds));
       await db.delete(scriptTags).where(inArray(scriptTags.id, [tA1Id, tB1Id, tPAId]));
@@ -4654,7 +4701,7 @@ describe('script_versions / script_to_tags RLS — parent-join forge enforcement
   it('org A1 can INSERT and SELECT a version of its own script', async () => {
     await ensureFixtures();
     const inserted = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
-      db.insert(scriptVersions).values({ scriptId: sA1Id, version: 1, content: 'echo a1-v1', changelog: 'org A1', createdBy: null }).returning({ id: scriptVersions.id })
+      db.insert(scriptVersions).values({ ...versionDef, scriptId: sA1Id, version: 1, content: 'echo a1-v1', changelog: 'org A1', createdBy: null }).returning({ id: scriptVersions.id })
     );
     expect(inserted).toHaveLength(1);
     vA1Id = inserted[0]!.id;
@@ -4686,7 +4733,7 @@ describe('script_versions / script_to_tags RLS — parent-join forge enforcement
     await ensureFixtures();
     await expectRlsViolation('script_versions', () =>
       withDbAccessContext(orgContext(orgB1Id, partnerBId), async () =>
-        db.insert(scriptVersions).values({ scriptId: sA1Id, version: 9, content: 'forged', changelog: null, createdBy: null })
+        db.insert(scriptVersions).values({ ...versionDef, scriptId: sA1Id, version: 9, content: 'forged', changelog: null, createdBy: null })
       )
     );
   });
@@ -4734,7 +4781,7 @@ describe('script_versions / script_to_tags RLS — parent-join forge enforcement
     expect(visible).toEqual([]);
     await expectRlsViolation('script_versions', () =>
       withDbAccessContext(partnerContext(partnerBId), async () =>
-        db.insert(scriptVersions).values({ scriptId: sPAId, version: 9, content: 'forged', changelog: null, createdBy: null })
+        db.insert(scriptVersions).values({ ...versionDef, scriptId: sPAId, version: 9, content: 'forged', changelog: null, createdBy: null })
       )
     );
   });
@@ -4743,7 +4790,7 @@ describe('script_versions / script_to_tags RLS — parent-join forge enforcement
   it('partner A can INSERT a version and a link on its own partner-wide script', async () => {
     await ensureFixtures();
     const inserted = await withDbAccessContext(partnerContext(partnerAId), async () =>
-      db.insert(scriptVersions).values({ scriptId: sPAId, version: 2, content: 'echo pa-v2', changelog: 'partner A', createdBy: null }).returning({ id: scriptVersions.id })
+      db.insert(scriptVersions).values({ ...versionDef, scriptId: sPAId, version: 2, content: 'echo pa-v2', changelog: 'partner A', createdBy: null }).returning({ id: scriptVersions.id })
     );
     expect(inserted).toHaveLength(1);
     await withDbAccessContext(partnerContext(partnerAId), async () => db.insert(scriptToTags).values({ scriptId: sPAId, tagId: tPAId }));
@@ -4760,7 +4807,7 @@ describe('script_versions / script_to_tags RLS — parent-join forge enforcement
     expect(visible.map((r) => r.id)).toEqual([vPAId]);
     await expectRlsViolation('script_versions', () =>
       withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
-        db.insert(scriptVersions).values({ scriptId: sPAId, version: 9, content: 'forged', changelog: null, createdBy: null })
+        db.insert(scriptVersions).values({ ...versionDef, scriptId: sPAId, version: 9, content: 'forged', changelog: null, createdBy: null })
       )
     );
   });
@@ -4802,12 +4849,12 @@ describe('script_versions / script_to_tags RLS — parent-join forge enforcement
     await ensureFixtures();
     await expectRlsViolation('script_versions', () =>
       withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
-        db.insert(scriptVersions).values({ scriptId: sSysId, version: 9, content: 'forged', changelog: null, createdBy: null })
+        db.insert(scriptVersions).values({ ...versionDef, scriptId: sSysId, version: 9, content: 'forged', changelog: null, createdBy: null })
       )
     );
     await expectRlsViolation('script_versions', () =>
       withDbAccessContext(partnerContext(partnerAId), async () =>
-        db.insert(scriptVersions).values({ scriptId: sSysId, version: 9, content: 'forged', changelog: null, createdBy: null })
+        db.insert(scriptVersions).values({ ...versionDef, scriptId: sSysId, version: 9, content: 'forged', changelog: null, createdBy: null })
       )
     );
   });

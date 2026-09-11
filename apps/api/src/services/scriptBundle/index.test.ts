@@ -17,7 +17,11 @@ const h = vi.hoisted(() => {
     selectQueue: [] as unknown[][],
     selectWheres: [] as unknown[],
     inserts: [] as Array<{ table: unknown; values: unknown }>,
-    updates: [] as Array<{ table: unknown; values: unknown }>
+    updates: [] as Array<{ table: unknown; values: unknown }>,
+    // cutScriptVersion calls, recorded rather than executed: the real helper
+    // needs a live `SELECT ... FOR UPDATE`, and its behaviour is proven by
+    // services/scriptVersions.test.ts plus the live-DB bundle RLS suite.
+    cuts: [] as Array<{ scriptId: string; provenance: Record<string, unknown> }>
   };
   function chain(get: () => unknown) {
     const c: Record<string, unknown> = {};
@@ -35,8 +39,19 @@ const h = vi.hoisted(() => {
   return { state, chain };
 });
 
+vi.mock('../scriptVersions', () => ({
+  cutScriptVersion: vi.fn((_tx: unknown, args: { scriptId: string; provenance: Record<string, unknown> }) => {
+    h.state.cuts.push(args);
+    return Promise.resolve({ id: 'version-row', scriptId: args.scriptId, version: 1 });
+  })
+}));
+
 vi.mock('../../db', () => ({
   db: {
+    transaction: vi.fn(async (fn: (tx: unknown) => unknown) => {
+      const { db } = await import('../../db');
+      return fn(db);
+    }),
     select: vi.fn(() => h.chain(() => h.state.selectQueue.shift() ?? [])),
     insert: vi.fn((table: unknown) => ({
       values: vi.fn((values: unknown) => {
@@ -104,6 +119,7 @@ beforeEach(() => {
   h.state.selectWheres = [];
   h.state.inserts = [];
   h.state.updates = [];
+  h.state.cuts = [];
 });
 
 /**
@@ -373,7 +389,7 @@ describe('importBundle', () => {
     }
   });
 
-  it('new-version mode appends the previous content to scriptVersions and bumps the version', async () => {
+  it('new-version mode cuts an imported-origin AFTER-image and leaves the bump to cutScriptVersion', async () => {
     const bundle = validBundle([{ ...baseEntry, content: 'new content' }]);
     h.state.selectQueue.push([
       {
@@ -393,18 +409,22 @@ describe('importBundle', () => {
     });
     expect('error' in result).toBe(false);
 
-    const versionInsert = h.state.inserts.find((i) => i.table === scriptVersions);
-    expect(versionInsert).toBeDefined();
-    const snapshot = versionInsert!.values as Record<string, unknown>;
-    expect(snapshot.scriptId).toBe(SCRIPT_ID);
-    expect(snapshot.version).toBe(4);
-    expect(snapshot.content).toBe('old content');
+    // W01a: the importer no longer writes script_versions itself — it hands
+    // the after-image cut to cutScriptVersion, which snapshots the row the
+    // update just wrote and owns scripts.version.
+    expect(h.state.inserts.find((i) => i.table === scriptVersions)).toBeUndefined();
+    expect(h.state.cuts).toHaveLength(1);
+    expect(h.state.cuts[0]!.scriptId).toBe(SCRIPT_ID);
+    expect(h.state.cuts[0]!.provenance).toMatchObject({
+      origin: 'imported',
+      changelog: `Imported from bundle "${baseEntry.name}"`
+    });
 
     const update = h.state.updates.find((u) => u.table === scripts);
     expect(update).toBeDefined();
     const set = update!.values as Record<string, unknown>;
     expect(set.content).toBe('new content');
-    expect(set.version).toBe(5);
+    expect(set).not.toHaveProperty('version');
     if ('versioned' in result) expect(result.versioned).toBe(1);
   });
 

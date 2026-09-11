@@ -32,6 +32,7 @@
       "tickets": "Tickets",
       "billing": "Contracts & Billing",
       "service": "Service",
+      "documents": "Documents",
       "activity": "Activity"
     },
     "comingSoon": {
@@ -127,6 +128,74 @@
         "contracts": "Contracts",
         "invoices": "Invoices",
         "quotes": "Quotes"
+      }
+    },
+    "documents": {
+      "title": "Documents",
+      "subtitle": "Runbooks, baselines, policies and delivery evidence for this organization.",
+      "empty": "No documents yet. Upload a runbook, a baseline or a signed policy to start the library.",
+      "emptyFiltered": "No documents in this category.",
+      "loadFailed": "Could not load documents.",
+      "upload": "Upload document",
+      "uploading": "Uploading…",
+      "replace": "Replace",
+      "download": "Download",
+      "delete": "Delete",
+      "deleteConfirm": "Delete \"{{title}}\"? This removes the file and every earlier version of it. This cannot be undone.",
+      "edit": "Edit",
+      "save": "Save",
+      "cancel": "Cancel",
+      "versions": "Version history",
+      "showSuperseded": "Show earlier versions",
+      "form": {
+        "title": "Title",
+        "description": "Description",
+        "category": "Category",
+        "portalVisible": "Visible in the customer portal",
+        "file": "File",
+        "fileHint": "PDF, JPEG, PNG or WebP, up to 10 MB.",
+        "replaceHint": "The current version is kept as history and the new file becomes the current one."
+      },
+      "filter": {
+        "all": "All categories"
+      },
+      "category": {
+        "baseline": "Baseline",
+        "runbook": "Runbook",
+        "policy": "Policy",
+        "evidence": "Evidence",
+        "report": "Report",
+        "export": "Export",
+        "other": "Other"
+      },
+      "column": {
+        "title": "Title",
+        "category": "Category",
+        "size": "Size",
+        "uploaded": "Uploaded",
+        "portal": "Portal",
+        "actions": "Actions"
+      },
+      "badge": {
+        "superseded": "Earlier version",
+        "portal": "In portal"
+      },
+      "errors": {
+        "tooLarge": "That file is larger than 10 MB.",
+        "unsupportedType": "Only PDF, JPEG, PNG and WebP files can be stored.",
+        "storageUnavailable": "Document storage is unavailable right now. Try again shortly.",
+        "notHead": "This document has already been replaced. Reload and work from the current version.",
+        "emptyFile": "That file is empty.",
+        "uploadFailed": "Could not upload the document.",
+        "updateFailed": "Could not save the document.",
+        "deleteFailed": "Could not delete the document.",
+        "downloadFailed": "Could not download the document."
+      },
+      "toast": {
+        "uploaded": "Document uploaded",
+        "replaced": "New version uploaded",
+        "updated": "Document updated",
+        "deleted": "Document deleted"
       }
     }
   }

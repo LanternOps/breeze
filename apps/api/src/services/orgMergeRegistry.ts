@@ -406,7 +406,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   client_ai_usage: { kind: 'repoint-dedupe', key: ['client_user_id', 'period', 'period_key'] }, // verified: client_ai_usage_bucket_uniq (org_id, client_user_id, period, period_key)
   contact_external_links: { kind: 'repoint-dedupe', key: ['system', 'external_id'] }, // verified: contact_external_links_uniq (org_id, system, external_id)
   // deliverable_template_sets_org_name_uq (org_id, name) WHERE org_id IS NOT NULL
-  // (2026-10-15-170500) — a plain repoint raises 23505 when both orgs own a set
+  // (2026-10-16-100500) — a plain repoint raises 23505 when both orgs own a set
   // with the same name. Partner-wide sets (org_id NULL) are never merge
   // participants, and keyWhere keeps them out of the collision predicate on
   // both sides. A dropped loser set takes its items with it (both branch FKs
@@ -721,6 +721,12 @@ const REPOINT_TABLES: readonly string[] = [
   "oauth_grants",
   "oauth_refresh_tokens",
   "onedrive_device_state",
+  // Plain repoint, NOT repoint-dedupe: org_documents has no org-scoped unique
+  // key (two orgs may both hold "Firewall baseline"), so after a merge the
+  // survivor simply holds both libraries and there is nothing to drop. The
+  // supersedes chain is intra-org and its composite FK is deferrable, so it
+  // survives the re-point unchanged.
+  "org_documents",
   "organization_external_links",
   "organization_key_dates",
   "pam_rules",

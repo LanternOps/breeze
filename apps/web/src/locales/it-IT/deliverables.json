@@ -80,7 +80,11 @@
     "rescheduledFrom": "Ripianificata dal {{date}}",
     "deliveryNote": "Nota di consegna",
     "waivedReason": "Motivo dell'esonero",
-    "newDueDate": "Nuova scadenza"
+    "newDueDate": "Nuova scadenza",
+    "uploadEvidence": "Carica un file come evidenza",
+    "uploadEvidenceHint": "PDF, JPEG, PNG o WebP, fino a 10 MB. Il file viene archiviato nella libreria documenti di questa organizzazione.",
+    "evidenceDocument": "Documento",
+    "upload": "Carica"
   },
   "evidence": {
     "reportRun": "Esecuzione del report",
@@ -99,7 +103,11 @@
     "duplicateName": "Esiste già un deliverable con questo nome per questa organizzazione.",
     "loadFailed": "Impossibile caricare i deliverable.",
     "saveFailed": "Impossibile salvare il deliverable.",
-    "actionFailed": "Impossibile aggiornare l'occorrenza."
+    "actionFailed": "Impossibile aggiornare l'occorrenza.",
+    "uploadFailed": "Impossibile caricare il file di evidenza.",
+    "tooLarge": "Questo file supera i 10 MB.",
+    "unsupportedType": "È possibile allegare solo file PDF, JPEG, PNG e WebP.",
+    "storageUnavailable": "Lo storage dei documenti non è al momento disponibile. Riprova a breve."
   },
   "confirm": {
     "deactivate": "Disattivare {{name}}? Le occorrenze aperte verranno chiuse e non ne verranno pianificate di nuove.",
@@ -144,7 +152,8 @@
     "rescheduled": "Occorrenza ripianificata",
     "evidenceAdded": "Evidenza aggiunta",
     "evidenceRemoved": "Evidenza rimossa",
-    "deactivated": "Deliverable disattivato"
+    "deactivated": "Deliverable disattivato",
+    "evidenceUploaded": "Evidenza caricata"
   },
   "templates": {
     "pageTitle": "Modelli di deliverable",

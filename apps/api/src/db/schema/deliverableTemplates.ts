@@ -7,7 +7,7 @@ import { deliverableCadenceEnum, deliverableCompletionModeEnum } from './service
  * Spec #5573 §4.6 / D9. Dual ownership: org_id XOR partner_id (CLAUDE.md
  * "Partner-Wide First"). The XOR CHECK, the two branch FKs on items and the
  * partner-wide SELECT policy live in SQL only (migration
- * 2026-10-15-170500-deliverable-templates.sql) — Drizzle cannot express any of
+ * 2026-10-16-100500-deliverable-templates.sql) — Drizzle cannot express any of
  * them. The single-column `references()` below exist for typing.
  */
 export const deliverableTemplateSets = pgTable('deliverable_template_sets', {

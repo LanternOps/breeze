@@ -337,6 +337,18 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "oauth_grants": tablePolicy("org_id", {"included":["id","account_id","client_id","partner_id","org_id","expires_at","created_at","revoked_at","revoked_by_user_id","revoked_reason"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["payload"]}),
   "oauth_refresh_tokens": tablePolicy("org_id", {"included":["id","user_id","client_id","partner_id","org_id","expires_at","revoked_at","created_at","last_used_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["payload"]}),
   "onedrive_device_state": tablePolicy("org_id", {"included":["device_id","org_id","signed_in","onedrive_version","files_on_demand_on","last_reported_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["kfm_folder_states","mounted_libraries","entitled_libraries","signed_in_upns","drift_entries"]}),
+  // org_documents (W03): `data` is bytea -> excludedOpen by the open-container
+  // rule. storage_key is an opaque `org-documents/<id>` path with no tenant
+  // identifier (precedent: ticket_attachments.storage_key, included). sha256 is
+  // a content digest — classified reviewedIncluded rather than included so the
+  // integrity value is explicitly signed off rather than passing on the
+  // technicality that "sha256" misses SUSPICIOUS_NAME_PARTS.
+  "org_documents": tablePolicy("org_id", {
+    included: ["id", "org_id", "title", "description", "category", "storage_backend", "storage_key", "content_type", "byte_size", "original_filename", "uploaded_by_user_id", "portal_visible", "supersedes_document_id", "deleted_at", "deleted_by", "created_at"],
+    reviewedIncluded: ["sha256"],
+    excludedSensitive: [],
+    excludedOpen: ["data"],
+  }),
   "org_ticket_settings": tablePolicy("org_id", {"included":["id","org_id","default_hourly_rate","default_billable","rate_currency","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["sla_overrides"]}),
   "organization_external_links": tablePolicy("org_id", {"included":["id","org_id","partner_id","system","external_id","label","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "organization_key_dates": tablePolicy("org_id", {"included":["id","org_id","label","kind","date","recurs_annually","remind_days_before","owner_user_id","reminded_for_date","reminder_ticket_id","portal_visible","notes","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),

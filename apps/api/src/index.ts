@@ -54,6 +54,7 @@ import { orgArchiveRoutes } from './routes/orgArchive';
 import { orgSummaryRoutes } from './routes/orgSummary';
 import { serviceDeliverableRoutes } from './routes/serviceDeliverables';
 import { deliverableTemplateRoutes } from './routes/deliverableTemplates';
+import { orgDocumentRoutes } from './routes/orgDocuments';
 import { orgKeyDateRoutes } from './routes/orgKeyDates';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
@@ -840,6 +841,7 @@ api.route('/orgs', orgArchiveRoutes);
 api.route('/orgs', orgSummaryRoutes);
 api.route('/orgs', serviceDeliverableRoutes); // /orgs/:orgId/deliverables/* (#5573 W01)
 api.route('/deliverable-templates', deliverableTemplateRoutes); // (#5573 W05)
+api.route('/orgs', orgDocumentRoutes); // /orgs/:orgId/documents/* (#5573 W03)
 api.route('/orgs', orgKeyDateRoutes);         // /orgs/:orgId/key-dates/* (#5573 W01)
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);

@@ -142,11 +142,16 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'list_deliverable_templates',
   'list_deliverables',
   'list_invoices',
+  // Org document library (service deliverables W03) — same family as the other
+  // business objects above: metadata-only tools whose tier-page entry is a
+  // content-authoring task, tracked with the rest of this gap.
+  'list_org_documents',
   'list_organizations',
   'list_quotes',
   'list_script_templates',
   'list_scripts',
   'lookup_distributor_product',
+  'manage_org_documents',
   'm365_query_groups',
   'm365_query_intune_devices',
   'm365_query_org',

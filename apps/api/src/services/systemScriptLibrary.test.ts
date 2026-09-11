@@ -1,7 +1,27 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-vi.mock('../db', () => ({
-  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn() },
+const h = vi.hoisted(() => ({
+  cuts: [] as Array<{ scriptId: string; provenance: Record<string, unknown> }>,
+}));
+
+vi.mock('../db', () => {
+  const db = {
+    select: vi.fn(),
+    insert: vi.fn(),
+    update: vi.fn(),
+    // The sync runs its insert/update + version cut inside db.transaction; the
+    // `tx` handed to the callback is `db` itself, so the per-test
+    // mockReturnValue queues below work unchanged.
+    transaction: vi.fn((fn: (tx: unknown) => unknown) => fn(db)),
+  };
+  return { db };
+});
+
+vi.mock('./scriptVersions', () => ({
+  cutScriptVersion: vi.fn((_tx: unknown, args: { scriptId: string; provenance: Record<string, unknown> }) => {
+    h.cuts.push(args);
+    return Promise.resolve({ id: 'version-row', scriptId: args.scriptId, version: 1 });
+  }),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -123,6 +143,7 @@ describe('ensureSystemLibraryScripts', () => {
     vi.mocked(db.select).mockReset();
     vi.mocked(db.insert).mockReset();
     vi.mocked(db.update).mockReset();
+    h.cuts = [];
   });
 
   function mockExisting(rows: Array<Record<string, unknown>>) {
@@ -133,7 +154,9 @@ describe('ensureSystemLibraryScripts', () => {
   }
 
   function mockInsert() {
-    const values = vi.fn().mockResolvedValue(undefined);
+    const values = vi.fn((vals: Record<string, unknown>) => ({
+      returning: vi.fn().mockResolvedValue([{ id: `created-${vals.name as string}` }]),
+    }));
     vi.mocked(db.insert).mockReturnValue({ values } as never);
     return values;
   }
@@ -202,7 +225,38 @@ describe('ensureSystemLibraryScripts', () => {
     expect(result.updated).toBeGreaterThan(0);
     const patch = set.mock.calls[0]![0];
     expect(patch.content).toBe(editionMigration!.content);
-    expect(patch.version).toBe(4);
+    // W01a: cutScriptVersion owns the bump — a second one here would skip a
+    // number and break UNIQUE-backed history.
+    expect(patch).not.toHaveProperty('version');
+    expect(h.cuts).toHaveLength(1);
+    expect(h.cuts[0]!.provenance).toMatchObject({ origin: 'system', createdBy: null });
+  });
+
+  it('cuts a system-origin version for a newly created library script', async () => {
+    mockExisting([]);
+    const values = mockInsert();
+
+    const result = await ensureSystemLibraryScripts();
+
+    expect(result.created).toBe(SYSTEM_LIBRARY_SCRIPTS.length);
+    expect(h.cuts).toHaveLength(SYSTEM_LIBRARY_SCRIPTS.length);
+    expect(h.cuts[0]!.provenance).toMatchObject({
+      origin: 'system',
+      changelog: 'Shipped system library definition',
+      createdBy: null,
+    });
+    // Inserted at 0 so the cut produces 1; 0 never escapes the transaction.
+    expect(values.mock.calls[0]![0]).toMatchObject({ version: 0, isSystem: true });
+  });
+
+  it('cuts nothing when every shipped definition is unchanged', async () => {
+    mockExisting([existingRowFor(editionMigration!)]);
+    mockInsert();
+    mockUpdate();
+
+    await ensureSystemLibraryScripts();
+
+    expect(h.cuts).toEqual([]);
   });
 
   it('revokes any security acknowledgement when it replaces the content (#5129)', async () => {

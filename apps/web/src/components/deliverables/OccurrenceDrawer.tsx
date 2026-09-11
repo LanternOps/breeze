@@ -6,6 +6,7 @@ import {
   deliverOccurrence,
   listOccurrences,
   removeEvidence,
+  uploadEvidence,
   reopenOccurrence,
   rescheduleOccurrence,
   waiveOccurrence,
@@ -51,6 +52,14 @@ const LATE_PILL = 'inline-flex items-center rounded-full bg-destructive/10 px-2 
 const ACTION_BTN = 'rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50';
 const INPUT = 'w-full rounded-md border bg-background px-2 py-1.5 text-sm';
 
+/** Upload failures the document service can answer with; anything else falls
+ *  back to the generic message. */
+const UPLOAD_ERROR_KEYS: Record<string, string> = {
+  FILE_TOO_LARGE: 'errors.tooLarge',
+  UNSUPPORTED_DOCUMENT_TYPE: 'errors.unsupportedType',
+  STORAGE_UNAVAILABLE: 'errors.storageUnavailable',
+};
+
 function isEvidenceRequired(err: unknown): boolean {
   if (!(err instanceof ActionError)) return false;
   if (err.code === 'EVIDENCE_REQUIRED') return true;
@@ -67,6 +76,7 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
   const { t } = useTranslation('deliverables');
   const uid = useId();
   const [rows, setRows] = useState<Occurrence[]>([]);
+  const [evidenceFiles, setEvidenceFiles] = useState<Record<string, File | null>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [action, setAction] = useState<{ id: string; kind: ActionKind } | null>(null);
@@ -148,6 +158,32 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
     } else {
       if (!dueAt) return;
       void run(t('toast.rescheduled'), () => rescheduleOccurrence(fetcher, orgId, id, { dueAt }));
+    }
+  };
+
+  /** Spec §7 upload-on-deliver: the file becomes an `evidence`-category
+   *  document in this org's library (inheriting the deliverable's portal flag)
+   *  and is linked to the occurrence in one request. */
+  const uploadEvidenceFile = async (id: string) => {
+    const file = evidenceFiles[id];
+    if (!file || busy) return;
+    const form = new FormData();
+    form.append('file', file);
+    form.append('title', file.name);
+    setBusy(true);
+    setInlineError(null);
+    try {
+      const next = await runClientAction(() => uploadEvidence(fetcher, orgId, id, form), {
+        errorFallback: t('errors.uploadFailed'),
+        successMessage: t('toast.evidenceUploaded'),
+        friendly: (code) => (UPLOAD_ERROR_KEYS[code] ? t(/* i18n-dynamic */ UPLOAD_ERROR_KEYS[code]) : undefined),
+      });
+      applyResult(next);
+      setEvidenceFiles((prev) => ({ ...prev, [id]: null }));
+    } catch (err) {
+      handleActionError(err, t('errors.uploadFailed'));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -235,6 +271,33 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
                     ))
                   )}
                 </div>
+
+                {occ.status !== 'waived' && (
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <label className="sr-only" htmlFor={`${uid}-evidence-file-${occ.id}`}>
+                      {t('drawer.uploadEvidence')}
+                    </label>
+                    <input
+                      id={`${uid}-evidence-file-${occ.id}`}
+                      type="file"
+                      accept="application/pdf,image/jpeg,image/png,image/webp"
+                      className="max-w-[16rem] text-xs"
+                      data-testid={`occurrence-evidence-file-${occ.id}`}
+                      onChange={(e) =>
+                        setEvidenceFiles((prev) => ({ ...prev, [occ.id]: e.target.files?.[0] ?? null }))}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void uploadEvidenceFile(occ.id)}
+                      disabled={busy || !evidenceFiles[occ.id]}
+                      className={ACTION_BTN}
+                      data-testid={`occurrence-evidence-upload-${occ.id}`}
+                    >
+                      {t('drawer.upload')}
+                    </button>
+                    <span className="text-muted-foreground">{t('drawer.uploadEvidenceHint')}</span>
+                  </div>
+                )}
 
                 {occ.deliveryNote && <p className="text-xs text-muted-foreground">{occ.deliveryNote}</p>}
                 {occ.waivedReason && <p className="text-xs text-muted-foreground">{occ.waivedReason}</p>}

@@ -323,6 +323,23 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     payment: z.record(z.string(), z.unknown()).optional(),
   }),
 
+  // Org document library (service deliverables W03). No byte-carrying field:
+  // MCP never uploads document content.
+  list_org_documents: z.object({
+    orgId: uuid,
+    category: z.enum(['baseline', 'runbook', 'policy', 'evidence', 'report', 'export', 'other']).optional(),
+    includeSuperseded: z.boolean().optional(),
+  }),
+
+  manage_org_documents: z.object({
+    action: z.enum(['update_metadata', 'set_portal_visibility', 'supersede']),
+    orgId: uuid,
+    documentId: uuid.optional(),
+    supersedesDocumentId: uuid.optional(),
+    portalVisible: z.boolean().optional(),
+    patch: z.record(z.string(), z.unknown()).optional(),
+  }),
+
   list_quotes: z.object({
     orgId: uuid.optional(),
     status: z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded']).optional(),

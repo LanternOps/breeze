@@ -57,6 +57,9 @@ export const updateDeliverableSchema = z
 
 export const listDeliverablesQuerySchema = z.object({
   contractId: z.string().guid().optional(),
+  // W03: was z.coerce.boolean(), which reads the string 'false' as TRUE and so
+  // inverted `?includeInactive=false` (queryParams.ts, and the repo-wide guard
+  // in queryParams.test.ts).
   includeInactive: optionalQueryBoolean,
 });
 
@@ -64,8 +67,12 @@ export const reportRunEvidenceRefSchema = z.object({
   kind: z.literal('report_run'),
   reportRunId: z.string().guid(),
 });
-// W03 widens this union with { kind: 'document', documentId }.
-export const evidenceRefSchema = z.discriminatedUnion('kind', [reportRunEvidenceRefSchema]);
+export const documentEvidenceRefSchema = z.object({
+  kind: z.literal('document'),
+  documentId: z.string().guid(),
+});
+// W03: both arms of deliverable_evidence_kind are now reachable from the API.
+export const evidenceRefSchema = z.discriminatedUnion('kind', [reportRunEvidenceRefSchema, documentEvidenceRefSchema]);
 export const addEvidenceSchema = evidenceRefSchema;
 
 export const deliverOccurrenceSchema = z.object({
