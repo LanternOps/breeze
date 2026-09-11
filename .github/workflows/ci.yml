@@ -1888,7 +1888,7 @@ jobs:
           # legs and does need it.
           docker run --rm --privileged -v "$PWD":/src -w /src debian:bookworm bash -c '
             apt-get update -qq &&
-            apt-get install -y -qq --no-install-recommends live-build debootstrap squashfs-tools xorriso grub-efi-amd64-bin mtools dosfstools ca-certificates >/dev/null &&
+            apt-get install -y -qq --no-install-recommends live-build debootstrap squashfs-tools xorriso grub-efi-amd64-bin mtools dosfstools ca-certificates cpio >/dev/null &&
             ./recovery-media/build.sh --arch amd64 --breeze-backup ./breeze-backup-linux-amd64 --version ci --out out/ &&
             bash recovery-media/build_test.sh out/breeze-recovery-linux-amd64.iso
           '

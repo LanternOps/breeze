@@ -326,7 +326,7 @@ jobs:
             -v "$PWD":/src -w /src/agent debian:bookworm bash -c '
               dpkg --add-architecture arm64 &&
               apt-get update -qq &&
-              apt-get install -y -qq --no-install-recommends live-build debootstrap squashfs-tools xorriso grub-efi-amd64-bin grub-efi-arm64-bin mtools dosfstools ca-certificates >/dev/null &&
+              apt-get install -y -qq --no-install-recommends live-build debootstrap squashfs-tools xorriso grub-efi-amd64-bin grub-efi-arm64-bin mtools dosfstools ca-certificates cpio >/dev/null &&
               ./recovery-media/build.sh --arch "$ARCH" --breeze-backup "../dist/breeze-backup-linux-$ARCH" --version "$BUILD_VERSION" --out ../out/ &&
               bash recovery-media/build_test.sh "../out/breeze-recovery-linux-$ARCH.iso"
             '
