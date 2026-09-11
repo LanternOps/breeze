@@ -287,29 +287,62 @@ describe('validateConfig', () => {
       });
     });
 
-    it('requires APP_ENCRYPTION_KEY_ID in production for integration credential sealing', () => {
+    it('warns (but does not refuse boot) when APP_ENCRYPTION_KEY_ID is unset in production', () => {
       // No feature flag gates /integrations/{communication,monitoring,ticketing,psa}
-      // — they are mounted unconditionally under the default BREEZE_ROLE 'all',
-      // so in production the key id is required outright. Without it,
-      // encryptSecret drops the AAD and writes non-AAD enc:v1, and
-      // sealIntegrationSettings refuses the write with a runtime 503.
+      // — they are mounted unconditionally under the default BREEZE_ROLE 'all' —
+      // but this is deliberately a WARNING, not a hard error: guided-setup.sh
+      // has never generated APP_ENCRYPTION_KEY_ID, so refusing boot would brick
+      // every existing self-hosted upgrade and every fresh guided install. The
+      // failure lands at the point of use instead (503 from the seal site).
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       withEnv({
         ...validEnv,
         NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'false',
         APP_ENCRYPTION_KEY_ID: '',
       }, () => {
-        expect(() => validateConfig()).toThrow(/APP_ENCRYPTION_KEY_ID/);
+        expect(() => validateConfig()).not.toThrow();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('APP_ENCRYPTION_KEY_ID'),
+        );
+        const sealWarnings = warnSpy.mock.calls
+          .flat()
+          .filter((m) => typeof m === 'string' && m.includes('APP_ENCRYPTION_KEY_ID'));
+        expect(sealWarnings.join('\n')).toContain('503');
       });
+      warnSpy.mockRestore();
     });
 
-    it('does not require APP_ENCRYPTION_KEY_ID outside production', () => {
+    it('does not warn about APP_ENCRYPTION_KEY_ID outside production, or when it is set', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       withEnv({
         ...validEnv,
         NODE_ENV: 'development',
         APP_ENCRYPTION_KEY_ID: '',
       }, () => {
-        expect(() => validateConfig()).not.toThrow(/APP_ENCRYPTION_KEY_ID/);
+        expect(() => validateConfig()).not.toThrow();
+        expect(
+          warnSpy.mock.calls
+            .flat()
+            .filter((m) => typeof m === 'string' && m.includes('APP_ENCRYPTION_KEY_ID')),
+        ).toHaveLength(0);
       });
+      warnSpy.mockClear();
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'false',
+      }, () => {
+        validateConfig();
+        expect(
+          warnSpy.mock.calls
+            .flat()
+            .filter((m) => typeof m === 'string' && m.includes('APP_ENCRYPTION_KEY_ID')),
+        ).toHaveLength(0);
+      });
+      warnSpy.mockRestore();
     });
 
     it('requires APP_ENCRYPTION_KEY_ID when write-action tools are enabled', () => {

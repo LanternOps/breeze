@@ -1890,36 +1890,6 @@ const envSchema = envObjectSchema
       });
     }
 
-    // Integration compatibility settings ↔ APP_ENCRYPTION_KEY_ID (SEC-065).
-    //
-    // /integrations/{communication,monitoring,ticketing,psa} seal every
-    // credential-shaped provider field with AAD-bound v3 ciphertext and REFUSE
-    // to seal without a key id: encryptSecret silently drops the `aad` option
-    // and writes non-AAD enc:v1 when none is configured, which would leave the
-    // family/organization/path binding absent with nothing to signal it.
-    //
-    // Unlike the two rules above, there is no feature flag to hang this off —
-    // integrationRoutes is mounted unconditionally in index.ts, and the default
-    // BREEZE_ROLE 'all' (single-container prod and every self-host) serves it.
-    // So the condition is simply "production". Development and test keep
-    // booting without a key id; they just get the runtime 503 from
-    // sealIntegrationSettings if they actually try to store a credential.
-    //
-    // Operator note: this is a NEW required production variable in the same
-    // class as IS_HOSTED and RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS. It must be
-    // present in .env AND mapped in the api service's `environment:` block —
-    // compose only interpolates variables it lists (the #570 gap class).
-    if (isProduction && !data.APP_ENCRYPTION_KEY_ID?.trim()) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['APP_ENCRYPTION_KEY_ID'],
-        message:
-          'APP_ENCRYPTION_KEY_ID is required in production. Integration provider credentials '
-          + '(/integrations/{communication,monitoring,ticketing,psa}) are sealed with AAD-bound enc:v3 '
-          + 'ciphertext and fail closed without a key id; without it every credential save returns 503. '
-          + 'Set it alongside APP_ENCRYPTION_KEY and map it through the api service environment block.',
-      });
-    }
 
     // --- Native APNs push (all-or-none) ---
     // Push is optional, so an empty APNS_* set is fine. But a partial set
@@ -2068,6 +2038,40 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
     // (AGENT_ENROLLMENT_SECRET is now a hard error in production — see the
     // schema superRefine. No warning needed here; the validator throws if
     // it's missing or weak.)
+
+    // Integration compatibility settings ↔ APP_ENCRYPTION_KEY_ID (SEC-065).
+    //
+    // /integrations/{communication,monitoring,ticketing,psa} seal every
+    // credential-shaped provider field with AAD-bound enc:v3 ciphertext and
+    // REFUSE to seal without a key id: encryptSecret silently drops the `aad`
+    // option and writes non-AAD enc:v1 when none is configured, which would
+    // leave the family/organization/path binding absent with nothing to signal
+    // it. sealIntegrationSettings therefore throws and the routes return 503.
+    //
+    // This is a WARNING, not a boot refusal, for the same reason as the
+    // TRUST_CF_CONNECTING_IP rule above: hard-failing would break every
+    // existing self-hosted upgrade and every fresh guided install.
+    // scripts/guided-setup.sh generates APP_ENCRYPTION_KEY but has never
+    // generated APP_ENCRYPTION_KEY_ID, so a refusal here would brick installs
+    // that are otherwise healthy — the integration compatibility routes are a
+    // small, optional surface and are not worth taking the whole API down for.
+    // The hosted droplets set the key id; self-hosts generally do not.
+    //
+    // The failure is therefore deferred and loud at the point of use rather
+    // than at boot. Note this is a warning only about the INTEGRATION seal —
+    // BREEZE_ROLE api|worker and M365_GRAPH_ACTIONS_TOOLS_ENABLED=true still
+    // refuse boot without the key id (see the schema superRefine).
+    if (!(env.APP_ENCRYPTION_KEY_ID ?? '').trim()) {
+      warnings.push({
+        key: 'APP_ENCRYPTION_KEY_ID',
+        message:
+          'APP_ENCRYPTION_KEY_ID is not set. It is required for integration credential sealing: '
+          + 'saving provider credentials on /integrations/{communication,monitoring,ticketing,psa} '
+          + 'will return 503 until it is set, because those credentials are sealed with AAD-bound '
+          + 'enc:v3 ciphertext and fail closed rather than degrade to unbound enc:v1. Set it '
+          + 'alongside APP_ENCRYPTION_KEY and map it through the api service environment block.',
+      });
+    }
 
     // SR2-16: a prod deploy that trusts proxy headers but leaves
     // TRUST_CF_CONNECTING_IP off resolves client IPs from X-Forwarded-For only.
