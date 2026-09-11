@@ -194,7 +194,7 @@ async function fetchAndCachePartnerCredits(partnerId: string): Promise<PartnerCr
   if (!billingUrl || !billingKey) return { ok: false, reason: 'unconfigured' };
 
   try {
-    const res = await fetch(`${billingUrl}/api/internal/partners/${partnerId}/ai-credits`, {
+    const res = await fetch(`${billingUrl}/billing/api/internal/partners/${partnerId}/ai-credits`, {
       headers: { 'Authorization': `Bearer ${billingKey}` },
     });
 
@@ -375,7 +375,7 @@ export async function deductBillingCredits(orgId: string, costCents: number): Pr
   }
 
   try {
-    const res = await fetch(`${billingUrl}/api/internal/partners/${org.partnerId}/ai-credits/deduct`, {
+    const res = await fetch(`${billingUrl}/billing/api/internal/partners/${org.partnerId}/ai-credits/deduct`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${billingKey}`,

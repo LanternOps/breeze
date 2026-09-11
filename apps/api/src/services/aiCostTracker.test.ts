@@ -493,7 +493,7 @@ describe('recordUsageFromSdkResult', () => {
     expect(captured.aggregateValues.every((values) => values.billingSource === 'platform')).toBe(true);
     expect(captured.aggregateConflictSets.every((set) => set.billingSource === 'platform')).toBe(true);
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://billing.internal/api/internal/partners/partner-1/ai-credits/deduct',
+      'https://billing.internal/billing/api/internal/partners/partner-1/ai-credits/deduct',
       expect.objectContaining({ method: 'POST' }),
     );
   });
@@ -1006,7 +1006,7 @@ describe('recordSessionlessSdkUsage', () => {
     await recordSessionlessSdkUsage('org-1', agentRunUsage, 'platform');
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://billing.internal/api/internal/partners/partner-1/ai-credits/deduct',
+      'https://billing.internal/billing/api/internal/partners/partner-1/ai-credits/deduct',
       expect.objectContaining({ method: 'POST' }),
     );
     const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
@@ -1691,7 +1691,7 @@ describe('getUsageSummary: credit cache read-through (#4388 W04)', () => {
     expect(summary.credits).toMatchObject({ remaining: 777, includedBalance: 200, purchasedBalance: 577 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://billing.internal/api/internal/partners/partner-1/ai-credits',
+      'https://billing.internal/billing/api/internal/partners/partner-1/ai-credits',
       expect.objectContaining({ headers: { Authorization: 'Bearer billing-key' } }),
     );
     expect(redisSet).toHaveBeenCalledWith(
@@ -1718,6 +1718,46 @@ describe('getUsageSummary: credit cache read-through (#4388 W04)', () => {
     redisGet.mockResolvedValueOnce(null);
 
     await expect(getUsageSummary('org1', { includeCredits: true })).resolves.toMatchObject({ credits: null });
+  });
+});
+
+// breeze-billing mounts its internal router at `/billing/api/internal`
+// (`app.route('/billing/api/internal', internalRoutes)`), and
+// `breezeBillingClient.cancelSubscription` already uses that prefix. These two
+// call sites were built against a bare `/api/internal`, so every credit check
+// and every deduction 404'd in production: the gate failed open and platform AI
+// spend was never deducted. Pin the full path so a prefix drift is a red test.
+describe('billing internal route prefix (#5591)', () => {
+  it('the credit check fetches /billing/api/internal/partners/:id/ai-credits', async () => {
+    setupDbMocks(null);
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: true, remainingCredits: 500, plan: 'pro',
+    }));
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValue(null);
+
+    await getUsageSummary('org1', { includeCredits: true });
+
+    expect(new URL(fetchMock.mock.calls[0]![0] as string).pathname).toBe(
+      '/billing/api/internal/partners/partner-1/ai-credits',
+    );
+  });
+
+  it('the deduction posts to /billing/api/internal/partners/:id/ai-credits/deduct', async () => {
+    setupDbMocks(null);
+    const fetchMock = enableBillingService();
+
+    await recordSessionlessSdkUsage('org-1', {
+      costCents: 40,
+      usage: { input_tokens: 10, output_tokens: 20 },
+      numTurns: 1,
+      model: 'claude-sonnet-4-6',
+    }, 'platform');
+
+    expect(new URL(fetchMock.mock.calls[0]![0] as string).pathname).toBe(
+      '/billing/api/internal/partners/partner-1/ai-credits/deduct',
+    );
   });
 });
 
