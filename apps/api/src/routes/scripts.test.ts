@@ -439,10 +439,13 @@ describe('scripts routes', () => {
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
+          // Deliberately carries a STALE version: the response must come from
+          // the cut, not from the pre-cut row. Matching the two would let a
+          // regression to `row.version` pass unnoticed.
           returning: vi.fn().mockResolvedValue([{
             id: SCRIPT_ID_1,
             name: 'Updated Script',
-            version: 2
+            version: 1
           }])
         })
       })
@@ -459,7 +462,7 @@ describe('scripts routes', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.version).toBe(2);
+    expect(body.version).toBe(scriptVersionsH.nextVersion);
   });
 
   // -------------------------------------------------------------------

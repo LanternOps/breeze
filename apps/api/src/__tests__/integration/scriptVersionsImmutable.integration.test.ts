@@ -19,7 +19,12 @@ import { describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { scripts, scriptVersions } from '../../db/schema';
+import { cutScriptVersion, headScriptVersion, sha256Content } from '../../services/scriptVersions';
 import { createOrganization, createPartner } from './db-utils';
+import { getTestDb } from './setup';
+import { replayMigration } from './replayMigration';
+
+const MIGRATION = '2026-10-16-100000-script-versions-immutable.sql';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -204,5 +209,173 @@ describe('script_versions immutability contract (breeze_app role)', () => {
                         OR run_as IS NULL OR content_digest IS NULL`)
     )) as unknown as Array<{ bad: string }>;
     expect(Number(rows[0]?.bad ?? -1)).toBe(0);
+  });
+});
+
+/**
+ * The claims cutScriptVersion's docblock makes that only real Postgres can
+ * settle: the FOR UPDATE lock serialises concurrent cuts, and the SQL twin of
+ * sha256Content agrees with the TypeScript one.
+ */
+describe('cutScriptVersion against real Postgres', () => {
+  runDb('two concurrent cuts serialise on the lock instead of colliding on UNIQUE', async () => {
+    const { script } = await seedScriptWithVersion();
+
+    // Independent contexts => independent pooled connections => two real
+    // concurrent transactions. Without `FOR UPDATE` both would read
+    // scripts.version = 1, both would target version 2, and the loser would
+    // reject with 23505 rather than producing version 3.
+    const cut = () =>
+      withSystemDbAccessContext(() =>
+        db.transaction((tx) =>
+          cutScriptVersion(tx, { scriptId: script.id, provenance: { origin: 'human', createdBy: null } })
+        )
+      );
+    const [a, b] = await Promise.all([cut(), cut()]);
+
+    expect([a.version, b.version].sort()).toEqual([2, 3]);
+
+    const rows = await withSystemDbAccessContext(() =>
+      db.select({ version: scriptVersions.version }).from(scriptVersions).where(eq(scriptVersions.scriptId, script.id))
+    );
+    expect(rows.map((r) => r.version).sort()).toEqual([1, 2, 3]);
+
+    const [parent] = await withSystemDbAccessContext(() =>
+      db.select({ version: scripts.version }).from(scripts).where(eq(scripts.id, script.id))
+    );
+    expect(parent?.version).toBe(3);
+  });
+
+  runDb('snapshots the AFTER image with a digest the SQL twin agrees with', async () => {
+    const { script } = await seedScriptWithVersion();
+    const after = 'Write-Host "after"\r\n';
+
+    const cut = await withSystemDbAccessContext(() =>
+      db.transaction(async (tx) => {
+        await tx.update(scripts).set({ content: after }).where(eq(scripts.id, script.id));
+        return cutScriptVersion(tx, { scriptId: script.id, provenance: { origin: 'human', createdBy: null } });
+      })
+    );
+
+    expect(cut.content).toBe(after);
+    expect(cut.contentDigest).toBe(sha256Content(after));
+
+    // The SQL twin (used by the migration's backfill) must agree with the
+    // TypeScript one, or a backfilled row and a cut row would carry different
+    // digests for identical content.
+    const rows = (await withSystemDbAccessContext(() =>
+      db.execute(
+        sql`SELECT encode(sha256(convert_to(normalize(replace(${after}, E'\r\n', E'\n'), NFC), 'UTF8')), 'hex') AS digest`
+      )
+    )) as unknown as Array<{ digest: string }>;
+    expect(rows[0]?.digest).toBe(sha256Content(after));
+  });
+});
+
+describe('headScriptVersion', () => {
+  runDb('returns the row whose version equals scripts.version, not merely the newest', async () => {
+    const { script } = await seedScriptWithVersion();
+
+    const head1 = await withSystemDbAccessContext(() => headScriptVersion(db, script.id));
+    expect(head1?.version).toBe(1);
+    expect(head1?.content).toBe('Write-Host "v1"');
+
+    // A version row ABOVE scripts.version (which the parent never advanced to)
+    // must not be mistaken for the head.
+    await withSystemDbAccessContext(() =>
+      db.insert(scriptVersions).values({
+        scriptId: script.id,
+        version: 9,
+        content: 'not the head',
+        language: 'powershell',
+        timeoutSeconds: 300,
+        runAs: 'system',
+        parameters: null,
+        contentDigest: sha256Content('not the head'),
+        origin: 'human',
+        changelog: null,
+        createdBy: null,
+      })
+    );
+
+    const head2 = await withSystemDbAccessContext(() => headScriptVersion(db, script.id));
+    expect(head2?.version).toBe(1);
+    expect(head2?.content).toBe('Write-Host "v1"');
+  });
+
+  runDb('returns null for a script with no matching version row', async () => {
+    const head = await withSystemDbAccessContext(() =>
+      headScriptVersion(db, '00000000-0000-4000-8000-000000000000')
+    );
+    expect(head).toBeNull();
+  });
+});
+
+/**
+ * The migration's duplicate-repair CTE only executes when the table already
+ * holds duplicate (script_id, version) pairs — which, once the UNIQUE
+ * constraint exists, can never happen again. A shipped migration cannot be
+ * edited, so the repair has exactly one chance to be correct: this is it.
+ */
+describe(`${MIGRATION} duplicate repair`, () => {
+  runDb('renumbers duplicates above the script max, keeping the oldest row at its number', async () => {
+    const { script } = await seedScriptWithVersion();
+    const testDb = getTestDb();
+
+    // Drop the constraint the migration installs so duplicates can exist,
+    // exactly as they did before this migration shipped.
+    await testDb.execute(
+      sql`ALTER TABLE public.script_versions DROP CONSTRAINT IF EXISTS script_versions_script_id_version_key`
+    );
+
+    const dupe = (content: string, createdAt: string) =>
+      withSystemDbAccessContext(() =>
+        db.insert(scriptVersions).values({
+          scriptId: script.id,
+          version: 1,
+          content,
+          language: 'powershell',
+          timeoutSeconds: 300,
+          runAs: 'system',
+          parameters: null,
+          contentDigest: sha256Content(content),
+          origin: 'human',
+          changelog: content,
+          createdAt: new Date(createdAt),
+          createdBy: null,
+        })
+      );
+    // The seeded row is created now; give the duplicates LATER timestamps so
+    // the repair's `ORDER BY created_at, id` keeps the seed at version 1.
+    await dupe('dupe-a', '2030-01-01T00:00:00Z');
+    await dupe('dupe-b', '2030-01-02T00:00:00Z');
+
+    const before = await withSystemDbAccessContext(() =>
+      db.select({ version: scriptVersions.version }).from(scriptVersions).where(eq(scriptVersions.scriptId, script.id))
+    );
+    // Guards the guard: the duplicates really are duplicates, so a green
+    // result below describes a repair rather than a table that never had any.
+    expect(before.map((r) => r.version)).toEqual([1, 1, 1]);
+
+    await replayMigration(MIGRATION);
+
+    const after = await withSystemDbAccessContext(() =>
+      db
+        .select({ version: scriptVersions.version, changelog: scriptVersions.changelog })
+        .from(scriptVersions)
+        .where(eq(scriptVersions.scriptId, script.id))
+    );
+    const versions = after.map((r) => r.version);
+    expect(new Set(versions).size).toBe(versions.length);
+    expect(after.find((r) => r.changelog === 'seed')?.version).toBe(1);
+    for (const changelog of ['dupe-a', 'dupe-b']) {
+      expect(after.find((r) => r.changelog === changelog)!.version).toBeGreaterThan(1);
+    }
+
+    // And the constraint is back, so the repaired state cannot re-degrade.
+    const conRows = (await withSystemDbAccessContext(() =>
+      db.execute(sql`SELECT 1 AS ok FROM pg_constraint WHERE conname = 'script_versions_script_id_version_key'`)
+    )) as unknown as Array<{ ok: number }>;
+    expect(conRows).toHaveLength(1);
   });
 });

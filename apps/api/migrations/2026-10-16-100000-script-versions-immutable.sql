@@ -26,6 +26,19 @@
 -- autoMigrate wraps each file in a transaction — no inner BEGIN/COMMIT.
 SELECT set_config('breeze.scope', 'system', true);
 
+-- Drop the immutability trigger FIRST, and re-create it at the very end.
+--
+-- Without this the file is not re-runnable: on a second apply the trigger
+-- installed by the first one aborts the repair and backfill UPDATEs below with
+-- 42501 ("script_versions rows are immutable"), because the trigger fires per
+-- ROW and cannot tell a migration apart from a tamper. A plain no-op re-run
+-- would survive (those UPDATEs match zero rows, so the trigger never fires),
+-- but a re-run against a database that still has duplicates or NULL definition
+-- columns would abort mid-file — which is the exact case a re-run exists to
+-- repair. autoMigrate wraps this file in a transaction, so the window in which
+-- the trigger is absent is never visible to another session.
+DROP TRIGGER IF EXISTS script_versions_immutable ON public.script_versions;
+
 DO $$
 BEGIN
   CREATE TYPE public.script_origin AS ENUM ('human', 'ai_proposal', 'imported', 'system');

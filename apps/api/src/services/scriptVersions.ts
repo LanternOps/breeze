@@ -48,9 +48,21 @@ export interface ScriptVersionProvenance {
   createdBy: string | null;
 }
 
-/** Raised when the script row is gone, soft-deleted out of view, or invisible
- *  under RLS, so there is nothing to cut a version from. Callers surface it as
- *  a 404, never as a silent skip. */
+/**
+ * Raised when the script row is gone or invisible under RLS, so there is
+ * nothing to cut a version from.
+ *
+ * NOT caught by any caller, deliberately: every call site has already written
+ * to `scripts` inside the same transaction, so the only correct response is to
+ * let this propagate, roll that write back, and surface a 500 through
+ * `app.onError` (which captures it to Sentry). Swallowing it into a 404 would
+ * mean reporting "not found" for a save that is half-applied in memory, and
+ * catching it to continue would leave a bumped `scripts.version` with no row
+ * behind it — unrepairable, since `script_versions` is append-only.
+ *
+ * It should be unreachable in practice: the row is locked `FOR UPDATE` inside
+ * the same transaction that just wrote to it.
+ */
 export class ScriptVersionCutError extends Error {
   constructor(message: string) {
     super(message);
