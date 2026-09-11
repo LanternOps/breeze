@@ -58,14 +58,16 @@ func TestOsFloorDoesNotUseShimmedVersionProperties(t *testing.T) {
 	// The RegistrySearch must sit directly under a <Property>, and that
 	// property's Id must be what the Launch condition reads; otherwise the
 	// condition evaluates an always-empty property and refuses every install.
-	propRe := regexp.MustCompile(`(?s)<Property\s+Id="([A-Za-z_0-9]+)"[^>]*>\s*<RegistrySearch\s+[^>]*Key="SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"[^>]*Name="CurrentMajorVersionNumber"`)
+	propRe := regexp.MustCompile(`(?s)<Property\s+Id="([A-Z_0-9]+)"[^>]*>\s*<RegistrySearch\s+[^>]*Key="SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"[^>]*Name="CurrentMajorVersionNumber"`)
 	pm := propRe.FindStringSubmatch(wxs)
 	if pm == nil {
 		t.Fatal("expected a <Property> wrapping a RegistrySearch on HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\CurrentMajorVersionNumber to provide the Windows 10 / Server 2016 floor")
 	}
 	prop := pm[1]
-	if strings.ToUpper(prop) == prop {
-		t.Errorf("property %q is public (all uppercase) and could be preset on the msiexec command line to defeat the floor; use a private mixed-case Id", prop)
+	// WiX (WIX0012) requires a search property to be public, i.e. all
+	// uppercase; a mixed-case id fails the release build (v0.112.0 tag).
+	if strings.ToUpper(prop) != prop {
+		t.Errorf("property %q must be all uppercase: AppSearch can only populate public properties (WIX0012)", prop)
 	}
 	found := false
 	for _, c := range conds {
