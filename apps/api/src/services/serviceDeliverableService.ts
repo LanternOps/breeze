@@ -596,3 +596,24 @@ export async function applyTicketStatusChange(_args: {
 }): Promise<void> {
   throw new Error('not implemented (W02)');
 }
+
+// ---------------------------------------------------------------------------
+// W02 sweep-shaped siblings (system callers, no actor).
+// ---------------------------------------------------------------------------
+
+export interface SweepDeliverable {
+  id: string; orgId: string; name: string;
+  cadence: 'monthly' | 'quarterly' | 'semiannual' | 'annual' | 'one_time';
+  anchorDueDate: string; effectiveFrom: string; effectiveUntil: string | null;
+  leadDays: number; graceDays: number; autoEvidenceReportId: string | null;
+}
+
+export async function openDueOccurrencesForDeliverable(_d: SweepDeliverable, _today: string, _serviceOffWarned: Set<string>): Promise<number> {
+  throw new Error('not implemented (W02)');
+}
+export async function markDueOccurrencesMissedForDeliverable(_d: SweepDeliverable, _today: string): Promise<number> {
+  throw new Error('not implemented (W02)');
+}
+export async function applyContractCancelledToDeliverables(_contractId: string, _today: string): Promise<number> {
+  throw new Error('not implemented (W02)');
+}

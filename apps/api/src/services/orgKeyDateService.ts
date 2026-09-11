@@ -192,3 +192,7 @@ export async function deleteKeyDate(orgId: string, id: string, actor: Deliverabl
     .returning({ id: organizationKeyDates.id });
   if (!row) throw new DeliverableServiceError('Not found', 404, 'NOT_FOUND');
 }
+
+export async function sweepKeyDateReminders(_today: string): Promise<number> {
+  throw new Error('not implemented (W02)');
+}
