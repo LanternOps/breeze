@@ -350,6 +350,15 @@
     reverse_proxy portal:4322
   }
 
+  # --- Redirects for partner customer & organization routes ---
+  redir /partner/customers/new /settings/organizations temporary
+  @redirPartnerCustomers path_regexp pc ^/partner/customers/(.+)
+  redir @redirPartnerCustomers /settings/organizations/{re.pc.1} temporary
+  redir /partner/customers /settings/organizations temporary
+
+  @exactOrgs path /organizations /organizations/
+  redir @exactOrgs /settings/organizations temporary
+
   # --- Web frontend (catch-all, with compression) ---
   handle {
     encode zstd gzip
