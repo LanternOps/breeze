@@ -91,6 +91,26 @@ describe('blobStorage (service deliverables W03)', () => {
     expect(getObjectStream).toHaveBeenCalledWith('org-documents/k');
   });
 
+  it('getBlobStream maps an s3 transport fault to BlobStorageError (503), never a bare throw', async () => {
+    withS3();
+    getObjectStream.mockRejectedValueOnce(new Error('connection reset') as never);
+    const { getBlobStream, BlobStorageError } = await import('./blobStorage');
+    let thrown: unknown;
+    try {
+      await getBlobStream({ storageBackend: 's3', storageKey: 'org-documents/k', data: null });
+    } catch (e) { thrown = e; }
+    expect(thrown).toBeInstanceOf(BlobStorageError);
+    expect((thrown as InstanceType<typeof BlobStorageError>).status).toBe(503);
+  });
+
+  it('getBlobStream answers a null body — not an error — for an s3 row with no key', async () => {
+    withS3();
+    const { getBlobStream } = await import('./blobStorage');
+    expect(await getBlobStream({ storageBackend: 's3', storageKey: null, data: null }))
+      .toEqual({ body: null, contentLength: null });
+    expect(getObjectStream).not.toHaveBeenCalled();
+  });
+
   it('deleteBlob is a no-op for a db row and deletes the object for an s3 row', async () => {
     withS3();
     const { deleteBlob } = await import('./blobStorage');

@@ -27,7 +27,9 @@ import {
   type DbAccessContext,
 } from '../../db';
 import { createOrganization, createPartner } from './db-utils';
-import { replaceDocument } from '../../services/orgDocumentService';
+import {
+  deleteDocument, getDocument, listDocuments, replaceDocument, streamDocument, supersedeDocument, updateDocument,
+} from '../../services/orgDocumentService';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -261,6 +263,97 @@ describe('org_documents RLS — org-axis forge (breeze_app role)', () => {
     const successors = rows(await withDbAccessContext(ctxA, () =>
       db.execute(sql`SELECT id FROM org_documents WHERE supersedes_document_id = ${head}::uuid`)));
     expect(successors.map((r) => r.id)).toEqual([winnerId]);
+  });
+
+  runDb('a supersede that arrives while a delete holds the head lock waits, then refuses the deleted target (no live row ever points at a tombstone)', async () => {
+    const { orgA, ctxA } = await seedTwoOrgs();
+    const head = await insertDoc(ctxA, orgA.id, { title: 'Firewall baseline' });
+    const newer = await insertDoc(ctxA, orgA.id, { title: 'Firewall baseline v2' });
+    const actor = { userId: null, partnerId: null, accessibleOrgIds: [orgA.id] };
+
+    // What this proves: the END STATE under a real concurrent interleave — the
+    // superseder waits on the row lock the deleter holds and then refuses,
+    // instead of linking `newer` to a tombstone that every read path 404s.
+    //
+    // What it does NOT prove: that deleteDocument is the thing taking the lock
+    // (this test takes one explicitly to make the interleave deterministic, and
+    // an UPDATE would take a row lock anyway). That deleteDocument runs its
+    // head check and its tombstone under ONE lock is pinned by the unit test
+    // 'takes a row lock on the head so a concurrent supersede cannot slip in
+    // behind the check' in orgDocumentService.test.ts.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const deleterStarted = (async () => {
+      // Take the same lock deleteDocument takes, then hold it.
+      return withDbAccessContext(ctxA, async () => {
+        await db.execute(sql`SELECT id FROM org_documents WHERE id = ${head}::uuid FOR UPDATE`);
+        await gate;
+        await deleteDocument(orgA.id, head, actor);
+      });
+    })();
+
+    await new Promise((r) => setTimeout(r, 250));
+    let supersedeOutcome: { ok: true } | { status?: number; code?: string };
+    const superseder = withDbAccessContext(ctxA, async () => {
+      try {
+        await supersedeDocument(orgA.id, newer, head, actor);
+        return { ok: true } as const;
+      } catch (err) {
+        return { status: (err as { status?: number }).status, code: (err as { code?: string }).code };
+      }
+    });
+    // Give the superseder time to block on the lock, then let the delete run.
+    await new Promise((r) => setTimeout(r, 250));
+    release();
+
+    await deleterStarted;
+    supersedeOutcome = await superseder;
+
+    // The superseder ran AFTER the delete committed, so its target is gone:
+    // it must refuse rather than link to a tombstone.
+    expect(supersedeOutcome).toMatchObject({ status: 404 });
+    const orphan = rows(await withDbAccessContext(ctxA, () =>
+      db.execute(sql`SELECT count(*)::int AS n FROM org_documents WHERE supersedes_document_id IS NOT NULL`)))[0]!.n;
+    expect(orphan).toBe(0);
+    const live = rows(await withDbAccessContext(ctxA, () =>
+      db.execute(sql`SELECT id FROM org_documents WHERE deleted_at IS NULL ORDER BY id`)));
+    expect(live.map((r) => r.id)).toEqual([newer]);
+  });
+
+  runDb('the SERVICE denies a foreign org against real Postgres — 404 on every exported function, and RLS hides the row even for a system-shaped actor', async () => {
+    const { orgA, orgB, ctxA, ctxB } = await seedTwoOrgs();
+    const docA = await insertDoc(ctxA, orgA.id, { title: 'Org A baseline' });
+    // An actor who can reach org B only, asking for org A's document.
+    const actorB = { userId: null, partnerId: null, accessibleOrgIds: [orgB.id] };
+    const file = { buffer: Buffer.concat([Buffer.from('%PDF-'), Buffer.alloc(8, 3)]), contentType: 'application/pdf', filename: 'x.pdf' };
+
+    await withDbAccessContext(ctxB, async () => {
+      for (const call of [
+        () => getDocument(orgA.id, docA, actorB),
+        () => streamDocument(orgA.id, docA, actorB),
+        () => updateDocument(orgA.id, docA, { title: 'pwned' }, actorB),
+        () => replaceDocument(orgA.id, docA, { file }, actorB),
+        () => supersedeDocument(orgA.id, docA, docA, actorB),
+        () => deleteDocument(orgA.id, docA, actorB),
+      ]) {
+        await expect(call()).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+      }
+      await expect(listDocuments(orgA.id, {}, actorB)).rejects.toMatchObject({ status: 404 });
+    });
+
+    // Defence in depth: even an actor the app layer would let through (null
+    // accessibleOrgIds = system-shaped) sees nothing under org B's RLS context,
+    // so the guard is not the only thing standing between the orgs.
+    const unrestricted = { userId: null, partnerId: null, accessibleOrgIds: null };
+    const seen = await withDbAccessContext(ctxB, () => listDocuments(orgA.id, {}, unrestricted));
+    expect(seen).toEqual([]);
+    await expect(withDbAccessContext(ctxB, () => getDocument(orgA.id, docA, unrestricted)))
+      .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+
+    // Positive control: the same calls succeed for the owning org.
+    const actorA = { userId: null, partnerId: null, accessibleOrgIds: [orgA.id] };
+    const mine = await withDbAccessContext(ctxA, () => listDocuments(orgA.id, {}, actorA));
+    expect(mine.map((d) => d.id)).toEqual([docA]);
   });
 
   runDb('a live row must carry its bytes in exactly one place; a tombstone may carry none (23514 / ok)', async () => {

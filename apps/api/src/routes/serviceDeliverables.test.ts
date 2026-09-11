@@ -262,6 +262,17 @@ describe('service deliverable routes (#5573 W01)', () => {
       expect(addEvidence).not.toHaveBeenCalled();
     });
 
+    it('a failed LINK leaves the uploaded document in the library (deliberately uncompensated) and still reports the failure', async () => {
+      addEvidence.mockRejectedValueOnce({ status: 409, code: 'INVALID_OCCURRENCE_TRANSITION', message: 'nope' });
+      const res = await upload(uploadForm());
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'INVALID_OCCURRENCE_TRANSITION' });
+      // The document was created and is NOT deleted: a technician's uploaded
+      // artifact is customer data we would rather keep and re-link.
+      expect(docMocks.uploadDocument).toHaveBeenCalledTimes(1);
+      expect(docMocks.deleteDocument).toBeUndefined();
+    });
+
     it('404s (never 403) an occurrence of another org before any bytes are written', async () => {
       serviceMocks.getOccurrenceOr404.mockRejectedValueOnce({ status: 404, code: 'NOT_FOUND', message: 'Not found' });
       const res = await upload(uploadForm());

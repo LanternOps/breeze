@@ -458,7 +458,11 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
       }
       if (text.includes('SELECT storage_key')) {
         order.push('select-keys');
-        return Promise.resolve([{ storage_key: 'ticket-attachments/a1' }]);
+        return Promise.resolve(
+          text.includes('org_documents')
+            ? [{ storage_key: 'org-documents/d1' }]
+            : [{ storage_key: 'ticket-attachments/a1' }],
+        );
       }
       if (/^\s*delete/i.test(text)) order.push(`delete:${text.slice(0, 60)}`);
       return Promise.resolve({ rowCount: 0 });
@@ -466,23 +470,52 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
 
     await cascadeDeleteOrg(ORG, BY);
 
-    expect(order[0]).toBe('select-keys');
-    expect(order[1]).toBe('objects');
-    expect(order.slice(2).every((s) => s.startsWith('delete:'))).toBe(true);
-    expect(deleteObjectKeysMock).toHaveBeenCalledWith(['ticket-attachments/a1']);
+    // W03: one key READ per byte table (so a missing table cannot blind the
+    // other), then still exactly ONE object-delete batch, and only then rows.
+    const objectsAt = order.indexOf('objects');
+    expect(objectsAt).toBeGreaterThan(0);
+    expect(order.slice(0, objectsAt).every((s) => s === 'select-keys')).toBe(true);
+    expect(order.filter((s) => s === 'objects')).toHaveLength(1);
+    expect(order.slice(objectsAt + 1).every((s) => s.startsWith('delete:'))).toBe(true);
+    expect(deleteObjectKeysMock).toHaveBeenCalledTimes(1);
+    expect(deleteObjectKeysMock).toHaveBeenCalledWith(['ticket-attachments/a1', 'org-documents/d1']);
   });
 
-  it('scopes the key read to this org and to s3-backed rows only', async () => {
+  it('scopes the key read to this org and to s3-backed rows only, for every byte table', async () => {
     rigKeys([]);
     await cascadeDeleteOrg(ORG, BY);
-    const keyQuery = mockState.executedSql.find((t) => t.includes('SELECT storage_key'))!;
-    expect(keyQuery).toContain('ticket_attachments');
-    // W03: the pre-clear is ONE read over BOTH byte tables. A second query
-    // would double the deleteObjectKeys call and break the ordering assertion
-    // in the sibling test, so this is a union, not a second statement.
-    expect(keyQuery).toContain('org_documents');
-    expect(keyQuery).toContain('org_id');
-    expect(keyQuery).toContain("storage_backend = 's3'");
+    const keyQueries = mockState.executedSql.filter((t) => t.includes('SELECT storage_key'));
+    // W03: one read PER byte table, not a UNION. A union means a missing table
+    // blinds the read for the other one too (a 42P01 on either is tolerated),
+    // which would skip the object pre-clear for a table that does exist.
+    expect(keyQueries.some((q) => q.includes('ticket_attachments'))).toBe(true);
+    expect(keyQueries.some((q) => q.includes('org_documents'))).toBe(true);
+    for (const q of keyQueries) {
+      expect(q).toContain('org_id');
+      expect(q).toContain("storage_backend = 's3'");
+    }
+  });
+
+  it('an absent org_documents table does NOT blind the ticket-attachment pre-clear', async () => {
+    // A partial-schema fixture (or a not-yet-migrated deployment) raises 42P01
+    // for one table. The other table's keys must still be read and deleted
+    // BEFORE any row goes — otherwise those objects are orphaned forever.
+    const undefinedTable = Object.assign(new Error('relation "org_documents" does not exist'), { code: '42P01' });
+    vi.mocked(db.execute).mockImplementation(((q: unknown) => {
+      const text = sqlToText(q);
+      if (text.includes('pg_constraint') || text.includes('contype')) {
+        return Promise.resolve(mockState.fkEdges);
+      }
+      if (text.includes('SELECT storage_key')) {
+        if (text.includes('org_documents')) return Promise.reject(undefinedTable);
+        return Promise.resolve([{ storage_key: 'ticket-attachments/a1' }]);
+      }
+      return Promise.resolve({ rowCount: 0 });
+    }) as any);
+
+    await cascadeDeleteOrg(ORG, BY);
+    expect(deleteObjectKeysMock).toHaveBeenCalledTimes(1);
+    expect(deleteObjectKeysMock).toHaveBeenCalledWith(['ticket-attachments/a1']);
   });
 
   it('issues ZERO object deletes for an org with only db-backend attachments', async () => {

@@ -355,6 +355,30 @@ describe('orgDocumentService (service deliverables W03)', () => {
       queueResult([]);
       await expect(deleteDocument('org1', 'd1', actor)).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
     });
+
+    it('takes a row lock on the head so a concurrent supersede cannot slip in behind the check', async () => {
+      queueResult([s3()]);          // head load, FOR UPDATE
+      queueResult([]);              // no successor
+      queueResult([{ id: 'd1' }]);  // tombstone UPDATE
+      await deleteDocument('org1', 'd1', actor);
+      expect(chain.for.mock.calls[0]?.[0]).toBe('update');
+      expect(chain.transaction.mock.calls.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('409s instead of tombstoning when a successor appeared while the delete was in flight', async () => {
+      queueResult([s3()]);              // head load
+      queueResult([{ id: 'd2' }]);      // successor committed by the racing writer
+      await expect(deleteDocument('org1', 'd1', actor)).rejects.toMatchObject({ status: 409, code: 'NOT_HEAD' });
+      expect(deleteBlobKeys).not.toHaveBeenCalled();
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('409s — never a silent success — when the tombstone UPDATE matches no row', async () => {
+      queueResult([s3()]);   // head load
+      queueResult([]);       // no successor
+      queueResult([]);       // UPDATE matched nothing: another delete won the race
+      await expect(deleteDocument('org1', 'd1', actor)).rejects.toMatchObject({ status: 409 });
+    });
   });
 
   describe('streamDocument', () => {

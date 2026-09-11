@@ -997,6 +997,12 @@ interface FkEdge {
 }
 
 /**
+ * Tables whose rows are the only index to an S3 object key. The erasure
+ * pre-clear reads them ONE AT A TIME (see the 1a. block in cascadeDeleteOrg).
+ */
+const OBJECT_PRECLEAR_TABLES = ['ticket_attachments', 'org_documents'] as const;
+
+/**
  * Read foreign-key edges from pg_catalog and return a topological order
  * of `getOrgCascadeDeleteOrder()` where children come before parents.
  *
@@ -1152,38 +1158,56 @@ export async function cascadeDeleteOrg(
   //     the same keys are re-read and the job finishes. Best-effort deletion
   //     with a logged count is deliberately rejected.
   //
-  //     ONE read over both byte tables, not two: a second statement would mean
-  //     a second deleteObjectKeys batch and a second abort path, and the
-  //     object-deletes-before-first-DELETE ordering would stop being a single
-  //     observable step. db-backed rows carry their bytes in the row and need
-  //     no pre-clear; a soft-deleted org_documents row has already had its
-  //     object removed and its storage_key cleared, so the NOT NULL excludes it.
-  try {
-    const keys = await dbModule.withSystemDbAccessContext(async () => {
-      const result = await dbModule.db.execute(sql`
-        SELECT storage_key
-        FROM ticket_attachments
-        WHERE org_id = ${orgId}::uuid
-          AND storage_backend = 's3'
-          AND storage_key IS NOT NULL
-        UNION ALL
-        SELECT storage_key
-        FROM org_documents
-        WHERE org_id = ${orgId}::uuid
-          AND storage_backend = 's3'
-          AND storage_key IS NOT NULL
-      `);
-      const rows = (result as unknown as { rows?: Array<{ storage_key: string }> }).rows
-        ?? (result as unknown as Array<{ storage_key: string }>);
-      return Array.isArray(rows) ? rows.map((r) => r.storage_key).filter(Boolean) : [];
-    });
-    if (keys.length > 0) {
-      await deleteObjectKeys(keys);
+  //     One read PER byte table, deliberately NOT a UNION: the 42P01 tolerance
+  //     below exists for partial-schema fixtures, and a union would let ONE
+  //     missing table blind the read for the other — skipping the pre-clear for
+  //     a table that does exist and orphaning its objects. The reads are still
+  //     followed by a SINGLE deleteObjectKeys batch before the first DELETE, so
+  //     "objects go before rows" remains one observable step.
+  //
+  //     db-backed rows carry their bytes in the row and need no pre-clear; a
+  //     soft-deleted org_documents row has already had its object removed and
+  //     its storage_key cleared, so the NOT NULL excludes it.
+  const objectKeys: string[] = [];
+  for (const table of OBJECT_PRECLEAR_TABLES) {
+    try {
+      const keys = await dbModule.withSystemDbAccessContext(async () => {
+        const result = await dbModule.db.execute(sql`
+          SELECT storage_key
+          FROM ${sql.raw(`"${table}"`)}
+          WHERE org_id = ${orgId}::uuid
+            AND storage_backend = 's3'
+            AND storage_key IS NOT NULL
+        `);
+        const rows = (result as unknown as { rows?: Array<{ storage_key: string }> }).rows
+          ?? (result as unknown as Array<{ storage_key: string }>);
+        return Array.isArray(rows) ? rows.map((r) => r.storage_key).filter(Boolean) : [];
+      });
+      objectKeys.push(...keys);
+    } catch (err) {
+      if (isUndefinedTable(err)) {
+        // Tolerated for partial-schema fixtures only — say so, because in a real
+        // deployment it means this table's objects were never cleared.
+        console.warn(
+          `[tenantCascade] object pre-clear skipped for missing table ${table} (org=${orgId}); ` +
+          'any objects it holds are NOT cleared',
+        );
+        continue;
+      }
+      await writeErasureFailedAudit(
+        orgId, performedBy, performedByEmail, 'tenant_object_preclear', stats, err,
+      );
+      throw new Error(
+        `[tenantCascade] object pre-clear failed for org=${orgId} table=${table}; erasure aborted before any row was deleted and is rerunnable: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
-  } catch (err) {
-    // The isUndefinedTable tolerance covers both tables at once — both ship in
-    // the same product; the guard exists only for partial-schema fixtures.
-    if (!isUndefinedTable(err)) {
+  }
+  if (objectKeys.length > 0) {
+    try {
+      await deleteObjectKeys(objectKeys);
+    } catch (err) {
       await writeErasureFailedAudit(
         orgId, performedBy, performedByEmail, 'tenant_object_preclear', stats, err,
       );

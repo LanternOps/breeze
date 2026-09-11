@@ -296,42 +296,79 @@ export async function deleteDocument(orgId: string, id: string, actor: Deliverab
     storageBackend: orgDocuments.storageBackend,
     storageKey: orgDocuments.storageKey,
   };
-  const [head] = await db.select(bytesColumns).from(orgDocuments).where(liveKey(orgId, id)).limit(1);
-  if (!head) throw notFound();
-  if (await successorOf(orgId, id)) {
-    throw notHead('Only the current version can be deleted; deleting it removes every version of the document');
-  }
 
-  const versions = [head];
-  const seen = new Set([head.id]);
-  let cursor = head.supersedesDocumentId;
-  while (cursor && !seen.has(cursor) && versions.length < MAX_CHAIN_LENGTH) {
-    const [prev] = await db.select(bytesColumns).from(orgDocuments).where(liveKey(orgId, cursor)).limit(1);
-    if (!prev) break;
-    versions.push(prev);
-    seen.add(prev.id);
-    cursor = prev.supersedesDocumentId;
-  }
-
-  // Objects FIRST: the rows are the only index to the keys.
-  const keys = versions
-    .filter((v) => v.storageBackend === 's3' && v.storageKey)
-    .map((v) => v.storageKey as string);
-  if (keys.length > 0) {
-    try {
-      await deleteBlobKeys(keys);
-    } catch (err) {
-      console.error('[orgDocumentService] object delete failed; nothing stamped, delete is retryable', {
-        documentId: id, keys: keys.length, error: err instanceof Error ? err.message : String(err),
-      });
-      throw storageUnavailable();
+  // ONE transaction, start to finish. The head is locked FOR UPDATE, the
+  // "is it still a head?" question is asked inside that lock, and the tombstone
+  // commits under the same lock — a plain SELECT does not wait on another
+  // transaction's row lock, so a concurrent supersede/replace could otherwise
+  // commit a successor between the check and the UPDATE and leave the survivor
+  // pointing at a soft-deleted predecessor that every read path 404s.
+  //
+  // The object delete sits inside the transaction too, BEFORE the UPDATE: the
+  // rows are the only index to the keys, so a storage fault must roll back
+  // with every row (and key) still findable and the delete still retryable.
+  await db.transaction(async (tx) => {
+    const [head] = await tx.select(bytesColumns).from(orgDocuments).where(liveKey(orgId, id)).limit(1).for('update');
+    if (!head) throw notFound();
+    const [successor] = await tx.select({ id: orgDocuments.id }).from(orgDocuments)
+      .where(and(eq(orgDocuments.supersedesDocumentId, id), eq(orgDocuments.orgId, orgId)))
+      .limit(1);
+    if (successor) {
+      throw notHead('Only the current version can be deleted; deleting it removes every version of the document');
     }
-  }
 
-  await db.update(orgDocuments)
-    .set({ deletedAt: new Date(), deletedBy: actor.userId, storageKey: null, data: null })
-    .where(and(inArray(orgDocuments.id, versions.map((v) => v.id)), eq(orgDocuments.orgId, orgId), isNull(orgDocuments.deletedAt)))
-    .returning({ id: orgDocuments.id });
+    const versions = [head];
+    const seen = new Set([head.id]);
+    let cursor = head.supersedesDocumentId;
+    while (cursor && !seen.has(cursor)) {
+      if (versions.length >= MAX_CHAIN_LENGTH) {
+        // Only reachable through corrupt data (the unique index and the
+        // no-self-supersede CHECK make a cycle unconstructible through this
+        // service). Say so rather than silently tombstoning a prefix.
+        console.error('[orgDocumentService] version chain exceeded the walk bound; deleting the prefix only', {
+          documentId: id, walked: versions.length,
+        });
+        break;
+      }
+      const [prev] = await tx.select(bytesColumns).from(orgDocuments).where(liveKey(orgId, cursor)).limit(1).for('update');
+      if (!prev) {
+        // A live row pointing at a missing or already-deleted predecessor is a
+        // data-integrity anomaly, not a normal delete — leave a breadcrumb.
+        console.error('[orgDocumentService] version chain breaks at a missing predecessor', {
+          documentId: id, missingPredecessor: cursor, walked: versions.length,
+        });
+        break;
+      }
+      versions.push(prev);
+      seen.add(prev.id);
+      cursor = prev.supersedesDocumentId;
+    }
+
+    const keys = versions
+      .filter((v) => v.storageBackend === 's3' && v.storageKey)
+      .map((v) => v.storageKey as string);
+    if (keys.length > 0) {
+      try {
+        await deleteBlobKeys(keys);
+      } catch (err) {
+        console.error('[orgDocumentService] object delete failed; nothing stamped, delete is retryable', {
+          documentId: id, keys: keys.length, error: err instanceof Error ? err.message : String(err),
+        });
+        throw storageUnavailable();
+      }
+    }
+
+    const stamped = await tx.update(orgDocuments)
+      .set({ deletedAt: new Date(), deletedBy: actor.userId, storageKey: null, data: null })
+      .where(and(inArray(orgDocuments.id, versions.map((v) => v.id)), eq(orgDocuments.orgId, orgId), isNull(orgDocuments.deletedAt)))
+      .returning({ id: orgDocuments.id });
+    if (stamped.length === 0) {
+      // Never report success for an UPDATE that touched nothing.
+      throw new DeliverableServiceError(
+        'The document changed while this request was in flight; reload and retry', 409, 'CONCURRENT_MODIFICATION',
+      );
+    }
+  });
 }
 
 /** Strong ETag for a document version: its content digest, quoted. */
