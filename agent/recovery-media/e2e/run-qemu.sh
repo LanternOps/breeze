@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# QEMU end-to-end proof for the Breeze recovery media (W04b Task 4): boots
-# the built ISO against a fake Breeze server and a seeded Debian snapshot
-# in CI-unattended mode (breeze.ci=1), lets the recovery console + rebuild
-# engine partition and restore target.img, waits for the guest to power
-# off, asserts the fake server recorded every expected progress phase, then
-# boots target.img alone and asserts it reaches a login prompt.
+# QEMU end-to-end proof for the Breeze recovery media (W04b Task 4, plus a
+# review addition): first, an OVMF smoke boot of the ISO exactly as
+# shipped (-boot d, no -kernel/-initrd override) proves EFI/BOOT/BOOTX64.EFI
+# + the shipped grub.cfg + build.sh's default cmdline actually reach a
+# running recovery console. Then boots the built ISO against a fake Breeze
+# server and a seeded Debian snapshot in CI-unattended mode (breeze.ci=1,
+# injected via -kernel/-initrd/-append since that boot needs to control the
+# cmdline exactly), lets the recovery console + rebuild engine partition
+# and restore target.img, waits for the guest to power off, asserts the
+# fake server recorded every expected progress phase, then boots
+# target.img alone and asserts it reaches a login prompt.
 #
 # Usage: run-qemu.sh <iso> <store-dir> <out-dir>
 # Requires root (loop-mountless but xorriso extraction + qemu KVM/TCG need
@@ -49,6 +54,79 @@ ovmf_code="$(find_ovmf OVMF_CODE)"
 ovmf_vars_template="$(find_ovmf OVMF_VARS)"
 cp "$ovmf_vars_template" "$out_dir/OVMF_VARS.fd"
 
+# --- Single cleanup trap for every background QEMU/fakeserver process this
+# script starts, across all three boots — `trap ... EXIT` replaces any
+# prior handler rather than stacking, so this must be the only trap call
+# in the script; each PID var defaults to empty until its boot sets it. ---
+fakeserver_pid=""
+boot0_pid=""
+boot2_pid=""
+cleanup() {
+  [ -n "$fakeserver_pid" ] && kill "$fakeserver_pid" 2>/dev/null || true
+  [ -n "$boot0_pid" ] && kill "$boot0_pid" 2>/dev/null || true
+  [ -n "$boot2_pid" ] && kill "$boot2_pid" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# --- Boot 0: OVMF smoke boot of the shipped GRUB path (review addition) —
+# boots the ISO exactly as a real operator's firmware would: -boot d, NO
+# -kernel/-initrd override, so this is the only boot in this script that
+# actually exercises EFI/BOOT/BOOTX64.EFI + the shipped grub.cfg + the
+# default cmdline build.sh baked in via --bootappend-live (breeze.media=1,
+# no breeze.ci=1/breeze.server=). Boot 1 below bypasses GRUB entirely via
+# -kernel/-initrd so it can control the cmdline exactly for the CI flow,
+# which is deliberate but means it never proves the shipped boot path on
+# its own — this does. Both breeze-recovery.service (tty1) and the
+# serial-getty@ttyS0 override start the same recovery-console; whichever
+# wins the AcquireLock mutual-exclusion lock (review addition, see
+# console.go/recovery_console_cmd.go) prints the interactive server-URL
+# prompt on serial, and the loser prints its own "waiting for the lock"
+# line instead — either is proof the shipped GRUB path reached a running
+# console, so the match below accepts both. ---
+serial0_log="$out_dir/serial-0.log"
+rm -f "$serial0_log"
+cp "$ovmf_vars_template" "$out_dir/OVMF_VARS_boot0.fd"
+
+echo "run-qemu: boot 0 — OVMF smoke boot of the shipped GRUB path (-boot d, no kernel/initrd override)"
+"$qemu_bin" \
+  -machine q35,accel=tcg -cpu max -m 2G -smp 2 \
+  -drive if=pflash,format=raw,readonly=on,file="$ovmf_code" \
+  -drive if=pflash,format=raw,file="$out_dir/OVMF_VARS_boot0.fd" \
+  -cdrom "$iso" \
+  -boot d \
+  -nographic -serial file:"$serial0_log" -monitor none \
+  -netdev user,id=n2 -device virtio-net-pci,netdev=n2 \
+  &
+boot0_pid=$!
+
+boot0_pattern='Breeze server URL:|waiting for the recovery console lock'
+deadline=$((SECONDS + 180))
+found=0
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if [ -f "$serial0_log" ] && grep -qE "$boot0_pattern" "$serial0_log"; then
+    found=1
+    break
+  fi
+  if ! kill -0 "$boot0_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 5
+done
+kill "$boot0_pid" 2>/dev/null || true
+wait "$boot0_pid" 2>/dev/null || true
+boot0_pid=""
+
+echo "----- serial-0.log (last 80 lines) -----"
+tail -80 "$serial0_log" || true
+echo "-----------------------------------------"
+
+if [ "$found" != "1" ]; then
+  echo "run-qemu: FAIL — shipped GRUB path (EFI/BOOT/BOOTX64.EFI + grub.cfg + default cmdline) did not reach a running recovery console within 3 minutes" >&2
+  exit 1
+fi
+boot0_line="$(grep -E "$boot0_pattern" "$serial0_log" | tail -1)"
+echo "run-qemu: PASS — boot 0 (shipped GRUB path) reached the recovery console: ${boot0_line}"
+
 # --- Build breeze-recovery-fakeserver + start it ---
 fakeserver_bin="$out_dir/breeze-recovery-fakeserver"
 echo "run-qemu: building breeze-recovery-fakeserver"
@@ -66,7 +144,6 @@ fakeserver_log="$out_dir/fakeserver.log"
   --identity new \
   > "$fakeserver_log" 2>&1 &
 fakeserver_pid=$!
-trap 'kill "$fakeserver_pid" 2>/dev/null || true' EXIT
 
 sleep 1
 if ! kill -0 "$fakeserver_pid" 2>/dev/null; then

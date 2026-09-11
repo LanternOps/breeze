@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
@@ -21,8 +24,10 @@ import (
 // at all: breeze-recovery.service (tty1) and the serial-getty@ttyS0
 // override BOTH unconditionally start on every boot, so without mutual
 // exclusion two console instances would independently partition/format/
-// mount the same target disk concurrently in breeze.ci=1 mode.
-const recoveryConsoleLockPath = "/run/breeze-recovery-console.lock"
+// mount the same target disk concurrently in breeze.ci=1 mode. A var (not
+// a const) so tests can point it at a scratch file instead of the real
+// /run path.
+var recoveryConsoleLockPath = "/run/breeze-recovery-console.lock"
 
 // recoveryConsoleLockPollInterval is a var so nothing about this needs to
 // be faster in tests — the console package's own unit tests exercise
@@ -34,26 +39,101 @@ var recoveryConsoleLockPollInterval = 2 * time.Second
 // (portable, no new dependency — a real flock(2) wrapper would be no more
 // robust for two same-host processes racing a create, and simpler to
 // reason about for the one-shot "acquire once at startup, release once at
-// exit" pattern this needs). The losing instance blocks here for as long
-// as it takes the winner to finish — which ends with the winner powering
-// off or rebooting the whole machine either way, so there is no scenario
-// where the loser needs to do anything else.
-func acquireRecoveryConsoleLock(ctx context.Context) (func(), error) {
+// exit" pattern this needs). The winner stamps its own PID into the lock
+// file.
+//
+// A bare O_EXCL lock (the original W04b implementation) has a real
+// failure mode found in code review: if the holder is SIGKILLed or
+// OOM-killed, its deferred release never runs, and systemd's
+// Restart=always brings the SAME unit right back up — which then blocks
+// on its OWN abandoned lock file forever, with no output, because nothing
+// on the media ever removes a stale lock. To recover from that: on
+// EEXIST, read the recorded holder PID and treat the lock as stale
+// (remove it and retry the create once) when that PID is no longer alive,
+// or when the file can't be read/parsed at all — the latter covers a
+// holder SIGKILLed between O_CREATE and writing its own PID, which is
+// exactly as likely as being killed after. A lock recording a genuinely
+// live PID is left alone; the caller blocks, polling, printing the
+// waiting message below exactly once. Either way the loser (a losing
+// stale-reclaim race, or a real live lock) exits cleanly on ctx
+// cancellation rather than hanging — there is no scenario where the loser
+// needs to do anything else once the winner reboots/powers off the whole
+// machine.
+func acquireRecoveryConsoleLock(ctx context.Context, out io.Writer) (func(), error) {
+	printedWaiting := false
 	for {
-		f, err := os.OpenFile(recoveryConsoleLockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_ = f.Close()
-			return func() { _ = os.Remove(recoveryConsoleLockPath) }, nil
-		}
-		if !os.IsExist(err) {
+		if release, err := tryCreateRecoveryConsoleLock(); err == nil {
+			return release, nil
+		} else if !os.IsExist(err) {
 			return nil, fmt.Errorf("create recovery console lock %s: %w", recoveryConsoleLockPath, err)
 		}
+
+		holderPID, readErr := readRecoveryConsoleLockHolder(recoveryConsoleLockPath)
+		if readErr != nil || !processAlive(holderPID) {
+			// Stale: reclaim it and retry the create immediately, once,
+			// before falling back to the normal wait-and-poll path below
+			// (we may simply have lost a race to reclaim it against
+			// another instance doing the same thing).
+			_ = os.Remove(recoveryConsoleLockPath)
+			if release, err := tryCreateRecoveryConsoleLock(); err == nil {
+				return release, nil
+			}
+		} else if !printedWaiting {
+			_, _ = fmt.Fprintf(out, "waiting for the recovery console lock (held by pid %d on another console)…\n", holderPID)
+			printedWaiting = true
+		}
+
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-time.After(recoveryConsoleLockPollInterval):
 		}
 	}
+}
+
+// tryCreateRecoveryConsoleLock makes one O_CREATE|O_EXCL attempt at
+// recoveryConsoleLockPath and, on success, stamps the file with this
+// process's own PID so a later instance can tell whether the lock is
+// stale. If the PID write itself fails partway (disk full, etc.) the
+// half-written file is removed rather than left behind unattributed.
+func tryCreateRecoveryConsoleLock() (func(), error) {
+	f, err := os.OpenFile(recoveryConsoleLockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	_, writeErr := fmt.Fprintf(f, "%d\n", os.Getpid())
+	closeErr := f.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = os.Remove(recoveryConsoleLockPath)
+		if writeErr != nil {
+			return nil, writeErr
+		}
+		return nil, closeErr
+	}
+	return func() { _ = os.Remove(recoveryConsoleLockPath) }, nil
+}
+
+// readRecoveryConsoleLockHolder reads and parses the PID recorded in an
+// existing lock file. Any failure to read, or an empty/unparseable
+// contents, is reported as an error — acquireRecoveryConsoleLock treats
+// that the same as a confirmed-dead PID (see its doc comment) rather than
+// distinguishing "can't tell" from "know it's dead", since a lock file
+// that isn't a valid PID can only be one this same code wrote and failed
+// to finish writing.
+func readRecoveryConsoleLockHolder(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	s := strings.TrimSpace(string(data))
+	if s == "" {
+		return 0, errors.New("empty recovery console lock file")
+	}
+	pid, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("parse recovery console lock holder pid %q: %w", s, err)
+	}
+	return pid, nil
 }
 
 // newRecoveryConsoleCommand wires the guided bare-metal recovery console
@@ -98,7 +178,9 @@ func newRecoveryConsoleCommand() *cobra.Command {
 					Provider:     bmr.NewRecoveryProvider,
 					Progress:     bmr.PostRecoveryProgress,
 					Shell:        runRecoveryShell,
-					AcquireLock:  acquireRecoveryConsoleLock,
+					AcquireLock: func(ctx context.Context) (func(), error) {
+						return acquireRecoveryConsoleLock(ctx, cmd.OutOrStdout())
+					},
 					Power: func(action string) error {
 						return exec.Command("systemctl", action).Run()
 					},
