@@ -262,7 +262,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
-  'backup_chains', 'backup_jobs', 'backup_sla_events',
+  'backup_chains', 'backup_jobs', 'backup_sla_events', 'backup_snapshot_retirements',
   'backup_snapshots', 'backup_verifications', 'bare_metal_recoveries',
   'brain_device_context', 'browser_extensions', 'browser_policy_violations',
   'capacity_predictions',
@@ -480,7 +480,7 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // recovery_tokens & backup_chains FK to backup_snapshots (no cascade),
   // so delete them first, then restore_jobs → backup_snapshots → backup_jobs
   'recovery_tokens', 'backup_chains',
-  'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs',
+  'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs', 'backup_snapshot_retirements',
   // Application backup & DR
   'sql_instances', 'local_vaults', 'hyperv_vms',
   // Deployment invites (FK device_id → devices.id; no cascade)

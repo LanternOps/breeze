@@ -42,7 +42,17 @@ export type BackupProfile = {
 
 type DraftSelections = {
   file: { enabled: boolean; paths: string[]; excludes: string[] };
-  system_image: { enabled: boolean; includeSystemState: boolean };
+  system_image: {
+    enabled: boolean;
+    includeSystemState: boolean;
+    // #5493: wholeMachine makes this ONE system_image selection that also
+    // walks the device's OS root (server picks the root from osType), so
+    // the resulting snapshot carries files + layout.json + system state
+    // together instead of fanning out into a files-only file snapshot and
+    // a files-less system_image snapshot.
+    wholeMachine: boolean;
+    excludes: string[];
+  };
   mssql: { enabled: boolean; backupType: string; excludeDatabases: string[] };
   hyperv: { enabled: boolean; consistencyType: string; excludeVms: string[] };
 };
@@ -57,7 +67,7 @@ type Draft = {
 
 const emptySelections = (): DraftSelections => ({
   file: { enabled: false, paths: [], excludes: [] },
-  system_image: { enabled: false, includeSystemState: true },
+  system_image: { enabled: false, includeSystemState: true, wholeMachine: false, excludes: [] },
   mssql: { enabled: false, backupType: "full", excludeDatabases: [] },
   hyperv: { enabled: false, consistencyType: "application", excludeVms: [] },
 });
@@ -77,6 +87,10 @@ function inflateSelections(stored: Record<string, unknown> | null | undefined): 
     base.system_image = {
       enabled: s.system_image.enabled === true,
       includeSystemState: s.system_image.includeSystemState !== false,
+      wholeMachine: s.system_image.wholeMachine === true,
+      excludes: Array.isArray(s.system_image.excludes)
+        ? (s.system_image.excludes as string[])
+        : [],
     };
   }
   if (s.mssql) {
@@ -104,7 +118,16 @@ export function selectionChips(selections: Record<string, unknown> | null | unde
   const s = (selections ?? {}) as Record<string, Record<string, unknown> | undefined>;
   const chips: string[] = [];
   if (s.file?.enabled === true) chips.push(i18n.t("backup:profiles.sourceFile"));
-  if (s.system_image?.enabled === true) chips.push(i18n.t("backup:profiles.sourceSystemState"));
+  if (s.system_image?.enabled === true) {
+    // #5493: a wholeMachine selection already implies "system state" (it's
+    // part of the same snapshot), so show the more descriptive single chip
+    // instead of both.
+    chips.push(
+      s.system_image.wholeMachine === true
+        ? i18n.t("backup:profiles.sourceWholeMachine")
+        : i18n.t("backup:profiles.sourceSystemState")
+    );
+  }
   if (s.mssql?.enabled === true) chips.push(i18n.t("backup:profiles.sourceSql"));
   if (s.hyperv?.enabled === true) chips.push(i18n.t("backup:profiles.sourceHyperv"));
   return chips;
@@ -119,7 +142,7 @@ type Template = {
   build: () => DraftSelections;
 };
 
-function createTemplates(): Template[] {
+export function createTemplates(): Template[] {
   const presets = createOsPresets();
   const byId = new Map(presets.map((preset) => [preset.id, preset]));
   const windows = byId.get("windows");
@@ -131,10 +154,21 @@ function createTemplates(): Template[] {
       icon: HardDrive,
       title: preset.title,
       description: preset.summary,
+      // #5493: whole-machine is ONE system_image selection that also walks
+      // the OS root (wholeMachine:true — the server picks '/' or 'C:\' from
+      // the device's osType), producing a single snapshot with files +
+      // layout.json + system state. Previously this built a SEPARATE file
+      // selection alongside system_image, fanning out into two jobs and two
+      // incomplete snapshots (#5493).
       build: (): DraftSelections => ({
         ...emptySelections(),
-        file: { enabled: true, paths: [...preset.paths], excludes: [...preset.excludes] },
-        system_image: { enabled: true, includeSystemState: true },
+        file: { enabled: false, paths: [], excludes: [] },
+        system_image: {
+          enabled: true,
+          includeSystemState: true,
+          wholeMachine: true,
+          excludes: [...preset.excludes],
+        },
       }),
     })),
     {
@@ -149,7 +183,7 @@ function createTemplates(): Template[] {
           paths: [...(windows?.paths ?? [])],
           excludes: [...(windows?.excludes ?? [])],
         },
-        system_image: { enabled: true, includeSystemState: true },
+        system_image: { enabled: true, includeSystemState: true, wholeMachine: false, excludes: [] },
         mssql: { enabled: true, backupType: "full", excludeDatabases: ["tempdb"] },
       }),
     },
@@ -215,6 +249,8 @@ function buildSelectionsPayload(selections: DraftSelections): Record<string, unk
     system_image: {
       enabled: selections.system_image.enabled,
       includeSystemState: selections.system_image.includeSystemState,
+      wholeMachine: selections.system_image.wholeMachine,
+      excludes: selections.system_image.excludes,
     },
     mssql: {
       enabled: selections.mssql.enabled,

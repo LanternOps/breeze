@@ -53,6 +53,10 @@ type run struct {
 	layout       *layout.Manifest
 	manifest     *backup.Snapshot
 	warnings     []string
+	// failedFiles are source paths the restore phase could not place (only
+	// populated under AllowPartialRestore); validate must not sample them —
+	// they were already reported as a warning.
+	failedFiles map[string]bool
 }
 
 func targetKey(t Target) string {
@@ -147,6 +151,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	r.result.DurationMs = time.Since(start).Milliseconds()
 	if !opts.DryRun {
 		_ = os.Remove(r.statePath)
+		_ = os.RemoveAll(restoreWorkRoot(opts.StateDir))
 	}
 	return r.result, nil
 }

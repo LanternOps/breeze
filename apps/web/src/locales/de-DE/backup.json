@@ -798,6 +798,7 @@
     "inUseCount_other": "Verwendet von {{count}} Richtlinien",
     "sourceFile": "Dateien",
     "sourceSystemState": "Systemstatus",
+    "sourceWholeMachine": "Gesamtes System",
     "sourceSql": "SQL Server",
     "sourceHyperv": "Hyper-V",
     "templateTitle": "Neues Sicherungsprofil",

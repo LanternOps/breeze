@@ -242,6 +242,14 @@ export const backupProfileSelectionsSchema = z
       .object({
         enabled: z.boolean().default(false),
         includeSystemState: z.boolean().default(true),
+        // #5493: a whole-machine profile is ONE system_image selection that
+        // also walks the OS root (server picks '/' or 'C:\' from the device's
+        // osType — see backupWorker.resolveBackupTargets) so the resulting
+        // snapshot carries files + layout.json + system-state together,
+        // instead of fanning out into a files-only snapshot and a
+        // files-less system_image snapshot.
+        wholeMachine: z.boolean().default(false),
+        excludes: z.array(z.string().trim().min(1)).max(256).default([]),
       })
       .optional(),
   })
@@ -270,6 +278,13 @@ export const backupProfileSelectionsSchema = z
         code: z.ZodIssueCode.custom,
         path: ['file', 'paths'],
         message: 'File backups require at least one path',
+      });
+    }
+    if (data.system_image?.wholeMachine && !data.system_image.enabled) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['system_image', 'wholeMachine'],
+        message: 'wholeMachine requires system_image.enabled',
       });
     }
   });

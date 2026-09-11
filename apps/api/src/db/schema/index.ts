@@ -127,6 +127,8 @@ export * from './llmProviderCatalog';
 export * from './llmEgressEvents';
 export * from './invoiceDocuments';
 export * from './contracts';
+export * from './serviceDeliverables';
+export * from './orgKeyDates';
 export * from './quotes';
 export * from './contractDocuments';
 export * from './clientAi';

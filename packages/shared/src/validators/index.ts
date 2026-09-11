@@ -1207,3 +1207,31 @@ export {
   type CreateBackupProfileInput,
   type UpdateBackupProfileInput,
 } from './backupTargets';
+export {
+  deliverableCadenceSchema,
+  deliverableCompletionModeSchema,
+  createDeliverableSchema,
+  updateDeliverableSchema,
+  listDeliverablesQuerySchema,
+  reportRunEvidenceRefSchema,
+  evidenceRefSchema,
+  addEvidenceSchema,
+  deliverOccurrenceSchema,
+  waiveOccurrenceSchema,
+  rescheduleOccurrenceSchema,
+  listOccurrencesQuerySchema,
+  type CreateDeliverableInput,
+  type UpdateDeliverableInput,
+  type DeliverOccurrenceInput,
+  type WaiveOccurrenceInput,
+  type RescheduleOccurrenceInput,
+  type AddEvidenceInput,
+  type EvidenceRef,
+} from './serviceDeliverables';
+export {
+  keyDateKindSchema,
+  createKeyDateSchema,
+  updateKeyDateSchema,
+  type CreateKeyDateInput,
+  type UpdateKeyDateInput,
+} from './orgKeyDates';

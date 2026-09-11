@@ -202,6 +202,12 @@ type Snapshot struct {
 	// as a green job with zero errors (an incomplete restore point that looks
 	// complete).
 	UploadFailures []error `json:"-"`
+	// VolatileFiles counts this run's entries recorded with Volatile: true
+	// (see that field). In-memory only, like UploadFailures — RunBackupContext
+	// folds it into a job Warning so a run with volatile files is visible
+	// server-side instead of silently carrying entries whose mismatch checks
+	// are quietly downgraded to warnings on every future restore/verify.
+	VolatileFiles int `json:"-"`
 }
 
 // SnapshotFile captures metadata for a backed up file.
@@ -268,6 +274,18 @@ type SnapshotFile struct {
 	ModeBits uint32 `json:"modeBits,omitempty"`
 	// Owner is nil when unknown (Windows, pre-W02 manifests).
 	Owner *FileOwner `json:"owner,omitempty"`
+	// Volatile is true when the source file kept changing while it was being
+	// backed up (grew/shrank/rewritten between the pre-upload measurement and
+	// the re-upload retry — see reconcileAfterUpload) and Size/Checksum
+	// therefore describe the LAST measurement that was actually uploaded,
+	// not necessarily the file's state at any single instant an observer
+	// could point to. Restore/verify treat a size or checksum mismatch on a
+	// Volatile entry as a warning, not a failed file (#5581) — the file is
+	// inherently a moving target (a live log, the agent's own checkpoint
+	// journal) and the manifest is already self-consistent with what was
+	// uploaded. Omitted (false) for the overwhelming majority of files,
+	// keeping ordinary manifests byte-identical to before this field existed.
+	Volatile bool `json:"volatile,omitempty"`
 }
 
 // HasContent reports whether the entry has an uploaded object at BackupPath.
@@ -646,6 +664,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	}
 
 	var errs []error
+	var volatileCount int
 
 	var bytesTotal int64
 	for _, file := range files {
@@ -917,6 +936,31 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		backupPath := path.Join(prefix, snapshotFilesDir, file.snapshotPath)
 		backupPath = ensureGzipExtension(backupPath)
 
+		// Measure (stat + hash) the source immediately before handing it to
+		// the upload, so the manifest entry can describe the SAME read that
+		// is about to be uploaded rather than a walk-time stat plus a
+		// separate post-upload hash from a third point in time (#5581). A
+		// measurement failure here (source vanished/unreadable since the
+		// walk) is not fatal on its own: fall through with the walk-time
+		// size/modTime and let the upload attempt itself surface (and
+		// classify) the failure the way it always has.
+		//
+		// Only uploadFile.size is adjusted (feeds uploadDeadline below) —
+		// the manifest entry's ModTime stays file.modTime (the walk-time
+		// value, unchanged) even when a measurement is available. The
+		// journal's resume matching (journal.Lookup) keys on that walk-time
+		// (sourcePath, size, modTime) triple; a live-mutating file's
+		// pre-upload modTime would never match on a later resumed run
+		// anyway (the file has moved on again), so there is nothing to gain
+		// by substituting it here — only Size/Checksum need to describe the
+		// uploaded bytes (#5581).
+		pre, preErr := measureBeforeUpload(file.sourcePath)
+		uploadFile := file
+		haveMeasurement := preErr == nil
+		if haveMeasurement {
+			uploadFile.size = pre.size
+		}
+
 		// Log the file we are ABOUT to upload, at debug, before we block on it.
 		// This is the line that makes a wedged backup diagnosable: the deadline
 		// below scales with file size and has no ceiling, so a large file whose
@@ -924,17 +968,17 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		// output. Without a start line the last thing in the log is the
 		// previous file's success and there is no way to tell which file is
 		// stuck (#2790, #2798).
-		deadline := uploadDeadline(file.size)
+		deadline := uploadDeadline(uploadFile.size)
 		log.Debug("uploading file",
 			"path", file.sourcePath,
 			"backupPath", backupPath,
-			"bytes", file.size,
+			"bytes", uploadFile.size,
 			"deadlineMs", deadline.Milliseconds(),
 			"snapshotId", snapshot.ID,
 		)
 
 		uploadStart := time.Now()
-		uploadErr := attemptFileUpload(ctx, provider, file, backupPath)
+		uploadErr := attemptFileUpload(ctx, provider, uploadFile, backupPath)
 		if uploadErr != nil && !errors.Is(uploadErr, errBackupStopped) {
 			// Before spending anything else on this failure, make sure the
 			// source we are reading from still exists. If the shadow copy died,
@@ -957,7 +1001,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 				// UploadFailures (and so job.ErrorCount), job carries on.
 				log.Warn("file upload failed permanently, skipping without retry",
 					"path", file.sourcePath,
-					"bytes", file.size,
+					"bytes", uploadFile.size,
 					"elapsedMs", time.Since(uploadStart).Milliseconds(),
 					"reason", reason,
 					"error", uploadErr.Error(),
@@ -986,7 +1030,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 				}
 				log.Warn("file upload failed, retrying once",
 					"path", file.sourcePath,
-					"bytes", file.size,
+					"bytes", uploadFile.size,
 					"elapsedMs", time.Since(uploadStart).Milliseconds(),
 					"deadlineMs", deadline.Milliseconds(),
 					"retryDelayMs", retryDelay.Milliseconds(),
@@ -997,7 +1041,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 				case <-ctx.Done():
 					uploadErr = errBackupStopped
 				case <-time.After(retryDelay):
-					uploadErr = attemptFileUpload(ctx, provider, file, backupPath)
+					uploadErr = attemptFileUpload(ctx, provider, uploadFile, backupPath)
 				}
 			}
 		}
@@ -1021,7 +1065,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			// shipping, and count it so the summary at the end is trustworthy.
 			log.Warn("file upload failed, skipping file",
 				"path", file.sourcePath,
-				"bytes", file.size,
+				"bytes", uploadFile.size,
 				"elapsedMs", time.Since(uploadStart).Milliseconds(),
 				"failedSoFar", len(errs),
 				"error", uploadErr.Error(),
@@ -1030,54 +1074,89 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}
 		uploadMs := time.Since(uploadStart).Milliseconds()
 
-		// Checksum the source bytes so integrity/test-restore can detect silent
-		// corruption of the stored object. A hash failure here is non-fatal —
-		// the file is still backed up; it just won't carry a checksum (verify
-		// falls back to a size check for it).
-		//
-		// NOTE: this re-reads the source after the upload above. On a host with
-		// no snapshotting (Unix has no VSS), a file that mutates between the
-		// upload read and this hash read yields a checksum that won't match the
-		// stored object, so a later verify raises a false "corruption" alert.
-		// That's the safe direction (a false alarm, not a silent pass) and is
-		// consistent with the pre-existing size-from-collection vs content-from-
-		// upload race. Eliminating it fully requires hashing the bytes as they
-		// stream to the provider (a provider-interface change) — left as future work.
-		// Timed separately from the upload: this is a second full read of the
-		// source file, so on a large file or a slow/network-mounted path it is
-		// a real chunk of wall-clock that produces zero network traffic and
-		// zero progress movement. Without its own timing it looks identical to
-		// a stalled upload from the outside.
-		sumStart := time.Now()
-		checksum, sumErr := sha256File(file.sourcePath)
-		if sumErr != nil {
-			log.Warn("checksum failed, file stored without one",
+		// Determine the manifest's Size/Checksum/Volatile for this entry so
+		// they describe the bytes that were actually uploaded (#5581)
+		// rather than a walk-time stat paired with a separately-timed
+		// post-upload hash. ModTime is deliberately NOT touched here — it
+		// stays file.modTime (the walk-time value) in every case; see the
+		// comment above the pre-measurement for why. The common path
+		// (haveMeasurement) re-stats immediately after the upload and, only
+		// on a mismatch, re-measures and re-uploads once — see
+		// reconcileAfterUpload's doc comment for the full policy, including
+		// what happens if it drifts again.
+		var (
+			finalSize     int64
+			finalChecksum string
+			volatile      bool
+		)
+		if haveMeasurement {
+			sumStart := time.Now()
+			reconciled, isVolatile, reconcileErr := reconcileAfterUpload(ctx, provider, file.sourcePath, backupPath, pre)
+			if reconcileErr != nil {
+				// Only errBackupStopped is ever returned here (a job cancel
+				// during the reconciliation retry) — abort exactly like any
+				// other errBackupStopped in this loop.
+				return abortStopped()
+			}
+			finalSize = reconciled.size
+			finalChecksum = reconciled.checksum
+			volatile = isVolatile
+			if volatile {
+				volatileCount++
+				log.Warn("file was modified while being backed up, recorded as volatile",
+					"path", file.sourcePath,
+					"bytes", finalSize,
+					"snapshotId", snapshot.ID,
+				)
+			}
+			log.Debug("file uploaded",
+				"path", file.sourcePath,
+				"bytes", finalSize,
+				"uploadMs", uploadMs,
+				"checksumMs", time.Since(sumStart).Milliseconds(),
+				"volatile", volatile,
+				"snapshotId", snapshot.ID,
+			)
+		} else {
+			// The pre-upload measurement failed (source vanished/unreadable
+			// right before the upload), yet the upload itself just
+			// succeeded — a narrow race. Fall back to the walk-time size
+			// and a best-effort post-upload hash, matching this package's
+			// behavior before #5581.
+			finalSize = file.size
+			sumStart := time.Now()
+			checksum, sumErr := sha256File(file.sourcePath)
+			if sumErr != nil {
+				log.Warn("checksum failed, file stored without one",
+					"path", file.sourcePath,
+					"bytes", file.size,
+					"error", sumErr.Error(),
+				)
+			}
+			finalChecksum = checksum
+			log.Debug("file uploaded",
 				"path", file.sourcePath,
 				"bytes", file.size,
-				"error", sumErr.Error(),
+				"uploadMs", uploadMs,
+				"checksumMs", time.Since(sumStart).Milliseconds(),
+				"snapshotId", snapshot.ID,
 			)
 		}
-		log.Debug("file uploaded",
-			"path", file.sourcePath,
-			"bytes", file.size,
-			"uploadMs", uploadMs,
-			"checksumMs", time.Since(sumStart).Milliseconds(),
-			"snapshotId", snapshot.ID,
-		)
 
 		entry := SnapshotFile{
 			SourcePath:   file.sourcePath,
 			OriginalPath: file.originalPath,
 			BackupPath:   backupPath,
-			Size:         file.size,
+			Size:         finalSize,
 			ModTime:      file.modTime,
-			Checksum:     checksum,
+			Checksum:     finalChecksum,
 			Mode:         uint32(file.mode.Perm()),
 			ModeBits:     file.modeBits,
 			Owner:        file.owner,
+			Volatile:     volatile,
 		}
 		snapshot.Files = append(snapshot.Files, entry)
-		snapshot.Size += file.size
+		snapshot.Size += entry.Size
 		markDone(1, file.size)
 		emitProgress(false)
 		if journal != nil {
@@ -1110,6 +1189,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// silently dropping them here (they used to be returned only when ZERO
 	// files uploaded).
 	snapshot.UploadFailures = errs
+	snapshot.VolatileFiles = volatileCount
 
 	if err := ctx.Err(); err != nil {
 		return abortStopped()
@@ -1445,6 +1525,92 @@ func attemptFileUpload(ctx context.Context, provider providers.BackupProvider, f
 		uploadErr = fmt.Errorf("upload stalled: no completion within %s", deadline)
 	}
 	return uploadErr
+}
+
+// filePreUploadMeasurement is a stat+hash of a source file taken as a single
+// unit, immediately before it is handed to an upload attempt — so
+// size/modTime/checksum all describe the SAME instant, and that instant is
+// as close as possible to the bytes the provider is about to read (see
+// measureBeforeUpload / reconcileAfterUpload, #5581).
+type filePreUploadMeasurement struct {
+	size     int64
+	modTime  time.Time
+	checksum string
+}
+
+// measureBeforeUpload stats and hashes sourcePath as one unit. Providers
+// upload from a path (BackupProvider.Upload(localPath, remotePath)), not a
+// reader, so there is no way to hash the exact bytes as they stream through
+// an in-flight upload without changing that interface; this is the closest
+// approximation available without it — stat+hash right before the upload
+// call, rather than a walk-time stat paired with a post-upload hash from a
+// third point in time (the original bug: two reads, two different instants).
+func measureBeforeUpload(sourcePath string) (filePreUploadMeasurement, error) {
+	info, err := os.Stat(sourcePath)
+	if err != nil {
+		return filePreUploadMeasurement{}, err
+	}
+	checksum, err := sha256File(sourcePath)
+	if err != nil {
+		return filePreUploadMeasurement{}, err
+	}
+	return filePreUploadMeasurement{size: info.Size(), modTime: info.ModTime(), checksum: checksum}, nil
+}
+
+// reconcileAfterUpload re-stats sourcePath immediately after a successful
+// upload and compares it against pre — the stat+hash taken right before that
+// upload began, describing exactly the bytes that were (supposed to be)
+// sent. If the source is unchanged, pre already describes the uploaded
+// object and is returned as-is: no warning, no extra work, the common case.
+//
+// If the source drifted (grew, shrank, or was otherwise modified) during the
+// upload window, the file is re-measured and re-uploaded ONCE so the
+// manifest has a chance to catch up with a fast-moving but eventually-still
+// file. If it drifts again even across that retry, chasing it further would
+// only delay the run against a file that is not going to hold still (a live
+// log, the agent's own checkpoint journal) — the entry is recorded as
+// volatile (return volatile=true) using the LAST pre-upload measurement,
+// which is self-consistent with what backupPath actually holds (that
+// measurement is what the retry's own upload sent).
+//
+// Returns errBackupStopped when ctx is cancelled during the retry — the
+// caller aborts the run exactly as it does for any other errBackupStopped;
+// no other error is returned (a retry upload failure or a vanished source is
+// folded into volatile=true rather than failing the file, since the object
+// already stored at backupPath from the FIRST, successful upload remains a
+// valid — if volatile — restore point).
+func reconcileAfterUpload(ctx context.Context, provider providers.BackupProvider, sourcePath, backupPath string, pre filePreUploadMeasurement) (measurement filePreUploadMeasurement, volatile bool, err error) {
+	post, statErr := os.Stat(sourcePath)
+	if statErr == nil && post.Size() == pre.size && post.ModTime().Equal(pre.modTime) {
+		return pre, false, nil
+	}
+
+	pre2, pre2Err := measureBeforeUpload(sourcePath)
+	if pre2Err != nil {
+		// Can no longer read the source at all (e.g. deleted moments after
+		// the first upload completed). What's already stored at backupPath
+		// came from pre — keep describing that, flagged volatile.
+		return pre, true, nil
+	}
+	reuploadFile := backupFile{sourcePath: sourcePath, size: pre2.size}
+	if uploadErr := attemptFileUpload(ctx, provider, reuploadFile, backupPath); uploadErr != nil {
+		if errors.Is(uploadErr, errBackupStopped) {
+			return pre, true, errBackupStopped
+		}
+		// Re-upload failed outright (destination error, deadline expiry).
+		// backupPath still holds whatever the FIRST upload put there, i.e.
+		// pre — keep describing that, flagged volatile since we now know
+		// the source didn't hold still.
+		return pre, true, nil
+	}
+
+	post2, statErr2 := os.Stat(sourcePath)
+	if statErr2 == nil && post2.Size() == pre2.size && post2.ModTime().Equal(pre2.modTime) {
+		return pre2, false, nil
+	}
+	// Changed again: stop chasing it and record the LAST pre-upload
+	// measurement — pre2, what was actually just re-uploaded — as volatile.
+	return pre2, true, nil
 }
 
 func uploadSnapshotFile(ctx context.Context, provider providers.BackupProvider, localPath, remotePath string) error {

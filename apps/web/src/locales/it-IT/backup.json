@@ -798,6 +798,7 @@
     "inUseCount_other": "Usato da {{count}} criteri",
     "sourceFile": "File",
     "sourceSystemState": "System State",
+    "sourceWholeMachine": "Intera macchina",
     "sourceSql": "SQL Server",
     "sourceHyperv": "Hyper-V",
     "templateTitle": "Nuovo profilo di backup",

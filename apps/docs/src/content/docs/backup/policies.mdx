@@ -105,7 +105,7 @@ Targets SQL Server databases. Like Hyper-V, new databases are automatically incl
 
 ### System Image
 
-Captures the OS state needed to rebuild a machine's configuration — registry hives, boot configuration, certificate store, drivers, services and firewall policy on Windows; `/etc`, the package list, enabled services, firewall rules and crontabs on Linux; preferences, launch items and network configuration on macOS — plus, on Linux and Windows, the disk layout used to judge whether the snapshot is [bare-metal restorable](/backup/restoring/#browsing-snapshots). Used for [bare metal recovery](/backup/bare-metal-recovery/); combine it with a file backup of the root filesystem (the **Whole machine** [profile templates](/backup/profiles/#whole-machine-templates) do this) for a full rebuild.
+Captures the OS state needed to rebuild a machine's configuration — registry hives, boot configuration, certificate store, drivers, services and firewall policy on Windows; `/etc`, the package list, enabled services, firewall rules and crontabs on Linux; preferences, launch items and network configuration on macOS — plus, on Linux and Windows, the disk layout used to judge whether the snapshot is [bare-metal restorable](/backup/restoring/#browsing-snapshots). Used for [bare metal recovery](/backup/bare-metal-recovery/); turning on whole-machine backup for this source also walks the root filesystem in the same snapshot (the **Whole machine** [profile templates](/backup/profiles/#whole-machine-templates) do this) for a full rebuild in one snapshot.
 
 ---
 

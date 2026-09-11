@@ -1,0 +1,149 @@
+{
+  "section": {
+    "title": "Livrables de service",
+    "empty": "Aucun livrable pour le moment. Ajoutez les rapports et révisions récurrents dus à ce client."
+  },
+  "table": {
+    "name": "Livrable",
+    "cadence": "Fréquence",
+    "nextDue": "Prochaine échéance",
+    "lastDelivered": "Dernière livraison",
+    "status": "État",
+    "portal": "Portail"
+  },
+  "cadence": {
+    "monthly": "Mensuelle",
+    "quarterly": "Trimestrielle",
+    "semiannual": "Semestrielle",
+    "annual": "Annuelle",
+    "one_time": "Unique"
+  },
+  "status": {
+    "on_track": "Dans les délais",
+    "due_soon": "Échéance imminente",
+    "late": "En retard",
+    "missed": "Manqué",
+    "inactive": "Inactif"
+  },
+  "occurrence": {
+    "status": {
+      "scheduled": "Planifiée",
+      "open": "Ouverte",
+      "awaiting_evidence": "En attente d'une preuve",
+      "delivered": "Livrée",
+      "missed": "Manquée",
+      "waived": "Exemptée"
+    }
+  },
+  "actions": {
+    "add": "Ajouter un livrable",
+    "edit": "Modifier",
+    "deactivate": "Désactiver",
+    "deliver": "Marquer comme livré",
+    "waive": "Exempter",
+    "reopen": "Rouvrir",
+    "reschedule": "Reporter",
+    "addEvidence": "Ajouter une preuve",
+    "removeEvidence": "Retirer la preuve",
+    "save": "Enregistrer",
+    "cancel": "Annuler"
+  },
+  "form": {
+    "name": "Nom",
+    "description": "Description",
+    "contract": "Contrat",
+    "noContract": "Non lié à un contrat",
+    "contractsUnavailable": "Impossible de charger les contrats de cette organisation. Rechargez la page avant d'enregistrer.",
+    "cadence": "Fréquence",
+    "anchorDueDate": "Première date d'échéance",
+    "effectiveFrom": "En vigueur à compter du",
+    "effectiveUntil": "En vigueur jusqu'au",
+    "leadDays": "Préavis (jours)",
+    "graceDays": "Période de grâce (jours)",
+    "artifactRequired": "Preuve requise avant de marquer comme livré",
+    "completionMode": {
+      "label": "Achèvement",
+      "explicit": "Marqué comme livré par un technicien",
+      "on_ticket_resolve": "Livré lorsque le billet lié est résolu"
+    },
+    "autoEvidenceReport": "Joindre les exécutions de rapport comme preuve",
+    "owner": "Responsable",
+    "ticketCategory": "Catégorie de billet",
+    "portalVisible": "Afficher dans le portail client",
+    "sortOrder": "Ordre d'affichage"
+  },
+  "drawer": {
+    "title": "Occurrences",
+    "evidence": "Preuves",
+    "noEvidence": "Aucune preuve jointe",
+    "late": "En retard",
+    "rescheduledFrom": "Reportée depuis le {{date}}",
+    "deliveryNote": "Note de livraison",
+    "waivedReason": "Motif de l'exemption",
+    "newDueDate": "Nouvelle date d'échéance"
+  },
+  "evidence": {
+    "reportRun": "Exécution de rapport",
+    "document": "Document",
+    "reportRunId": "Identifiant d'exécution de rapport"
+  },
+  "upcoming": {
+    "title": "90 prochains jours",
+    "empty": "Rien n'est dû au cours des 90 prochains jours."
+  },
+  "group": {
+    "noContract": "Aucun contrat"
+  },
+  "errors": {
+    "evidenceRequired": "Joignez une preuve avant de marquer cette occurrence comme livrée.",
+    "duplicateName": "Un livrable portant ce nom existe déjà pour cette organisation.",
+    "loadFailed": "Impossible de charger les livrables.",
+    "saveFailed": "Impossible d'enregistrer le livrable.",
+    "actionFailed": "Impossible de mettre à jour l'occurrence."
+  },
+  "confirm": {
+    "deactivate": "Désactiver {{name}}? Les occurrences ouvertes seront fermées et aucune nouvelle ne sera planifiée.",
+    "deleteKeyDate": "Supprimer la date importante {{label}}?"
+  },
+  "keyDates": {
+    "title": "Dates importantes",
+    "empty": "Aucune date importante enregistrée.",
+    "add": "Ajouter une date importante",
+    "label": "Libellé",
+    "kind": {
+      "label": "Type",
+      "insurance_renewal": "Renouvellement d'assurance",
+      "vendor_contract_end": "Fin du contrat avec un fournisseur",
+      "compliance_deadline": "Échéance de conformité",
+      "audit": "Vérification",
+      "other": "Autre"
+    },
+    "date": "Date",
+    "recursAnnually": "Se répète chaque année",
+    "remindDaysBefore": "Rappel (jours avant)",
+    "portalVisible": "Afficher dans le portail client",
+    "contractEnd": "Fin du contrat",
+    "notes": "Notes",
+    "owner": "Responsable",
+    "edit": "Modifier la date importante",
+    "delete": "Supprimer",
+    "errors": {
+      "loadFailed": "Impossible de charger les dates importantes.",
+      "saveFailed": "Impossible d'enregistrer la date importante."
+    },
+    "toast": {
+      "saved": "Date importante enregistrée",
+      "deleted": "Date importante supprimée"
+    }
+  },
+  "toast": {
+    "saved": "Livrable enregistré",
+    "delivered": "Marqué comme livré",
+    "waived": "Occurrence exemptée",
+    "reopened": "Occurrence rouverte",
+    "rescheduled": "Occurrence reportée",
+    "evidenceAdded": "Preuve ajoutée",
+    "evidenceRemoved": "Preuve retirée",
+    "deactivated": "Livrable désactivé"
+  }
+}
