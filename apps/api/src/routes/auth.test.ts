@@ -70,7 +70,7 @@ vi.mock('../services', () => {
   // tests continue to assert success on the happy path.
   rememberJtiFamily: vi.fn().mockResolvedValue(undefined),
   getFamilyForJti: vi.fn().mockResolvedValue(null),
-  revokeFamily: vi.fn().mockResolvedValue(undefined),
+  revokeFamily: vi.fn().mockResolvedValue({ redis: 'confirmed', database: 'confirmed' }),
   isFamilyRevoked: vi.fn().mockResolvedValue(false),
   touchFamilyLastUsed: vi.fn().mockResolvedValue(undefined),
   // Task 7 follow-up: shared family-mint helper used by every authenticated
@@ -425,6 +425,7 @@ import {
   markRefreshTokenJtiRotated,
   wasRefreshTokenJtiRecentlyRotated,
   revokeFamily,
+  isFamilyRevoked,
   getFamilyForJti,
   getTrustedClientIp,
   rateLimiter,
@@ -551,6 +552,7 @@ describe('auth routes', () => {
     vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
     vi.mocked(wasRefreshTokenJtiRecentlyRotated).mockResolvedValue(false);
     vi.mocked(getFamilyForJti).mockResolvedValue(null);
+    vi.mocked(revokeFamily).mockResolvedValue({ redis: 'confirmed', database: 'confirmed' });
     vi.mocked(getTrustedClientIp).mockReturnValue('127.0.0.1');
     vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() });
     vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
@@ -2565,6 +2567,7 @@ describe('auth routes', () => {
       expect(body.reason).toBe('refresh_raced');
       // The whole point: the family must survive, and the cookie must NOT be cleared.
       expect(revokeFamily).not.toHaveBeenCalled();
+      expect(createAuditLogAsync).not.toHaveBeenCalled();
       expect(createTokenPair).not.toHaveBeenCalled();
       const setCookie = res.headers.get('set-cookie') ?? '';
       expect(setCookie).not.toContain('breeze_refresh_token=;');
@@ -2603,6 +2606,53 @@ describe('auth routes', () => {
       // Genuine reuse DOES clear the cookie.
       const setCookie = res.headers.get('set-cookie') ?? '';
       expect(setCookie).toContain('breeze_refresh_token=;');
+    });
+
+    it.each((['confirmed', 'unavailable', 'failed'] as const).flatMap((redis) =>
+      (['confirmed', 'not_found', 'failed'] as const).map((database) => ({ redis, database })),
+    ))('records bounded family outcomes redis=$redis database=$database without claiming complete containment', async (outcome) => {
+      vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(true);
+      vi.mocked(wasRefreshTokenJtiRecentlyRotated).mockResolvedValue(false);
+      vi.mocked(revokeFamily).mockResolvedValue(outcome);
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: '11111111-1111-4111-8111-111111111111',
+        email: 'user@example.test',
+        roleId: null, orgId: null, partnerId: null, scope: 'system',
+        type: 'refresh', mfa: false, iat: 123456,
+        jti: 'rejected-jti', fam: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      });
+
+      const res = await app.request('/auth/refresh', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=rejected-token; breeze_csrf_token=test-csrf-token',
+        },
+      });
+
+      // Denial is unconditional: an unacknowledged durable write must never
+      // soften the response, it must only stop the audit row from claiming
+      // containment that was not acknowledged by any store.
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Invalid refresh token' });
+      expect(res.headers.get('set-cookie')).toContain('breeze_refresh_token=;');
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(isFamilyRevoked).not.toHaveBeenCalled();
+      expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'auth.refresh.reuse_detected',
+        result: 'denied',
+        resourceId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        details: {
+          replayedJti: 'rejected-jti',
+          detection: 'revoked_or_unavailable',
+          familyRevocation: outcome,
+          reason: outcome.database === 'confirmed'
+            ? 'Refresh token rejected outside rotation grace; durable family revocation confirmed'
+            : 'Refresh token rejected outside rotation grace; durable family revocation unconfirmed',
+        },
+      }));
+      expect(JSON.stringify(vi.mocked(createAuditLogAsync).mock.calls)).not.toContain('entire family revoked');
     });
 
     it('#1107: a successful refresh records a rotation-grace marker for the old jti', async () => {
