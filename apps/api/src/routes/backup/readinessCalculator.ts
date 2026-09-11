@@ -1,6 +1,6 @@
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { backupJobs as backupJobsTable, recoveryReadiness as recoveryReadinessTable, RESTORABLE_BACKUP_JOB_STATUSES } from '../../db/schema';
+import { backupJobs as backupJobsTable, devices, recoveryReadiness as recoveryReadinessTable, RESTORABLE_BACKUP_JOB_STATUSES } from '../../db/schema';
 import { publishEvent } from '../../services/eventBus';
 import {
   backupJobs,
@@ -87,7 +87,8 @@ function createNoHistoryReadiness(orgId: string, deviceId: string): RecoveryRead
 
 async function addMissingAssignedDevicesToReadiness(
   orgId: string,
-  rows: RecoveryReadiness[]
+  rows: RecoveryReadiness[],
+  allowedSiteIds?: readonly string[],
 ): Promise<RecoveryReadiness[]> {
   let assignedDevices: BackupAssignedDevice[] = [];
 
@@ -100,6 +101,28 @@ async function addMissingAssignedDevicesToReadiness(
 
   if (assignedDevices.length === 0) {
     return rows;
+  }
+
+  if (allowedSiteIds) {
+    if (allowedSiteIds.length === 0) return [];
+    try {
+      const visible = await runWithSystemDbAccess(() => db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(and(
+          eq(devices.orgId, orgId),
+          inArray(devices.siteId, [...allowedSiteIds]),
+          inArray(devices.id, assignedDevices.map((device) => device.deviceId)),
+        )));
+      const visibleIds = new Set(visible.map((row) => row.id));
+      assignedDevices = assignedDevices.filter((device) => visibleIds.has(device.deviceId));
+    } catch (error) {
+      // `rows` is already site-scoped by listRecoveryReadinessFromDb. Returning
+      // it unaugmented drops the synthetic assigned-device rows rather than
+      // adding ones we could not confirm are visible — no unscoped row escapes.
+      console.warn('[backupVerification] Site-scoped assigned-device lookup failed; skipping synthetic readiness rows:', error);
+      return rows;
+    }
   }
 
   const existingDeviceIds = new Set(rows.map((row) => row.deviceId));
@@ -210,14 +233,23 @@ async function getLatestCompletedBackup(
   return latestBackup ? { completedAt: latestBackup.completedAt ?? null } : null;
 }
 
-async function listRecoveryReadinessFromDb(orgId: string): Promise<RecoveryReadiness[] | null> {
+async function listRecoveryReadinessFromDb(orgId: string, allowedSiteIds?: readonly string[]): Promise<RecoveryReadiness[] | null> {
   if (!supportsDbOrg(orgId)) return null;
+  if (allowedSiteIds?.length === 0) return [];
 
   try {
     const rows = await runWithSystemDbAccess(() => db
       .select()
       .from(recoveryReadinessTable)
-      .where(eq(recoveryReadinessTable.orgId, orgId))
+      .where(and(
+        eq(recoveryReadinessTable.orgId, orgId),
+        allowedSiteIds ? sql`exists (
+          select 1 from ${devices}
+          where ${devices.id} = ${recoveryReadinessTable.deviceId}
+            and ${devices.orgId} = ${recoveryReadinessTable.orgId}
+            and ${inArray(devices.siteId, [...allowedSiteIds])}
+        )` : undefined,
+      ))
       .orderBy(recoveryReadinessTable.readinessScore));
 
     return rows.map((row) => normalizeDbReadinessRow({
@@ -226,6 +258,7 @@ async function listRecoveryReadinessFromDb(orgId: string): Promise<RecoveryReadi
     }));
   } catch (error) {
     console.warn('[backupVerification] DB readiness read failed; falling back to memory:', error);
+    if (allowedSiteIds) return [];
     return null;
   }
 }
@@ -310,10 +343,11 @@ async function safePublish(
 
 // ---- Public readiness listing ----
 
-export async function listRecoveryReadiness(orgId: string): Promise<RecoveryReadiness[]> {
-  const dbRows = await listRecoveryReadinessFromDb(orgId);
-  const rows = dbRows ?? listRecoveryReadinessFromMemory(orgId);
-  return addMissingAssignedDevicesToReadiness(orgId, rows);
+export async function listRecoveryReadiness(orgId: string, allowedSiteIds?: readonly string[]): Promise<RecoveryReadiness[]> {
+  if (allowedSiteIds?.length === 0) return [];
+  const dbRows = await listRecoveryReadinessFromDb(orgId, allowedSiteIds);
+  const rows = dbRows ?? (allowedSiteIds ? [] : listRecoveryReadinessFromMemory(orgId));
+  return addMissingAssignedDevicesToReadiness(orgId, rows, allowedSiteIds);
 }
 
 // ---- Main readiness computation ----
@@ -461,7 +495,7 @@ export async function recomputeRecoveryReadinessForDevice(
 
 // ---- Health summary ----
 
-export async function getBackupHealthSummary(orgId: string): Promise<{
+export async function getBackupHealthSummary(orgId: string, allowedSiteIds?: readonly string[]): Promise<{
   verification: {
     total: number;
     passedLast24h: number;
@@ -480,8 +514,8 @@ export async function getBackupHealthSummary(orgId: string): Promise<{
   };
 }> {
   const [rows, readiness, assignedResult] = await Promise.all([
-    listBackupVerifications(orgId, { excludeSimulated: true }),
-    listRecoveryReadiness(orgId),
+    listBackupVerifications(orgId, { excludeSimulated: true, allowedSiteIds }),
+    listRecoveryReadiness(orgId, allowedSiteIds),
     resolveAllBackupAssignedDevices(orgId)
       .then((assigned) => ({ assigned, failed: false as const }))
       .catch((err) => {
@@ -493,7 +527,28 @@ export async function getBackupHealthSummary(orgId: string): Promise<{
   const dayAgo = now - DAY_MS;
 
   const last24h = rows.filter((row) => toEpoch(row.completedAt ?? row.startedAt) >= dayAgo);
-  const protectedDeviceIds = assignedResult.assigned.map((a) => a.deviceId);
+  let assigned = assignedResult.assigned;
+  if (allowedSiteIds) {
+    if (allowedSiteIds.length === 0) assigned = [];
+    else {
+      try {
+        const visible = await runWithSystemDbAccess(() => db
+          .select({ id: devices.id })
+          .from(devices)
+          .where(and(
+            eq(devices.orgId, orgId),
+            inArray(devices.siteId, [...allowedSiteIds]),
+            inArray(devices.id, assigned.map((device) => device.deviceId)),
+          )));
+        const visibleIds = new Set(visible.map((row) => row.id));
+        assigned = assigned.filter((device) => visibleIds.has(device.deviceId));
+      } catch (error) {
+        console.warn('[BackupReadiness] Site-scoped assigned-device lookup failed closed:', error);
+        assigned = [];
+      }
+    }
+  }
+  const protectedDeviceIds = assigned.map((a) => a.deviceId);
   const protectedDevices = new Set(protectedDeviceIds);
   const coveredRecently = new Set(
     rows

@@ -83,6 +83,7 @@ vi.mock('../../db/schema', () => ({
   },
   recoveryReadiness: {
     orgId: 'recovery_readiness.org_id',
+    deviceId: 'recovery_readiness.device_id',
     estimatedRpoMinutes: 'recovery_readiness.estimated_rpo_minutes',
     estimatedRtoMinutes: 'recovery_readiness.estimated_rto_minutes',
   },
@@ -280,6 +281,99 @@ describe('sla routes', () => {
     expect(body.data.compliancePercent).toBe(67);
     expect(body.data.avgRpoMinutes).toBe(15);
     expect(body.data.avgRtoMinutes).toBe(45);
+  });
+
+  it('narrows the SLA dashboard to allowed device sites (SEC-021 sibling)', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    const breachesChain = chainMock([{ count: 1 }]);
+    const eventsChain = chainMock([{ count: 4 }]);
+    const readinessChain = chainMock([{ avgRpo: 15, avgRto: 45 }]);
+    selectMock
+      // 1. resolveSiteAllowedDeviceIds
+      .mockReturnValueOnce(chainMock([
+        { id: DEVICE_ID, siteId: SITE_A },
+        { id: OTHER_DEVICE_ID, siteId: SITE_B },
+      ]))
+      .mockReturnValueOnce(chainMock([{ count: 3 }]))
+      .mockReturnValueOnce(breachesChain)
+      .mockReturnValueOnce(eventsChain)
+      .mockReturnValueOnce(readinessChain)
+      .mockReturnValueOnce(chainMock([{ count: 1 }]));
+
+    const res = await app.request('/backup/sla/dashboard', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    // Events keep unattributed rows (device_id NULL), matching GET /events.
+    const eventScoped = expect.objectContaining({
+      op: 'or',
+      conditions: expect.arrayContaining([
+        expect.objectContaining({ op: 'isNull', column: 'backup_sla_events.device_id' }),
+        expect.objectContaining({ op: 'inArray', column: 'backup_sla_events.device_id', values: [DEVICE_ID] }),
+      ]),
+    });
+    for (const chain of [breachesChain, eventsChain]) {
+      expect(chain.where).toHaveBeenCalledWith(expect.objectContaining({
+        op: 'and',
+        conditions: expect.arrayContaining([eventScoped]),
+      }));
+    }
+    // recovery_readiness is always per-device: plain membership, no NULL arm.
+    expect(readinessChain.where).toHaveBeenCalledWith(expect.objectContaining({
+      op: 'and',
+      conditions: expect.arrayContaining([
+        expect.objectContaining({ op: 'inArray', column: 'recovery_readiness.device_id', values: [DEVICE_ID] }),
+      ]),
+    }));
+  });
+
+  it('fails the SLA dashboard closed for an empty site ceiling', async () => {
+    permissionsState = { allowedSiteIds: [] };
+
+    const res = await app.request('/backup/sla/dashboard', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      data: {
+        activeConfigs: 0,
+        compliancePercent: null,
+        compliantConfigs: 0,
+        activeBreaches: 0,
+        totalEventsLast30d: 0,
+        avgRpoMinutes: null,
+        avgRtoMinutes: null,
+      },
+    });
+    // No aggregate ran: nothing was queried at all.
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps unrestricted SLA dashboard behavior unchanged', async () => {
+    const breachesChain = chainMock([{ count: 1 }]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 3 }]))
+      .mockReturnValueOnce(breachesChain)
+      .mockReturnValueOnce(chainMock([{ count: 4 }]))
+      .mockReturnValueOnce(chainMock([{ avgRpo: 15, avgRto: 45 }]))
+      .mockReturnValueOnce(chainMock([{ count: 1 }]));
+
+    const res = await app.request('/backup/sla/dashboard', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    // No device resolution query, and no device predicate on the aggregates.
+    expect(selectMock).toHaveBeenCalledTimes(5);
+    expect(breachesChain.where).toHaveBeenCalledWith(expect.objectContaining({
+      op: 'and',
+      conditions: expect.not.arrayContaining([expect.objectContaining({ op: 'inArray' })]),
+    }));
   });
 });
 

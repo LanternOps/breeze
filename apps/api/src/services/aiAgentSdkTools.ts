@@ -1591,6 +1591,15 @@ export function createBreezeMcpServer(
       makeHandler('delete_tenant', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    // SEC-2026-09-05-021: get_backup_health / run_backup_verification /
+    // get_recovery_readiness are declared here but have NO executeTool
+    // registration yet (asserted by helperToolFilter.test.ts and the registry
+    // parity contract). When a handler IS wired, it MUST pass the caller's
+    // `auth.allowedSiteIds` through to getBackupHealthSummary /
+    // listRecoveryReadiness / listBackupVerifications the way
+    // routes/backup/verification.ts does — those services apply the site
+    // ceiling only when it is supplied, so an omitted argument silently
+    // returns org-wide rows to a site-restricted caller.
     tool(
       'get_backup_health',
       'Get backup and verification health summary for an organization, with optional device focus.',
