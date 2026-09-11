@@ -1205,9 +1205,11 @@ describe('scripts routes', () => {
       expect(getInserted().timeoutSeconds).toBe(300);
       expect(getInserted().runAs).toBe('system');
       expect(getInserted().exitCodeSeverityMapping).toBeNull();
-      // Fresh row: version always starts at 1, never copied from a source
-      // that may have accumulated versions via prior edits.
-      expect(getInserted().version).toBe(1);
+      // Fresh row: never copied from a source that may have accumulated
+      // versions via prior edits. Inserted at 0 and moved to 1 by
+      // cutScriptVersion inside the same transaction (W01a), so 0 is never
+      // observable outside it.
+      expect(getInserted().version).toBe(0);
     });
 
     it('does NOT copy the source script\u2019s security acknowledgements (#5129)', async () => {
