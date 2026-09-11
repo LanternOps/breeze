@@ -552,6 +552,17 @@ export async function reapStaleDeviceCommands(): Promise<number> {
   return reaped;
 }
 
+/** Mirrors scripts.timeout_seconds' own DEFAULT 300 (schema/scripts.ts:47). */
+const DEFAULT_EXECUTION_TIMEOUT_SECONDS = 300;
+
+function resolveExecutionTimeoutSeconds(
+  row: { timeoutSeconds: number | null; scriptTimeoutSeconds: number | null },
+): number {
+  return row.timeoutSeconds ?? row.scriptTimeoutSeconds ?? DEFAULT_EXECUTION_TIMEOUT_SECONDS;
+}
+
+export const __testOnly = { resolveExecutionTimeoutSeconds, DEFAULT_EXECUTION_TIMEOUT_SECONDS };
+
 export async function reapStaleScriptExecutions(): Promise<number> {
   // #3190: this used to be a flat `300s + 5min grace` for every execution,
   // ignoring the script's own `timeoutSeconds`. That is wrong in both
@@ -578,10 +589,15 @@ export async function reapStaleScriptExecutions(): Promise<number> {
       scriptId: scriptExecutions.scriptId,
       createdAt: scriptExecutions.createdAt,
       startedAt: scriptExecutions.startedAt,
-      timeoutSeconds: scripts.timeoutSeconds,
+      // Snapshot first. The join stays only to serve rows written before
+      // 2026-10-16-100200 — and it is a LEFT join now, because a
+      // proposal-backed execution has no scripts parent and an inner join
+      // would drop it from the reaper entirely (it would then run forever).
+      timeoutSeconds: scriptExecutions.timeoutSeconds,
+      scriptTimeoutSeconds: scripts.timeoutSeconds,
     })
     .from(scriptExecutions)
-    .innerJoin(scripts, eq(scripts.id, scriptExecutions.scriptId))
+    .leftJoin(scripts, eq(scripts.id, scriptExecutions.scriptId))
     .where(
       and(
         inArray(scriptExecutions.status, ['pending', 'queued', 'running']),
@@ -599,7 +615,7 @@ export async function reapStaleScriptExecutions(): Promise<number> {
     // check on a fixed constant would keep enforcing the old floor and make
     // the fix inert for exactly the short-timeout case #3190 describes.
     const timeoutMs = getCommandTimeoutMs(CommandTypes.SCRIPT, {
-      timeoutSeconds: exec.timeoutSeconds,
+      timeoutSeconds: resolveExecutionTimeoutSeconds(exec),
     });
     const referenceTime = exec.status === 'running' && exec.startedAt
       ? exec.startedAt.getTime()

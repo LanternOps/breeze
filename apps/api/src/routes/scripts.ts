@@ -1363,7 +1363,15 @@ scriptRoutes.get(
         runAs: scriptExecutions.runAs,
         targetSessionId: scriptExecutions.targetSessionId,
         scriptName: scripts.name,
-        scriptLanguage: scripts.language,
+        // Snapshot first, falling back to the joined script for rows written
+        // before the execution carried its own language (2026-10-16-100200).
+        // A proposal-backed execution has no scripts parent at all.
+        scriptLanguage: sql<string | null>`coalesce(${scriptExecutions.language}::text, ${scripts.language}::text)`,
+        sourceKind: scriptExecutions.sourceKind,
+        proposalId: scriptExecutions.proposalId,
+        reviewRiskTier: scriptExecutions.reviewRiskTier,
+        reviewSummary: scriptExecutions.reviewSummary,
+        approvalMethod: scriptExecutions.approvalMethod,
         deviceHostname: devices.hostname,
         deviceOsType: devices.osType,
         deviceOrgId: devices.orgId,

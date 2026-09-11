@@ -1074,18 +1074,28 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input, auth) => {
-      // Partner-wide/system scripts have org_id NULL; the plain orgCondition
-      // would exclude their executions (same trap run_script guards against
-      // above). Org-less scripts pass here; the device-site check below and
-      // RLS still constrain what the session can see.
-      const orgCond = auth.orgCondition(scripts.orgId);
-      const scriptOrgCondition = orgCond ? or(isNull(scripts.orgId), orgCond) : undefined;
+      // TENANCY MOVED: the org predicate used to ride `scripts.orgId` through
+      // the inner join (with an `isNull` carve-out for partner-wide/system
+      // scripts). With a left join that predicate would be NULL — and
+      // therefore not true — for every proposal row, so it is re-anchored on
+      // the execution's OWN denormalised org_id, which is the column RLS and
+      // the device-move restamp already maintain and which is NOT NULL for
+      // every execution regardless of source.
+      const orgCond = auth.orgCondition(scriptExecutions.orgId);
 
       const [execution] = await db
         .select({
           id: scriptExecutions.id,
+          sourceKind: scriptExecutions.sourceKind,
           scriptId: scriptExecutions.scriptId,
+          proposalId: scriptExecutions.proposalId,
           scriptName: scripts.name,
+          scriptLanguage: scripts.language,
+          language: scriptExecutions.language,
+          timeoutSeconds: scriptExecutions.timeoutSeconds,
+          reviewRiskTier: scriptExecutions.reviewRiskTier,
+          reviewSummary: scriptExecutions.reviewSummary,
+          approvalMethod: scriptExecutions.approvalMethod,
           deviceId: scriptExecutions.deviceId,
           deviceHostname: devices.hostname,
           deviceSiteId: devices.siteId,
@@ -1099,11 +1109,12 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           createdAt: scriptExecutions.createdAt,
         })
         .from(scriptExecutions)
-        .innerJoin(scripts, eq(scriptExecutions.scriptId, scripts.id))
+        // LEFT, not INNER: a proposal-backed row has no scripts parent.
+        .leftJoin(scripts, eq(scriptExecutions.scriptId, scripts.id))
         .leftJoin(devices, eq(scriptExecutions.deviceId, devices.id))
         .where(and(
           eq(scriptExecutions.id, input.executionId as string),
-          ...(scriptOrgCondition ? [scriptOrgCondition] : []),
+          ...(orgCond ? [orgCond] : []),
         ))
         .limit(1);
 
@@ -1114,7 +1125,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       }
 
       const { deviceSiteId: _siteId, ...result } = execution;
-      return JSON.stringify({ execution: result });
+      return JSON.stringify({ execution: shapeExecutionRow(result) });
     },
   });
 
@@ -1382,3 +1393,21 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     }
   });
 }
+
+function shapeExecutionRow(row: {
+  sourceKind: 'library' | 'proposal'; proposalId: string | null;
+  scriptName: string | null; language: string | null; scriptLanguage: string | null;
+  timeoutSeconds: number | null; [key: string]: unknown;
+}) {
+  return {
+    ...row,
+    // A proposal has no library name. Say so plainly rather than rendering an
+    // empty string the assistant might read as "the script was deleted".
+    scriptName: row.scriptName ?? (row.sourceKind === 'proposal' ? 'AI-authored proposal' : null),
+    language: row.language ?? row.scriptLanguage ?? null,
+  };
+}
+
+// Extended by Task 21 (runScriptHandler) — keep as a plain object literal
+// rather than reassigning it, so later work can merge into the same export.
+export const __testOnly = { shapeExecutionRow };
