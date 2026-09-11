@@ -426,8 +426,34 @@ export async function resolveBackupTargets(
       return [{ commandType: 'backup_run', payload }];
     }
 
-    case 'system_image':
-      return [{ commandType: 'backup_run', payload: { systemImage: true } }];
+    case 'system_image': {
+      const t = targets as { wholeMachine?: boolean; excludes?: string[] };
+      if (t.wholeMachine !== true) {
+        // Byte-identical to the pre-#5493 payload: no paths, so the helper
+        // builds a files-less system_image-only snapshot (layout + state).
+        return [{ commandType: 'backup_run', payload: { systemImage: true } }];
+      }
+      // #5493: whole-machine profile — walk the device's OS root alongside
+      // layout.json + system state so ONE snapshot carries everything the
+      // rebuild engine needs. Root is chosen server-side from the device's
+      // discovered osType, never trusted from the caller.
+      const [device] = await db
+        .select({ osType: devices.osType })
+        .from(devices)
+        .where(eq(devices.id, deviceId));
+      const root = device?.osType === 'windows' ? 'C:\\' : '/';
+      return [
+        {
+          commandType: 'backup_run',
+          payload: {
+            systemImage: true,
+            wholeMachine: true,
+            paths: [root],
+            excludes: Array.isArray(t.excludes) ? t.excludes : [],
+          },
+        },
+      ];
+    }
 
     case 'hyperv': {
       const t = targets as {
