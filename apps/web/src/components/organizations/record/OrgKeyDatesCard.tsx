@@ -11,7 +11,8 @@ import {
   type KeyDateKind,
 } from '@/lib/api/orgKeyDates';
 import { formatDate } from '@/lib/dateTimeFormat';
-import { ActionError, handleActionError, runAction } from '@/lib/runAction';
+import { handleActionError } from '@/lib/runAction';
+import { runClientAction } from '@/lib/runClientAction';
 import { useLatest, type OrgFetch } from './orgRecordFetch';
 
 const KINDS: readonly KeyDateKind[] = [
@@ -71,26 +72,6 @@ const INPUT = 'w-full rounded-md border bg-background px-2 py-1.5 text-sm';
 const BUTTON = 'inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:opacity-60';
 const ICON_BUTTON = 'rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-60';
 
-/**
- * Adapts the typed client (which unwraps `{ data }` and throws `ActionError`)
- * back into the `Response` shape `runAction` reads, so the real API message
- * (a 409 duplicate, a 400 validation error) reaches the toast instead of the
- * generic fallback — and a 401 still takes runAction's session-expiry branch.
- */
-async function asResponse(run: () => Promise<unknown>): Promise<Response> {
-  const headers = { 'content-type': 'application/json' };
-  try {
-    const data = await run();
-    return new Response(JSON.stringify({ data: data ?? null }), { status: 200, headers });
-  } catch (err) {
-    if (err instanceof ActionError && err.status > 0) {
-      const body = err.body && typeof err.body === 'object' ? err.body : { error: err.message };
-      return new Response(JSON.stringify(body), { status: err.status, headers });
-    }
-    throw err;
-  }
-}
-
 /** `key_date` rows sort with contract ends by date; ties keep label order. */
 function byDate(a: KeyDate, b: KeyDate): number {
   return a.date.localeCompare(b.date) || a.label.localeCompare(b.label);
@@ -149,16 +130,10 @@ export default function OrgKeyDatesCard({ orgId, orgFetch }: { orgId: string; or
     const target = editing;
     setSaving(true);
     try {
-      await runAction({
-        request: () =>
-          asResponse(() =>
-            target === 'new'
-              ? createKeyDate(orgFetch, orgId, body)
-              : updateKeyDate(orgFetch, orgId, target, body),
-          ),
-        errorFallback: t('keyDates.errors.saveFailed'),
-        successMessage: t('keyDates.toast.saved'),
-      });
+      await runClientAction(
+        () => (target === 'new' ? createKeyDate(orgFetch, orgId, body) : updateKeyDate(orgFetch, orgId, target, body)),
+        { errorFallback: t('keyDates.errors.saveFailed'), successMessage: t('keyDates.toast.saved') },
+      );
       close();
       await load();
     } catch (err) {
@@ -171,8 +146,7 @@ export default function OrgKeyDatesCard({ orgId, orgFetch }: { orgId: string; or
   const remove = async (id: string) => {
     setDeleting(id);
     try {
-      await runAction({
-        request: () => asResponse(() => deleteKeyDate(orgFetch, orgId, id)),
+      await runClientAction(() => deleteKeyDate(orgFetch, orgId, id), {
         errorFallback: t('keyDates.errors.saveFailed'),
         successMessage: t('keyDates.toast.deleted'),
       });

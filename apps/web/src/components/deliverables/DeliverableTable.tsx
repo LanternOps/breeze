@@ -12,7 +12,8 @@ import {
 import { handleActionError } from '../../lib/runAction';
 import { formatDate } from '../billing/shared/format';
 import { Dialog } from '../shared/Dialog';
-import DeliverableForm, { runClientAction } from './DeliverableForm';
+import DeliverableForm from './DeliverableForm';
+import { runClientAction } from '../../lib/runClientAction';
 
 export interface DeliverableTableProps {
   fetcher: Fetcher;

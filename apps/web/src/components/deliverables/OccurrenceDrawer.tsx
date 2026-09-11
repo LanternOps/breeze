@@ -18,7 +18,7 @@ import {
 import { ActionError, handleActionError } from '../../lib/runAction';
 import { formatDate } from '../billing/shared/format';
 import { Drawer } from '../shared/Drawer';
-import { runClientAction } from './DeliverableForm';
+import { runClientAction } from '../../lib/runClientAction';
 
 export interface OccurrenceDrawerProps {
   fetcher: Fetcher;
