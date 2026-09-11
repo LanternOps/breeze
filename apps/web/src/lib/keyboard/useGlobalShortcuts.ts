@@ -22,9 +22,17 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 /**
  * App-wide single-key shortcuts, mounted once per authenticated page by
- * `GlobalShortcuts` (DashboardLayout). Listens on `window` in the bubble phase
- * so a page-local handler on `document` (e.g. the devices filter bar's own `/`
- * and `?`) runs first and wins by calling `preventDefault()`.
+ * `GlobalShortcuts` (DashboardLayout).
+ *
+ * Two listeners with opposite precedence:
+ * - The single keys (`g`, `/`, `?`, `[`) sit on `window` in the BUBBLE phase,
+ *   so a page-local handler (the devices filter bar's own `/` and `?`, on
+ *   `document`) runs first and wins by calling `preventDefault()`.
+ * - The second key of a pending chord is taken in the CAPTURE phase and
+ *   stopped there. Once the user has pressed `g`, the next key belongs to the
+ *   chord: `g a` must go to Alerts, not also fire the ticket queue's single-key
+ *   `a` (assign to me) — a page handler on `window` registered after this
+ *   island would otherwise run second and act on the same keystroke.
  *
  *   g then <key>  navigate (see goToShortcuts.ts)
  *   /             open the command palette
@@ -47,26 +55,31 @@ export function useGlobalShortcuts(): void {
       }
     };
 
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return;
-      if (event.metaKey || event.ctrlKey || event.altKey) {
+    // Capture phase: completes a pending chord before any page handler sees
+    // the key. A key that is not a chord target just cancels the chord and
+    // continues through the normal dispatch.
+    const onChordCapture = (event: KeyboardEvent) => {
+      if (!chordPending.current) return;
+      if (event.metaKey || event.ctrlKey || event.altKey || isEditableTarget(event.target)) {
         clearChord();
         return;
       }
+      clearChord();
+      const target = GO_TO_BY_KEY.get(event.key);
+      if (!target) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const ui = useUiStore.getState();
+      if (ui.isShortcutsHelpOpen) ui.closeShortcutsHelp();
+      void navigateTo(target.href);
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (isEditableTarget(event.target)) return;
 
       const ui = useUiStore.getState();
-
-      if (chordPending.current) {
-        clearChord();
-        const target = GO_TO_BY_KEY.get(event.key);
-        if (target) {
-          event.preventDefault();
-          if (ui.isShortcutsHelpOpen) ui.closeShortcutsHelp();
-          void navigateTo(target.href);
-        }
-        return;
-      }
 
       switch (event.key) {
         case 'g':
@@ -90,8 +103,10 @@ export function useGlobalShortcuts(): void {
       }
     };
 
+    window.addEventListener('keydown', onChordCapture, true);
     window.addEventListener('keydown', onKeyDown);
     return () => {
+      window.removeEventListener('keydown', onChordCapture, true);
       window.removeEventListener('keydown', onKeyDown);
       clearChord();
     };

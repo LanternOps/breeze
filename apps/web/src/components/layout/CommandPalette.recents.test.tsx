@@ -90,6 +90,39 @@ describe('CommandPalette — recents', () => {
     expect(screen.queryByTestId('palette-section-quick-actions')).toBeNull();
   });
 
+  it('keeps local matches visible and selectable while the server search loads', () => {
+    vi.useFakeTimers();
+    try {
+      seed();
+      render(<CommandPalette />);
+      act(() => { useUiStore.getState().openCommandPalette(); });
+      fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'alp' } });
+      act(() => { vi.advanceTimersByTime(250); }); // past the debounce → fetch pending
+      expect(screen.getByText('Searching…')).toBeInTheDocument();
+      expect(within(screen.getByTestId('palette-section-recent')).getByRole('button')).toHaveTextContent('alpha');
+      fireEvent.keyDown(window, { key: 'Enter' });
+      expect(navigateToMock).toHaveBeenCalledWith('/devices/id-alpha');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('drops the previous query\'s server results as soon as a new search starts', async () => {
+    seed();
+    fetchWithAuthMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ results: [{ id: 's1', type: 'scripts', title: 'Old script' }] }),
+    } as Response);
+    render(<CommandPalette />);
+    act(() => { useUiStore.getState().openCommandPalette(); });
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'old' } });
+    expect(await screen.findByText('Old script')).toBeInTheDocument();
+    fetchWithAuthMock.mockReturnValue(new Promise(() => {}));
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'older' } });
+    await act(async () => { await new Promise((r) => setTimeout(r, 250)); });
+    expect(screen.queryByText('Old script')).toBeNull();
+  });
+
   it('matches recent pages by title and by path', () => {
     seed();
     render(<CommandPalette />);

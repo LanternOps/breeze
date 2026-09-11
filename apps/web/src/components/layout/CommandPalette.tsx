@@ -262,6 +262,10 @@ export default function CommandPalette() {
     let isActive = true;
     setIsLoading(true);
     setErrorMessage(null);
+    // Drop the previous query's results now, not when the new ones land:
+    // anything still in `results` stays keyboard-selectable, so it must not
+    // be something the user can no longer see.
+    setResults([]);
 
     const performSearch = async () => {
       try {
@@ -603,8 +607,9 @@ export default function CommandPalette() {
                 </div>
               )}
 
-              {!isLoading &&
-                sections.map((section) => (
+              {/* Rendered while loading too: local recent matches are already
+                  selectable, so they must stay visible under the spinner. */}
+              {sections.map((section) => (
                   <div key={section.id} data-testid={`palette-section-${section.id}`} className="border-t first:border-t-0">
                     <div
                       data-testid="palette-section-heading"

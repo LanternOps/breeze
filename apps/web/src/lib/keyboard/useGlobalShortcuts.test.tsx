@@ -130,6 +130,33 @@ describe('useGlobalShortcuts', () => {
     window.removeEventListener(SIDEBAR_CYCLE_MODE_EVENT, listener);
   });
 
+  it('a pending chord claims its second key before a page-level window handler', () => {
+    renderHook(() => useGlobalShortcuts());
+    // Mirrors useQueueKeyboard: registered after the island, on window, single-key "a".
+    let assigned = 0;
+    const assignMe = (e: KeyboardEvent) => { if (e.key === 'a') { assigned++; e.preventDefault(); } };
+    window.addEventListener('keydown', assignMe);
+    press('g');
+    press('a');
+    expect(navigateToMock).toHaveBeenCalledWith('/alerts');
+    expect(assigned).toBe(0);
+    // With no chord pending the page handler sees "a" as usual.
+    press('a');
+    expect(assigned).toBe(1);
+    expect(navigateToMock).toHaveBeenCalledTimes(1);
+    window.removeEventListener('keydown', assignMe);
+  });
+
+  it('a chord prefix consumed by a page handler never starts a chord', () => {
+    renderHook(() => useGlobalShortcuts());
+    const consumeG = (e: KeyboardEvent) => { if (e.key === 'g') e.preventDefault(); };
+    document.addEventListener('keydown', consumeG);
+    press('g');
+    press('d');
+    expect(navigateToMock).not.toHaveBeenCalled();
+    document.removeEventListener('keydown', consumeG);
+  });
+
   it('closes the shortcuts help when a chord navigates away', () => {
     renderHook(() => useGlobalShortcuts());
     useUiStore.setState({ isShortcutsHelpOpen: true });
