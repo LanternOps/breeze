@@ -324,3 +324,146 @@ func TestCollectBackupFiles_FidelityEntries(t *testing.T) {
 		t.Error("walker followed a directory symlink")
 	}
 }
+
+// #5493: found live on the bare-metal boot proof. The whole-machine preset
+// excludes /proc/**, /tmp/**, /var/tmp/** (and siblings). Before the fix, an
+// excluded directory was pruned via fs.SkipDir without ever being added to
+// the walker's candidate-directory list, so it could never get its own
+// manifest entry — and any directory whose children were all excluded still
+// looked "non-empty" to dirNeedsEntry because childCount counted excluded
+// children too. The rebuilt root ended up with no /proc, /tmp, or /var/tmp,
+// so systemd couldn't mount its API filesystems and update-initramfs failed
+// (mktemp: failed to create directory via template
+// '/var/tmp/mkinitramfs_XXXXXX': No such file or directory).
+//
+// An excluded directory must still be recorded (mode/owner preserved, e.g.
+// /tmp's sticky 1777) even though its contents are skipped, and an excluded
+// child (file or directory) must never count toward its parent's
+// childCount.
+func TestCollectBackupFiles_ExcludedDirectoriesStillGetManifestEntries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix mode bits (sticky 1777) and ownership")
+	}
+	root := t.TempDir()
+	mustMkdir := func(rel string, mode os.FileMode) string {
+		p := pathpkg.Join(root, rel)
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, mode); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	mustFile := func(rel string) {
+		p := pathpkg.Join(root, rel)
+		if err := os.MkdirAll(pathpkg.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const sticky1777 = os.ModeSticky | 0o777
+	mustMkdir("proc", 0o755)
+	mustFile("proc/x")
+	mustMkdir("tmp", sticky1777)
+	mustFile("tmp/y")
+	mustMkdir("var/tmp", sticky1777)
+	mustFile("var/tmp/z")
+	mustFile("var/log/syslog")
+	mustFile("etc/hosts")
+
+	excl := newExcludeMatcher([]string{"/proc/**", "/tmp/**", "/var/tmp/**"})
+	files, err := NewBackupManager(BackupConfig{}).collectBackupFilesFromPaths(context.Background(), []string{root}, excl, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byRel := map[string]backupFile{}
+	for _, f := range files {
+		rel, _ := pathpkg.Rel(root, f.sourcePath)
+		byRel[pathpkg.ToSlash(rel)] = f
+	}
+
+	// Excluded directories themselves must still be recorded, with their
+	// real mode preserved.
+	proc, ok := byRel["proc"]
+	if !ok || proc.kind != KindDir || proc.modeBits != 0o755 {
+		t.Errorf("proc entry = %+v (ok=%v), want KindDir mode 0755", proc, ok)
+	}
+	tmp, ok := byRel["tmp"]
+	if !ok || tmp.kind != KindDir || tmp.modeBits != uint32(sticky1777) {
+		t.Errorf("tmp entry = %+v (ok=%v), want KindDir mode sticky 1777", tmp, ok)
+	}
+	varTmp, ok := byRel["var/tmp"]
+	if !ok || varTmp.kind != KindDir || varTmp.modeBits != uint32(sticky1777) {
+		t.Errorf("var/tmp entry = %+v (ok=%v), want KindDir mode sticky 1777", varTmp, ok)
+	}
+
+	// Their contents must never appear.
+	if _, ok := byRel["proc/x"]; ok {
+		t.Error("proc/x should have been excluded, but is present in the manifest")
+	}
+	if _, ok := byRel["tmp/y"]; ok {
+		t.Error("tmp/y should have been excluded, but is present in the manifest")
+	}
+	if _, ok := byRel["var/tmp/z"]; ok {
+		t.Error("var/tmp/z should have been excluded, but is present in the manifest")
+	}
+
+	// var has an included, default-mode child (var/log/syslog) plus the
+	// excluded var/tmp — the excluded child must not count, but the
+	// included one does, so var itself must NOT get an entry (default
+	// MkdirAll 0755 already recreates it correctly).
+	if _, ok := byRel["var"]; ok {
+		t.Error("var should not get its own entry: it has an included child and default mode")
+	}
+	// Included files must still be captured normally.
+	if _, ok := byRel["var/log/syslog"]; !ok {
+		t.Error("var/log/syslog should have been backed up")
+	}
+	if _, ok := byRel["etc/hosts"]; !ok {
+		t.Error("etc/hosts should have been backed up")
+	}
+}
+
+// #5493: a directory that is not itself excluded, but whose ONLY children
+// are excluded by pattern, must still read as empty and get its own
+// manifest entry — otherwise it silently vanishes from a rebuild exactly
+// like a directly-excluded directory does.
+func TestCollectBackupFiles_DirectoryWithOnlyExcludedChildrenBecomesEmptyDirEntry(t *testing.T) {
+	root := t.TempDir()
+	cache := pathpkg.Join(root, "cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pathpkg.Join(cache, "a.tmp"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pathpkg.Join(cache, "b.tmp"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	excl := newExcludeMatcher([]string{"*.tmp"})
+	files, err := NewBackupManager(BackupConfig{}).collectBackupFilesFromPaths(context.Background(), []string{root}, excl, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byRel := map[string]backupFile{}
+	for _, f := range files {
+		rel, _ := pathpkg.Rel(root, f.sourcePath)
+		byRel[pathpkg.ToSlash(rel)] = f
+	}
+
+	cacheEntry, ok := byRel["cache"]
+	if !ok || cacheEntry.kind != KindDir {
+		t.Errorf("cache entry = %+v (ok=%v), want an empty-dir KindDir entry", cacheEntry, ok)
+	}
+	if _, ok := byRel["cache/a.tmp"]; ok {
+		t.Error("cache/a.tmp should have been excluded")
+	}
+	if _, ok := byRel["cache/b.tmp"]; ok {
+		t.Error("cache/b.tmp should have been excluded")
+	}
+}

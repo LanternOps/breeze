@@ -1591,12 +1591,31 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 		// walkedDir/dirs/childCount defer the "does this directory need its
 		// own manifest entry" decision until after the walk: emptiness is
 		// only known once every child has been visited (see dirNeedsEntry).
-		// childCount is keyed by the ABSOLUTE parent path and counts every
-		// visited child (files, symlinks, subdirs) INCLUDING excluded ones,
-		// so an excluded-only directory still counts as non-empty and gets
-		// no entry of its own — its exclusion means "do not back this up",
-		// not "this is an empty directory worth recreating".
-		type walkedDir struct{ path, rel string }
+		// childCount is keyed by the ABSOLUTE parent path and counts only
+		// children that actually make it into the backup (non-excluded
+		// files/symlinks/subdirs) — an excluded child, file or directory,
+		// does NOT count. That matters two ways (#5493):
+		//   - a directory whose children are ALL excluded (e.g. a cache dir
+		//     holding only *.tmp files under a "*.tmp" exclude) still reads
+		//     as empty and gets its own manifest entry, same as a directory
+		//     that was always empty.
+		//   - a directory that is ITSELF excluded (walkedDir.forced below)
+		//     is force-recorded regardless of childCount/mode — its contents
+		//     are skipped, but the directory's presence, mode, and ownership
+		//     still need to survive a rebuild. This is what keeps mount
+		//     points like /proc, /tmp, and /var/tmp (whole-machine preset
+		//     excludes) present after a bare-metal restore: nothing else in
+		//     the manifest recreates them, and systemd/update-initramfs
+		//     require them to exist.
+		type walkedDir struct {
+			path, rel string
+			// forced marks a directory that was itself pattern-excluded (or
+			// inside journalDirs): it always gets a manifest entry — mode
+			// and ownership recorded, contents skipped — bypassing
+			// dirNeedsEntry's "would the default MkdirAll suffice" check,
+			// since nothing else will ever recreate this directory.
+			forced bool
+		}
 		var dirs []walkedDir
 		childCount := map[string]int{}
 
@@ -1618,22 +1637,41 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				if path == cleanRoot {
 					return nil
 				}
-				// An excluded directory is skipped entirely (fs.SkipDir), not
-				// just its immediate files (#2418). The journal-dir check
-				// rides the same fs.SkipDir path so the whole checkpoint
-				// journal subtree — not just files that happen to match a
-				// glob — is pruned in one step (#5581).
-				if (excl != nil && excl.matches(slashRel)) || isWithinAnyDir(path, journalDirs) {
+				// An excluded directory's CONTENTS are skipped entirely
+				// (fs.SkipDir), not just its immediate files (#2418). The
+				// journal-dir check rides the same fs.SkipDir path so the
+				// whole checkpoint journal subtree — not just files that
+				// happen to match a glob — is pruned in one step (#5581).
+				//
+				// Only a PATTERN-excluded directory is force-recorded (see
+				// walkedDir.forced above): it represents a real, user-owned
+				// filesystem location (e.g. /proc, /tmp under the
+				// whole-machine preset) that a rebuild must still recreate.
+				// The journal directory is this run's own ephemeral
+				// bookkeeping location — ONLY it, on its own, must never
+				// appear in the manifest at all, forced or not (#5581,
+				// TestRunBackupContext_JournalHardExclude_MatchesVSSShadowPath) —
+				// so it is pruned with no entry, same as before. A directory
+				// that happens to be both pattern-excluded AND the journal
+				// dir still gets forced, consistent with "pattern exclusion
+				// always forces an entry" — that combination just doesn't
+				// arise for the journal dir in practice, since it isn't
+				// itself covered by any whole-machine preset pattern.
+				excludedByPattern := excl != nil && excl.matches(slashRel)
+				if excludedByPattern || isWithinAnyDir(path, journalDirs) {
+					if excludedByPattern {
+						dirs = append(dirs, walkedDir{path: path, rel: slashRel, forced: true})
+					}
 					return fs.SkipDir
 				}
 				dirs = append(dirs, walkedDir{path: path, rel: slashRel})
 				childCount[filepath.Dir(path)]++
 				return nil
 			}
-			childCount[filepath.Dir(path)]++
 			if excl.matches(slashRel) || isWithinAnyDir(path, journalDirs) {
 				return nil
 			}
+			childCount[filepath.Dir(path)]++
 			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, relPath))
 			if _, exists := seen[snapshotPath]; exists {
 				log.Debug("duplicate backup path skipped", "snapshotPath", snapshotPath)
@@ -1685,7 +1723,13 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				continue
 			}
 			owner := fileOwner(info)
-			if !dirNeedsEntry(info, owner, childCount[d.path] == 0) {
+			// A forced (pattern-excluded, or journal-dir) entry always gets
+			// recorded — dirNeedsEntry's emptiness/mode/owner heuristics are
+			// about whether the default restore behavior (MkdirAll 0755)
+			// would already recreate it correctly; an excluded directory is
+			// never recreated by anything else in the manifest, so it always
+			// needs its own entry regardless of what dirNeedsEntry would say.
+			if !d.forced && !dirNeedsEntry(info, owner, childCount[d.path] == 0) {
 				continue
 			}
 			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, d.rel))
