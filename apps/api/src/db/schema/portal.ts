@@ -40,6 +40,10 @@ export const portalBranding = pgTable('portal_branding', {
   enableBackups: boolean('enable_backups').notNull().default(false),
   enableReports: boolean('enable_reports').notNull().default(false),
   enableSupportUsage: boolean('enable_support_usage').notNull().default(false),
+  // Service deliverables W04 (spec §4.7, D10): the Service scorecard and the
+  // org document library. Same fail-closed shape as the five flags above.
+  enableService: boolean('enable_service').notNull().default(false),
+  enableDocuments: boolean('enable_documents').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
