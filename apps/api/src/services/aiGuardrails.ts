@@ -1180,6 +1180,16 @@ const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string 
   restore_hyperv_vm: [{ resource: 'backup', action: 'read' }],
 };
 
+/** Additional permissions for one action of a multiplexed tool. Keeping these
+ * separate from TOOL_EXTRA_PERMISSIONS avoids raising unrelated invoice edits
+ * to contract-read authority while still feeding the same live RBAC resolution
+ * used by dispatch and durable approval/release eligibility. */
+const TOOL_ACTION_EXTRA_PERMISSIONS: Record<string, Record<string, { resource: string; action: string }[]>> = {
+  manage_invoices: {
+    add_contract_line: [{ resource: 'contracts', action: 'read' }],
+  },
+};
+
 // Per-tool rate limits: { limit, windowSeconds }
 const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }> = {
   execute_command: { limit: 10, windowSeconds: 300 },
@@ -1987,7 +1997,11 @@ function resolveToolPermissionRequirements(
 
   return {
     ok: true,
-    requirements: [required, ...(TOOL_EXTRA_PERMISSIONS[toolName] ?? [])],
+    requirements: [
+      required,
+      ...(TOOL_EXTRA_PERMISSIONS[toolName] ?? []),
+      ...(action ? (TOOL_ACTION_EXTRA_PERMISSIONS[toolName]?.[action] ?? []) : []),
+    ],
   };
 }
 
@@ -2038,6 +2052,22 @@ export async function checkToolPermission(
   // extra permission; denials keep the same first-failure ordering as the
   // old per-requirement loop.
   return checkPermissionRequirements(auth, resolution.requirements);
+}
+
+/** Check a tool against an already-fresh permission resolution. */
+export function checkToolPermissionForResolvedUser(
+  toolName: string,
+  input: Record<string, unknown>,
+  userPerms: import('./permissions').UserPermissions,
+): string | null {
+  const resolution = resolveToolPermissionRequirements(toolName, input);
+  if (!resolution.ok) return resolution.denial;
+  for (const requirement of resolution.requirements) {
+    if (!hasPermission(userPerms, requirement.resource, requirement.action)) {
+      return `Insufficient permissions: requires ${requirement.resource}.${requirement.action}`;
+    }
+  }
+  return null;
 }
 
 /**

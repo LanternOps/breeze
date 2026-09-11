@@ -44,13 +44,14 @@ import {
   issueInvoice,
   recordPayment,
   voidPayment,
-  voidInvoice
+  voidInvoice,
+  lockContractLineMaterializationSource
 } from './invoiceService';
 import { createInvoicePayLink } from './invoiceCheckout';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { db } from '../db';
 import type { DeviceSnapshotRow } from './contractQuantities';
-import { computeContractEstimate, getContract, lockContractRow, materializeContractLineOntoInvoice } from './contractService';
+import { computeContractEstimate, getContract, materializeContractLineOntoInvoice } from './contractService';
 import { toCents } from './invoiceMath';
 import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
 
@@ -310,17 +311,36 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
           case 'add_bundle_line':
             return JSON.stringify(await addBundleLine(String(input.invoiceId), String(input.bundleId), Number(input.quantity), actor));
           case 'add_contract_line': {
+            // Contracts are a partner/system-owned billing surface. A selected-
+            // site closure cannot safely project an org-wide contract quantity
+            // or its device evidence, so fail closed before any source or
+            // destination read. The canonical guardrail separately requires
+            // both invoices:write and contracts:read for this exact action.
+            if (auth.scope !== 'partner' && auth.scope !== 'system') {
+              return JSON.stringify({
+                error: 'Adding a contract line requires a partner-scoped session',
+                code: 'PARTNER_SCOPE_REQUIRED',
+              });
+            }
+            if (auth.allowedSiteIds !== undefined) {
+              return JSON.stringify({
+                error: 'Adding a contract line requires unrestricted organization visibility',
+                code: 'FULL_PARTNER_SCOPE_REQUIRED',
+              });
+            }
             const contractActor = {
               userId: auth.user.id,
               partnerId: actor.partnerId,
               accessibleOrgIds: actor.accessibleOrgIds,
+              permissions: new Set(['contracts:read']),
             };
             const contractId = String(input.contractId);
             const contractLineId = String(input.contractLineId);
             // The tool executes inside the request's ambient DB transaction.
-            // Hold the producer lock before re-reading both the line and its
-            // resolved quantity so an allowance edit cannot race materialization.
-            await lockContractRow(db, contractId);
+            // Lock destination then source in the canonical invoice -> contract
+            // order. Both locks remain held through quantity resolution,
+            // evidence capture and materialization.
+            await lockContractLineMaterializationSource(String(input.invoiceId), contractId, actor);
             const { contract, lines } = await getContract(contractId, contractActor);
             const line = lines.find((candidate) => candidate.id === contractLineId);
             if (!line) return JSON.stringify({ error: 'Contract line not found for this contract' });

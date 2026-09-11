@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { and, or, eq, desc, lt, inArray, sql, count } from 'drizzle-orm';
-import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { assertInTransaction, db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
   invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
@@ -118,6 +118,39 @@ async function lockDraftInvoice(tx: DbExecutor, invoiceId: string) {
   if (!rows[0]) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   assertDraft(rows[0]);
   return rows[0];
+}
+
+/**
+ * Invoice-first lock anchor for the interactive contract-line producer.
+ * The caller continues with the contract lock in the same ambient transaction,
+ * matching addContractLine's canonical invoice -> contract order. Exporting the
+ * narrow authorized wrapper keeps lockDraftInvoice itself private.
+ */
+async function lockContractLineDestinationAndSource(
+  tx: DbExecutor,
+  invoiceId: string,
+  contractId: string,
+  actor: InvoiceActor,
+) {
+  const inv = await lockDraftInvoice(tx, invoiceId);
+  requireInvoiceAccess(actor, inv);
+  const [contractRow] = await tx.select({
+    id: contracts.id, orgId: contracts.orgId, currencyCode: contracts.currencyCode,
+  }).from(contracts).where(eq(contracts.id, contractId)).limit(1).for('update');
+  if (!contractRow) throw new InvoiceServiceError('Contract not found', 404, 'INVALID_STATE');
+  if (contractRow.orgId !== inv.orgId) {
+    throw new InvoiceServiceError('Contract line is not available for this invoice', 404, 'INVALID_STATE');
+  }
+  return { invoice: inv, contract: contractRow };
+}
+
+export async function lockContractLineMaterializationSource(
+  invoiceId: string,
+  contractId: string,
+  actor: InvoiceActor,
+) {
+  assertInTransaction('lockContractLineMaterializationSource');
+  return lockContractLineDestinationAndSource(db, invoiceId, contractId, actor);
 }
 
 export async function createManualInvoice(input: { orgId: string; siteId?: string; notes?: string; termsAndConditions?: string; currencyCode?: string }, actor: InvoiceActor) {
@@ -375,8 +408,6 @@ export async function addContractLine(
   actor: InvoiceActor
 ): Promise<{ line: typeof invoiceLines.$inferSelect; pricedFrom: ContractLinePricedFrom }> {
   return db.transaction(async (tx) => {
-    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
-
     // Wave 6 (#3778): the contract id is not optional at the service layer.
     if (!input.contractId) {
       throw new InvoiceServiceError('contractId is required for a contract-sourced line', 500, 'INVALID_STATE');
@@ -387,13 +418,9 @@ export async function addContractLine(
     // `invoice -> contract` order. Without it, a concurrent ACTIVE-contract
     // restamp could commit between this read and this insert, leaving an
     // old-currency line on a live draft that eligibility never saw.
-    const [contractRow] = await tx.select({
-      id: contracts.id, orgId: contracts.orgId, currencyCode: contracts.currencyCode,
-    }).from(contracts).where(eq(contracts.id, input.contractId)).limit(1).for('update');
-    if (!contractRow) throw new InvoiceServiceError('Contract not found', 404, 'INVALID_STATE');
-    if (contractRow.orgId !== inv.orgId) {
-      throw new InvoiceServiceError('Contract belongs to a different organization', 400, 'INVALID_STATE');
-    }
+    const { invoice: inv, contract: contractRow } = await lockContractLineDestinationAndSource(
+      tx, invoiceId, input.contractId, actor,
+    );
 
     // B2 guard (spec §5): a contract-sourced line may only land on an invoice in
     // the SAME currency as its contract — no conversion, no silent restamp. This

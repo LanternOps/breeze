@@ -78,6 +78,7 @@ vi.mock('../services/effectiveSettings', () => ({ assertNotLocked: vi.fn() }));
 
 import { aiRoutes } from './ai';
 import { getSessionHistory } from '../services/aiCostTracker';
+import { db } from '../db';
 
 const ORG_ID = 'org-111';
 
@@ -113,6 +114,20 @@ describe('GET /ai/admin/sessions permission gate (SR5-09)', () => {
 
     expect(res.status).toBe(403);
     expect(getSessionHistory).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '/ai/admin/security-events',
+    '/ai/admin/tool-executions',
+  ])('denies organizations:read before database access on %s', async (path) => {
+    currentAuth = authWith([{ resource: 'organizations', action: 'read' }]);
+
+    const res = await app.request(`${path}?orgId=${ORG_ID}`, {
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
   });
 
   it('allows a caller holding ai_sessions:read_all', async () => {

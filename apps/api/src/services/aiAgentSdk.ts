@@ -28,7 +28,7 @@ import {
 } from './scriptRunContextApproval';
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
-import { compactToolResultForChat } from './aiToolOutput';
+import { compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from './expoPush';
 import { decideHelperToolAction } from './pamToolActionGovernance';
 import { loadSession, loadConnection } from './m365Helpers';
@@ -56,6 +56,7 @@ import { TEMP_PASSWORD_ENC_KEY } from './actionIntents/resultSecrets';
 import { captureException } from './sentry';
 import { recordActionIntentMetric } from './actionIntents/metrics';
 import { resolveLlmConfigForOrg, type UsableLlmConfig } from './llm/llmConfigResolver';
+import { resolveLiveSessionToolAuthority } from './aiSessionLiveAuthority';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -752,6 +753,48 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     // wrapped in withDbAccessContext({scope:'organization', orgId: session.orgId, ...})
     // to set the correct PostgreSQL GUCs under RLS.
     if (guardrailCheck.tier >= 2) {
+      const refreshTier2Authority = async (error: string) => {
+        try {
+          const live = await resolveLiveSessionToolAuthority(session, toolName, input);
+          if (!live.ok) {
+            if (session.auditSnapshot) {
+              writeAuditEvent(requestLikeFromSnapshot(session.auditSnapshot), {
+                orgId: session.orgId,
+                action: 'ai.security.tool_authority_changed',
+                resourceType: 'ai_session',
+                resourceId: session.breezeSessionId,
+                actorId: session.auth.user.id,
+                actorEmail: session.auth.user.email,
+                initiatedBy: 'ai',
+                result: 'failure',
+                errorMessage: live.reason,
+                details: { toolName },
+              });
+            }
+            return { allowed: false as const, error };
+          }
+          session.auth = live.auth;
+          session.toolAuth = live.toolAuth;
+          return null;
+        } catch (err) {
+          console.error('[AI-SDK] Live Tier-2 authority revalidation failed:', toolName, err);
+          if (session.auditSnapshot) {
+            writeAuditEvent(requestLikeFromSnapshot(session.auditSnapshot), {
+              orgId: session.orgId,
+              action: 'ai.security.tool_authority_changed',
+              resourceType: 'ai_session',
+              resourceId: session.breezeSessionId,
+              actorId: session.auth.user.id,
+              actorEmail: session.auth.user.email,
+              initiatedBy: 'ai',
+              result: 'failure',
+              errorMessage: 'Live authority revalidation failed',
+              details: { toolName },
+            });
+          }
+          return { allowed: false as const, error };
+        }
+      };
       // Helper sessions: PAM governs (Phase 1, security finding A). This
       // branch precedes the auto_approve/plan shortcuts on purpose — a
       // helper token must never self-relax the approval gate. The
@@ -771,7 +814,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
                 .values({
                   sessionId: session.breezeSessionId,
                   toolName,
-                  toolInput: input,
+                  toolInput: redactSensitiveToolInput(input),
                   status: 'pending',
                 })
                 .returning()
@@ -897,6 +940,10 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         !session.isPaused &&
         !(session.activePlanId && (effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan'));
       if (guardrailCheck.tier === 2 && (effectiveMode === 'auto_approve' || readOnlyAutoExec)) {
+        const liveDenial = await refreshTier2Authority(
+          'Authorization changed before execution; the action was not executed.',
+        );
+        if (liveDenial) return liveDenial;
         try {
           await withDbAccessContext(
             { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
@@ -904,7 +951,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               db.insert(aiToolExecutions).values({
                 sessionId: session.breezeSessionId,
                 toolName,
-                toolInput: input,
+                toolInput: redactSensitiveToolInput(input),
                 status: 'executing',
               })
           );
@@ -963,6 +1010,13 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       if ((effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan') && session.activePlanId) {
         const match = matchPlanStep(session, toolName, input);
         if (match.matches && guardrailCheck.tier < 3 && !isSecretBearingTool(toolName)) {
+          const liveDenial = await refreshTier2Authority(
+            'Authorization changed after plan approval; the action was not executed.',
+          );
+          if (liveDenial) {
+            await abortActivePlan(session);
+            return liveDenial;
+          }
           // Emit plan_step_start event
           session.eventBus.publish({
             type: 'plan_step_start',
@@ -977,7 +1031,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
                 db.insert(aiToolExecutions).values({
                   sessionId: session.breezeSessionId,
                   toolName,
-                  toolInput: input,
+                  toolInput: redactSensitiveToolInput(input),
                   status: 'executing',
                 })
             );
@@ -1042,7 +1096,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               .values({
                 sessionId: session.breezeSessionId,
                 toolName,
-                toolInput: input,
+                toolInput: redactSensitiveToolInput(input),
                 status: 'pending',
               })
               .returning()
@@ -1863,6 +1917,23 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           return await failMatchedPlanStep({ allowed: false, error: 'Tool execution was rejected or timed out' });
         }
 
+        const liveDenial = await refreshTier2Authority(
+          'Authorization changed while awaiting approval; the action was not executed.',
+        );
+        if (liveDenial) {
+          try {
+            await withDbAccessContext(
+              { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+              () => db.update(aiToolExecutions)
+                .set({ status: 'rejected', errorMessage: liveDenial.error })
+                .where(eq(aiToolExecutions.id, approvalExec!.id)),
+            );
+          } catch (err) {
+            captureException(err instanceof Error ? err : new Error(String(err)));
+          }
+          return liveDenial;
+        }
+
         // Mark as executing
         try {
           await withDbAccessContext(
@@ -2041,7 +2112,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
             db.insert(aiToolExecutions).values({
               sessionId,
               toolName,
-              toolInput: input,
+              toolInput: redactSensitiveToolInput(input),
               toolOutput: parsedOutput,
               status: isError ? 'failed' : 'completed',
               errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 1000)) : undefined,

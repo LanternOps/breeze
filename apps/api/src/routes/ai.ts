@@ -25,6 +25,7 @@ import {
 } from '../services/aiAgent';
 import { runPreFlightChecks, abortActivePlan, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
+import { redactPersistedToolInput } from '../services/aiToolOutput';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import {
   calculateCatalogCostCents,
@@ -1352,7 +1353,7 @@ aiRoutes.get(
 aiRoutes.get(
   '/admin/security-events',
   requireScope('organization', 'partner', 'system'),
-  requireAiRead,
+  requireAiSessionsReadAll,
   async (c) => {
     const auth = c.get('auth');
     const orgId = c.req.query('orgId') || auth.orgId;
@@ -1409,7 +1410,7 @@ aiRoutes.get(
 aiRoutes.get(
   '/admin/tool-executions',
   requireScope('organization', 'partner', 'system'),
-  requireAiRead,
+  requireAiSessionsReadAll,
   async (c) => {
     const auth = c.get('auth');
     const orgId = c.req.query('orgId') || auth.orgId;
@@ -1554,7 +1555,10 @@ aiRoutes.get(
         failed: Number(row.failed),
         rejected: Number(row.rejected),
       })),
-      executions,
+      executions: executions.map((execution) => ({
+        ...execution,
+        toolInput: redactPersistedToolInput(execution.toolInput),
+      })),
     });
   }
 );
