@@ -7,7 +7,7 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
-import { snmpDevices, snmpMetrics, snmpTemplates, devices } from '../db/schema';
+import { discoveredAssets, snmpDevices, snmpMetrics, snmpTemplates, devices } from '../db/schema';
 import { eq, and, or, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
@@ -48,6 +48,55 @@ const MAX_BACKOFF_SECONDS = 3600; // sub-hour intervals never stretch past an ho
  * as needing attention.
  */
 const FAILURE_STATUS_THRESHOLD = 3;
+
+/**
+ * `snmp_devices.last_status` values for the three site-authority refusals below.
+ *
+ * These are NOT the same class of event as "the org has no online agent". That
+ * one is a transient Breeze-side condition — an MSP's only agent host rebooting
+ * — and `markPollDispatched` deliberately refuses to count it, so a healthy
+ * switch is not marked offline for an hour every reboot.
+ *
+ * A site-authority refusal is different: nothing else will poll this device.
+ * Before asset-site authority existed, any online agent in the org picked the
+ * poll up, so these devices kept reporting. Now they do not, and leaving
+ * `last_status` at its last-known value would show a green switch that has not
+ * been polled since the asset moved — silent monitoring loss. Each cause gets
+ * its own value (rather than the generic 'offline') so the dashboard can say
+ * WHY, and `consecutive_failures` is incremented so the existing backoff and
+ * failure/alert path treats it like any other sustained polling failure. A
+ * genuine successful poll clears both.
+ *
+ * All three fit `last_status varchar(20)`.
+ */
+const SITE_AUTHORITY_STATUS = {
+  assetMissing: 'asset_missing',
+  assetNoSite: 'asset_no_site',
+  noAgentInSite: 'no_agent_in_site',
+} as const;
+
+/**
+ * Record a site-authority refusal durably against the SNMP device.
+ *
+ * Runs in its own short system DB context: phase 1's context has already closed
+ * by the time the outcome switch runs, and phase 2 deliberately holds no
+ * context across the agent socket. This path is a failure path only, so the
+ * extra connection acquisition is not on the hot poll.
+ */
+async function recordSiteAuthorityFailure(
+  deviceId: string,
+  status: (typeof SITE_AUTHORITY_STATUS)[keyof typeof SITE_AUTHORITY_STATUS],
+): Promise<void> {
+  await runWithSystemDbAccess(() =>
+    db
+      .update(snmpDevices)
+      .set({
+        consecutiveFailures: sql`${snmpDevices.consecutiveFailures} + 1`,
+        lastStatus: status,
+      })
+      .where(eq(snmpDevices.id, deviceId))
+  );
+}
 
 let snmpQueue: Queue | null = null;
 
@@ -219,7 +268,9 @@ type PollDispatchInputs =
   | { status: 'device-missing' }
   | { status: 'org-mismatch'; payloadOrgId: string; deviceOrgId: string }
   | { status: 'no-oids' }
-  | { status: 'no-agent'; orgId: string }
+  | { status: 'asset-missing'; assetId: string; orgId: string }
+  | { status: 'asset-site-missing'; assetId: string; orgId: string }
+  | { status: 'no-agent'; orgId: string; siteId: string | null }
   | {
       status: 'ok';
       device: typeof snmpDevices.$inferSelect;
@@ -291,29 +342,59 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
     return { status: 'no-oids' };
   }
 
-  // Find an online agent for this org — `device.orgId`, the live row, never the
-  // job payload (#3226).
+  // Asset-bound SNMP polls are a site-scoped operation. Resolve and lock the
+  // CURRENT asset row before selecting an executor so a concurrent site move
+  // cannot split the authorization read from the agent-selection read. The
+  // lock is released with this short phase-1 DB context, before connectivity,
+  // credential decryption, or WebSocket dispatch.
+  //
+  // Legacy SNMP rows without an assetId predate discovered-asset binding and
+  // retain their established org-wide executor selection. New route-created
+  // rows are always asset-bound.
+  let executionSiteId: string | null = null;
+  if (device.assetId) {
+    const assetRows = await db
+      .select({ siteId: discoveredAssets.siteId })
+      .from(discoveredAssets)
+      .where(and(
+        eq(discoveredAssets.id, device.assetId),
+        eq(discoveredAssets.orgId, device.orgId),
+      ))
+      .for('update');
+    const asset = assetRows[0];
+    if (!asset) {
+      return { status: 'asset-missing', assetId: device.assetId, orgId: device.orgId };
+    }
+    if (typeof asset.siteId !== 'string') {
+      return { status: 'asset-site-missing', assetId: device.assetId, orgId: device.orgId };
+    }
+    executionSiteId = asset.siteId;
+  }
+
+  // Find an online agent for this org — and, for asset-bound rows, the current
+  // asset site. `device.orgId` is the live row, never the job payload (#3226).
   //
   // Quick Support exclusion: ephemeral devices (`devices.isEphemeral`) live in
   // the hidden per-partner 'quick_support' org and are a stranger's personal
   // machine borrowed for one ~20-minute session. That org stays inside
   // technicians' accessibleOrgIds for RLS reasons, so a bare "any online device
   // in this org" pick could conscript a home PC into polling SNMP targets.
+  const agentConditions = [
+    eq(devices.orgId, device.orgId),
+    eq(devices.isEphemeral, false),
+    eq(devices.status, 'online'),
+  ];
+  if (executionSiteId) agentConditions.push(eq(devices.siteId, executionSiteId));
+
   const [onlineAgent] = await db
     .select({ agentId: devices.agentId })
     .from(devices)
-    .where(
-      and(
-        eq(devices.orgId, device.orgId),
-        eq(devices.isEphemeral, false),
-        eq(devices.status, 'online')
-      )
-    )
+    .where(and(...agentConditions))
     .limit(1);
 
   const agentId = onlineAgent?.agentId ?? null;
   if (!agentId) {
-    return { status: 'no-agent', orgId: device.orgId };
+    return { status: 'no-agent', orgId: device.orgId, siteId: executionSiteId };
   }
 
   return { status: 'ok', device, oids, agentId };
@@ -385,8 +466,24 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
     case 'no-oids':
       console.warn(`[SnmpWorker] No OIDs configured for device ${data.deviceId}`);
       return { dispatched: false, agentId: null };
+    case 'asset-missing':
+      console.warn(`[SnmpWorker] Asset ${inputs.assetId} not found in org ${inputs.orgId}; refusing asset-bound SNMP poll`);
+      await recordSiteAuthorityFailure(data.deviceId, SITE_AUTHORITY_STATUS.assetMissing);
+      return { dispatched: false, agentId: null };
+    case 'asset-site-missing':
+      console.warn(`[SnmpWorker] Asset ${inputs.assetId} has no site in org ${inputs.orgId}; refusing asset-bound SNMP poll`);
+      await recordSiteAuthorityFailure(data.deviceId, SITE_AUTHORITY_STATUS.assetNoSite);
+      return { dispatched: false, agentId: null };
     case 'no-agent':
-      console.warn(`[SnmpWorker] No online agent for org ${inputs.orgId}`);
+      console.warn(inputs.siteId
+        ? `[SnmpWorker] No online agent for org ${inputs.orgId} in site ${inputs.siteId}`
+        : `[SnmpWorker] No online agent for org ${inputs.orgId}`);
+      // Site-scoped only. The org-wide branch keeps its established
+      // don't-count-it behaviour (see SITE_AUTHORITY_STATUS above): that is a
+      // transient Breeze-side condition, not a device that nothing will poll.
+      if (inputs.siteId) {
+        await recordSiteAuthorityFailure(data.deviceId, SITE_AUTHORITY_STATUS.noAgentInSite);
+      }
       return { dispatched: false, agentId: null };
   }
 

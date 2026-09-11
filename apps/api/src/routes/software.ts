@@ -129,6 +129,53 @@ function resolveCatalogListScope(
 }
 
 /**
+ * A software deployment is an indivisible parent: its target metadata and
+ * aggregate status describe every child device. Restricted callers may see or
+ * mutate it only when it has at least one result and every result still points
+ * to a live device in one of their allowed sites.
+ *
+ * Applied by every deployment-parent route: list, summary, get-by-id, cancel,
+ * retry and results. Uniformly, on purpose — a route that resolves the parent
+ * without it is an existence oracle for the ones that do.
+ *
+ * The aliased subqueries name `deployment_id`, `device_id` and `site_id` as raw
+ * SQL because Drizzle aliasing inside a `sql` template would not carry the
+ * column mapping. They are the physical names declared in
+ * `db/schema/software.ts:118-121` (`deployment_results.deployment_id`,
+ * `.device_id`) and `db/schema/devices.ts` (`devices.site_id`); a rename there
+ * must be mirrored here, and is caught by
+ * `__tests__/integration/softwareDeploymentSiteScope.integration.test.ts`,
+ * which runs this predicate against real Postgres.
+ */
+export function softwareDeploymentSiteScopePredicate(
+  deploymentIdColumn: typeof softwareDeployments.id,
+  permissions: UserPermissions | undefined,
+): SQL | undefined {
+  const allowedSiteIds = permissions?.allowedSiteIds;
+  if (allowedSiteIds === undefined) return undefined;
+  if (allowedSiteIds.length === 0) return sql`false`;
+
+  const allowedSites = sql.join(allowedSiteIds.map((siteId) => sql`${siteId}::uuid`), sql`, `);
+  return sql`
+    EXISTS (
+      SELECT 1 FROM ${deploymentResults} AS deployment_scope_result
+      WHERE deployment_scope_result.deployment_id = ${deploymentIdColumn}
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM ${deploymentResults} AS deployment_scope_result
+      LEFT JOIN ${devices} AS deployment_scope_device
+        ON deployment_scope_device.id = deployment_scope_result.device_id
+      WHERE deployment_scope_result.deployment_id = ${deploymentIdColumn}
+        AND (
+          deployment_scope_device.id IS NULL
+          OR deployment_scope_device.site_id IS NULL
+          OR deployment_scope_device.site_id NOT IN (${allowedSites})
+        )
+    )`;
+}
+
+/**
  * Authorize a write against a catalog row fetched by id (dual-axis, #2135).
  * Org-owned rows: the same resolved-org narrowing as the reads
  * (authorizeCatalogItemRead) — a partner caller acting as org A must not
@@ -1521,7 +1568,13 @@ softwareRoutes.get(
     // but is ignored — clients filter the returned page on the computed
     // `status` field instead. (Previously the route fetched every org row,
     // filtered in JS and sliced — SQL pagination replaces that.)
-    const orgCondition = eq(softwareDeployments.orgId, orgId);
+    const orgCondition = and(
+      eq(softwareDeployments.orgId, orgId),
+      softwareDeploymentSiteScopePredicate(
+        softwareDeployments.id,
+        c.get('permissions') as UserPermissions | undefined,
+      ),
+    );
     const [items, countRows] = await Promise.all([
       db.select().from(softwareDeployments)
         .where(orgCondition)
@@ -1580,7 +1633,13 @@ softwareRoutes.get(
       })
       .from(softwareDeployments)
       .leftJoin(deploymentResults, eq(deploymentResults.deploymentId, softwareDeployments.id))
-      .where(eq(softwareDeployments.orgId, orgId))
+      .where(and(
+        eq(softwareDeployments.orgId, orgId),
+        softwareDeploymentSiteScopePredicate(
+          softwareDeployments.id,
+          c.get('permissions') as UserPermissions | undefined,
+        ),
+      ))
       .groupBy(
         softwareDeployments.id,
         softwareDeployments.dispatchedAt,
@@ -2123,7 +2182,14 @@ softwareRoutes.get(
 
     const { id } = c.req.valid('param');
     const [deployment] = await db.select().from(softwareDeployments)
-      .where(and(eq(softwareDeployments.id, id), eq(softwareDeployments.orgId, orgId)));
+      .where(and(
+        eq(softwareDeployments.id, id),
+        eq(softwareDeployments.orgId, orgId),
+        softwareDeploymentSiteScopePredicate(
+          softwareDeployments.id,
+          c.get('permissions') as UserPermissions | undefined,
+        ),
+      ));
     if (!deployment) return c.json({ error: 'Deployment not found' }, 404);
 
     const statusMap = await getDeploymentStatusMap([deployment.id]);
@@ -2155,7 +2221,14 @@ softwareRoutes.post(
 
     const { id } = c.req.valid('param');
     const [deployment] = await db.select().from(softwareDeployments)
-      .where(and(eq(softwareDeployments.id, id), eq(softwareDeployments.orgId, orgId)));
+      .where(and(
+        eq(softwareDeployments.id, id),
+        eq(softwareDeployments.orgId, orgId),
+        softwareDeploymentSiteScopePredicate(
+          softwareDeployments.id,
+          c.get('permissions') as UserPermissions | undefined,
+        ),
+      ));
     if (!deployment) return c.json({ error: 'Deployment not found' }, 404);
 
     // Update pending results to cancelled. `.returning()` surfaces which rows
@@ -2392,8 +2465,20 @@ softwareRoutes.post(
     const { id } = c.req.valid('param');
     const { deviceIds } = c.req.valid('json');
 
+    // Strict parent, same as list/summary/get/cancel. The per-device retry
+    // narrowing below is not sufficient on its own: without this the parent
+    // still resolves for a site-restricted caller, so a deployment that
+    // `GET /deployments/:id` refuses to show is still confirmed to exist here
+    // (and remains mutable) — an existence oracle around the SEC-046 gate.
     const [deployment] = await db.select().from(softwareDeployments)
-      .where(and(eq(softwareDeployments.id, id), eq(softwareDeployments.orgId, orgId)));
+      .where(and(
+        eq(softwareDeployments.id, id),
+        eq(softwareDeployments.orgId, orgId),
+        softwareDeploymentSiteScopePredicate(
+          softwareDeployments.id,
+          c.get('permissions') as UserPermissions | undefined,
+        ),
+      ));
     if (!deployment) return c.json({ error: 'Deployment not found' }, 404);
 
     // Retrying an undispatched scheduled/maintenance deployment makes no sense —
@@ -2518,8 +2603,21 @@ softwareRoutes.get(
     const query = c.req.valid('query');
     const { limit, offset } = getLimitOffset(query);
 
+    // Strict parent, same as list/summary/get/cancel. The per-device result
+    // narrowing below is not sufficient on its own: without this the parent
+    // still resolves for a site-restricted caller, so a deployment that
+    // `GET /deployments/:id` refuses to show is still confirmed to exist here
+    // (returning 200 with an empty page) — an existence oracle around the
+    // SEC-046 gate.
     const [deployment] = await db.select().from(softwareDeployments)
-      .where(and(eq(softwareDeployments.id, id), eq(softwareDeployments.orgId, orgId)));
+      .where(and(
+        eq(softwareDeployments.id, id),
+        eq(softwareDeployments.orgId, orgId),
+        softwareDeploymentSiteScopePredicate(
+          softwareDeployments.id,
+          c.get('permissions') as UserPermissions | undefined,
+        ),
+      ));
     if (!deployment) return c.json({ error: 'Deployment not found' }, 404);
 
     const conditions: SQL[] = [eq(deploymentResults.deploymentId, id)];
