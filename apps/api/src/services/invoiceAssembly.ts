@@ -1,6 +1,6 @@
 import { and, eq, ne, gte, lte, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { timeEntries, ticketParts } from '../db/schema';
+import { timeEntries, ticketParts, tickets, ticketCategories } from '../db/schema';
 import { computeLineTotal } from './invoiceMath';
 import type { InvoiceLineSourceType } from './invoiceTypes';
 
@@ -9,6 +9,7 @@ export interface DraftLineSpec {
   sourceId: string | null;
   catalogItemId: string | null;
   ticketId: string | null;
+  name?: string | null;
   description: string;
   quantity: string;
   unitPrice: string;
@@ -74,10 +75,30 @@ type TimeEntryRow = {
   id: string; ticketId: string | null; description: string | null;
   durationMinutes: number | null; hourlyRate: string | null; isApproved: boolean;
   currencyCode?: string | null;
+  ticketInternalNumber?: string | null;
+  ticketNumber?: string | null;
+  ticketSubject?: string | null;
+  ticketCategory?: string | null;
+  categoryName?: string | null;
 };
 
 const entryHours = (r: TimeEntryRow) => ((r.durationMinutes ?? 0) / 60).toFixed(2);
 const entryDescription = (r: TimeEntryRow) => r.description?.trim() || 'Labor';
+
+export function buildTimeEntryName(r: TimeEntryRow): string | null {
+  const ticketRef = r.ticketInternalNumber || r.ticketNumber;
+  const category = r.categoryName || r.ticketCategory;
+  if (ticketRef) {
+    const prefix = `[${ticketRef}]`;
+    const catPart = category ? `${category}: ` : '';
+    const subject = r.ticketSubject?.trim() || 'Labor';
+    return `${prefix} ${catPart}${subject}`;
+  }
+  if (category) {
+    return `${category}: ${r.ticketSubject?.trim() || 'Labor'}`;
+  }
+  return r.ticketSubject?.trim() || null;
+}
 
 /** Labor rule (one rule, everywhere): hours rounded to 2dp first (the numeric(10,2) quantity
  *  schema), then `lineTotal = roundToCurrency(hours2dp × rate, currencyCode)`.
@@ -91,8 +112,10 @@ export function timeEntryToLineSpec(r: TimeEntryRow, currencyCode: string): Draf
   }
   const hours = entryHours(r);
   const unitPrice = Number(r.hourlyRate).toFixed(2);
+  const name = buildTimeEntryName(r);
   return {
     sourceType: 'time_entry', sourceId: r.id, catalogItemId: null, ticketId: r.ticketId,
+    name,
     description: entryDescription(r),
     quantity: hours, unitPrice, costBasis: null, taxable: false, customerVisible: true,
     lineTotal: computeLineTotal(hours, unitPrice, currencyCode), isUnapprovedTime: !r.isApproved
@@ -126,9 +149,15 @@ export function ticketPartToLineSpec(r: {
   id: string; ticketId: string | null; catalogItemId: string | null; description: string;
   quantity: string; unitPrice: string; costBasis: string | null;
   currencyCode?: string | null;
+  ticketInternalNumber?: string | null;
+  ticketNumber?: string | null;
+  ticketSubject?: string | null;
 }, currencyCode: string): DraftLineSpec {
+  const ticketRef = r.ticketInternalNumber || r.ticketNumber;
+  const name = ticketRef ? `[${ticketRef}] ${r.description}` : r.description;
   return {
     sourceType: 'part', sourceId: r.id, catalogItemId: r.catalogItemId, ticketId: r.ticketId,
+    name,
     description: r.description,
     quantity: r.quantity, unitPrice: r.unitPrice, costBasis: r.costBasis ?? null,
     taxable: true, customerVisible: true,
@@ -145,18 +174,26 @@ export async function gatherOrgTimeEntries(orgId: string, from: Date, to: Date, 
   const rows = await db.select({
     id: timeEntries.id, ticketId: timeEntries.ticketId, description: timeEntries.description,
     durationMinutes: timeEntries.durationMinutes, hourlyRate: timeEntries.hourlyRate, isApproved: timeEntries.isApproved,
-    currencyCode: timeEntries.currencyCode
-  }).from(timeEntries).where(and(
-    eq(timeEntries.orgId, orgId),
-    eq(timeEntries.isBillable, true),
-    eq(timeEntries.billingStatus, 'not_billed'),
-    // Explicit exclusions (redundant with = 'not_billed', kept for intent/future-proofing).
-    ne(timeEntries.billingStatus, 'contract'),
-    ne(timeEntries.billingStatus, 'no_charge'),
-    sql`${timeEntries.endedAt} IS NOT NULL`,
-    gte(timeEntries.endedAt, from),
-    lte(timeEntries.endedAt, to)
-  ));
+    currencyCode: timeEntries.currencyCode,
+    ticketInternalNumber: tickets.internalNumber,
+    ticketNumber: tickets.ticketNumber,
+    ticketSubject: tickets.subject,
+    ticketCategory: tickets.category,
+    categoryName: ticketCategories.name,
+  }).from(timeEntries)
+    .leftJoin(tickets, eq(timeEntries.ticketId, tickets.id))
+    .leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
+    .where(and(
+      eq(timeEntries.orgId, orgId),
+      eq(timeEntries.isBillable, true),
+      eq(timeEntries.billingStatus, 'not_billed'),
+      // Explicit exclusions (redundant with = 'not_billed', kept for intent/future-proofing).
+      ne(timeEntries.billingStatus, 'contract'),
+      ne(timeEntries.billingStatus, 'no_charge'),
+      sql`${timeEntries.endedAt} IS NOT NULL`,
+      gte(timeEntries.endedAt, from),
+      lte(timeEntries.endedAt, to)
+    ));
   return partitionTimeEntries(rows, headerCurrency);
 }
 
@@ -166,17 +203,22 @@ export async function gatherOrgParts(orgId: string, from: Date, to: Date, header
   const rows = await db.select({
     id: ticketParts.id, ticketId: ticketParts.ticketId, catalogItemId: ticketParts.catalogItemId,
     description: ticketParts.description, quantity: ticketParts.quantity, unitPrice: ticketParts.unitPrice, costBasis: ticketParts.costBasis,
-    currencyCode: ticketParts.currencyCode
-  }).from(ticketParts).where(and(
-    eq(ticketParts.orgId, orgId),
-    eq(ticketParts.isBillable, true),
-    eq(ticketParts.billingStatus, 'not_billed'),
-    // Explicit exclusions (redundant with = 'not_billed', kept for intent/future-proofing).
-    ne(ticketParts.billingStatus, 'contract'),
-    ne(ticketParts.billingStatus, 'no_charge'),
-    gte(ticketParts.createdAt, from),
-    lte(ticketParts.createdAt, to)
-  ));
+    currencyCode: ticketParts.currencyCode,
+    ticketInternalNumber: tickets.internalNumber,
+    ticketNumber: tickets.ticketNumber,
+    ticketSubject: tickets.subject,
+  }).from(ticketParts)
+    .leftJoin(tickets, eq(ticketParts.ticketId, tickets.id))
+    .where(and(
+      eq(ticketParts.orgId, orgId),
+      eq(ticketParts.isBillable, true),
+      eq(ticketParts.billingStatus, 'not_billed'),
+      // Explicit exclusions (redundant with = 'not_billed', kept for intent/future-proofing).
+      ne(ticketParts.billingStatus, 'contract'),
+      ne(ticketParts.billingStatus, 'no_charge'),
+      gte(ticketParts.createdAt, from),
+      lte(ticketParts.createdAt, to)
+    ));
   return partitionByCurrency(rows, headerCurrency, ticketPartToLineSpec);
 }
 
@@ -186,22 +228,35 @@ export async function gatherTicketBillables(ticketId: string, headerCurrency: st
   const te = await db.select({
     id: timeEntries.id, ticketId: timeEntries.ticketId, description: timeEntries.description,
     durationMinutes: timeEntries.durationMinutes, hourlyRate: timeEntries.hourlyRate, isApproved: timeEntries.isApproved,
-    currencyCode: timeEntries.currencyCode
-  }).from(timeEntries).where(and(
-    eq(timeEntries.ticketId, ticketId), eq(timeEntries.isBillable, true), eq(timeEntries.billingStatus, 'not_billed'),
-    // Explicit exclusions (redundant with = 'not_billed', kept for intent/future-proofing).
-    ne(timeEntries.billingStatus, 'contract'), ne(timeEntries.billingStatus, 'no_charge'),
-    sql`${timeEntries.endedAt} IS NOT NULL`
-  ));
+    currencyCode: timeEntries.currencyCode,
+    ticketInternalNumber: tickets.internalNumber,
+    ticketNumber: tickets.ticketNumber,
+    ticketSubject: tickets.subject,
+    ticketCategory: tickets.category,
+    categoryName: ticketCategories.name,
+  }).from(timeEntries)
+    .leftJoin(tickets, eq(timeEntries.ticketId, tickets.id))
+    .leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
+    .where(and(
+      eq(timeEntries.ticketId, ticketId), eq(timeEntries.isBillable, true), eq(timeEntries.billingStatus, 'not_billed'),
+      // Explicit exclusions (redundant with = 'not_billed', kept for intent/future-proofing).
+      ne(timeEntries.billingStatus, 'contract'), ne(timeEntries.billingStatus, 'no_charge'),
+      sql`${timeEntries.endedAt} IS NOT NULL`
+    ));
   const parts = await db.select({
     id: ticketParts.id, ticketId: ticketParts.ticketId, catalogItemId: ticketParts.catalogItemId,
     description: ticketParts.description, quantity: ticketParts.quantity, unitPrice: ticketParts.unitPrice, costBasis: ticketParts.costBasis,
-    currencyCode: ticketParts.currencyCode
-  }).from(ticketParts).where(and(
-    eq(ticketParts.ticketId, ticketId), eq(ticketParts.isBillable, true), eq(ticketParts.billingStatus, 'not_billed'),
-    // Explicit exclusions (redundant with = 'not_billed', kept for intent/future-proofing).
-    ne(ticketParts.billingStatus, 'contract'), ne(ticketParts.billingStatus, 'no_charge')
-  ));
+    currencyCode: ticketParts.currencyCode,
+    ticketInternalNumber: tickets.internalNumber,
+    ticketNumber: tickets.ticketNumber,
+    ticketSubject: tickets.subject,
+  }).from(ticketParts)
+    .leftJoin(tickets, eq(ticketParts.ticketId, tickets.id))
+    .where(and(
+      eq(ticketParts.ticketId, ticketId), eq(ticketParts.isBillable, true), eq(ticketParts.billingStatus, 'not_billed'),
+      // Explicit exclusions (redundant with = 'not_billed', kept for intent/future-proofing).
+      ne(ticketParts.billingStatus, 'contract'), ne(ticketParts.billingStatus, 'no_charge')
+    ));
   return mergeAssembly(
     partitionTimeEntries(te, headerCurrency),
     partitionByCurrency(parts, headerCurrency, ticketPartToLineSpec)

@@ -1076,6 +1076,25 @@ function LineRow({
     <>
       <tr className="border-t" data-testid={`invoice-line-${line.id}`}>
         <td className="px-3 py-2">
+          {(line.ticketNumber || line.ticketCategory) && (
+            <div className="mb-1 flex items-center gap-1.5 text-xs">
+              {line.ticketNumber && (
+                <a
+                  href={`/tickets#${line.ticketNumber}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center rounded bg-primary/10 px-1.5 py-0.5 font-medium text-primary hover:bg-primary/20 transition-colors"
+                >
+                  {line.ticketNumber}
+                </a>
+              )}
+              {line.ticketCategory && (
+                <span className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-muted-foreground font-medium">
+                  {line.ticketCategory}
+                </span>
+              )}
+            </div>
+          )}
           <input
             type="text" value={name} disabled={!canWrite || isPending(nameKey)}
             aria-label={t('invoiceEditor.fields.lineName')} placeholder={t('invoiceEditor.fields.name')}
