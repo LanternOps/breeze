@@ -15,7 +15,7 @@
  */
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { contracts, contractLines, deviceGroups, deviceGroupMemberships, groupMembershipLog, quotes, quoteLines } from '../db/schema';
+import { configPolicyAssignments, contracts, contractLines, deviceGroups, deviceGroupMemberships, groupMembershipLog, quotes, quoteLines } from '../db/schema';
 
 export type DeviceGroupDeleteCode = 'NOT_FOUND' | 'HAS_CHILDREN' | 'BILLED_BY_CONTRACTS' | 'QUOTED_BY_QUOTES';
 
@@ -100,6 +100,13 @@ export async function deleteDeviceGroup(groupId: string, orgId: string): Promise
     await tx.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, groupId));
     // group_membership_log FKs device_groups with no ON DELETE (#3313).
     await tx.delete(groupMembershipLog).where(eq(groupMembershipLog.groupId, groupId));
+    // Remove configuration policy assignments targeting this group so trigger doesn't fail
+    await tx.delete(configPolicyAssignments).where(
+      and(
+        eq(configPolicyAssignments.level, 'device_group'),
+        eq(configPolicyAssignments.targetId, groupId)
+      )
+    );
     await tx.delete(deviceGroups).where(eq(deviceGroups.id, groupId));
 
     return { group, affectedDeviceIds: affected.map((a) => a.deviceId) };
