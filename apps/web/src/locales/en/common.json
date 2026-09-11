@@ -5,7 +5,7 @@
   "nav": {
     "fleetPosture": "Fleet Posture",
     "dashboard": "Dashboard",
-    "devices": "Devices",
+    "devices": "Devices & Assets",
     "alerts": "Alerts",
     "approvals": "Approvals",
     "pendingApprovals": "{{count}} pending approvals",
@@ -713,7 +713,19 @@
         "scripts": "Scripts",
         "alerts": "Alerts",
         "users": "Users",
-        "settings": "Settings"
+        "settings": "Settings",
+        "recent-devices": "Recent devices",
+        "recent-pages": "Recently visited"
+      },
+      "actions": {
+        "newDevice": "New device",
+        "newDeviceDescription": "Add a device to your fleet",
+        "runScript": "Run script",
+        "runScriptDescription": "Execute a script on devices",
+        "alertRules": "Alert rules",
+        "alertRulesDescription": "Manage alerting in Configuration Policies",
+        "keyboardShortcuts": "Keyboard shortcuts",
+        "keyboardShortcutsDescription": "Every key and chord, on one card"
       }
     },
     "notifications": {
@@ -753,7 +765,10 @@
       "collapse": "Collapse sidebar",
       "expand": "Expand sidebar",
       "collapseSections": "Collapse all sections",
-      "closeMenu": "Close menu"
+      "closeMenu": "Close menu",
+      "recentDevices": "Recent devices",
+      "hideRecentDevices": "Hide recent devices",
+      "showRecentDevices": "Show recent devices"
     },
     "orgRequired": {
       "title": "Select an organization",
@@ -764,6 +779,20 @@
       "title": "Couldn't load your organizations",
       "description": "Something went wrong loading your organization list. Check your connection and try again.",
       "retry": "Retry"
+    },
+    "shortcuts": {
+      "title": "Keyboard shortcuts",
+      "general": "General",
+      "goTo": "Go to",
+      "goToHint": "Press g, release, then the key.",
+      "then": "then",
+      "search": "Search Breeze",
+      "searchSlash": "Search (also opens with this key)",
+      "cycleSidebar": "Cycle the sidebar: open, auto-hide, icons",
+      "help": "Open the help panel",
+      "showThis": "Show this card",
+      "close": "Close a dialog or menu",
+      "typingNote": "Single-key shortcuts pause while you are typing in a field."
     }
   },
   "migrationBanner": {
