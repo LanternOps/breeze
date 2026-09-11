@@ -1142,8 +1142,9 @@ export async function cascadeDeleteOrg(
   // detected we throw and abort BEFORE deleting anything.
   const order = await topologicalCascadeOrder();
 
-  // 1a. Clear ticket-attachment OBJECTS before ANY row is deleted anywhere (W08 #3902,
-  //     spec D9). The rows are the ONLY index to the object keys — deleting
+  // 1a. Clear customer OBJECTS before ANY row is deleted anywhere (W08 #3902
+  //     spec D9; widened to org_documents by service deliverables W03 spec
+  //     #5573 §4.9). The rows are the ONLY index to the object keys — deleting
   //     them first would leave customer bytes in the bucket with nothing left
   //     to find them by, which is exactly the GDPR failure erasure exists to
   //     prevent. A storage fault therefore ABORTS the erasure before anything
@@ -1151,12 +1152,23 @@ export async function cascadeDeleteOrg(
   //     the same keys are re-read and the job finishes. Best-effort deletion
   //     with a logged count is deliberately rejected.
   //
-  //     db-backed rows carry their bytes in the row and need no pre-clear.
+  //     ONE read over both byte tables, not two: a second statement would mean
+  //     a second deleteObjectKeys batch and a second abort path, and the
+  //     object-deletes-before-first-DELETE ordering would stop being a single
+  //     observable step. db-backed rows carry their bytes in the row and need
+  //     no pre-clear; a soft-deleted org_documents row has already had its
+  //     object removed and its storage_key cleared, so the NOT NULL excludes it.
   try {
     const keys = await dbModule.withSystemDbAccessContext(async () => {
       const result = await dbModule.db.execute(sql`
         SELECT storage_key
         FROM ticket_attachments
+        WHERE org_id = ${orgId}::uuid
+          AND storage_backend = 's3'
+          AND storage_key IS NOT NULL
+        UNION ALL
+        SELECT storage_key
+        FROM org_documents
         WHERE org_id = ${orgId}::uuid
           AND storage_backend = 's3'
           AND storage_key IS NOT NULL
@@ -1169,12 +1181,14 @@ export async function cascadeDeleteOrg(
       await deleteObjectKeys(keys);
     }
   } catch (err) {
+    // The isUndefinedTable tolerance covers both tables at once — both ship in
+    // the same product; the guard exists only for partial-schema fixtures.
     if (!isUndefinedTable(err)) {
       await writeErasureFailedAudit(
-        orgId, performedBy, performedByEmail, 'ticket_attachments_objects', stats, err,
+        orgId, performedBy, performedByEmail, 'tenant_object_preclear', stats, err,
       );
       throw new Error(
-        `[tenantCascade] attachment object pre-clear failed for org=${orgId}; erasure aborted before any row was deleted and is rerunnable: ${
+        `[tenantCascade] object pre-clear failed for org=${orgId}; erasure aborted before any row was deleted and is rerunnable: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );

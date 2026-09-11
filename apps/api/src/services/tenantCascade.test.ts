@@ -477,6 +477,10 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
     await cascadeDeleteOrg(ORG, BY);
     const keyQuery = mockState.executedSql.find((t) => t.includes('SELECT storage_key'))!;
     expect(keyQuery).toContain('ticket_attachments');
+    // W03: the pre-clear is ONE read over BOTH byte tables. A second query
+    // would double the deleteObjectKeys call and break the ordering assertion
+    // in the sibling test, so this is a union, not a second statement.
+    expect(keyQuery).toContain('org_documents');
     expect(keyQuery).toContain('org_id');
     expect(keyQuery).toContain("storage_backend = 's3'");
   });
@@ -510,7 +514,7 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
       expect.objectContaining({
         action: 'tenant.erasure.failed',
         result: 'failure',
-        details: expect.objectContaining({ failedTable: 'ticket_attachments_objects' }),
+        details: expect.objectContaining({ failedTable: 'tenant_object_preclear' }),
       }),
     );
   });
