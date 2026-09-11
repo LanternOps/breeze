@@ -35,7 +35,10 @@ vi.mock('bullmq', () => ({
 
 vi.mock('drizzle-orm', () => ({
   and: (...conditions: unknown[]) => ({ op: 'and', conditions }),
+  or: (...conditions: unknown[]) => ({ op: 'or', conditions }),
   eq: (left: unknown, right: unknown) => ({ op: 'eq', left, right }),
+  lt: (left: unknown, right: unknown) => ({ op: 'lt', left, right }),
+  isNull: (value: unknown) => ({ op: 'isNull', value }),
   inArray: (left: unknown, right: unknown) => {
     state.inArrayCalls.push({ left, right });
     return { op: 'inArray', left, right };

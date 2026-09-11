@@ -14,6 +14,8 @@ const DEVICE_C = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 const DEVICE_D = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
 const PATCH_ID = '44444444-4444-4444-4444-444444444444';
 const RING_ID = '55555555-5555-4555-8555-555555555555';
+const REPORT_SITE_A = '66666666-6666-4666-8666-666666666666';
+const REPORT_SITE_B = '77777777-7777-4777-8777-777777777777';
 
 const mockAuthState = vi.hoisted(() => ({
   scope: 'organization' as 'organization' | 'partner' | 'system',
@@ -160,35 +162,23 @@ vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn()
 }));
 
-vi.mock('../../services/siteScope', () => ({
-  resolveRequestReportAuthority: vi.fn(async () => reportAuthorityState.result),
-  persistedSiteScopeValues: vi.fn((authority: any) => ({
-    executionScopeVersion: 1,
-    executionScopeKind: authority.scope.kind,
-    executionScopeSiteIds: authority.scope.kind === 'restricted'
-      ? authority.scope.siteIds
-      : null,
-    executionScopeUserId: authority.principalUserId,
-    executionScopeFingerprint: authority.fingerprint,
-    executionScopeCapturedAt: authority.capturedAt,
-    executionScopePrincipalKind: authority.principalKind,
-  })),
-  decodeSiteScope: vi.fn((row: any, orgId: string) => {
-    if (row.executionScopeFingerprint === 'bad') throw new Error('bad scope');
-    if (row.executionScopeVersion !== 1) {
-      return { version: 1, kind: 'legacy_unscoped', orgId };
-    }
-    return row.executionScopeKind === 'restricted'
-      ? { version: 1, kind: 'restricted', orgId, siteIds: row.executionScopeSiteIds }
-      : { version: 1, kind: 'unrestricted', orgId };
-  }),
-  isSiteScopeSubset: vi.fn((stored: any, current: any) => {
-    if (stored.kind === 'legacy_unscoped') return false;
-    if (current.kind === 'unrestricted') return true;
-    if (stored.kind === 'unrestricted') return false;
-    return stored.siteIds.every((siteId: string) => current.siteIds.includes(siteId));
-  }),
-}));
+// Only `resolveRequestReportAuthority` is replaced: it is the single helper in
+// this module that needs a live database. Every decode / subset / persist call
+// below therefore runs the REAL implementation.
+//
+// A hand-written re-implementation used to stand in for `decodeSiteScope` and
+// `isSiteScopeSubset` here, and it had already drifted: its subset check
+// returned false for every `legacy_unscoped` candidate, while the real function
+// returns TRUE when the current caller is unrestricted (an org-wide reader's
+// authority does contain an unknown-scope org-wide row). A route test asserting
+// the mock's semantics would have passed while production did the opposite.
+vi.mock('../../services/siteScope', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/siteScope')>();
+  return {
+    ...actual,
+    resolveRequestReportAuthority: vi.fn(async () => reportAuthorityState.result),
+  };
+});
 
 vi.mock('../../jobs/patchComplianceReportWorker', () => ({
   enqueuePatchComplianceReport: vi.fn(async () => ({ enqueued: true, jobId: 'patch-compliance-report:test' }))
@@ -234,6 +224,27 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { enqueuePatchComplianceReport } from '../../jobs/patchComplianceReportWorker';
 import { writeRouteAudit } from '../../services/auditEvents';
+// Real implementations (the mock above spreads the actual module). Fixtures
+// below must therefore carry a fingerprint the real decoder accepts.
+import {
+  persistedSiteScopeValues,
+  siteScopeFingerprint,
+  type SiteScopeV1,
+} from '../../services/siteScope';
+
+const restrictedReportScope = (orgId: string, siteIds: string[]): SiteScopeV1 =>
+  ({ version: 1, kind: 'restricted', orgId, siteIds });
+
+/** The seven persisted execution-scope columns of a user-owned report row. */
+function reportScopeColumns(scope: SiteScopeV1, userId: string, capturedAt: Date) {
+  return persistedSiteScopeValues({
+    principalKind: 'user',
+    scope,
+    principalUserId: userId,
+    capturedAt,
+    fingerprint: siteScopeFingerprint(scope),
+  });
+}
 
 function selectWhereResult(rows: unknown[]) {
   return {
@@ -321,19 +332,15 @@ describe('patch routes', () => {
     mockAuthState.partnerOrgAccess = null;
     mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
     mockAuthState.permissions = [{ resource: '*', action: '*' }];
+    const defaultScope = restrictedReportScope(ACCESSIBLE_ORG_ID, [REPORT_SITE_A]);
     reportAuthorityState.result = {
       ok: true,
       authority: {
         principalKind: 'user',
-        scope: {
-          version: 1,
-          kind: 'restricted',
-          orgId: ACCESSIBLE_ORG_ID,
-          siteIds: ['66666666-6666-4666-8666-666666666666'],
-        },
+        scope: defaultScope,
         principalUserId: USER_ID,
         capturedAt: new Date('2026-09-06T12:00:00Z'),
-        fingerprint: 'a'.repeat(64),
+        fingerprint: siteScopeFingerprint(defaultScope),
       },
     };
     app = new Hono();
@@ -797,9 +804,11 @@ describe('patch routes', () => {
       requestedBy: USER_ID,
       executionScopeVersion: 1,
       executionScopeKind: 'restricted',
-      executionScopeSiteIds: ['66666666-6666-4666-8666-666666666666'],
+      executionScopeSiteIds: [REPORT_SITE_A],
       executionScopeUserId: USER_ID,
-      executionScopeFingerprint: 'a'.repeat(64),
+      executionScopeFingerprint: siteScopeFingerprint(
+        restrictedReportScope(ACCESSIBLE_ORG_ID, [REPORT_SITE_A]),
+      ),
       executionScopePrincipalKind: 'user',
     }));
   });
@@ -877,13 +886,11 @@ describe('patch routes', () => {
       completedAt: now,
       createdAt: now,
       outputPath: '/tmp/report.csv',
-      executionScopeVersion: 1,
-      executionScopeKind: 'restricted',
-      executionScopeSiteIds: ['66666666-6666-4666-8666-666666666666'],
-      executionScopeUserId: USER_ID,
-      executionScopeFingerprint: 'a'.repeat(64),
-      executionScopeCapturedAt: now,
-      executionScopePrincipalKind: 'user',
+      ...reportScopeColumns(
+        restrictedReportScope(ACCESSIBLE_ORG_ID, [REPORT_SITE_A]),
+        USER_ID,
+        now,
+      ),
     }]) as any);
 
     const res = await app.request(`/patches/compliance/report/${reportId}`, {
@@ -904,7 +911,7 @@ describe('patch routes', () => {
       version: 1,
       kind: 'restricted',
       orgId: ACCESSIBLE_ORG_ID,
-      siteIds: ['77777777-7777-4777-8777-777777777777'],
+      siteIds: [REPORT_SITE_B],
     };
     vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([{
       id: reportId,
@@ -912,13 +919,11 @@ describe('patch routes', () => {
       status: 'completed',
       format: 'csv',
       outputPath: '/tmp/report.csv',
-      executionScopeVersion: 1,
-      executionScopeKind: 'restricted',
-      executionScopeSiteIds: ['66666666-6666-4666-8666-666666666666'],
-      executionScopeUserId: USER_ID,
-      executionScopeFingerprint: 'a'.repeat(64),
-      executionScopeCapturedAt: now,
-      executionScopePrincipalKind: 'user',
+      ...reportScopeColumns(
+        restrictedReportScope(ACCESSIBLE_ORG_ID, [REPORT_SITE_A]),
+        USER_ID,
+        now,
+      ),
     }]) as any);
 
     const res = await app.request(`/patches/compliance/report/${reportId}`, {
@@ -988,7 +993,7 @@ describe('patch routes', () => {
       version: 1,
       kind: 'restricted',
       orgId: ACCESSIBLE_ORG_ID,
-      siteIds: ['77777777-7777-4777-8777-777777777777'],
+      siteIds: [REPORT_SITE_B],
     };
     vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([{
       id: reportId,
@@ -996,13 +1001,11 @@ describe('patch routes', () => {
       status: 'completed',
       format: 'csv',
       outputPath: '/tmp/hidden-report.csv',
-      executionScopeVersion: 1,
-      executionScopeKind: 'restricted',
-      executionScopeSiteIds: ['66666666-6666-4666-8666-666666666666'],
-      executionScopeUserId: USER_ID,
-      executionScopeFingerprint: 'a'.repeat(64),
-      executionScopeCapturedAt: now,
-      executionScopePrincipalKind: 'user',
+      ...reportScopeColumns(
+        restrictedReportScope(ACCESSIBLE_ORG_ID, [REPORT_SITE_A]),
+        USER_ID,
+        now,
+      ),
     }]) as any);
 
     const res = await app.request(`/patches/compliance/report/${reportId}/download`, {

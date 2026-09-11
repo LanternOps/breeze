@@ -65,6 +65,15 @@ BEGIN
   RAISE WARNING 'failed % pending or running legacy patch compliance reports', failed_count;
 END $$;
 
+-- The 'restricted' and 'unrestricted' arms below deliberately admit ONLY
+-- execution_scope_principal_kind = 'user'. services/siteScope.ts can also emit
+-- 'system' (a platform-authored report) and 'portal_user', and the `reports`
+-- table's own shape check permits both — but nothing creates a patch compliance
+-- report except GET /patches/compliance/report, which always resolves a staff
+-- user. Restricting the shape here is the fail-closed choice: a forged
+-- non-user envelope cannot be inserted at all. A future scheduled or
+-- portal-initiated compliance report MUST widen this constraint (and the
+-- worker's principal assertion) in a new migration rather than work around it.
 ALTER TABLE patch_compliance_reports
   DROP CONSTRAINT IF EXISTS patch_compliance_reports_execution_scope_shape_chk;
 ALTER TABLE patch_compliance_reports

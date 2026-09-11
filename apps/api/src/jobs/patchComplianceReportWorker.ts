@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { Job, Queue, Worker } from 'bullmq';
 
 import * as dbModule from '../db';
@@ -24,6 +24,22 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 const PATCH_COMPLIANCE_REPORT_QUEUE = 'patch-compliance-reports';
 const PATCH_REPORT_STORAGE_PATH = process.env.PATCH_REPORT_STORAGE_PATH || './data/patch-reports';
+
+/**
+ * BullMQ's own job lock. A `running` row whose `started_at` is older than this
+ * can no longer be held by a live processor: BullMQ has already released the
+ * lock and re-delivered the job, so the database row is stale rather than busy.
+ * The reclaim predicate below and the Worker option MUST stay the same value.
+ */
+export const PATCH_COMPLIANCE_REPORT_LOCK_DURATION_MS = 300_000;
+
+/**
+ * Terminal message for a job BullMQ gave up on after `maxStalledCount`. The
+ * processor never runs for that delivery, so nothing else would move the row
+ * off `running` and the requester would poll a report that can never finish.
+ */
+const STALLED_FAILURE_MESSAGE =
+  'Report generation stalled and was abandoned; request the report again';
 
 type PatchSource = typeof patchSourceEnum.enumValues[number];
 type PatchSeverity = typeof patchSeverityEnum.enumValues[number];
@@ -179,6 +195,14 @@ async function processGenerateComplianceReport(
     throw new Error('Report request not found');
   }
 
+  // Compare-and-set the ownership claim so two deliveries of the same job
+  // cannot both generate output. A `running` row is reclaimable only once its
+  // `started_at` is older than the BullMQ lock: before that a live processor
+  // still owns it, after that the process that claimed it is gone (an API
+  // restart mid-generation is the common case) and the row would otherwise sit
+  // on `running` forever, because every redelivery would find it non-pending.
+  // A reclaim re-runs every authority check below exactly as a first claim does.
+  const staleBefore = new Date(Date.now() - PATCH_COMPLIANCE_REPORT_LOCK_DURATION_MS);
   const claimed = await db
     .update(patchComplianceReports)
     .set({
@@ -189,7 +213,16 @@ async function processGenerateComplianceReport(
     })
     .where(and(
       eq(patchComplianceReports.id, report.id),
-      eq(patchComplianceReports.status, 'pending'),
+      or(
+        eq(patchComplianceReports.status, 'pending'),
+        and(
+          eq(patchComplianceReports.status, 'running'),
+          or(
+            isNull(patchComplianceReports.startedAt),
+            lt(patchComplianceReports.startedAt, staleBefore),
+          ),
+        ),
+      ),
     ))
     .returning({ id: patchComplianceReports.id });
   if (claimed.length === 0) return null;
@@ -218,6 +251,14 @@ async function processGenerateComplianceReport(
     throw new Error('Report execution authority is invalid or legacy');
   }
 
+  // `resolveLiveReportAuthority` passes allowPlatformAuthority = true, i.e. it
+  // also honours a platform/system-scoped role, whereas the create route's
+  // `resolveRequestReportAuthority` only does so when the REQUEST itself came
+  // in on a system-scope token. That asymmetry is harmless here: the worker has
+  // no request to scope against, and whatever it resolves is immediately
+  // intersected with the immutable ceiling persisted at request time, so a
+  // broader live authority can only ever narrow to that ceiling, never widen
+  // past it.
   const liveResult = await resolveLiveReportAuthority(
     report.requestedBy,
     report.orgId,
@@ -308,6 +349,40 @@ export async function processPatchComplianceReportJob(
   return result;
 }
 
+/**
+ * True for the error BullMQ raises when a job exceeded `maxStalledCount`
+ * ("job stalled more than allowable limit"). That delivery never reaches the
+ * processor, so the terminal state has to be written from the event handler.
+ */
+export function isStalledLimitFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return message.toLowerCase().includes('stalled more than');
+}
+
+/**
+ * Fail-closed terminal state for a report BullMQ abandoned. Guarded on a
+ * non-terminal status so it can never overwrite a `completed` row that a
+ * slow-but-successful processor wrote just before the stall was declared.
+ */
+export async function markStalledPatchComplianceReportFailed(
+  reportId: string,
+): Promise<void> {
+  await runWithSystemDbAccess(async () => {
+    await db
+      .update(patchComplianceReports)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        updatedAt: new Date(),
+        errorMessage: STALLED_FAILURE_MESSAGE,
+      })
+      .where(and(
+        eq(patchComplianceReports.id, reportId),
+        inArray(patchComplianceReports.status, ['pending', 'running']),
+      ));
+  });
+}
+
 export function getPatchComplianceReportQueue(): Queue<PatchComplianceReportJobData> {
   if (!patchComplianceReportQueue) {
     patchComplianceReportQueue = new Queue<PatchComplianceReportJobData>(PATCH_COMPLIANCE_REPORT_QUEUE, {
@@ -388,7 +463,7 @@ function createPatchComplianceReportWorker(): Worker<PatchComplianceReportJobDat
     {
       connection: getBullMQConnection(),
       concurrency: 2,
-      lockDuration: 300_000,
+      lockDuration: PATCH_COMPLIANCE_REPORT_LOCK_DURATION_MS,
       stalledInterval: 60_000,
       maxStalledCount: 2,
     }
@@ -413,6 +488,19 @@ export async function initializePatchComplianceReportWorker(): Promise<void> {
 
   patchComplianceReportWorker.on('failed', (job, error) => {
     console.error(`[PatchComplianceReportWorker] Job ${job?.id} failed:`, error);
+
+    // The processor writes its own terminal state for every failure it saw.
+    // A stalled-limit failure is the one case it never ran for, so the row
+    // would stay `running` and the requester would poll forever.
+    const reportId = job?.data?.reportId;
+    if (reportId && isStalledLimitFailure(error)) {
+      markStalledPatchComplianceReportFailed(reportId).catch((err) => {
+        console.error(
+          `[PatchComplianceReportWorker] Failed to record stalled state for ${reportId}:`,
+          err,
+        );
+      });
+    }
   });
 
   console.log('[PatchComplianceReportWorker] Initialized');
