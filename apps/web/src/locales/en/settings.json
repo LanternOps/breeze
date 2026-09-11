@@ -1149,6 +1149,14 @@
         "enableSupportUsage": {
           "label": "Support usage",
           "description": "Show month-to-date billable support-time totals."
+        },
+        "enableService": {
+          "label": "Service",
+          "description": "Show scheduled deliverables, what was delivered, and key dates."
+        },
+        "enableDocuments": {
+          "label": "Documents",
+          "description": "Let customers download the documents you have shared with them."
         }
       }
     },

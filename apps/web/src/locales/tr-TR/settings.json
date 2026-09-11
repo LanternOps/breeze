@@ -1149,6 +1149,14 @@
         "enableSupportUsage": {
           "label": "Destek kullanımı",
           "description": "Ayın bugüne kadarki faturalandırılabilir destek süresi toplamını gösterir."
+        },
+        "enableService": {
+          "label": "Hizmet",
+          "description": "Planlanan teslimatları, teslim edilenleri ve önemli tarihleri gösterir."
+        },
+        "enableDocuments": {
+          "label": "Belgeler",
+          "description": "Müşterilerin paylaşılan belgeleri indirmesine izin verir."
         }
       }
     },

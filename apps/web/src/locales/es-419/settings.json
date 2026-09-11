@@ -1149,6 +1149,14 @@
         "enableSupportUsage": {
           "label": "Uso de soporte",
           "description": "Muestra el total de tiempo de soporte facturable del mes en curso."
+        },
+        "enableService": {
+          "label": "Servicio",
+          "description": "Muestra los entregables programados, lo entregado y las fechas clave."
+        },
+        "enableDocuments": {
+          "label": "Documentos",
+          "description": "Permite a los clientes descargar los documentos que compartiste."
         }
       }
     },
