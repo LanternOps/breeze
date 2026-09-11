@@ -14,7 +14,7 @@ import { CeremonyError, decideIntentApproval } from "@/lib/intentApprovals";
 import { ActionError } from "@/lib/runAction";
 import { navigateTo } from "@/lib/navigation";
 import { useRunContextLabel } from "../common/RunContext";
-import type { AiScriptRunContext } from "@breeze/shared";
+import type { AiApprovalScope, AiScriptRunContext } from "@breeze/shared";
 
 // Must be <= server-side waitForApproval timeout (300s). Plan approvals use 10-min timeout.
 const AUTO_DENY_MS = 5 * 60 * 1000;
@@ -51,13 +51,24 @@ interface AiApprovalDialogProps {
    * requester is NOT an eligible approver (multi-approver org), this card
    * shows a waiting state only. When the server fanned the approval row out
    * to the requester (sole-operator branch), selfApprovalRequestId is set
-   * and the card offers an inline L3 self-approve: WebAuthn ceremony
-   * (Touch ID / Windows Hello) + proof POST — satisfying, not bypassing,
-   * the decide handler's assurance-level >= 3 gate.
+   * and the card offers an inline self-approve. Whether that runs a WebAuthn
+   * ceremony (Touch ID / Windows Hello) + proof POST depends on
+   * `approvalScope`: four_eyes always does, satisfying — not bypassing — the
+   * decide handler's assurance-level >= 3 gate; supervised does not, because
+   * that gate no longer applies to it (#5600).
    */
   intentBacked?: boolean;
   /** The viewer's own fanned-out approval row (sole-operator case). */
   selfApprovalRequestId?: string;
+  /**
+   * The intent's server-classified approval scope (#5600). `'supervised'` means
+   * this self-approve IS the whole authorization and the server no longer
+   * requires an L3 WebAuthn proof for it, so the decide helper skips the
+   * ceremony (retrying with it only if an enforcing partner policy answers
+   * `step_up_required`). `'four_eyes'` — and an absent scope, e.g. an older
+   * server — keeps the always-ceremony behaviour.
+   */
+  approvalScope?: AiApprovalScope;
   /**
    * The intent's real server-side expiry (ISO). When present, the countdown is
    * anchored to it rather than a mount-relative constant — so the card cannot
@@ -235,6 +246,7 @@ export default function AiApprovalDialog({
   onReject,
   intentBacked,
   selfApprovalRequestId,
+  approvalScope,
   intentExpiresAt,
   scriptRunContext,
   onIntentDecided,
@@ -285,7 +297,12 @@ export default function AiApprovalDialog({
     setIntentDecideState("deciding");
     setIntentError(null);
     try {
-      const outcome = await decideIntentApproval(selfApprovalRequestId, decision);
+      const outcome = await decideIntentApproval(
+        selfApprovalRequestId,
+        decision,
+        undefined,
+        approvalScope,
+      );
       if (outcome === "needs_device") {
         setIntentDecideState("needs_device");
         return;

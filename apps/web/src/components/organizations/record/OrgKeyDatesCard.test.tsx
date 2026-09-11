@@ -1,3 +1,7 @@
+// Date-only values (YYYY-MM-DD) are calendar dates, not instants. A zone west of
+// UTC is where parsing them as UTC midnight renders the previous day (#5573 smoke).
+process.env.TZ = 'America/Denver';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -103,6 +107,8 @@ describe('OrgKeyDatesCard', () => {
     expect(within(contractRow).queryByTestId('key-date-delete-contract:c-1')).toBeNull();
 
     expect(within(keyRow).getByText('Insurance renewal')).toBeTruthy();
+    // 2026-11-01 must render as November 1st in every timezone, never October 31st.
+    expect(within(keyRow).getByText(/11\/1\/2026/)).toBeTruthy();
     expect(within(keyRow).getByTestId('key-date-edit-kd-1')).toBeTruthy();
     expect(within(keyRow).getByTestId('key-date-delete-kd-1')).toBeTruthy();
 

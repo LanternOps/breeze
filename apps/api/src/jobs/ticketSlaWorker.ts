@@ -72,6 +72,10 @@ async function stampBreaches(target: 'response' | 'resolution'): Promise<Breache
       SELECT id
       FROM tickets
       WHERE status IN ('new', 'open')
+        -- #5573 spec §4.8: planned work has a due date, not an SLA. Rows
+        -- written before tickets.work_kind shipped default to 'support', so
+        -- this narrows nothing that used to be swept.
+        AND work_kind = 'support'
         AND sla_paused_at IS NULL
         AND ${unmetCondition}
         AND ${targetColumn} IS NOT NULL

@@ -78,6 +78,7 @@ const namespaceDuplicateBaselines = {
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // pt-BR.
     'organizations.json': 6, // W01 #5075: cognates — "Sites", "{{count}} site(s)"; +2 W02: device status "Online"/"Offline" are identical cognates in pt-BR
+    'pages.json': 10, // Cognates: Backup, Webhooks (x2), OneDrive, Scripts, Logs, EDR, Software (x2), and one settings-card title (Sites).
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 357,
@@ -180,6 +181,7 @@ const namespaceDuplicateBaselines = {
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // es-419.
     'organizations.json': 1, // W01 #5075: cognate — "Tickets"
+    'pages.json': 12, // Cognates: CIS Benchmarks, Webhooks (x2), OneDrive, Scripts, EDR, Roles, Variables, Software (x2), Tickets, and Ticket (singular).
     'patches.json': 16,
     'peripherals.json': 4,
     'policies.json': 241,
@@ -286,6 +288,10 @@ const namespaceDuplicateBaselines = {
     'discovery.json': 15,
     'integrations.json': 38,
     'organizations.json': 8, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR
+    // +1: PR review fix aligning fr-FR terminology with devices.json/settings.json/
+    // scripts.json made titles.scripts an intentional cognate ("Script" is the
+    // standard fr-FR loanword) on top of the pre-existing ones.
+    'pages.json': 12, // Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
     'patches.json': 20,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -399,6 +405,10 @@ const namespaceDuplicateBaselines = {
     'discovery.json': 15,
     'integrations.json': 40,
     'organizations.json': 7, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA
+    // +1: PR review fix aligning fr-CA terminology with fr-FR (fr-CA mirrors it
+    // here) made titles.scripts an intentional cognate ("Script" is the
+    // standard loanword) on top of the pre-existing ones.
+    'pages.json': 12, // Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
     'patches.json': 20,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -527,6 +537,7 @@ const namespaceDuplicateBaselines = {
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
     // interpolation; German uses the same "OS" acronym.
     'organizations.json': 3, // W01 #5075: cognate — "Tickets"; +2 W02: device status "Online"/"Offline" are identical cognates in de-DE
+    'pages.json': 14, // Cognates: Backup, CIS Benchmarks, Dashboard, Webhooks (x2), OneDrive, Patches, EDR, Software (x2), Tickets, Ticket (singular), and two settings-card titles (Ticketing, Single Sign-On).
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 205,
@@ -608,6 +619,7 @@ const namespaceDuplicateBaselines = {
     'discovery.json': 22,
     'integrations.json': 81,
     'organizations.json': 3, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term; +2 W02: device status "Online"/"Offline" are identical cognates in it-IT
+    'pages.json': 10, // Cognates: Backup, CIS Benchmarks, Dashboard, OneDrive, EDR, Software (x2), Ticket, and two settings-card titles (Ticketing, SSO) — proper nouns/acronyms/loanwords.
     'patches.json': 18,
     'peripherals.json': 4,
     'policies.json': 363,
@@ -680,6 +692,7 @@ const namespaceDuplicateBaselines = {
     'discovery.json': 9,
     'integrations.json': 22,
     'organizations.json': 1, // W01 #5075: cognate — "{{count}} site"
+    'pages.json': 3, // Cognates: CIS Benchmarks, OneDrive, EDR — proper nouns/acronyms.
     'patches.json': 11,
     'peripherals.json': 4,
     // +8: package-manager software library — OS names ("Windows", "macOS",

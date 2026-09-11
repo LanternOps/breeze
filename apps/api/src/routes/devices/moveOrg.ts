@@ -40,6 +40,7 @@ import {
   PamDeviceMoveBlockedError,
 } from '../../services/pamDeviceMoveGuard';
 import { pgErrorNode } from '../../utils/pgErrors';
+import { assertDeviceTicketsNotPinnedToDeliverable, TicketServiceError } from '../../services/ticketService';
 
 /**
  * An organization that passed the pre-transaction existence check was gone at
@@ -262,6 +263,13 @@ moveOrgRoutes.post(
         if (!lockedTarget) throw new OrgVanishedDuringMoveError('target');
         if (!lockedSource) throw new OrgVanishedDuringMoveError('source');
         await assertPamDeviceOrgMoveAllowed(tx, { deviceId, sourceOrgId });
+        // #5573 W02 — a ticket on this device that is a service deliverable's
+        // work item pins it to the deliverable's org. `tickets` is in
+        // getDeviceOrgDenormalizedTables(), so the loop below would re-stamp
+        // its org_id and trip sd_occ_ticket_org_fk (deliberately NOT deferred
+        // by name above) as an opaque 23503. Cheap precondition, same 409 the
+        // ticket-level move answers with.
+        await assertDeviceTicketsNotPinnedToDeliverable(tx, deviceId);
         const lockedSourceCurrency = lockedSource.currencyCode;
         const lockedTargetCurrency = lockedTarget.currencyCode;
 
@@ -1042,6 +1050,11 @@ moveOrgRoutes.post(
       // failed-move audit.
       if (err instanceof TicketMoveCurrencyBlockedError) {
         return c.json({ error: err.message, code: err.code, details: err.details }, 409);
+      }
+      // #5573 W02 — same shape: the transaction rolled back untouched, so this
+      // is an explainable refusal, not a failure worth Sentry.
+      if (err instanceof TicketServiceError && err.code === 'DELIVERABLE_TICKET_PINNED') {
+        return c.json({ error: err.message, code: err.code }, 409);
       }
       // A row deleted under us is a lost race, not an exception: the
       // transaction rolled back, so answer exactly as the pre-transaction

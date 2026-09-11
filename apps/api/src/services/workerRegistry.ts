@@ -1137,6 +1137,19 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Service deliverables W02 (#5573 spec §5.1). Two Workers, one initializer:
+    // the daily `deliverable-jobs` sweep and the first `contract-events`
+    // consumer. 'global' because workerEntrypointClosure.contract.test.ts says
+    // so — if it reports the closure reaching routes/agentWs.ts, flip to
+    // 'socket-owner', never loosen the test.
+    name: 'deliverableWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/deliverableWorker');
+      return { init: m.initializeDeliverableWorkers, shutdown: m.shutdownDeliverableWorkers };
+    },
+  },
+  {
     // Wave 5B (#3827 Task 4): 48h sweep of `ai_unattended_exposure`, the
     // org-wide blast-cap ledger the act + policy-decide lanes share. No
     // route graph / socket import anywhere in its closure — `global`, same

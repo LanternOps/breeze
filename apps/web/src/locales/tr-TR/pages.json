@@ -1,0 +1,264 @@
+{
+  "titles": {
+    "notFound": "Sayfa bulunamadı",
+    "serverError": "Bir şeyler ters gitti",
+    "acceptInvite": "Daveti Kabul Et",
+    "accountConnectedApps": "Bağlı uygulamalar",
+    "accountDelete": "Hesabı sil",
+    "accountDevices": "Güvenilir cihazlar",
+    "accountInactive": "Başlayın",
+    "accountTestApproval": "Onayı test et",
+    "adminAccountDeletionRequestsDetail": "Hesap silme talebi",
+    "adminAccountDeletionRequests": "Hesap silme talepleri",
+    "adminAiKillSwitch": "Yapay Zeka Acil Durdurma Anahtarı",
+    "adminConnectedApps": "Bağlı uygulamalar (yönetici)",
+    "adminLlmProviderCatalog": "LLM Sağlayıcı Kataloğu",
+    "adminQuarantined": "Karantinaya alınmış cihazlar",
+    "adminThirdPartyCatalog": "Üçüncü Taraf Kataloğu",
+    "adminTrustAct": "Ortak güven eylemi",
+    "adminTrustQueue": "Ortak güven kuyruğu",
+    "adminUsersDetailDevices": "Kullanıcı cihazları",
+    "aiAgentsImpact": "Yapay Zeka Etkisi",
+    "aiAgentsRunsDetail": "Çalıştırma Detayı",
+    "aiAgentsRuns": "Aracı Çalıştırmaları",
+    "aiForOffice": "Office için AI",
+    "aiRisk": "Yapay Zeka Risk Motoru",
+    "alertsChannels": "Bildirim Kanalları",
+    "alertsCorrelations": "Uyarı Korelasyonları",
+    "alertsDetail": "Uyarı Ayrıntıları",
+    "alerts": "Uyarılar",
+    "analytics": "Analitik",
+    "approvals": "Onaylar",
+    "auditBaselinesDetail": "Denetim Referans Noktası",
+    "auditBaselines": "Denetim Referans Noktaları",
+    "audit": "Denetim İzi",
+    "auth": "Giriş yapın veya hesap oluşturun",
+    "authConnectSso": "Girişinizi bağlayın",
+    "authMfaSetup": "MFA'yı Ayarla",
+    "authVerifyEmail": "E-postayı Doğrula",
+    "automationsDetail": "Otomasyonu Düzenle",
+    "automations": "Otomasyonlar",
+    "automationsNew": "Yeni Otomasyon",
+    "backup": "Yedekleme",
+    "billingInvoices": "Faturalar",
+    "billingInvoicesDetail": "Fatura",
+    "billingQuotes": "Teklifler",
+    "billingQuotesDetail": "Teklif",
+    "c2c": "Bulut Yedekleme",
+    "cisHardening": "CIS Benchmarks",
+    "configurationPoliciesDefaults": "Breeze Varsayılanları",
+    "configurationPoliciesDetail": "Yapılandırma Politikası",
+    "configurationPolicies": "Yapılandırma Politikaları",
+    "configurationPoliciesNew": "Yeni Yapılandırma Politikası",
+    "contracts": "Sözleşmeler",
+    "contractsDetail": "Sözleşme",
+    "contractsNew": "Yeni sözleşme",
+    "devicesCompare": "Cihaz Karşılaştırması",
+    "devicesGroups": "Cihaz Grupları",
+    "devicesDetail": "Cihaz Ayrıntıları",
+    "devices": "Cihazlar",
+    "devicesNetworkDetail": "Ağ Cihazı Ayrıntıları",
+    "devicesPosture": "Filo Duruşu",
+    "discovery": "Ağ Keşfi",
+    "dnsSecurity": "DNS Güvenlik",
+    "dr": "Olağanüstü Durum Kurtarma",
+    "extensionsNamePath": "Uzantı",
+    "fleet": "Filo Orkestrasyonu",
+    "forgotPassword": "Şifremi Unuttum",
+    "incidentsDetail": "Olay Ayrıntısı",
+    "incidents": "Olaylar",
+    "dashboard": "Kontrol Paneli",
+    "integrations": "Entegrasyonlar",
+    "integrationsPsa": "PSA Entegrasyonları",
+    "integrationsWebhooks": "Webhooklar",
+    "login": "Giriş Yap",
+    "logs": "Günlükler",
+    "monitoring": "İzleme",
+    "oauthConsent": "Erişimi yetkilendir",
+    "onedrive": "OneDrive",
+    "organizationsDetail": "Organizasyon",
+    "pam": "Ayrıcalıklı Erişim",
+    "partner": "Ortak Portalı",
+    "patches": "Yamalar",
+    "peripherals": "Çevre Birimi Kontrolü",
+    "policiesCompliance": "Uyumluluk Panosu",
+    "policiesDetail": "Politikayı Düzenle",
+    "policies": "Politikalar",
+    "policiesNew": "Yeni Politika",
+    "quick": "Hızlı Destek",
+    "registerPartner": "Şirketinizi Kaydedin",
+    "remoteFilesDevice": "Uzak Dosya Yöneticisi",
+    "remoteFiles": "Dosya Aktarımı Başlat",
+    "remote": "Uzaktan Erişim",
+    "remoteProxyTunnel": "Ağ Proxy'si",
+    "remoteQuickSupport": "Hızlı Destek",
+    "remoteSessions": "Oturum Geçmişi",
+    "remoteTerminalDevice": "Uzak Terminal",
+    "remoteTerminal": "Terminal Oturumu Başlat",
+    "remoteTools": "Uzaktan Araçlar",
+    "remoteVncTunnel": "VNC Uzak Masaüstü",
+    "reportsBuilder": "Rapor Oluşturucu",
+    "reportsDetailEdit": "Raporu Düzenle",
+    "reports": "Raporlar",
+    "reportsNew": "Rapor Oluştur",
+    "reportsTemplates": "Rapor Şablonları",
+    "resetPassword": "Şifreyi Sıfırla",
+    "scriptsDetail": "Komut Dosyasını Düzenle",
+    "scriptsDetailExecutions": "Çalıştırma Geçmişi",
+    "scripts": "Komut Dosyaları",
+    "scriptsNew": "Yeni Komut Dosyası",
+    "securityAdminAudit": "Yönetici Hesabı Denetimi",
+    "securityAntivirus": "Antivirüs Kapsamı",
+    "securityEdr": "EDR",
+    "securityEncryption": "Şifreleme Durumu",
+    "securityFirewall": "Güvenlik Duvarı Durumu",
+    "security": "Güvenlik",
+    "securityPasswordPolicy": "Parola Politikası",
+    "securityRecommendations": "Güvenlik Önerileri",
+    "securityScore": "Güvenlik Puanı",
+    "securityTrends": "Güvenlik Eğilimleri",
+    "securityUserRisk": "Kullanıcı Riski",
+    "securityVulnerabilities": "Güvenlik Açıkları",
+    "sensitiveData": "Hassas Veriler",
+    "settingsAccessReviews": "Erişim İncelemeleri",
+    "settingsAiAgents": "Yapay Zeka Aracıları",
+    "settingsAiUsage": "Yapay Zeka Kullanımı ve Bütçe",
+    "settingsAlertTemplatesDetail": "Uyarı Şablonu",
+    "settingsAlertTemplates": "Uyarı Şablonları",
+    "settingsApiKeys": "API Anahtarları",
+    "settingsBilling": "Faturalandırma Ayarları",
+    "settingsCatalog": "Ürün Kataloğu",
+    "settingsConnectedApps": "Bağlı uygulamalar",
+    "settingsCustomFields": "Özel Alanlar",
+    "settingsEnrollmentKeys": "Kayıt Anahtarları",
+    "settingsFilters": "Kayıtlı Filtreler",
+    "settings": "Ayarlar",
+    "settingsOfficeAddinBindings": "Outlook Eklenti Bağlamaları",
+    "settingsOrganizationsDetail": "Organizasyon Ayarları",
+    "settingsOrganizationsDetailBilling": "Organizasyon Faturalandırması",
+    "settingsOrganizations": "Organizasyonlar",
+    "settingsPartner": "Ortak Ayarları",
+    "settingsPartnerServicePrincipals": "Hizmet Sorumluları",
+    "settingsProfile": "Profil Ayarları",
+    "settingsRoles": "Roller",
+    "settingsSitesDetail": "Site Ayarları",
+    "settingsSso": "Tek Oturum Açma (SSO)",
+    "settingsUsers": "Kullanıcılar",
+    "settingsVariables": "Değişkenler",
+    "settingsWebhooks": "Webhooklar",
+    "setup": "İlk Kurulum",
+    "software": "Yazılım Kitaplığı",
+    "softwareInventory": "Yazılım",
+    "softwarePolicies": "Yazılım",
+    "ticketsDetail": "Bilet",
+    "tickets": "Biletler",
+    "ticketsNew": "Bilet Oluştur",
+    "timesheet": "Zaman Çizelgesi",
+    "vulnerabilities": "Güvenlik Açıkları",
+    "workspace": "Yapay Zeka Asistanı"
+  },
+  "layout": {
+    "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",
+    "metaDescriptionSetup": "Breeze RMM - İlk Kurulum"
+  },
+  "authShell": {
+    "tagline": "Hız, netlik ve ölçek için tasarlanmış modern RMM platformu."
+  },
+  "errorPage": {
+    "notFoundBody": "Aradığınız sayfa mevcut değil veya taşınmış olabilir.",
+    "serverErrorBody": "Bizim tarafımızda beklenmeyen bir hata oluştu. Ekibimiz bilgilendirildi — lütfen birazdan tekrar deneyin.",
+    "referenceIdLabel": "Referans Kimliği:",
+    "dashboardLink": "Kontrol paneline git",
+    "signInLink": "Giriş yap"
+  },
+  "settingsIndex": {
+    "heading": "Ayarlar",
+    "description": "Organizasyonunuzun ayarlarını, kullanıcılarını ve sitelerini yönetin.",
+    "cards": {
+      "ticketing": {
+        "title": "Bilet Yönetimi",
+        "description": "Bilet durumlarını, öncelik SLA'larını, kategorileri ve varsayılan dışa aktarma ayarlarını yapılandırın."
+      },
+      "catalog": {
+        "title": "Ürün Kataloğu",
+        "description": "Donanım, yazılım ve hizmet kalemlerini, fiyatlandırmayı ve paketleri yönetin."
+      },
+      "billing": {
+        "title": "Faturalandırma",
+        "description": "Fatura para birimi, vergi, numaralandırma, koşullar ve varsayılan altbilgi."
+      },
+      "organizations": {
+        "title": "Organizasyonlar",
+        "description": "Organizasyonları, sözleşmeleri ve hesap ayarlarını yönetin."
+      },
+      "users": {
+        "title": "Kullanıcılar",
+        "description": "Kullanıcı davet edin, rolleri yönetin ve erişim izinlerini kontrol edin."
+      },
+      "sso": {
+        "title": "Tek Oturum Açma",
+        "description": "SSO sağlayıcılarını yapılandırın, e-posta alan adlarını doğrulayın ve SSO ile girişi zorunlu kılın."
+      },
+      "accessReviews": {
+        "title": "Erişim İncelemeleri",
+        "description": "Periyodik kullanıcı erişim sertifikasyonları çalıştırın ve onay kayıtlarını dışa aktarın."
+      },
+      "connectedApps": {
+        "title": "Bağlı Uygulamalar",
+        "description": "Kiracınıza erişim yetkisi verilen yapay zeka asistanlarını ve MCP istemcilerini inceleyin ve iptal edin."
+      },
+      "officeAddinBindings": {
+        "title": "Outlook Eklenti Bağlamaları",
+        "description": "Outlook teknisyen eklentisine bağlı teknisyenleri yönetin ve erişimi iptal edin."
+      },
+      "sites": {
+        "title": "Siteler",
+        "description": "Konumları, saat dilimlerini ve siteye özel ayarları yapılandırın."
+      }
+    }
+  },
+  "settingsBillingPage": {
+    "heading": "Faturalandırma ayarları",
+    "description": "Müşterileriniz için fatura para birimi, vergi, numaralandırma, koşullar ve altbilgi."
+  },
+  "settingsConnectedAppsPage": {
+    "heading": "Bağlı uygulamalar",
+    "description": "OAuth üzerinden kiracınıza erişim yetkisi verilen yapay zeka asistanları ve diğer MCP istemcileri. Erişimi istediğiniz zaman iptal edin — uygulamanın belirteci 10 dakika içinde reddedilir."
+  },
+  "settingsOrganizationBillingPage": {
+    "backLink": "← Organizasyon ayarları",
+    "heading": "Faturalandırma ayarları",
+    "description": "Bu organizasyonun faturalarında kullanılan vergi kimliği ve fatura adresi."
+  },
+  "alertsCorrelationsPage": {
+    "heading": "Uyarı Korelasyonları",
+    "description": "Gruplandırılmış uyarı olaylarını, paylaşılan kanıtları ve talep üzerine kök neden analizini (RCA) inceleyin."
+  },
+  "reportsBuilderPage": {
+    "breadcrumbReports": "Raporlar",
+    "breadcrumbBuilder": "Oluşturucu",
+    "heading": "Rapor Oluşturucu",
+    "description": "Canlı önizlemelerle rapor tasarlayın, planlayın ve dağıtın."
+  },
+  "reportsNewPage": {
+    "breadcrumbReports": "Raporlar",
+    "breadcrumbNew": "Yeni Rapor",
+    "heading": "Rapor Oluştur",
+    "description": "Altyapınızı izlemek ve analiz etmek için yeni bir rapor yapılandırın."
+  },
+  "remoteToolsPage": {
+    "loading": "Uzaktan araçlar yükleniyor...",
+    "loadingHint": "Uzaktan yönetim araçlarına erişmek için bir cihaz seçin"
+  },
+  "remoteTerminalPage": {
+    "loading": "Uzak terminal yükleniyor...",
+    "loadingDeviceName": "Cihaz yükleniyor..."
+  },
+  "authLayout": {
+    "tagline": "Uzaktan İzleme ve Yönetim"
+  },
+  "authPage": {
+    "description": "Breeze RMM - Giriş yapın veya hesap oluşturun",
+    "tagline": "Başlamak için giriş yapın veya hesabınızı oluşturun."
+  }
+}

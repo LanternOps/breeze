@@ -5,6 +5,6 @@ import NetworkDeviceDetailPage from '../../../components/devices/NetworkDeviceDe
 const { id } = Astro.params;
 ---
 
-<DashboardLayout title="Network Device Details">
+<DashboardLayout titleKey="titles.devicesNetworkDetail">
   <NetworkDeviceDetailPage assetId={id!} client:load />
 </DashboardLayout>

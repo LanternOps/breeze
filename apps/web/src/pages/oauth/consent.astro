@@ -6,6 +6,6 @@ const uid = Astro.url.searchParams.get('uid');
 if (!uid) return Astro.redirect('/');
 ---
 
-<AuthLayout title="Authorize access">
+<AuthLayout titleKey="titles.oauthConsent">
   <ConsentForm uid={uid} client:only="react" />
 </AuthLayout>
