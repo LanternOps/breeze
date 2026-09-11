@@ -1,6 +1,7 @@
 import { showToast } from '../components/shared/Toast';
 import { extractApiError, isApiFailure } from './apiError';
 import { dispatchTrustDenied, isTrustDenial } from './trustProbation';
+import { i18n } from './i18n';
 
 export class ActionError extends Error {
   code?: string;
@@ -78,6 +79,14 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
       ? (data as Record<string, unknown>).error
       : undefined);
     const friendlyKey = code ?? (typeof errorToken === 'string' ? errorToken : undefined);
+    // Additive i18n by error code (Phase-3 Task 3): when the API rides a `code`
+    // and we have an `errors:<CODE>` translation loaded, use it as the default
+    // message. Falls through to server prose when the key is absent. Placed
+    // BEFORE the `friendly` hook so a per-call friendly() still overrides it.
+    // i18n-dynamic: code is a runtime value, keyUsage can't scan it statically.
+    if (code && i18n.exists(`errors:${code}`)) {
+      message = i18n.t(`errors:${code}`);
+    }
     if (friendlyKey && opts.friendly) {
       const friendly = opts.friendly(friendlyKey);
       if (friendly) message = friendly;

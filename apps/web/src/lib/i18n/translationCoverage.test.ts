@@ -74,6 +74,8 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 2,
     'devices.json': 174,
     'discovery.json': 17,
+    // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
+    'errors.json': 0,
     'integrations.json': 23,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // pt-BR.
@@ -177,6 +179,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 1,
     'devices.json': 125,
     'discovery.json': 17,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     'integrations.json': 31,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // es-419.
@@ -286,6 +291,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 6,
     'devices.json': 152,
     'discovery.json': 15,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     'integrations.json': 38,
     'organizations.json': 8, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR
     // +1: PR review fix aligning fr-FR terminology with devices.json/settings.json/
@@ -403,6 +411,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 6,
     'devices.json': 152,
     'discovery.json': 15,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     'integrations.json': 40,
     'organizations.json': 7, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA
     // +1: PR review fix aligning fr-CA terminology with fr-FR (fr-CA mirrors it
@@ -533,6 +544,9 @@ const namespaceDuplicateBaselines = {
     'devices.json': 164,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     'discovery.json': 27,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     'integrations.json': 43,
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
     // interpolation; German uses the same "OS" acronym.
@@ -617,6 +631,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 2,
     'devices.json': 144,
     'discovery.json': 22,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     'integrations.json': 81,
     'organizations.json': 3, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term; +2 W02: device status "Online"/"Offline" are identical cognates in it-IT
     'pages.json': 10, // Cognates: Backup, CIS Benchmarks, Dashboard, OneDrive, EDR, Software (x2), Ticket, and two settings-card titles (Ticketing, SSO) — proper nouns/acronyms/loanwords.
@@ -690,6 +707,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 1,
     'devices.json': 88,
     'discovery.json': 9,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     'integrations.json': 22,
     'organizations.json': 1, // W01 #5075: cognate — "{{count}} site"
     'pages.json': 3, // Cognates: CIS Benchmarks, OneDrive, EDR — proper nouns/acronyms.
