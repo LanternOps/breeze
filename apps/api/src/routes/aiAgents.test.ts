@@ -336,7 +336,12 @@ vi.mock('../services/aiAgents/supervisedKeyDemote', () => ({
 const envMock = vi.hoisted(() => ({ policyDecideEnabled: vi.fn(() => true) }));
 vi.mock('../config/env', () => ({ policyDecideEnabled: envMock.policyDecideEnabled }));
 
-import { AI_AGENT_GRADUATION_BY_ORG_BATCH, aiAgentsRoutes, mapError } from './aiAgents';
+import {
+  AI_AGENT_GRADUATION_BY_ORG_BATCH,
+  aiAgentsRoutes,
+  mapError,
+  runSiteScopeCondition,
+} from './aiAgents';
 import { InvalidScriptIdsError } from '../services/aiAgents/scriptAuthorization';
 
 const AGENT_ID = '11111111-1111-4111-8111-111111111111';
@@ -347,6 +352,7 @@ const PARTNER_ID = '55555555-5555-4555-8555-555555555555';
 const RUN_ID = '66666666-6666-4666-8666-666666666666';
 const USER_ID = '77777777-7777-4777-8777-777777777777';
 const INTENT_ID = '88888888-8888-4888-8888-888888888888';
+const SITE_ID = '99999999-9999-4999-8999-999999999999';
 
 function agent(overrides: Record<string, unknown> = {}) {
   return {
@@ -654,6 +660,17 @@ describe('POST /ai-agents/:id/runs', () => {
 // The route now projects through the same `mapRunListItem` mapper as the
 // org-wide `GET /runs` list.
 describe('GET /ai-agents/:id/runs (legacy per-agent list, review fix #3828)', () => {
+  it('pushes the organization user site ceiling into SQL before limiting history', async () => {
+    let where: unknown;
+    selectMock.mockReturnValueOnce(selectChain([], (predicate) => { where = predicate; }));
+
+    const res = await buildApp(false, { allowedSiteIds: [SITE_ID] })
+      .request(`/ai-agents/${AGENT_ID}/runs?limit=1`);
+
+    expect(res.status).toBe(200);
+    expect(sqlParams(where)).toContain(SITE_ID);
+  });
+
   it('is gated on ai_agents:read', async () => {
     hasPermMock.mockReturnValue(false);
     const res = await buildApp().request(`/ai-agents/${AGENT_ID}/runs`);
@@ -869,6 +886,27 @@ const dialect = new PgDialect();
 function sqlParams(predicate: unknown): unknown[] {
   return dialect.sqlToQuery(predicate as SQL).params;
 }
+
+describe('runSiteScopeCondition', () => {
+  it('keeps unrestricted callers unchanged', () => {
+    expect(runSiteScopeCondition({ allowedSiteIds: undefined })).toBeUndefined();
+  });
+
+  it('fails closed for an explicit empty ceiling', () => {
+    const query = dialect.sqlToQuery(runSiteScopeCondition({ allowedSiteIds: [] })!);
+    expect(query.sql).toContain('false');
+    expect(query.params).toEqual([]);
+  });
+
+  it('requires a same-org current device in an allowed site', () => {
+    const query = dialect.sqlToQuery(runSiteScopeCondition({ allowedSiteIds: [SITE_ID] })!);
+    expect(query.sql).toContain('EXISTS');
+    expect(query.sql).toContain('"run_scope_device"."id"');
+    expect(query.sql).toContain('"run_scope_device"."org_id"');
+    expect(query.sql).toContain('"run_scope_device"."site_id"');
+    expect(query.params).toContain(SITE_ID);
+  });
+});
 
 // Strict response-shape schemas (DTO rule, Global Constraints): a route that
 // starts spreading a raw row again — pulling in dedupeKey, policySnapshot,
@@ -1123,6 +1161,18 @@ function runRow(overrides: Record<string, unknown> = {}) {
 }
 
 describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
+  it('applies the site ceiling to the initial run lookup before any subsidiary trace read', async () => {
+    let where: unknown;
+    selectMock.mockReturnValueOnce(selectChain([], (predicate) => { where = predicate; }));
+
+    const res = await buildApp(false, { allowedSiteIds: [SITE_ID] })
+      .request(`/ai-agents/runs/${RUN_ID}`);
+
+    expect(res.status).toBe(404);
+    expect(sqlParams(where)).toContain(SITE_ID);
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
   it('returns 404 for a run outside the caller\'s org (or that does not exist)', async () => {
     selectMock.mockReturnValueOnce(selectChain([]));
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
@@ -1654,6 +1704,20 @@ describe('POST /ai-agents/verdicts/:verdictId/feedback', () => {
 });
 
 describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
+  it('pushes the site ceiling into the keyset query before limit and cursor selection', async () => {
+    let where: unknown;
+    let limit: number | undefined;
+    selectMock.mockReturnValueOnce(selectChain([], (predicate) => { where = predicate; }, (value) => { limit = value; }));
+
+    const res = await buildApp(false, { allowedSiteIds: [SITE_ID] })
+      .request('/ai-agents/runs?limit=1');
+
+    expect(res.status).toBe(200);
+    expect(sqlParams(where)).toContain(SITE_ID);
+    expect(limit).toBe(2);
+    expect(await res.json()).toEqual({ data: [], nextCursor: null });
+  });
+
   it('is gated on ai_agents:read', async () => {
     hasPermMock.mockReturnValue(false);
     const res = await buildApp().request('/ai-agents/runs');
@@ -3256,6 +3320,16 @@ describe('GET /ai-agents', () => {
   beforeEach(() => {
     listAgentsMock.mockResolvedValue([agentRow({ disabledAt: null })]);
     selectDistinctOnMock.mockReturnValue(distinctChain([]));
+  });
+
+  it('selects the latest site-visible run rather than the latest org-visible run', async () => {
+    let where: unknown;
+    selectDistinctOnMock.mockReturnValueOnce(distinctChain([], (predicate) => { where = predicate; }));
+
+    const res = await buildApp(false, { allowedSiteIds: [SITE_ID] }).request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    expect(sqlParams(where)).toContain(SITE_ID);
   });
 
   it('projects the latest run per agent from ONE batched query', async () => {
