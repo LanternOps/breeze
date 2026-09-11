@@ -302,6 +302,12 @@ func TestCollectBackupFiles_FidelityEntries(t *testing.T) {
 	if !ok || empty.kind != KindDir {
 		t.Fatalf("empty dir entry = %+v (ok=%v)", empty, ok)
 	}
+	// A genuinely empty directory (never itself pattern-excluded) is not a
+	// placeholder — see TestCollectBackupFiles_ExcludedDirectoriesStillGetManifestEntries
+	// for the pattern-excluded case, which IS (review fix, #5493).
+	if empty.placeholder {
+		t.Error("a genuinely empty dir must not be marked placeholder")
+	}
 	if _, ok := byRel["usr"]; ok {
 		t.Error("a plain non-empty 0755 directory must not get an entry")
 	}
@@ -387,18 +393,19 @@ func TestCollectBackupFiles_ExcludedDirectoriesStillGetManifestEntries(t *testin
 	}
 
 	// Excluded directories themselves must still be recorded, with their
-	// real mode preserved.
+	// real mode preserved, and marked Placeholder — restore must not
+	// re-permission them if they already exist (review fix, #5493).
 	proc, ok := byRel["proc"]
-	if !ok || proc.kind != KindDir || proc.modeBits != 0o755 {
-		t.Errorf("proc entry = %+v (ok=%v), want KindDir mode 0755", proc, ok)
+	if !ok || proc.kind != KindDir || proc.modeBits != 0o755 || !proc.placeholder {
+		t.Errorf("proc entry = %+v (ok=%v), want KindDir mode 0755 placeholder=true", proc, ok)
 	}
 	tmp, ok := byRel["tmp"]
-	if !ok || tmp.kind != KindDir || tmp.modeBits != uint32(sticky1777) {
-		t.Errorf("tmp entry = %+v (ok=%v), want KindDir mode sticky 1777", tmp, ok)
+	if !ok || tmp.kind != KindDir || tmp.modeBits != uint32(sticky1777) || !tmp.placeholder {
+		t.Errorf("tmp entry = %+v (ok=%v), want KindDir mode sticky 1777 placeholder=true", tmp, ok)
 	}
 	varTmp, ok := byRel["var/tmp"]
-	if !ok || varTmp.kind != KindDir || varTmp.modeBits != uint32(sticky1777) {
-		t.Errorf("var/tmp entry = %+v (ok=%v), want KindDir mode sticky 1777", varTmp, ok)
+	if !ok || varTmp.kind != KindDir || varTmp.modeBits != uint32(sticky1777) || !varTmp.placeholder {
+		t.Errorf("var/tmp entry = %+v (ok=%v), want KindDir mode sticky 1777 placeholder=true", varTmp, ok)
 	}
 
 	// Their contents must never appear.
@@ -459,6 +466,13 @@ func TestCollectBackupFiles_DirectoryWithOnlyExcludedChildrenBecomesEmptyDirEntr
 	cacheEntry, ok := byRel["cache"]
 	if !ok || cacheEntry.kind != KindDir {
 		t.Errorf("cache entry = %+v (ok=%v), want an empty-dir KindDir entry", cacheEntry, ok)
+	}
+	// cache itself was never pattern-excluded (only its children were), so
+	// this is an ordinary "genuinely empty" dir entry, not a placeholder —
+	// its mode was legitimately captured and restore must always reapply
+	// it, unlike a Placeholder entry (review fix, #5493).
+	if cacheEntry.placeholder {
+		t.Error("cache is genuinely empty (not itself excluded), must not be marked placeholder")
 	}
 	if _, ok := byRel["cache/a.tmp"]; ok {
 		t.Error("cache/a.tmp should have been excluded")

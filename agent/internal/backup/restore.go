@@ -341,6 +341,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		// itself is created with symlinkat and the directory with mkdirat,
 		// both relative to that pinned parent — never by pathname.
 		var entryErr error
+		skippedExistingPlaceholder := false
 		switch entry.Kind {
 		case KindSymlink:
 			var linkWarnings []error
@@ -349,14 +350,35 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 				result.Warnings = append(result.Warnings, fmt.Sprintf("recreated %s with reduced fidelity: %v", displayPath, warning))
 			}
 		case KindDir:
-			mode := os.FileMode(entry.ModeBits)
-			if !applyOwnership {
-				// A non-root owner may legitimately set sticky/setgid on its
-				// own directory; setuid on a directory is vanishingly rare and
-				// this path cannot confirm root, so it strips only that bit.
-				mode &^= os.ModeSetuid
+			// Placeholder (review fix, #5493): a pattern-excluded directory
+			// (e.g. /tmp, /proc under the whole-machine preset) is recorded
+			// purely so a rebuild recreates it at all — it is NOT a
+			// deliberately-configured mode/owner capture the way an
+			// ordinary empty-dir entry is. If it already exists, a customer
+			// may have tightened its permissions since the backup ran; an
+			// ordinary backup_restore must not silently revert that. Only
+			// apply mode/owner when this restore is the one creating the
+			// directory. securefs.StatFile is the symlink-safe existence
+			// check: it walks the same descriptor-pinned path InstallDir
+			// would, so this can't be fooled by a planted symlink into
+			// skipping (or performing) the wrong directory's metadata
+			// apply.
+			if entry.Placeholder {
+				if info, statErr := securefs.StatFile(targetBase, relativeEntry); statErr == nil && info.IsDir() {
+					skippedExistingPlaceholder = true
+				}
 			}
-			entryErr = securefs.InstallDir(targetBase, relativeEntry, mode, entry.ModeBits != 0, entryOwner(entry, applyOwnership), entry.ModTime)
+			if !skippedExistingPlaceholder {
+				mode := os.FileMode(entry.ModeBits)
+				if !applyOwnership {
+					// A non-root owner may legitimately set sticky/setgid on
+					// its own directory; setuid on a directory is
+					// vanishingly rare and this path cannot confirm root,
+					// so it strips only that bit.
+					mode &^= os.ModeSetuid
+				}
+				entryErr = securefs.InstallDir(targetBase, relativeEntry, mode, entry.ModeBits != 0, entryOwner(entry, applyOwnership), entry.ModTime)
+			}
 		default:
 			entryErr = fmt.Errorf("entry %s has content; use the file path", displayPath)
 		}
@@ -366,7 +388,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 			result.Warnings = append(result.Warnings, fmt.Sprintf("could not recreate %s: %v", displayPath, entryErr))
 			continue
 		}
-		if !applyOwnership && entry.Owner != nil {
+		if !skippedExistingPlaceholder && !applyOwnership && entry.Owner != nil {
 			warnOwnership()
 		}
 		result.FilesRestored++
@@ -807,6 +829,19 @@ func RestoreContentlessEntry(targetPath string, entry SnapshotFile, applyOwnersh
 			return err
 		}
 	case KindDir:
+		// Placeholder (review fix, #5493): see the matching comment in
+		// RestoreFromSnapshotContext's dir pass above — a pattern-excluded
+		// directory's manifest entry exists purely so a rebuild recreates
+		// it at all, not because its mode/owner were deliberately captured.
+		// If it's already there, a customer may have tightened its
+		// permissions since the backup; leave it untouched rather than
+		// silently reverting that, and skip the applyOwnership tail below
+		// too (return directly).
+		if entry.Placeholder {
+			if info, err := os.Lstat(targetPath); err == nil && info.IsDir() {
+				return nil
+			}
+		}
 		if err := os.MkdirAll(targetPath, 0o755); err != nil {
 			return err
 		}

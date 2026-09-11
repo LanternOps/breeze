@@ -1446,6 +1446,11 @@ type backupFile struct {
 	linkTarget string
 	modeBits   uint32
 	owner      *FileOwner
+	// placeholder mirrors SnapshotFile.Placeholder — see that field's doc
+	// comment (snapshot.go). Set only via contentlessEntry for a KindDir
+	// entry the walker force-recorded because the directory matched an
+	// exclude pattern (#5493).
+	placeholder bool
 }
 
 // fullModeBits keeps perm + setuid/setgid/sticky; everything else (type bits)
@@ -1609,11 +1614,16 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 		//     require them to exist.
 		type walkedDir struct {
 			path, rel string
-			// forced marks a directory that was itself pattern-excluded (or
-			// inside journalDirs): it always gets a manifest entry — mode
-			// and ownership recorded, contents skipped — bypassing
-			// dirNeedsEntry's "would the default MkdirAll suffice" check,
-			// since nothing else will ever recreate this directory.
+			// forced marks a directory that was itself pattern-excluded
+			// (never the journal dir — see the walker below, which checks
+			// journalDirs first and returns before this can be set for
+			// it): it always gets a manifest entry — mode and ownership
+			// recorded, contents skipped — bypassing dirNeedsEntry's
+			// "would the default MkdirAll suffice" check, since nothing
+			// else will ever recreate this directory. Carried into the
+			// resulting backupFile/SnapshotFile as Placeholder, which
+			// restore uses to avoid re-permissioning an already-existing
+			// directory (review fix, #5493).
 			forced bool
 		}
 		var dirs []walkedDir
@@ -1643,25 +1653,29 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				// whole checkpoint journal subtree — not just files that
 				// happen to match a glob — is pruned in one step (#5581).
 				//
-				// Only a PATTERN-excluded directory is force-recorded (see
-				// walkedDir.forced above): it represents a real, user-owned
-				// filesystem location (e.g. /proc, /tmp under the
-				// whole-machine preset) that a rebuild must still recreate.
-				// The journal directory is this run's own ephemeral
-				// bookkeeping location — ONLY it, on its own, must never
-				// appear in the manifest at all, forced or not (#5581,
-				// TestRunBackupContext_JournalHardExclude_MatchesVSSShadowPath) —
-				// so it is pruned with no entry, same as before. A directory
-				// that happens to be both pattern-excluded AND the journal
-				// dir still gets forced, consistent with "pattern exclusion
-				// always forces an entry" — that combination just doesn't
-				// arise for the journal dir in practice, since it isn't
-				// itself covered by any whole-machine preset pattern.
-				excludedByPattern := excl != nil && excl.matches(slashRel)
-				if excludedByPattern || isWithinAnyDir(path, journalDirs) {
-					if excludedByPattern {
-						dirs = append(dirs, walkedDir{path: path, rel: slashRel, forced: true})
-					}
+				// The journal-dir check runs FIRST and unconditionally wins
+				// (review fix): the journal directory is this run's own
+				// ephemeral bookkeeping location and must NEVER appear in
+				// the manifest at all — not even if it also happens to
+				// match a user-configured exclude pattern (e.g. an explicit
+				// "**/backup-journal/**" exclude, or simply a pattern broad
+				// enough to catch it incidentally). Checking journalDirs
+				// first, and returning before excludedByPattern is even
+				// evaluated, means that combination can never accidentally
+				// force an entry for it — see
+				// TestRunBackupContext_JournalHardExclude_MatchesVSSShadowPath
+				// and TestRunBackupContext_JournalHardExclude_WinsOverMatchingUserExclude.
+				//
+				// Only THEN does a PATTERN-excluded directory get
+				// force-recorded (see walkedDir.forced above): it
+				// represents a real, user-owned filesystem location (e.g.
+				// /proc, /tmp under the whole-machine preset) that a
+				// rebuild must still recreate.
+				if isWithinAnyDir(path, journalDirs) {
+					return fs.SkipDir
+				}
+				if excl != nil && excl.matches(slashRel) {
+					dirs = append(dirs, walkedDir{path: path, rel: slashRel, forced: true})
 					return fs.SkipDir
 				}
 				dirs = append(dirs, walkedDir{path: path, rel: slashRel})
@@ -1723,12 +1737,17 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				continue
 			}
 			owner := fileOwner(info)
-			// A forced (pattern-excluded, or journal-dir) entry always gets
-			// recorded — dirNeedsEntry's emptiness/mode/owner heuristics are
-			// about whether the default restore behavior (MkdirAll 0755)
-			// would already recreate it correctly; an excluded directory is
-			// never recreated by anything else in the manifest, so it always
-			// needs its own entry regardless of what dirNeedsEntry would say.
+			// A forced (pattern-excluded — never the journal dir, see the
+			// walker above) entry always gets recorded — dirNeedsEntry's
+			// emptiness/mode/owner heuristics are about whether the default
+			// restore behavior (MkdirAll 0755) would already recreate it
+			// correctly; an excluded directory is never recreated by
+			// anything else in the manifest, so it always needs its own
+			// entry regardless of what dirNeedsEntry would say. It is also
+			// marked Placeholder (review fix, #5493): restore must only
+			// apply its mode/owner when creating it fresh, never re-apply
+			// them over a directory a customer may have deliberately
+			// reconfigured since the backup — see SnapshotFile.Placeholder.
 			if !d.forced && !dirNeedsEntry(info, owner, childCount[d.path] == 0) {
 				continue
 			}
@@ -1739,7 +1758,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 			seen[snapshotPath] = struct{}{}
 			files = append(files, backupFile{
 				sourcePath: d.path, snapshotPath: snapshotPath, modTime: info.ModTime(), mode: info.Mode(),
-				kind: KindDir, modeBits: fullModeBits(info.Mode()), owner: owner,
+				kind: KindDir, modeBits: fullModeBits(info.Mode()), owner: owner, placeholder: d.forced,
 			})
 		}
 	}
