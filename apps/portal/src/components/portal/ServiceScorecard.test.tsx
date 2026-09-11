@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ServiceScorecard } from './ServiceScorecard';
+import { portalApi } from '@/lib/api';
 import type { PortalServiceOverviewDto } from '@breeze/shared';
 
 vi.mock('@/lib/api', () => ({
@@ -56,5 +57,46 @@ describe('ServiceScorecard', () => {
   it('shows an honest empty state, not a blank page', () => {
     render(<ServiceScorecard overview={{ ...overview, groups: [], keyDates: [] }} />);
     expect(screen.getByTestId('portal-service-empty')).toBeInTheDocument();
+  });
+});
+
+describe('ServiceScorecard history', () => {
+  const occurrence = {
+    id: 'o1', name: 'Monthly sign-in log review', periodStart: '2026-08-01',
+    periodEnd: '2026-08-31', dueAt: '2026-08-31', rescheduled: true,
+    status: 'delivered' as const, deliveredAt: '2026-09-01T17:00:00.000Z', late: true,
+    note: 'Ran a day late', artifactState: 'held_by_msp' as const, evidence: [],
+  };
+
+  it('fetches this deliverable\'s occurrences and renders them', async () => {
+    vi.mocked(portalApi.getServiceOccurrences).mockResolvedValue({
+      data: {
+        asOf: '2026-10-15T12:00:00.000Z', timezone: 'America/Denver',
+        deliverable: { id: 'd1', name: 'Monthly sign-in log review', cadence: 'monthly' },
+        occurrences: [occurrence],
+      },
+    } as never);
+
+    render(<ServiceScorecard overview={overview} />);
+    fireEvent.click(screen.getByTestId('portal-service-history-toggle-d1'));
+
+    await waitFor(() => expect(screen.getByTestId('portal-service-occurrence-row-o1')).toBeInTheDocument());
+    expect(portalApi.getServiceOccurrences).toHaveBeenCalledWith('d1');
+    const row = screen.getByTestId('portal-service-occurrence-row-o1');
+    expect(row).toHaveTextContent('Rescheduled');
+    expect(row).toHaveTextContent('Delivered (artifact held by your IT team)');
+    expect(row.textContent).not.toMatch(/ticket/i);
+  });
+
+  it('tells the customer the history could not load instead of failing silently', async () => {
+    vi.mocked(portalApi.getServiceOccurrences).mockResolvedValue({
+      error: 'Service unavailable', statusCode: 503,
+    } as never);
+
+    render(<ServiceScorecard overview={overview} />);
+    fireEvent.click(screen.getByTestId('portal-service-history-toggle-d1'));
+
+    await waitFor(() => expect(screen.getByText('Service unavailable')).toBeInTheDocument());
+    expect(screen.queryByTestId('portal-service-occurrences-d1')).toBeNull();
   });
 });

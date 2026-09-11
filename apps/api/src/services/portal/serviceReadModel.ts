@@ -502,8 +502,12 @@ export async function serviceTile(
 
   const [counts] = await db
     .select({
-      onTime: sql<number>`count(*) FILTER (WHERE ${serviceDeliverableOccurrences.status} = 'delivered' AND ${serviceDeliverableOccurrences.deliveredAt}::date <= ${serviceDeliverableOccurrences.dueAt})::int`,
-      late: sql<number>`count(*) FILTER (WHERE ${serviceDeliverableOccurrences.status} = 'delivered' AND ${serviceDeliverableOccurrences.deliveredAt}::date > ${serviceDeliverableOccurrences.dueAt})::int`,
+      // `delivered_at::date` would cast in the DB SESSION's zone, which is not
+      // the org's. A delivery at 23:30 America/Los_Angeles on the due date is
+      // on time for the customer and the next UTC day — the tile would then
+      // call late what the Service page (isLate, org zone) calls on time.
+      onTime: sql<number>`count(*) FILTER (WHERE ${serviceDeliverableOccurrences.status} = 'delivered' AND (${serviceDeliverableOccurrences.deliveredAt} at time zone ${args.timezone})::date <= ${serviceDeliverableOccurrences.dueAt})::int`,
+      late: sql<number>`count(*) FILTER (WHERE ${serviceDeliverableOccurrences.status} = 'delivered' AND (${serviceDeliverableOccurrences.deliveredAt} at time zone ${args.timezone})::date > ${serviceDeliverableOccurrences.dueAt})::int`,
       missed: sql<number>`count(*) FILTER (WHERE ${serviceDeliverableOccurrences.status} = 'missed')::int`,
     })
     .from(serviceDeliverableOccurrences)

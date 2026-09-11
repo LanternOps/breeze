@@ -162,11 +162,41 @@ describe('GET /documents/:id/content', () => {
     expect(mocks.streamDocument).not.toHaveBeenCalled();
   });
 
-  it('answers a storage fault with a retryable 503, never a 500', async () => {
+  it('answers a STORAGE_UNAVAILABLE fault with a retryable 503', async () => {
     mocks.portalVisibleDocument.mockResolvedValue(handle('c'));
-    mocks.streamDocument.mockRejectedValue(new Error('s3 down'));
+    mocks.streamDocument.mockRejectedValue(
+      new DeliverableServiceError('Document storage is unavailable', 503, 'STORAGE_UNAVAILABLE'));
     const response = await isolatedApp().request(`/documents/${ID}/content`);
     expect(response.status).toBe(503);
+  });
+
+  it('does NOT dress an ordinary fault up as a retryable storage outage', async () => {
+    // streamDocument also runs two DB reads and an access check. A pool error
+    // or a programming bug there must stay a 500 — telling the customer to
+    // retry, and hiding the fault from 500-rate monitoring, is worse than the
+    // error itself.
+    mocks.portalVisibleDocument.mockResolvedValue(handle('c'));
+    mocks.streamDocument.mockRejectedValue(new Error('connection terminated'));
+    const app = isolatedApp();
+    app.onError((_err, c) => c.json({ error: 'Internal' }, 500));
+    const response = await app.request(`/documents/${ID}/content`);
+    expect(response.status).toBe(500);
+  });
+
+  it('logs a metadata row whose bytes are missing instead of a silent 404', async () => {
+    mocks.portalVisibleDocument.mockResolvedValue(handle('e'));
+    mocks.streamDocument.mockResolvedValue({
+      view: {}, contentType: 'application/pdf', originalFilename: 'gone.pdf',
+      sha256: 'e'.repeat(64), body: null, contentLength: null,
+    });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const response = await isolatedApp().request(`/documents/${ID}/content`);
+    expect(response.status).toBe(404);
+    expect(logged).toHaveBeenCalledWith(
+      '[portal-documents] object missing for row',
+      expect.objectContaining({ documentId: ID }),
+    );
+    logged.mockRestore();
   });
 
   it('turns a 404 from the W03 service into a bare 404, not a 500', async () => {

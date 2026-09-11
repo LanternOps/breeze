@@ -2,11 +2,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
-const state = vi.hoisted(() => ({ rows: [] as unknown[][], wheres: [] as unknown[] }));
+const state = vi.hoisted(() => ({
+  rows: [] as unknown[][],
+  wheres: [] as unknown[],
+  selects: [] as unknown[],
+}));
 
 vi.mock('../../db', () => ({
   db: {
-    select: vi.fn(() => {
+    select: vi.fn((projection: unknown) => {
+      state.selects.push(projection);
       const chain: Record<string, unknown> = {};
       for (const m of ['from', 'where', 'orderBy', 'limit', 'innerJoin', 'leftJoin']) {
         chain[m] = vi.fn((arg: unknown) => {
@@ -71,7 +76,7 @@ describe('portalOccurrenceStatus', () => {
 });
 
 describe('serviceOverview', () => {
-  beforeEach(() => { state.rows.length = 0; state.wheres.length = 0; });
+  beforeEach(() => { state.rows.length = 0; state.wheres.length = 0; state.selects.length = 0; });
 
   function seed(opts: { enableReports: boolean; evidence: unknown[] }) {
     state.rows.push([{ enableReports: opts.enableReports }]);          // branding read
@@ -204,7 +209,7 @@ describe('serviceOverview', () => {
 });
 
 describe('deliverableOccurrences', () => {
-  beforeEach(() => { state.rows.length = 0; state.wheres.length = 0; });
+  beforeEach(() => { state.rows.length = 0; state.wheres.length = 0; state.selects.length = 0; });
 
   it('returns null for a deliverable that is not a portal-visible row of this org', async () => {
     state.rows.push([]);  // deliverable lookup finds nothing (RLS or portal_visible=false)
@@ -255,7 +260,7 @@ describe('deliverableOccurrences', () => {
 });
 
 describe('serviceTile', () => {
-  beforeEach(() => { state.rows.length = 0; state.wheres.length = 0; });
+  beforeEach(() => { state.rows.length = 0; state.wheres.length = 0; state.selects.length = 0; });
 
   it('returns null when enable_service is off', async () => {
     state.rows.push([{ enableService: false }]);
@@ -284,6 +289,25 @@ describe('serviceTile', () => {
     state.rows.push([]);
     const tile = await serviceTile(ORG_ID, { timezone: 'UTC', now: NOW });
     expect(tile).toMatchObject({ status: 'no_data', deliveredOnTime: null, nextDue: null });
+  });
+
+  it('splits on time from late in the ORG timezone, not the DB session zone', async () => {
+    // A delivery at 23:30 America/Los_Angeles on the due date is still on time
+    // for the customer even though it is the next calendar day in UTC. A bare
+    // `delivered_at::date` cast reads the SESSION zone, so the tile would call
+    // it late while the Service page (isLate, org zone) calls it on time.
+    state.rows.push([{ enableService: true }]);
+    state.rows.push([{ onTime: 1, late: 0, missed: 0 }]);
+    state.rows.push([]);
+    await serviceTile(ORG_ID, { timezone: 'America/Los_Angeles', now: NOW });
+    const counts = new PgDialect().sqlToQuery(state.wheres[0] as SQL);
+    expect(counts.params).toContain(ORG_ID);
+    // The aggregate must convert the timestamp into the org's zone before the
+    // date comparison.
+    const compiled = (state.selects[1] ?? {}) as Record<string, SQL>;
+    const onTime = new PgDialect().sqlToQuery(compiled.onTime as SQL);
+    expect(onTime.sql).toContain('at time zone');
+    expect(onTime.params).toContain('America/Los_Angeles');
   });
 
   it('is ok with zero counts when something is still scheduled ahead', async () => {

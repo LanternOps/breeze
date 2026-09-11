@@ -126,6 +126,21 @@ describe('GET /service/:deliverableId/occurrences', () => {
     expect(mocks.deliverableOccurrences).not.toHaveBeenCalled();
   });
 
+  it('accepts exactly the published window and refuses one more', async () => {
+    // Pins the boundary itself: max(24) is the published window (spec §8), so
+    // a silent widening to 25 would otherwise go unnoticed.
+    mocks.deliverableOccurrences.mockResolvedValue({ asOf: '', timezone: 'UTC', deliverable: { id: 'd1', name: 'x', cadence: 'monthly' }, occurrences: [] });
+    expect((await isolatedApp().request(`/service/${ORG_ID}/occurrences?limit=24`)).status).toBe(200);
+    expect((await isolatedApp().request(`/service/${ORG_ID}/occurrences?limit=25`)).status).toBe(400);
+  });
+
+  it('defaults to the full window when no limit is given', async () => {
+    mocks.deliverableOccurrences.mockResolvedValue({ asOf: '', timezone: 'UTC', deliverable: { id: 'd1', name: 'x', cadence: 'monthly' }, occurrences: [] });
+    await isolatedApp().request(`/service/${ORG_ID}/occurrences`);
+    expect(mocks.deliverableOccurrences).toHaveBeenCalledWith(
+      ORG_ID, ORG_ID, expect.objectContaining({ limit: 24 }));
+  });
+
   it('passes the validated limit through', async () => {
     mocks.deliverableOccurrences.mockResolvedValue({ asOf: '', timezone: 'America/Denver', deliverable: { id: 'd1', name: 'x', cadence: 'monthly' }, occurrences: [] });
     await isolatedApp().request(`/service/${ORG_ID}/occurrences?limit=5`);

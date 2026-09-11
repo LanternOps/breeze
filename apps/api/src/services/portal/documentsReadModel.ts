@@ -51,11 +51,17 @@ export async function documentsForOrg(
       isNull(orgDocuments.deletedAt),
       // Chain heads only: a replaced version stays downloadable through a
       // delivery record, but the library lists the current one.
+      //
+      // The successor must itself be portal-visible. Without that clause a
+      // replacement uploaded as a draft (portal_visible = false) hides the
+      // version the customer could still read, and shows nothing in its place
+      // — the document silently disappears from the library.
       sql`NOT EXISTS (
         SELECT 1 FROM ${orgDocuments} AS successor
         WHERE successor.supersedes_document_id = ${orgDocuments.id}
           AND successor.org_id = ${orgId}
           AND successor.deleted_at IS NULL
+          AND successor.portal_visible = true
       )`,
     ))
     .orderBy(asc(orgDocuments.category), desc(orgDocuments.createdAt)) as unknown as Array<{

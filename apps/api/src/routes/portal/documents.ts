@@ -84,10 +84,26 @@ portalDocumentRoutes.get(
       }
       // A transport fault is RETRYABLE, not a bug (the ticket-attachment route
       // learned this the hard way: an S3 blip surfaced as a generic 500).
-      captureException(err);
-      return c.json({ error: 'Document storage is unavailable — try again shortly' }, 503);
+      // orgDocumentService converts BlobStorageError into a 503
+      // STORAGE_UNAVAILABLE, so ONLY that shape earns the retry advice —
+      // anything else (a pool error, a query bug, a TypeError from a later
+      // refactor) must surface as a 500 rather than be dressed up as a
+      // transient outage the customer should retry.
+      if (err instanceof DeliverableServiceError && err.status === 503) {
+        captureException(err);
+        return c.json({ error: 'Document storage is unavailable — try again shortly' }, 503);
+      }
+      throw err;
     }
-    if (!opened.body) return c.json({ error: 'Document not found' }, 404);
+    if (!opened.body) {
+      // Metadata says the document exists and is portal-visible, but the bytes
+      // are gone (a db row with a null `data`, or an s3 row with no key). That
+      // is a data-integrity fault, not an ordinary wrong-id 404 — without this
+      // line a lost object is indistinguishable from a stale link in the logs
+      // (the ticket-attachment route learned the same lesson).
+      console.error('[portal-documents] object missing for row', { documentId: id, orgId });
+      return c.json({ error: 'Document not found' }, 404);
+    }
 
     headers['Content-Type'] = opened.contentType;
     headers['Content-Disposition'] =
