@@ -246,6 +246,13 @@ type manifestFile struct {
 	LinkTarget string             `json:"linkTarget,omitempty"`
 	ModeBits   uint32             `json:"modeBits,omitempty"`
 	Owner      *manifestFileOwner `json:"owner,omitempty"`
+	// Placeholder mirrors backup.SnapshotFile.Placeholder — same
+	// deliberately-independent-mirror rationale as the fields above. True
+	// only for a "dir" entry the walker force-recorded because the
+	// directory matched an exclude pattern (#5493); see
+	// restoreContentlessEntry's "dir" case for how it changes restore
+	// behavior (review fix).
+	Placeholder bool `json:"placeholder,omitempty"`
 }
 
 // manifestFileOwner mirrors backup.FileOwner.
@@ -1113,6 +1120,16 @@ func restoreContentlessEntry(targetPath string, file manifestFile) error {
 		}
 		return symlinkFile(file.LinkTarget, targetPath)
 	case "dir":
+		// Placeholder (review fix, #5493): mirrors backup.RestoreContentlessEntry's
+		// KindDir case (agent/internal/backup/restore.go) — an already-existing
+		// directory is left untouched rather than re-chmod'd, so this reinstall-
+		// then-recover path can't silently revert permissions a customer
+		// tightened on a pattern-excluded directory (e.g. /tmp) since the backup.
+		if file.Placeholder {
+			if info, statErr := os.Lstat(targetPath); statErr == nil && info.IsDir() {
+				return nil
+			}
+		}
 		if mkErr := os.MkdirAll(targetPath, 0o750); mkErr != nil {
 			return mkErr
 		}

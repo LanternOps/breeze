@@ -3886,6 +3886,44 @@
         "agents/installation.mdx",
         "features/remote-access.mdx"
       ]
+    },
+    {
+      "pattern": "agent/installer/breeze.wxs",
+      "docs": [
+        "agents/installation.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/backup/rebuild/**",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/backup/systemstate/**",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/backup/layout/**",
+      "docs": [
+        "backup/bare-metal-recovery.mdx",
+        "backup/restoring.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/cmd/breeze-backup/**",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "scripts/release/verify-release-images.sh",
+      "docs": [
+        "deploy/production.mdx",
+        "getting-started/quickstart.mdx"
+      ]
     }
   ]
 }

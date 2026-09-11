@@ -12,7 +12,6 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/breeze-rmm/agent/internal/remote/clipboard"
-	"github.com/breeze-rmm/agent/internal/remote/filedrop"
 )
 
 const (
@@ -35,25 +34,24 @@ const (
 
 // Session represents a remote desktop WebRTC session with H264 encoding.
 type Session struct {
-	id              string
-	peerConn        *webrtc.PeerConnection
-	videoTrack      *webrtc.TrackLocalStaticSample
-	dataChannel     *webrtc.DataChannel
-	inputHandler    InputHandler
-	capturer        ScreenCapturer
-	encoder         atomic.Pointer[VideoEncoder]
-	encoderPF       PixelFormat // cached encoder input format for CPU Encode() path
-	clipboardSync   *clipboard.ClipboardSync
-	fileDropHandler *filedrop.FileDropHandler
-	cursorDC        *webrtc.DataChannel
-	controlDC       *webrtc.DataChannel
-	audioTrack      *webrtc.TrackLocalStaticSample
-	audioCapturer   AudioCapturer
-	audioEnabled    atomic.Bool
-	done            chan struct{}
-	mu              sync.RWMutex
-	isActive        bool
-	fps             int
+	id            string
+	peerConn      *webrtc.PeerConnection
+	videoTrack    *webrtc.TrackLocalStaticSample
+	dataChannel   *webrtc.DataChannel
+	inputHandler  InputHandler
+	capturer      ScreenCapturer
+	encoder       atomic.Pointer[VideoEncoder]
+	encoderPF     PixelFormat // cached encoder input format for CPU Encode() path
+	clipboardSync *clipboard.ClipboardSync
+	cursorDC      *webrtc.DataChannel
+	controlDC     *webrtc.DataChannel
+	audioTrack    *webrtc.TrackLocalStaticSample
+	audioCapturer AudioCapturer
+	audioEnabled  atomic.Bool
+	done          chan struct{}
+	mu            sync.RWMutex
+	isActive      bool
+	fps           int
 	// stopReason is the short, technician-facing text describing why teardown
 	// happened, set by StopWithReason (#5300). Empty for a plain Stop() call
 	// (operator-initiated stop, lifetime policy, peer disconnect) — callers
@@ -543,9 +541,6 @@ func (s *Session) doCleanup() {
 		}
 		if s.clipboardSync != nil {
 			s.clipboardSync.Stop()
-		}
-		if s.fileDropHandler != nil {
-			s.fileDropHandler.Close()
 		}
 		if s.cursorDC != nil {
 			s.cursorDC.Close()

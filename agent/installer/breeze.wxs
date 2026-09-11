@@ -111,17 +111,22 @@
       <UpgradeVersion Minimum="0.0.0.0" IncludeMinimum="yes" OnlyDetect="yes" Property="OTHEREDITIONFOUND" />
     </Upgrade>
     <Launch Condition="NOT OTHEREDITIONFOUND" Message="A different edition of the Breeze Agent is already installed. Uninstall it before installing this edition." />
-    <!-- The stock MSI sequences run LaunchConditions (100) BEFORE
-         FindRelatedProducts (200), which would leave OTHEREDITIONFOUND
-         permanently unset when the Launch condition above is evaluated —
-         i.e. the cross-edition guard would never fire. Reorder so the
-         related-product probe populates the property first, in both the
-         interactive and silent install paths. -->
+    <!-- Stock InstallExecuteSequence numbers are LaunchConditions 100,
+         FindRelatedProducts 200, AppSearch 400, so on a silent install
+         OTHEREDITIONFOUND (above) and WINDOWS_CURRENT_MAJOR_VERSION (below)
+         would both still be empty when the Launch conditions are evaluated
+         — the cross-edition guard would never fire and the OS floor would
+         refuse everything. (InstallUISequence already puts AppSearch at 50,
+         before LaunchConditions.) Pull both actions ahead of
+         LaunchConditions explicitly in both sequences so the ordering is
+         never implicit. -->
     <InstallUISequence>
       <FindRelatedProducts Before="LaunchConditions" />
+      <AppSearch Before="LaunchConditions" />
     </InstallUISequence>
     <InstallExecuteSequence>
       <FindRelatedProducts Before="LaunchConditions" />
+      <AppSearch Before="LaunchConditions" />
     </InstallExecuteSequence>
 
     <Launch Condition="VersionNT64" Message="Breeze Agent requires 64-bit Windows." />
@@ -131,12 +136,42 @@
          agent binary compiled against the current toolchain would install
          successfully on a legacy box and then fail at runtime with no
          useful message (issue #4608, Option C: declare the floor and block
-         at install time instead). VersionNT is Windows Installer's OS
-         version property (major*100+minor); Windows 10 and every Windows
-         Server release from 2016 onward all report NT 10.0, i.e. 1000, so
-         `>= 1000` is exactly the Windows-10/Server-2016 floor; it is not
-         a magic threshold pointing at one specific release. -->
-    <Launch Condition="VersionNT >= 1000" Message="Breeze Agent requires Windows 10 or Windows Server 2016 or later. Legacy Windows versions (7, 8, 8.1, Server 2008 R2 through 2012 R2) are not supported." />
+         at install time instead).
+
+         DO NOT use VersionNT / WindowsBuild for this check. On Windows 10,
+         Server 2016 and later, Windows Installer reports VersionNT = 603 and
+         WindowsBuild = 9600 (the Windows 8.1 values) on EVERY install, by
+         design: msiexec.exe is manifested only up to Windows 8.1, so the
+         version APIs it calls are shimmed (Microsoft KB 3202260). The
+         `VersionNT >= 1000` floor that shipped in v0.110.0 therefore refused
+         every fresh MSI install on Windows 10/11 with the legacy-OS message.
+         First reported 2026-09-10 via NinjaRMM- and Action1-driven installs
+         of 0.111.1 on Windows 11 24H2, whose log showed VersionNT = 603 next
+         to MsiWin32AssemblySupport = 6.3.26100.8972.
+
+         Registry reads are not shimmed, and
+         HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\CurrentMajorVersionNumber
+         (REG_DWORD 10) exists only on Windows 10 / Server 2016 and later;
+         Windows 8.1 and earlier have only the "6.x" CurrentVersion string.
+         So "the value exists" is exactly the Windows-10/Server-2016 floor.
+         `Installed OR` keeps repair/upgrade/uninstall of an already-installed
+         product from ever being blocked by this check (WiX guidance for
+         OS-floor launch conditions). The property must be PUBLIC (all
+         uppercase): WiX refuses a lowercase search property (WIX0012),
+         because AppSearch can only populate public properties. That means
+         `msiexec /i ... WINDOWS_CURRENT_MAJOR_VERSION=1` can satisfy the
+         floor by hand — an admin bypassing a guard on their own machine,
+         accepted. If the HKLM read itself fails (locked-down ACL), the user
+         sees this same legacy-OS message. -->
+    <Property Id="WINDOWS_CURRENT_MAJOR_VERSION">
+      <RegistrySearch Id="WINDOWS_CURRENT_MAJOR_VERSIONSearch"
+                      Root="HKLM"
+                      Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+                      Name="CurrentMajorVersionNumber"
+                      Type="raw"
+                      Bitness="always64" />
+    </Property>
+    <Launch Condition="Installed OR WINDOWS_CURRENT_MAJOR_VERSION" Message="Breeze Agent requires Windows 10 or Windows Server 2016 or later. Legacy Windows versions (7, 8, 8.1, Server 2008 R2 through 2012 R2) are not supported." />
     <Launch Condition="(NOT SERVER_URL AND NOT ENROLLMENT_KEY) OR (SERVER_URL AND ENROLLMENT_KEY)" Message="SERVER_URL and ENROLLMENT_KEY must be provided together." />
 
     <?ifdef ServerUrlDefault ?>

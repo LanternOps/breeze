@@ -402,10 +402,17 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   alert_correlation_groups: { kind: 'repoint-dedupe', key: ['group_key'] }, // verified: alert_correlation_groups_org_key_uq (org_id, group_key)
   ai_cost_usage: { kind: 'repoint-dedupe', key: ['period', 'period_key'] }, // verified: ai_cost_usage_org_period_idx (org_id, period, period_key)
   ai_budget_alert_events: { kind: 'repoint-dedupe', key: ['period', 'period_key', 'threshold_pct'] }, // verified: ai_budget_alert_events_org_period_rung_uidx (org_id, period, period_key, threshold_pct)
+  ai_budget_reservations: { kind: 'repoint-dedupe', key: ['idempotency_key'] }, // verified: ai_budget_reservations_org_idempotency_uidx (org_id, idempotency_key). Its composite (session_id, org_id) FK to ai_sessions is DEFERRABLE INITIALLY IMMEDIATE so the merge can re-point ai_sessions and this table in separate statements.
   client_ai_usage: { kind: 'repoint-dedupe', key: ['client_user_id', 'period', 'period_key'] }, // verified: client_ai_usage_bucket_uniq (org_id, client_user_id, period, period_key)
   contact_external_links: { kind: 'repoint-dedupe', key: ['system', 'external_id'] }, // verified: contact_external_links_uniq (org_id, system, external_id)
   delegant_m365_connections: { kind: 'repoint-dedupe', key: ['customer_label'] }, // verified: delegant_m365_org_customer_uniq (org_id, customer_label)
   remediation_suggestions: { kind: 'repoint-dedupe', key: ['source_type', 'source_id'] }, // superset of its four partial uniques (org_id, source_type, source_id, {script_id|script_template_id|playbook_id|target_type}); derived rows, over-dropping is safe
+  // service_deliverables_org_contract_name_uq (org_id, COALESCE(contract_id, nil), name)
+  // — 2026-10-15-170000. NOT repoint-dedupe: the loser's row carries its
+  // occurrences and evidence via ON DELETE CASCADE, i.e. the delivered/waived
+  // history the customer portal (#5573) shows. Rename on collision instead,
+  // exactly as audit_baselines does, then repoint everything.
+  service_deliverables: { kind: 'custom', note: "rename colliding loser deliverables (same COALESCE(contract_id), name under the survivor) with a ' (merged <org8>)' suffix, then repoint all rows; NEVER delete — service_deliverable_occurrences/evidence are ON DELETE CASCADE and are the delivery history" },
   tunnel_allowlists: { kind: 'repoint-dedupe', key: ['direction', 'pattern', "COALESCE({site_id}, '00000000-0000-0000-0000-000000000000'::uuid)"] }, // verified: tunnel_allowlists_org_direction_pattern_site_idx (2026-08-08-proxy-session-lifetime.sql)
   // action_intents used to be classified here as a `repoint-dedupe` keyed on
   // action_intents_org_idem_uniq. It is now `leave-for-erasure` above: the
@@ -562,8 +569,10 @@ const REPOINT_TABLES: readonly string[] = [
   "backup_profiles",
   "backup_sla_configs",
   "backup_sla_events",
+  "backup_snapshot_retirements",
   "backup_snapshots",
   "backup_verifications",
+  "bare_metal_recoveries",
   "brain_device_context",
   "browser_extensions",
   "browser_policies",
@@ -700,6 +709,7 @@ const REPOINT_TABLES: readonly string[] = [
   "oauth_refresh_tokens",
   "onedrive_device_state",
   "organization_external_links",
+  "organization_key_dates",
   "pam_rules",
   "partner_enrollment_key_idempotency",
   "patch_compliance_reports",
@@ -758,6 +768,8 @@ const REPOINT_TABLES: readonly string[] = [
   "sensitive_data_findings",
   "sensitive_data_policies",
   "sensitive_data_scans",
+  "service_deliverable_evidence",
+  "service_deliverable_occurrences",
   "service_principals",
   "service_process_check_results",
   "sites",

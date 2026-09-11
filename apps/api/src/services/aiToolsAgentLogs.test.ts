@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // Mock dependencies before imports
 vi.mock('../db', () => ({
@@ -85,6 +87,7 @@ describe('aiToolsAgentLogs', () => {
           id: 'log-1',
           deviceId: 'dev-1',
           timestamp: new Date('2026-02-15T10:00:00Z'),
+          createdAt: new Date('2026-02-15T10:00:05Z'),
           level: 'error',
           component: 'heartbeat',
           message: 'connection failed',
@@ -92,13 +95,14 @@ describe('aiToolsAgentLogs', () => {
           agentVersion: '1.0.0',
         },
       ];
+      const orderBy = vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(mockRows),
+      });
 
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            orderBy: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue(mockRows),
-            }),
+            orderBy,
           }),
         }),
       } as any);
@@ -114,6 +118,17 @@ describe('aiToolsAgentLogs', () => {
       expect(parsed.logs[0].message).toBe('connection failed');
       expect(parsed.logs[0].level).toBe('error');
       expect(parsed.logs[0].timestamp).toBe('2026-02-15T10:00:00.000Z');
+      expect(parsed.logs[0].receivedAt).toBe('2026-02-15T10:00:05.000Z');
+      // Receipt time dominates; event time only breaks ties inside one receipt
+      // instant (a 100-row ingest batch shares created_at), and the random uuid
+      // is last. Assert the sequence, not just membership.
+      const dialect = new PgDialect();
+      const orderingSql = (orderBy.mock.calls[0] as SQL[])
+        .map((clause) => dialect.sqlToQuery(clause).sql)
+        .join(', ');
+      expect(orderingSql).toContain('"created_at"');
+      expect(orderingSql.indexOf('"timestamp"')).toBeGreaterThan(orderingSql.indexOf('"created_at"'));
+      expect(orderingSql.indexOf('"id"')).toBeGreaterThan(orderingSql.indexOf('"timestamp"'));
     });
 
     it('redacts legacy raw secrets before returning log search results', async () => {
@@ -125,6 +140,7 @@ describe('aiToolsAgentLogs', () => {
                 id: 'log-1',
                 deviceId: 'dev-1',
                 timestamp: new Date('2026-02-15T10:00:00Z'),
+                createdAt: new Date('2026-02-15T10:00:05Z'),
                 level: 'error',
                 component: 'heartbeat',
                 message: 'failed token=raw-token',

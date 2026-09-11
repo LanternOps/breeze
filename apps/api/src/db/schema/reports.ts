@@ -125,6 +125,9 @@ export const reportRuns = pgTable('report_runs', {
   ),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
+  // (id, report_id) key so service_deliverable_evidence can prove a run belongs to
+  // a report of the same org (report_runs has no org_id of its own). Spec #5573 §4.3.
+  reportRunsIdReportIdUniq: uniqueIndex('report_runs_id_report_id_uniq').on(table.id, table.reportId),
   requestedByShape: check(
     'report_runs_requested_by_shape_chk',
     sql`(

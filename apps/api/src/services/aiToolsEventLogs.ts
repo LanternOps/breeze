@@ -31,6 +31,17 @@ async function resolveSiteScopedDeviceIds(auth: AuthContext): Promise<string[] |
   return resolveSiteAllowedDeviceIds(orgId, auth);
 }
 
+/**
+ * Preserve the distinction between an unrestricted caller (undefined) and a
+ * caller restricted to no sites ([]), while keeping the statement-local site
+ * predicate deterministic across every log-search service.
+ */
+function normalizedAllowedSiteIds(auth: AuthContext): string[] | null {
+  return auth.allowedSiteIds === undefined
+    ? null
+    : Array.from(new Set(auth.allowedSiteIds)).sort();
+}
+
 export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
     aiTools.set(tool.definition.name, tool);
@@ -98,6 +109,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
         }
         const result = await searchFleetLogs(auth, {
           allowedDeviceIds,
+          allowedSiteIds: normalizedAllowedSiteIds(auth),
           query: typeof input.query === 'string' ? input.query : undefined,
           timeRange: typeof input.timeRange === 'object' && input.timeRange !== null
             ? {
@@ -235,6 +247,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
 
         const trends = await getLogTrends(auth, {
           allowedDeviceIds,
+          allowedSiteIds: normalizedAllowedSiteIds(auth),
           start: timeRange.start,
           end: timeRange.end,
           minLevel: typeof input.minLevel === 'string'
@@ -250,6 +263,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.groupBy === 'string') {
           groupingSummary = await getLogAggregation(auth, {
             allowedDeviceIds,
+            allowedSiteIds: normalizedAllowedSiteIds(auth),
             start: trends.start,
             end: trends.end,
             bucket: 'hour',
@@ -314,6 +328,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
         const result = await detectPatternCorrelation({
           orgId,
           allowedDeviceIds,
+          allowedSiteIds: normalizedAllowedSiteIds(auth),
           pattern,
           isRegex: Boolean(input.isRegex),
           timeWindowSeconds: Number(input.timeWindow) || 300,

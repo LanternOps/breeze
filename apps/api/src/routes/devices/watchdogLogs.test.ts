@@ -24,8 +24,10 @@ vi.mock('../../db/schema', () => ({
     siteId: 'devices.siteId',
   },
   agentLogs: {
+    id: 'agentLogs.id',
     deviceId: 'agentLogs.deviceId',
     timestamp: 'agentLogs.timestamp',
+    createdAt: 'agentLogs.createdAt',
     level: 'agentLogs.level',
     component: 'agentLogs.component',
     message: 'agentLogs.message',
@@ -67,6 +69,19 @@ describe('watchdog log routes', () => {
   });
 
   it('redacts legacy raw secrets before returning watchdog logs', async () => {
+    const orderBy = vi.fn().mockReturnValue({
+      limit: vi.fn().mockReturnValue({
+        offset: vi.fn().mockResolvedValue([{
+          id: 'log-1',
+          deviceId: '11111111-2222-4333-8444-555555555555',
+          component: 'watchdog.service',
+          message: 'restart failed token=raw-token',
+          fields: { apiKey: 'raw-key', nested: { password: 'raw-password' } },
+          timestamp: new Date('2099-05-01T00:00:00.000Z'),
+          createdAt: new Date('2026-05-01T00:00:00.000Z'),
+        }]),
+      }),
+    });
     vi.mocked(db.select)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -78,18 +93,7 @@ describe('watchdog log routes', () => {
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            orderBy: vi.fn().mockReturnValue({
-              limit: vi.fn().mockReturnValue({
-                offset: vi.fn().mockResolvedValue([{
-                  id: 'log-1',
-                  deviceId: '11111111-2222-4333-8444-555555555555',
-                  component: 'watchdog.service',
-                  message: 'restart failed token=raw-token',
-                  fields: { apiKey: 'raw-key', nested: { password: 'raw-password' } },
-                  timestamp: new Date('2026-05-01T00:00:00.000Z'),
-                }]),
-              }),
-            }),
+            orderBy,
           }),
         }),
       } as any)
@@ -110,6 +114,15 @@ describe('watchdog log routes', () => {
       apiKey: '[REDACTED]',
       nested: { password: '[REDACTED]' },
     });
+    // Receipt time dominates; event time only breaks ties inside one receipt
+    // instant (a 100-row ingest batch shares created_at), and the random uuid
+    // is last. Assert the sequence, not just membership.
+    const orderingDump = JSON.stringify(orderBy.mock.calls);
+    expect(orderingDump).toContain('agentLogs.createdAt');
+    expect(orderingDump.indexOf('agentLogs.timestamp'))
+      .toBeGreaterThan(orderingDump.indexOf('agentLogs.createdAt'));
+    expect(orderingDump.indexOf('agentLogs.id'))
+      .toBeGreaterThan(orderingDump.indexOf('agentLogs.timestamp'));
   });
 
   it('denies watchdog logs when site scope excludes the device', async () => {

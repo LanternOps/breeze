@@ -83,12 +83,16 @@ describe('authorizeHumanApiKeyCreator', () => {
     if (!res.ok) expect(res.reason).toBe('scope_exceeds_current_permissions');
   });
 
-  it('FAILS CLOSED (no_membership) when the permission read THROWS (DB/RLS error), never authorizing', async () => {
+  // Distinct from `no_membership` on purpose: a failed read establishes
+  // NOTHING about the creator, and `routes/apiKeys.ts` treats a proven-dead
+  // creator (`no_membership`) as licence to revoke. Collapsing the two would
+  // let a transient DB/Redis fault authorize revoking a LIVE key.
+  it('FAILS CLOSED (lookup_error, NOT no_membership) when the permission read THROWS (DB/RLS error), never authorizing', async () => {
     vi.mocked(getUserPermissions).mockRejectedValue(new Error('RLS/DB down'));
     const res = await authorizeHumanApiKeyCreator({
       createdBy: 'user-1', orgId: 'org-1', partnerId: 'partner-1', scopes: ['devices:read'],
     });
-    expect(res).toEqual({ ok: false, reason: 'no_membership' });
+    expect(res).toEqual({ ok: false, reason: 'lookup_error' });
   });
 
   // A partner creator's org access can be narrowed (orgAccess/allowedOrgIds)

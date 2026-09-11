@@ -801,6 +801,7 @@
     "inUseCount_other": "Used by {{count}} policies",
     "sourceFile": "Files",
     "sourceSystemState": "System State",
+    "sourceWholeMachine": "Whole Machine",
     "sourceSql": "SQL Server",
     "sourceHyperv": "Hyper-V",
     "templateTitle": "New backup profile",
@@ -871,5 +872,31 @@
     "deleteConfirmBody": "Delete \"{{name}}\"? This cannot be undone.",
     "deleteInUse_one": "This profile is used by {{count}} configuration policy. Unlink it there first.",
     "deleteInUse_other": "This profile is used by {{count}} configuration policies. Unlink it there first."
+  },
+  "bareMetalRecovery": {
+    "title": "Bare-metal recovery",
+    "description": "Create a one-time recovery code to rebuild a whole machine from a snapshot onto new or repaired hardware.",
+    "snapshotLabel": "Snapshot",
+    "selectSnapshotPlaceholder": "Select a snapshot...",
+    "selectSnapshotFirst": "Select a snapshot first.",
+    "identityLabel": "Device identity",
+    "identityOriginal": "Original device (resume this device's identity)",
+    "identityNew": "New device (enroll as a new device)",
+    "createButton": "Create recovery code",
+    "createFailed": "Failed to create the recovery.",
+    "codeInstructions": "Enter this code when prompted by the Breeze recovery media. It expires in 15 minutes and can only be used once.",
+    "codeExpires": "Expires at {{time}}",
+    "overdueNotice": "No check-in yet — look at the recovery console.",
+    "statusFailed": "Recovery failed",
+    "statusRefused": "Recovery refused",
+    "status": {
+      "created": "Created",
+      "media_booted": "Media booted",
+      "planned": "Planned",
+      "restoring": "Restoring",
+      "validated": "Validated",
+      "rebooted": "Rebooted",
+      "checked_in": "Checked in"
+    }
   }
 }

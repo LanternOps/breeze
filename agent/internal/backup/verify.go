@@ -27,7 +27,13 @@ type VerifyResult struct {
 	SizeBytes     int64    `json:"sizeBytes"`
 	DurationMs    int64    `json:"durationMs"`
 	FailedFiles   []string `json:"failedFiles,omitempty"`
-	Error         string   `json:"error,omitempty"`
+	// Warnings carries advisory notes that did not fail a file — currently
+	// only a size/checksum mismatch on a Volatile entry (#5581): the source
+	// kept changing while it was backed up, so the manifest describes the
+	// last pre-upload measurement rather than any single instant, and a
+	// mismatch against it is expected rather than corruption.
+	Warnings []string `json:"warnings,omitempty"`
+	Error    string   `json:"error,omitempty"`
 }
 
 // TestRestoreResult holds the outcome of a test restore operation.
@@ -41,7 +47,10 @@ type TestRestoreResult struct {
 	RestorePath        string   `json:"restorePath"`
 	CleanedUp          bool     `json:"cleanedUp"`
 	FailedFiles        []string `json:"failedFiles,omitempty"`
-	Error              string   `json:"error,omitempty"`
+	// Warnings carries advisory notes that did not fail a file — see
+	// VerifyResult.Warnings.
+	Warnings []string `json:"warnings,omitempty"`
+	Error    string   `json:"error,omitempty"`
 }
 
 // VerifyIntegrity checks a snapshot's manifest and validates each file
@@ -130,21 +139,39 @@ func VerifyIntegrity(provider providers.BackupProvider, snapshotID string) (*Ver
 			continue
 		}
 		if info.Size() != file.Size {
-			os.Remove(tempPath)
-			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
-			log.Warn("size mismatch", "phase", "verify", "backupPath", file.BackupPath,
-				"expectedBytes", file.Size, "actualBytes", info.Size())
-			continue
-		}
-		if file.Checksum != "" {
-			if !checksumMatches(tempPath, file.Checksum) {
+			if file.Volatile {
+				// The source kept changing while it was backed up (#5581):
+				// the manifest's Size describes the last pre-upload
+				// measurement, not necessarily the object's current state.
+				// Advisory only — count the file verified, don't fail it.
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("%s: size differs from manifest (manifest %d, actual %d) — file was volatile during backup", file.BackupPath, file.Size, info.Size()))
+				log.Warn("volatile file size mismatch (advisory, not a failure)", "phase", "verify", "backupPath", file.BackupPath,
+					"expectedBytes", file.Size, "actualBytes", info.Size())
+			} else {
 				os.Remove(tempPath)
 				result.FilesFailed++
 				result.FailedFiles = append(result.FailedFiles, file.BackupPath)
-				log.Warn("checksum mismatch", "phase", "verify", "backupPath", file.BackupPath,
-					"expected", file.Checksum)
+				log.Warn("size mismatch", "phase", "verify", "backupPath", file.BackupPath,
+					"expectedBytes", file.Size, "actualBytes", info.Size())
 				continue
+			}
+		}
+		if file.Checksum != "" {
+			if !checksumMatches(tempPath, file.Checksum) {
+				if file.Volatile {
+					result.Warnings = append(result.Warnings,
+						fmt.Sprintf("%s: checksum differs from manifest (manifest %s) — file was volatile during backup", file.BackupPath, file.Checksum))
+					log.Warn("volatile file checksum mismatch (advisory, not a failure)", "phase", "verify", "backupPath", file.BackupPath,
+						"expected", file.Checksum)
+				} else {
+					_ = os.Remove(tempPath)
+					result.FilesFailed++
+					result.FailedFiles = append(result.FailedFiles, file.BackupPath)
+					log.Warn("checksum mismatch", "phase", "verify", "backupPath", file.BackupPath,
+						"expected", file.Checksum)
+					continue
+				}
 			}
 		} else {
 			result.FilesSizeOnly++
@@ -293,19 +320,24 @@ func TestRestore(provider providers.BackupProvider, snapshotID, workRoot string,
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
 			log.Warn("stat failed", "phase", "restore", "backupPath", file.BackupPath, "error", errString(statErr))
-		case info.Size() != file.Size:
+		case info.Size() != file.Size && !file.Volatile:
 			// A real test-restore must confirm the bytes came back intact, not
 			// just that a file appeared (same blind spot as VerifyIntegrity).
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
 			log.Warn("size mismatch", "phase", "restore", "backupPath", file.BackupPath,
 				"expectedBytes", file.Size, "actualBytes", info.Size())
-		case file.Checksum != "" && !checksumMatches(destPath, file.Checksum):
+		case file.Checksum != "" && !file.Volatile && !checksumMatches(destPath, file.Checksum):
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
 			log.Warn("checksum mismatch", "phase", "restore", "backupPath", file.BackupPath,
 				"expected", file.Checksum)
 		default:
+			if file.Volatile && (info.Size() != file.Size || (file.Checksum != "" && !checksumMatches(destPath, file.Checksum))) {
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("%s: differs from manifest — file was volatile during backup", file.BackupPath))
+				log.Warn("volatile file mismatch (advisory, not a failure)", "phase", "restore", "backupPath", file.BackupPath)
+			}
 			result.FilesVerified++
 			result.SizeBytes += info.Size()
 		}

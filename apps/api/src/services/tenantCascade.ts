@@ -276,6 +276,15 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // DELETE CASCADE. No cross-references to ai_budgets, so its position is
   // pure alphabetization ('_' sorts before letters under localeCompare).
   'ai_budget_alert_events',
+  // ai_budget_reservations (SEC-142/143): durable pre-dispatch spend fence,
+  // Shape 1 with NOT NULL org_id ON DELETE CASCADE. It also carries a
+  // composite (session_id, org_id) FK to ai_sessions with a column-scoped
+  // ON DELETE SET NULL (session_id) — that FK has an explicit ON DELETE, so
+  // like the neighbours above the real DELETE order comes from
+  // topologicalCascadeOrder()'s runtime pg_constraint read, not this array.
+  // The alphabetical position happens to be children-before-parents anyway
+  // ('ai_budget_reservations' < 'ai_sessions').
+  'ai_budget_reservations',
   'ai_budgets',
   'ai_cost_usage',
   // AI Operator thin slice (#5205 W03, #5208). All three are Shape 1 with a
@@ -334,8 +343,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'backup_profiles',
   'backup_sla_configs',
   'backup_sla_events',
+  'backup_snapshot_retirements',
   'backup_snapshots',
   'backup_verifications',
+  'bare_metal_recoveries',
   'brain_device_context',
   'browser_extensions',
   'browser_policies',
@@ -506,6 +517,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // but the table is enumerated here per the cascade contract test's
   // requirement that every org_id-columned table be listed for auditability.
   'organization_external_links',
+  'organization_key_dates',
   'organization_users',
   'agent_rollback_events',
   'agent_rollback_directives',
@@ -585,6 +597,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'sensitive_data_findings',
   'sensitive_data_policies',
   'sensitive_data_scans',
+  // service_deliverable_* : evidence -> occurrences -> deliverables (children first);
+  // localeCompare puts '_e' < '_o' < 's', so alphabetical order IS FK order here.
+  'service_deliverable_evidence',
+  'service_deliverable_occurrences',
+  'service_deliverables',
   'service_principals',
   'service_process_check_results',
   'sites',
@@ -860,10 +877,17 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
   // narrative-artifact fixture, #4190, but not caused by it: an ordinary
   // scheduled report has produced these rows since the feature shipped).
   //
-  // Safe to clear first: the only FK INTO report_runs is
-  // `ai_agent_runs.report_run_id`, which is ON DELETE SET NULL (confdeltype
-  // 'n'), so the run rows survive this statement with a null link and are
-  // then deleted by the main loop on their own org_id.
+  // Safe to clear first: two FKs point INTO report_runs and neither can raise
+  // 23503 here —
+  //   * `ai_agent_runs.report_run_id` is ON DELETE SET NULL (confdeltype 'n'):
+  //     the run rows survive this statement with a null link and are then
+  //     deleted by the main loop on their own org_id;
+  //   * `service_deliverable_evidence.sd_evidence_report_run_fk`
+  //     (report_run_id, report_id) is ON DELETE CASCADE (confdeltype 'c',
+  //     #5573 W01): the evidence rows referencing a deleted run go with it.
+  //     Those rows carry org_id and are also reached by the main loop, so a
+  //     run cleared here or an evidence row deleted there are both fine in
+  //     either order.
   //
   // No partner-axis twin is needed (unlike the SSO/PSA/software entries):
   // `reports.org_id` is NOT NULL, so every definition — and therefore every

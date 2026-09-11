@@ -606,7 +606,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_device_vulnerabilities: { resource: 'devices', action: 'read' },
   remediate_vulnerability: { resource: 'patches', action: 'execute' },
   analyze_metrics: { resource: 'devices', action: 'read' },
-  get_s1_status: { resource: 'organizations', action: 'read' },
+  get_s1_status: { resource: 'devices', action: 'read' },
   get_s1_threats: { resource: 'devices', action: 'read' },
   s1_isolate_device: { resource: 'devices', action: 'execute' },
   s1_threat_action: { resource: 'devices', action: 'execute' },

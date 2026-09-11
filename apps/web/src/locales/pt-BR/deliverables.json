@@ -1,0 +1,149 @@
+{
+  "section": {
+    "title": "Entregas do serviço",
+    "empty": "Nenhuma entrega ainda. Adicione os relatórios e revisões recorrentes devidos a este cliente."
+  },
+  "table": {
+    "name": "Entrega",
+    "cadence": "Frequência",
+    "nextDue": "Próximo vencimento",
+    "lastDelivered": "Última entrega",
+    "status": "Status",
+    "portal": "Portal"
+  },
+  "cadence": {
+    "monthly": "Mensal",
+    "quarterly": "Trimestral",
+    "semiannual": "Semestral",
+    "annual": "Anual",
+    "one_time": "Única"
+  },
+  "status": {
+    "on_track": "Em dia",
+    "due_soon": "Vence em breve",
+    "late": "Atrasada",
+    "missed": "Perdida",
+    "inactive": "Inativa"
+  },
+  "occurrence": {
+    "status": {
+      "scheduled": "Agendada",
+      "open": "Aberta",
+      "awaiting_evidence": "Aguardando evidência",
+      "delivered": "Entregue",
+      "missed": "Perdida",
+      "waived": "Dispensada"
+    }
+  },
+  "actions": {
+    "add": "Adicionar entrega",
+    "edit": "Editar",
+    "deactivate": "Desativar",
+    "deliver": "Marcar como entregue",
+    "waive": "Dispensar",
+    "reopen": "Reabrir",
+    "reschedule": "Reagendar",
+    "addEvidence": "Adicionar evidência",
+    "removeEvidence": "Remover evidência",
+    "save": "Salvar",
+    "cancel": "Cancelar"
+  },
+  "form": {
+    "name": "Nome",
+    "description": "Descrição",
+    "contract": "Contrato",
+    "noContract": "Sem vínculo com contrato",
+    "contractsUnavailable": "Não foi possível carregar os contratos desta organização. Recarregue a página antes de salvar.",
+    "cadence": "Frequência",
+    "anchorDueDate": "Primeira data de vencimento",
+    "effectiveFrom": "Vigente a partir de",
+    "effectiveUntil": "Vigente até",
+    "leadDays": "Antecedência (dias)",
+    "graceDays": "Prazo de tolerância (dias)",
+    "artifactRequired": "Evidência obrigatória antes de marcar como entregue",
+    "completionMode": {
+      "label": "Conclusão",
+      "explicit": "Marcada como entregue por um técnico",
+      "on_ticket_resolve": "Entregue quando o chamado vinculado for resolvido"
+    },
+    "autoEvidenceReport": "Anexar execuções de relatório como evidência",
+    "owner": "Responsável",
+    "ticketCategory": "Categoria do chamado",
+    "portalVisible": "Exibir no portal do cliente",
+    "sortOrder": "Ordem de exibição"
+  },
+  "drawer": {
+    "title": "Ocorrências",
+    "evidence": "Evidências",
+    "noEvidence": "Nenhuma evidência anexada",
+    "late": "Atrasada",
+    "rescheduledFrom": "Reagendada de {{date}}",
+    "deliveryNote": "Observação da entrega",
+    "waivedReason": "Motivo da dispensa",
+    "newDueDate": "Nova data de vencimento"
+  },
+  "evidence": {
+    "reportRun": "Execução de relatório",
+    "document": "Documento",
+    "reportRunId": "ID da execução de relatório"
+  },
+  "upcoming": {
+    "title": "Próximos 90 dias",
+    "empty": "Nada vence nos próximos 90 dias."
+  },
+  "group": {
+    "noContract": "Sem contrato"
+  },
+  "errors": {
+    "evidenceRequired": "Anexe uma evidência antes de marcar esta ocorrência como entregue.",
+    "duplicateName": "Já existe uma entrega com este nome nesta organização.",
+    "loadFailed": "Não foi possível carregar as entregas.",
+    "saveFailed": "Não foi possível salvar a entrega.",
+    "actionFailed": "Não foi possível atualizar a ocorrência."
+  },
+  "confirm": {
+    "deactivate": "Desativar {{name}}? As ocorrências abertas serão encerradas e nenhuma nova será agendada.",
+    "deleteKeyDate": "Excluir a data-chave {{label}}?"
+  },
+  "keyDates": {
+    "title": "Datas-chave",
+    "empty": "Nenhuma data-chave registrada.",
+    "add": "Adicionar data-chave",
+    "label": "Rótulo",
+    "kind": {
+      "label": "Tipo",
+      "insurance_renewal": "Renovação de seguro",
+      "vendor_contract_end": "Fim de contrato com fornecedor",
+      "compliance_deadline": "Prazo de conformidade",
+      "audit": "Auditoria",
+      "other": "Outro"
+    },
+    "date": "Data",
+    "recursAnnually": "Repete todo ano",
+    "remindDaysBefore": "Lembrar (dias antes)",
+    "portalVisible": "Exibir no portal do cliente",
+    "contractEnd": "Fim do contrato",
+    "notes": "Observações",
+    "owner": "Responsável",
+    "edit": "Editar data-chave",
+    "delete": "Excluir",
+    "errors": {
+      "loadFailed": "Não foi possível carregar as datas-chave.",
+      "saveFailed": "Não foi possível salvar a data-chave."
+    },
+    "toast": {
+      "saved": "Data-chave salva",
+      "deleted": "Data-chave excluída"
+    }
+  },
+  "toast": {
+    "saved": "Entrega salva",
+    "delivered": "Marcada como entregue",
+    "waived": "Ocorrência dispensada",
+    "reopened": "Ocorrência reaberta",
+    "rescheduled": "Ocorrência reagendada",
+    "evidenceAdded": "Evidência adicionada",
+    "evidenceRemoved": "Evidência removida",
+    "deactivated": "Entrega desativada"
+  }
+}

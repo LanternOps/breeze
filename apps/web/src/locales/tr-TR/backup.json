@@ -801,6 +801,7 @@
     "inUseCount_other": "{{count}} politikaları tarafından kullanılıyor",
     "sourceFile": "Dosyalar",
     "sourceSystemState": "Sistem Durumu",
+    "sourceWholeMachine": "Tüm Makine",
     "sourceSql": "SQL Sunucusu",
     "sourceHyperv": "Hyper-V",
     "templateTitle": "Yeni yedekleme profili",
@@ -871,5 +872,31 @@
     "deleteConfirmBody": "\"{{name}}\" silinsin mi? Bu geri alınamaz.",
     "deleteInUse_one": "Bu profil {{count}} yapılandırma ilkesi tarafından kullanılır. Önce oradaki bağlantıyı kaldırın.",
     "deleteInUse_other": "Bu profil {{count}} yapılandırma politikaları tarafından kullanılır. Önce oradaki bağlantıyı kaldırın."
+  },
+  "bareMetalRecovery": {
+    "title": "Sıfırdan (bare-metal) kurtarma",
+    "description": "Bir anlık görüntüden tüm makineyi yeni veya onarılmış donanıma yeniden oluşturmak için tek kullanımlık bir kurtarma kodu oluşturun.",
+    "snapshotLabel": "Anlık görüntü",
+    "selectSnapshotPlaceholder": "Bir anlık görüntü seçin…",
+    "selectSnapshotFirst": "Önce bir anlık görüntü seçin.",
+    "identityLabel": "Cihaz kimliği",
+    "identityOriginal": "Orijinal cihaz (bu cihazın kimliğini sürdür)",
+    "identityNew": "Yeni cihaz (yeni bir cihaz olarak kaydet)",
+    "createButton": "Kurtarma kodu oluştur",
+    "createFailed": "Kurtarma oluşturulamadı.",
+    "codeInstructions": "Breeze kurtarma ortamı sorduğunda bu kodu girin. Kod 15 dakika içinde sona erer ve yalnızca bir kez kullanılabilir.",
+    "codeExpires": "Şu saatte sona erer: {{time}}",
+    "overdueNotice": "Henüz bir onay yok — kurtarma konsoluna bakın.",
+    "statusFailed": "Kurtarma başarısız oldu",
+    "statusRefused": "Kurtarma reddedildi",
+    "status": {
+      "created": "Oluşturuldu",
+      "media_booted": "Ortam başlatıldı",
+      "planned": "Planlandı",
+      "restoring": "Geri yükleniyor",
+      "validated": "Doğrulandı",
+      "rebooted": "Yeniden başlatıldı",
+      "checked_in": "Giriş yapıldı"
+    }
   }
 }

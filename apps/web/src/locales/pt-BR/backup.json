@@ -801,6 +801,7 @@
     "inUseCount_other": "Usado por {{count}} políticas",
     "sourceFile": "Arquivos",
     "sourceSystemState": "Estado do sistema",
+    "sourceWholeMachine": "Máquina completa",
     "sourceSql": "SQL Server",
     "sourceHyperv": "Hyper-V",
     "templateTitle": "Novo perfil de backup",
@@ -871,5 +872,31 @@
     "deleteConfirmBody": "Excluir \"{{name}}\"? Isso não pode ser desfeito.",
     "deleteInUse_one": "Este perfil é usado por {{count}} política de configuração. Desvincule-o lá primeiro.",
     "deleteInUse_other": "Este perfil é usado por {{count}} políticas de configuração. Desvincule-o lá primeiro."
+  },
+  "bareMetalRecovery": {
+    "title": "Recuperação bare-metal",
+    "description": "Crie um código de recuperação de uso único para reconstruir uma máquina inteira a partir de um snapshot em hardware novo ou reparado.",
+    "snapshotLabel": "Snapshot",
+    "selectSnapshotPlaceholder": "Selecione um snapshot…",
+    "selectSnapshotFirst": "Selecione um snapshot primeiro.",
+    "identityLabel": "Identidade do dispositivo",
+    "identityOriginal": "Dispositivo original (manter a identidade deste dispositivo)",
+    "identityNew": "Novo dispositivo (registrar como um novo dispositivo)",
+    "createButton": "Criar código de recuperação",
+    "createFailed": "Falha ao criar a recuperação.",
+    "codeInstructions": "Digite este código quando solicitado pela mídia de recuperação da Breeze. Ele expira em 15 minutos e só pode ser usado uma vez.",
+    "codeExpires": "Expira às {{time}}",
+    "overdueNotice": "Ainda sem confirmação — verifique o console de recuperação.",
+    "statusFailed": "Falha na recuperação",
+    "statusRefused": "Recuperação recusada",
+    "status": {
+      "created": "Criada",
+      "media_booted": "Mídia iniciada",
+      "planned": "Planejada",
+      "restoring": "Restaurando",
+      "validated": "Validada",
+      "rebooted": "Reiniciada",
+      "checked_in": "Confirmada"
+    }
   }
 }

@@ -34,6 +34,17 @@ vi.mock('../db', () => ({
 vi.mock('./backupRetention', () => ({
   cleanupExpiredSnapshots: vi.fn(),
   sweepUnreferencedBackupObjects: vi.fn(),
+  // D18 W01: real (not mocked) identity logic -- stampDispatchPinAndIdentity
+  // calls this for every dispatched target, hyperv/mssql included.
+  normalizeStorageIdentity: (provider: string, providerConfig: Record<string, unknown>): string => {
+    if (provider === 'local') {
+      const rawPath = typeof providerConfig.path === 'string' ? providerConfig.path : '';
+      return `local::${rawPath}`;
+    }
+    const endpoint = typeof providerConfig.endpoint === 'string' ? providerConfig.endpoint : '';
+    const bucket = typeof providerConfig.bucket === 'string' ? providerConfig.bucket : '';
+    return `${provider}::${endpoint}::${bucket}`;
+  },
 }));
 
 const captureExceptionMock = vi.fn();
@@ -331,8 +342,12 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
       }),
     );
     // The parent's send is the one that threw — delivery is AMBIGUOUS, so its
-    // row stays in-flight for a genuine agent result to land on.
-    expect(updatesFor('job-1')).toHaveLength(0);
+    // row stays in-flight for a genuine agent result to land on. D18 W01:
+    // Phase 3 now unconditionally stamps storage_identity on every prepared
+    // job (including the parent) before any send is attempted, so job-1 DOES
+    // pick up that one update — the assertion narrows to "no STATUS-settling
+    // update happened", which is the actual thing #4137 guarantees here.
+    expect(updatesFor('job-1').some((u) => 'status' in u.payload)).toBe(false);
   });
 
   it('leaves an already-sent target and the throwing target alone while settling the untouched one', async () => {
@@ -343,8 +358,11 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
 
     await expect(__testOnly.processDispatchBackup(DATA as never)).rejects.toThrow('relay exploded');
 
-    expect(updatesFor('job-1')).toHaveLength(0); // sent — result still coming
-    expect(updatesFor('child-1')).toHaveLength(0); // threw — ambiguous
+    // D18 W01: job-1 (the parent) picks up ONE non-status storage_identity
+    // stamp from Phase 3 (unconditional for every prepared job) -- narrow to
+    // "no STATUS-settling update", the actual #4137 guarantee.
+    expect(updatesFor('job-1').some((u) => 'status' in u.payload)).toBe(false); // sent — result still coming
+    expect(updatesFor('child-1').some((u) => 'status' in u.payload)).toBe(false); // threw — ambiguous
     expect(updatesFor('child-2')).toContainEqual(
       expect.objectContaining({ payload: expect.objectContaining({ status: 'failed' }) }),
     );

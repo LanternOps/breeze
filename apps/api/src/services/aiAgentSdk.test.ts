@@ -643,21 +643,10 @@ describe('runPreFlightChecks', () => {
     expect(mockBuildSystemPrompt).toHaveBeenCalledWith(auth);
   });
 
-  // --- Remaining budget ---
+  // --- Durable budget handoff ---
 
-  it('returns remaining budget as maxBudgetUsd', async () => {
+  it('does not return an advisory remaining-budget snapshot', async () => {
     mockGetRemainingBudgetUsd.mockResolvedValue(42.5);
-
-    const result = await runPreFlightChecks('session-1', 'hello', auth);
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.maxBudgetUsd).toBe(42.5);
-    }
-  });
-
-  it('sets maxBudgetUsd to undefined when remaining budget is null', async () => {
-    mockGetRemainingBudgetUsd.mockResolvedValue(null);
 
     const result = await runPreFlightChecks('session-1', 'hello', auth);
 
@@ -665,14 +654,7 @@ describe('runPreFlightChecks', () => {
     if (result.ok) {
       expect(result.maxBudgetUsd).toBeUndefined();
     }
-  });
-
-  it('returns error when getRemainingBudgetUsd throws', async () => {
-    mockGetRemainingBudgetUsd.mockRejectedValue(new Error('DB timeout'));
-
-    const result = await runPreFlightChecks('session-1', 'hello', auth);
-
-    expect(result).toEqual({ ok: false, error: 'Unable to verify spending budget. Please try again later.' });
+    expect(mockGetRemainingBudgetUsd).not.toHaveBeenCalled();
   });
 
   // --- Successful result ---
@@ -690,7 +672,7 @@ describe('runPreFlightChecks', () => {
       expect(result.session).toEqual(session);
       expect(result.sanitizedContent).toBe('clean input');
       expect(result.systemPrompt).toBeDefined();
-      expect(result.maxBudgetUsd).toBe(25.0);
+      expect(result.maxBudgetUsd).toBeUndefined();
       expect(result.resolved).toEqual({
         source: 'platform',
         apiKey: 'platform-key',

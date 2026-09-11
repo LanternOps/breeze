@@ -6,6 +6,7 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
   backupSnapshots,
+  bareMetalRecoveries,
   devices,
   recoveryBootMediaArtifacts,
   recoveryMediaArtifacts,
@@ -119,7 +120,7 @@ function getSessionStatus(row: {
   return 'pending';
 }
 
-function toTokenSummary(row: {
+export function toTokenSummary(row: {
   id: string;
   deviceId: string;
   // Nullable since 2026-10-15-140004 (D17): a recovery token outlives its
@@ -355,15 +356,15 @@ async function expireTokenArtifacts(orgId: string) {
 // `runOutsideDbContext` wrap: these routes have no ambient context in
 // production, but the wrap keeps this helper safe to reuse even if that ever
 // changes.
-function runInRecoveryOrgContext<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
+export function runInRecoveryOrgContext<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
   return runOutsideDbContext(() =>
     withDbAccessContext({ scope: 'organization', orgId, accessibleOrgIds: [orgId] }, fn)
   );
 }
 
-async function enforcePublicRateLimit(
+export async function enforcePublicRateLimit(
   c: any,
-  action: 'authenticate' | 'complete',
+  action: 'authenticate' | 'complete' | 'exchange',
   limit: number
 ) {
   const ip = getTrustedClientIp(c);
@@ -375,9 +376,9 @@ async function enforcePublicRateLimit(
   return c.json({ error: 'Rate limit exceeded. Please wait before retrying.' }, 429);
 }
 
-async function enforceTokenRateLimit(
+export async function enforceTokenRateLimit(
   c: any,
-  action: 'authenticate' | 'download',
+  action: 'authenticate' | 'download' | 'exchange' | 'progress',
   tokenHash: string,
   limit: number,
   windowSeconds: number
@@ -1380,64 +1381,95 @@ bmrPublicRoutes.post(
         result: 'success',
       });
 
-      return c.json(
-        buildAuthenticatedBootstrapPayload({
-          tokenId: row.id,
-          deviceId: row.deviceId,
-          // snapshot.id (not row.snapshotId) — TS can't narrow row.snapshotId
-          // from the `!snapshot` guard above, but by construction they're the
-          // same value: resolveSnapshotProviderConfig looked snapshot up BY
-          // row.snapshotId, so a non-null `snapshot` proves it was non-null.
-          // snapshot.id is properly typed non-null (backup_snapshots' PK).
-          snapshotId: snapshot.id,
-          restoreType: row.restoreType,
-          targetConfig: row.targetConfig,
-          authenticatedAt,
-          device: device
-            ? {
-                id: device.id,
-                hostname: device.hostname,
-                displayName: device.displayName ?? null,
-                osType: device.osType,
-                architecture: device.architecture,
-              }
-            : null,
-          snapshot: {
-            id: snapshot.id,
-            orgId: snapshot.orgId,
-            jobId: snapshot.jobId,
-            deviceId: snapshot.deviceId,
-            configId: snapshot.configId ?? null,
-            snapshotId: snapshot.snapshotId,
-            label: snapshot.label,
-            location: snapshot.location,
-            timestamp: toIsoString(snapshot.timestamp),
-            size: snapshot.size,
-            fileCount: snapshot.fileCount,
-            hardwareProfile: snapshot.hardwareProfile,
-            systemStateManifest: snapshot.systemStateManifest,
-            backupType: snapshot.backupType,
-            isIncremental: snapshot.isIncremental,
-            metadata: asRecord(snapshot.metadata),
-          },
-          providerType: resolvedSnapshot?.providerType,
-          config: config
-            ? {
-                id: config.id,
-                orgId: config.orgId,
-                name: config.name,
-                type: config.type,
-                provider: config.provider,
-                providerConfig: config.providerConfig,
-                schedule: config.schedule ?? null,
-                retention: config.retention ?? null,
-                isActive: config.isActive,
-              }
-            : null,
-          requestUrl: c.req.url,
-          tokenExpiresAt: row.expiresAt,
+      // Bare-metal recovery W04a: when this token was minted by
+      // POST /bmr/recover/exchange, echo the (nonce-less) recovery binding
+      // on bootstrap.recovery so a re-authenticating helper can see the
+      // recovery id/identity. This is deliberately the LAST db call before
+      // the payload is built, so it never shifts the position of any
+      // earlier select() in bmr.test.ts's mocked call sequence — every
+      // existing authenticate test leaves it unmocked and gets the harness
+      // default empty result, i.e. no `recovery` field. The nonce itself is
+      // NEVER returned here: it only ever exists in plaintext for the
+      // single exchange response that generated it, and is never
+      // persisted — only its hash is stored on the recovery row — so there
+      // is no plaintext left for a later authenticate call to leak.
+      const [recoveryBinding] = await db
+        .select({
+          id: bareMetalRecoveries.id,
+          identity: bareMetalRecoveries.identity,
+          deviceId: bareMetalRecoveries.deviceId,
+          snapshotId: bareMetalRecoveries.snapshotId,
         })
-      );
+        .from(bareMetalRecoveries)
+        .where(eq(bareMetalRecoveries.recoveryTokenId, row.id))
+        .limit(1);
+
+      const authenticatedPayload = buildAuthenticatedBootstrapPayload({
+        tokenId: row.id,
+        deviceId: row.deviceId,
+        // snapshot.id (not row.snapshotId) — TS can't narrow row.snapshotId
+        // from the `!snapshot` guard above, but by construction they're the
+        // same value: resolveSnapshotProviderConfig looked snapshot up BY
+        // row.snapshotId, so a non-null `snapshot` proves it was non-null.
+        // snapshot.id is properly typed non-null (backup_snapshots' PK).
+        snapshotId: snapshot.id,
+        restoreType: row.restoreType,
+        targetConfig: row.targetConfig,
+        authenticatedAt,
+        device: device
+          ? {
+              id: device.id,
+              hostname: device.hostname,
+              displayName: device.displayName ?? null,
+              osType: device.osType,
+              architecture: device.architecture,
+            }
+          : null,
+        snapshot: {
+          id: snapshot.id,
+          orgId: snapshot.orgId,
+          jobId: snapshot.jobId,
+          deviceId: snapshot.deviceId,
+          configId: snapshot.configId ?? null,
+          snapshotId: snapshot.snapshotId,
+          label: snapshot.label,
+          location: snapshot.location,
+          timestamp: toIsoString(snapshot.timestamp),
+          size: snapshot.size,
+          fileCount: snapshot.fileCount,
+          hardwareProfile: snapshot.hardwareProfile,
+          systemStateManifest: snapshot.systemStateManifest,
+          backupType: snapshot.backupType,
+          isIncremental: snapshot.isIncremental,
+          metadata: asRecord(snapshot.metadata),
+        },
+        providerType: resolvedSnapshot?.providerType,
+        config: config
+          ? {
+              id: config.id,
+              orgId: config.orgId,
+              name: config.name,
+              type: config.type,
+              provider: config.provider,
+              providerConfig: config.providerConfig,
+              schedule: config.schedule ?? null,
+              retention: config.retention ?? null,
+              isActive: config.isActive,
+            }
+          : null,
+        requestUrl: c.req.url,
+        tokenExpiresAt: row.expiresAt,
+        recovery: recoveryBinding
+          ? {
+              id: recoveryBinding.id,
+              identity: recoveryBinding.identity as 'original' | 'new',
+              deviceId: recoveryBinding.deviceId,
+              snapshotId: recoveryBinding.snapshotId,
+            }
+          : null,
+      });
+
+      return c.json(authenticatedPayload);
     });
   }
 );

@@ -103,7 +103,7 @@ vi.mock('../../services', () => {
   revokeRefreshTokenJti: vi.fn(async () => true),
   markRefreshTokenJtiRotated: vi.fn(async () => undefined),
   wasRefreshTokenJtiRecentlyRotated: vi.fn(async () => false),
-  revokeFamily: vi.fn(async () => undefined),
+  revokeFamily: vi.fn(async () => ({ redis: 'confirmed', database: 'confirmed' })),
   isFamilyRevoked: vi.fn(async () => false),
   touchFamilyLastUsed: vi.fn(async () => undefined),
   isTokenIssuedBeforePasswordChange: vi.fn(() => false),
@@ -1150,6 +1150,56 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
     expect(clearRefreshTokenCookie).toHaveBeenCalled();
     expect(isRefreshTokenJtiRevoked).not.toHaveBeenCalled();
     expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('still blocks, but does not claim durable containment, when the family write is unacknowledged', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-blocked',
+      fam: 'family-blocked',
+      mdid: 'lost-installation',
+    } as any);
+    mobileBlockMocks.getBoundMobileDeviceBlock.mockResolvedValueOnce({ reason: 'lost phone' });
+    vi.mocked(revokeFamily).mockResolvedValueOnce({ redis: 'failed', database: 'failed' });
+
+    const res = await postRefresh();
+
+    // The block is terminal for THIS request regardless of the stores.
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'device_blocked', reason: 'lost phone' });
+    expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    expect(createTokenPair).not.toHaveBeenCalled();
+    // ...but the unacknowledged durable write must be operator-visible rather
+    // than silently treated as a completed revocation.
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[auth] Mobile-device block could not durably revoke the refresh family',
+      expect.objectContaining({ familyId: 'family-blocked', redis: 'failed', database: 'failed' }),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('does not warn when the mobile-device block durably revoked the family', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-blocked',
+      fam: 'family-blocked',
+      mdid: 'lost-installation',
+    } as any);
+    mobileBlockMocks.getBoundMobileDeviceBlock.mockResolvedValueOnce({ reason: 'lost phone' });
+    vi.mocked(revokeFamily).mockResolvedValueOnce({ redis: 'unavailable', database: 'confirmed' });
+
+    expect((await postRefresh()).status).toBe(403);
+    expect(errorSpy).not.toHaveBeenCalledWith(
+      '[auth] Mobile-device block could not durably revoke the refresh family',
+      expect.anything(),
+    );
+    errorSpy.mockRestore();
   });
 
 });
