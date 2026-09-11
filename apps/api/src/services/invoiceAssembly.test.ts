@@ -16,6 +16,17 @@ describe('timeEntryToLineSpec', () => {
       taxable: false, customerVisible: true, lineTotal: '180.00', isUnapprovedTime: true
     });
   });
+  it('formats ticket number, category, and subject into line name when available', () => {
+    const spec = timeEntryToLineSpec({
+      id: 'te1', ticketId: 'tk1', description: 'Replaced router',
+      durationMinutes: 60, hourlyRate: '100.00', isApproved: true,
+      ticketInternalNumber: 'T-2026-0042',
+      ticketSubject: 'Network down',
+      categoryName: 'Networking',
+    }, 'USD');
+    expect(spec.name).toBe('[T-2026-0042] Networking: Network down');
+    expect(spec.description).toBe('Replaced router');
+  });
   it('defaults the description; an explicit zero rate stays a valid zero line', () => {
     const spec = timeEntryToLineSpec({ id: 'te2', ticketId: null, description: null, durationMinutes: 0, hourlyRate: '0.00', isApproved: true }, 'USD');
     expect(spec.description).toBe('Labor');
