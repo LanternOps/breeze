@@ -80,7 +80,11 @@
     "rescheduledFrom": "Reprogramada desde {{date}}",
     "deliveryNote": "Nota de entrega",
     "waivedReason": "Motivo de la exoneración",
-    "newDueDate": "Nueva fecha de vencimiento"
+    "newDueDate": "Nueva fecha de vencimiento",
+    "uploadEvidence": "Subir un archivo como evidencia",
+    "uploadEvidenceHint": "PDF, JPEG, PNG o WebP, hasta 10 MB. El archivo se archiva en la biblioteca de documentos de esta organización.",
+    "evidenceDocument": "Documento",
+    "upload": "Subir"
   },
   "evidence": {
     "reportRun": "Ejecución de informe",
@@ -99,7 +103,11 @@
     "duplicateName": "Ya existe un entregable con este nombre para esta organización.",
     "loadFailed": "No se pudieron cargar los entregables.",
     "saveFailed": "No se pudo guardar el entregable.",
-    "actionFailed": "No se pudo actualizar la ocurrencia."
+    "actionFailed": "No se pudo actualizar la ocurrencia.",
+    "uploadFailed": "No se pudo subir el archivo de evidencia.",
+    "tooLarge": "Ese archivo pesa más de 10 MB.",
+    "unsupportedType": "Solo se pueden adjuntar archivos PDF, JPEG, PNG y WebP.",
+    "storageUnavailable": "El almacenamiento de documentos no está disponible en este momento. Vuelva a intentarlo en unos minutos."
   },
   "confirm": {
     "deactivate": "¿Desactivar {{name}}? Las ocurrencias abiertas se cerrarán y no se programarán nuevas.",
@@ -144,6 +152,7 @@
     "rescheduled": "Ocurrencia reprogramada",
     "evidenceAdded": "Evidencia agregada",
     "evidenceRemoved": "Evidencia quitada",
-    "deactivated": "Entregable desactivado"
+    "deactivated": "Entregable desactivado",
+    "evidenceUploaded": "Evidencia subida"
   }
 }

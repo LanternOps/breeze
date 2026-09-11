@@ -80,7 +80,11 @@
     "rescheduledFrom": "{{date}} tarihinden yeniden planlandı",
     "deliveryNote": "Teslim notu",
     "waivedReason": "Muafiyet nedeni",
-    "newDueDate": "Yeni son tarih"
+    "newDueDate": "Yeni son tarih",
+    "uploadEvidence": "Kanıt olarak bir dosya yükle",
+    "uploadEvidenceHint": "PDF, JPEG, PNG veya WebP, 10 MB'a kadar. Dosya bu kuruluşun belge kitaplığına kaydedilir.",
+    "evidenceDocument": "Belge",
+    "upload": "Yükle"
   },
   "evidence": {
     "reportRun": "Rapor çalıştırması",
@@ -99,7 +103,11 @@
     "duplicateName": "Bu kuruluş için aynı ada sahip bir çıktı zaten var.",
     "loadFailed": "Çıktılar yüklenemedi.",
     "saveFailed": "Çıktı kaydedilemedi.",
-    "actionFailed": "Oluşum güncellenemedi."
+    "actionFailed": "Oluşum güncellenemedi.",
+    "uploadFailed": "Kanıt dosyası yüklenemedi.",
+    "tooLarge": "Bu dosya 10 MB'tan büyük.",
+    "unsupportedType": "Yalnızca PDF, JPEG, PNG ve WebP dosyaları eklenebilir.",
+    "storageUnavailable": "Belge depolama şu anda kullanılamıyor. Kısa süre sonra tekrar deneyin."
   },
   "confirm": {
     "deactivate": "{{name}} devre dışı bırakılsın mı? Açık oluşumlar kapatılır ve yenileri planlanmaz.",
@@ -144,6 +152,7 @@
     "rescheduled": "Oluşum yeniden planlandı",
     "evidenceAdded": "Kanıt eklendi",
     "evidenceRemoved": "Kanıt kaldırıldı",
-    "deactivated": "Çıktı devre dışı bırakıldı"
+    "deactivated": "Çıktı devre dışı bırakıldı",
+    "evidenceUploaded": "Kanıt yüklendi"
   }
 }

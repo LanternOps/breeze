@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { optionalQueryBoolean } from './queryParams';
 
 /**
  * Organization document library (service deliverables W03, spec #5573 §4.4/§10).
@@ -42,7 +43,9 @@ export const updateDocumentSchema = z.object({
 
 export const listDocumentsQuerySchema = z.object({
   category: orgDocumentCategorySchema.optional(),
-  includeSuperseded: boolFromString.optional(),
+  // The canonical query-string boolean: `z.coerce.boolean()` reads 'false' as
+  // TRUE (queryParams.ts), which would silently invert this filter.
+  includeSuperseded: optionalQueryBoolean,
 });
 
 export type OrgDocumentCategory = z.infer<typeof orgDocumentCategorySchema>;

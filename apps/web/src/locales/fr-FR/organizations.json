@@ -32,6 +32,7 @@
       "tickets": "Tickets",
       "billing": "Contrats et facturation",
       "service": "Prestations",
+      "documents": "Documentation",
       "activity": "Activité"
     },
     "comingSoon": {
@@ -127,6 +128,74 @@
         "contracts": "Contrats",
         "invoices": "Factures",
         "quotes": "Devis"
+      }
+    },
+    "documents": {
+      "title": "Bibliothèque de documents",
+      "subtitle": "Guides opérationnels, lignes de base, politiques et preuves de livraison pour cette organisation.",
+      "empty": "Aucun document pour le moment. Téléversez un guide opérationnel, une ligne de base ou une politique signée pour démarrer la bibliothèque.",
+      "emptyFiltered": "Aucun document dans cette catégorie.",
+      "loadFailed": "Impossible de charger les documents.",
+      "upload": "Téléverser un document",
+      "uploading": "Téléversement…",
+      "replace": "Remplacer",
+      "download": "Télécharger",
+      "delete": "Supprimer",
+      "deleteConfirm": "Supprimer « {{title}} » ? Cela retire le fichier et toutes ses versions antérieures. Cette action est irréversible.",
+      "edit": "Modifier",
+      "save": "Enregistrer",
+      "cancel": "Annuler",
+      "versions": "Historique des versions",
+      "showSuperseded": "Afficher les versions antérieures",
+      "form": {
+        "title": "Titre",
+        "description": "Descriptif",
+        "category": "Catégorie",
+        "portalVisible": "Visible dans le portail client",
+        "file": "Fichier",
+        "fileHint": "PDF, JPEG, PNG ou WebP, jusqu'à 10 Mo.",
+        "replaceHint": "La version actuelle est conservée dans l'historique et le nouveau fichier devient la version courante."
+      },
+      "filter": {
+        "all": "Toutes les catégories"
+      },
+      "category": {
+        "baseline": "Ligne de base",
+        "runbook": "Guide opérationnel",
+        "policy": "Politique",
+        "evidence": "Justificatif",
+        "report": "Rapport",
+        "export": "Exportation",
+        "other": "Autre"
+      },
+      "column": {
+        "title": "Titre",
+        "category": "Catégorie",
+        "size": "Taille",
+        "uploaded": "Téléversé",
+        "portal": "Portail",
+        "actions": "Opérations"
+      },
+      "badge": {
+        "superseded": "Version antérieure",
+        "portal": "Dans le portail"
+      },
+      "errors": {
+        "tooLarge": "Ce fichier dépasse 10 Mo.",
+        "unsupportedType": "Seuls les fichiers PDF, JPEG, PNG et WebP peuvent être stockés.",
+        "storageUnavailable": "Le stockage de documents est indisponible pour le moment. Réessayez sous peu.",
+        "notHead": "Ce document a déjà été remplacé. Rechargez la page et travaillez à partir de la version courante.",
+        "emptyFile": "Ce fichier est vide.",
+        "uploadFailed": "Impossible de téléverser le document.",
+        "updateFailed": "Impossible d'enregistrer le document.",
+        "deleteFailed": "Impossible de supprimer le document.",
+        "downloadFailed": "Impossible de télécharger le document."
+      },
+      "toast": {
+        "uploaded": "Document téléversé",
+        "replaced": "Nouvelle version téléversée",
+        "updated": "Document mis à jour",
+        "deleted": "Document supprimé"
       }
     }
   }

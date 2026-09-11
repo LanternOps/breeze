@@ -64,7 +64,11 @@ export default function OrgDocumentsTab({ orgId, orgFetch }: { orgId: string; or
   const [busy, setBusy] = useState(false);
   const latest = useLatest<LoadState>();
 
-  const tr = useCallback((key: string, vars?: Record<string, unknown>) => t(`orgRecord.documents.${key}`, vars ?? {}), [t]);
+  /** Every key in this tab lives under one namespace prefix. */
+  const tr = useCallback(
+    (key: string, vars?: Record<string, unknown>) => t(/* i18n-dynamic */ `orgRecord.documents.${key}`, vars ?? {}),
+    [t],
+  );
 
   const load = useCallback(async () => {
     const result = await latest.run(

@@ -176,7 +176,7 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
       const next = await runClientAction(() => uploadEvidence(fetcher, orgId, id, form), {
         errorFallback: t('errors.uploadFailed'),
         successMessage: t('toast.evidenceUploaded'),
-        friendly: (code) => (UPLOAD_ERROR_KEYS[code] ? t(UPLOAD_ERROR_KEYS[code]) : undefined),
+        friendly: (code) => (UPLOAD_ERROR_KEYS[code] ? t(/* i18n-dynamic */ UPLOAD_ERROR_KEYS[code]) : undefined),
       });
       applyResult(next);
       setEvidenceFiles((prev) => ({ ...prev, [id]: null }));
