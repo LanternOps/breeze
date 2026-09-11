@@ -18,8 +18,15 @@ vi.mock('../db', () => {
     };
     return chain;
   };
-  return { db: makeChain() };
+  return {
+    db: makeChain(),
+    runOutsideDbContext: (fn: () => unknown) => fn(),
+    withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  };
 });
+
+const { createTicketMock } = vi.hoisted(() => ({ createTicketMock: vi.fn() }));
+vi.mock('./ticketService', () => ({ createTicket: createTicketMock }));
 
 // serviceDeliverableService is authored concurrently (Task 8); the suite stays
 // self-contained by supplying the error class shape it will export.
@@ -231,6 +238,105 @@ describe('orgKeyDateService', () => {
       await expect(svc.deleteKeyDate('org1', 'k1', actor)).resolves.toBeUndefined();
       expect(chain.delete.mock.calls).toHaveLength(1);
       expect(chain.where.mock.calls).toHaveLength(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // W02 — daily sweep (system callers)
+  // -------------------------------------------------------------------------
+
+  const K = { id: 'k1', orgId: 'org1', label: 'Cyber insurance renewal', kind: 'insurance_renewal',
+    date: '2027-03-01', ownerUserId: 'u1' };
+  const sets = () => chain.set.mock.calls.map((c) => c[0] as Record<string, unknown>);
+
+  describe('sweepKeyDateReminders (spec §5.3 step 5)', () => {
+    it('creates one deliverable-kind reminder ticket and stamps reminded_for_date', async () => {
+      queueResult([]);                                   // roll-forward: nothing stale
+      queueResult([K]); queueResult([{ id: 'k1' }]); queueResult([]);   // due, claim, link
+      createTicketMock.mockResolvedValue({ id: 't9' });
+      expect(await svc.sweepKeyDateReminders('2027-01-01')).toBe(1);
+      expect(createTicketMock).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: 'org1', source: 'api', workKind: 'deliverable',
+        subject: 'Key date: Cyber insurance renewal — 2027-03-01',
+        dueDate: new Date('2027-03-01T00:00:00.000Z'), assigneeId: 'u1',
+      }), expect.anything());
+      expect(sets()[0]).toMatchObject({ remindedForDate: '2027-03-01' });   // the claim
+      expect(sets()[1]).toMatchObject({ reminderTicketId: 't9' });          // the link
+    });
+
+    it('selects only rows inside the reminder window, not yet reminded for this date, not in the past, on eligible orgs', async () => {
+      queueResult([]); queueResult([]);
+      await svc.sweepKeyDateReminders('2027-01-01');
+      const dueWhere = chain.where.mock.calls[1]?.[0];
+      expect(collectBoundValues(dueWhere)).toEqual(expect.arrayContaining(['2027-01-01']));
+      const { PgDialect } = await import('drizzle-orm/pg-core');
+      const text = new PgDialect().sqlToQuery(dueWhere as never).sql;
+      expect(text).toContain('"remind_days_before" is not null');
+      expect(text).toContain('IS DISTINCT FROM');
+      expect(text).toContain('automation_eligible_org');
+      expect(text).toContain('"date" >=');
+    });
+
+    it('never reminds twice for the same (id, date)', async () => {
+      queueResult([]); queueResult([K]); queueResult([]);   // claim matched 0 rows
+      expect(await svc.sweepKeyDateReminders('2027-01-01')).toBe(0);
+      expect(createTicketMock).not.toHaveBeenCalled();
+    });
+
+    it('still stamps the reminder when Service Management is off', async () => {
+      queueResult([]); queueResult([K]); queueResult([{ id: 'k1' }]);
+      createTicketMock.mockRejectedValue(Object.assign(new Error('off'), { code: 'service_management_off' }));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        expect(await svc.sweepKeyDateReminders('2027-01-01')).toBe(1);
+        expect(sets()).toHaveLength(1);                     // claim only, no ticket link
+      } finally { warn.mockRestore(); }
+    });
+
+    it('drops a stale owner instead of failing the reminder every day', async () => {
+      queueResult([]); queueResult([K]); queueResult([{ id: 'k1' }]); queueResult([]);
+      createTicketMock
+        .mockRejectedValueOnce(Object.assign(new Error('gone'), { code: 'ASSIGNEE_WRONG_PARTNER' }))
+        .mockResolvedValueOnce({ id: 't9' });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        expect(await svc.sweepKeyDateReminders('2027-01-01')).toBe(1);
+        expect((createTicketMock.mock.calls[1]![0] as Record<string, unknown>).assigneeId).toBeUndefined();
+      } finally { warn.mockRestore(); }
+    });
+
+    it('rethrows any other ticket failure (the claim rolls back with it)', async () => {
+      queueResult([]); queueResult([K]); queueResult([{ id: 'k1' }]);
+      createTicketMock.mockRejectedValue(new Error('connection reset'));
+      await expect(svc.sweepKeyDateReminders('2027-01-01')).rejects.toThrow('connection reset');
+    });
+  });
+
+  describe('rollForwardAnnualKeyDates', () => {
+    it('advances a past recurring date one year and clears both reminder stamps', async () => {
+      queueResult([{ id: 'k1', date: '2026-03-01' }]); queueResult([{ id: 'k1' }]);
+      expect(await svc.rollForwardAnnualKeyDates('2026-09-10')).toBe(1);
+      expect(sets().at(-1)).toMatchObject({ date: '2027-03-01', remindedForDate: null, reminderTicketId: null });
+      // CAS on the date that was read, so a concurrent edit is not overwritten.
+      expect(collectBoundValues(chain.where.mock.calls.at(-1)?.[0])).toEqual(expect.arrayContaining(['k1', '2026-03-01']));
+    });
+
+    it('advances a date several years stale straight to its next future occurrence', async () => {
+      queueResult([{ id: 'k1', date: '2023-03-01' }]); queueResult([{ id: 'k1' }]);
+      await svc.rollForwardAnnualKeyDates('2026-09-10');
+      expect(sets().at(-1)).toMatchObject({ date: '2027-03-01' });
+    });
+
+    it('keeps a Feb 29 anniversary on Feb 29 in leap years', async () => {
+      queueResult([{ id: 'k1', date: '2024-02-29' }]); queueResult([{ id: 'k1' }]);
+      await svc.rollForwardAnnualKeyDates('2027-06-01');
+      expect(sets().at(-1)).toMatchObject({ date: '2028-02-29' });
+    });
+
+    it('leaves a future date alone', async () => {
+      queueResult([]);
+      expect(await svc.rollForwardAnnualKeyDates('2026-09-10')).toBe(0);
+      expect(chain.update.mock.calls).toHaveLength(0);
     });
   });
 });

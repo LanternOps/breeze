@@ -685,15 +685,14 @@ describe('serviceDeliverableService', () => {
 
   describe('openDueOccurrencesForDeliverable (spec §5.3 step 2)', () => {
     const OCC = { id: 'o1', nameSnapshot: 'Sign-in log review', periodStart: '2026-10-01', periodEnd: '2026-10-31', dueAt: '2026-10-31' };
-    /** candidates, claim, config, partner pre-resolve */
-    const seedOpen = (claim: unknown[], cfg: Record<string, unknown>, ok?: Record<string, boolean>) => {
+    /** candidates, claim, config */
+    const seedOpen = (claim: unknown[], cfg: Record<string, unknown>) => {
       queueResult([OCC]); queueResult(claim); queueResult([cfg]);
-      if (ok) queueResult([ok]);
     };
     const NO_CFG = { ownerUserId: null, ticketCategoryId: null, description: null };
 
     it('creates an SLA-free deliverable ticket and links it to the claimed occurrence', async () => {
-      seedOpen([{ id: 'o1' }], { ownerUserId: 'u1', ticketCategoryId: 'c1', description: 'Review sign-in logs' }, { ownerOk: true, categoryOk: true });
+      seedOpen([{ id: 'o1' }], { ownerUserId: 'u1', ticketCategoryId: 'c1', description: 'Review sign-in logs' });
       createTicketMock.mockResolvedValue({ id: 't1' });
       expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(1);
       expect(createTicketMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -730,21 +729,33 @@ describe('serviceDeliverableService', () => {
       await expect(openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).rejects.toThrow('connection reset');
     });
 
-    it('drops an owner or category no longer in the org partner instead of stalling forever', async () => {
-      seedOpen([{ id: 'o1' }], { ownerUserId: 'u-gone', ticketCategoryId: 'c-gone', description: null }, { ownerOk: false, categoryOk: false });
-      createTicketMock.mockResolvedValue({ id: 't1' });
+    it('drops an owner and a category the ticket service refuses instead of stalling forever', async () => {
+      seedOpen([{ id: 'o1' }], { ownerUserId: 'u-gone', ticketCategoryId: 'c-gone', description: null });
+      createTicketMock
+        .mockRejectedValueOnce(Object.assign(new Error('wrong partner'), { code: 'ASSIGNEE_WRONG_PARTNER' }))
+        .mockRejectedValueOnce(Object.assign(new Error('no category'), { code: 'CATEGORY_NOT_FOUND' }))
+        .mockResolvedValueOnce({ id: 't1' });
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
-        await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set());
-        const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
+        expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(1);
+        expect(createTicketMock).toHaveBeenCalledTimes(3);
+        const input = createTicketMock.mock.calls[2]![0] as Record<string, unknown>;
         expect(input.assigneeId).toBeUndefined();
         expect(input.categoryId).toBeUndefined();
         expect(warn).toHaveBeenCalledTimes(2);
+        expect(lastSet()).toMatchObject({ ticketId: 't1' });
       } finally { warn.mockRestore(); }
     });
 
+    it('does not loop on a refusal for a reference it already dropped', async () => {
+      seedOpen([{ id: 'o1' }], NO_CFG);
+      createTicketMock.mockRejectedValue(Object.assign(new Error('wrong partner'), { code: 'ASSIGNEE_WRONG_PARTNER' }));
+      await expect(openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).rejects.toThrow('wrong partner');
+      expect(createTicketMock).toHaveBeenCalledTimes(1);
+    });
+
     it('retries once without an assignee createTicket still refuses (e.g. deactivated user)', async () => {
-      seedOpen([{ id: 'o1' }], { ownerUserId: 'u-off', ticketCategoryId: 'c1', description: null }, { ownerOk: true, categoryOk: true });
+      seedOpen([{ id: 'o1' }], { ownerUserId: 'u-off', ticketCategoryId: 'c1', description: null });
       createTicketMock
         .mockRejectedValueOnce(Object.assign(new Error('not eligible'), { code: 'ASSIGNEE_NOT_ELIGIBLE' }))
         .mockResolvedValueOnce({ id: 't2' });
