@@ -16,7 +16,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
-import { aiSessions, aiMessages, aiBudgets } from '../db/schema';
+import { aiSessions, aiMessages } from '../db/schema';
 import { eq, and, isNull, inArray } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { buildOrgAccessClosures } from '../middleware/auth';
@@ -41,6 +41,7 @@ import { resolveWireModel, type ResolvedLlmEndpoint, type UsableLlmConfig } from
 import { getLlmEgressProxy } from './llm/llmEgressProxy';
 import { recordLlmEgressEvent } from './llm/llmEgressRecorder';
 import { markAiBudgetReservationIndeterminate } from './aiBudgetReservations';
+import { getEffectiveAiBudget } from './effectiveSettings';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -565,7 +566,7 @@ export interface ActiveSession {
   approvalWaitAbort: AbortController | null;
   /** Count of approval waits currently blocked inside preToolUse. */
   pendingApprovalWaits: number;
-  /** Approval mode for this session (loaded from org's aiBudgets) */
+  /** Approval mode for this session (effective: partner override -> org row -> per_step) */
   approvalMode: AiApprovalMode;
   /** Optional MCP allowlist for restricted sessions such as helper chat. */
   allowedTools?: string[];
@@ -639,6 +640,34 @@ export function buildDeviceBoundSessionAuth(auth: AuthContext, sessionOrgId: str
 // ============================================
 // StreamingSessionManager (singleton)
 // ============================================
+
+const APPROVAL_MODES: readonly AiApprovalMode[] = ['per_step', 'action_plan', 'auto_approve', 'hybrid_plan'];
+
+/**
+ * Effective approval mode for a session's org (#5593).
+ *
+ * Resolves through `getEffectiveAiBudget` — partner JSONB `aiBudgets`
+ * override, then the org's `ai_budgets` row, then `per_step` — instead of
+ * reading the org row directly, which silently ignored a partner-wide default.
+ * The partner override is free-form JSON, so an unrecognized value is rejected
+ * rather than handed to the approval gate. Any failure keeps the previous
+ * fail-safe behaviour: the strictest mode, `per_step`.
+ */
+async function loadApprovalMode(orgId: string): Promise<AiApprovalMode> {
+  try {
+    const budget = await getEffectiveAiBudget(orgId);
+    const mode = budget.approvalMode as AiApprovalMode;
+    if (APPROVAL_MODES.includes(mode)) return mode;
+    console.warn(
+      '[StreamingSessionManager] Unrecognized approval mode, defaulting to per_step:',
+      budget.approvalMode,
+    );
+  } catch (err) {
+    captureException(err);
+    console.error('[StreamingSessionManager] Failed to load approval mode, defaulting to per_step:', err);
+  }
+  return 'per_step';
+}
 
 export class StreamingSessionManager {
   private sessions = new Map<string, ActiveSession>();
@@ -762,6 +791,14 @@ export class StreamingSessionManager {
           : auth;
         reusable.auditSnapshot = snapshot;
         reusable.allowedTools = allowedTools;
+        // Re-resolve the approval mode so a settings change applies to the NEXT
+        // message rather than only to a brand-new in-memory session (#5593).
+        // Skipped while a turn is in flight: the route answers a concurrent
+        // message with 409, and swapping the mode mid-turn would change the
+        // gate the running turn already started under.
+        if (reusable.state !== 'processing') {
+          reusable.approvalMode = await loadApprovalMode(dbSession.orgId);
+        }
         reusable.lastActivityAt = Date.now();
         return reusable;
       }
@@ -776,21 +813,7 @@ export class StreamingSessionManager {
       inputController.setSdkSessionId(dbSession.sdkSessionId);
     }
 
-    // Load org's approval mode from aiBudgets
-    let approvalMode: AiApprovalMode = 'per_step';
-    try {
-      const [budget] = await db
-        .select({ approvalMode: aiBudgets.approvalMode })
-        .from(aiBudgets)
-        .where(eq(aiBudgets.orgId, dbSession.orgId))
-        .limit(1);
-      if (budget?.approvalMode) {
-        approvalMode = budget.approvalMode as AiApprovalMode;
-      }
-    } catch (err) {
-      captureException(err);
-      console.error('[StreamingSessionManager] Failed to load approval mode, defaulting to per_step:', err);
-    }
+    const approvalMode = await loadApprovalMode(dbSession.orgId);
 
     const catalogEndpoint = catalogEndpointOf(resolved);
 
