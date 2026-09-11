@@ -32,6 +32,7 @@ import OrgDevicesTab from './OrgDevicesTab';
 import OrgOverviewTab from './OrgOverviewTab';
 import OrgRecordHeader from './OrgRecordHeader';
 import OrgServiceTab from './OrgServiceTab';
+import OrgDocumentsTab from './OrgDocumentsTab';
 import OrgSitesTab from './OrgSitesTab';
 import OrgTicketsTab from './OrgTicketsTab';
 import { makeOrgFetch, useLatest, type OrgRecordOrg, type OrgSummary } from './orgRecordFetch';
@@ -307,6 +308,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
       {effectiveTab === 'tickets' && <OrgTicketsTab orgId={orgId} orgFetch={orgFetch} />}
       {effectiveTab === 'billing' && <OrgBillingTab orgId={orgId} />}
       {effectiveTab === 'service' && <OrgServiceTab orgId={orgId} orgFetch={orgFetch} />}
+      {effectiveTab === 'documents' && <OrgDocumentsTab orgId={orgId} orgFetch={orgFetch} />}
 
       {modal === 'archive' && (
         <ArchiveOrgModal
