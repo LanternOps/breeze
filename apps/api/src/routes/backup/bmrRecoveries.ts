@@ -6,8 +6,8 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { and, desc, eq, notInArray } from 'drizzle-orm';
-import { db } from '../../db';
+import { and, desc, eq, gt, isNull, notInArray } from 'drizzle-orm';
+import { db, withSystemDbAccessContext } from '../../db';
 import {
   BARE_METAL_RECOVERY_TERMINAL,
   bareMetalRecoveries,
@@ -48,6 +48,18 @@ import {
 } from './schemas';
 
 const idParamSchema = z.object({ id: z.string().guid() });
+
+// Bare-metal recovery W04a review fix: thrown from inside the exchange
+// transaction when the conditional one-time-claim UPDATE matches 0 rows
+// (another concurrent request already claimed the code, or it expired
+// between the initial lookup and this transaction) — distinguishes "lost
+// the race, roll back cleanly" from a genuine unexpected error.
+class CodeAlreadyClaimedError extends Error {
+  constructor() {
+    super('bare-metal recovery code already claimed');
+    this.name = 'CodeAlreadyClaimedError';
+  }
+}
 
 export const bmrRecoveryRoutes = new Hono();
 export const bmrRecoveryPublicRoutes = new Hono();
@@ -335,11 +347,20 @@ bmrRecoveryPublicRoutes.post(
     const codeLimited = await enforceTokenRateLimit(c, 'exchange', codeHash, 5, 3600);
     if (codeLimited) return codeLimited;
 
-    const [rec] = await db
-      .select()
-      .from(bareMetalRecoveries)
-      .where(eq(bareMetalRecoveries.codeHash, codeHash))
-      .limit(1);
+    // Bare-metal recovery W04a review fix: this route has no ambient DB
+    // access context (it is mounted before authMiddleware and there is no
+    // org to scope to until the code hash resolves one), so — exactly like
+    // authenticate/complete in bmr.ts — this initial lookup must run inside
+    // withSystemDbAccessContext. Without it `breeze.scope` is unset, RLS's
+    // breeze_has_org_access(org_id) denies every row, and every real code
+    // silently 404s as if it were invalid.
+    const [rec] = await withSystemDbAccessContext(() =>
+      db
+        .select()
+        .from(bareMetalRecoveries)
+        .where(eq(bareMetalRecoveries.codeHash, codeHash))
+        .limit(1)
+    );
 
     const now = new Date();
     if (!rec || rec.codeUsedAt || rec.codeExpiresAt.getTime() < now.getTime() || rec.status !== 'created') {
@@ -359,40 +380,79 @@ bmrRecoveryPublicRoutes.post(
       const tokenHash = hashRecoveryToken(plainToken);
       const nonce = generateRecoveryNonce();
 
-      const tokenRow = await db.transaction(async (tx) => {
-        const [t] = await tx
-          .insert(recoveryTokens)
-          .values({
-            orgId: rec.orgId,
-            deviceId: rec.deviceId,
-            snapshotId: rec.snapshotId,
-            tokenHash,
-            restoreType: 'bare_metal',
-            targetConfig: { bareMetalRecoveryId: rec.id },
-            status: 'authenticated',
-            authenticatedAt: now,
-            createdBy: rec.createdBy,
-            expiresAt: new Date(now.getTime() + 24 * 3600 * 1000),
-          })
-          .returning();
-        if (!t) {
-          throw new Error('Failed to mint recovery token during exchange');
-        }
-        await tx
-          .update(bareMetalRecoveries)
-          .set({
-            codeUsedAt: now,
-            nonceHash: hashRecoveryNonce(nonce),
-            recoveryTokenId: t.id,
-            status: 'media_booted',
-            mediaBootedAt: now,
-            updatedAt: now,
-          })
-          .where(eq(bareMetalRecoveries.id, rec.id));
-        return t;
-      });
+      // Bare-metal recovery W04a review fix: the plain SELECT above is a
+      // read from BEFORE this transaction opened — two concurrent requests
+      // for the same code both pass it. The one-time guarantee comes from
+      // this conditional UPDATE instead: it only claims the row while it is
+      // still exactly {status:'created', codeUsedAt:null, unexpired}, and
+      // Postgres serializes concurrent UPDATEs to the same row, so at most
+      // one request's WHERE clause can still match. The token is minted
+      // FIRST, in the same transaction, so a lost claim (0 rows) can throw
+      // to roll the whole transaction back — no orphan recoveryTokens row
+      // survives a race loser.
+      let tokenRow: typeof recoveryTokens.$inferSelect | undefined;
+      let claimed = true;
+      try {
+        await db.transaction(async (tx) => {
+          const [t] = await tx
+            .insert(recoveryTokens)
+            .values({
+              orgId: rec.orgId,
+              deviceId: rec.deviceId,
+              snapshotId: rec.snapshotId,
+              tokenHash,
+              restoreType: 'bare_metal',
+              targetConfig: { bareMetalRecoveryId: rec.id },
+              status: 'authenticated',
+              authenticatedAt: now,
+              createdBy: rec.createdBy,
+              expiresAt: new Date(now.getTime() + 24 * 3600 * 1000),
+            })
+            .returning();
+          if (!t) {
+            throw new Error('Failed to mint recovery token during exchange');
+          }
+          tokenRow = t;
 
-      const bootstrap = await buildRecoveryExchangeBootstrap(c, tokenRow, {
+          const [claimedRow] = await tx
+            .update(bareMetalRecoveries)
+            .set({
+              codeUsedAt: now,
+              nonceHash: hashRecoveryNonce(nonce),
+              recoveryTokenId: t.id,
+              status: 'media_booted',
+              mediaBootedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(bareMetalRecoveries.id, rec.id),
+              isNull(bareMetalRecoveries.codeUsedAt),
+              eq(bareMetalRecoveries.status, 'created'),
+              gt(bareMetalRecoveries.codeExpiresAt, now),
+            ))
+            .returning();
+
+          if (!claimedRow) {
+            claimed = false;
+            throw new CodeAlreadyClaimedError();
+          }
+        });
+      } catch (err) {
+        if (err instanceof CodeAlreadyClaimedError || !claimed) {
+          writeAuditEvent(c, {
+            orgId: rec.orgId,
+            action: 'bmr.recovery.exchange',
+            resourceType: 'bare_metal_recovery',
+            resourceId: rec.id,
+            result: 'failure',
+            details: { reason: 'already_claimed' },
+          });
+          return c.json({ error: 'code_invalid' }, 404);
+        }
+        throw err;
+      }
+
+      const bootstrap = await buildRecoveryExchangeBootstrap(c, tokenRow!, {
         id: rec.id,
         identity: rec.identity as 'original' | 'new',
         deviceId: rec.deviceId,
@@ -409,7 +469,7 @@ bmrRecoveryPublicRoutes.post(
         resourceType: 'bare_metal_recovery',
         resourceId: rec.id,
         result: 'success',
-        details: { tokenId: tokenRow.id, identity: rec.identity },
+        details: { tokenId: tokenRow!.id, identity: rec.identity },
       });
 
       return c.json({ token: plainToken, bootstrap });
@@ -441,11 +501,17 @@ bmrRecoveryPublicRoutes.post(
     const limited = await enforceTokenRateLimit(c, 'progress', tokenHash, 600, 3600);
     if (limited) return limited;
 
-    const [t] = await db
-      .select({ id: recoveryTokens.id, orgId: recoveryTokens.orgId, status: recoveryTokens.status, expiresAt: recoveryTokens.expiresAt })
-      .from(recoveryTokens)
-      .where(eq(recoveryTokens.tokenHash, tokenHash))
-      .limit(1);
+    // Bare-metal recovery W04a review fix: same reasoning as the exchange
+    // route above — no ambient DB access context exists yet (the org is not
+    // known until this token hash resolves one), so this lookup must run in
+    // system scope or RLS denies every row.
+    const [t] = await withSystemDbAccessContext(() =>
+      db
+        .select({ id: recoveryTokens.id, orgId: recoveryTokens.orgId, status: recoveryTokens.status, expiresAt: recoveryTokens.expiresAt })
+        .from(recoveryTokens)
+        .where(eq(recoveryTokens.tokenHash, tokenHash))
+        .limit(1)
+    );
     if (!t || t.status === 'revoked' || t.expiresAt.getTime() < Date.now()) {
       return c.json({ error: 'invalid_token' }, 401);
     }

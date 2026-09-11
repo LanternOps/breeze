@@ -265,6 +265,10 @@ describe('bare-metal recoveries routes', () => {
         }]))
         .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, hostname: 'rig-01', osType: 'linux', architecture: 'x86_64', displayName: null }]));
       insertMock.mockReturnValueOnce(chainMock([{ id: 'token-1', orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, restoreType: 'bare_metal', targetConfig: {}, expiresAt: new Date(Date.now() + 86_400_000), authenticatedAt: new Date() }]));
+      // The conditional one-time-claim UPDATE (review fix) must return the
+      // claimed row for the exchange to proceed — an empty result models
+      // "someone else claimed it first" and is covered by a separate test.
+      updateMock.mockReturnValueOnce(chainMock([{ id: RECOVERY_ID, status: 'media_booted' }]));
 
       const res = await publicApp.request('/backup/bmr/recover/exchange', {
         method: 'POST',
@@ -303,6 +307,28 @@ describe('bare-metal recoveries routes', () => {
         expect(res.status).toBe(404);
         expect((await res.json()).error).toBe('code_invalid');
       }
+    });
+
+    it('returns 404 code_invalid and mints no lasting token when the conditional claim loses the race', async () => {
+      const code = 'ABCDEFGHJ';
+      selectMock.mockReturnValueOnce(chainMock([{
+        id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, identity: 'original',
+        status: 'created', codeHash: hashRecoveryCode(code), codeExpiresAt: new Date(Date.now() + 60_000),
+        codeUsedAt: null, nonceHash: 'x'.repeat(64), createdBy: 'user-123',
+      }]));
+      insertMock.mockReturnValueOnce(chainMock([{ id: 'token-1', orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, restoreType: 'bare_metal', targetConfig: {}, expiresAt: new Date(Date.now() + 86_400_000), authenticatedAt: new Date() }]));
+      // A concurrent request already claimed the row: the conditional
+      // UPDATE's WHERE no longer matches, so it returns zero rows.
+      updateMock.mockReturnValueOnce(chainMock([]));
+
+      const res = await publicApp.request('/backup/bmr/recover/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'abc-def-ghj' }),
+      });
+
+      expect(res.status).toBe(404);
+      expect((await res.json()).error).toBe('code_invalid');
     });
 
     it('rejects malformed codes with 400 before touching the database', async () => {
