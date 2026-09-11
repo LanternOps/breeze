@@ -578,9 +578,72 @@ describe('serviceDeliverableService', () => {
     });
   });
 
-  describe('W02 stubs', () => {
-    it('throw not implemented', async () => {
-      await expect(applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: null, resolutionNote: null })).rejects.toThrow('not implemented (W02)');
+  describe('applyTicketStatusChange (spec §6)', () => {
+    const occRow = (over: Record<string, unknown> = {}) => ({ id: 'o1', status: 'open',
+      deliveredVia: null, artifactRequired: true, completionMode: 'on_ticket_resolve', ...over });
+
+    it('resolve with evidence delivers via ticket and copies the resolution note and actor', async () => {
+      queueResult([occRow()]); queueResult([{ id: 'e1' }]); queueResult([{ id: 'o1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'done' });
+      expect(lastSet()).toMatchObject({ status: 'delivered', deliveredVia: 'ticket', deliveredByUserId: 'u7', deliveryNote: 'done' });
+      expect(lastSet().deliveredAt).toBeInstanceOf(Date);
+      // CAS on the status the decision was made from.
+      expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'open']));
+    });
+
+    it('resolve without an artifact requirement delivers even with no evidence', async () => {
+      queueResult([occRow({ artifactRequired: false })]); queueResult([]); queueResult([{ id: 'o1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'closed', actorUserId: 'u7', resolutionNote: null });
+      expect(lastSet()).toMatchObject({ status: 'delivered', deliveredVia: 'ticket' });
+    });
+
+    it('resolve with artifact required and no evidence goes to awaiting_evidence, keeping the note but stamping no delivery', async () => {
+      queueResult([occRow()]); queueResult([]); queueResult([{ id: 'o1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'closed', actorUserId: 'u7', resolutionNote: 'Reviewed' });
+      const patch = lastSet();
+      expect(patch).toMatchObject({ status: 'awaiting_evidence', deliveryNote: 'Reviewed' });
+      expect(patch.deliveredAt).toBeUndefined();
+      expect(patch.deliveredByUserId).toBeUndefined();
+      expect(patch.deliveredVia).toBeUndefined();
+    });
+
+    it('a late resolution of a missed occurrence still records the delivery', async () => {
+      queueResult([occRow({ status: 'missed' })]); queueResult([{ id: 'e1' }]); queueResult([{ id: 'o1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'late' });
+      expect(lastSet()).toMatchObject({ status: 'delivered' });
+      expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'missed']));
+    });
+
+    it('explicit completion mode changes nothing', async () => {
+      queueResult([occRow({ completionMode: 'explicit' })]); queueResult([]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'x' });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('a reopen undoes a ticket-driven delivery and clears the delivery fields', async () => {
+      queueResult([occRow({ status: 'delivered', deliveredVia: 'ticket' })]); queueResult([{ id: 'o1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'open', actorUserId: 'u7', resolutionNote: null });
+      expect(lastSet()).toMatchObject({ status: 'open', deliveredAt: null, deliveredByUserId: null, deliveredVia: null, deliveryNote: null });
+    });
+
+    it('a reopen NEVER undoes an explicit delivery', async () => {
+      queueResult([occRow({ status: 'delivered', deliveredVia: 'explicit' })]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'open', actorUserId: 'u7', resolutionNote: null });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('is idempotent — a redelivery of an already-delivered occurrence is a no-op', async () => {
+      queueResult([occRow({ status: 'delivered', deliveredVia: 'ticket' })]); queueResult([{ id: 'e1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'done' });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('ignores a ticket no occurrence is linked to, and statuses that are neither resolved nor reopened', async () => {
+      queueResult([]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: null });
+      queueResult([occRow()]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'some_custom', actorUserId: 'u7', resolutionNote: null });
+      expect(chain.update.mock.calls).toHaveLength(0);
     });
   });
 

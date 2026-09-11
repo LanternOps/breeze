@@ -638,10 +638,72 @@ export async function markOccurrenceMissed(occurrenceId: string): Promise<void> 
     .set({ status: 'missed', updatedAt: new Date() })
     .where(and(eq(serviceDeliverableOccurrences.id, occurrenceId), inArray(serviceDeliverableOccurrences.status, MISSABLE)));
 }
-export async function applyTicketStatusChange(_args: {
+const RESOLVED_LIKE: ReadonlySet<string> = new Set(['resolved', 'closed']);
+const REOPENED_LIKE: ReadonlySet<string> = new Set(['new', 'open', 'pending', 'on_hold']);
+
+/**
+ * Spec §6. System caller (the `deliverable-status` subscriber). Advisory, not
+ * the record of delivery (D4) — the deliverable's completion policy decides,
+ * via the pure state machine. Idempotent by construction: the write is CAS'd
+ * on the status this function read, so a duplicate or racing event updates 0
+ * rows.
+ */
+export async function applyTicketStatusChange(args: {
   ticketId: string; orgId: string; to: string; actorUserId: string | null; resolutionNote: string | null;
 }): Promise<void> {
-  throw new Error('not implemented (W02)');
+  const [occ] = await db.select({
+      id: serviceDeliverableOccurrences.id, status: serviceDeliverableOccurrences.status,
+      deliveredVia: serviceDeliverableOccurrences.deliveredVia,
+      artifactRequired: serviceDeliverables.artifactRequired,
+      completionMode: serviceDeliverables.completionMode,
+    })
+    .from(serviceDeliverableOccurrences)
+    .innerJoin(serviceDeliverables, and(
+      eq(serviceDeliverables.id, serviceDeliverableOccurrences.deliverableId),
+      eq(serviceDeliverables.orgId, serviceDeliverableOccurrences.orgId),
+    ))
+    .where(and(eq(serviceDeliverableOccurrences.ticketId, args.ticketId), eq(serviceDeliverableOccurrences.orgId, args.orgId)))
+    .limit(1);
+  if (!occ) return;
+
+  const current = occ.status;
+  let outcome: ReturnType<typeof transition>;
+  if (RESOLVED_LIKE.has(args.to)) {
+    const evidence = await db.select({ id: serviceDeliverableEvidence.id })
+      .from(serviceDeliverableEvidence)
+      .where(and(eq(serviceDeliverableEvidence.occurrenceId, occ.id), eq(serviceDeliverableEvidence.orgId, args.orgId)))
+      .limit(1);
+    outcome = transition(current, {
+      type: 'ticket_resolved', hasEvidence: evidence.length > 0,
+      artifactRequired: occ.artifactRequired, completionMode: occ.completionMode,
+    });
+  } else if (REOPENED_LIKE.has(args.to)) {
+    outcome = transition(current, { type: 'ticket_reopened', deliveredVia: occ.deliveredVia });
+  } else {
+    return;
+  }
+  if (outcome.next === null) return;
+
+  const now = new Date();
+  const patch: Partial<typeof serviceDeliverableOccurrences.$inferInsert> = { status: outcome.next, updatedAt: now };
+  if (outcome.next === 'delivered') {
+    patch.deliveredAt = now;
+    patch.deliveredByUserId = args.actorUserId;
+    patch.deliveredVia = 'ticket';
+    patch.deliveryNote = args.resolutionNote;
+  } else if (outcome.next === 'awaiting_evidence') {
+    // The delivery is not recorded until evidence arrives (addEvidence stamps
+    // it), but the technician's resolution note is the delivery narrative —
+    // keep it so the eventual delivery carries it.
+    patch.deliveryNote = args.resolutionNote;
+  } else if (outcome.next === 'open') {
+    patch.deliveredAt = null; patch.deliveredByUserId = null;
+    patch.deliveredVia = null; patch.deliveryNote = null;
+  }
+
+  await db.update(serviceDeliverableOccurrences).set(patch)
+    // CAS on the status we decided from: a concurrent write loses silently.
+    .where(and(occurrenceKey(args.orgId, occ.id), eq(serviceDeliverableOccurrences.status, current)));
 }
 
 // ---------------------------------------------------------------------------
