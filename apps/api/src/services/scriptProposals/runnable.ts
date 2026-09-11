@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
-import { scriptProposals, type ScriptProposalRow } from '../../db/schema';
+import { scriptProposals, type ScriptProposalRow } from '../../db/schema/scriptProposals';
 import type { AuthContext } from '../../middleware/auth';
 
 export type ProposalRunnabilityReason =

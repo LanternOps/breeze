@@ -1,5 +1,5 @@
 import type { ScriptLanguage } from '@breeze/shared';
-import type { ScriptProposalRow } from '../../db/schema';
+import type { ScriptProposalRow } from '../../db/schema/scriptProposals';
 
 /**
  * The pinned material for a proposal-backed run (spec §4.5).

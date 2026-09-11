@@ -3,7 +3,7 @@ import {
   type ProposeScriptInput, type ScriptProposalStatus, type ScriptScanResult, scanScriptContent,
 } from '@breeze/shared';
 import { db } from '../../db';
-import { scriptProposals, type ScriptProposalRow } from '../../db/schema';
+import { scriptProposals, type ScriptProposalRow } from '../../db/schema/scriptProposals';
 import { sha256Content } from '../scriptVersions';
 import type { AuthContext } from '../../middleware/auth';
 
@@ -70,6 +70,29 @@ export async function createScriptProposal(
 
   if (!proposal) throw new Error('Failed to create script proposal');
   return { proposal, scan };
+}
+
+/**
+ * Back-fill `session_id` on a chat-authored proposal once the SDK's post-tool
+ * hook knows the proposal id (the tool handler itself never sees the Breeze
+ * session id). Org-scoped and `session_id IS NULL`-guarded, so a foreign-org
+ * id or an already-attributed row is a no-op — the immutability trigger also
+ * refuses a NULL→non-NULL→other rewrite. Returns whether a row was written.
+ */
+export async function attachProposalToSession(
+  proposalId: string,
+  orgId: string,
+  sessionId: string,
+): Promise<boolean> {
+  const result = await db
+    .update(scriptProposals)
+    .set({ sessionId })
+    .where(and(
+      eq(scriptProposals.id, proposalId),
+      eq(scriptProposals.orgId, orgId),
+      isNull(scriptProposals.sessionId),
+    ));
+  return (result as { rowCount?: number }).rowCount === 1;
 }
 
 /** Org-scoped read. Returns null rather than throwing on a cross-org id. */

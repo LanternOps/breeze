@@ -28,7 +28,9 @@ import {
   checkGuardrails,
   type AgentGuardrailPolicy,
   type GuardrailCheck,
+  type GuardrailContext,
 } from '../aiGuardrails';
+import { loadProposalGuardrailContext } from '../scriptProposals';
 import { getUserPermissions, userCanDecideApprovals } from '../permissions';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from '../expoPush';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
@@ -213,6 +215,14 @@ export interface CreateActionIntentInput {
    * own `ai_agent_runs.task_id` matches.
    */
   task?: ActionIntentTaskContext;
+  /**
+   * AI script authoring (spec §4.5): the proposal's reviewed risk tier, when
+   * the caller has already loaded it. Absent, `createActionIntent` loads it
+   * itself for a `run_script { proposalId }` call (see
+   * `resolveGuardrailForIntent`). This is the contract the unattended lane
+   * (W04) consumes — keep the field name.
+   */
+  guardrailContext?: GuardrailContext;
 }
 
 export type ActionIntentSnapshot = {
@@ -954,6 +964,30 @@ function triggerPolicyDecisionAttempt(intentId: string): void {
     });
 }
 
+/**
+ * The guardrail check `createActionIntent` runs, with the proposal context
+ * loaded first when the tool call names one.
+ *
+ * Exported so the seam is directly testable: without the context, a
+ * proposal-backed run_script would be refused here as tier 4 `tool_blocked`,
+ * and every proposal intent would die at creation.
+ *
+ * The load is a plain read outside any transaction — this runs BEFORE the
+ * creation transaction opens, so it cannot double-hold a pooled connection.
+ */
+export async function resolveGuardrailForIntent(
+  toolName: string,
+  input: Record<string, unknown>,
+  orgId: string | null,
+  provided?: GuardrailContext,
+): Promise<{ check: GuardrailCheck; context: GuardrailContext | undefined }> {
+  const context = provided
+    ?? (toolName === 'run_script' && typeof input.proposalId === 'string' && orgId
+      ? await loadProposalGuardrailContext(input, orgId)
+      : undefined);
+  return { check: checkGuardrails(toolName, input, context), context };
+}
+
 export async function createActionIntent(
   auth: AuthContext,
   input: CreateActionIntentInput,
@@ -1039,7 +1073,16 @@ export async function createActionIntent(
   const scopeDeviceId = input.scope && 'deviceId' in input.scope ? input.scope.deviceId : null;
   const scopeTicketId = input.scope && 'ticketId' in input.scope ? input.scope.ticketId : null;
 
-  const guardrail = checkGuardrails(input.toolName, input.input);
+  const { check: guardrail, context: guardrailContext } = await resolveGuardrailForIntent(
+    input.toolName,
+    input.input,
+    // `input.orgId` is the caller-supplied address; the authoritative
+    // `resolvedOrg` is computed a few lines below, and the guardrail only needs
+    // the org to scope a READ that is re-validated by assertProposalRunnable
+    // and by consumeProposalForIntent inside the transaction.
+    input.orgId ?? auth.orgId ?? null,
+    input.guardrailContext,
+  );
   if (!guardrail.allowed || guardrail.tier >= 4) {
     throw new ActionIntentTierError(
       `Tool "${input.toolName}" is not permitted on the action-intent path: ${guardrail.reason ?? 'blocked'}`,
@@ -1329,7 +1372,7 @@ export async function createActionIntent(
       // populates it the moment Task A4 lands, rather than needing a second
       // follow-up PR to wire the creation call site too.
       ...(scopeTicketId ? { scope: { ticketId: scopeTicketId } } : {}),
-    } as AgentGuardrailPolicy);
+    } as AgentGuardrailPolicy, guardrailContext);
     if (verdict.disposition === 'deny') {
       throw new ActionIntentError(
         `Agent policy denies "${input.toolName}": ${verdict.reason ?? 'denied'}`,

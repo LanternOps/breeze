@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { scriptProposals } from '../../db/schema';
+import { scriptProposals } from '../../db/schema/scriptProposals';
 import type { GuardrailContext } from '../aiGuardrails';
 
 /**

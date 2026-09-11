@@ -1,7 +1,7 @@
 import { Queue } from 'bullmq';
 import { desc, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { scriptProposalReviews, type ScriptProposalReviewRow } from '../../db/schema';
+import { scriptProposalReviews, type ScriptProposalReviewRow } from '../../db/schema/scriptProposals';
 import { getBullMQConnection } from '../redis';
 
 export const SCRIPT_REVIEW_QUEUE = 'script-review';

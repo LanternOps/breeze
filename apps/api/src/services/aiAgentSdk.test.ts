@@ -1865,7 +1865,8 @@ describe('createSessionPreToolUse', () => {
       expect(result).toEqual({ allowed: true });
       // Only the allowlist check moved to the exposed name. Tier, RBAC and the
       // audit row still describe the capability that actually runs.
-      expect(checkGuardrails).toHaveBeenCalledWith('run_script', { scriptId: 'script-1' });
+      // Third arg is the proposal guardrail context — undefined for a library run.
+      expect(checkGuardrails).toHaveBeenCalledWith('run_script', { scriptId: 'script-1' }, undefined);
       expect(checkToolPermission).toHaveBeenCalledWith(
         'run_script',
         { scriptId: 'script-1' },
