@@ -1235,3 +1235,15 @@ export {
   type CreateKeyDateInput,
   type UpdateKeyDateInput,
 } from './orgKeyDates';
+export {
+  orgDocumentCategorySchema,
+  uploadDocumentMetaSchema,
+  replaceDocumentMetaSchema,
+  updateDocumentSchema,
+  listDocumentsQuerySchema,
+  type OrgDocumentCategory,
+  type UploadDocumentMeta,
+  type ReplaceDocumentMeta,
+  type UpdateDocumentInput,
+  type ListDocumentsQuery,
+} from './orgDocuments';
