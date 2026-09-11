@@ -10,17 +10,24 @@ import { quoteRoutes as portalQuoteRoutes } from './quotes';
 import {
   portalAssetCheckoutEnabledMiddleware,
   portalSelfServiceEnabledMiddleware,
-  createPortalFeatureGateStrict
+  createPortalFeatureGateStrict,
+  createPortalFeatureGateAny
 } from './featureFlags';
 import { portalDashboardRoutes } from './dashboard';
 import { portalSecurityRoutes } from './security';
 import { portalBackupRoutes } from './backups';
 import { portalReportRoutes } from './reports';
 import { portalServiceRoutes } from './service';
+import { portalDocumentRoutes } from './documents';
 
 export const portalRoutes = new Hono();
 
 const isTicketsUsagePath = (c: Context) => c.req.path.endsWith('/tickets/usage');
+const isDocumentContentPath = (c: Context) => /\/documents\/[^/]+\/content$/.test(c.req.path);
+const documentsLibraryGate = createPortalFeatureGateStrict('enableDocuments');
+// Spec §8: a portal-visible document published as delivery evidence is
+// downloadable under enable_service even when the library page is off.
+const documentBytesGate = createPortalFeatureGateAny('enableDocuments', 'enableService');
 
 // Public routes (no auth required)
 portalRoutes.route('/', authRoutes);
@@ -53,6 +60,9 @@ portalRoutes.use('/reports/*', createPortalFeatureGateStrict('enableReports'));
 // Service deliverables W04 — both new surfaces fail closed the same way.
 portalRoutes.use('/service/*', portalAuthMiddleware);
 portalRoutes.use('/service/*', createPortalFeatureGateStrict('enableService'));
+portalRoutes.use('/documents/*', portalAuthMiddleware);
+portalRoutes.use('/documents/*', async (c, next) =>
+  isDocumentContentPath(c) ? documentBytesGate(c, next) : documentsLibraryGate(c, next));
 
 // `/tickets/usage` (Part B adds the handler to ticketRoutes) is gated on
 // enableSupportUsage, not enableTickets — it must not inherit the general
@@ -90,3 +100,4 @@ portalRoutes.route('/', portalSecurityRoutes);
 portalRoutes.route('/', portalBackupRoutes);
 portalRoutes.route('/', portalReportRoutes);
 portalRoutes.route('/', portalServiceRoutes);
+portalRoutes.route('/', portalDocumentRoutes);
