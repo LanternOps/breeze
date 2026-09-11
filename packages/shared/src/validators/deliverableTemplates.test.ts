@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  updateTemplateItemSchema,
   createTemplateSetSchema,
   updateTemplateSetSchema,
   createTemplateItemSchema,
@@ -33,6 +34,13 @@ describe('deliverableTemplates validators', () => {
     expect(updateTemplateSetSchema.safeParse({ orgId: '11111111-1111-4111-8111-111111111111' }).success).toBe(false);
     expect(updateTemplateSetSchema.safeParse({ items: [] }).success).toBe(false);
     expect(updateTemplateSetSchema.parse({ name: 'Best plan v2' })).toEqual({ name: 'Best plan v2' });
+  });
+
+  it('an item PATCH never resurrects the create defaults', () => {
+    // .partial() does NOT strip .default(), so a defaulted field list reused
+    // for the update schema would turn `PATCH { graceDays }` into a silent
+    // reset of every other knob.
+    expect(updateTemplateItemSchema.parse({ graceDays: 21 })).toEqual({ graceDays: 21 });
   });
 
   it('apply requires a setId and an ISO effectiveFrom when present', () => {

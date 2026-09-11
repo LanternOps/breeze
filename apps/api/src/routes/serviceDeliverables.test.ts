@@ -34,6 +34,14 @@ vi.mock('../services/serviceDeliverableService', () => ({
   },
 }));
 
+const templateMocks = vi.hoisted(() => ({ applyTemplateSet: vi.fn() }));
+vi.mock('../services/deliverableTemplateService', () => ({
+  ...templateMocks,
+  TemplateServiceError: class TemplateServiceError extends Error {
+    constructor(msg: string, public status = 400, public code = 'ERR', public details?: unknown) { super(msg); }
+  },
+}));
+
 import { authMiddleware } from '../middleware/auth';
 import { serviceDeliverableRoutes } from './serviceDeliverables';
 
@@ -210,5 +218,44 @@ describe('service deliverable routes (#5573 W01)', () => {
   it('400 for a non-guid org or deliverable id', async () => {
     expect((await app.request(`/bad/deliverables`, { headers: AUTH })).status).toBe(400);
     expect((await app.request(`/${ORG}/deliverables/bad`, { headers: AUTH })).status).toBe(400);
+  });
+
+  // ── apply-template (W05) ────────────────────────────────────────────────
+  it('POST apply-template returns { data } with created and skipped', async () => {
+    templateMocks.applyTemplateSet.mockResolvedValueOnce({
+      setId: DEL, setName: 'Best plan', orgId: ORG, contractId: null, effectiveFrom: '2026-10-01',
+      created: [{ id: OCC, name: 'Sign-in log review', cadence: 'monthly', anchorDueDate: '2026-10-31' }],
+      skipped: ['Firewall rule review'],
+    });
+    const res = await post(`/${ORG}/deliverables/apply-template`, { setId: DEL, effectiveFrom: '2026-10-01' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ data: { skipped: ['Firewall rule review'] } });
+    expect(templateMocks.applyTemplateSet).toHaveBeenCalledWith(
+      ORG, DEL, { contractId: undefined, effectiveFrom: '2026-10-01', ownerUserId: undefined },
+      expect.objectContaining({ scope: 'partner', partnerId: 'p1' }),
+    );
+  });
+
+  it('POST apply-template surfaces 409 TEMPLATE_NAME_COLLISION with details.collisions', async () => {
+    templateMocks.applyTemplateSet.mockRejectedValueOnce({
+      status: 409, code: 'TEMPLATE_NAME_COLLISION', message: 'exists', details: { collisions: ['Sign-in log review'] },
+    });
+    const res = await post(`/${ORG}/deliverables/apply-template`, { setId: DEL });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'TEMPLATE_NAME_COLLISION', details: { collisions: ['Sign-in log review'] } });
+  });
+
+  it('POST apply-template 400s a non-ISO effectiveFrom before reaching the service', async () => {
+    templateMocks.applyTemplateSet.mockClear();
+    const res = await post(`/${ORG}/deliverables/apply-template`, { setId: DEL, effectiveFrom: '31/10/2026' });
+    expect(res.status).toBe(400);
+    expect(templateMocks.applyTemplateSet).not.toHaveBeenCalled();
+  });
+
+  it('apply-template is not swallowed by the /:id matcher', async () => {
+    templateMocks.applyTemplateSet.mockResolvedValueOnce({ created: [], skipped: [] });
+    const res = await post(`/${ORG}/deliverables/apply-template`, { setId: DEL });
+    expect(res.status).toBe(200);
+    expect(getDeliverable).not.toHaveBeenCalled();
   });
 });

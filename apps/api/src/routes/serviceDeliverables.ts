@@ -20,6 +20,7 @@ import { zValidator } from '../lib/validation';
 import { authMiddleware, requireScope, requirePermission, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import {
+  applyTemplateSetSchema,
   createDeliverableSchema, updateDeliverableSchema, listDeliverablesQuerySchema,
   deliverOccurrenceSchema, waiveOccurrenceSchema, rescheduleOccurrenceSchema,
   addEvidenceSchema, listOccurrencesQuerySchema,
@@ -30,6 +31,8 @@ import {
   addEvidence, removeEvidence,
   type DeliverableActor,
 } from '../services/serviceDeliverableService';
+import { applyTemplateSet } from '../services/deliverableTemplateService';
+import { templateActorFrom, handleTemplateError } from './deliverableTemplates';
 
 export const serviceDeliverableRoutes = new Hono();
 serviceDeliverableRoutes.use('*', authMiddleware);
@@ -169,6 +172,26 @@ serviceDeliverableRoutes.delete(
     try {
       return c.json({ data: await removeEvidence(orgId, oId, eId, deliverableActorFrom(c)) });
     } catch (err) { return handleDeliverableError(c, err); }
+  },
+);
+
+// ── Apply a template set (literal segment — MUST precede `/:id`) ───────────
+
+serviceDeliverableRoutes.post(
+  '/:orgId/deliverables/apply-template',
+  scopes, writePerm,
+  zValidator('param', orgParam), zValidator('json', applyTemplateSetSchema),
+  async (c) => {
+    const { setId, contractId, effectiveFrom, ownerUserId } = c.req.valid('json');
+    try {
+      return c.json({
+        data: await applyTemplateSet(
+          c.req.valid('param').orgId, setId,
+          { contractId, effectiveFrom, ownerUserId },
+          templateActorFrom(c),
+        ),
+      });
+    } catch (err) { return handleTemplateError(c, err); }
   },
 );
 
