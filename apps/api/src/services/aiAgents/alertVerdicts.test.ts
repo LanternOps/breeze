@@ -19,6 +19,9 @@ const OTHER_USER_ID = '00000000-0000-4000-8000-0000000000ec';
 const AGENT_ID = '00000000-0000-4000-8000-0000000000ed';
 const RULE_ID = '00000000-0000-4000-8000-0000000000ee';
 const ROOT_ALERT_ID = '00000000-0000-4000-8000-0000000000ef';
+// The run's org after a device org-move re-stamps the verdict's org_id to the
+// target org (#4867) but leaves ai_agent_runs behind in the source org.
+const SOURCE_RUN_ORG_ID = '00000000-0000-4000-8000-0000000000f0';
 
 const state = vi.hoisted(() => ({
   selectQueue: [] as unknown[][],
@@ -809,6 +812,7 @@ describe('projectAlertAiVerdictSummary', () => {
       rationale: 'Disk usage climbing steadily with no recovery.',
       patternKind: 'daily',
       feedback: 'up',
+      feedbackBy: USER_ID,
       suggestedIntentId: INTENT_ID,
       createdAt: '2026-09-22T10:00:00.000Z',
     });
@@ -837,6 +841,7 @@ describe('projectAlertAiVerdictSummary', () => {
 
     expect(dto.patternKind).toBeNull();
     expect(dto.feedback).toBeNull();
+    expect(dto.feedbackBy).toBeNull();
     expect(dto.suggestedIntentId).toBeNull();
   });
 });
@@ -877,7 +882,7 @@ describe('recordVerdictFeedback', () => {
 
   it('an up-vote writes the update and one feedback_up evidence row keyed to the verdict\'s own createdAt', async () => {
     state.selectQueue.push([verdictRow()]);
-    state.selectQueue.push([{ agentId: AGENT_ID }]);
+    state.selectQueue.push([{ agentId: AGENT_ID, orgId: ORG_ID }]);
     state.selectQueue.push([{ ruleId: RULE_ID }]);
 
     const result = await recordVerdictFeedback(agentAuth, VERDICT_ROW_ID, 'up');
@@ -900,6 +905,36 @@ describe('recordVerdictFeedback', () => {
       runId: RUN_ID,
       // The FIXED bucket — the verdict's own creation, not the vote's.
       occurredAt: new Date('2026-08-15T00:00:00.000Z'),
+    });
+  });
+
+  it('stamps the evidence row with the RUN\'s org, not the verdict\'s, once the verdict\'s alert has moved org (#4867)', async () => {
+    // A device org-move re-stamps `ai_alert_verdicts.org_id` to the target org
+    // (routes/devices/moveOrg.ts, ALERT_CHILD_ORG_REWRITE_TABLES) so the moved
+    // alert keeps its noise classification, but `ai_agent_runs` deliberately
+    // stays in the SOURCE org (owner decision 2026-08-23) and `run_id` is NOT
+    // NULL — so the two orgs diverge. `ai_agent_op_evidence_run_org_fk` is the
+    // COMPOSITE (run_id, org_id) -> ai_agent_runs(id, org_id): writing the
+    // VERDICT's org next to the RUN's id is a 23503 that rolls the whole
+    // feedback request back as a 500. The run's own org is the only value that
+    // FK accepts, and it is also the honest one — the evidence describes what
+    // the agent did, and the agent belongs to the org that ran it.
+    state.selectQueue.push([verdictRow({ orgId: ORG_ID })]);
+    state.selectQueue.push([{ agentId: AGENT_ID, orgId: SOURCE_RUN_ORG_ID }]);
+    state.selectQueue.push([{ ruleId: RULE_ID }]);
+
+    const result = await recordVerdictFeedback(agentAuth, VERDICT_ROW_ID, 'up');
+
+    // The vote itself still resolves against the verdict, in the verdict's org
+    // (the route audits that org) — only the evidence row's tenant stamp
+    // follows the run.
+    expect(result).toEqual({ status: 'ok', orgId: ORG_ID });
+    expect(state.updateCount).toBe(1);
+    expect(state.insertValues[0]).toMatchObject({
+      orgId: SOURCE_RUN_ORG_ID,
+      agentId: AGENT_ID,
+      runId: RUN_ID,
+      metric: 'feedback_up',
     });
   });
 

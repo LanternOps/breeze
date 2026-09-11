@@ -97,6 +97,19 @@ docker compose version >/dev/null 2>&1 || {
   exit 1
 }
 
+# deploy/docker-compose.prod.yml's M365 executor signing-key secrets default
+# their file: source to ../docker/secrets/.empty-jwk (relative to deploy/)
+# when unset — the common case; see #2991. This script always runs from a
+# full checkout (REPO_ROOT above, and `pnpm db:migrate` below both require
+# one), so the tracked file is already present; this is a fail-fast guard,
+# not a repair — a missing file here means the checkout is broken/sparse and
+# should be fixed rather than papered over.
+m365_jwk_placeholder="${REPO_ROOT}/docker/secrets/.empty-jwk"
+if [[ ! -f "${m365_jwk_placeholder}" ]]; then
+  echo "[deploy] Missing ${m365_jwk_placeholder} (tracked in git) — this checkout looks incomplete/sparse. A full 'git clone' is required; see docs/operations/DEPLOY_PRODUCTION.md prerequisites." >&2
+  exit 1
+fi
+
 # shellcheck disable=SC1090
 set -a; source "${ENV_FILE}"; set +a
 
@@ -110,6 +123,7 @@ required_vars=(
   BREEZE_VERSION
   BREEZE_API_IMAGE_DIGEST
   BREEZE_WEB_IMAGE_DIGEST
+  BREEZE_PORTAL_IMAGE_DIGEST
   BREEZE_BINARIES_IMAGE_DIGEST
   CADDY_IMAGE_REF
   CLOUDFLARED_IMAGE_REF
@@ -188,12 +202,45 @@ require_digest_ref() {
 
 require_sha256_digest BREEZE_API_IMAGE_DIGEST
 require_sha256_digest BREEZE_WEB_IMAGE_DIGEST
+require_sha256_digest BREEZE_PORTAL_IMAGE_DIGEST
 require_sha256_digest BREEZE_BINARIES_IMAGE_DIGEST
 require_digest_ref CADDY_IMAGE_REF
 require_digest_ref CLOUDFLARED_IMAGE_REF
 require_digest_ref REDIS_IMAGE_REF
 require_digest_ref COTURN_IMAGE_REF
 require_digest_ref BILLING_IMAGE_REF
+
+release_repository="lanternops/breeze"
+release_version="${BREEZE_VERSION#v}"
+if [[ ! "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+  echo "[deploy] BREEZE_VERSION must be an exact semantic version" >&2
+  exit 1
+fi
+release_tag="v${release_version}"
+release_image_base="ghcr.io/lanternops/breeze"
+release_manifest_dir="$(mktemp -d)"
+trap 'rm -rf "$release_manifest_dir"' EXIT
+release_download_base="https://github.com/${release_repository}/releases/download/${release_tag}"
+
+echo "[deploy] Downloading signed image inventory for ${release_repository} ${release_tag}"
+curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+  --connect-timeout 10 --max-time 30 --retry 2 --max-filesize 1048576 \
+  --output "${release_manifest_dir}/release-artifact-manifest.json" \
+  "${release_download_base}/release-artifact-manifest.json"
+curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+  --connect-timeout 10 --max-time 30 --retry 2 --max-filesize 4096 \
+  --output "${release_manifest_dir}/release-artifact-manifest.json.ed25519" \
+  "${release_download_base}/release-artifact-manifest.json.ed25519"
+
+node "${REPO_ROOT}/scripts/release/release-image-manifest.mjs" verify \
+  --manifest "${release_manifest_dir}/release-artifact-manifest.json" \
+  --signature "${release_manifest_dir}/release-artifact-manifest.json.ed25519" \
+  --expected-repository "${release_repository}" \
+  --expected-release "${release_tag}" \
+  --require-image "api=${release_image_base}/api@${BREEZE_API_IMAGE_DIGEST}" \
+  --require-image "web=${release_image_base}/web@${BREEZE_WEB_IMAGE_DIGEST}" \
+  --require-image "portal=${release_image_base}/portal@${BREEZE_PORTAL_IMAGE_DIGEST}" \
+  --require-image "binaries=${release_image_base}/binaries@${BREEZE_BINARIES_IMAGE_DIGEST}"
 
 COMPOSE_ARGS=(-f "${COMPOSE_FILE}")
 if [[ "${ENABLE_MONITORING}" == "true" ]]; then
@@ -238,6 +285,26 @@ assert_supported_redis_topology() {
     echo "[deploy] Redis maxmemory-policy must be noeviction" >&2
     return 1
   }
+}
+
+# The post-deploy admission check must prove it reached BREEZE, not merely that
+# something answered. `curl --fail` only fails at >= 400, so an authenticating
+# proxy that covers /health but not /ready answers the probe with a 302 to its
+# identity provider and curl exits 0 — the redirect never reaches the API and
+# the check silently stops being diagnostic (found on a live Cloudflare Access
+# instance, #4007). `-L` is worse: it can land on a 200 login page.
+# `--fail-with-body` does not help either; same >= 400 threshold. So assert the
+# UNREDIRECTED status is exactly 200 and that the body is Breeze's own verdict.
+readiness_ok() {
+  local body status rc
+  body="$(mktemp)"
+  rc=1
+  status="$(curl --silent --show-error --output "${body}" --write-out '%{http_code}' "https://${BREEZE_DOMAIN}/ready")"
+  if [[ "${status}" == "200" ]] && grep -q '"ready":true' "${body}"; then
+    rc=0
+  fi
+  rm -f "${body}"
+  return "${rc}"
 }
 
 expect_barrier_status() {
@@ -395,14 +462,14 @@ fi
 
 echo "[deploy] Running smoke checks"
 for _ in {1..24}; do
-  if curl --silent --show-error --fail "https://${BREEZE_DOMAIN}/health" >/dev/null 2>&1; then
+  if readiness_ok; then
     break
   fi
   sleep 5
 done
 
-if ! curl --silent --show-error --fail "https://${BREEZE_DOMAIN}/health" >/dev/null; then
-  echo "[deploy] Health check failed: https://${BREEZE_DOMAIN}/health" >&2
+if ! readiness_ok; then
+  echo "[deploy] Readiness check failed: https://${BREEZE_DOMAIN}/ready did not return HTTP 200 with \"ready\":true" >&2
   exit 1
 fi
 

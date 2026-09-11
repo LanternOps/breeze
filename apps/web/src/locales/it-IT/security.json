@@ -1031,12 +1031,14 @@
       "loadWithStatus": "Impossibile caricare le regole (HTTP {{status}})",
       "load": "Impossibile caricare le regole",
       "updateRule": "Impossibile aggiornare la regola",
-      "deleteRule": "Impossibile eliminare la regola"
+      "deleteRule": "Impossibile eliminare la regola",
+      "reapproveRule": "Impossibile riapprovare la regola"
     },
     "toasts": {
       "defaultVerdictSet": "Verdetto predefinito impostato su {{verdict}}",
       "ruleToggled": "Regola \"{{name}}\" {{state}}",
-      "ruleDeleted": "Regola \"{{name}}\" eliminata"
+      "ruleDeleted": "Regola \"{{name}}\" eliminata",
+      "ruleReapproved": "Regola \"{{name}}\" riapprovata: approvazione automatica ripristinata"
     },
     "states": {
       "disabled": "disabilitata",
@@ -1044,7 +1046,8 @@
     },
     "description": "I criteri software vengono valutati per primi: una corrispondenza in allowlist/blocklist decide prima di queste regole. Le regole vengono poi eseguite in ordine di priorità (prima la più bassa); la prima corrispondenza decide.",
     "actions": {
-      "addRule": "Aggiungi regola"
+      "addRule": "Aggiungi regola",
+      "reapprove": "Riapprova"
     },
     "defaultVerdict": {
       "label": "Verdetto predefinito",
@@ -1070,6 +1073,15 @@
       "title": "Elimina regola PAM",
       "message": "Eliminare la regola \"{{name}}\"? Le richieste di elevazione non corrisponderanno più a questa regola.",
       "confirm": "Elimina regola"
+    },
+    "staleTierBadge": {
+      "label": "Obsoleto",
+      "tooltip": "Il livello di rischio {{tier}} non corrisponde più a nulla che questa regola possa selezionare, quindi non potrà mai più corrispondere.",
+      "tooltipWithTiers": "Il livello di rischio {{tier}} non corrisponde più a nulla che questa regola possa selezionare, quindi non potrà mai più corrispondere. Livelli attualmente in uso: {{tiers}}."
+    },
+    "suspendedBadge": {
+      "label": "Approvazione automatica sospesa",
+      "tooltip": "Questa regola approvava automaticamente prima dell’aggiornamento. Ora richiede l’approvazione umana finché un amministratore non la riapprova."
     }
   },
   "pamPamSignerGroupsTab": {

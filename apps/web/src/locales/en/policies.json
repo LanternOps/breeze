@@ -9,6 +9,8 @@
       "thisPolicyHasNoOrganizationSoAssignment": "This policy has no organization, so assignment targets cannot be listed.",
       "failedToAddAssignment": "Failed to add assignment",
       "failedToRemoveAssignment": "Failed to remove assignment",
+      "assignmentAdded": "Assignment added",
+      "assignmentRemoved": "Assignment removed",
       "roleFilter": "Role Filter",
       "optional": "(optional)",
       "noRestrictionAppliesToAllDeviceRoles": "No restriction - applies to all device roles",
@@ -119,6 +121,9 @@
       "archived2": "Archived",
       "inheritingFrom": "Inheriting from",
       "overrideIndividualTabsToCustomizeSettings": "— Override individual tabs to customize settings",
+      "managedByYourMsp": "Managed by your MSP",
+      "inheritedByPolicies_one": "Inherited by {{count}} policy",
+      "inheritedByPolicies_other": "Inherited by {{count}} policies",
       "isnTAvailableOnPartnerWidePolicies": "isn't available on partner-wide policies",
       "configureThisFeatureOnAnOrganizationScoped": "Configure this feature on an organization-scoped policy.",
       "thisPolicyStillCarriesAnExisting": "This policy still carries an existing",
@@ -136,6 +141,7 @@
     "configPolicyList": {
       "archived": "Archived",
       "configurationPolicies": "Configuration Policies",
+      "inheritsBadge": "Inherits",
       "of": "of",
       "policies": "policies",
       "searchPolicies": "Search policies...",
@@ -155,6 +161,7 @@
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Failed to fetch configuration policies",
       "failedToDeletePolicy": "Failed to delete policy",
+      "deleteBlockedByChildren": "Delete the policies that inherit from this one first:",
       "loadingConfigurationPolicies": "Loading configuration policies...",
       "tryAgain": "Try again",
       "configurationPolicies": "Configuration Policies",
@@ -664,6 +671,16 @@
         "configCheck": "config_check",
         "none": "none"
       },
+      "deviceLifecycleTab": {
+        "permanentlyDeleteRemovedDevices": "Permanently delete removed devices",
+        "offKeepRemovedDevicesUntilDeletedManually": "Off — keep removed devices until someone deletes them manually.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "Removed devices are permanently deleted {{days}} days after removal.",
+        "permanentlyDeleteRemovedDevicesAfter": "Permanently delete removed devices after",
+        "days": "days",
+        "enterAWholeNumberOfDaysBetween": "Enter a whole number of days between 1 and 3650.",
+        "purgeIsIrreversibleAndDestroysHistory": "Purge is irreversible and destroys history",
+        "aDailyJobPermanentlyDeletesTheDevice": "A daily job permanently deletes the device record and everything attached to it — alerts, scripts, patches, logs and inventory. Devices with an agent uninstall still queued are skipped until it completes. The closest policy wins, so an organization can switch this off to opt out of an all-organizations window."
+      },
       "eventLogTab": {
         "security": "Security",
         "hardware": "Hardware",
@@ -694,7 +711,11 @@
       "featureTabShell": {
         "override": "Override",
         "revertToParent": "Revert to Parent",
-        "saving": "Saving..."
+        "saving": "Saving...",
+        "revertConfirmTitle": "Revert to parent policy?",
+        "revertConfirmMessage": "This deletes the {{feature}} override on this policy. Its settings are lost and the parent policy's settings apply to every device using this policy. This cannot be undone.",
+        "removeConfirmTitle": "Remove this configuration?",
+        "removeConfirmMessage": "This deletes the {{feature}} configuration from this policy. Its settings are lost and the feature stops being applied to every device using this policy. This cannot be undone."
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Deploy Breeze Assist to devices",
@@ -883,9 +904,20 @@
         "time": "Time",
         "dayOfWeek": "Day of week",
         "dayOfMonth": "Day of month",
+        "offlineDevices": "Offline devices",
+        "offlineBehaviorQueue": "Queue for offline devices",
+        "offlineBehaviorQueueDescription": "Runs on the next check-in, before the next scheduled run.",
+        "offlineBehaviorSkip": "Skip offline devices",
+        "offlineBehaviorSkipDescription": "Devices that are offline when the job runs are recorded as skipped.",
         "rebootPolicy": "Reboot Policy",
         "rebootDelayMinutes": "Reboot delay (minutes)",
         "rebootDelayMinutesDescription": "How long the logged-in user is warned before a post-patch reboot.",
+        "rebootAllowDeferral": "Let users postpone the restart",
+        "rebootAllowDeferralDescription": "Show the signed-in user a prompt with a Postpone button. Requires the Breeze helper to be running in the user's session; Linux devices fall back to the terminal warning. The restart still happens at the deadline once the postponements run out.",
+        "rebootMaxDeferrals": "Maximum postponements",
+        "rebootMaxDeferralsDescription": "How many times one user may postpone a single restart before it proceeds.",
+        "rebootDeferralMinutes": "Postpone by (minutes)",
+        "rebootDeferralMinutesDescription": "How far each postponement pushes the restart out.",
         "windowsUpdateSource": "Windows Update Source",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Manage Windows Update exclusively through Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Suppresses the endpoint's native Windows Update automatic-install channel so updates only flow through Breeze's approval rings — preventing unexpected reboots and patches outside your schedule. Windows-only; Breeze's own scan/approve/install path is unaffected. Reverts cleanly when disabled (a pre-existing admin Group Policy is left untouched).",
@@ -920,7 +952,8 @@
         "loadingPolicies": "Loading policies...",
         "noExistingPoliciesFound": "No existing policies found.",
         "selectAPolicy": "Select a policy...",
-        "clearSelection": "Clear selection"
+        "clearSelection": "Clear selection",
+        "allOrgs": "All orgs"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",
@@ -1628,20 +1661,6 @@
       "catalogTab": "Catalog",
       "summaryCompleted7d": "Completed (7d)",
       "summaryFailed7d": "Failed (7d)"
-    },
-    "softwareComplianceReport": {
-      "softwareComplianceReport": "Software Compliance Report",
-      "analyzeSoftwareVersionDriftAcrossManagedDevices": "Analyze software version drift across managed devices.",
-      "bulkUpdate": "Bulk update",
-      "versionDriftAnalysis": "Version drift analysis",
-      "clickARowToSeeOutdatedDevices": "Click a row to see outdated devices.",
-      "software": "Software",
-      "expectedVersion": "Expected version",
-      "devicesOnVersion": "Devices on version",
-      "devicesOutdated": "Devices outdated",
-      "details": "Details",
-      "outdatedDevices": "Outdated devices",
-      "hide": "Hide"
     },
     "softwareInventory": {
       "allowed": "Allowed",

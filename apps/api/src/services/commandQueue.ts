@@ -1,8 +1,14 @@
 import { eq, and, inArray } from 'drizzle-orm';
-import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
+import {
+  db,
+  getCurrentDbAccessContext,
+  runOutsideDbContext,
+  withDbAccessContext,
+  withSystemDbAccessContext,
+} from '../db';
 import { deviceCommands, devices, auditLogs, users } from '../db/schema';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
-import { captureException } from './sentry';
+import { captureException, captureMessage } from './sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from './backupMetrics';
 import {
   claimPendingCommandForDelivery,
@@ -13,7 +19,13 @@ import {
   AGENT_BINARY_UPDATE_COMMAND_TYPES,
   agentBinaryUpdateDispatchRefusal,
 } from './agentEditionCompat';
+import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { recordCommandDispatch } from './anomalyMetrics';
+// #5128. `dispatchDeviceCommand` imports back from this module; both uses are
+// function-level (neither evaluates the other's exports at module load), so the
+// ESM cycle resolves.
+import { dispatchDeviceCommand } from './dispatchDeviceCommand';
+import { deliverByFor, type OfflinePolicy } from './commandOfflinePolicy';
 import {
   decryptCommandForDelivery,
   terminalPayloadErasureSet,
@@ -40,170 +52,13 @@ export const WATCHDOG_STALE_MS = 10 * 60 * 1000;
 export const SEND_RETRY_ATTEMPTS = 3;
 export const SEND_RETRY_DELAY_MS = 500;
 
-// Command types for system tools
-export const CommandTypes = {
-  // Process management
-  LIST_PROCESSES: 'list_processes',
-  GET_PROCESS: 'get_process',
-  KILL_PROCESS: 'kill_process',
-
-  // Service management
-  LIST_SERVICES: 'list_services',
-  GET_SERVICE: 'get_service',
-  START_SERVICE: 'start_service',
-  STOP_SERVICE: 'stop_service',
-  RESTART_SERVICE: 'restart_service',
-
-  // Event logs (Windows)
-  EVENT_LOGS_LIST: 'event_logs_list',
-  EVENT_LOGS_QUERY: 'event_logs_query',
-  EVENT_LOG_GET: 'event_log_get',
-
-  // Scheduled tasks (Windows)
-  TASKS_LIST: 'tasks_list',
-  TASK_GET: 'task_get',
-  TASK_RUN: 'task_run',
-  TASK_ENABLE: 'task_enable',
-  TASK_DISABLE: 'task_disable',
-  TASK_HISTORY: 'task_history',
-
-  // Registry (Windows)
-  REGISTRY_KEYS: 'registry_keys',
-  REGISTRY_VALUES: 'registry_values',
-  REGISTRY_GET: 'registry_get',
-  REGISTRY_SET: 'registry_set',
-  REGISTRY_DELETE: 'registry_delete',
-  REGISTRY_KEY_CREATE: 'registry_key_create',
-  REGISTRY_KEY_DELETE: 'registry_key_delete',
-
-  // File operations
-  FILE_LIST: 'file_list',
-  FILE_READ: 'file_read',
-  FILE_WRITE: 'file_write',
-  FILE_DELETE: 'file_delete',
-  FILE_MKDIR: 'file_mkdir',
-  FILE_RENAME: 'file_rename',
-  FILESYSTEM_ANALYSIS: 'filesystem_analysis',
-  FILE_COPY: 'file_copy',
-  FILE_TRASH_LIST: 'file_trash_list',
-  FILE_TRASH_RESTORE: 'file_trash_restore',
-  FILE_TRASH_PURGE: 'file_trash_purge',
-  FILE_LIST_DRIVES: 'file_list_drives',
-
-  // Terminal
-  TERMINAL_START: 'terminal_start',
-  TERMINAL_DATA: 'terminal_data',
-  TERMINAL_RESIZE: 'terminal_resize',
-  TERMINAL_STOP: 'terminal_stop',
-
-  // Script execution
-  SCRIPT: 'script',
-
-  // Software management
-  SOFTWARE_INSTALL: 'software_install',
-  SOFTWARE_UNINSTALL: 'software_uninstall',
-  SOFTWARE_UPDATE: 'software_update',
-  // Opt-in macOS package-manager bootstrap (installs Homebrew itself).
-  HOMEBREW_BOOTSTRAP: 'homebrew_bootstrap',
-  CIS_BENCHMARK: 'cis_benchmark',
-  APPLY_CIS_REMEDIATION: 'apply_cis_remediation',
-
-  // Patch management
-  PATCH_SCAN: 'patch_scan',
-  INSTALL_PATCHES: 'install_patches',
-  ROLLBACK_PATCHES: 'rollback_patches',
-  COLLECT_RELIABILITY_METRICS: 'collect_reliability_metrics',
-
-  // Security
-  SECURITY_COLLECT_STATUS: 'security_collect_status',
-  SECURITY_SCAN: 'security_scan',
-  SECURITY_THREAT_QUARANTINE: 'security_threat_quarantine',
-  SECURITY_THREAT_REMOVE: 'security_threat_remove',
-  SECURITY_THREAT_RESTORE: 'security_threat_restore',
-  SENSITIVE_DATA_SCAN: 'sensitive_data_scan',
-  ENCRYPT_FILE: 'encrypt_file',
-  SECURE_DELETE_FILE: 'secure_delete_file',
-  QUARANTINE_FILE: 'quarantine_file',
-
-  // Disk encryption (BitLocker / FileVault)
-  ENCRYPTION_COLLECT_KEYS: 'encryption_collect_keys',
-  ENCRYPTION_ROTATE_KEY: 'encryption_rotate_key',
-
-  // Peripheral control — pushes full active policy set to agent
-  PERIPHERAL_POLICY_SYNC: 'peripheral_policy_sync',
-  PERIPHERAL_POLICY_SYNC_V2: 'peripheral_policy_sync_v2',
-  AGENT_ROLLBACK_V1: 'agent_rollback_v1',
-
-  // Log shipping
-  SET_LOG_LEVEL: 'set_log_level',
-
-  // Runtime diagnostics — on-demand pprof capture from the agent (#2389).
-  // Profiles are captured in-process and returned base64 in the command
-  // result; the agent never opens a listening socket for this.
-  CAPTURE_PPROF: 'capture_pprof',
-
-  // Screenshot (AI Vision)
-  TAKE_SCREENSHOT: 'take_screenshot',
-
-  // Computer control (AI Computer Use)
-  COMPUTER_ACTION: 'computer_action',
-
-  // Boot performance
-  COLLECT_BOOT_PERFORMANCE: 'collect_boot_performance',
-  MANAGE_STARTUP_ITEM: 'manage_startup_item',
-
-  // Audit policy compliance
-  COLLECT_AUDIT_POLICY: 'collect_audit_policy',
-  APPLY_AUDIT_POLICY_BASELINE: 'apply_audit_policy_baseline',
-
-  // Safe mode reboot (Windows only)
-  REBOOT_SAFE_MODE: 'reboot_safe_mode',
-  // Wake-on-LAN — sent to a relay agent on the target's LAN, not the offline target itself
-  WAKE_ON_LAN: 'wake_on_lan',
-  // On-demand inventory refresh — agent re-runs every send*Inventory collector,
-  // so the API sees fresh hardware/software/network/etc. without waiting for
-  // the next periodic cycle.
-  REFRESH_INVENTORY: 'refresh_inventory',
-  // Self-uninstall (remote wipe)
-  SELF_UNINSTALL: 'self_uninstall',
-  // Backup
-  BACKUP_RUN: 'backup_run',
-  BACKUP_STOP: 'backup_stop',
-  BACKUP_RESTORE: 'backup_restore',
-  BACKUP_VERIFY: 'backup_verify',
-  BACKUP_TEST_RESTORE: 'backup_test_restore',
-  BACKUP_CLEANUP: 'backup_cleanup',
-  // VSS
-  VSS_STATUS: 'vss_status',
-  VSS_WRITER_LIST: 'vss_writer_list',
-  // MSSQL
-  MSSQL_DISCOVER: 'mssql_discover',
-  MSSQL_BACKUP: 'mssql_backup',
-  MSSQL_RESTORE: 'mssql_restore',
-  MSSQL_VERIFY: 'mssql_verify',
-  // Hyper-V
-  HYPERV_DISCOVER: 'hyperv_discover',
-  HYPERV_BACKUP: 'hyperv_backup',
-  HYPERV_RESTORE: 'hyperv_restore',
-  HYPERV_CHECKPOINT: 'hyperv_checkpoint',
-  HYPERV_VM_STATE: 'hyperv_vm_state',
-  // System state & BMR
-  SYSTEM_STATE_COLLECT: 'system_state_collect',
-  HARDWARE_PROFILE: 'hardware_profile',
-  VM_RESTORE_FROM_BACKUP: 'vm_restore_from_backup',
-  VM_RESTORE_ESTIMATE: 'vm_restore_estimate',
-  VM_INSTANT_BOOT: 'vm_instant_boot',
-  BMR_RECOVER: 'bmr_recover',
-  // Vault
-  VAULT_SYNC: 'vault_sync',
-  VAULT_STATUS: 'vault_status',
-  VAULT_CONFIGURE: 'vault_configure',
-  // Incident response
-  COLLECT_EVIDENCE: 'collect_evidence',
-  EXECUTE_CONTAINMENT: 'execute_containment',
-} as const;
-
-export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
+// Command types for system tools.
+// #5128: the table itself now lives in the leaf module ./commandTypes so the
+// fail-closed offline-policy registry can build from it at module load without
+// forming an initialisation cycle through this file. Re-exported here so every
+// existing `import { CommandTypes } from './commandQueue'` keeps working.
+export { CommandTypes, type CommandType } from './commandTypes';
+import { CommandTypes, type CommandType } from './commandTypes';
 
 export interface CommandPayload {
   [key: string]: unknown;
@@ -217,6 +72,7 @@ export interface CommandResult {
   error?: string;
   durationMs?: number;
   data?: unknown;
+  trust?: { capability: 'device_execute'; reason: string };
   /**
    * The device_commands row id, attached by executeCommand once a command row
    * exists (success or failure). Lets callers point at the persisted result
@@ -250,7 +106,13 @@ export async function insertQueuedCommandInTransaction(
     deviceId: string;
     type: CommandType;
     payload: CommandPayload;
-    createdBy: string;
+    /**
+     * `device_commands.created_by` is a NULLABLE uuid. Pass `null` for a
+     * synthetic principal that `resolveCommandCreatedBy` degraded — NOT `''`,
+     * which Postgres rejects with `22P02 invalid input syntax for type uuid`
+     * and which rolls back the caller's whole transaction (#3525 W02b).
+     */
+    createdBy: string | null;
   },
 ): Promise<QueuedCommand> {
   const [command] = await tx.insert(deviceCommands).values({
@@ -275,6 +137,18 @@ const runOutsideDbContextSafe = runOutsideDbContext;
 export interface QueueCommandForExecutionResult {
   command?: QueuedCommand;
   error?: string;
+  trust?: { capability: 'device_execute'; reason: string };
+  /**
+   * #5128. `delivered` = pushed over the live socket. `queued_live` = device
+   * online, waiting for the next heartbeat. `queued_offline` = the device was
+   * not online and the command is waiting for it to come back.
+   */
+  delivery?: 'delivered' | 'queued_offline' | 'queued_live';
+  /**
+   * #5128. The instant after which the row expires undelivered. NULL for a
+   * `reject` policy — those rows stay on the legacy execution clock.
+   */
+  deliverBy?: Date | null;
 }
 
 export type RearmIdempotentCommandResult =
@@ -407,6 +281,11 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.FILE_TRASH_PURGE,
   CommandTypes.TERMINAL_START,
   CommandTypes.SCRIPT,
+  // #3525: stopping someone else's running script on a customer endpoint is an
+  // operator action with a real blast radius — audit the dispatch, same as the
+  // run it interrupts. Note this covers the queueCommand/executeCommand insert
+  // sites only; insertQueuedCommandInTransaction has no audit block at all.
+  CommandTypes.SCRIPT_CANCEL,
   CommandTypes.PATCH_SCAN,
   CommandTypes.INSTALL_PATCHES,
   CommandTypes.ROLLBACK_PATCHES,
@@ -607,7 +486,12 @@ export async function queueCommand(
   // id has to exist BEFORE the payload is encrypted. Callers that seal a
   // payload reserve a UUID and pass it here; everyone else keeps the column
   // default. Never accept a client-supplied value.
-  options: { commandId?: string } = {}
+  // #5128: `deliverBy` is the DELIVERY deadline (the instant by which an agent
+  // must have CLAIMED the row) and `submittedOrgId` is the device's org at
+  // enqueue, compared at claim time to cancel rows whose device has since moved
+  // org. Both are optional so legacy callers keep today's semantics
+  // (deliver_by NULL = the reaper's created_at + execution-timeout rule).
+  options: { commandId?: string; deliverBy?: Date | null; submittedOrgId?: string } = {}
 ): Promise<QueuedCommand> {
   // #4093 — agent-binary updates must not be created here. This insert site
   // cannot set target_role (the row would default to 'agent', which has no
@@ -623,6 +507,8 @@ export async function queueCommand(
         `so the artifact-edition gate (#4093) and the watchdog target role are applied.`,
     );
   }
+
+  await assertDeviceExecuteAllowed(deviceId, type, userId);
 
   // Never stamp `userId` verbatim — it may be a synthetic-auth id with no
   // `users` row, which would fail the created_by FK with 23503 (#3978).
@@ -644,6 +530,8 @@ export async function queueCommand(
         payload,
         status: 'pending',
         createdBy: safeUserId,
+        ...(options.deliverBy ? { deliverBy: options.deliverBy } : {}),
+        ...(options.submittedOrgId ? { submittedOrgId: options.submittedOrgId } : {}),
       })
       .returning(),
   );
@@ -808,6 +696,14 @@ export async function waitForCommandResult(
 
 /**
  * Queue a command and attempt immediate dispatch to the agent websocket.
+ *
+ * #5128: this is now a thin adapter over `dispatchDeviceCommand`, the single
+ * enqueue seam. Every caller of this function hard-rejected offline devices
+ * before #5128, so it passes `previouslyRejected: true` — the
+ * DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED flag (default ON since W4; set it to
+ * `false` to opt out) is what decides whether their offline devices reject as
+ * they used to or queue with a deadline. The error strings are unchanged, so
+ * callers that surface `error` verbatim behave identically with the flag off.
  */
 export async function queueCommandForExecution(
   deviceId: string,
@@ -817,61 +713,35 @@ export async function queueCommandForExecution(
     userId?: string;
     preferHeartbeat?: boolean;
     expectedOrgId?: string;
+    /** Explicit override; wins over the registry default and the flag. */
+    offlinePolicy?: OfflinePolicy;
   } = {}
 ): Promise<QueueCommandForExecutionResult> {
-  const { userId, preferHeartbeat = false, expectedOrgId } = options;
+  const res = await dispatchDeviceCommand({
+    deviceId,
+    type,
+    payload,
+    ...(options.userId !== undefined ? { userId: options.userId } : {}),
+    ...(options.preferHeartbeat !== undefined ? { preferHeartbeat: options.preferHeartbeat } : {}),
+    ...(options.expectedOrgId !== undefined ? { expectedOrgId: options.expectedOrgId } : {}),
+    ...(options.offlinePolicy !== undefined ? { offlinePolicy: options.offlinePolicy } : {}),
+    previouslyRejected: true,
+  });
 
-  const [device] = await db
-    .select()
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
-
-  if (!device) {
-    return { error: 'Device not found' };
+  if (!res.ok) {
+    return res.code === 'trust_denied' && res.trust
+      ? { error: res.error, trust: res.trust }
+      : { error: res.error };
   }
 
-  // Defense-in-depth: this lookup can run under withSystemDbAccessContext (RLS off),
-  // so callers that know the expected owning org (e.g. DR dispatch) pass expectedOrgId
-  // to prevent a cross-tenant device id from receiving a destructive command.
-  if (expectedOrgId !== undefined && device.orgId !== expectedOrgId) {
-    return { error: 'Device not found' };
-  }
-
-  if (device.status !== 'online') {
-    return { error: `Device is ${device.status}, cannot execute command` };
-  }
-
-  const command = await queueCommand(deviceId, type, payload, userId);
-
-  if (device.agentId && !preferHeartbeat) {
-    const claimed = await claimPendingCommandForDelivery(command.id);
-    if (claimed) {
-      // Decrypt sensitive fields just-in-time; a decrypt failure returns null
-      // (logged) and skips the send so the command is released for retry rather
-      // than throwing out of the enqueue path.
-      const delivered = decryptCommandForDelivery({ id: command.id, type, deviceId, payload });
-      const sent = delivered ? sendCommandToAgent(device.agentId, toAgentCommandFrame(delivered)) : false;
-      if (sent) {
-        return {
-          command: {
-            ...command,
-            status: 'sent',
-            executedAt: claimed.executedAt
-          } as QueuedCommand
-        };
-      }
-      await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
-    }
-  }
-
-  return { command };
+  return { command: res.command, delivery: res.delivery, deliverBy: res.deliverBy };
 }
 
 export async function queueBackupStopCommand(
   deviceId: string,
   options: {
     userId?: string;
+    jobId?: string;
   } = {}
 ): Promise<QueueCommandForExecutionResult> {
   return runOutsideDbContextSafe(() =>
@@ -879,7 +749,10 @@ export async function queueBackupStopCommand(
       const result = await queueCommandForExecution(
         deviceId,
         CommandTypes.BACKUP_STOP,
-        { reason: 'cancelled' },
+        // jobId targets one workload on a queue-capable helper
+        // (BACKUP_QUEUE_MIN_HELPER_VERSION). Older helpers ignore the field
+        // and stop every backup on the device — the pre-queue behaviour.
+        { reason: 'cancelled', ...(options.jobId ? { jobId: options.jobId } : {}) },
         options
       );
 
@@ -906,59 +779,178 @@ export async function queueBackupStopCommand(
   );
 }
 
+export interface ExecuteCommandOptions {
+  userId?: string;
+  timeoutMs?: number;
+  preferHeartbeat?: boolean;
+  /**
+   * The organization the caller made its dispatch decision under. When set,
+   * the precheck refuses the dispatch unless the device is STILL in that org
+   * (#5264).
+   *
+   * Why this is a parameter and not just RLS: `precheckCommandExecution`
+   * resolves the device by id alone, and `executeCommandWithSystemPrecheck`
+   * runs that read under a SYSTEM scope that bypasses RLS entirely. Any
+   * background caller holding a device id from an earlier decision — an
+   * approved intent, a queued act step, a durable Operator task — can
+   * therefore dispatch a live command to a device that has since been moved
+   * to another organization, attributed to the ORIGINAL org's agent
+   * principal. That is an active cross-tenant command dispatch, not a stale
+   * read.
+   *
+   * REQUIRED (not optional) on `executeCommandWithSystemPrecheck` — see
+   * `SystemPrecheckCommandOptions`. Optional here because `executeCommand`
+   * runs the precheck inside the caller's OWN org-scoped RLS transaction,
+   * where the `devices` SELECT already cannot see another tenant's row; the
+   * request routes get their guarantee from RLS and pass nothing. Passing it
+   * there anyway is harmless defence in depth.
+   */
+  expectedOrgId?: string;
+  /**
+   * Which polling consumer on the device picks up this command.
+   * - 'agent' (default): the long-lived Go agent. Has a WS connection, so
+   *   executeCommand dispatches over WS for low latency.
+   * - 'watchdog': the separate breeze-watchdog process. Has NO WebSocket —
+   *   it polls via heartbeat (`claimPendingCommandsForDevice(..., 'watchdog')`
+   *   in routes/agents/heartbeat.ts). When targetRole is 'watchdog' we
+   *   MUST skip the WS dispatch path entirely and just write the row;
+   *   otherwise the command is sent to the agent WS (wrong consumer) and
+   *   the row's default target_role='agent' hides it from the heartbeat
+   *   claim query, leaving it pending forever.
+   *
+   * NOTE: because the watchdog polls every heartbeat (~5–10s per device,
+   * sometimes slower), callers targeting the watchdog should pass a larger
+   * timeoutMs than they would for an agent command.
+   */
+  targetRole?: 'agent' | 'watchdog';
+}
+
 /**
- * Execute a command and wait for result (convenience wrapper).
+ * `ExecuteCommandOptions` for the SYSTEM entry point, where `expectedOrgId` is
+ * mandatory rather than optional (#5264).
  *
- * When called from routes protected by authMiddleware, the entire request
- * handler runs inside a long-lived PostgreSQL transaction (via
- * withDbAccessContext).  If the device_commands INSERT stays inside that
- * transaction it is invisible to the WebSocket handler that processes the
- * agent's response (separate transaction) — so the result is silently
- * dropped and waitForCommandResult times out after 30 s.
- *
- * Fix: fetch the device (needs RLS → runs in the auth transaction), then
- * break out of the DB context for the device_commands lifecycle.
- * device_commands has no org_id column so RLS does not apply.
+ * `executeCommandWithSystemPrecheck` runs its device lookup under a scope that
+ * bypasses RLS, so nothing else in the stack can tell the caller's tenant from
+ * anyone else's. Requiring the field at the type level makes the omission a
+ * compile error at the call site rather than a silent cross-tenant dispatch in
+ * production — the same reason the RLS contract tests exist rather than a
+ * review checklist.
  */
-export async function executeCommand(
+export type SystemPrecheckCommandOptions =
+  Omit<ExecuteCommandOptions, 'expectedOrgId'> & { expectedOrgId: string };
+
+/**
+ * Watchdog-targeted commands have no WS consumer; the WS pre-check and the
+ * dispatch path must be skipped entirely for them. The heartbeat poll path in
+ * routes/agents/heartbeat.ts picks them up. Derived in ONE place so the
+ * precheck and the dispatch phase can never disagree about it.
+ */
+function dispatchesViaWs(options: ExecuteCommandOptions): boolean {
+  return (options.targetRole ?? 'agent') === 'agent' && !(options.preferHeartbeat ?? false);
+}
+
+/**
+ * The columns of the device row the dispatch phase still needs once the
+ * precheck's DB context has closed — the WS target, and the org/hostname the
+ * audit row is stamped with. Deliberately just these three: everything else
+ * the precheck selects (status, the watchdog freshness fields, the
+ * agent-edition triple) is consumed by a gate that runs BEFORE the context
+ * closes, and carrying it forward would invite the dispatch phase to start
+ * reasoning about a snapshot whose gate has already passed.
+ */
+interface PreparedCommandDevice {
+  agentId: string;
+  orgId: string;
+  hostname: string;
+}
+
+type CommandPrecheckOutcome =
+  | { ok: true; device: PreparedCommandDevice }
+  | { ok: false; result: CommandResult };
+
+/**
+ * At most one Sentry event per deciding org per window for the #5264
+ * cross-tenant refusal below.
+ *
+ * Same reasoning as `reportHeldContextDispatch` further down this file, which
+ * exists because a hot path emitting one event per call has previously burned
+ * thousands of events/day off the org quota. The refusal is rare by design,
+ * but it is NOT rare by construction: a durable AI Operator task re-runs its
+ * verification read on a schedule for as long as it stays `waiting`, and a
+ * bulk org move can strand many device ids at once — either one would fire an
+ * event per attempt, and the Nth is worth nothing the first was not.
+ *
+ * A SEPARATE map from `heldContextDispatchLastCapture` on purpose: sharing one
+ * would let a burst of either signal silently suppress the other for a whole
+ * window, and "a dispatch was refused across tenants" and "a dispatch was made
+ * from inside a held context" are problems an operator needs to see
+ * independently.
+ *
+ * Keyed by the DECIDING org rather than the device, so one misbehaving caller
+ * cannot evict everyone else's window by cycling device ids — and capped,
+ * because unlike the three-valued `scope` key the sibling uses, the org space
+ * is unbounded. Blowing past the cap inside one window IS the storm this
+ * throttle exists for, so dropping the whole map (rather than growing it) is
+ * the right failure mode: the next refusal per org re-alerts and the map
+ * restarts small.
+ *
+ * The console line stays unthrottled: it carries the deviceId, the command
+ * type and the ACTUAL org, none of which may ride a Sentry tag. Logs have no
+ * quota, so the event is the alert and the log line is the attribution.
+ */
+const CROSS_TENANT_REFUSAL_CAPTURE_THROTTLE_MS = 15 * 60 * 1000;
+const CROSS_TENANT_REFUSAL_MAX_TRACKED_ORGS = 200;
+const crossTenantRefusalLastCapture = new Map<string, number>();
+
+function shouldCaptureCrossTenantRefusal(expectedOrgId: string): boolean {
+  const now = Date.now();
+  const last = crossTenantRefusalLastCapture.get(expectedOrgId);
+  if (last !== undefined && now - last < CROSS_TENANT_REFUSAL_CAPTURE_THROTTLE_MS) return false;
+  if (crossTenantRefusalLastCapture.size >= CROSS_TENANT_REFUSAL_MAX_TRACKED_ORGS) {
+    crossTenantRefusalLastCapture.clear();
+  }
+  crossTenantRefusalLastCapture.set(expectedOrgId, now);
+  return true;
+}
+
+/**
+ * Phase 1 of `executeCommand` — every gate that must clear BEFORE a
+ * `device_commands` row exists: the device lookup, the partner-trust
+ * capability check, the artifact-edition gate, the liveness gates and the
+ * interactive WS fast-fail, in exactly that order.
+ *
+ * Reads `devices` and evaluates partner trust, so it needs an RLS access
+ * context — and deliberately does NOT open one of its own, because which
+ * context is correct belongs to the caller: a request route runs this inside
+ * its auth transaction (RLS-gated, the security property `executeCommand` has
+ * always had), while a background caller uses
+ * `executeCommandWithSystemPrecheck` to get a short system context that closes
+ * before anything waits on the device.
+ *
+ * THE DEVICE LOOKUP IS NOT SELF-TENANTING (#5264). It is
+ * `WHERE devices.id = $1` with no org predicate, so its isolation comes
+ * ENTIRELY from the ambient RLS context — which is exactly what the system
+ * path does not have. `options.expectedOrgId` closes that: when the caller
+ * says which org it decided under, a device that has since moved refuses the
+ * dispatch here, before any `device_commands` row exists. The system entry
+ * point makes it mandatory; see `SystemPrecheckCommandOptions`.
+ *
+ * Every terminal `CommandResult` returned here predates the row, so none of
+ * them carries a `commandId` — that preserves the "commandId present ⇔ row
+ * exists" contract the dispatch phase relies on.
+ */
+async function precheckCommandExecution(
   deviceId: string,
   type: CommandType | string,
-  payload: CommandPayload = {},
-  options: {
-    userId?: string;
-    timeoutMs?: number;
-    preferHeartbeat?: boolean;
-    /**
-     * Which polling consumer on the device picks up this command.
-     * - 'agent' (default): the long-lived Go agent. Has a WS connection, so
-     *   executeCommand dispatches over WS for low latency.
-     * - 'watchdog': the separate breeze-watchdog process. Has NO WebSocket —
-     *   it polls via heartbeat (`claimPendingCommandsForDevice(..., 'watchdog')`
-     *   in routes/agents/heartbeat.ts). When targetRole is 'watchdog' we
-     *   MUST skip the WS dispatch path entirely and just write the row;
-     *   otherwise the command is sent to the agent WS (wrong consumer) and
-     *   the row's default target_role='agent' hides it from the heartbeat
-     *   claim query, leaving it pending forever.
-     *
-     * NOTE: because the watchdog polls every heartbeat (~5–10s per device,
-     * sometimes slower), callers targeting the watchdog should pass a larger
-     * timeoutMs than they would for an agent command.
-     */
-    targetRole?: 'agent' | 'watchdog';
-  } = {}
-): Promise<CommandResult> {
-  const {
-    timeoutMs = 30000,
-    userId,
-    preferHeartbeat = false,
-    targetRole = 'agent',
-  } = options;
-  // Watchdog-targeted commands have no WS consumer; the WS pre-check /
-  // dispatch path below must be skipped entirely for them. The heartbeat
-  // poll path in routes/agents/heartbeat.ts picks them up.
-  const dispatchViaWs = targetRole === 'agent' && !preferHeartbeat;
+  options: ExecuteCommandOptions,
+): Promise<CommandPrecheckOutcome> {
+  const { userId } = options;
+  const targetRole = options.targetRole ?? 'agent';
+  const dispatchViaWs = dispatchesViaWs(options);
 
-  // 1. Verify device inside the auth transaction (RLS-protected).
+  // 1. Verify device inside the caller's transaction (RLS-protected ONLY when
+  // the caller holds a tenant-scoped context — see the header note on #5264
+  // and the explicit `expectedOrgId` gate immediately after this SELECT).
   // agentEdition/agentVersion/watchdogVersion feed the artifact-edition gate
   // below (#4093) — cheap here because this SELECT already runs.
   const [device] = await db
@@ -978,7 +970,57 @@ export async function executeCommand(
     .limit(1);
 
   if (!device) {
-    return { status: 'failed', error: 'Device not found' };
+    return { ok: false, result: { status: 'failed', error: 'Device not found' } };
+  }
+
+  // #5264 — fail-closed tenancy gate. The SELECT above has no org predicate,
+  // and under the system scope RLS is not filtering it either, so this is the
+  // ONLY thing standing between a device that moved organizations and a live
+  // command dispatched into its new tenant under the old tenant's principal.
+  // It runs FIRST — before trust, edition and liveness — because none of those
+  // gates mean anything once the device is known to be the wrong tenant's, and
+  // because their refusal strings would otherwise leak that a device with this
+  // id exists and what state it is in.
+  if (options.expectedOrgId !== undefined && device.orgId !== options.expectedOrgId) {
+    // The deviceId and the two org ids are attribution, so they ride the log
+    // line, not the Sentry event: a device id never belongs in a tag, and the
+    // event's job is only to alert that the class occurred at all.
+    console.error(
+      '[commandQueue] refusing dispatch: device is no longer in the deciding organization (#5264)',
+      { deviceId, type, expectedOrgId: options.expectedOrgId, actualOrgId: device.orgId },
+    );
+    if (shouldCaptureCrossTenantRefusal(options.expectedOrgId)) {
+      // Invariant text: it is the Sentry grouping key, so the varying part
+      // rides the allowlisted `org_id` tag rather than the message.
+      captureMessage(
+        '[commandQueue] command dispatch refused: device left the deciding organization between '
+          + 'decision and dispatch (#5264)',
+        { eventCode: 'command_dispatch_cross_tenant_refused', tags: { org_id: options.expectedOrgId } },
+      );
+    }
+    // Deliberately indistinguishable from a genuine miss — byte-identical to
+    // the sibling gate on the QUEUE lane (`dispatchDeviceCommand.ts`, which
+    // has carried this same `expectedOrgId` contract for the
+    // `queueCommandForExecution` callers). The two are one contract: a caller
+    // holding a device id it no longer has any claim to must not learn from
+    // the error string that the device still exists somewhere.
+    return { ok: false, result: { status: 'failed', error: 'Device not found' } };
+  }
+
+  try {
+    await assertDeviceExecuteAllowed(deviceId, type, userId);
+  } catch (e) {
+    if (e instanceof TrustDeniedError) {
+      return {
+        ok: false,
+        result: {
+          status: 'failed',
+          error: e.code,
+          trust: { capability: e.capability, reason: e.reason },
+        },
+      };
+    }
+    throw e;
   }
 
   // #4093 — artifact-edition gate for agent-binary updates, at the dispatch
@@ -996,7 +1038,7 @@ export async function executeCommand(
     console.warn(
       `[commandQueue] ${type} dispatch refused for device ${deviceId} (#4093): ${editionRefusal}`,
     );
-    return { status: 'failed', error: editionRefusal };
+    return { ok: false, result: { status: 'failed', error: editionRefusal } };
   }
 
   if (targetRole === 'watchdog') {
@@ -1015,12 +1057,18 @@ export async function executeCommand(
       : Infinity;
     if (watchdogAgeMs > WATCHDOG_STALE_MS) {
       return {
-        status: 'failed',
-        error: 'Watchdog is not reporting; cannot dispatch watchdog command',
+        ok: false,
+        result: {
+          status: 'failed',
+          error: 'Watchdog is not reporting; cannot dispatch watchdog command',
+        },
       };
     }
   } else if (device.status !== 'online') {
-    return { status: 'failed', error: `Device is ${device.status}, cannot execute command` };
+    return {
+      ok: false,
+      result: { status: 'failed', error: `Device is ${device.status}, cannot execute command` },
+    };
   }
 
   // Fast-fail interactive commands when the WS is known-dead. The user is
@@ -1042,11 +1090,35 @@ export async function executeCommand(
       agentId: device.agentId,
       type,
     });
-    return { status: 'failed' as const, error: DEVICE_UNREACHABLE_ERROR };
+    return { ok: false, result: { status: 'failed' as const, error: DEVICE_UNREACHABLE_ERROR } };
   }
 
-  // 2. Queue, dispatch, and poll OUTSIDE the auth transaction so the
-  //    INSERT commits immediately and is visible to the WS handler.
+  return { ok: true, device };
+}
+
+/**
+ * Phase 2 of `executeCommand` — queue, dispatch, and poll. Runs entirely
+ * OUTSIDE the caller's DB context so the INSERT commits immediately and is
+ * visible to the WebSocket handler that processes the agent's response
+ * (a separate transaction); its own short system contexts cover the writes
+ * that would otherwise be contextless bare-pool writes (#1375).
+ *
+ * `device` is the snapshot the precheck resolved. Re-reading it here would
+ * defeat the point of the split, and there was never an atomic
+ * authorisation-to-insert guarantee to lose: the precheck's SELECT has always
+ * been a non-locking read.
+ */
+async function dispatchPreparedCommand(
+  device: PreparedCommandDevice,
+  deviceId: string,
+  type: CommandType | string,
+  payload: CommandPayload,
+  options: ExecuteCommandOptions,
+): Promise<CommandResult> {
+  const { timeoutMs = 30000, userId } = options;
+  const targetRole = options.targetRole ?? 'agent';
+  const dispatchViaWs = dispatchesViaWs(options);
+
   return runOutsideDbContextSafe(async () => {
     // Validate userId for the created_by FK. Shared with queueCommand — see
     // `resolveCommandCreatedBy` for why synthetic-auth ids degrade to NULL and
@@ -1093,6 +1165,20 @@ export async function executeCommand(
           status: 'pending',
           createdBy: safeUserId,
           targetRole,
+          // #5128. executeCommand is synchronous by contract (the caller waits
+          // via waitForCommandResult), so it stays `reject` — and a `reject`
+          // row gets NO `deliver_by`. Review round 2 (J): stamping the
+          // 5-minute race grace here cut every executeCommand row's pending
+          // window from the legacy 30-minute execution clock to 5 minutes,
+          // including watchdog-targeted binary/restart work and other
+          // `preferHeartbeat` callers, and it expired a barrier-held reboot
+          // while the power-state barrier was deliberately holding it. NULL
+          // keeps the legacy clock, so nothing changes for reject callers.
+          // (Deliberately no literal command-type names here: the #4093 scan in
+          // agentEditionCompat.test.ts greps raw file text, and this hub file
+          // must stay off its allowlist so a real raw insert still trips it.)
+          deliverBy: deliverByFor({ kind: 'reject' }),
+          submittedOrgId: device.orgId,
         })
         .returning(),
     );
@@ -1208,6 +1294,157 @@ export async function executeCommand(
     };
     return { ...finalResult, commandId: command.id };
   });
+}
+
+/**
+ * Execute a command and wait for result (convenience wrapper).
+ *
+ * When called from routes protected by authMiddleware, the entire request
+ * handler runs inside a long-lived PostgreSQL transaction (via
+ * withDbAccessContext).  If the device_commands INSERT stays inside that
+ * transaction it is invisible to the WebSocket handler that processes the
+ * agent's response (separate transaction) — so the result is silently
+ * dropped and waitForCommandResult times out after 30 s.
+ *
+ * Fix: fetch the device (needs RLS → runs in the auth transaction), then
+ * break out of the DB context for the device_commands lifecycle.
+ * device_commands has no org_id column so RLS does not apply.
+ *
+ * NOTE for background callers (workers, schedulers, AI-agent runs): the
+ * `runOutsideDbContext` inside the dispatch phase exits the AsyncLocalStorage,
+ * but it CANNOT release a transaction the caller opened — so wrapping this
+ * call in `withSystemDbAccessContext` just to satisfy the precheck pins a
+ * pooled connection idle-in-transaction for the whole `timeoutMs` wait (#1105).
+ * Use `executeCommandWithSystemPrecheck` instead.
+ */
+export async function executeCommand(
+  deviceId: string,
+  type: CommandType | string,
+  payload: CommandPayload = {},
+  options: ExecuteCommandOptions = {}
+): Promise<CommandResult> {
+  const precheck = await precheckCommandExecution(deviceId, type, options);
+  if (!precheck.ok) return precheck.result;
+  return dispatchPreparedCommand(precheck.device, deviceId, type, payload, options);
+}
+
+/**
+ * At most one Sentry event per scope per window for the held-context guard
+ * below. The same `db_operation_inside_held_context` code is deduped by call
+ * site in `db/index.ts` for exactly this reason: a hot path emitting it per
+ * call has previously burned thousands of events/day off the org quota, and
+ * the Nth event from a scope you have already seen tells you nothing the first
+ * did not. Bounded by construction — there are three scopes.
+ *
+ * The console line is deliberately NOT throttled: it carries the deviceId and
+ * command type that attribute the violation to a caller, neither of which can
+ * ride a Sentry tag (`commandType` is not in `ALLOWED_TAG_NAMES` and would be
+ * scrubbed; a device id never belongs in one). Logs have no quota. So the
+ * Sentry event is the alert and the log line is the attribution — the same
+ * division of labour `reportContextlessWrite` uses.
+ *
+ * Deliberately NOT `db/index.ts`'s exported `shouldCaptureHeldContext`, even
+ * though it is the same per-scope shape: its map is shared with the
+ * `db_context_held_too_long` capture, so one signal would silently suppress the
+ * other for a whole window. These are different problems — "a context was held
+ * too long" vs "this dispatch was made from inside one" — and an operator needs
+ * to see both. The cost of keeping them apart is the six lines below.
+ */
+const HELD_CONTEXT_DISPATCH_CAPTURE_THROTTLE_MS = 15 * 60 * 1000;
+const heldContextDispatchLastCapture = new Map<string, number>();
+
+function reportHeldContextDispatch(
+  scope: string,
+  deviceId: string,
+  type: CommandType | string,
+): void {
+  // Invariant text: it is the Sentry grouping key, so the varying part rides
+  // the allowlisted `scope` tag rather than the message.
+  const message = '[commandQueue] executeCommandWithSystemPrecheck was called from inside an '
+    + "existing DB access context. The caller's pooled connection stays pinned "
+    + 'idle-in-transaction for the whole device round-trip (#1105/#4150) — call it at depth 0, '
+    + 'or use executeCommand if the caller genuinely wants its own context to gate the precheck.';
+  console.warn(message, { deviceId, type, scope });
+
+  const now = Date.now();
+  const last = heldContextDispatchLastCapture.get(scope);
+  if (last !== undefined && now - last < HELD_CONTEXT_DISPATCH_CAPTURE_THROTTLE_MS) return;
+  heldContextDispatchLastCapture.set(scope, now);
+  captureMessage(message, {
+    eventCode: 'db_operation_inside_held_context',
+    tags: { scope },
+  });
+}
+
+/**
+ * `executeCommand` for callers that hold NO DB access context of their own —
+ * BullMQ workers, schedulers, and the AI-agent run loop (which deliberately
+ * runs contextless; see jobs/aiAgentRunner.ts).
+ *
+ * Such a caller cannot invoke `executeCommand` directly: the precheck's
+ * `devices` SELECT would run on the bare pool, RLS would deny it, and every
+ * dispatch would report "Device not found". Wrapping the whole call in a
+ * system context makes it work — and pins a pooled Postgres connection
+ * idle-in-transaction for the entire device round-trip, which is the #1105
+ * pool-exhaustion shape (#4150, and #4133/3ec0439d2 before it in the workers).
+ *
+ * This entry point opens a system context for the PRECHECK ONLY and closes it
+ * before anything waits on the device. The dispatch phase — the WS send and
+ * the `waitForCommandResult` poll — runs at depth 0, holding nothing.
+ *
+ * Scope is system, matching what the background callers already passed. A
+ * caller that needs the command gated by a specific tenant's RLS must open
+ * that context itself and call `executeCommand` — but see the note there
+ * about how long it will then hold a connection.
+ *
+ * BECAUSE the scope is system, the precheck's `devices` read is not filtered
+ * by RLS at all, so `options.expectedOrgId` is MANDATORY here (#5264): every
+ * caller must name the organization it made the dispatch decision under, and
+ * a device that has moved since then is refused. It is a required parameter
+ * rather than a lint rule so that adding a new background dispatch site
+ * cannot compile without answering the question.
+ *
+ * PRECONDITION: no ambient DB access context. It is reported (not thrown) when
+ * broken, because from inside someone else's transaction the no-held-context
+ * promise is unrecoverable — see the guard below.
+ */
+export async function executeCommandWithSystemPrecheck(
+  deviceId: string,
+  type: CommandType | string,
+  payload: CommandPayload = {},
+  options: SystemPrecheckCommandOptions,
+): Promise<CommandResult> {
+  const ambient = getCurrentDbAccessContext();
+  if (ambient) {
+    reportHeldContextDispatch(ambient.scope, deviceId, type);
+  }
+
+  // ANY ambient context is joined, never nested inside. Two reasons, and the
+  // second is why this is not just `scope === 'system'`:
+  //
+  //  - A nested `withSystemDbAccessContext` checks out a SECOND pooled
+  //    connection while the caller's is still held for the whole round-trip —
+  //    strictly worse than the bug this entry point exists to fix.
+  //  - Escaping a caller's 'organization'/'partner' context to open a system
+  //    one would run the precheck's `devices` read and trust check with FULL
+  //    cross-tenant visibility, i.e. more permissively than the caller's own
+  //    scope allows. Joining instead degrades toward "Device not found" — the
+  //    fail-CLOSED direction, and the repo's standing contract that too little
+  //    context denies rather than bypasses.
+  //
+  // Reaching here with an ambient context is a caller bug either way; the
+  // guard above says so out loud. It must not also widen what the caller can
+  // reach while it is being wrong.
+  const precheck = ambient
+    ? await precheckCommandExecution(deviceId, type, options)
+    : await runOutsideDbContextSafe(() =>
+      withSystemDbAccessContext(
+        () => precheckCommandExecution(deviceId, type, options),
+        'commandQueue.executeCommandWithSystemPrecheck',
+      ));
+
+  if (!precheck.ok) return precheck.result;
+  return dispatchPreparedCommand(precheck.device, deviceId, type, payload, options);
 }
 
 /**

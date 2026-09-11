@@ -137,11 +137,39 @@ const categoryConfig: Record<
   },
 };
 
-const resultConfig: Record<string, { label: string; dot: string }> = {
-  success: { label: "Success", dot: "bg-green-500" },
-  failure: { label: "Failed", dot: "bg-red-500" },
-  denied: { label: "Denied", dot: "bg-yellow-500" },
+const resultConfig: Record<string, { label: string; dot: string; badge: string }> = {
+  success: {
+    label: "Success",
+    dot: "bg-green-500",
+    badge: "border-green-500/30 bg-green-500/10 text-green-600",
+  },
+  failure: {
+    label: "Failed",
+    dot: "bg-red-500",
+    badge: "border-red-500/30 bg-red-500/10 text-red-600",
+  },
+  denied: {
+    label: "Denied",
+    dot: "bg-yellow-500",
+    badge: "border-yellow-500/30 bg-yellow-500/10 text-yellow-600",
+  },
+  dispatched: {
+    label: "Dispatched",
+    dot: "bg-blue-500",
+    badge: "border-blue-500/30 bg-blue-500/10 text-blue-600",
+  },
 };
+
+// A result outside the known enum (e.g. a value added server-side before the
+// web client catches up) must never silently render as "Success" — that's
+// the #4223 bug class. Render the raw value with neutral styling instead.
+const unknownResultConfig = (
+  result: string,
+): { label: string; dot: string; badge: string } => ({
+  label: result,
+  dot: "bg-gray-400",
+  badge: "border-gray-400/30 bg-gray-400/10 text-gray-600",
+});
 
 const initiatedByConfig: Record<
   string,
@@ -265,6 +293,11 @@ export default function DeviceEventLogViewer({
     page: 1,
     limit: 50,
     total: 0,
+    // Stop-gap for #4834: past FEED_TOTAL_CAP (10,000) matching rows the API
+    // stops counting and reports a lower bound instead of an exact total.
+    // This view always sends withTotal=true, so the field is always present
+    // on a real response.
+    totalIsLowerBound: false,
   });
 
   const effectiveTimezone =
@@ -335,6 +368,28 @@ export default function DeviceEventLogViewer({
     Math.ceil(pagination.total / pagination.limit),
   );
 
+  // #4834: past FEED_TOTAL_CAP the API clamps `total` and sets
+  // totalIsLowerBound, so render "10,000+" instead of a number that looks
+  // precise but isn't.
+  const formattedTotal = pagination.totalIsLowerBound
+    ? t("deviceEventLogViewer.totalAtLeast", {
+        count: formatNumber(pagination.total),
+      })
+    : formatNumber(pagination.total);
+
+  // A page is short (fewer than `limit` rows) only when it is genuinely the
+  // last one — the API always fills a page to `limit` until the underlying
+  // result set runs out (mergeFeedPage slices a top-N union). That holds
+  // whether or not a total was even requested, so it's a more reliable "is
+  // there more" signal than comparing `page` to `totalPages`, which is
+  // derived from a total that's clamped past FEED_TOTAL_CAP (#4834) — a
+  // page<totalPages check would misfire exactly when the true count lands on
+  // a page-size boundary above the cap (e.g. true total 10,050 with a 50-row
+  // page: the last full page still reports totalIsLowerBound, so Next must
+  // stay enabled there and only disable once the following, empty page comes
+  // back).
+  const canGoNext = activities.length === pagination.limit;
+
   if (error) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
@@ -362,8 +417,11 @@ export default function DeviceEventLogViewer({
               {t("deviceEventLogViewer.activities")}
             </h3>
             {!loading && (
-              <span className="ml-1 text-sm text-muted-foreground">
-                ({formatNumber(pagination.total)}{" "}
+              <span
+                className="ml-1 text-sm text-muted-foreground"
+                data-testid="event-log-total"
+              >
+                ({formattedTotal}{" "}
                 {t("deviceEventLogViewer.total")}{" "}
               </span>
             )}
@@ -460,7 +518,9 @@ export default function DeviceEventLogViewer({
             {activities.map((activity) => {
               const isExpanded = expandedId === activity.id;
               const relTime = formatRelativeTime(activity.timestamp);
-              const rc = resultConfig[activity.result] ?? resultConfig.success;
+              const rc =
+                resultConfig[activity.result] ??
+                unknownResultConfig(activity.result);
               const cc =
                 categoryConfig[activity.category] ?? categoryConfig.system;
               const CatIcon = cc.icon;
@@ -549,11 +609,8 @@ export default function DeviceEventLogViewer({
                           {/* Result badge */}
                           {activity.result !== "success" && (
                             <span
-                              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${
-                                activity.result === "failure"
-                                  ? "border-red-500/30 bg-red-500/10 text-red-600"
-                                  : "border-yellow-500/30 bg-yellow-500/10 text-yellow-600"
-                              }`}
+                              data-testid={`event-log-result-badge-${activity.id}`}
+                              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${rc.badge}`}
                             >
                               {rc.label}
                             </span>
@@ -693,12 +750,26 @@ export default function DeviceEventLogViewer({
         {/* Pagination */}
         {!loading && pagination.total > pagination.limit && (
           <div className="flex items-center justify-between border-t px-4 py-3">
-            <p className="text-xs text-muted-foreground">
-              {t("deviceEventLogViewer.showing")}{" "}
-              {(page - 1) * pagination.limit + 1}
-              {t("deviceEventLogViewer.text")}
-              {Math.min(page * pagination.limit, pagination.total)}{" "}
-              {t("deviceEventLogViewer.of")} {formatNumber(pagination.total)}
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="event-log-pagination-status"
+            >
+              {/* Past FEED_TOTAL_CAP (#4834) the true total is unknown, so
+                  paging can overshoot the real end by one page — that page
+                  comes back empty. Compute the range from the rows actually
+                  returned rather than from `limit`, or the trailing page
+                  renders an inverted "10051–10050" range. */}
+              {activities.length === 0 ? (
+                t("deviceEventLogViewer.noMoreActivity")
+              ) : (
+                <>
+                  {t("deviceEventLogViewer.showing")}{" "}
+                  {(page - 1) * pagination.limit + 1}
+                  {t("deviceEventLogViewer.text")}
+                  {(page - 1) * pagination.limit + activities.length}{" "}
+                  {t("deviceEventLogViewer.of")} {formattedTotal}
+                </>
+              )}
             </p>
             <div className="flex items-center gap-1">
               <button
@@ -710,12 +781,13 @@ export default function DeviceEventLogViewer({
                 <ChevronLeft className="h-4 w-4" />
               </button>
               <span className="px-2 text-xs text-muted-foreground">
-                {page} / {totalPages}
+                {page} / {Math.max(totalPages, page)}
               </span>
               <button
                 type="button"
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                disabled={page >= totalPages}
+                data-testid="event-log-next-page"
+                onClick={() => setPage((p) => p + 1)}
+                disabled={!canGoNext}
                 className="inline-flex h-7 w-7 items-center justify-center rounded-md border text-muted-foreground transition hover:bg-muted disabled:opacity-40"
               >
                 <ChevronRight className="h-4 w-4" />

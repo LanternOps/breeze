@@ -1,7 +1,9 @@
-import { and, or, eq, desc, lt, inArray, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { randomUUID } from 'node:crypto';
+import { and, or, eq, desc, lt, inArray, sql, count } from 'drizzle-orm';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
-  invoices, invoiceLines, invoicePayments, invoiceStripePayments, organizations, partners,
+  invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
   catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets,
   accountingEntityMappings, accountingConnections
 } from '../db/schema';
@@ -15,9 +17,14 @@ import { snapshotCost } from './catalogPricing';
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
-import { enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid } from '../jobs/accountingSyncWorker';
+import {
+  enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid,
+  enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete,
+} from '../jobs/accountingSyncWorker';
 import type { MappingSyncStatus } from './accounting/accountingMappingService';
-import { clearPaymentMappingForInvoicePayment } from './accounting/accountingPaymentPull';
+import { requestPaymentPush, requestPaymentDelete, fanOutOwedPayments } from './accounting/accountingPaymentPush';
+import type { DbContextRunner } from './accounting/dbContextGuard';
+import { INVOICE_REMOTE_DELETED_ERROR } from './accounting/types';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
@@ -86,7 +93,7 @@ export function requireInvoiceAccess(actor: InvoiceActor, inv: { orgId: string; 
 /** Either the ambient `db` handle or a `db.transaction` callback handle. */
 type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-async function getOwnedInvoiceOr404(id: string, dbc: DbExecutor = db) {
+export async function getOwnedInvoiceOr404(id: string, dbc: DbExecutor = db) {
   const rows = await dbc.select().from(invoices).where(eq(invoices.id, id)).limit(1);
   if (!rows[0]) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   return rows[0];
@@ -353,6 +360,13 @@ export async function addContractLine(
     taxable: boolean;        // used on non-catalog path
     catalogItemId?: string | null;
     sourceId?: string | null; // contract_line id
+    /**
+     * #3205 W04: per-unit cost basis for a DERIVED line (an overage) that
+     * inherits its origin line's basis, so computeInvoiceProfit does not report
+     * it as pure margin. Honoured on the NON-CATALOG path only — on the catalog
+     * path the price resolver stays authoritative for cost as well as price.
+     */
+    costBasis?: string | null;
     /** The owning CONTRACT id — durable lineage (#3778). REQUIRED: a
      *  source_type='contract' line without it is a 500-worthy bug, never a
      *  silent insert, because the ACTIVE-contract restamp keys on this column. */
@@ -439,6 +453,8 @@ export async function addContractLine(
       if (Number(quantity) < 0 || Number(unitPrice) < 0) {
         throw new InvoiceServiceError('Negative amounts not allowed', 400, 'INVALID_AMOUNT');
       }
+      costBasis = input.costBasis != null ? Number(input.costBasis).toFixed(2) : null;
+      if (costBasis != null) assertRepresentable(costBasis, inv.currencyCode);
     }
 
     const line = await insertLineAndRecompute(tx, invoiceId, inv.orgId, {
@@ -622,6 +638,15 @@ export interface InvoiceAccountingSync {
   lastSyncedAt: string | null;
   lastError: string | null;
   remoteDocNumber: string | null;
+  /**
+   * True when this mapping row carries the `markInvoiceDeletedRemotely`
+   * marker (#4544) — the reconcile worker saw QuickBooks delete/void an
+   * invoice Breeze previously pushed. Computed here, server-side, from the
+   * one place that knows the exact sentinel `lastError` string
+   * (`INVOICE_REMOTE_DELETED_ERROR`), so the web layer never has to
+   * string-match `lastError` to decide whether re-pushing is safe.
+   */
+  remoteDeleted: boolean;
 }
 
 /**
@@ -664,12 +689,25 @@ async function getInvoiceAccountingSync(invoiceId: string, partnerId: string): P
     lastSyncedAt: row.lastSyncedAt ? row.lastSyncedAt.toISOString() : null,
     lastError: row.lastError,
     remoteDocNumber: row.remoteDocNumber,
+    remoteDeleted: row.lastError === INVOICE_REMOTE_DELETED_ERROR,
   };
 }
 
 export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId); requireInvoiceAccess(actor, inv);
   const lines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
+  // #3205 W07 ruling 3: one grouped aggregate per invoice DETAIL view. Keep it
+  // out of listInvoices and the customer projection.
+  const evidenceCounts = await db
+    .select({ lineId: invoiceLineDevices.invoiceLineId, n: count() })
+    .from(invoiceLineDevices)
+    .where(eq(invoiceLineDevices.invoiceId, invoiceId))
+    .groupBy(invoiceLineDevices.invoiceLineId);
+  const deviceCountByLine = new Map(evidenceCounts.map((row) => [row.lineId, Number(row.n)]));
+  const linesWithDeviceCount = lines.map((line) => ({
+    ...line,
+    deviceCount: deviceCountByLine.get(line.id) ?? 0,
+  }));
   // Whether this invoice's partner can collect online (gates the "Send payment
   // link" UI). Partner-axis read under a partner/system request scope, so the
   // actor's own connection row is RLS-visible. Best-effort: a lookup failure
@@ -684,7 +722,7 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   // warn-don't-block mismatch so the detail page can flag the FX spread before
   // the partner sends a pay link. Cached columns only — no Stripe call here.
   return {
-    invoice: inv, lines, stripeConnected: connected, // accounting view (all lines)
+    invoice: inv, lines: linesWithDeviceCount, stripeConnected: connected, // accounting view (all lines)
     stripeAccountCurrency: connected ? conn.defaultCurrency ?? null : null,
     currencyWarning: connected ? buildStripeCurrencyWarning(inv.currencyCode, conn.defaultCurrency) : null,
     accountingSync,
@@ -692,6 +730,7 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
 }
 
 export type CustomerInvoiceLine = {
+  ticketNumber: string | null;
   /**
    * Line title, mirroring invoice_lines.name (#3319). NULL for legacy lines
    * created before the name/description split, where `description` holds the
@@ -730,6 +769,7 @@ export type CustomerInvoiceHeader = Pick<InvoiceRow,
 >;
 
 type CustomerInvoiceLineSource = {
+  ticketNumber?: string | null;
   name?: string | null;
   description?: string | null;
   quantity: string;
@@ -741,6 +781,7 @@ type CustomerInvoiceLineSource = {
 /** Explicit serialization boundary: never spread an invoice_lines row here. */
 export function toCustomerInvoiceLine(line: CustomerInvoiceLineSource): CustomerInvoiceLine {
   return {
+    ticketNumber: line.ticketNumber ?? null,
     // Carry BOTH fields (#3319). This previously collapsed to
     // `description ?? name`, which is the INVERSE of the fallback every other
     // renderer uses, so a line with both set showed the customer only the
@@ -785,13 +826,21 @@ export async function getCustomerInvoice(
   // App-layer org guard (defense-in-depth over RLS). 404, not 403 — don't leak existence to the portal.
   if (orgId !== undefined && inv.orgId !== orgId) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   const rows = await db.select({
+    ticketNumber: tickets.ticketNumber,
     name: invoiceLines.name,
     description: invoiceLines.description,
     quantity: invoiceLines.quantity,
     unitPrice: invoiceLines.unitPrice,
     taxable: invoiceLines.taxable,
     lineTotal: invoiceLines.lineTotal,
-  }).from(invoiceLines).where(and(eq(invoiceLines.invoiceId, invoiceId), eq(invoiceLines.customerVisible, true))).orderBy(invoiceLines.sortOrder);
+  }).from(invoiceLines).leftJoin(tickets, and(
+    eq(tickets.id, invoiceLines.ticketId),
+    eq(tickets.orgId, inv.orgId),
+  )).where(and(
+    eq(invoiceLines.invoiceId, invoiceId),
+    eq(invoiceLines.orgId, inv.orgId),
+    eq(invoiceLines.customerVisible, true),
+  )).orderBy(invoiceLines.sortOrder);
   const lines = rows.map(toCustomerInvoiceLine);
   // partnerId rides OUTSIDE the serialized header: the portal route needs it
   // for the partner-name branding lookup, but CustomerInvoiceHeader is the
@@ -834,6 +883,7 @@ export async function updatePartnerBillingSettings(
   patch: {
     currencyCode: string; defaultTaxRate?: number | null; invoiceNumberPrefix: string;
     invoiceTermsDays: number; defaultMarkupPercent?: number | null; autoTaxHardware?: boolean;
+    invoiceDeviceAppendix?: boolean;
     autoEmailInvoiceOnQuoteAccept?: boolean;
     catalogAiStyle?: string | null;
     invoiceFooter?: string | null;
@@ -859,6 +909,7 @@ export async function updatePartnerBillingSettings(
     set.defaultMarkupPercent = patch.defaultMarkupPercent === null ? null : Number(patch.defaultMarkupPercent).toFixed(2);
   }
   if (patch.autoTaxHardware !== undefined) set.autoTaxHardware = patch.autoTaxHardware;
+  if (patch.invoiceDeviceAppendix !== undefined) set.invoiceDeviceAppendix = patch.invoiceDeviceAppendix;
   if (patch.autoEmailInvoiceOnQuoteAccept !== undefined) set.autoEmailInvoiceOnQuoteAccept = patch.autoEmailInvoiceOnQuoteAccept;
   if (patch.catalogAiStyle !== undefined) set.catalogAiStyle = patch.catalogAiStyle?.trim() || null;
   if (patch.invoiceFooter !== undefined) set.invoiceFooter = patch.invoiceFooter;
@@ -875,6 +926,7 @@ export async function updatePartnerBillingSettings(
     currencyCode: partners.currencyCode, defaultTaxRate: partners.defaultTaxRate,
     invoiceNumberPrefix: partners.invoiceNumberPrefix, invoiceTermsDays: partners.invoiceTermsDays,
     defaultMarkupPercent: partners.defaultMarkupPercent, autoTaxHardware: partners.autoTaxHardware,
+    invoiceDeviceAppendix: partners.invoiceDeviceAppendix,
     autoEmailInvoiceOnQuoteAccept: partners.autoEmailInvoiceOnQuoteAccept,
     catalogAiStyle: partners.catalogAiStyle, invoiceFooter: partners.invoiceFooter,
     documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
@@ -1287,6 +1339,13 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       // carries. Pure key addition using the `partner` row read above (after
       // all locks): no new read, no new lock class.
       documentLocale: inv.documentLocale ?? resolvePartnerDocumentLocale(partner),
+      // #3205 W07 decision 14a: resolve the appendix choice ONCE, here, and write
+      // a concrete boolean. After this the column is a settled fact, not an
+      // override-or-inherit tri-state, and loadInvoiceForRender reads ONLY this
+      // column — so a later change to the partner default cannot alter what a
+      // sanctioned re-render produces. Same two-writer rule document_locale
+      // follows, for the same reason.
+      deviceAppendix: inv.deviceAppendix ?? partner?.invoiceDeviceAppendix ?? false,
       updatedAt: issueDate
     }).where(and(eq(invoices.id, invoiceId), eq(invoices.status, 'draft'))).returning({ id: invoices.id });
     // Guarded write: impossible to miss while we hold the row lock and asserted
@@ -1368,11 +1427,45 @@ export async function recomputeInvoiceStatus(invoiceId: string, dbc: DbExecutor 
   const status = deriveInvoiceStatus({ voided: inv.voidedAt !== null, issued, total: inv.total, amountPaid, dueDate: inv.dueDate, asOf: new Date() });
   const patch: Record<string, unknown> = { amountPaid, balance, status, updatedAt: new Date() };
   if (status === 'paid' && inv.paidAt === null) patch.paidAt = new Date();
+  // #4542: paid_at was STAMPED but never CLEARED, so an invoice that fell back
+  // out of `paid` — a voided payment, a QuickBooks-side reversal, a Stripe
+  // refund — kept reporting a payment date it no longer had, and every
+  // "paid in period" report counted it twice. Only written when it actually
+  // changes, so an ordinary recompute of an unpaid invoice writes no churn.
+  if (status !== 'paid' && inv.paidAt !== null) patch.paidAt = null;
   if (status === 'overdue' && inv.markedOverdueAt === null) patch.markedOverdueAt = new Date();
   await dbc.update(invoices).set(patch).where(eq(invoices.id, invoiceId));
 }
 
+/**
+ * Queue the QuickBooks work an ORG-SCOPED caller could not queue itself.
+ *
+ * `requestPaymentPush`/`requestPaymentDelete` write to partner-axis tables that
+ * an organization-scoped principal cannot see, so from a customer-facing flow
+ * (quote acceptance taking a deposit, the portal) they report the skip and write
+ * nothing. This runs the same work in a SYSTEM context once the caller's
+ * transaction is done with it.
+ *
+ * `runOutsideDbContext` FIRST is not optional: `withDbAccessContext` is a no-op
+ * when a context is already open (it deliberately keeps the caller's scope), so
+ * without escaping first this would run under the very org scope it exists to
+ * get out of.
+ *
+ * Best-effort throughout. The money is already committed; a QuickBooks push that
+ * could not be queued is recoverable (the next invoice push fans it out) and
+ * must never fail the payment.
+ */
+async function inSystemContext<T>(label: string, fn: (runner: DbContextRunner) => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => {
+    const runner: DbContextRunner = (inner) => withSystemDbAccessContext(inner, label);
+    return fn(runner);
+  });
+}
+
 export async function recordPayment(invoiceId: string, input: RecordPaymentInput, actor: InvoiceActor) {
+  // Captured BEFORE the transaction: the ambient scope decides whether the
+  // in-transaction outbox write is possible at all.
+  const orgScoped = getCurrentDbAccessContext()?.scope === 'organization';
   // ONE transaction, invoice row lock FIRST (B10 lock order — every payment
   // writer: manual record, manual void, Stripe reconcile). All validation runs
   // against the LOCKED row and the in-tx payment sum; a check-then-insert
@@ -1380,7 +1473,7 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
   // land. Every helper gets the `tx` handle — inside a request context this
   // transaction is a savepoint on the request tx, and a stray global-`db` call
   // would escape it.
-  const { inv, payment, updated } = await db.transaction(async (tx) => {
+  const { inv, payment, updated, paymentPushMappingId } = await db.transaction(async (tx) => {
     const [inv] = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1).for('update');
     if (!inv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
     // Re-authorize against the locked row (it may have moved site/org since any
@@ -1427,8 +1520,18 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
       reference: input.reference ?? null, receivedAt: input.receivedAt, recordedBy: actor.userId, note: input.note ?? null
     }).returning();
     await recomputeInvoiceStatus(invoiceId, tx);
+    // The mapping row is the OUTBOX and it is written HERE, in the same
+    // transaction as the payment — not from a post-commit hook. If the process
+    // dies before the enqueue below, the reconcile sweep finds the pending row
+    // and pushes it anyway; if this transaction rolls back, no promise to
+    // QuickBooks survives it either. Null = nothing owed (push disabled, manual
+    // push mode, or the invoice itself is not in QuickBooks yet — the invoice
+    // push fans its payments out when it lands).
+    const paymentPushMappingId = await requestPaymentPush(tx, {
+      invoicePaymentId: payment!.id, invoiceId, partnerId: inv.partnerId,
+    });
     const updated = await getOwnedInvoiceOr404(invoiceId, tx);
-    return { inv, payment: payment!, updated };
+    return { inv, payment: payment!, updated, paymentPushMappingId };
   });
 
   // Event emission runs after db.transaction returns, but that does NOT mean
@@ -1439,6 +1542,37 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
   // Moving emission to post-commit is the follow-up tracked in #3803.
   await emitInvoiceEvent({ type: 'payment.recorded', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, paymentId: payment.id, actorUserId: actor.userId });
   if (updated.status === 'paid') await emitInvoiceEvent({ type: 'invoice.paid', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, actorUserId: actor.userId });
+  // Fire-and-forget nudge, AFTER the transaction callback returned.
+  // `enqueueAccountingPaymentPush` is itself Redis-outage-safe; the extra
+  // try/catch is the same defensive belt as the issue-side push hook, so no
+  // unexpected throw can fail a payment that is already committed.
+  if (paymentPushMappingId) {
+    try {
+      await enqueueAccountingPaymentPush(paymentPushMappingId, inv.partnerId);
+    } catch (err) {
+      console.error('[invoiceService] enqueueAccountingPaymentPush failed (payment already committed)', `paymentId=${payment.id}`, err instanceof Error ? err.message : err);
+    }
+  } else if (orgScoped) {
+    // The org-scoped caller could not write the outbox row (partner-axis tables
+    // are invisible to it), so do it here in a system context. `fanOutOwedPayments`
+    // is the right tool rather than a second `requestPaymentPush`: it already
+    // refuses a payment recorded before `push_payments_since`, an invoice whose
+    // own mapping is not synced, and a payment that already carries a mapping.
+    try {
+      const mappingIds = await inSystemContext(
+        'invoiceService.recordPayment.orgScopedFanOut',
+        (runner) => fanOutOwedPayments(invoiceId, inv.partnerId, runner),
+      );
+      for (const mappingId of mappingIds) {
+        await enqueueAccountingPaymentPush(mappingId, inv.partnerId);
+      }
+    } catch (err) {
+      console.error(
+        '[invoiceService] org-scoped payment fan-out failed (payment already committed)',
+        `paymentId=${payment.id}`, err instanceof Error ? err.message : err,
+      );
+    }
+  }
   // Surface the persisted payment alongside the refreshed invoice so the route
   // can write a durable audit_logs entry for this money-path mutation. The
   // emitInvoiceEvent bus above is intentionally unconsumed and is NOT the
@@ -1463,7 +1597,45 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
   // lock invoice → payment inside one transaction and re-validate both.
   const [pre] = await db.select({ invoiceId: invoicePayments.invoiceId }).from(invoicePayments).where(eq(invoicePayments.id, paymentId)).limit(1);
   if (!pre) throw new InvoiceServiceError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
-  const { inv, audit } = await db.transaction(async (tx) => {
+
+  // ORG-SCOPED PRE-CHECK. Both reads the QuickBooks-origin guard needs — the
+  // payment's mapping and the connection's `pull_payments` — are partner-axis,
+  // so an org-scoped caller reads ZERO rows and the guard would pass a payment
+  // it must refuse. Done here, BEFORE the transaction, because escalating scope
+  // inside the caller's transaction is not something a void should do. Read-only
+  // and race-free in the way that matters: a payment's ORIGIN never changes.
+  const orgScoped = getCurrentDbAccessContext()?.scope === 'organization';
+  const preCheck = orgScoped
+    ? await inSystemContext('invoiceService.voidPayment.originPreCheck', (runner) => runner(async () => {
+      const [mapping] = await db
+        .select({ breezeOrigin: accountingEntityMappings.breezeOrigin })
+        .from(accountingEntityMappings)
+        .where(and(
+          eq(accountingEntityMappings.breezeEntityType, 'payment'),
+          eq(accountingEntityMappings.breezeEntityId, paymentId),
+        ))
+        .limit(1);
+      if (!mapping || mapping.breezeOrigin) return { mapping: mapping ?? null, quickbooksWillReimport: false };
+      const [inv] = await db
+        .select({ partnerId: invoices.partnerId })
+        .from(invoices).where(eq(invoices.id, pre.invoiceId)).limit(1);
+      if (!inv) return { mapping, quickbooksWillReimport: false };
+      const [conn] = await db
+        .select({ status: accountingConnections.status, pullPayments: accountingConnections.pullPayments })
+        .from(accountingConnections)
+        .where(and(
+          eq(accountingConnections.partnerId, inv.partnerId),
+          eq(accountingConnections.provider, 'quickbooks'),
+        ))
+        .limit(1);
+      return {
+        mapping,
+        quickbooksWillReimport: !!conn && conn.status === 'connected' && conn.pullPayments,
+      };
+    }))
+    : null;
+
+  const { inv, audit, deleteMappingId } = await db.transaction(async (tx) => {
     // The payment row carries orgId but not siteId; the parent invoice drives the
     // site-axis guard (a site-restricted caller must not void a payment on an
     // out-of-site invoice) — run it against the LOCKED row.
@@ -1474,6 +1646,90 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
     // full-refund may have deleted it while we waited.
     const [pay] = await tx.select().from(invoicePayments).where(eq(invoicePayments.id, paymentId)).limit(1).for('update');
     if (!pay || pay.invoiceId !== pre.invoiceId) throw new InvoiceServiceError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
+
+    // QuickBooks-origin payments are refused at the SERVICE layer, not just
+    // hidden in the UI (spec decision 15). QuickBooks is the system of record
+    // for them: a Breeze-side void would not touch the books, and the next CDC
+    // sweep would pull the payment straight back in — leaving an audit trail of
+    // a void that did nothing. Read with the same (type, entity id) shape
+    // `requestPaymentDelete` uses so the two can never disagree about which row
+    // they are looking at; unscoped by partner on purpose, so a row that somehow
+    // belonged to another partner refuses the void instead of slipping past it.
+    // `accounting_entity_mappings` is partner-axis under RLS, so an org-scoped
+    // principal reads ZERO rows here and this probe would report "no accounting
+    // mapping" — the COMMON case, and an ordinary no-op — letting a
+    // QuickBooks-owned payment be voided (review wave 2, finding 5). Refusing
+    // outright was wrong too: org-scoped voids are legitimate. The answer comes
+    // from the system-context pre-check taken BEFORE this transaction instead;
+    // under partner/system scope nothing changes.
+    const [existingMapping] = orgScoped ? [preCheck!.mapping ?? undefined] : await tx
+      .select({ breezeOrigin: accountingEntityMappings.breezeOrigin })
+      .from(accountingEntityMappings)
+      .where(and(
+        eq(accountingEntityMappings.breezeEntityType, 'payment'),
+        eq(accountingEntityMappings.breezeEntityId, paymentId),
+      ))
+      .limit(1);
+    // ...but ONLY while a sweep would actually re-import it (review wave 2,
+    // finding 8). The refusal's entire argument is "the next CDC sweep would
+    // pull it straight back in". With `pull_payments` off — or the realm
+    // disconnected, or the connection deleted — no such sweep runs: the CDC pass
+    // skips every QuickBooks-origin change (`skipped_pull_disabled`), so the
+    // refusal stops protecting anything and instead makes the payment
+    // PERMANENTLY unremovable in Breeze. In that state the void is allowed and
+    // touches nothing in QuickBooks: `requestPaymentDelete` deletes a
+    // QuickBooks-origin mapping outright and returns null, so no delete job is
+    // enqueued and Breeze never asks QuickBooks to remove a Payment it did not
+    // create. The audit says so explicitly, because the QuickBooks record
+    // surviving is the part a reader must not have to infer.
+    let quickbooksRecordUntouched = false;
+    let untouchedReason: 'pull_disabled' | 'not_connected' | 'no_connection' | null = null;
+    if (existingMapping && !existingMapping.breezeOrigin) {
+      const [conn] = orgScoped ? [undefined] : await tx
+        .select({
+          status: accountingConnections.status,
+          pullPayments: accountingConnections.pullPayments,
+        })
+        .from(accountingConnections)
+        .where(and(
+          eq(accountingConnections.partnerId, parentInv.partnerId),
+          eq(accountingConnections.provider, 'quickbooks'),
+        ))
+        .limit(1);
+      const willReimport = orgScoped
+        ? preCheck!.quickbooksWillReimport
+        : !!conn && conn.status === 'connected' && conn.pullPayments;
+      if (willReimport) {
+        throw new InvoiceServiceError(
+          'This payment came from QuickBooks; reverse it in QuickBooks instead',
+          409, 'QUICKBOOKS_OWNED_PAYMENT',
+        );
+      }
+      quickbooksRecordUntouched = true;
+      untouchedReason = orgScoped
+        ? 'pull_disabled'
+        : !conn ? 'no_connection' : conn.status !== 'connected' ? 'not_connected' : 'pull_disabled';
+    }
+
+    // Stripe is the system of record for Stripe-backed payment reversals. Keep
+    // this lookup under the already-held invoice/payment locks so a manual
+    // void cannot race durable refund/dispute reconciliation. The QuickBooks
+    // mapping checks above are deliberately preserved: a Stripe capture may
+    // also have a Breeze-origin QuickBooks outbox row.
+    const [stripeMapping] = await tx
+      .select({ id: invoiceStripePayments.id })
+      .from(invoiceStripePayments)
+      .where(eq(invoiceStripePayments.invoicePaymentId, paymentId))
+      .limit(1)
+      .for('update');
+    if (stripeMapping) {
+      throw new InvoiceServiceError(
+        'Stripe-backed payments must be refunded or disputed in Stripe and reconciled automatically.',
+        409,
+        'STRIPE_PAYMENT_MANAGED_EXTERNALLY',
+      );
+    }
+
     // Capture the destroyed row's financial details BEFORE the delete so the voided
     // payment survives in the durable audit chain even after the row is gone.
     const audit = {
@@ -1484,24 +1740,85 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
       method: pay.method,
       reference: pay.reference,
       recordedBy: pay.recordedBy,
+      // Present ONLY on the QuickBooks-origin branch above, so an ordinary void
+      // does not carry a field that reads as meaningful when it is not.
+      ...(quickbooksRecordUntouched ? { quickbooksRecordUntouched: true, untouchedReason } : {}),
     };
-    // Clear the 'payment' accounting_entity_mappings row for this
-    // invoice_payments id FIRST, inside this same transaction. breeze_entity_id
-    // is polymorphic (no FK, so nothing cascades — see orgMerge.runPostPassFixups'
-    // orphan-sweep comment): deleting the payment row first would strand the
-    // mapping, and a later QuickBooks CDC delivery for that Payment would then
-    // read as "already applied" and silently skip re-recording it. Zero rows is
-    // the normal case (a manual or Stripe payment has no accounting mapping).
-    await clearPaymentMappingForInvoicePayment(tx, paymentId);
+    // Settle the 'payment' accounting_entity_mappings row FIRST, inside this
+    // same transaction. breeze_entity_id is polymorphic (no FK, so nothing
+    // cascades — see orgMerge.runPostPassFixups' orphan-sweep comment): deleting
+    // the payment row first would strand the mapping, and a later QuickBooks CDC
+    // delivery for that Payment would then read as "already applied" and
+    // silently skip re-recording it. Replaces Phase D's
+    // `clearPaymentMappingForInvoicePayment`, which only ever deleted the row: a
+    // Breeze-origin payment that reached QuickBooks now KEEPS its mapping with
+    // pending_op='delete' until QuickBooks confirms the removal. Null (nothing
+    // to enqueue) is the normal case — a manual or Stripe payment usually has no
+    // accounting mapping at all.
+    const deleteMappingId = await requestPaymentDelete(tx, paymentId);
     await tx.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
     await recomputeInvoiceStatus(pay.invoiceId, tx);
     const inv = await getOwnedInvoiceOr404(pay.invoiceId, tx);
-    return { inv, audit };
+    return { inv, audit, deleteMappingId };
   });
+  // PERSISTED HERE, not left to the caller (review wave 3, finding D2). The
+  // route's own `invoice.payment.voided` entry carries the flag too, but the
+  // AI/MCP `manage_invoices` path writes no route audit at all — so the fact
+  // that a QuickBooks-origin payment was voided while its QuickBooks record was
+  // left standing reached no durable store on that path. Writing it in the
+  // service covers every caller, present and future. Fire-and-forget, exactly
+  // like the enqueue below: the void has already committed and an audit failure
+  // must not undo it.
+  if (audit.quickbooksRecordUntouched) {
+    writeAuditEvent(requestLikeFromSnapshot({}), {
+      orgId: audit.orgId,
+      action: 'invoice.payment.voided_quickbooks_untouched',
+      resourceType: 'invoice_payment',
+      resourceId: audit.paymentId,
+      actorType: actor.userId ? 'user' : 'system',
+      actorId: actor.userId ?? null,
+      result: 'success',
+      details: {
+        invoiceId: audit.invoiceId,
+        amount: audit.amount,
+        reason: audit.untouchedReason,
+        provider: 'quickbooks',
+      },
+    });
+  }
   // Emitted after db.transaction returns — NOT after the lock is released: on
   // the request path this is a savepoint of the request-wide tx, so the invoice
   // row lock is held until the request commits. Post-commit emission: #3803.
   await emitInvoiceEvent({ type: 'payment.voided', invoiceId: audit.invoiceId, orgId: audit.orgId, partnerId: inv.partnerId, paymentId, actorUserId: actor.userId });
+  // Same fire-and-forget contract as the record hook above: the mapping row
+  // already carries pending_op='delete', so a failed enqueue only delays the
+  // removal until the reconcile sweep re-enqueues it.
+  if (deleteMappingId) {
+    try {
+      await enqueueAccountingPaymentDelete(deleteMappingId, inv.partnerId);
+    } catch (err) {
+      console.error('[invoiceService] enqueueAccountingPaymentDelete failed (void already committed)', `paymentId=${paymentId}`, err instanceof Error ? err.message : err);
+    }
+  } else if (orgScoped) {
+    // The org-scoped transaction could not write the outbox flip, so do it now
+    // in a system context. Unlike the record path's fan-out this genuinely
+    // works from here: the mapping row already EXISTED and was committed long
+    // before this transaction, so a separate connection can see and flip it —
+    // `requestPaymentDelete` reads only the mapping, never the `invoice_payments`
+    // row this void is deleting.
+    try {
+      const mappingId = await inSystemContext(
+        'invoiceService.voidPayment.orgScopedDelete',
+        (runner) => runner(() => requestPaymentDelete(db, paymentId)),
+      );
+      if (mappingId) await enqueueAccountingPaymentDelete(mappingId, inv.partnerId);
+    } catch (err) {
+      console.error(
+        '[invoiceService] org-scoped payment delete request failed (void already committed)',
+        `paymentId=${paymentId}`, err instanceof Error ? err.message : err,
+      );
+    }
+  }
   return { invoice: inv, audit };
 }
 
@@ -1525,27 +1842,51 @@ export async function listPayments(invoiceId: string, actor: InvoiceActor) {
   // layer, and this read must never depend on it alone.
   const paymentIds = rows.map((r) => r.id);
   const qboLinked = paymentIds.length === 0 ? [] : await db
-    .select({ breezeEntityId: accountingEntityMappings.breezeEntityId })
+    .select({
+      breezeEntityId: accountingEntityMappings.breezeEntityId,
+      breezeOrigin: accountingEntityMappings.breezeOrigin,
+      syncStatus: accountingEntityMappings.syncStatus,
+      lastError: accountingEntityMappings.lastError,
+    })
     .from(accountingEntityMappings)
     .where(and(
       eq(accountingEntityMappings.partnerId, inv.partnerId),
       eq(accountingEntityMappings.breezeEntityType, 'payment'),
       inArray(accountingEntityMappings.breezeEntityId, paymentIds),
     ));
-  const qboIds = new Set(qboLinked.map((r) => r.breezeEntityId));
+  const mappingByPaymentId = new Map(qboLinked.map((r) => [r.breezeEntityId, r]));
   // Stripe wins a (structurally impossible) double link: it is the badge that
   // gates the destructive hand-void affordance.
-  return rows.map((r) => ({
-    ...r,
-    source: stripeIds.has(r.id)
+  return rows.map((r) => {
+    const mapping = mappingByPaymentId.get(r.id) ?? null;
+    // `quickbooks` means "QuickBooks OWNS this row", which is true only for a
+    // payment the pull created (spec decision 15). A Breeze-origin payment that
+    // Breeze PUSHED to QuickBooks stays manual/stripe — it is still hand-voidable
+    // and the void propagates the deletion — and instead carries a sync badge.
+    const source = stripeIds.has(r.id)
       ? ('stripe' as const)
-      : qboIds.has(r.id) ? ('quickbooks' as const) : ('manual' as const),
-  }));
+      : mapping && !mapping.breezeOrigin ? ('quickbooks' as const) : ('manual' as const);
+    return {
+      ...r,
+      source,
+      accountingSync: mapping && mapping.breezeOrigin
+        ? { status: mapping.syncStatus, lastError: mapping.lastError }
+        : null,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Void + reissue + overdue sweep + viewed (Task 3.8)
 // ---------------------------------------------------------------------------
+
+// #3205 W07: same body as contractService.ts's chunksOf — two callers in two
+// services is this repo's existing pattern; not extracted to a shared util.
+function chunksOf<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
 
 /**
  * Void an issued invoice and optionally reissue it as a fresh draft.
@@ -1584,6 +1925,41 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     requireInvoiceAccess(actor, inv);
     if (inv.status === 'draft') throw new InvoiceServiceError('Delete drafts instead of voiding', 409, 'INVALID_STATE');
     if (inv.status === 'void') throw new InvoiceServiceError('Already void', 409, 'INVALID_STATE');
+
+    // 1b. APPLIED PAYMENTS BLOCK THE VOID (#5180).
+    //
+    // Voiding a settled invoice used to succeed locally and then fail forever
+    // downstream: QuickBooks will not void an invoice a Payment settles, so the
+    // accounting job burned its whole five-attempt ladder on a deterministic
+    // refusal, and the next payment pull flagged the mapping in error because
+    // Breeze said void while QuickBooks said paid. It is wrong locally too — the
+    // void releases the source time entries and parts for re-invoicing while
+    // money that was collected against them stays recorded, so a reissue
+    // double-counts the revenue.
+    //
+    // REFUSE rather than auto-unapply (the spec's two options, #5180). Deleting
+    // a payment row is money movement: it needs its own audit event, its own
+    // permission and its own QuickBooks delete, all of which `voidPayment`
+    // already owns. Silently performing it inside a void would make an
+    // irreversible ledger change the operator never asked for; refusing costs
+    // them one extra explicit step and leaves the invoice exactly as it was.
+    // The billing spec is silent on this case (it says only "any issued status
+    // → void"), so this is the first decision on it rather than a reversal.
+    //
+    // Authoritative under the FOR UPDATE lock taken above: every payment writer
+    // locks the invoice row before inserting, so no payment can land between
+    // this sum and the status flip below.
+    const appliedRows = await db.select({ amount: invoicePayments.amount })
+      .from(invoicePayments).where(eq(invoicePayments.invoiceId, invoiceId));
+    const appliedCents = appliedRows.reduce((sum, r) => sum + toCents(r.amount), 0);
+    if (appliedCents > 0) {
+      throw new InvoiceServiceError(
+        `This invoice has ${fromCents(appliedCents)} ${inv.currencyCode} of payments applied to it. `
+        + 'Remove those payments first (and in QuickBooks, if it is synced there), then void the invoice',
+        409, 'INVOICE_HAS_PAYMENTS'
+      );
+    }
+
     voidedOrgId = inv.orgId;
     voidedPartnerId = inv.partnerId;
 
@@ -1638,7 +2014,10 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     }
 
     const now = new Date();
-    await db.update(invoices).set({ status: 'void', voidedAt: now, voidReason: reason, updatedAt: now }).where(eq(invoices.id, invoiceId));
+    // paid_at cleared with the same reasoning as recomputeInvoiceStatus above
+    // (#4542): this update bypasses the recompute entirely, so a paid invoice
+    // that is voided would otherwise keep its payment date forever.
+    await db.update(invoices).set({ status: 'void', voidedAt: now, voidReason: reason, paidAt: null, updatedAt: now }).where(eq(invoices.id, invoiceId));
     // release source rows so they can be re-invoiced
     if (timeIds.length) await db.update(timeEntries).set({ billingStatus: 'not_billed', updatedAt: now }).where(inArray(timeEntries.id, timeIds));
     if (partIds.length) await db.update(ticketParts).set({ billingStatus: 'not_billed', updatedAt: now }).where(inArray(ticketParts.id, partIds));
@@ -1650,7 +2029,15 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     // make sense in the currency they were rounded in. document_locale is
     // likewise NOT copied: it is an issue-time snapshot, restamped when this
     // draft issues (#3777).
-    const [draft] = await db.insert(invoices).values({ partnerId: inv.partnerId, orgId: inv.orgId, siteId: inv.siteId, status: 'draft', notes: inv.notes, currencyCode: inv.currencyCode, replacesInvoiceId: invoiceId, createdBy: actor.userId }).returning();
+    const [draft] = await db.insert(invoices).values({
+      partnerId: inv.partnerId, orgId: inv.orgId, siteId: inv.siteId, status: 'draft', notes: inv.notes,
+      currencyCode: inv.currencyCode, replacesInvoiceId: invoiceId, createdBy: actor.userId,
+      // #3205 W07 decision 15a: copied verbatim. document_locale is NOT copied
+      // (it is an issue-time snapshot, restamped when this draft issues);
+      // evidence_version IS, because the evidence itself is being cloned — a
+      // clone must not read as a pre-W07 invoice.
+      evidenceVersion: inv.evidenceVersion,
+    }).returning();
     draftId = draft!.id;
     await db.update(invoices).set({ replacedByInvoiceId: draft!.id }).where(eq(invoices.id, invoiceId));
     // Cloned from the rows LOCKED in step 2 — not re-read unlocked.
@@ -1666,15 +2053,50 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
       costBasis: l.costBasis, revenueAllocation: l.revenueAllocation, taxable: l.taxable, customerVisible: l.customerVisible,
       lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, sortOrder: l.sortOrder
     });
-    const oldToNew = new Map<string, string>();
+    // Mint every new line id UP FRONT — parents AND children — so the map is
+    // complete and order-independent before a single row is written.
+    //
+    // The old shape built the map POSITIONALLY from `.returning({ id })`
+    // (`parents.forEach((l, i) => oldToNew.set(l.id, inserted[i]!.id))`), which
+    // assumes RETURNING comes back in input order. Postgres does not promise
+    // that. Today the consequence would be invisible (the map only re-pointed
+    // parentLineId among sibling bundle rows); attach billing evidence to it and
+    // a reordered RETURNING silently files device rows under the WRONG line.
+    // Pre-generated uuids remove the assumption instead of adding a second one.
+    // The children insert also never returned ids at all, so the map was
+    // parents-only — evidence on a bundle child had nowhere to go.
+    const oldToNew = new Map<string, string>(srcLines.map((l) => [l.id, randomUUID()]));
+    const newId = (oldLineId: string): string => {
+      const id = oldToNew.get(oldLineId);
+      // The old child clone used `oldToNew.get(l.parentLineId!) ?? null`, which
+      // silently PROMOTED a child to a top-level line when its parent was
+      // missing. Throw instead.
+      if (!id) throw new InvoiceServiceError(`Reissue clone: no mapping for line ${oldLineId}`, 500, 'INVALID_STATE');
+      return id;
+    };
     const parents = srcLines.filter((l) => l.parentLineId === null);
     if (parents.length) {
-      const inserted = await db.insert(invoiceLines).values(parents.map((l) => cloneValues(l, null))).returning({ id: invoiceLines.id });
-      parents.forEach((l, i) => oldToNew.set(l.id, inserted[i]!.id));
+      await db.insert(invoiceLines).values(parents.map((l) => ({ id: newId(l.id), ...cloneValues(l, null) })));
     }
     const children = srcLines.filter((l) => l.parentLineId !== null);
     if (children.length) {
-      await db.insert(invoiceLines).values(children.map((l) => cloneValues(l, oldToNew.get(l.parentLineId!) ?? null)));
+      await db.insert(invoiceLines).values(
+        children.map((l) => ({ id: newId(l.id), ...cloneValues(l, newId(l.parentLineId!)) })),
+      );
+    }
+
+    // #3205 W07: clone the evidence through the SAME map. Device pointers are
+    // copied VERBATIM — device_id, hostname, device_role, site_id, counted_as —
+    // so a row detached before the reissue (deleted or moved device) stays
+    // detached on the clone rather than being resurrected.
+    const srcEvidence = await db.select().from(invoiceLineDevices)
+      .where(eq(invoiceLineDevices.invoiceId, invoiceId));
+    for (const chunk of chunksOf(srcEvidence, 500)) {
+      await db.insert(invoiceLineDevices).values(chunk.map((e) => ({
+        invoiceLineId: newId(e.invoiceLineId), invoiceId: draft!.id, orgId: e.orgId,
+        deviceId: e.deviceId, hostname: e.hostname, deviceRole: e.deviceRole,
+        siteId: e.siteId, countedAs: e.countedAs,
+      })));
     }
   }));
 

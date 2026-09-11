@@ -178,7 +178,9 @@ export const aiAgentProtectedResourcesSchema = aiAgentProtectedResourcesPatchSch
 // (validateAuthorizationKeys, apps/api/src/services/actionIntents/
 // policyDecidable.ts) and runs at write time, rejecting with a structured 422.
 const actAssetsFields = z.object({
-  scriptIds: z.array(z.string().guid()).max(50),
+  // Deduped on parse (#5089 review): one script is one authorization, and a
+  // repeated id would otherwise inflate every count built on this list.
+  scriptIds: z.array(z.string().guid()).max(50).transform((ids) => [...new Set(ids)]),
   supervisedActionKeys: z.array(z.string().regex(TOOL_REF)).max(50),
 });
 export const aiAgentActAssetsPatchSchema = actAssetsFields.partial();
@@ -227,6 +229,25 @@ export const updateAiAgentSchema = z.object({
 });
 
 /**
+ * Task 11 (#5051): `POST /ai/agents/preview` evaluates a DRAFT agent policy —
+ * exactly the body `POST /ai/agents` would accept, except a name has not
+ * necessarily been chosen yet (the guided create flow's review step, spec
+ * §4.6 step 4, runs before Step 1's name field is required to be final).
+ * Every other field keeps `createAiAgentSchema`'s validation and defaulting
+ * (`aiAgentPolicyFieldsSchema`'s `.prefault({})` transforms still fill
+ * `protectedResources`/`limits`/`triggers`/`recipients`/`actAssets`), so
+ * `buildAgentPreview` never has to special-case a partially-defaulted draft.
+ *
+ * `createAiAgentSchema` is `aiAgentPolicyFieldsSchema.extend({...})` — a
+ * plain `ZodObject` (the object itself is never `.transform()`ed, only
+ * individual field schemas are), so `.omit()`/`.extend()` chain on it
+ * directly rather than needing to be rebuilt from the fields schema.
+ */
+export const previewAiAgentSchema = createAiAgentSchema.omit({ name: true }).extend({
+  name: z.string().trim().min(1).max(120).optional(),
+});
+
+/**
  * Manual "run now" trigger body. `.strict()` so a caller cannot smuggle an
  * `orgId`/`kind`/`dedupeKey` past the route into `createAndEnqueueAgentRun` —
  * the org comes from the device row and the kind from the agent row.
@@ -237,6 +258,7 @@ export const triggerAgentRunSchema = z.object({
 
 export type CreateAiAgentInput = z.infer<typeof createAiAgentSchema>;
 export type UpdateAiAgentInput = z.infer<typeof updateAiAgentSchema>;
+export type PreviewAiAgentInput = z.infer<typeof previewAiAgentSchema>;
 export type TriggerAgentRunInput = z.infer<typeof triggerAgentRunSchema>;
 
 /**

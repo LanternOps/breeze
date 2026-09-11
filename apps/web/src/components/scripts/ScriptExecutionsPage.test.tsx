@@ -10,14 +10,23 @@ vi.mock('../../stores/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../stores/auth')>();
   return { ...actual, fetchWithAuth: fetchWithAuthMock };
 });
+
+type MockExecuteModalProps = {
+  onExecute: (scriptId: string, deviceIds: string[], parameters: Record<string, string | number | boolean>, runAs: 'system' | 'user') => Promise<ScriptAdmissionResult>;
+  script: { id: string };
+  initialDeviceIds?: string[];
+  initialParameters?: Record<string, string | number | boolean>;
+};
+
 vi.mock('./ScriptExecutionModal', () => ({
-  default: ({ onExecute, script }: {
-    onExecute: (scriptId: string, deviceIds: string[], parameters: Record<string, string | number | boolean>, runAs: 'system' | 'user') => Promise<ScriptAdmissionResult>;
-    script: { id: string };
-  }) => (
-    <button type="button" onClick={() => void onExecute(script.id, ['device-1'], {}, 'system')}>
-      Confirm Execute
-    </button>
+  default: ({ onExecute, script, initialDeviceIds, initialParameters }: MockExecuteModalProps) => (
+    <div>
+      <div data-testid="mock-initial-device-ids">{JSON.stringify(initialDeviceIds ?? null)}</div>
+      <div data-testid="mock-initial-parameters">{JSON.stringify(initialParameters ?? null)}</div>
+      <button type="button" onClick={() => void onExecute(script.id, ['device-1'], {}, 'system')}>
+        Confirm Execute
+      </button>
+    </div>
   ),
 }));
 
@@ -171,6 +180,34 @@ describe('ScriptExecutionsPage', () => {
     await waitFor(() => expect(executionListCalls).toBeGreaterThanOrEqual(2));
   });
 
+  // #4885 — "Run again" from the execution-details modal.
+  it('opens the execute modal pre-filled with the clicked execution\'s device and parameters', async () => {
+    mockApi(() =>
+      jsonResponse({
+        ...listRow,
+        stdout: 'FULL STDOUT FROM DETAIL',
+        stderr: '',
+        parameters: { target: 'C:\\Temp', force: true },
+      })
+    );
+
+    await openDetails();
+    await screen.findByText('FULL STDOUT FROM DETAIL');
+
+    fireEvent.click(screen.getByTestId('execution-run-again'));
+
+    // The details view is gone (replaced by the execute flow), and the
+    // execute modal received exactly this execution's device + parameters —
+    // not an empty/blank form.
+    expect(screen.queryByText('Execution Details')).toBeNull();
+    expect(await screen.findByTestId('mock-initial-device-ids')).toHaveTextContent(
+      JSON.stringify([listRow.deviceId])
+    );
+    expect(screen.getByTestId('mock-initial-parameters')).toHaveTextContent(
+      JSON.stringify({ target: 'C:\\Temp', force: true })
+    );
+  });
+
   it('does not refresh executions for a typed all-target rejection', async () => {
     let executionListCalls = 0;
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
@@ -196,5 +233,58 @@ describe('ScriptExecutionsPage', () => {
     await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([url]) => url === `/scripts/${SCRIPT_ID}/execute`)).toBe(true));
 
     expect(executionListCalls).toBe(1);
+  });
+});
+
+// #4886 follow-up: "Run again" (and the plain "Run Script" toolbar button) on
+// this page never navigated to the new execution the way ScriptsPage's
+// library run does -- the operator was left staring at a page that had
+// merely refetched in place, with no indication of which row was new.
+describe('ScriptExecutionsPage post-run navigation (#4886 mirror)', () => {
+  it('navigates to the device Scripts tab, highlighting the new execution, after a successful run', async () => {
+    const { navigateTo } = await import('@/lib/navigation');
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === `/scripts/${SCRIPT_ID}`) return jsonResponse({ script });
+      if (url === `/scripts/${SCRIPT_ID}/executions`) return jsonResponse({ executions: [listRow] });
+      if (url === '/orgs/sites') return jsonResponse({ sites: [] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({
+          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          status: 'queued',
+          targets: [{ requestedDeviceId: 'device-1', admission: 'admitted', executionId: 'execution-new' }],
+        }, 201);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(<ScriptExecutionsPage scriptId={SCRIPT_ID} />);
+    fireEvent.click(await screen.findByText('Run Script'));
+    fireEvent.click(await screen.findByText('Confirm Execute'));
+
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/devices/device-1#scripts/execution-new'));
+  });
+
+  it('does not navigate when every target was rejected', async () => {
+    const { navigateTo } = await import('@/lib/navigation');
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === `/scripts/${SCRIPT_ID}`) return jsonResponse({ script });
+      if (url === `/scripts/${SCRIPT_ID}/executions`) return jsonResponse({ executions: [listRow] });
+      if (url === '/orgs/sites') return jsonResponse({ sites: [] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({
+          requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          status: 'rejected',
+          targets: [{ requestedDeviceId: 'device-1', admission: 'denied', reasonCode: 'site_access_denied' }],
+        }, 201);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(<ScriptExecutionsPage scriptId={SCRIPT_ID} />);
+    fireEvent.click(await screen.findByText('Run Script'));
+    fireEvent.click(await screen.findByText('Confirm Execute'));
+    await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([url]) => url === `/scripts/${SCRIPT_ID}/execute`)).toBe(true));
+
+    expect(navigateTo).not.toHaveBeenCalled();
   });
 });

@@ -100,6 +100,7 @@
       "formats": { "csv": "CSV", "excel": "Excel", "pdf": "PDF" },
       "loading": "Caricamento report...",
       "never": "Mai",
+      "visibleInPortal": "Visibile nel portale clienti",
       "newReport": "Nuovo report",
       "nextOccurrence": "Prossimo: {{next}}",
       "reportTypes": { "ai_org_narrative": "Resoconto settimanale delle operazioni AI", "alert_summary": "Riepilogo avvisi", "compliance": "Report conformità", "device_inventory": "Inventario dispositivi", "executive_summary": "Riepilogo direzionale", "performance": "Report prestazioni", "security_compliance_posture": "Stato sicurezza e conformità", "software_inventory": "Inventario software" },
@@ -157,6 +158,7 @@
       "noGrouping": "Nessun raggruppamento",
       "noNumericFields": "Nessun campo numerico",
       "placeholders": { "email": "name@company.com", "reportName": "Panoramica mensile della sicurezza", "templateName": "Pacchetto trimestrale di conformità", "value": "Valore" },
+      "recipients": { "contacts": "Contatti dell'organizzazione", "legacy": "Indirizzi email precedenti", "convert": "Converti in contatto", "added": "Destinatario del report aggiunto", "removed": "Destinatario del report rimosso", "converted": "Indirizzo email convertito in contatto", "updateFailed": "Impossibile aggiornare i destinatari del report", "convertFailed": "Impossibile convertire questo indirizzo email", "mfaRequired": "La conversione di un destinatario richiede l’autenticazione a più fattori. Abilita l’MFA nel tuo profilo e riprova.", "loadFailed": "Impossibile caricare i destinatari del report" },
       "previewTable": { "selectFields": "Seleziona campi per popolare la tabella di anteprima." },
       "reportTypes": { "activity": { "description": "Tracce di attività utente, amministrative e di sistema", "label": "Attività" }, "alerts": { "description": "Volume avvisi, gravità e prestazioni di risposta", "label": "Avvisi" }, "compliance": { "description": "Prontezza agli audit e visibilità sull'allineamento ai criteri", "label": "Conformità" }, "devices": { "description": "Inventario e stato di salute degli endpoint gestiti", "label": "Dispositivi" }, "patches": { "description": "Prontezza patch, stato distribuzione ed esposizione", "label": "Patch" } },
       "runTime": "Ora di esecuzione",
@@ -187,13 +189,9 @@
       "template": "Template",
       "templates": {
         "alert_summary": { "description": "Avvisi principali, trend di gravità e carico di risposta.", "name": "Report riepilogo avvisi" },
-        "billing_usage": { "description": "Utilizzo licenze, fasce di consumo e riepiloghi di riaddebito.", "name": "Report fatturazione/utilizzo" },
         "device_health": { "description": "Andamento CPU, memoria e uptime con punteggio sullo stato dei dispositivi.", "name": "Report stato dispositivi" },
         "executive_summary": { "description": "KPI di alto livello, profilo di rischio e trend strategici per la dirigenza.", "name": "Riepilogo direzionale" },
-        "patch_compliance": { "description": "Copertura patch, aggiornamenti scaduti e stato della correzione.", "name": "Report conformità patch" },
-        "security_compliance_posture": { "description": "Evidenze pronte per assicurazione/verifica: copertura EDR, crittografia, firewall, patching, vulnerabilità, accesso privilegiato e integrazioni di sicurezza con riepiloghi percentuali di implementazione.", "name": "Stato di sicurezza e conformità (assicurazione)" },
-        "sla_compliance": { "description": "Aderenza SLA, rischio di violazione e tempi di risposta.", "name": "Report conformità SLA" },
-        "technician_activity": { "description": "Volume ticket, interventi sui dispositivi e velocità di risoluzione.", "name": "Report attività tecnici" }
+        "security_compliance_posture": { "description": "Evidenze pronte per assicurazione/verifica: copertura EDR, crittografia, firewall, patching, vulnerabilità, accesso privilegiato e integrazioni di sicurezza con riepiloghi percentuali di implementazione.", "name": "Stato di sicurezza e conformità (assicurazione)" }
       },
       "title": "Template report",
       "useTemplate": "Usa template",

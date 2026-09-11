@@ -4,6 +4,7 @@ import { unifiSiteMappings, unifiDevices, unifiSyncRuns, discoveredAssets } from
 import { buildClassificationWrite, type ClassificationWrite } from '../discoveredAssetClassification';
 import type { DbExecutor } from './unifiConnectionService';
 import type { UnifiClient, UnifiDeviceDto, UnifiIspMetrics } from './unifiClient';
+import { canonicalMac, canonicalAssetMac } from './unifiMac';
 
 export interface SyncRunResult {
   hostsSeen: number;
@@ -106,16 +107,20 @@ async function reconcileDiscoveredAsset(
   // it knows the exact model, so it outranks the agent scan's OUI vendor guess
   // that used to rewrite UniFi switches to access_point (#3187).
 
-  // 1. Match by (org_id, mac) first — the stable identifier.
+  // 1. Match by (org_id, mac) first — the stable identifier. Canonicalise both
+  // sides, exactly as the telemetry path does (#5096) — a controller reporting
+  // uppercase/hyphenated MACs, or an asset row written non-canonically by
+  // another producer, must still match.
+  const mac = canonicalMac(device.mac);
   let existing: { id: string } | null = null;
-  if (device.mac) {
+  if (mac) {
     const byMac = await db
       .select({ id: discoveredAssets.id })
       .from(discoveredAssets)
       .where(
         and(
           eq(discoveredAssets.orgId, mapping.orgId),
-          eq(discoveredAssets.macAddress, device.mac),
+          eq(canonicalAssetMac, mac),
         ),
       )
       .limit(1);
@@ -140,7 +145,10 @@ async function reconcileDiscoveredAsset(
   // asset_type is deliberately NOT in here — it is applied per-branch below so a
   // manual override survives the sync (#3011).
   const enrich = {
-    macAddress: device.mac ?? undefined,
+    // Store the canonical form: this row is the one every other producer
+    // matches against, so writing the source's casing here would poison
+    // future lookups (mirrors linkTelemetryDeviceToAsset in unifiTelemetryService.ts).
+    macAddress: mac ?? undefined,
     hostname: device.name ?? undefined,
     manufacturer: 'Ubiquiti',
     model: device.model ?? undefined,
@@ -182,6 +190,10 @@ async function reconcileDiscoveredAsset(
       // typeSource is set only on the INSERT side; the conflict branch must
       // never reset an existing row's type_source back to 'auto'.
       typeSource: 'auto',
+      // #5213 — same reasoning, insert side only: a scan-discovered row that
+      // UniFi later enriches is still a scan row, and a MANUAL row must never
+      // be relabelled 'unifi' by an enrichment pass.
+      source: 'unifi',
       ...(classified
         ? {
             assetType: classified,
@@ -192,6 +204,10 @@ async function reconcileDiscoveredAsset(
     })
     .onConflictDoUpdate({
       target: [discoveredAssets.orgId, discoveredAssets.ipAddress],
+      // The (org_id, ip_address) unique index is PARTIAL as of #5213. Postgres
+      // only infers a partial index when the statement repeats its predicate;
+      // without this the upsert fails at runtime with 42P10.
+      targetWhere: sql`${discoveredAssets.ipAddress} is not null`,
       set: conflictSet,
     })
     .returning({ id: discoveredAssets.id });

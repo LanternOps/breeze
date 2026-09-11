@@ -2,9 +2,9 @@ import { createHash, randomUUID } from 'crypto';
 import { getRedis } from './redis';
 
 /**
- * SR2-20 / #2707: existing-factor step-up grant for adding a NEW MFA factor to
- * an ALREADY-PROTECTED account, OR registering an authenticator device as an
- * approver.
+ * Existing-factor step-up grants for sensitive MFA mutations on an
+ * ALREADY-PROTECTED account, registering an authenticator device as an
+ * approver, and the other purpose-bound operations listed below.
  *
  * Minted by FOUR sources: (1) `POST /auth/mfa/step-up`, after the caller
  * proves an existing factor (TOTP/SMS/passkey); (2)
@@ -15,9 +15,9 @@ import { getRedis } from './redis';
  * mode), the passwordless equivalent of (2) — see #4018.
  *
  * Grants from (1) are presented back to a factor-addition endpoint
- * (`/mfa/enable`, setup-confirm, `/mfa/sms/enable`, `/passkeys/register/*`) as
- * `stepUpGrantId`. Grants for approver-device registration (from any of the
- * three sources) are presented as `registerGrantId` to
+ * (`/mfa/enable`, setup-confirm, `/mfa/sms/enable`, `/passkeys/register/*`) or
+ * recovery-code rotation as `stepUpGrantId`. Grants for approver-device
+ * registration are presented as `registerGrantId` to
  * `POST /authenticator/devices/webauthn/options`,
  * `POST /authenticator/devices/webauthn/verify`, or the mobile
  * `POST /authenticator/devices`.
@@ -33,9 +33,16 @@ import { getRedis } from './redis';
  * can never validate/consume for another (bindsMatch checks equality). */
 export type StepUpOperation =
   | 'add_factor'
+  | 'rotate_recovery_codes'
+  | 'delete_passkey'
   | 'register_approver_device'
   | 'agent_rollback'
-  | 'enroll_first_factor';
+  | 'enroll_first_factor'
+  // RMM-QA-176: entering or EXTENDING device maintenance mode. Bound by
+  // resourceDigest to the exact { deviceIds, reason, durationHours } the
+  // technician was shown, so a grant can never be replayed against a
+  // different device set or a longer window.
+  | 'device_maintenance';
 
 export interface StepUpGrant {
   id: string;
@@ -74,6 +81,40 @@ export function rollbackResourceDigest(input: {
     reason: input.reason,
     targetVersion: input.targetVersion,
   });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+// The device-maintenance maxima moved to services/maintenanceStepUpLimits.ts —
+// see that file's header for why a constant must not live in a module this
+// many suites mock wholesale.
+
+/**
+ * Canonical digest for a device-maintenance grant.
+ *
+ * Canonicalization is part of the security contract, not a convenience: the
+ * mint route and the maintenance routes must produce byte-identical input for
+ * the same operator intent, so `deviceIds` is deduplicated and sorted and
+ * `reason` is trimmed here — in ONE function both callers use — rather than at
+ * each call site. Keys are emitted in a fixed alphabetical order because
+ * JSON.stringify preserves insertion order, which would otherwise let two
+ * equivalent objects hash differently.
+ */
+export function maintenanceResourceDigest(input: {
+  deviceIds: string[];
+  reason: string;
+  durationHours: number;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    deviceIds: [...new Set(input.deviceIds)].sort(),
+    durationHours: input.durationHours,
+    reason: input.reason.trim(),
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/** Bind a factor-removal grant to one exact server-side passkey row. */
+export function passkeyRemovalResourceDigest(passkeyId: string): `sha256:${string}` {
+  const canonical = JSON.stringify({ passkeyId });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 

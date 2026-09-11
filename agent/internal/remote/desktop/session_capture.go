@@ -35,6 +35,12 @@ const (
 	// (2560x1440 IDRs are typically 60-150KB). Dropping keyframes causes decoder
 	// corruption — garbled blocks and color artifacts until the next IDR arrives.
 	maxFrameSizeBytes = 512_000 // 512KB — safe for 1440p IDR keyframes
+
+	// noVideoStopReasonFallback is recorded when the no-video watchdog gives
+	// up and exhausts its reattach budget, but the capturer swallowed no
+	// specific Win32 failure to explain why (e.g. DXGI, which returns real
+	// errors instead of swallowing them as a nil frame). See noVideoStopReason.
+	noVideoStopReasonFallback = "screen capture stopped producing frames and did not recover"
 )
 
 var encodedFramePool = sync.Pool{
@@ -252,6 +258,18 @@ func (s *Session) captureLoop() {
 	}
 }
 
+// noVideoStopReason builds the reason passed to Session.StopWithReason when
+// the no-video watchdog exhausts its reattach budget (#5300). It prefers the
+// last Win32 error the capturer swallowed as a nil frame — the same detail
+// describeCaptureFailure attaches on the startup probe path — and falls back
+// to a generic description when the capturer recorded none (e.g. DXGI).
+func noVideoStopReason(capturer ScreenCapturer) string {
+	if reason := swallowedCaptureError(capturer); reason != "" {
+		return reason
+	}
+	return noVideoStopReasonFallback
+}
+
 // captureLoopDXGI runs a tight loop driven by DXGI's AcquireNextFrame blocking.
 // No ticker — capture calls block until a new frame is available or timeout.
 // Returns the next captureMode when a mode switch is needed.
@@ -331,8 +349,14 @@ func (s *Session) captureLoopDXGI() captureMode {
 			if time.Since(lastWrite) > noVideoReattachTimeout &&
 				time.Since(wd.lastAttempt) > reattachCooldown {
 				if wd.evaluate(s.id, lastWriteNanos) {
-					// Spawn Stop() in a goroutine because Stop() waits on the capture goroutine via s.wg — calling inline would deadlock.
-					go s.Stop()
+					// Spawn StopWithReason() in a goroutine because it waits on the capture goroutine via s.wg — calling inline would deadlock.
+					// #5300: pass the last swallowed capture error (if any) so the
+					// ended-session text names the real failure instead of the
+					// generic text, matching what the startup probe path already does.
+					s.mu.RLock()
+					capturer := s.capturer
+					s.mu.RUnlock()
+					go s.StopWithReason(noVideoStopReason(capturer))
 					return captureModeStopped
 				}
 				wd.recordAttempt(lastWriteNanos)
@@ -640,8 +664,12 @@ func (s *Session) captureLoopTicker() captureMode {
 				if time.Since(lastWrite) > noVideoReattachTimeout &&
 					time.Since(wd.lastAttempt) > reattachCooldown {
 					if wd.evaluate(s.id, lastWriteNanos) {
-						// Spawn Stop() in a goroutine because Stop() waits on the capture goroutine via s.wg — calling inline would deadlock.
-						go s.Stop()
+						// Spawn StopWithReason() in a goroutine because it waits on the capture goroutine via s.wg — calling inline would deadlock.
+						// #5300: same rationale as captureLoopDXGI above.
+						s.mu.RLock()
+						capturer := s.capturer
+						s.mu.RUnlock()
+						go s.StopWithReason(noVideoStopReason(capturer))
 						return captureModeStopped
 					}
 					wd.recordAttempt(lastWriteNanos)

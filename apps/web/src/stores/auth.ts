@@ -133,6 +133,7 @@ interface AuthState {
   logout: () => void;
   updateUser: (user: Partial<User>) => void;
   commitMfaEnrollmentIfCurrent: (generation: number, tokens: Tokens) => boolean;
+  commitReissuedSessionIfCurrent: (generation: number, tokens: Tokens) => boolean;
   setAuthThrottledUntil: (until: number | null) => void;
 }
 
@@ -179,6 +180,9 @@ export const useAuthStore = create<AuthState>()(
         // Re-login clears any stale expiry state and re-arms
         // handleSessionExpired for the new session.
         sessionExpiryInFlight = false;
+        // Same reasoning for the SSO failure reason (#3704): a session that
+        // just logged in must not inherit a previous attempt's verdict.
+        ssoExchangeFailed = false;
         // A fresh login makes any pending throttle-recovery reload stale —
         // the session is already restored, don't reload out from under it.
         cancelThrottleReload();
@@ -226,6 +230,31 @@ export const useAuthStore = create<AuthState>()(
       updateUser: (updates) => set((state) => ({
         user: state.user ? { ...state.user, ...updates } : null
       })),
+
+      /**
+       * Adopt a replacement session an authenticated endpoint handed back after
+       * rotating the user's own authority (#4480: POST /auth/mfa/recovery-codes
+       * bumps mfa_epoch and revokes every refresh family, then re-issues for the
+       * caller). Unlike commitMfaEnrollmentIfCurrent this asserts nothing about
+       * the user record — only the tokens move.
+       *
+       * Fenced on `sessionGeneration`: a logout or re-login that raced the
+       * request has already bumped it, and pushing a token into THAT session
+       * would resurrect an evicted one.
+       */
+      commitReissuedSessionIfCurrent: (generation, tokens) => {
+        let committed = false;
+        set((state) => {
+          if (
+            state.sessionGeneration !== generation
+            || !state.isAuthenticated
+            || !state.user
+          ) return state;
+          committed = true;
+          return { tokens };
+        });
+        return committed;
+      },
 
       commitMfaEnrollmentIfCurrent: (generation, tokens) => {
         let committed = false;
@@ -746,6 +775,46 @@ export function settleSsoLoginGate(): void {
   ssoLoginGate = null;
 }
 
+/**
+ * Where a terminally failed SSO exchange sends the user.
+ *
+ * Exported so AuthOverlay's redirect and handleSessionExpired's eviction land
+ * on the BYTE-IDENTICAL URL. That is what makes it harmless for either of them
+ * to win the race between the two (#3704) — see markSsoExchangeFailed below.
+ */
+export const SSO_EXCHANGE_FAILED_LOGIN_PATH = '/login?error=sso_exchange_failed';
+
+let ssoExchangeFailed = false;
+
+/**
+ * Record that the `#ssoCode` exchange has terminally failed (#3704).
+ *
+ * Settling the gate releases every refresh queued behind it, and those
+ * refreshes 401 against the very cookie whose deadness sent the user through
+ * SSO in the first place. Their eviction is CORRECT — the session really is
+ * gone — but its generic `reason=session-expired` is the wrong explanation:
+ * it points away from SSO and invites an infinite retry loop, since signing in
+ * again just re-runs the same broken SSO round trip.
+ *
+ * AuthOverlay orders the two so the specific redirect commits first, which on
+ * its own is enough whenever `navigateTo` completes a real soft transition.
+ * This flag is what makes the outcome correct even when that ordering
+ * guarantee does NOT hold — `navigateTo` falls back to a fire-and-forget
+ * `window.location.replace`, which merely QUEUES a hard navigation and then
+ * resolves, so the address bar has not moved yet when the gate opens. Rather
+ * than suppress the eviction (which would strand the user if the SSO redirect
+ * never lands), we make it carry the same destination: whichever navigation
+ * wins, the user gets the same specific explanation.
+ *
+ * Cleared by login(), and — more importantly — by ANY refresh that mints an
+ * access token (see requestTokenRefreshWaitingOutThrottle): a proven-live
+ * session must never carry a previous attempt's SSO verdict into an unrelated
+ * eviction later in the same document.
+ */
+export function markSsoExchangeFailed(): void {
+  ssoExchangeFailed = true;
+}
+
 // Optional chaining: tests (and some embedders) stub `window.location` with a
 // partial object, and this runs at module load where a throw breaks every
 // importer of the store.
@@ -855,6 +924,18 @@ async function requestTokenRefreshWaitingOutThrottle(): Promise<RefreshOutcome> 
     // drop the mask so a wait we entered above can never outlive its cause.
     useAuthStore.getState().setAuthThrottledUntil(null);
     cancelThrottleReload();
+  }
+
+  // A minted access token proves the session is alive, so a previous SSO
+  // exchange failure is no longer the reason for anything (#3704). Clearing it
+  // in login() alone is NOT enough: every cookie-based recovery path lands on
+  // setTokens() without ever calling login(), so the verdict would outlive its
+  // cause and mislabel an unrelated eviction — an idle timeout hours later
+  // reported as "SSO sign-in failed", with its `next` deep link dropped too.
+  // Every refresh in the app funnels through here, so this is the one place
+  // that catches all of them.
+  if (outcome.kind === 'restored') {
+    ssoExchangeFailed = false;
   }
 
   return outcome;
@@ -1151,6 +1232,17 @@ export function handleSessionExpired(reason: SessionExpiredReason = 'session-exp
   useAuthStore.getState().logout();
 
   if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+    // A terminally failed SSO exchange outranks the generic expiry these
+    // refreshes report (#3704): it is the actual reason the session is dead,
+    // and it is the only one of the two the user can act on. Landing on the
+    // exact URL AuthOverlay is already navigating to makes it irrelevant which
+    // of the two wins. Dropping `next` is safe precisely BECAUSE the verdict is
+    // cleared by any successful refresh: it can only still be set while the SSO
+    // bounce is the live cause, and that handoff has no deep link to preserve.
+    if (ssoExchangeFailed) {
+      window.location.replace(SSO_EXCHANGE_FAILED_LOGIN_PATH);
+      return;
+    }
     const url = loginPathWithNext();
     window.location.replace(`${url}${url.includes('?') ? '&' : '?'}reason=${reason}`);
   }
@@ -1174,16 +1266,81 @@ export interface FetchWithAuthOptions extends RequestInit {
    * org. Callers that set this own their org scoping entirely.
    */
   skipOrgIdInjection?: boolean;
+  /**
+   * Pin this request to an explicit org, ignoring the ambient switcher scope.
+   * For URL-pinned surfaces — the organization RECORD page (#5075) renders one
+   * org chosen by the path while the switcher may sit on a different org (or
+   * on All organizations), so ambient injection would fetch the wrong tenant's
+   * rows into a page that names another customer.
+   *
+   * `undefined` = inject the ambient scope (the default, unchanged);
+   * `string` = force this org; `null` = inject nothing (same as
+   * `skipOrgIdInjection`, which is kept as the readable alias for the
+   * deliberately cross-org reads).
+   */
+  orgIdOverride?: string | null;
+}
+
+/**
+ * The `?orgId=` rewrite, split out from `fetchWithAuth` so the precedence rules
+ * are testable without the token/refresh machinery around them.
+ *
+ * Relative URLs only — `buildApiUrl` prepends the API origin afterwards. The
+ * fragment is sliced off first: it never reaches the server, and a path like
+ * `/tickets/new#orgId=x` (a UI deep link) must not read as "the URL already
+ * names an org".
+ *
+ * A URL that explicitly names a DIFFERENT org than the caller's override
+ * throws. Silently preferring either one would send a request whose org is not
+ * what one of the two call sites believes it is — a wrong-tenant read, which
+ * is worth a loud failure in dev rather than a plausible-looking page.
+ */
+export function applyOrgId(
+  rawUrl: string,
+  o: { skipOrgIdInjection?: boolean; orgIdOverride?: string | null; ambient: string | null },
+): string {
+  const hashIdx = rawUrl.indexOf('#');
+  const hash = hashIdx >= 0 ? rawUrl.slice(hashIdx) : '';
+  const base = hashIdx >= 0 ? rawUrl.slice(0, hashIdx) : rawUrl;
+  const qIdx = base.indexOf('?');
+  const path = qIdx >= 0 ? base.slice(0, qIdx) : base;
+  const params = new URLSearchParams(qIdx >= 0 ? base.slice(qIdx + 1) : '');
+  const existing = params.get('orgId');
+
+  // Pin-and-skip are contradictory instructions, and skip silently winning is
+  // how an org-pinned surface loses its pin: `makeOrgFetch` merges an
+  // `orgIdOverride` into whatever init the caller passed, so a caller that
+  // adds `skipOrgIdInjection` un-pins a tenant-scoped read with no error. Same
+  // reasoning as the URL-vs-override conflict below — refuse rather than
+  // silently choose.
+  if (typeof o.orgIdOverride === 'string' && o.skipOrgIdInjection) {
+    throw new Error(`fetchWithAuth: orgIdOverride=${o.orgIdOverride} conflicts with skipOrgIdInjection`);
+  }
+
+  if (o.orgIdOverride === null || o.skipOrgIdInjection) {
+    // The caller owns its scoping entirely.
+  } else if (typeof o.orgIdOverride === 'string') {
+    if (existing && existing !== o.orgIdOverride) {
+      throw new Error(`fetchWithAuth: URL orgId=${existing} conflicts with orgIdOverride=${o.orgIdOverride}`);
+    }
+    params.set('orgId', o.orgIdOverride);
+  } else if (!existing && o.ambient) {
+    params.set('orgId', o.ambient);
+  }
+
+  const qs = params.toString();
+  return `${path}${qs ? `?${qs}` : ''}${hash}`;
 }
 
 export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOptions = {}): Promise<Response> {
+  // Custom options are destructured OUT here: everything left in `init` is a
+  // real RequestInit and is what every `fetch` below spreads. An unknown key in
+  // a RequestInit is silently ignored by the platform, so leaking these would
+  // fail invisibly rather than loudly.
+  const { skipOrgIdInjection, skipUnauthorizedRetry, orgIdOverride, ...init } = options;
+
   // Auto-inject orgId from the org store so partner/system users always scope API calls
-  let url = rawUrl;
-  const orgId = _getOrgId?.();
-  if (orgId && !options.skipOrgIdInjection && !url.includes('orgId=')) {
-    const separator = url.includes('?') ? '&' : '?';
-    url = `${url}${separator}orgId=${orgId}`;
-  }
+  const url = applyOrgId(rawUrl, { skipOrgIdInjection, orgIdOverride, ambient: _getOrgId?.() ?? null });
 
   const { tokens: initialTokens, isAuthenticated, setTokens } = useAuthStore.getState();
   let tokens = initialTokens;
@@ -1239,7 +1396,7 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
     }
   }
 
-  const headers = new Headers(options.headers);
+  const headers = new Headers(init.headers);
 
   if (tokens?.accessToken) {
     headers.set('Authorization', `Bearer ${tokens.accessToken}`);
@@ -1250,7 +1407,7 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   // here strips the boundary and the server can't parse the body (avatar upload).
   // Also don't clobber a caller-provided Content-Type (e.g. `application/octet-stream`
   // for raw chunk PUTs) — only default to JSON when the caller set none.
-  if (!(options.body instanceof FormData) && !headers.has('Content-Type')) {
+  if (!(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
 
@@ -1259,8 +1416,8 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   // cap aborts an in-flight upload the server then completes anyway, surfacing the
   // confusing "signal is aborted without reason" DOMException even though the file
   // landed (issue #1601). Give uploads a much longer ceiling while keeping it bounded.
-  const externalSignal = options.signal;
-  const timeoutMs = options.body instanceof FormData ? UPLOAD_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
+  const externalSignal = init.signal;
+  const timeoutMs = init.body instanceof FormData ? UPLOAD_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
   const controller = !externalSignal ? new AbortController() : null;
   const timeout = controller
     ? setTimeout(
@@ -1275,7 +1432,7 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
 
   let response: Response;
   try {
-    response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include', signal });
+    response = await fetch(buildApiUrl(url), { ...init, headers, credentials: 'include', signal });
   } catch (err) {
     if (timeout) clearTimeout(timeout);
     throw err;
@@ -1284,20 +1441,20 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
 
   // If unauthorized, attempt cookie-backed refresh once (unless the caller's
   // body is single-use and must never be replayed — see skipUnauthorizedRetry).
-  if (response.status === 401 && !options.skipUnauthorizedRetry) {
+  if (response.status === 401 && !skipUnauthorizedRetry) {
     const outcome = await requestTokenRefreshShared();
     if (outcome.kind === 'restored') {
       setTokens(outcome.tokens);
 
       // Retry original request with new token
       headers.set('Authorization', `Bearer ${outcome.tokens.accessToken}`);
-      response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include', signal });
+      response = await fetch(buildApiUrl(url), { ...init, headers, credentials: 'include', signal });
     } else {
       // If another in-flight request already refreshed state, retry once with latest token.
       const latestToken = useAuthStore.getState().tokens?.accessToken;
       if (latestToken && latestToken !== previousAccessToken) {
         headers.set('Authorization', `Bearer ${latestToken}`);
-        response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include', signal });
+        response = await fetch(buildApiUrl(url), { ...init, headers, credentials: 'include', signal });
       } else {
         // Refresh failed and no newer token exists; the session is
         // unrecoverable. Still return the 401 below — callers may inspect it,
@@ -1354,6 +1511,14 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
         if (path !== '/auth/mfa/setup') {
           window.location.href = '/auth/mfa/setup?forced=1';
         }
+      } else if (body?.reason === 'auth_binding_rotation_required') {
+        // The server already installed the replacement `breeze_auth_binding`
+        // cookie on THIS response (Set-Cookie) before answering 428 — the
+        // browser's cookie jar picks it up automatically on the next fetch
+        // via `credentials: 'include'`. So the fix is a bare replay of the
+        // exact same request, once. If the replay 428s again, fall through
+        // and hand it back to the caller exactly like any other error.
+        response = await fetch(buildApiUrl(url), { ...init, headers, credentials: 'include', signal });
       }
     } catch {
       // Not JSON or parse failed — surface as a normal 428 to caller
@@ -2044,11 +2209,13 @@ export async function apiEnableTotpMfa(code: string, currentPassword: string): P
   try {
     const response = await fetchWithAuth('/auth/mfa/enable', {
       method: 'POST',
-      // #4413: a rejected TOTP comes back as 401, same status the bearer guard
-      // uses. Without this the generic 401 path replays the code, or evicts the
-      // session outright — on the forced-enrollment page that strands the user
-      // with no way back in. The caller already renders the raw error.
-      skipUnauthorizedRetry: true,
+      // #4470: no `skipUnauthorizedRetry` here any more. The API now answers a
+      // rejected TOTP (or a rejected step-up password) with 400 +
+      // `code: 'mfa_code_invalid'` / `'invalid_credentials'`, so a typo can no
+      // longer reach fetchWithAuth's 401 refresh-and-evict path at all. A 401
+      // from this endpoint now means only what it says — the bearer is dead —
+      // and refreshing it is the right response. The #4413 stopgap flag is
+      // gone with the status it was working around.
       body: JSON.stringify({ code, currentPassword }),
     });
     const data = await response.json().catch(() => null);
@@ -2109,10 +2276,29 @@ export async function apiVerifyPhone(phoneNumber: string, currentPassword: strin
   }
 }
 
+/**
+ * #5198: confirming a number that REPLACES the one behind an already-active SMS
+ * factor advances `mfa_epoch` and revokes every refresh family — no other
+ * session may keep an assurance minted before the factor's material changed —
+ * and hands this caller a replacement session in the same response. Adopt it;
+ * keeping the pre-swap token means the next request 401s on a stale `mep`, its
+ * refresh fails against a revoked family, and the user is bounced to
+ * /login?reason=session-expired by the very action they just authenticated for.
+ *
+ * `reauthRequired` is the honest third state: the server revoked everything but
+ * could not install the replacement (or a logout raced us and the store refused
+ * the commit), so this session really is dead even though the phone number
+ * changed. Initial verification — no active factor yet — replaces nothing and
+ * reports neither.
+ */
 export async function apiConfirmPhone(phoneNumber: string, code: string, currentPassword: string): Promise<{
   success: boolean;
   error?: string;
+  reauthRequired?: boolean;
 }> {
+  // Captured BEFORE the request so a logout that races it is detectable when
+  // the replacement comes back.
+  const generation = useAuthStore.getState().sessionGeneration;
   try {
     const response = await fetchWithAuth('/auth/phone/confirm', {
       method: 'POST',
@@ -2125,7 +2311,12 @@ export async function apiConfirmPhone(phoneNumber: string, code: string, current
       return { success: false, error: extractApiError(data, 'Failed to verify phone') };
     }
 
-    return { success: true };
+    if (data?.sessionReplaced !== true) return { success: true };
+
+    const tokens = data.tokens as Tokens | undefined;
+    const adopted = typeof tokens?.accessToken === 'string'
+      && useAuthStore.getState().commitReissuedSessionIfCurrent(generation, tokens);
+    return { success: true, reauthRequired: !adopted };
   } catch {
     return { success: false, error: 'Network error' };
   }

@@ -7,7 +7,14 @@ import { users } from './users';
 
 export const scriptLanguageEnum = pgEnum('script_language', ['powershell', 'bash', 'python', 'cmd']);
 export const scriptRunAsEnum = pgEnum('script_run_as', ['system', 'user', 'elevated']);
-export const executionStatusEnum = pgEnum('execution_status', ['pending', 'queued', 'running', 'completed', 'failed', 'timeout', 'cancelled']);
+// #3525: 'cancelling' is TRANSIENT — a cancel is in flight and unresolved. Only
+// a PROVEN stop terminalises as 'cancelled'; an unproven one reverts to
+// `cancel_prev_status`. Value order mirrors the installed type
+// (2026-10-07-110000 adds it AFTER 'running'), which drizzle-kit compares.
+export const executionStatusEnum = pgEnum('execution_status', ['pending', 'queued', 'running', 'cancelling', 'completed', 'failed', 'timeout', 'cancelled']);
+// #3525: the cancel REQUEST's lifecycle, orthogonal to the execution outcome
+// (spec OD8-C). NULL means no cancel was ever requested.
+export const scriptCancelStateEnum = pgEnum('script_cancel_state', ['requested', 'confirmed', 'unconfirmed', 'failed']);
 export const triggerTypeEnum = pgEnum('trigger_type', ['manual', 'scheduled', 'alert', 'policy', 'automation']);
 
 // Feature #3: severity-by-exit-code mapping. Keys are non-negative integer
@@ -39,6 +46,26 @@ export const scripts = pgTable('scripts', {
   // NULL = legacy behavior (non-zero exit = error). When set, see
   // ScriptExitCodeSeverityMapping above and deriveSeverityFromScript().
   exitCodeSeverityMapping: jsonb('exit_code_severity_mapping').$type<ScriptExitCodeSeverityMapping>(),
+  // #5129 — the agent's STRICT-level danger-pattern DESCRIPTIONS an admin
+  // explicitly acknowledged for this script (e.g. "PowerShell HKLM
+  // modification"). Dispatched with every run; the agent allows exactly these
+  // Strict patterns and still blocks any other match. Basic-level patterns
+  // ignore this entirely and can never be acknowledged.
+  //
+  // A SET, not a boolean, on purpose: a boolean would mean acknowledging an
+  // HKLM write permanently disarms Strict checking for the script, so a later
+  // edit introducing a credential-dumping pattern would inherit the approval
+  // silently. Re-derived on every save as (submitted ∩ patterns the content
+  // actually matches) — see services/scriptSecurityAcknowledgement.ts.
+  acknowledgedSecurityPatterns: text('acknowledged_security_patterns')
+    .array()
+    .notNull()
+    .default(sql`'{}'::text[]`),
+  // Who granted the most recent acknowledgement, and when. The audit log is
+  // the forensic record; these exist so the script record itself can say who
+  // accepted the risk without a log query.
+  securityAcknowledgedBy: uuid('security_acknowledged_by').references(() => users.id),
+  securityAcknowledgedAt: timestamp('security_acknowledged_at'),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -58,7 +85,14 @@ export const scriptCategories = pgTable('script_categories', {
   description: text('description'),
   icon: varchar('icon', { length: 50 }),
   color: varchar('color', { length: 7 }),
-  parentId: uuid('parent_id').references((): AnyPgColumn => scriptCategories.id),
+  // ON DELETE SET NULL (2026-10-13-120000-script-categories-parent-ownership-guard.sql,
+  // #4873): org_id is nullable here (partner-wide categories, epic #2135), so a
+  // single `DELETE ... WHERE org_id = $1` during GDPR org erasure does not remove
+  // a row set closed under this self-reference. Letting Postgres clear the edge is
+  // what keeps erasure from aborting with 23503. A DEFERRABLE constraint trigger
+  // (`script_categories_parent_guard`) additionally forbids a child naming a parent
+  // on a different owner axis.
+  parentId: uuid('parent_id').references((): AnyPgColumn => scriptCategories.id, { onDelete: 'set null' }),
   order: integer('order').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
@@ -118,6 +152,16 @@ export const scriptTemplates = pgTable('script_templates', {
   nameIdx: index('script_templates_name_idx').on(table.name)
 }));
 
+/**
+ * #2698: what the script custom-field write-back did for one execution.
+ * `rejected.reason` is one of the CustomFieldWriteRejection values in
+ * services/customFields/scriptWriteBack.ts. Keys only — never values.
+ */
+export interface ScriptCustomFieldWriteSummary {
+  applied: string[];
+  rejected: Array<{ key: string; reason: string }>;
+}
+
 export const scriptExecutions = pgTable('script_executions', {
   id: uuid('id').primaryKey().defaultRandom(),
   scriptId: uuid('script_id').notNull().references(() => scripts.id),
@@ -143,11 +187,48 @@ export const scriptExecutions = pgTable('script_executions', {
   stdout: text('stdout'),
   stderr: text('stderr'),
   errorMessage: text('error_message'),
+  // #2698: per-run summary of the script custom-field write-back.
+  customFieldResult: jsonb('custom_field_result').$type<ScriptCustomFieldWriteSummary>(),
+  // #3525 cancellation lifecycle, orthogonal to `status` (spec OD8-C).
+  // `status` says what happened to the PROCESS; these say what happened to the
+  // CANCEL REQUEST. A NULL cancel_state means no cancel was ever requested —
+  // enforced against cancel_requested_at by script_executions_cancel_state_chk.
+  cancelRequestedAt: timestamp('cancel_requested_at'),
+  // The AI-agent actor id is an ai_agents id, not a user id; the caller
+  // probes-and-degrades to NULL before writing here, as triggered_by already does.
+  cancelledBy: uuid('cancelled_by').references(() => users.id, { onDelete: 'set null' }),
+  cancelState: scriptCancelStateEnum('cancel_state'),
+  // The `device_commands.id` of the queued script_cancel. Bare uuid for the same
+  // reason as automation_run_id: command rows are reaped independently and a
+  // stale id must simply match nothing rather than block a delete.
+  cancelCommandId: uuid('cancel_command_id'),
+  // The status held when the cancel was requested. An unconfirmed or failed
+  // cancel reverts to it, so the row never claims an outcome we cannot prove
+  // and reapStaleScriptExecutions keeps ownership of the deadline.
+  cancelPrevStatus: executionStatusEnum('cancel_prev_status'),
+  // #4888 — the run context this execution ACTUALLY used, resolved at dispatch
+  // as `override ?? script.runAs`. Before this column the answer lived only in
+  // the transient `device_commands.payload` (sanitised out of every history
+  // read), so execution history could not say whether a run went to SYSTEM or
+  // to the logged-in user. NULLABLE ON PURPOSE: rows written before #4888 do
+  // not know, and 'system' would be an assertion we cannot back.
+  runAs: scriptRunAsEnum('run_as'),
+  // The Windows session a `run_as = 'user'` run was pinned to (RDS session
+  // targeting). NULL = any interactive session.
+  targetSessionId: integer('target_session_id'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   automationRunIdIdx: index('script_executions_automation_run_id_idx')
     .on(table.automationRunId)
-    .where(sql`automation_run_id IS NOT NULL`)
+    .where(sql`automation_run_id IS NOT NULL`),
+  // #3525: the cancellation sweep scans only in-flight cancels.
+  cancellingIdx: index('script_executions_cancelling_idx')
+    .on(table.cancelRequestedAt)
+    .where(sql`status = 'cancelling'`),
+  // #3525: closers resolve the execution from the cancel command's id.
+  cancelCommandIdx: index('script_executions_cancel_command_idx')
+    .on(table.cancelCommandId)
+    .where(sql`cancel_command_id IS NOT NULL`)
 }));
 
 export const scriptExecutionBatches = pgTable('script_execution_batches', {

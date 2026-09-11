@@ -1,3 +1,4 @@
+import { DrizzleQueryError } from 'drizzle-orm';
 import { Hono } from 'hono';
 import type { ExtensionAuditEvent } from '../hostTypes';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -56,7 +57,26 @@ function auth(overrides: Partial<WorkspaceAuthContext> = {}): WorkspaceAuthConte
   };
 }
 
-function makeHarness(authValue = auth()) {
+type ExtensionAuthorizationFixture = {
+  hasPermission: (resource: string, action: string) => boolean;
+  mfaSatisfied: boolean;
+};
+
+function authorization(
+  grants: string[] = ['*:*'],
+  mfaSatisfied = true,
+): ExtensionAuthorizationFixture {
+  return {
+    hasPermission: (resource, action) =>
+      grants.includes('*:*') || grants.includes(`${resource}:${action}`),
+    mfaSatisfied,
+  };
+}
+
+function makeHarness(
+  authValue = auth(),
+  authorizationValue: ExtensionAuthorizationFixture = authorization(),
+) {
   const sourcesService = {
     list: vi.fn(async () => [source()]),
     get: vi.fn(async () => source()),
@@ -87,6 +107,11 @@ function makeHarness(authValue = auth()) {
   const app = new Hono<WorkspaceRouteEnv>();
   app.use('*', async (c, next) => {
     c.set('auth', authValue);
+    // The host gateway owns permission resolution. Keep this fixture explicit
+    // so route tests exercise the extension's authorization boundary rather
+    // than treating partner scope as a privilege signal.
+    (c as unknown as { set(key: string, value: unknown): void })
+      .set('extensionAuthorization', authorizationValue);
     await next();
   });
   app.route('/', createSourcesRoutes({ sourcesService, credentialService, audit, log }));
@@ -106,6 +131,49 @@ beforeEach(() => {
 });
 
 describe('sources admin routes', () => {
+  it('does not treat read-only partner organization reach as source administration', async () => {
+    const h = makeHarness(auth(), authorization(['workspace:read']));
+
+    const read = await h.app.request(`/sources?orgId=${ORG_ID}`);
+    expect(read.status).toBe(200);
+
+    const create = await h.app.request(
+      `/sources?orgId=${ORG_ID}`,
+      jsonRequest('POST', sourceInput),
+    );
+    expect(create.status).toBe(403);
+    expect(h.sourcesService.create).not.toHaveBeenCalled();
+  });
+
+  it('requires the credential grant before touching stored source credentials', async () => {
+    const h = makeHarness(
+      auth(),
+      authorization(['workspace:read', 'workspace:write', 'workspace:execute', 'devices:execute']),
+    );
+    const res = await h.app.request(
+      `/sources/${SOURCE_ID}/credential?orgId=${ORG_ID}`,
+      jsonRequest('PUT', { username: 'synthetic-user', password: 'synthetic-password' }),
+    );
+    expect(res.status).toBe(403);
+    expect(h.credentialService.set).not.toHaveBeenCalled();
+  });
+
+  it('requires MFA before a permitted source mutation', async () => {
+    const h = makeHarness(
+      auth(),
+      authorization(
+        ['workspace:read', 'workspace:write', 'workspace:execute', 'devices:execute'],
+        false,
+      ),
+    );
+    const res = await h.app.request(
+      `/sources?orgId=${ORG_ID}`,
+      jsonRequest('POST', sourceInput),
+    );
+    expect(res.status).toBe(403);
+    expect(h.sourcesService.create).not.toHaveBeenCalled();
+  });
+
   it('rejects organization-scoped callers', async () => {
     const h = makeHarness(auth({ scope: 'organization', orgId: ORG_ID }));
     const res = await h.app.request(`/sources?orgId=${ORG_ID}`);
@@ -246,6 +314,28 @@ describe('sources admin routes', () => {
     expect(invalidPatch.status).toBe(400);
     expect(h.sourcesService.create).not.toHaveBeenCalled();
     expect(h.sourcesService.update).not.toHaveBeenCalled();
+  });
+
+  it.each(['POST', 'PATCH'])('maps a wrapped foreign-key violation on %s to 400', async (method) => {
+    const h = makeHarness();
+    const error = new DrizzleQueryError('write source', [],
+      Object.assign(new Error('private database detail'), { code: '23503' }));
+    h.sourcesService.create.mockRejectedValueOnce(error);
+    h.sourcesService.update.mockRejectedValueOnce(error);
+    const path = method === 'POST' ? '/sources' : `/sources/${SOURCE_ID}`;
+    const res = await h.app.request(`${path}?orgId=${ORG_ID}`, jsonRequest(method, sourceInput));
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).not.toContain('private database detail');
+    expect(h.audit).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID, result: 'failure' }));
+  });
+
+  it('does not turn an unrelated wrapped database error into a validation error', async () => {
+    const h = makeHarness();
+    h.sourcesService.create.mockRejectedValueOnce(new DrizzleQueryError('write source', [],
+      Object.assign(new Error('private database detail'), { code: '42501' })));
+    const res = await h.app.request(`/sources?orgId=${ORG_ID}`, jsonRequest('POST', sourceInput));
+    expect(res.status).toBe(500);
+    expect(JSON.stringify(await res.json())).not.toContain('private database detail');
   });
 
   it('rejects an empty patch without touching the source', async () => {

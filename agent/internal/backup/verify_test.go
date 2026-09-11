@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
@@ -152,6 +153,82 @@ func TestVerifyIntegrity_MissingFile(t *testing.T) {
 	}
 }
 
+// TestVerifyIntegrity_VolatileSizeMismatch_WarnsNotFails proves #5581's
+// verify-side policy: a Volatile manifest entry's size mismatch is a
+// warning, counted as verified, not a failure — while an ordinary
+// (non-Volatile) entry with the exact same kind of mismatch still fails,
+// proving this doesn't loosen verification generally.
+func TestVerifyIntegrity_VolatileSizeMismatch_WarnsNotFails(t *testing.T) {
+	basePath := t.TempDir()
+	snapshotID := "snapshot-volatile"
+	prefix := path.Join("snapshots", snapshotID)
+	srcDir := t.TempDir()
+
+	volatileSrc := filepath.Join(srcDir, "volatile.log")
+	if err := os.WriteFile(volatileSrc, []byte("0123456789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	provider := providers.NewLocalProvider(basePath)
+	volatileBackupPath := path.Join(prefix, "files", "volatile.log.gz")
+	if err := provider.Upload(volatileSrc, volatileBackupPath); err != nil {
+		t.Fatal(err)
+	}
+
+	staleSrc := filepath.Join(srcDir, "stale.txt")
+	if err := os.WriteFile(staleSrc, []byte("0123456789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	staleBackupPath := path.Join(prefix, "files", "stale.txt.gz")
+	if err := provider.Upload(staleSrc, staleBackupPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both objects are actually 10 bytes; the manifest declares a stale 5
+	// bytes for each, but only the volatile one carries Volatile: true.
+	manifest := Snapshot{
+		ID: snapshotID,
+		Files: []SnapshotFile{
+			{SourcePath: volatileSrc, BackupPath: volatileBackupPath, Size: 5, Volatile: true},
+			{SourcePath: staleSrc, BackupPath: staleBackupPath, Size: 5},
+		},
+		Size: 10,
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestDir := filepath.Join(basePath, prefix)
+	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(manifestDir, "manifest.json"), manifestBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := VerifyIntegrity(provider, snapshotID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.FilesVerified != 1 {
+		t.Errorf("FilesVerified = %d, want 1 (the volatile entry counts as verified despite the mismatch)", result.FilesVerified)
+	}
+	if result.FilesFailed != 1 {
+		t.Errorf("FilesFailed = %d, want 1 (only the non-volatile mismatch)", result.FilesFailed)
+	}
+	if len(result.FailedFiles) != 1 || result.FailedFiles[0] != staleBackupPath {
+		t.Errorf("FailedFiles = %v, want only %q", result.FailedFiles, staleBackupPath)
+	}
+	foundVolatileWarning := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, volatileBackupPath) && strings.Contains(w, "volatile") {
+			foundVolatileWarning = true
+		}
+	}
+	if !foundVolatileWarning {
+		t.Errorf("expected an advisory warning mentioning the volatile file, got %v", result.Warnings)
+	}
+}
+
 func TestVerifyIntegrity_CorruptedGzip(t *testing.T) {
 	basePath := t.TempDir()
 	snapshotID := "snapshot-corrupt"
@@ -194,7 +271,7 @@ func TestTestRestore_HappyPath(t *testing.T) {
 	var progressCalls int
 	progressFn := func(current, total int) { progressCalls++ }
 
-	result, err := TestRestore(provider, snapshotID, progressFn)
+	result, err := TestRestore(provider, snapshotID, t.TempDir(), progressFn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -237,7 +314,7 @@ func TestTestRestore_MissingFile(t *testing.T) {
 	os.WriteFile(filepath.Join(manifestDir, "manifest.json"), manifestBytes, 0o644)
 
 	provider := providers.NewLocalProvider(basePath)
-	result, err := TestRestore(provider, snapshotID, nil)
+	result, err := TestRestore(provider, snapshotID, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -247,11 +324,12 @@ func TestTestRestore_MissingFile(t *testing.T) {
 }
 
 func TestCleanupRestoreDir_Success(t *testing.T) {
-	dir := filepath.Join(os.TempDir(), "breeze-restore-test", "test-cleanup")
+	configuredRoot := t.TempDir()
+	dir := filepath.Join(configuredRoot, "restore-work", "breeze-restore-test-test-cleanup")
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, "dummy.txt"), []byte("x"), 0o644)
 
-	if err := CleanupRestoreDir(dir); err != nil {
+	if err := CleanupRestoreDir(dir, configuredRoot); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
@@ -260,7 +338,7 @@ func TestCleanupRestoreDir_Success(t *testing.T) {
 }
 
 func TestCleanupRestoreDir_PathTraversal(t *testing.T) {
-	err := CleanupRestoreDir("/etc/passwd")
+	err := CleanupRestoreDir("/etc/passwd", t.TempDir())
 	if err == nil {
 		t.Error("expected error for path outside restore prefix")
 	}
@@ -288,7 +366,7 @@ func TestTestRestorePreservesDistinctPathsForDuplicateBasenames(t *testing.T) {
 		},
 	}
 
-	result, err := TestRestore(provider, "dup-basenames", nil)
+	result, err := TestRestore(provider, "dup-basenames", t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -303,5 +381,115 @@ func TestTestRestorePreservesDistinctPathsForDuplicateBasenames(t *testing.T) {
 	}
 	if pathA == pathB {
 		t.Fatalf("duplicate basenames restored to the same path %q", pathA)
+	}
+}
+
+// TestTestRestore_UsesOriginalPathUnderVSS proves D8 for TestRestore: a
+// manifest entry whose SourcePath is a VSS shadow-copy device path must be
+// restored under its OriginalPath's relative structure, never under the
+// shadow path's — otherwise a test-restore silently exercises (and
+// "passes") a location no real recovery would ever use.
+//
+// TestRestore unconditionally os.RemoveAll's its restore dir before
+// returning (see its Cleanup step), so asserting on the filesystem AFTER
+// it returns would be vacuous — everything is gone by then regardless of
+// which path it wrote to. Instead this uses recordingTestRestoreProvider
+// (see TestTestRestorePreservesDistinctPathsForDuplicateBasenames above),
+// which records each Download's local destination in a map that survives
+// the cleanup, to observe where the file was actually written DURING the
+// restore.
+func TestTestRestore_UsesOriginalPathUnderVSS(t *testing.T) {
+	const shadowSourcePath = "/vss-shadow-copy-1/assure/src/x"
+	const originalPath = "/assure/src/x"
+
+	snapshot := Snapshot{
+		ID: "dup-basenames", // recordingTestRestoreProvider.Download special-cases this manifest key
+		Files: []SnapshotFile{
+			{SourcePath: shadowSourcePath, OriginalPath: originalPath, BackupPath: path.Join(snapshotRootDir, "dup-basenames", "files", "x.gz"), Size: 2},
+		},
+		Size: 2,
+	}
+	manifest, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+
+	provider := &recordingTestRestoreProvider{
+		manifest: manifest,
+		files: map[string][]byte{
+			path.Join(snapshotRootDir, "dup-basenames", "files", "x.gz"): []byte("xx"),
+		},
+	}
+
+	result, err := TestRestore(provider, "dup-basenames", t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "passed" {
+		t.Fatalf("expected passed, got %s (error: %s, failed: %v)", result.Status, result.Error, result.FailedFiles)
+	}
+
+	downloadedTo := provider.downloads[path.Join(snapshotRootDir, "dup-basenames", "files", "x.gz")]
+	if downloadedTo == "" {
+		t.Fatalf("expected the file download to be recorded, got %+v", provider.downloads)
+	}
+	if strings.Contains(downloadedTo, "vss-shadow-copy-1") {
+		t.Fatalf("TestRestore wrote under the VSS shadow-device path instead of the original path: %q", downloadedTo)
+	}
+	wantSuffix := filepath.Join("assure", "src", "x")
+	if !strings.HasSuffix(downloadedTo, wantSuffix) {
+		t.Fatalf("TestRestore destination = %q, want it to end with the original path's relative structure %q", downloadedTo, wantSuffix)
+	}
+}
+
+// W02: VerifyIntegrity must never try to download a content-less entry's
+// (empty) BackupPath — it has no object to verify, so it's simply skipped;
+// only the one real file counts toward FilesVerified.
+func TestVerifyIntegrity_SkipsContentlessEntries(t *testing.T) {
+	provider := newMockProvider()
+	fileKey := "snapshots/s1/files/path_0/etc/hosts"
+	provider.files[fileKey] = []byte("abc")
+	manifest := Snapshot{ID: "s1", FormatVersion: manifestFormatFidelity, Files: []SnapshotFile{
+		{SourcePath: "/etc/hosts", BackupPath: fileKey, Size: 3, Checksum: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
+		{SourcePath: "/bin", Kind: KindSymlink, LinkTarget: "usr/bin"},
+		{SourcePath: "/var/empty", Kind: KindDir},
+	}}
+	data, _ := json.Marshal(manifest)
+	provider.files["snapshots/s1/manifest.json"] = data
+
+	res, err := VerifyIntegrity(provider, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "passed" || res.FilesVerified != 1 || res.FilesFailed != 0 {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+// W02: TestRestore shares VerifyIntegrity's content-less-entry blind spot —
+// without this fix every fidelity-format snapshot would permanently report
+// "partial" from TestRestore (the symlink/dir entries' empty BackupPath
+// downloads would fail) even though a real restore handles them fine (see
+// restore.go's separate symlink/dir passes, Task 4). Not explicitly in the
+// plan's Task 3 scope, but the identical fix on the identical file for the
+// identical reason.
+func TestTestRestore_SkipsContentlessEntries(t *testing.T) {
+	provider := newMockProvider()
+	fileKey := "snapshots/s2/files/path_0/etc/hosts"
+	provider.files[fileKey] = []byte("abc")
+	manifest := Snapshot{ID: "s2", FormatVersion: manifestFormatFidelity, Files: []SnapshotFile{
+		{SourcePath: "/etc/hosts", BackupPath: fileKey, Size: 3},
+		{SourcePath: "/bin", Kind: KindSymlink, LinkTarget: "usr/bin"},
+		{SourcePath: "/var/empty", Kind: KindDir},
+	}}
+	data, _ := json.Marshal(manifest)
+	provider.files["snapshots/s2/manifest.json"] = data
+
+	res, err := TestRestore(provider, "s2", t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "passed" || res.FilesVerified != 1 || res.FilesFailed != 0 {
+		t.Fatalf("result = %+v", res)
 	}
 }

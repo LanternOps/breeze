@@ -5,7 +5,8 @@ import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog, sites } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
-import { evaluateFilterWithPreview, extractFieldsFromFilter, validateFilter } from '../services/filterEngine';
+import { evaluateFilterWithPreview, extractFieldsFromFilter, validateFilter, FilterQueryTimeoutError } from '../services/filterEngine';
+import { FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS, reportFilterPreviewTimeout } from '../services/filterPreviewTimeout';
 import {
   addManualGroupMemberships,
   evaluateGroupMembership,
@@ -15,9 +16,10 @@ import {
 } from '../services/groupMembership';
 import { writeRouteAudit } from '../services/auditEvents';
 import type { FilterConditionGroup } from '../services/filterEngine';
-import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import { PERMISSIONS, canAccessSite, hasPermission, type UserPermissions } from '../services/permissions';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
+import { deleteDeviceGroup, DeviceGroupDeleteError } from '../services/deviceGroupDelete';
 
 export const groupRoutes = new Hono();
 const requireGroupRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -795,40 +797,31 @@ groupRoutes.delete(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    // Check for child groups
-    const [childCount] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(deviceGroups)
-      .where(eq(deviceGroups.parentId, id));
-
-    if (Number(childCount?.count ?? 0) > 0) {
-      return c.json({ error: 'Cannot delete group with child groups' }, 400);
+    let result: Awaited<ReturnType<typeof deleteDeviceGroup>>;
+    try {
+      result = await deleteDeviceGroup(id, group.orgId);
+    } catch (err) {
+      if (err instanceof DeviceGroupDeleteError) {
+        if (err.code === 'NOT_FOUND') return c.json({ error: 'Group not found' }, 404);
+        if (err.code === 'HAS_CHILDREN') return c.json({ error: 'Cannot delete group with child groups' }, 400);
+        // Contract and quote names/numbers are billing data — disclose each
+        // list only to a caller with that domain's read permission.
+        const perms = c.get('permissions') as UserPermissions | undefined;
+        const canReadContracts = !!perms && hasPermission(perms, PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action);
+        const canReadQuotes = !!perms && hasPermission(perms, PERMISSIONS.QUOTES_READ.resource, PERMISSIONS.QUOTES_READ.action);
+        return c.json({
+          error: err.message,
+          code: err.code === 'QUOTED_BY_QUOTES' ? 'GROUP_IN_USE_BY_QUOTES' : 'GROUP_IN_USE_BY_CONTRACTS',
+          ...(err.contractCount ? { contractCount: err.contractCount } : {}),
+          ...(err.quoteCount ? { quoteCount: err.quoteCount } : {}),
+          ...(canReadContracts && err.contracts ? { contracts: err.contracts } : {}),
+          ...(canReadQuotes && err.quotes ? { quotes: err.quotes } : {}),
+        }, 409);
+      }
+      throw err;
     }
 
-    const affectedMemberships = await db
-      .select({ deviceId: deviceGroupMemberships.deviceId })
-      .from(deviceGroupMemberships)
-      .where(eq(deviceGroupMemberships.groupId, id));
-
-    // Delete memberships first
-    await db.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, id));
-
-    // …and the membership audit log, which also FKs device_groups with no
-    // ON DELETE (#3313). Every dynamic group accumulates rows here the first
-    // time its membership materializes, so without this the group can never be
-    // deleted again: the DELETE below raises 23503 and the route 500s.
-    //
-    // These two are the ONLY tables that reference device_groups.id.
-    // config_policy_assignments targets a group through a polymorphic
-    // (level, target_id) pair with no foreign key, so it cannot block the
-    // delete — its orphan-row problem is real but separate, and deliberately
-    // out of scope here.
-    await db.delete(groupMembershipLog).where(eq(groupMembershipLog.groupId, id));
-
-    // Delete the group
-    await db.delete(deviceGroups).where(eq(deviceGroups.id, id));
-
-    await Promise.all(affectedMemberships.map(({ deviceId }) =>
+    await Promise.all(result.affectedDeviceIds.map((deviceId) =>
       schedulePeripheralPolicyDevice(deviceId, 'group_deleted').catch((error) => {
         console.error(`[groups] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
       })
@@ -1090,11 +1083,23 @@ groupRoutes.post(
     }
 
     const filter = group.filterConditions as FilterConditionGroup;
-    const preview = await evaluateFilterWithPreview(filter, {
-      orgId: group.orgId,
-      allowedSiteIds: group.siteId ? [group.siteId] : null,
-      previewLimit: limit
-    });
+    let preview;
+    try {
+      preview = await evaluateFilterWithPreview(filter, {
+        orgId: group.orgId,
+        allowedSiteIds: group.siteId ? [group.siteId] : null,
+        previewLimit: limit
+      });
+    } catch (error) {
+      // The fourth preview endpoint, and the one most likely to time out: a
+      // dynamic group's stored filter is applied to the whole org rather than
+      // being typed interactively, so nothing bounds its cost up front. Same
+      // treatment as the three in routes/filters.ts (#5181) — without it this
+      // endpoint would keep answering the anonymous 500 the issue is about.
+      if (!(error instanceof FilterQueryTimeoutError)) throw error;
+      reportFilterPreviewTimeout(group.orgId);
+      return c.json(FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS);
+    }
 
     return c.json({
       data: {

@@ -193,7 +193,8 @@
     {
       "pattern": "apps/api/src/services/binarySync.ts",
       "docs": [
-        "deploy/binaries.mdx"
+        "deploy/binaries.mdx",
+        "deploy/upgrades.mdx"
       ]
     },
     {
@@ -219,6 +220,9 @@
       "pattern": "docker-compose*.yml",
       "docs": [
         "deploy/production.mdx",
+        "deploy/tls.mdx",
+        "deploy/turn-server.mdx",
+        "getting-started/architecture.mdx",
         "getting-started/prerequisites.mdx"
       ]
     },
@@ -245,13 +249,6 @@
       "pattern": "apps/api/src/routes/oauth*.ts",
       "docs": [
         "features/mcp-server.mdx"
-      ]
-    },
-    {
-      "pattern": "apps/api/src/routes/publicShortLinks.ts",
-      "docs": [
-        "agents/enrollment-keys.mdx",
-        "agents/installation.mdx"
       ]
     },
     {
@@ -354,6 +351,7 @@
       "pattern": "agent/internal/backup/**",
       "docs": [
         "backup/overview.mdx",
+        "backup/troubleshooting.mdx",
         "security/backup.mdx"
       ]
     },
@@ -385,7 +383,7 @@
       ]
     },
     {
-      "pattern": "apps/api/src/services/aiToolsPlaybook.ts",
+      "pattern": "apps/api/src/services/aiToolsPlaybooks.ts",
       "docs": [
         "features/ai.mdx",
         "features/playbooks.mdx"
@@ -418,18 +416,21 @@
     {
       "pattern": "apps/api/src/routes/c2c/**",
       "docs": [
+        "backup/cloud-to-cloud.mdx",
         "backup/overview.mdx"
       ]
     },
     {
       "pattern": "apps/api/src/services/c2cM365.ts",
       "docs": [
+        "backup/cloud-to-cloud.mdx",
         "backup/overview.mdx"
       ]
     },
     {
       "pattern": "apps/api/src/routes/dr*.ts",
       "docs": [
+        "backup/disaster-recovery.mdx",
         "backup/overview.mdx"
       ]
     },
@@ -518,9 +519,10 @@
     {
       "pattern": "apps/api/src/routes/approvals.ts",
       "docs": [
+        "features/ai-agents.mdx",
         "features/ai.mdx",
-        "features/mobile.mdx",
-        "features/mcp-server.mdx"
+        "features/mcp-server.mdx",
+        "features/mobile.mdx"
       ]
     },
     {
@@ -680,12 +682,6 @@
       ]
     },
     {
-      "pattern": "apps/api/src/routes/auditLogs.ts",
-      "docs": [
-        "reference/audit-logs.mdx"
-      ]
-    },
-    {
       "pattern": "apps/web/src/lib/auditFormat.ts",
       "docs": [
         "reference/audit-logs.mdx"
@@ -709,6 +705,7 @@
       "docs": [
         "deploy/environment.mdx",
         "deploy/production.mdx",
+        "deploy/rollout-modes.mdx",
         "security/hardening.mdx"
       ]
     },
@@ -790,7 +787,8 @@
       "pattern": "docker/Caddyfile.prod",
       "docs": [
         "deploy/cloudflare-tunnel.mdx",
-        "deploy/production.mdx"
+        "deploy/production.mdx",
+        "deploy/tls.mdx"
       ]
     },
     {
@@ -1068,6 +1066,7 @@
     {
       "pattern": "apps/api/src/db/schema/portal.ts",
       "docs": [
+        "features/branding.mdx",
         "features/portal.mdx",
         "reference/schema.mdx"
       ]
@@ -1218,6 +1217,7 @@
     {
       "pattern": "apps/api/src/routes/remote/**",
       "docs": [
+        "deploy/turn-server.mdx",
         "features/remote-access.mdx"
       ]
     },
@@ -1305,13 +1305,6 @@
       ]
     },
     {
-      "pattern": "apps/api/src/db/schema/contracts.ts",
-      "docs": [
-        "features/contracts.mdx",
-        "reference/schema.mdx"
-      ]
-    },
-    {
       "pattern": "apps/api/src/routes/vulnerabilities.ts",
       "docs": [
         "features/vulnerability-management.mdx",
@@ -1391,13 +1384,6 @@
       "pattern": "apps/api/src/jobs/reconcileTopology.ts",
       "docs": [
         "features/discovery.mdx"
-      ]
-    },
-    {
-      "pattern": "apps/api/src/services/binarySync.ts",
-      "docs": [
-        "deploy/binaries.mdx",
-        "deploy/upgrades.mdx"
       ]
     },
     {
@@ -1656,37 +1642,52 @@
       "pattern": "agent/scripts/install/**",
       "docs": [
         "agents/installation.mdx",
-        "backup/overview.mdx"
+        "backup/overview.mdx",
+        "migration/atera.mdx",
+        "migration/connectwise-automate.mdx",
+        "migration/datto-rmm.mdx",
+        "migration/kaseya-vsa.mdx",
+        "migration/mass-deployment.mdx",
+        "migration/n-central.mdx",
+        "migration/ninjaone.mdx",
+        "migration/other-rmms.mdx",
+        "migration/overview.mdx",
+        "migration/syncro.mdx"
       ]
     },
     {
       "pattern": "apps/api/src/services/unifi/**",
       "docs": [
-        "features/integrations.mdx"
+        "features/integrations.mdx",
+        "features/unifi-integration.mdx"
       ]
     },
     {
       "pattern": "apps/api/src/routes/unifi/**",
       "docs": [
-        "features/integrations.mdx"
+        "features/integrations.mdx",
+        "features/unifi-integration.mdx"
       ]
     },
     {
       "pattern": "apps/api/src/routes/agents/unifiTelemetry.ts",
       "docs": [
-        "features/integrations.mdx"
+        "features/integrations.mdx",
+        "features/unifi-integration.mdx"
       ]
     },
     {
       "pattern": "apps/web/src/components/integrations/UnifiIntegration.tsx",
       "docs": [
-        "features/integrations.mdx"
+        "features/integrations.mdx",
+        "features/unifi-integration.mdx"
       ]
     },
     {
       "pattern": "agent/internal/unifi/**",
       "docs": [
-        "features/integrations.mdx"
+        "features/integrations.mdx",
+        "features/unifi-integration.mdx"
       ]
     },
     {
@@ -1723,12 +1724,6 @@
     },
     {
       "pattern": "apps/api/src/routes/reports/**",
-      "docs": [
-        "features/reports.mdx"
-      ]
-    },
-    {
-      "pattern": "apps/web/src/components/reports/reportPdf.ts",
       "docs": [
         "features/reports.mdx"
       ]
@@ -2194,6 +2189,16 @@
     {
       "pattern": "apps/api/src/services/orgImport/**",
       "docs": [
+        "migration/atera.mdx",
+        "migration/connectwise-automate.mdx",
+        "migration/datto-rmm.mdx",
+        "migration/kaseya-vsa.mdx",
+        "migration/mass-deployment.mdx",
+        "migration/n-central.mdx",
+        "migration/ninjaone.mdx",
+        "migration/other-rmms.mdx",
+        "migration/overview.mdx",
+        "migration/syncro.mdx",
         "migration/toolkit.mdx"
       ]
     },
@@ -2241,6 +2246,7 @@
     {
       "pattern": "apps/api/src/services/releaseAssetTrust.ts",
       "docs": [
+        "deploy/antivirus-exceptions.mdx",
         "deploy/binaries.mdx",
         "deploy/sign-your-own-packages.mdx"
       ]
@@ -2362,12 +2368,6 @@
     },
     {
       "pattern": "apps/web/src/components/settings/AiAgentGraduationPanel.tsx",
-      "docs": [
-        "features/ai-agents.mdx"
-      ]
-    },
-    {
-      "pattern": "apps/api/src/routes/approvals.ts",
       "docs": [
         "features/ai-agents.mdx"
       ]
@@ -2509,6 +2509,1420 @@
       "pattern": "apps/api/src/services/workerRegistry.ts",
       "docs": [
         "deploy/worker-split.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/patchRebootHandler.ts",
+      "docs": [
+        "features/patch-management.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/billingEvidence.ts",
+      "docs": [
+        "features/invoices.mdx",
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/invoices/evidence.ts",
+      "docs": [
+        "features/invoices.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractCoverage.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractAllowance.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractSnapshot.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/deviceCoverage.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "features/devices.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/billing.ts",
+      "docs": [
+        "features/devices.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/contracts/periods.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/quoteDeviceSet.ts",
+      "docs": [
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/invoicePdf.ts",
+      "docs": [
+        "features/invoices.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/webhooks/quickbooks.ts",
+      "docs": [
+        "features/accounting-integrations.mdx",
+        "deploy/environment.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/accounting/accountingInvoicePush.ts",
+      "docs": [
+        "features/accounting-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/accounting/accountingPaymentPull.ts",
+      "docs": [
+        "features/accounting-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/portal/**",
+      "docs": [
+        "features/portal.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/portal/rateLimit.ts",
+      "docs": [
+        "features/portal.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/scriptCancellation.ts",
+      "docs": [
+        "features/automations.mdx",
+        "features/scripts.mdx",
+        "scripts/stopping-a-running-script.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/scriptClone.ts",
+      "docs": [
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/scriptRunContextApproval.ts",
+      "docs": [
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/scriptRunRequest.ts",
+      "docs": [
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/customFields/**",
+      "docs": [
+        "features/custom-fields.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/customFields/scriptWriteBack.ts",
+      "docs": [
+        "features/custom-fields.mdx",
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiBudgetAlerts.ts",
+      "docs": [
+        "features/ai.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiBudgetAlertEmail.ts",
+      "docs": [
+        "features/ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiAgents/graduationService.ts",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiAgents/impactRollup.ts",
+      "docs": [
+        "features/ai-impact.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/orgAuditRetentionSettings.ts",
+      "docs": [
+        "reference/audit-logs.mdx",
+        "reference/users-and-roles.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/auditRetentionPolicyService.ts",
+      "docs": [
+        "reference/audit-logs.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contacts/**",
+      "docs": [
+        "reference/organizations-and-sites.mdx",
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/orgContacts.ts",
+      "docs": [
+        "reference/organizations-and-sites.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/fcm.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "features/mobile.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/authenticatorAttestation.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "reference/users-and-roles.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/auth/ssoDiscovery.ts",
+      "docs": [
+        "reference/sso.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/partnerTrust.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/ipClassify.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/configurationPolicies/crud.ts",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/configurationPolicy.ts",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/configPolicyOwnership.ts",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/configurationPolicies/ConfigPolicyCreatePage.tsx",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/configurationPolicies/ConfigPolicyDetailPage.tsx",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/configurationPolicies/ConfigurationPoliciesPage.tsx",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/commandOfflinePolicy.ts",
+      "docs": [
+        "features/devices.mdx",
+        "deploy/environment.mdx",
+        "features/patch-management.mdx",
+        "features/automations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/commandClaimEligibility.ts",
+      "docs": [
+        "features/devices.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/readiness.ts",
+      "docs": [
+        "monitoring/health.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/config/readinessConfig.ts",
+      "docs": [
+        "monitoring/health.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/workerReadinessRegistry.ts",
+      "docs": [
+        "monitoring/health.mdx",
+        "deploy/worker-split.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/accounting/accountingPaymentPush.ts",
+      "docs": [
+        "features/accounting-integrations.mdx",
+        "features/invoices.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/accountingReconcileWorker.ts",
+      "docs": [
+        "features/accounting-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/monitorWorker.ts",
+      "docs": [
+        "features/network-monitors.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/serviceManagement.ts",
+      "docs": [
+        "reference/partner-management.mdx",
+        "features/ticketing.mdx",
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/PartnerModulesCard.tsx",
+      "docs": [
+        "reference/partner-management.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/organizations/record/**",
+      "docs": [
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiOperator/**",
+      "docs": [
+        "features/ai-agents.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/aiOperatorTasks.ts",
+      "docs": [
+        "features/ai-agents.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/aiOperatorTaskWorker.ts",
+      "docs": [
+        "features/ai-agents.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/aiOperatorTaskOutboxPublisher.ts",
+      "docs": [
+        "features/ai-agents.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/aiOperator/**",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/attestation/playIntegrity.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "features/approval-security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/mfaPolicyActivation.ts",
+      "docs": [
+        "reference/users-and-roles.mdx",
+        "security/hardening.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/agentapp/service_install.go",
+      "docs": [
+        "agents/installation.mdx",
+        "features/watchdog.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/winsvcinstall/**",
+      "docs": [
+        "agents/installation.mdx",
+        "agents/advanced-install.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/backup/**",
+      "docs": [
+        "backup/api-reference.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/backup/bmr.ts",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/backup/bmr/**",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/backup/RecoveryBootstrapTab.tsx",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/backup/encryption.ts",
+      "docs": [
+        "backup/encryption.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/backupEncryption.ts",
+      "docs": [
+        "backup/encryption.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/backup/EncryptionKeyList.tsx",
+      "docs": [
+        "backup/encryption.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/backup/hyperv.ts",
+      "docs": [
+        "backup/hyperv.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/backup/hyperv/**",
+      "docs": [
+        "backup/hyperv.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/backup/Hyperv*.tsx",
+      "docs": [
+        "backup/hyperv.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/backup/dashboard.ts",
+      "docs": [
+        "backup/monitoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/backup/jobs.ts",
+      "docs": [
+        "backup/monitoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/backup/BackupDashboard.tsx",
+      "docs": [
+        "backup/monitoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/backup/BackupJobList.tsx",
+      "docs": [
+        "backup/monitoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/backupMetrics.ts",
+      "docs": [
+        "backup/monitoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/backup/configs.ts",
+      "docs": [
+        "backup/policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/configurationPolicies/featureTabs/BackupTab.tsx",
+      "docs": [
+        "backup/policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/configurationPolicies/featureTabs/backupTabPresets.ts",
+      "docs": [
+        "backup/policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/backup/profiles.ts",
+      "docs": [
+        "backup/profiles.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/backup/BackupProfilesTab.tsx",
+      "docs": [
+        "backup/profiles.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/backup/restore.ts",
+      "docs": [
+        "backup/restoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/backup/snapshots.ts",
+      "docs": [
+        "backup/restoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/backup/RestoreWizard.tsx",
+      "docs": [
+        "backup/restoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/backup/SnapshotBrowser.tsx",
+      "docs": [
+        "backup/restoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/backup/sla.ts",
+      "docs": [
+        "backup/sla.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/backup/SLADashboard.tsx",
+      "docs": [
+        "backup/sla.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/backup/SLAConfigDialog.tsx",
+      "docs": [
+        "backup/sla.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/backup/mssql.ts",
+      "docs": [
+        "backup/sql-server.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/backup/mssql/**",
+      "docs": [
+        "backup/sql-server.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/backup/MssqlDashboard.tsx",
+      "docs": [
+        "backup/sql-server.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/backup/vss.ts",
+      "docs": [
+        "backup/troubleshooting.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/backup/vault.ts",
+      "docs": [
+        "backup/vault.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/backup/vault.go",
+      "docs": [
+        "backup/vault.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/backup/VaultDashboard.tsx",
+      "docs": [
+        "backup/vault.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/backup/VaultConfigDialog.tsx",
+      "docs": [
+        "backup/vault.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/backup/verification*.ts",
+      "docs": [
+        "backup/verification.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/backup/verify.go",
+      "docs": [
+        "backup/verification.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/backup/BackupVerificationTab.tsx",
+      "docs": [
+        "backup/verification.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/backup/BackupVerificationOverview.tsx",
+      "docs": [
+        "backup/verification.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/Makefile",
+      "docs": [
+        "agents/building.mdx",
+        "deploy/antivirus-exceptions.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/helper/**",
+      "docs": [
+        "agents/helper.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/sessionbroker/**",
+      "docs": [
+        "agents/helper.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/tcc/**",
+      "docs": [
+        "agents/macos-permissions.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/c2c/**",
+      "docs": [
+        "backup/cloud-to-cloud.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/dr/**",
+      "docs": [
+        "backup/disaster-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/middleware/cfAccessLogin.ts",
+      "docs": [
+        "deploy/cloudflare-access-trust.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/auth/cfAccessRedirectLogin.ts",
+      "docs": [
+        "deploy/cloudflare-access-trust.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/config/env.ts",
+      "docs": [
+        "deploy/rollout-modes.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/diagnosticLogs.ts",
+      "docs": [
+        "features/agent-diagnostics.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/agentapp/service_cmd_*.go",
+      "docs": [
+        "features/agent-diagnostics.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/alertTemplates/**",
+      "docs": [
+        "features/alert-templates.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/alerts/AlertTemplate*.tsx",
+      "docs": [
+        "features/alert-templates.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/auditBaselines.ts",
+      "docs": [
+        "features/audit-baselines.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/auditBaselines.ts",
+      "docs": [
+        "features/audit-baselines.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/auditBaselineService.ts",
+      "docs": [
+        "features/audit-baselines.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/auditBaselines/**",
+      "docs": [
+        "features/audit-baselines.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/collectors/metrics.go",
+      "docs": [
+        "features/bandwidth-monitoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/metrics.ts",
+      "docs": [
+        "features/bandwidth-monitoring.mdx",
+        "features/performance-metrics.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/DevicePerformanceGraphs.tsx",
+      "docs": [
+        "features/bandwidth-monitoring.mdx",
+        "features/performance-metrics.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/agents/bootPerformance.ts",
+      "docs": [
+        "features/boot-performance.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/collectors/boot_performance*.go",
+      "docs": [
+        "features/boot-performance.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/DeviceBootPerformanceTab.tsx",
+      "docs": [
+        "features/boot-performance.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/portal/branding.ts",
+      "docs": [
+        "features/branding.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/BrandingEditor.tsx",
+      "docs": [
+        "features/branding.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/PartnerBrandingTab.tsx",
+      "docs": [
+        "features/branding.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/portal/BrandingProvider.tsx",
+      "docs": [
+        "features/branding.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/browserSecurity.ts",
+      "docs": [
+        "features/browser-security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/browserSecurity.ts",
+      "docs": [
+        "features/browser-security.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/collectors/change_tracker*.go",
+      "docs": [
+        "features/change-tracking.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/changes.ts",
+      "docs": [
+        "features/change-tracking.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/changes.ts",
+      "docs": [
+        "features/change-tracking.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/agents/changes.ts",
+      "docs": [
+        "features/change-tracking.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/DeviceChangeHistoryTab.tsx",
+      "docs": [
+        "features/change-tracking.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/groups.ts",
+      "docs": [
+        "features/device-groups.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/groups.ts",
+      "docs": [
+        "features/device-groups.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/DeviceGroupsPage.tsx",
+      "docs": [
+        "features/device-groups.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/deviceGroupMatching.ts",
+      "docs": [
+        "features/device-groups.mdx"
+      ]
+    },
+    {
+      "pattern": "ee/workspace/**",
+      "docs": [
+        "features/extensions.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/filesystem.ts",
+      "docs": [
+        "features/filesystem-analysis.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/remote/tools/filesystem_analysis.go",
+      "docs": [
+        "features/filesystem-analysis.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/DeviceFilesystemTab.tsx",
+      "docs": [
+        "features/filesystem-analysis.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/deviceIpHistory.ts",
+      "docs": [
+        "features/ip-history.mdx",
+        "features/network-intelligence.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/ipHistoryRetention.ts",
+      "docs": [
+        "features/ip-history.mdx",
+        "features/network-intelligence.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/DeviceIpHistoryTab.tsx",
+      "docs": [
+        "features/ip-history.mdx",
+        "features/network-intelligence.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/DeviceLinkedProfilesTab.tsx",
+      "docs": [
+        "features/linked-profiles.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/links.ts",
+      "docs": [
+        "features/linked-profiles.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/mgmtdetect/**",
+      "docs": [
+        "features/management-posture.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/posture.ts",
+      "docs": [
+        "features/management-posture.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/managementPostureReport.ts",
+      "docs": [
+        "features/management-posture.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/FleetPostureReport.tsx",
+      "docs": [
+        "features/management-posture.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/lib/postureCategories.ts",
+      "docs": [
+        "features/management-posture.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/integrations.ts",
+      "docs": [
+        "features/monitoring-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/integrations/MonitoringIntegration.tsx",
+      "docs": [
+        "features/monitoring-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/networkBaselines.ts",
+      "docs": [
+        "features/network-baselines.mdx",
+        "features/network-intelligence.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/networkChanges.ts",
+      "docs": [
+        "features/network-baselines.mdx",
+        "features/network-intelligence.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/networkBaseline.ts",
+      "docs": [
+        "features/network-baselines.mdx",
+        "features/network-intelligence.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/networkBaselineWorker.ts",
+      "docs": [
+        "features/network-baselines.mdx",
+        "features/network-intelligence.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/discovery/NetworkBaselinesPanel.tsx",
+      "docs": [
+        "features/network-baselines.mdx",
+        "features/network-intelligence.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/collectors/connections*.go",
+      "docs": [
+        "features/network-connections.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/hardware.ts",
+      "docs": [
+        "features/network-connections.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/DeviceNetworkConnections.tsx",
+      "docs": [
+        "features/network-connections.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/networkKnownGuests.ts",
+      "docs": [
+        "features/network-intelligence.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/KnownGuestsSettings.tsx",
+      "docs": [
+        "features/network-intelligence.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/onedrivehelper/**",
+      "docs": [
+        "features/onedrive-helper.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/onedrive.ts",
+      "docs": [
+        "features/onedrive-helper.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/onedriveHelper.ts",
+      "docs": [
+        "features/onedrive-helper.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/configurationPolicies/featureTabs/OneDriveHelperTab.tsx",
+      "docs": [
+        "features/onedrive-helper.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/DeviceOneDriveTab.tsx",
+      "docs": [
+        "features/onedrive-helper.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/plugins.ts",
+      "docs": [
+        "features/plugins.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/plugins.ts",
+      "docs": [
+        "features/plugins.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/plugins.ts",
+      "docs": [
+        "features/plugins.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/policyManagement/**",
+      "docs": [
+        "features/policy-management.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/scriptAi.ts",
+      "docs": [
+        "features/script-ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/scriptBuilderTools.ts",
+      "docs": [
+        "features/script-ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/scripts/ScriptAi*.tsx",
+      "docs": [
+        "features/script-ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/DeviceMonitoringTab.tsx",
+      "docs": [
+        "features/service-monitoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/configurationPolicies/featureTabs/MonitoringTab.tsx",
+      "docs": [
+        "features/service-monitoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/setup/SetupWizard.tsx",
+      "docs": [
+        "features/setup-wizard.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/softwareInventory.ts",
+      "docs": [
+        "features/software-inventory.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/softwareInventoryObservations.ts",
+      "docs": [
+        "features/software-inventory.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/software/SoftwareInventoryView.tsx",
+      "docs": [
+        "features/software-inventory.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/DeviceSoftwareInventory.tsx",
+      "docs": [
+        "features/software-inventory.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/systemTools/**",
+      "docs": [
+        "features/system-tools.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/remote/RemoteToolsPage.tsx",
+      "docs": [
+        "features/system-tools.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/tags.ts",
+      "docs": [
+        "features/tags.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/userRisk.ts",
+      "docs": [
+        "features/user-risk.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/userRiskScoring.ts",
+      "docs": [
+        "features/user-risk.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/userRiskSignals.ts",
+      "docs": [
+        "features/user-risk.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/userRisk.ts",
+      "docs": [
+        "features/user-risk.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/security/UserRiskPage.tsx",
+      "docs": [
+        "features/user-risk.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/sessions.ts",
+      "docs": [
+        "features/user-sessions.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/sessions.ts",
+      "docs": [
+        "features/user-sessions.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/collectors/sessions.go",
+      "docs": [
+        "features/user-sessions.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/warranty.ts",
+      "docs": [
+        "features/warranty-tracking.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/warrantyAlertEvaluator.ts",
+      "docs": [
+        "features/warranty-tracking.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/warrantySync.ts",
+      "docs": [
+        "features/warranty-tracking.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/warrantyProviders/**",
+      "docs": [
+        "features/warranty-tracking.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/DeviceWarrantyCard.tsx",
+      "docs": [
+        "features/warranty-tracking.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/configurationPolicies/featureTabs/WarrantyTab.tsx",
+      "docs": [
+        "features/warranty-tracking.mdx"
+      ]
+    },
+    {
+      "pattern": "monitoring/rules/**",
+      "docs": [
+        "monitoring/alerts.mdx"
+      ]
+    },
+    {
+      "pattern": "monitoring/alertmanager.yml",
+      "docs": [
+        "monitoring/alerts.mdx"
+      ]
+    },
+    {
+      "pattern": "docker-compose.monitoring.yml",
+      "docs": [
+        "monitoring/alerts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/accessReviews.ts",
+      "docs": [
+        "reference/access-reviews.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/accessReviews.ts",
+      "docs": [
+        "reference/access-reviews.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/AccessReview*.tsx",
+      "docs": [
+        "reference/access-reviews.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/filters.ts",
+      "docs": [
+        "reference/filters-and-search.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/search.ts",
+      "docs": [
+        "reference/filters-and-search.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/validators/filters.ts",
+      "docs": [
+        "reference/filters-and-search.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/filters/**",
+      "docs": [
+        "reference/filters-and-search.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/scripts/**",
+      "docs": [
+        "scripts/stopping-a-running-script.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/executor/**",
+      "docs": [
+        "scripts/stopping-a-running-script.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/customFieldImport.ts",
+      "docs": [
+        "migration/atera.mdx",
+        "migration/connectwise-automate.mdx",
+        "migration/datto-rmm.mdx",
+        "migration/kaseya-vsa.mdx",
+        "migration/mass-deployment.mdx",
+        "migration/n-central.mdx",
+        "migration/ninjaone.mdx",
+        "migration/other-rmms.mdx",
+        "migration/overview.mdx",
+        "migration/syncro.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/*CustomFieldImport*.tsx",
+      "docs": [
+        "migration/atera.mdx",
+        "migration/connectwise-automate.mdx",
+        "migration/datto-rmm.mdx",
+        "migration/kaseya-vsa.mdx",
+        "migration/mass-deployment.mdx",
+        "migration/n-central.mdx",
+        "migration/ninjaone.mdx",
+        "migration/other-rmms.mdx",
+        "migration/overview.mdx",
+        "migration/syncro.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/collectors/software_linux.go",
+      "docs": [
+        "agents/installation.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/patching/defaults_linux.go",
+      "docs": [
+        "agents/installation.mdx",
+        "features/patch-management.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/remote/desktop/x11/**",
+      "docs": [
+        "agents/installation.mdx",
+        "features/remote-access.mdx",
+        "agents/helper.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/heartbeat/desktop_access_linux.go",
+      "docs": [
+        "agents/installation.mdx",
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/installer/breeze.wxs",
+      "docs": [
+        "agents/installation.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/backup/rebuild/**",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/backup/systemstate/**",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/backup/layout/**",
+      "docs": [
+        "backup/bare-metal-recovery.mdx",
+        "backup/restoring.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/cmd/breeze-backup/**",
+      "docs": [
+        "backup/bare-metal-recovery.mdx"
+      ]
+    },
+    {
+      "pattern": "scripts/release/verify-release-images.sh",
+      "docs": [
+        "deploy/production.mdx",
+        "getting-started/quickstart.mdx"
       ]
     }
   ]

@@ -13,12 +13,14 @@ const mockAuthState = vi.hoisted(() => ({
   scope: 'organization' as 'organization' | 'partner' | 'system',
   orgId: 'org-123' as string | null,
   partnerId: null as string | null,
-  accessibleOrgIds: ['org-123'] as string[] | null
+  accessibleOrgIds: ['org-123'] as string[] | null,
+  allowedSiteIds: undefined as string[] | undefined
 }));
 
 vi.mock('../services', () => ({}));
 
 vi.mock('../services/permissions', () => ({
+  canAccessSite: (permissions: { allowedSiteIds?: string[] }, siteId: string) => !permissions.allowedSiteIds || permissions.allowedSiteIds.includes(siteId),
   PERMISSIONS: {
     REMOTE_ACCESS: { resource: 'remote', action: 'access' },
     // sessions.ts gained requirePermission(DEVICES_READ) — the mock
@@ -54,7 +56,12 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  remoteSessions: {},
+  remoteSessions: {
+    id: 'remoteSessions.id',
+    status: 'remoteSessions.status',
+    desktopStartCommandId: 'remoteSessions.desktopStartCommandId',
+    desktopPromptMode: 'remoteSessions.desktopPromptMode',
+  },
   devices: {},
   organizations: {},
   users: {},
@@ -84,6 +91,29 @@ vi.mock('../services/remoteAccessPolicy', () => ({
   }),
 }));
 
+vi.mock('../services/remoteRevocationLease', () => ({
+  AGENT_UPGRADE_REQUIRED_CODE: 'agent_upgrade_required',
+  AGENT_UPGRADE_REQUIRED_MESSAGE: 'agent update required',
+  isRevocationLeaseCapable: vi.fn(async () => true),
+  prepareRevocationLeaseForStart: vi.fn(async () => ({
+    ok: true,
+    lease: {
+      token: 'lease-token',
+      expiresAt: 1_000_060_000,
+      hardDeadline: 1_000_600_000,
+      renewEverySec: 25,
+      graceSec: 90,
+    },
+  })),
+  renewRevocationLease: vi.fn(async () => ({
+    status: 'renewed',
+    expiresAt: 1,
+    hardDeadline: 2,
+    renewEverySec: 25,
+    graceSec: 90,
+  })),
+}));
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
@@ -110,7 +140,12 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    // Only the real mounted requirePermission chain populates this context.
+    // authMiddleware and requireScope above deliberately do not seed it.
+    c.set('permissions', { allowedSiteIds: mockAuthState.allowedSiteIds });
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
@@ -223,6 +258,7 @@ describe('remote routes', () => {
     mockAuthState.orgId = 'org-123';
     mockAuthState.partnerId = null;
     mockAuthState.accessibleOrgIds = ['org-123'];
+    mockAuthState.allowedSiteIds = undefined;
     app = new Hono();
     app.route('/remote', remoteRoutes);
   });
@@ -257,7 +293,11 @@ describe('remote routes', () => {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([{ count: 0 }])
           })
-        } as any);
+        } as any)
+        // 5. createRemoteSession -> users.permissions_epoch revocation-lease
+        // baseline (a desktop session without it would be unrenewable, so the
+        // create 503s rather than mint one).
+        .mockReturnValueOnce(mockSelectChain([{ permissionsEpoch: 1 }]));
 
       // 1. db.insert for session creation
       // 2. db.insert for audit log
@@ -454,6 +494,43 @@ describe('remote routes', () => {
     });
   });
 
+  describe('capability routes inherit the parent permission context', () => {
+    const cases = [
+      ['ws-ticket', 'POST', `/remote/sessions/${SESSION_UUID}/ws-ticket`, undefined],
+      ['desktop-connect-code', 'POST', `/remote/sessions/${SESSION_UUID}/desktop-connect-code`, undefined],
+      ['ICE servers', 'GET', `/remote/ice-servers?sessionId=${SESSION_UUID}`, undefined],
+      ['ICE candidate', 'POST', `/remote/sessions/${SESSION_UUID}/ice`, { candidate: { candidate: 'synthetic', sdpMid: '0', sdpMLineIndex: 0 } }],
+    ] as const;
+
+    it.each(cases)('%s enforces a live parent-loaded site ceiling before effects', async (_label, method, url, payload) => {
+      const { createWsTicket, createDesktopConnectCode } = await import('../services/remoteSessionAuth');
+      const session = { id: SESSION_UUID, type: 'desktop', status: 'active', userId: 'user-123', deviceId: DEVICE_UUID, orgId: 'org-123', iceCandidates: [] };
+      const device = { id: DEVICE_UUID, orgId: 'org-123', siteId: 'site-allowed', status: 'online' };
+      mockAuthState.allowedSiteIds = ['site-allowed'];
+      const request = () => app.request(url, {
+        method, headers: { 'Content-Type': 'application/json' },
+        ...(payload ? { body: JSON.stringify(payload) } : {}),
+      });
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectInnerJoinChain([{ session, device }]));
+      vi.mocked(db.update).mockReturnValueOnce(mockUpdateReturning([{ id: SESSION_UUID, iceCandidates: [] }]));
+      expect((await request()).status).toBe(200);
+
+      vi.clearAllMocks();
+      resetDbMocks();
+      mockAuthState.allowedSiteIds = ['site-hidden'];
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectInnerJoinChain([{ session, device }]));
+      const denial = await request();
+      expect(denial.status).toBe(403);
+      expect(await denial.json()).toEqual({ error: 'Access to this site denied' });
+      expect(createWsTicket).not.toHaveBeenCalled();
+      expect(createDesktopConnectCode).not.toHaveBeenCalled();
+      expect(checkRemoteAccess).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+    });
+  });
+
   describe('GET /remote/ice-servers', () => {
     it('requires a sessionId so TURN credentials are session scoped', async () => {
       const res = await app.request('/remote/ice-servers');
@@ -508,50 +585,43 @@ describe('remote routes', () => {
     });
   });
 
-  describe('POST /remote/sessions/:id/answer', () => {
-    it('should accept a WebRTC answer and activate the session', async () => {
-      const sessionResult = {
+  describe('retired user-authenticated endpoint verdict routes', () => {
+    it.each([
+      ['answer', { answer: 'answer-sdp', consentReason: 'user' }],
+      ['deny', { reason: 'user' }],
+    ])('does not let a session owner submit an agent %s verdict', async (route, body) => {
+      // Fully rig the former handler's read/write chains. This makes the
+      // regression fail against the affected baseline because an owned,
+      // connecting session is otherwise accepted and mutated.
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectInnerJoinChain([{
         session: {
           id: SESSION_UUID,
           userId: 'user-123',
           status: 'connecting',
           type: 'desktop',
-          iceCandidates: []
+          iceCandidates: [],
         },
-        device: {
-          id: DEVICE_UUID,
-          orgId: 'org-123'
-        }
-      };
-      const startedAt = new Date();
-
-      // getSessionWithOrgCheck
-      vi.mocked(db.select).mockReturnValueOnce(
-        mockSelectInnerJoinChain([sessionResult])
-      );
-
-      // update session
+        device: { id: DEVICE_UUID, orgId: 'org-123', agentId: 'agent-123' },
+      }]));
       vi.mocked(db.update).mockReturnValueOnce(mockUpdateReturning([{
         id: SESSION_UUID,
-        status: 'active',
-        webrtcAnswer: 'answer-sdp',
-        startedAt
+        status: route === 'answer' ? 'active' : 'denied',
+        webrtcAnswer: route === 'answer' ? 'answer-sdp' : null,
+        startedAt: new Date(),
+        endedAt: new Date(),
       }]));
-
-      // audit log insert
       vi.mocked(db.insert).mockReturnValueOnce(mockInsertNoReturn());
 
-      const res = await app.request(`/remote/sessions/${SESSION_UUID}/answer`, {
+      const res = await app.request(`/remote/sessions/${SESSION_UUID}/${route}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-        body: JSON.stringify({ answer: 'answer-sdp' })
+        body: JSON.stringify(body),
       });
 
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.status).toBe('active');
-      expect(body.webrtcAnswer).toBe('answer-sdp');
-      expect(body.startedAt).toBeDefined();
+      expect(res.status).toBe(404);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
     });
   });
 

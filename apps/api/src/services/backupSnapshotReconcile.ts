@@ -1,10 +1,10 @@
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { backupConfigs, backupJobs, backupSnapshots } from '../db/schema';
+import { backupConfigs, backupJobs, backupSnapshots, backupSnapshotRetirements } from '../db/schema';
 import { normalizeStorageIdentity } from '../jobs/backupRetention';
 import type { ParsedBackupCommandResult } from '../routes/backup/resultSchemas';
-import { applyBackupCommandResultToJob } from './backupResultPersistence';
+import { applyBackupCommandResultToJob, LATE_RESULT_FENCE_REASON_PATTERN } from './backupResultPersistence';
 import { captureException, captureMessage } from './sentry';
 import {
   BACKUP_SNAPSHOT_MANIFEST_KEY,
@@ -114,6 +114,14 @@ export const RECONCILE_MAX_OPEN_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 export const RECONCILE_DEFAULT_LIMIT = 5;
 export const RECONCILE_MAX_LIMIT = 25;
 
+// Half of BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS's 9-day default (spec §3.4:
+// "reconcile adopts an orphan only while its manifest is younger than half
+// the window, so adoption and sweeping are disjoint by age").
+// TODO(W02): replace with backupGcKnobs.ts's real orphan-window export once
+// that module grows it — kept as a local literal here so this wave does not
+// reach into a not-yet-defined W02 constant.
+const RECONCILE_ORPHAN_HALF_WINDOW_MS = (9 * 24 * 60 * 60 * 1000) / 2;
+
 /** `inArray` batch size — a destination can hold thousands of snapshots. */
 const CLAIM_LOOKUP_CHUNK = 500;
 
@@ -152,7 +160,20 @@ export type ReconcileSkipReason =
   /** The manifest read fine but the restore-point write failed. */
   | 'adoption-failed'
   /** Adoption was skipped because the per-call limit was reached. */
-  | 'limit-reached';
+  | 'limit-reached'
+  /** D18 §3.3/§3.4: the storage identity has a retirement row for this id. */
+  | 'retired'
+  /** D18 §3.4: the manifest is older than half the orphan window — leave it
+   *  for the sweep instead of racing it. */
+  | 'orphan-too-old-for-adoption'
+  /** D18 §3.1/§3.4: the manifest declares a baseSnapshotId with no live,
+   *  unretired backup_snapshots row — its references may already dangle. */
+  | 'base-missing'
+  /** D18 §3.1 review fix: the claiming job's own late result was already
+   *  rejected by backupResultPersistence.ts's late-result fence
+   *  (errorLog contains publish_lease_expired or base_retired) — re-adopting
+   *  it here would resurrect exactly what that fence exists to prevent. */
+  | 'late-result-fenced';
 
 export type ReconcileCandidate = {
   snapshotId: string;
@@ -198,6 +219,9 @@ type ClaimingJob = {
   configId: string | null;
   status: string;
   createdAt: Date | null;
+  // D18 W01 review fix: needed to detect a job the late-result fence
+  // (backupResultPersistence.ts) already rejected.
+  errorLog: string | null;
 };
 
 type SnapshotClaims = {
@@ -243,6 +267,9 @@ const reconcileManifestSchema = z
         z
           .object({
             sourcePath: z.string().min(1),
+            // Stable pre-VSS path (D12): must survive re-adoption or the
+            // index falls back to the shadow-copy device path.
+            originalPath: z.string().min(1).optional(),
             backupPath: z.string().min(1),
             size: z.number().nonnegative().optional(),
             modTime: z.string().optional(),
@@ -400,6 +427,7 @@ async function loadClaimsAndSharing(params: {
             status: backupJobs.status,
             createdAt: backupJobs.createdAt,
             snapshotId: backupJobs.snapshotId,
+            errorLog: backupJobs.errorLog,
           })
           .from(backupJobs)
           .where(inArray(backupJobs.snapshotId, batch));
@@ -412,6 +440,7 @@ async function loadClaimsAndSharing(params: {
             configId: row.configId ?? null,
             status: row.status,
             createdAt: row.createdAt ?? null,
+            errorLog: row.errorLog ?? null,
           };
           if (claim.orgId !== orgId) {
             foreignClaimed.add(row.snapshotId);
@@ -532,7 +561,7 @@ function jobCoversWriteTime(job: AdoptableJob, writtenAt: Date, now: Date): bool
  * computation — the last of which is what finally makes the snapshot visible
  * to retention.
  */
-function manifestToCommandResult(params: {
+export function manifestToCommandResult(params: {
   snapshotId: string;
   manifestText: string;
   matchedBy: 'job-snapshot-id' | 'time-window';
@@ -552,6 +581,7 @@ function manifestToCommandResult(params: {
       file.modTime && Number.isFinite(Date.parse(file.modTime)) ? file.modTime : undefined;
     return {
       sourcePath: file.sourcePath,
+      originalPath: file.originalPath,
       backupPath: file.backupPath,
       size: file.size !== undefined ? Math.trunc(file.size) : undefined,
       modTime,
@@ -569,7 +599,16 @@ function manifestToCommandResult(params: {
     snapshotId: params.snapshotId,
     filesBackedUp: files.length,
     bytesBackedUp: size,
-    snapshot: { id: params.snapshotId, timestamp, size, files },
+    snapshot: {
+      id: params.snapshotId,
+      timestamp,
+      size,
+      files,
+      // D18 (#5429/§3.1): forwarded so applyBackupCommandResultToJob can
+      // record lineage on an adopted (not directly-reported) snapshot too.
+      baseSnapshotId: parsed.baseSnapshotId,
+      formatVersion: parsed.formatVersion,
+    },
     metadata: {
       // Consumed by backupResultPersistence to set backup_snapshots.location.
       storagePrefix: `${BACKUP_SNAPSHOT_ROOT_DIR}/${params.snapshotId}`,
@@ -676,6 +715,25 @@ export async function reconcileOrphanedBackupSnapshots(params: {
     snapshotIds,
   });
 
+  // D18 §3.3/§3.4: a retired snapshot id is refused outright — reconcile must
+  // never re-adopt a prefix retention already deliberately tombstoned, even
+  // if its manifest still sits in the bucket waiting for the sweep to
+  // reclaim it.
+  const retiredRows = snapshotIds.length
+    ? await runInDbContext(() =>
+        db
+          .select({ snapshotId: backupSnapshotRetirements.snapshotId })
+          .from(backupSnapshotRetirements)
+          .where(
+            and(
+              eq(backupSnapshotRetirements.storageIdentity, storageIdentity),
+              inArray(backupSnapshotRetirements.snapshotId, snapshotIds),
+            ),
+          )
+      )
+    : [];
+  const retiredSnapshotIds = new Set(retiredRows.map((r) => r.snapshotId));
+
   // Process oldest-written first so the time-window matcher consumes jobs
   // deterministically and a rerun produces the same attribution.
   const ordered = snapshotIds.slice().sort((a, b) => {
@@ -713,6 +771,15 @@ export async function reconcileOrphanedBackupSnapshots(params: {
         error: null,
       });
     };
+
+    if (retiredSnapshotIds.has(snapshotId)) {
+      skip('retired');
+      continue;
+    }
+    if (writtenAt && now.getTime() - writtenAt.getTime() > RECONCILE_ORPHAN_HALF_WINDOW_MS) {
+      skip('orphan-too-old-for-adoption');
+      continue;
+    }
 
     const restorableOwner = claims.restorable.get(snapshotId);
     if (restorableOwner) {
@@ -753,6 +820,18 @@ export async function reconcileOrphanedBackupSnapshots(params: {
       // restore-point insert never landed.
       if (!ADOPTABLE_JOB_STATUSES.includes(claimingJob.status as (typeof ADOPTABLE_JOB_STATUSES)[number])) {
         skip('job-not-adoptable');
+        continue;
+      }
+      // D18 §3.1 review fix: a job whose late result was already rejected by
+      // backupResultPersistence.ts's late-result fence must not be
+      // re-adopted here — that would resurrect exactly what the fence exists
+      // to prevent (a base already reclaimed, or a lease already expired).
+      if (
+        claimingJob.status === 'failed' &&
+        typeof claimingJob.errorLog === 'string' &&
+        LATE_RESULT_FENCE_REASON_PATTERN.test(claimingJob.errorLog)
+      ) {
+        skip('late-result-fenced');
         continue;
       }
       if (allowedDeviceIdSet && !allowedDeviceIdSet.has(claimingJob.deviceId)) {
@@ -873,6 +952,42 @@ export async function reconcileOrphanedBackupSnapshots(params: {
       candidate.error = error instanceof Error ? error.message : String(error);
       candidates.push(candidate);
       continue;
+    }
+
+    // D18 §3.1/§3.4: a manifest declaring a base with no live, unretired row
+    // has references that may already dangle — refuse rather than adopt.
+    // Scoped by storageIdentity too (review fix), not just snapshotId:
+    // backup_snapshots.snapshot_id carries no uniqueness constraint
+    // (schema/backup.ts), so without this the base row lookup itself could
+    // match a same-string snapshot_id belonging to a different identity.
+    if (result.snapshot?.baseSnapshotId) {
+      const declaredBase = result.snapshot.baseSnapshotId;
+      const [liveBase] = await runInDbContext(() =>
+        db
+          .select({ id: backupSnapshots.id })
+          .from(backupSnapshots)
+          .leftJoin(
+            backupSnapshotRetirements,
+            and(
+              eq(backupSnapshotRetirements.storageIdentity, storageIdentity),
+              eq(backupSnapshotRetirements.snapshotId, declaredBase),
+            ),
+          )
+          .where(
+            and(
+              eq(backupSnapshots.snapshotId, declaredBase),
+              eq(backupSnapshots.storageIdentity, storageIdentity),
+              isNull(backupSnapshotRetirements.id),
+            ),
+          )
+          .limit(1)
+      );
+      if (!liveBase) {
+        candidate.skipReason = 'base-missing';
+        candidate.error = `manifest declares base ${declaredBase}, which has no live, unretired row`;
+        candidates.push(candidate);
+        continue;
+      }
     }
 
     candidate.fileCount = result.filesBackedUp ?? null;

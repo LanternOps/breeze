@@ -9,6 +9,8 @@
       "thisPolicyHasNoOrganizationSoAssignment": "Diese Richtlinie hat keine Organisation, daher können Zuweisungsziele nicht aufgelistet werden.",
       "failedToAddAssignment": "Aufgabe konnte nicht hinzugefügt werden",
       "failedToRemoveAssignment": "Die Zuweisung konnte nicht entfernt werden",
+      "assignmentAdded": "Aufgabe hinzugefügt",
+      "assignmentRemoved": "Zuweisung entfernt",
       "roleFilter": "Rollenfilter",
       "optional": "(optional)",
       "noRestrictionAppliesToAllDeviceRoles": "Keine Einschränkung – gilt für alle Geräterollen",
@@ -131,7 +133,10 @@
       "removing": "Entfernen...",
       "removeConfiguration": "Konfiguration entfernen",
       "complianceStatus2": "compliance_status",
-      "assignments2": "Aufgaben"
+      "assignments2": "Aufgaben",
+      "managedByYourMsp": "Verwaltet von Ihrem MSP",
+      "inheritedByPolicies_one": "Von {{count}} Richtlinie geerbt",
+      "inheritedByPolicies_other": "Von {{count}} Richtlinien geerbt"
     },
     "configPolicyList": {
       "archived": "Archiviert",
@@ -150,7 +155,8 @@
       "of2": "von",
       "itsOwningOrganization": "seine Eigentümerorganisation",
       "organizationPolicyTitle": "Organisationsrichtlinie – gilt nur für {{organization}}",
-      "summary": "{{filtered}} von {{total}} Richtlinien"
+      "summary": "{{filtered}} von {{total}} Richtlinien",
+      "inheritsBadge": "Erbt"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Konfigurationsrichtlinien konnten nicht abgerufen werden",
@@ -166,7 +172,8 @@
       "areYouSureYouWantToDelete": "Sind Sie sicher, dass Sie löschen möchten?",
       "thisWillAlsoRemoveAllFeatureLinks": "? Dadurch werden auch alle Funktionsverknüpfungen und Zuweisungen entfernt. Diese Aktion kann nicht rückgängig gemacht werden.",
       "delete": "löschen",
-      "deleting": "Löschen..."
+      "deleting": "Löschen...",
+      "deleteBlockedByChildren": "Löschen Sie zuerst die Richtlinien, die von dieser erben:"
     },
     "organizationScopePanel": {
       "failedToLoadAssignments": "Zuweisungen konnten nicht geladen werden",
@@ -664,6 +671,16 @@
         "configCheck": "config_check",
         "none": "keine"
       },
+      "deviceLifecycleTab": {
+        "permanentlyDeleteRemovedDevices": "Entfernte Geräte endgültig löschen",
+        "offKeepRemovedDevicesUntilDeletedManually": "Aus — entfernte Geräte bleiben erhalten, bis sie manuell gelöscht werden.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "Entfernte Geräte werden {{days}} Tage nach dem Entfernen endgültig gelöscht.",
+        "permanentlyDeleteRemovedDevicesAfter": "Entfernte Geräte endgültig löschen nach",
+        "days": "Tagen",
+        "enterAWholeNumberOfDaysBetween": "Geben Sie eine ganze Anzahl von Tagen zwischen 1 und 3650 ein.",
+        "purgeIsIrreversibleAndDestroysHistory": "Das Löschen ist unwiderruflich und vernichtet den Verlauf",
+        "aDailyJobPermanentlyDeletesTheDevice": "Ein täglicher Job löscht den Gerätedatensatz und alles, was daran hängt, endgültig — Alarme, Skripte, Patches, Protokolle und Inventar. Geräte, für die noch eine Agent-Deinstallation ansteht, werden übersprungen, bis diese abgeschlossen ist. Die nächstgelegene Richtlinie gewinnt, sodass eine Organisation dies deaktivieren kann, um sich von einem organisationsweiten Zeitfenster abzumelden."
+      },
       "eventLogTab": {
         "security": "Sicherheit",
         "hardware": "Hardware",
@@ -694,7 +711,11 @@
       "featureTabShell": {
         "override": "Überschreiben",
         "revertToParent": "Zurück zum übergeordneten Element",
-        "saving": "Speichern..."
+        "saving": "Speichern...",
+        "revertConfirmTitle": "Auf übergeordnete Richtlinie zurücksetzen?",
+        "revertConfirmMessage": "Dadurch wird die {{feature}}-Überschreibung dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Einstellungen der übergeordneten Richtlinie gelten für alle Geräte, die diese Richtlinie verwenden. Dies kann nicht rückgängig gemacht werden.",
+        "removeConfirmTitle": "Diese Konfiguration entfernen?",
+        "removeConfirmMessage": "Dadurch wird die {{feature}}-Konfiguration aus dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Funktion wird auf keinem Gerät mehr angewendet, das diese Richtlinie verwendet. Dies kann nicht rückgängig gemacht werden."
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Stellen Sie Breeze Assist auf Geräten bereit",
@@ -883,9 +904,20 @@
         "time": "Zeit",
         "dayOfWeek": "Wochentag",
         "dayOfMonth": "Tag des Monats",
+        "offlineDevices": "Offline-Geräte",
+        "offlineBehaviorQueue": "Für Offline-Geräte in die Warteschlange stellen",
+        "offlineBehaviorQueueDescription": "Wird beim nächsten Check-in ausgeführt, vor dem nächsten geplanten Lauf.",
+        "offlineBehaviorSkip": "Offline-Geräte überspringen",
+        "offlineBehaviorSkipDescription": "Geräte, die beim Ausführen des Auftrags offline sind, werden als übersprungen erfasst.",
         "rebootPolicy": "Neustartrichtlinie",
         "rebootDelayMinutes": "Reboot delay (minutes)",
         "rebootDelayMinutesDescription": "How long the logged-in user is warned before a post-patch reboot.",
+        "rebootAllowDeferral": "Let users postpone the restart",
+        "rebootAllowDeferralDescription": "Show the signed-in user a prompt with a Postpone button. Requires the Breeze helper to be running in the user's session; Linux devices fall back to the terminal warning. The restart still happens at the deadline once the postponements run out.",
+        "rebootMaxDeferrals": "Maximum postponements",
+        "rebootMaxDeferralsDescription": "How many times one user may postpone a single restart before it proceeds.",
+        "rebootDeferralMinutes": "Postpone by (minutes)",
+        "rebootDeferralMinutesDescription": "How far each postponement pushes the restart out.",
         "windowsUpdateSource": "Windows Update-Quelle",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Verwalten Sie Windows Update ausschließlich über Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Unterdrückt den nativen automatischen Windows Update-Installationskanal des Endpunkts, sodass Updates nur über die Genehmigungsringe von Breeze fließen und so unerwartete Neustarts und Patches außerhalb Ihres Zeitplans verhindert werden. Nur Windows; Der eigene Scan/approve/install-Pfad von Breeze bleibt davon unberührt. Wird bei Deaktivierung sauber wiederhergestellt (eine bereits vorhandene Administrator-Gruppenrichtlinie bleibt unberührt).",
@@ -920,7 +952,8 @@
         "loadingPolicies": "Richtlinien werden geladen...",
         "noExistingPoliciesFound": "Keine vorhandenen Richtlinien gefunden.",
         "selectAPolicy": "Wählen Sie eine Richtlinie aus...",
-        "clearSelection": "Auswahl aufheben"
+        "clearSelection": "Auswahl aufheben",
+        "allOrgs": "Alle Orgs"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",
@@ -1628,20 +1661,6 @@
       "catalogTab": "Katalog",
       "summaryCompleted7d": "Abgeschlossen (7 Tage)",
       "summaryFailed7d": "Fehlgeschlagen (7 Tage)"
-    },
-    "softwareComplianceReport": {
-      "softwareComplianceReport": "Software-Compliance-Bericht",
-      "analyzeSoftwareVersionDriftAcrossManagedDevices": "Analysieren Sie die Softwareversionsdrift auf verwalteten Geräten.",
-      "bulkUpdate": "Massenaktualisierung",
-      "versionDriftAnalysis": "Analyse der Versionsdrift",
-      "clickARowToSeeOutdatedDevices": "Klicken Sie auf eine Zeile, um veraltete Geräte anzuzeigen.",
-      "software": "Software",
-      "expectedVersion": "Erwartete Version",
-      "devicesOnVersion": "Geräte auf Version",
-      "devicesOutdated": "Geräte veraltet",
-      "details": "Details",
-      "outdatedDevices": "Veraltete Geräte",
-      "hide": "Verstecken"
     },
     "softwareInventory": {
       "allowed": "Erlaubt",

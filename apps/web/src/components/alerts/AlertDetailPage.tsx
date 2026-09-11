@@ -16,8 +16,11 @@ import {
   type AlertStatus,
 } from './alertConfig';
 import CreateTicketFromAlertDialog from './CreateTicketFromAlertDialog';
+import { useOrgStore } from '@/stores/orgStore';
 import type { TicketStatus, TicketPriority } from '../tickets/ticketConfig';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
+import { DelegateToOperatorButton } from '../aiOperator/DelegateToOperatorButton';
+import { extractServiceNameFromAlert } from '../aiOperator/alertServiceName';
 import {
   formatAnomalyConfidence,
   formatAnomalyType,
@@ -36,6 +39,14 @@ type Alert = {
   status: AlertStatus;
   deviceId: string;
   deviceName: string;
+  /**
+   * The alert's OWN org. W08 (#5246): the delegate action targets this org,
+   * never the globally selected one — spec §5.1, "changing global
+   * organization context while drafting cannot retarget the task". The API
+   * has always returned it (the detail route spreads the whole alert row);
+   * it simply was not declared here before.
+   */
+  orgId: string;
   ruleId?: string;
   ruleName?: string;
   triggeredAt: string;
@@ -89,6 +100,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
   const [linkedTickets, setLinkedTickets] = useState<LinkedTicket[]>([]);
   const [linkedError, setLinkedError] = useState(false);
   const [ticketDialogOpen, setTicketDialogOpen] = useState(false);
+  const serviceManagementMode = useOrgStore((state) => state.serviceManagementMode);
 
   const fetchAlert = useCallback(async () => {
     try {
@@ -313,15 +325,27 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
 
           {/* Actions */}
           <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => setTicketDialogOpen(true)}
-              className="h-10 rounded-md border px-4 text-sm font-medium hover:bg-muted"
-              data-testid="alert-create-ticket"
-            >
-              <Ticket className="mr-2 inline-block h-4 w-4" />
-              {t('alertDetailPage.createTicket')}
-            </button>
+            {/* #5075 W04 — Service Management gate.
+                'off': the API refuses with a 409 (the backstop lives in
+                ticketService.createTicket), so this avoids offering a button
+                that cannot succeed.
+                'external': the API WOULD accept the create (it still writes the
+                Breeze-side shadow row), but the alert flow has no PSA-linking
+                step yet, so a ticket raised here would strand outside the
+                partner's system of record. Hidden until that ships — unlike the
+                org record's Tickets tab, which stays visible under external
+                because it lists those shadow rows. */}
+            {serviceManagementMode === 'native' && (
+              <button
+                type="button"
+                onClick={() => setTicketDialogOpen(true)}
+                className="h-10 rounded-md border px-4 text-sm font-medium hover:bg-muted"
+                data-testid="alert-create-ticket"
+              >
+                <Ticket className="mr-2 inline-block h-4 w-4" />
+                {t('alertDetailPage.createTicket')}
+              </button>
+            )}
             {alert.status === 'active' && (
               <button
                 type="button"
@@ -332,6 +356,20 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                 <CheckCircle className="mr-2 inline-block h-4 w-4" />
                 {t('alertDetailPage.acknowledge')}
               </button>
+            )}
+            {/* W08 of #5205 (#5246). Hidden entirely unless the AI Operator
+                flags are on. Targets the ALERT's org and device, and cites
+                the alert as its source so the verification criterion gets a
+                recurrence signal (without one, the best achievable outcome is
+                `investigation_complete`, never `verified_resolved`). */}
+            {(alert.status === 'active' || alert.status === 'acknowledged') && (
+              <DelegateToOperatorButton
+                orgId={alert.orgId}
+                deviceId={alert.deviceId}
+                deviceLabel={alert.deviceName}
+                source={{ kind: 'alert', id: alert.id }}
+                defaultServiceName={extractServiceNameFromAlert(alert) ?? undefined}
+              />
             )}
             {(alert.status === 'active' || alert.status === 'acknowledged') && (
               <button

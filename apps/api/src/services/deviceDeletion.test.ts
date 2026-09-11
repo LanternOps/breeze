@@ -254,18 +254,45 @@ describe('deleteDeviceCascade lock ordering', () => {
     expect(statements[statements.length - 1]).toBe('__DELETE_DEVICES_ROW__');
   });
 
-  it('uses the guarded audit-retention role only for append-only peripheral delivery events', async () => {
+  // #4371 fixup: agent_rollback_events and pam_actuation_results joined
+  // peripheral_policy_delivery_events under the SAME guarded escalation —
+  // all three have DELETE fully revoked from breeze_app (see
+  // DEVICE_CASCADE_AUDIT_ADMIN_TABLES in deviceDeletion.ts).
+  it.each([
+    'peripheral_policy_delivery_events',
+    'agent_rollback_events',
+    'pam_actuation_results',
+  ])('uses the guarded audit-retention role for append-only table %s', async (table) => {
     const { tx, statements } = captureTx();
 
     await deleteDeviceCascade(tx, 'device-1');
 
-    const eventDelete = statements.findIndex((statement) =>
-      statement.includes('peripheral_policy_delivery_events') && statement.includes('DELETE FROM')
+    const rowDelete = statements.findIndex((statement) =>
+      statement.includes(table) && statement.includes('DELETE FROM')
     );
-    expect(eventDelete).toBeGreaterThan(0);
-    expect(statements[eventDelete - 2]).toContain('SET LOCAL ROLE breeze_audit_admin');
-    expect(statements[eventDelete - 1]).toContain('breeze.allow_audit_retention');
-    expect(statements[eventDelete + 1]).toContain('RESET ROLE');
+    expect(rowDelete, `no DELETE statement found for ${table}`).toBeGreaterThan(0);
+    expect(statements[rowDelete - 2]).toContain('SET LOCAL ROLE breeze_audit_admin');
+    expect(statements[rowDelete - 1]).toContain('breeze.allow_audit_retention');
+    expect(statements[rowDelete + 1]).toContain('RESET ROLE');
+  });
+
+  it('does NOT use the audit-admin escalation for ordinary device-cascade tables', async () => {
+    const { tx, statements } = captureTx();
+
+    await deleteDeviceCascade(tx, 'device-1');
+
+    // automation_action_results and device_software_inventory_state keep
+    // DELETE granted to breeze_app (only TRUNCATE was revoked, and nothing
+    // deletes via TRUNCATE) — they must NOT be routed through the
+    // escalation, or the escalation set has silently over-grown.
+    for (const table of ['automation_action_results', 'device_software_inventory_state']) {
+      const rowDelete = statements.findIndex((statement) =>
+        statement.includes(table) && statement.includes('DELETE FROM')
+      );
+      expect(rowDelete, `no DELETE statement found for ${table}`).toBeGreaterThan(0);
+      expect(statements[rowDelete - 1]).not.toContain('breeze_audit_admin');
+      expect(statements[rowDelete - 1]).not.toContain('breeze.allow_audit_retention');
+    }
   });
 });
 
@@ -312,6 +339,26 @@ describe('deleteDeviceCascade link detach (#3952)', () => {
 
     const detach = detachStatementFor(statements, 'network_change_events');
     expect(detach).not.toContain('link_source');
+  });
+
+  it('detaches manual_assets with linked_device_id alone (#4622)', async () => {
+    // manual_assets joined DEVICE_LINKED_DEVICE_ID_TABLES in #4622. The rows
+    // are hand-entered inventory (serial, asset tag, assigned contact, notes)
+    // that must OUTLIVE the device, so the cascade detaches rather than
+    // deletes — and it declares no link-conditional CHECK constraint, so it
+    // has no DEVICE_LINK_DEPENDENT_COLUMNS entry and nothing else may be
+    // cleared alongside. The loop is data-driven, so this is cheap insurance
+    // that registration actually produces the statement.
+    const { tx, statements } = captureTx();
+
+    await deleteDeviceCascade(tx, 'device-1');
+
+    const detach = detachStatementFor(statements, 'manual_assets');
+    expect(detach).not.toContain('link_source');
+    expect(
+      statements.filter((s) => s.includes('manual_assets') && s.includes('delete')),
+      'manual_assets must be DETACHED, never deleted, by a device cascade',
+    ).toHaveLength(0);
   });
 });
 

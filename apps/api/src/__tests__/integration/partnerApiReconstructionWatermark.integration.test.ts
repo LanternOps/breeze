@@ -25,6 +25,7 @@ import {
 import { partnerInventoryRoutes } from '../../routes/partnerApi/inventory';
 import { partnerRelationshipRoutes } from '../../routes/partnerApi/relationships';
 import { createOrganization, createPartner, createSite, reapplyOrgIdFkDeferrability } from './db-utils';
+import { replayMigration } from './replayMigration';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -53,7 +54,17 @@ describe('partner reconstruction resource watermarks', () => {
     // (migrations/2026-09-12-100001-org-lifecycle-foundations.sql Section 2,
     // which lists devices_site_org_fk among the 16 constraints it converts).
     // Restore it rather than editing the shipped migration.
-    await reapplyOrgIdFkDeferrability(db);
+    await reapplyOrgIdFkDeferrability(db, ['devices_site_org_fk']);
+    // The bare sql.raw replays above prove idempotency but also revert every
+    // function the hardening file (re)defines — breeze_partner_export_device_
+    // child_insert/update/delete — to its 2026-07-23 body for the rest of this
+    // vitest process. Later shipped migrations redefine those bodies (first:
+    // 2026-10-14-100200-device-warranty-manual-asset-subject.sql, which widens
+    // the device_id guard so a NULL-subject warranty row is legal), and any
+    // suite that runs after this one in the same shard would see the old body
+    // (PR #5253, Integration shard 1). replayMigration re-applies, in filename
+    // order, every later migration that redefines the same functions.
+    await replayMigration('2026-07-23-partner-export-material-state-hardening.sql');
     const sourceId = '55555555-5555-4555-8555-555555555555';
     const [identity] = await db.execute<{ value: string }>(sql`
       SELECT public.breeze_partner_export_stable_uuid(
@@ -311,6 +322,56 @@ describe('partner reconstruction resource watermarks', () => {
       .resolves.toBeDefined();
     expect((await siteState(highSite.id)).orgId).toBe(lowOrg.id);
     expect((await siteState(lowSite.id)).orgId).toBe(highOrg.id);
+  });
+
+  /**
+   * SEC-2026-09-05-146 review F3. The recurring-authority envelope on
+   * network_baselines (creator, ceiling, epochs, fingerprint, generation,
+   * armed-at, blocked reason) changes on every re-arm and every blocked
+   * dispatch, and alters nothing a partner export reconstructs. Without an
+   * exclusion those writes would churn site export material on the scheduler's
+   * 15-minute cadence.
+   *
+   * `2026-10-15-150600-network-baseline-recurring-authority.sql` extends the
+   * `network_baselines` branch of `breeze_partner_export_site_child_update`'s
+   * `excluded` array. The control below is paired: the envelope must NOT touch
+   * the watermark, and a real baseline field (subnet) must still touch it — so
+   * an over-broad exclusion cannot pass by making the trigger inert.
+   */
+  runDb('network_baselines authority envelope writes are excluded from site material state, but subnet is not', async () => {
+    const db = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const [baseline] = await db.insert(networkBaselines).values({
+      orgId: org.id, siteId: site.id, subnet: '10.55.0.0/24',
+    }).returning();
+    if (!baseline) throw new Error('baseline insert failed');
+    await db.execute(sql`SELECT public.breeze_partner_export_touch_sites(
+      ARRAY[${site.id}::uuid], true, true
+    )`);
+
+    const before = await siteState(site.id);
+    await db.update(networkBaselines).set({
+      authorityUserId: null,
+      authoritySiteIds: [site.id],
+      authorityPermissionsEpoch: 9,
+      authorityMfaEpoch: 4,
+      authorityFingerprint: 'f'.repeat(64),
+      authorityGeneration: 7,
+      authorityArmedAt: new Date(),
+      scheduleBlockedReason: 'reapproval_required',
+    }).where(eq(networkBaselines.id, baseline.id));
+
+    const afterEnvelope = await siteState(site.id);
+    expect(afterEnvelope.inventory.getTime()).toBe(before.inventory.getTime());
+    expect(afterEnvelope.relationships.getTime()).toBe(before.relationships.getTime());
+
+    // Positive control: a materially reconstructed column still bumps it.
+    await db.update(networkBaselines).set({ subnet: '10.56.0.0/24' })
+      .where(eq(networkBaselines.id, baseline.id));
+    const afterSubnet = await siteState(site.id);
+    expect(afterSubnet.inventory.getTime()).toBeGreaterThan(afterEnvelope.inventory.getTime());
   });
 
   runDb('eligible discovered asset insert, move, and delete touch inventory and relationships for both sites', async () => {

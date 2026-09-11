@@ -227,7 +227,14 @@ vi.mock('../commandQueue', () => ({
 }));
 
 const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
+const { maintenanceGateMock } = vi.hoisted(() => ({ maintenanceGateMock: vi.fn() }));
 vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
+// #4919 — the maintenance gate is unit-tested in scriptMaintenanceGate.test.ts;
+// here it is mocked (permissive by default) so this file tests the WIRING and
+// so the real gate's DB read never runs against the schema-mocked db above.
+vi.mock('../scriptMaintenanceGate', () => ({
+  checkScriptMaintenanceSuppression: maintenanceGateMock,
+}));
 // terminalPayloadErasureSet builds a jsonb SQL expression off the real
 // deviceCommands schema; stub it so the schema-mocked pollRunProgress cancel
 // path doesn't need the full schema. The returned key just rides the SET clause.
@@ -330,6 +337,8 @@ beforeEach(() => {
   getFleetFindingMock.mockReset();
   queueCommandForExecutionMock.mockReset();
   captureExceptionMock.mockReset();
+  maintenanceGateMock.mockReset();
+  maintenanceGateMock.mockResolvedValue({ suppressed: false });
 });
 
 /**
@@ -402,6 +411,195 @@ describe('createRemediationRun — script validation', () => {
     const req: RemediateRequest = { actionKind: 'script', scriptId: SCRIPT_1, parameters: {} };
     const result = await createRemediationRun(makeAuth(), FINDING_1, req);
     expect(result.runId).toBe(RUN_1);
+  });
+});
+
+/**
+ * #4888 — the Fix flow's run-context override.
+ *
+ * The picker has always RENDERED a System / logged-in-user select and then
+ * thrown the answer away (`_runAs` in FixPickerModal.tsx), because the
+ * dispatcher read `runAs` straight off the script row. These tests pin the two
+ * halves of honouring it: the choice is PERSISTED on the run at creation, and
+ * the dispatcher's COMMAND PAYLOAD carries it.
+ *
+ * The payload assertion is the load-bearing one. A test that only checked
+ * `queueCommandForExecution` had been called — or that matched the payload
+ * with a bare `expect.anything()` — passed against the old, broken code too.
+ */
+describe('createRemediationRun / dispatchRunChunk — run-context override (#4888)', () => {
+  it('persists the operator-chosen runAs on the run row', async () => {
+    getFleetFindingMock.mockResolvedValue(findingDetail({ orgId: ORG_1 }));
+    h.selectQueue.push([{ id: SCRIPT_1, orgId: ORG_1 }]); // script lookup
+    h.selectQueue.push([]); // membership: no members
+    h.insertReturningQueue.push([{ id: RUN_1 }]);
+
+    const req: RemediateRequest = {
+      actionKind: 'script',
+      scriptId: SCRIPT_1,
+      parameters: {},
+      runAs: 'user',
+    };
+    await createRemediationRun(makeAuth(), FINDING_1, req);
+
+    expect(h.capturedInserts[0]!.values).toMatchObject({ runAs: 'user' });
+  });
+
+  it('records runAs as null when the operator did not choose one (= the script default)', async () => {
+    getFleetFindingMock.mockResolvedValue(findingDetail({ orgId: ORG_1 }));
+    h.selectQueue.push([{ id: SCRIPT_1, orgId: ORG_1 }]);
+    h.selectQueue.push([]);
+    h.insertReturningQueue.push([{ id: RUN_1 }]);
+
+    const req: RemediateRequest = { actionKind: 'script', scriptId: SCRIPT_1, parameters: {} };
+    await createRemediationRun(makeAuth(), FINDING_1, req);
+
+    expect((h.capturedInserts[0]!.values as Record<string, unknown>).runAs).toBeNull();
+  });
+
+  it('never records a runAs for a command run — a command has no script default to override', async () => {
+    getFleetFindingMock.mockResolvedValue(findingDetail({ orgId: ORG_1 }));
+    h.selectQueue.push([]); // membership: no members
+    h.insertReturningQueue.push([{ id: RUN_1 }]);
+
+    const req: RemediateRequest = { actionKind: 'command', commandType: 'reboot', parameters: {} };
+    await createRemediationRun(makeAuth(), FINDING_1, req);
+
+    expect((h.capturedInserts[0]!.values as Record<string, unknown>).runAs).toBeNull();
+  });
+
+  it("dispatches with the run's chosen runAs, NOT the script row's saved default", async () => {
+    // The whole bug: script row says 'system', the operator picked 'user', and
+    // the agent used to receive 'system'.
+    h.selectQueue.push([
+      {
+        id: RUN_1,
+        orgId: ORG_1,
+        actionKind: 'script',
+        commandType: null,
+        scriptId: SCRIPT_1,
+        parameterSnapshot: {},
+        status: 'running',
+        createdBy: USER_ID,
+        startedAt: new Date(),
+        runAs: 'user',
+      },
+    ]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
+    h.selectQueue.push([{ orgId: ORG_1, language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' }]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
+    queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-runas' } });
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    const payload = queueCommandForExecutionMock.mock.calls[0]![2] as Record<string, unknown>;
+    expect(payload.runAs).toBe('user');
+  });
+
+  it("falls back to the script's saved default when the run recorded no choice (pre-#4888 rows)", async () => {
+    h.selectQueue.push([
+      {
+        id: RUN_1,
+        orgId: ORG_1,
+        actionKind: 'script',
+        commandType: null,
+        scriptId: SCRIPT_1,
+        parameterSnapshot: {},
+        status: 'running',
+        createdBy: USER_ID,
+        startedAt: new Date(),
+        runAs: null,
+      },
+    ]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]);
+    h.selectQueue.push([{ orgId: ORG_1, language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'elevated' }]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
+    queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-default' } });
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    const payload = queueCommandForExecutionMock.mock.calls[0]![2] as Record<string, unknown>;
+    expect(payload.runAs).toBe('elevated');
+  });
+
+  // #5129. Fleet remediation is the one script-dispatch path that does NOT go
+  // through `dispatchScriptToDevice`, so it re-lists which script fields ride
+  // the payload by hand. If it forgets the acknowledgement, every acknowledged
+  // script silently reverts to "refused" the moment it is run from a
+  // remediation run rather than the Scripts page — a per-path regression the
+  // dispatchScriptToDevice suite cannot see.
+  const HKLM_ACK = 'PowerShell HKLM modification';
+
+  function seedScriptRun(scriptRow: Record<string, unknown>): void {
+    h.selectQueue.push([
+      {
+        id: RUN_1,
+        orgId: ORG_1,
+        actionKind: 'script',
+        commandType: null,
+        scriptId: SCRIPT_1,
+        parameterSnapshot: {},
+        status: 'running',
+        createdBy: USER_ID,
+        startedAt: new Date(),
+        runAs: null,
+      },
+    ]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
+    h.selectQueue.push([scriptRow]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
+    queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-ack' } });
+  }
+
+  const riskyScript = (overrides: Record<string, unknown> = {}) => ({
+    orgId: ORG_1,
+    language: 'bash',
+    content: "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Contoso' -Name Enabled -Value 1",
+    timeoutSeconds: 60,
+    runAs: 'system',
+    acknowledgedSecurityPatterns: [],
+    ...overrides,
+  });
+
+  it('forwards the script\u2019s acknowledged security patterns (#5129)', async () => {
+    seedScriptRun(riskyScript({ acknowledgedSecurityPatterns: [HKLM_ACK] }));
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    const payload = queueCommandForExecutionMock.mock.calls[0]![2] as Record<string, unknown>;
+    expect(payload.acknowledgedSecurityPatterns).toEqual([HKLM_ACK]);
+    // Guards the guard: the risky content really did ride along, so the
+    // assertion above is about a forwarded acknowledgement rather than an
+    // accidentally-empty payload.
+    expect(payload.content).toContain('HKLM');
+  });
+
+  it('omits the acknowledgement key when the script acknowledges nothing (#5129)', async () => {
+    // Keeps the wire byte-identical to pre-#5129 for unacknowledged scripts;
+    // an absent key is what the agent treats as fail closed.
+    seedScriptRun(riskyScript({ acknowledgedSecurityPatterns: [] }));
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    const payload = queueCommandForExecutionMock.mock.calls[0]![2] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty('acknowledgedSecurityPatterns');
+  });
+
+  it('re-reads the acknowledgement at dispatch time, so a revoked one stops authorising the run (#5129)', async () => {
+    // The run was created while the script was acknowledged; the approval was
+    // revoked before this chunk dispatched. The script row is re-fetched here
+    // (the same re-fetch that exists for bound parameters), so the stale
+    // approval must NOT ride along and the device must refuse again.
+    seedScriptRun(riskyScript({ acknowledgedSecurityPatterns: null }));
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    const payload = queueCommandForExecutionMock.mock.calls[0]![2] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty('acknowledgedSecurityPatterns');
+    expect(payload.content).toContain('HKLM');
   });
 });
 
@@ -834,6 +1032,82 @@ describe('dispatchRunChunk', () => {
     expect(skip).toBeDefined();
     expect(skip.values.skipReason).toBe('unreachable');
     expect(h.capturedUpdates.some((u) => (u.values as Record<string, unknown>).status === 'failed')).toBe(false);
+  });
+
+  /**
+   * #4919 — fleet remediation is the one script path that does not go through
+   * `dispatchScriptToDevice`, so it cannot inherit that seam's gate and calls
+   * the shared gate itself. Suppression must be a SKIP recorded before the
+   * claim: a claimed-then-abandoned target sits `queued` forever.
+   */
+  it('skips a script target whose device is in a maintenance window, before claiming it', async () => {
+    h.selectQueue.push([runRow({ status: 'running', actionKind: 'script', scriptId: 'sc-1', commandType: null })]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
+    h.selectQueue.push([
+      { orgId: ORG_1, language: 'powershell', content: 'echo hi', timeoutSeconds: 60, runAs: 'system', parameters: null },
+    ]);
+    maintenanceGateMock.mockResolvedValue({
+      suppressed: true,
+      reason: 'window_active',
+      message: 'Device is in a maintenance window that suppresses script execution',
+      windowEndsAt: new Date('2030-01-01T00:00:00Z'),
+    });
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    const skip = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'skipped')!;
+    expect(skip).toBeDefined();
+    expect(skip.values.skipReason).toBe('maintenance_window');
+    // Never claimed: no update flipped this target to `queued`.
+    expect(h.capturedUpdates.some((u) => (u.values as Record<string, unknown>).status === 'queued')).toBe(false);
+    expect(h.capturedUpdates.some((u) => (u.values as Record<string, unknown>).status === 'failed')).toBe(false);
+  });
+
+  /**
+   * `suppressScripts` is a statement about running SCRIPTS. A reboot or a
+   * service restart is governed by its own policy, so this path must not
+   * consult the gate for them at all — checking would silently extend the
+   * flag's meaning without anyone deciding to.
+   */
+  it('FAILS a script target whose maintenance window could not be evaluated, rather than skipping it', async () => {
+    // `skipped` is the status an operator reads as "nothing to see here". A
+    // maintenance config we could not read is a broken safety dependency and
+    // has to surface as a failure.
+    h.selectQueue.push([runRow({ status: 'running', actionKind: 'script', scriptId: 'sc-1', commandType: null })]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]);
+    h.selectQueue.push([
+      { orgId: ORG_1, language: 'powershell', content: 'echo hi', timeoutSeconds: 60, runAs: 'system', parameters: null },
+    ]);
+    maintenanceGateMock.mockResolvedValue({
+      suppressed: true,
+      reason: 'check_failed',
+      message: 'Maintenance window could not be evaluated for this device; refusing to run the script (fail-closed)',
+      windowEndsAt: null,
+    });
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    const failed = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'failed')!;
+    expect(failed).toBeDefined();
+    expect(failed.values.resultSummary).toContain('fail-closed');
+    expect(h.capturedUpdates.some((u) => (u.values as Record<string, unknown>).status === 'skipped')).toBe(false);
+  });
+
+  it('does not consult the maintenance gate for a command-kind run', async () => {
+    h.selectQueue.push([runRow({ status: 'running' })]); // actionKind: 'command'
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
+    queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-1' } });
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    expect(maintenanceGateMock).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionMock).toHaveBeenCalled();
   });
 
   it('treats a device that vanished between run creation and dispatch as unreachable', async () => {

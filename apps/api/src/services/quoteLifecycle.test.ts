@@ -13,10 +13,23 @@ function queueResult(rows: unknown[]) { results.push(rows); }
 const setCalls: Array<Record<string, unknown>> = [];
 const insertValueCalls: unknown[] = [];
 
+// #3905 — the RLS scope sendQuote captures and the deferred email re-enters.
+// vi.hoisted so it exists before the hoisted vi.mock('../db') factory runs.
+const { TEST_DB_CONTEXT } = vi.hoisted(() => ({
+  TEST_DB_CONTEXT: {
+    scope: 'partner' as const,
+    orgId: null,
+    accessibleOrgIds: ['org-1'],
+    accessiblePartnerIds: ['partner-1'],
+    userId: 'user-1',
+    currentPartnerId: 'partner-1',
+  },
+}));
+
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'execute', 'transaction'];
+    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'leftJoin', 'execute', 'transaction'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
     chain.set = vi.fn((payload: Record<string, unknown>) => { setCalls.push(payload); return chain; });
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
@@ -40,6 +53,12 @@ vi.mock('../db', () => {
     db,
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    // #3905 — sendQuote/resendQuote assert an ambient context and capture its
+    // metadata so the deferred email can re-enter the SAME RLS scope. The stub
+    // context is what the deferred's DB phases are asserted to run under.
+    assertInTransaction: () => {},
+    getCurrentDbAccessContext: () => TEST_DB_CONTEXT,
+    withDbAccessContext: (_ctx: unknown, fn: () => unknown) => fn(),
   };
 });
 
@@ -68,8 +87,16 @@ vi.mock('./email', async (importOriginal) => {
   return { ...actual, getEmailService: vi.fn(() => ({ sendEmail: sendEmailMock, fromWithDisplayName: (name: string) => `"${name}" <no-reply@test.example>` })) };
 });
 
+vi.mock('./quoteDeviceSet', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./quoteDeviceSet')>();
+  return { ...actual, countQuoteDeviceSetLines: vi.fn() };
+});
+
 import { buildPublicQuoteAcceptUrl, portalBase, sendQuote, resendQuote, getQuoteShareLink } from './quoteLifecycle';
 import { renderQuotePdf } from './quotePdf';
+import { countQuoteDeviceSetLines } from './quoteDeviceSet';
+
+const countQuoteDeviceSetLinesMock = vi.mocked(countQuoteDeviceSetLines);
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 
@@ -235,7 +262,7 @@ describe('sendQuote deposit validation', () => {
       taxRate: null, depositType: 'percent', depositPercent: '100.00',
     }]);
     queueResult([]); // blocks
-    queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
+    queueResult([{ line: { quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }, deviceGroup: null, site: null }]);
     queueResult([]); // no staged Pax8 order
     queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -256,7 +283,7 @@ describe('sendQuote deposit validation', () => {
     }]);
     queueResult([]); // blocks
     // A one-time line exists (so dueOnAcceptance > 0) but NONE are depositEligible.
-    queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
+    queueResult([{ line: { quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }, deviceGroup: null, site: null }]);
     queueResult([]); // no staged Pax8 order
     queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -324,7 +351,10 @@ describe('sendQuote customer-facing PDF', () => {
       sellerSnapshot: null,
     }]);
     queueResult([]); // blocks
-    queueResult([visibleLine, internalLine]); // lines
+    queueResult([
+      { line: visibleLine, deviceGroup: null, site: null },
+      { line: internalLine, deviceGroup: null, site: null },
+    ]); // lines
     queueResult([]); // no staged Pax8 order
     queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -342,8 +372,10 @@ describe('sendQuote customer-facing PDF', () => {
     }]);
 
     const result = await sendQuote('q1', actor);
+    // #3905 — delivery is deferred out of the send transaction.
+    const delivery = await result.deliverEmail();
 
-    expect(result.emailed).toBe(true);
+    expect(delivery.emailed).toBe(true);
     expect(capturedPdfArgs).not.toBeNull();
     // renderQuotePdf(quote, blocks, lines, loadImage, branding, loadCatalogImage) — lines is arg index 2.
     const renderedLines = capturedPdfArgs![2] as Array<Record<string, unknown>>;
@@ -354,6 +386,84 @@ describe('sendQuote customer-facing PDF', () => {
     // toCustomerLines also strips the cost-basis field, same as the portal route.
     expect(renderedLines[0]).not.toHaveProperty('unitCost');
     expect(sendEmailMock.mock.calls[0]![0].text).toContain('1.200,00 €');
+    expect(result.deviceSetDrift).toEqual([]);
+  });
+});
+
+describe('sendQuote device-set drift report (#3205 W05)', () => {
+  const quoteRow = {
+    id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+    taxRate: null, depositType: 'none', depositPercent: null,
+    quoteNumber: 'Q-2026-0001', issueDate: '2026-01-01', expiryDate: null,
+    total: '700.00', currencyCode: 'USD', terms: null, termsAndConditions: null,
+    sellerSnapshot: null, billToName: null, billToTaxId: null,
+  };
+  const descriptorLine = {
+    id: 'line-device-set', quoteId: 'q1', orgId: 'org1', name: 'Managed servers', description: null,
+    quantity: '7.00', unitPrice: '100.00', lineTotal: '700.00', taxable: false,
+    customerVisible: true, recurrence: 'monthly', depositEligible: false,
+    contractLineType: 'per_device_role', deviceRoles: ['server'], deviceGroupId: null,
+    deviceGroupName: null, siteId: null, siteName: null, includedQuantity: null,
+    overageMode: null, overageUnitPrice: null,
+  };
+
+  beforeEach(() => {
+    results.length = 0;
+    setCalls.length = 0;
+    vi.clearAllMocks();
+    countQuoteDeviceSetLinesMock.mockResolvedValue([]);
+  });
+
+  function queueSendWithDescriptor() {
+    queueResult([{ id: 'q1' }]); // child lock
+    queueResult([quoteRow]);
+    queueResult([]); // blocks
+    queueResult([{ line: descriptorLine, deviceGroup: null, site: null }]);
+    queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
+    queueResult([]); // order headers
+    queueResult([]); // order lines
+    queueResult([{ name: 'Customer Co', taxId: null }]); // getQuote draft bill-to org
+    queueResult([quoteRow]); // quoteDeviceSetEstimate quote
+    queueResult([descriptorLine]); // quoteDeviceSetEstimate lines
+    queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]);
+    queueResult([{ name: 'Customer Co', taxId: null, billingContact: null }]);
+    queueResult([{ id: 'q1' }]); // draft -> sent claim
+    // The email is deferred post-commit (#3905): sendQuote's only remaining DB
+    // call here is the final re-select of the committed row.
+    queueResult([{ ...quoteRow, status: 'sent' }]);
+  }
+
+  it('reports a changed live quantity and still sends', async () => {
+    queueSendWithDescriptor();
+    countQuoteDeviceSetLinesMock.mockResolvedValueOnce([{
+      lineId: descriptorLine.id, counted: 9, billed: 9, included: null,
+      overage: 0, overageMode: null,
+    }]);
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.quote.status).toBe('sent');
+    expect(result.deviceSetDrift).toEqual([{
+      lineId: descriptorLine.id, description: 'Managed servers',
+      storedQuantity: '7.00', liveQuantity: 9,
+    }]);
+  });
+
+  it('reports an evaluation error and still sends', async () => {
+    queueSendWithDescriptor();
+    countQuoteDeviceSetLinesMock.mockResolvedValueOnce([{
+      lineId: descriptorLine.id, counted: 0, billed: 0, included: null,
+      overage: 0, overageMode: null, error: 'GROUP_EVALUATION_FAILED',
+    }]);
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.quote.status).toBe('sent');
+    expect(result.deviceSetDrift).toEqual([{
+      lineId: descriptorLine.id, description: 'Managed servers',
+      storedQuantity: '7.00', liveQuantity: null, error: 'GROUP_EVALUATION_FAILED',
+    }]);
   });
 });
 
@@ -386,7 +496,7 @@ describe('sendQuote email delivery status', () => {
     queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([quoteRow]);
     queueResult([]); // blocks
-    queueResult([lineRow]); // lines
+    queueResult([{ line: lineRow, deviceGroup: null, site: null }]); // lines
     queueResult([]); // no staged Pax8 order
     queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -399,44 +509,56 @@ describe('sendQuote email delivery status', () => {
 
   it('reports no_billing_contact (and sends nothing) when the org has no billing email', async () => {
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: null });
+    // #3905 — the final re-select now runs INSIDE the send transaction,
+    // before the deferred delivery's own reads.
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
     // No billingContact → the email branch short-circuits before the
     // portalBranding read, straight to the outcome marker and the re-select.
     queueResult([]); // outcome-marker update
-    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
 
     const result = await sendQuote('q1', actor);
+    // #3905 — delivery is deferred out of the send transaction.
+    const delivery = await result.deliverEmail();
 
-    expect(result.emailed).toBe(false);
-    expect(result.emailReason).toBe('no_billing_contact');
+    expect(delivery.emailed).toBe(false);
+    expect(delivery.emailReason).toBe('no_billing_contact');
     expect(sendEmailMock).not.toHaveBeenCalled();
     expect(result.quote.status).toBe('sent'); // the send itself still commits
   });
 
   it('reports send_failed when the email provider throws (send still commits)', async () => {
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    // #3905 — the final re-select now runs INSIDE the send transaction,
+    // before the deferred delivery's own reads.
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
     queueResult([]); // portalBranding — none configured
     queueResult([]); // outcome-marker update
-    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
     sendEmailMock.mockRejectedValue(new Error('smtp down'));
 
     const result = await sendQuote('q1', actor);
+    // #3905 — delivery is deferred out of the send transaction.
+    const delivery = await result.deliverEmail();
 
-    expect(result.emailed).toBe(false);
-    expect(result.emailReason).toBe('send_failed');
+    expect(delivery.emailed).toBe(false);
+    expect(delivery.emailReason).toBe('send_failed');
     expect(result.quote.status).toBe('sent');
   });
 
   it('reports pdf_render_failed (and never calls the email transport) when building the attachment throws', async () => {
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    // #3905 — the final re-select now runs INSIDE the send transaction,
+    // before the deferred delivery's own reads.
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
     queueResult([]); // portalBranding — none configured
     queueResult([]); // outcome-marker update
-    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
     vi.mocked(renderQuotePdf).mockRejectedValueOnce(new Error('pdfkit blew up'));
 
     const result = await sendQuote('q1', actor);
+    // #3905 — delivery is deferred out of the send transaction.
+    const delivery = await result.deliverEmail();
 
-    expect(result.emailed).toBe(false);
-    expect(result.emailReason).toBe('pdf_render_failed');
+    expect(delivery.emailed).toBe(false);
+    expect(delivery.emailReason).toBe('pdf_render_failed');
     expect(sendEmailMock).not.toHaveBeenCalled(); // never reached the transport
     expect(result.quote.status).toBe('sent'); // the send itself still commits
   });
@@ -445,27 +567,35 @@ describe('sendQuote email delivery status', () => {
   // page shows "Sent" with no banner and the customer silently got nothing.
   it('persists send_email_reason so a failed direct send raises the banner', async () => {
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    // #3905 — the final re-select now runs INSIDE the send transaction,
+    // before the deferred delivery's own reads.
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent', sendEmailReason: 'send_failed' }]);
     queueResult([]); // portalBranding — none configured
     queueResult([]); // outcome-marker update
-    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent', sendEmailReason: 'send_failed' }]);
     sendEmailMock.mockRejectedValue(new Error('smtp down'));
 
     const result = await sendQuote('q1', actor);
+    // #3905 — delivery is deferred out of the send transaction.
+    const delivery = await result.deliverEmail();
 
-    expect(result.emailReason).toBe('send_failed');
+    expect(delivery.emailReason).toBe('send_failed');
     // The write itself, not just the returned row: the banner reads the column.
     expect(setCalls.some((p) => p.sendEmailReason === 'send_failed')).toBe(true);
   });
 
   it('writes exactly one sendEmailReason on a successful send: the claim clearing it', async () => {
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
-    queueResult([]); // portalBranding — none configured
+    // #3905 — the final re-select now runs INSIDE the send transaction,
+    // before the deferred delivery's own reads.
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+    queueResult([]); // portalBranding — none configured
 
     const result = await sendQuote('q1', actor);
+    // #3905 — delivery is deferred out of the send transaction.
+    const delivery = await result.deliverEmail();
 
-    expect(result.emailed).toBe(true);
-    expect(result.emailReason).toBeUndefined();
+    expect(delivery.emailed).toBe(true);
+    expect(delivery.emailReason).toBeUndefined();
     // Exactly one `.set()` carries sendEmailReason (the draft→sent claim, which
     // clears it) — a successful send must not add a second bookkeeping write.
     // Asserting the COUNT rather than the absence of a value: a stray
@@ -477,13 +607,17 @@ describe('sendQuote email delivery status', () => {
 
   it('reports emailed:true with no reason on a successful send', async () => {
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
-    queueResult([]); // portalBranding
+    // #3905 — the final re-select now runs INSIDE the send transaction,
+    // before the deferred delivery's own reads.
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+    queueResult([]); // portalBranding
 
     const result = await sendQuote('q1', actor);
+    // #3905 — delivery is deferred out of the send transaction.
+    const delivery = await result.deliverEmail();
 
-    expect(result.emailed).toBe(true);
-    expect(result.emailReason).toBeUndefined();
+    expect(delivery.emailed).toBe(true);
+    expect(delivery.emailReason).toBeUndefined();
   });
 
   it('sends with an MSP-branded from display name and the partner billing email as reply-to', async () => {
@@ -491,10 +625,13 @@ describe('sendQuote email delivery status', () => {
       { name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } },
       { billingEmail: 'accounts@acmemsp.example' },
     );
-    queueResult([]); // portalBranding
+    // #3905 — the final re-select now runs INSIDE the send transaction,
+    // before the deferred delivery's own reads.
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+    queueResult([]); // portalBranding
 
-    await sendQuote('q1', actor);
+    // #3905 — delivery is deferred out of the send transaction.
+    await (await sendQuote('q1', actor)).deliverEmail();
 
     expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
       // Display name is the MSP ("via Breeze" keeps the platform address honest);
@@ -507,12 +644,16 @@ describe('sendQuote email delivery status', () => {
   it('uses composer recipients + cc over the billing-contact fallback', async () => {
     // Org has NO billing contact — the explicit `to` must carry the send anyway.
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: null });
-    queueResult([]); // portalBranding
+    // #3905 — the final re-select now runs INSIDE the send transaction,
+    // before the deferred delivery's own reads.
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+    queueResult([]); // portalBranding
 
     const result = await sendQuote('q1', actor, { to: ['buyer@customer.example'], cc: ['cfo@customer.example'] });
+    // #3905 — delivery is deferred out of the send transaction.
+    const delivery = await result.deliverEmail();
 
-    expect(result.emailed).toBe(true);
+    expect(delivery.emailed).toBe(true);
     expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
       to: ['buyer@customer.example'],
       cc: ['cfo@customer.example'],
@@ -524,8 +665,10 @@ describe('sendQuote email delivery status', () => {
 
   it('normalizes and de-duplicates persisted quote recipient authorization', async () => {
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: null });
-    queueResult([]); // portalBranding
+    // #3905 — the final re-select now runs INSIDE the send transaction,
+    // before the deferred delivery's own reads.
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+    queueResult([]); // portalBranding
 
     await sendQuote('q1', actor, { to: [' Buyer@Customer.Example ', 'buyer@customer.example'] });
 
@@ -536,12 +679,16 @@ describe('sendQuote email delivery status', () => {
 
   it('includePdf:false skips the PDF render and attaches nothing', async () => {
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
-    queueResult([]); // portalBranding
+    // #3905 — the final re-select now runs INSIDE the send transaction,
+    // before the deferred delivery's own reads.
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+    queueResult([]); // portalBranding
 
     const result = await sendQuote('q1', actor, { includePdf: false });
+    // #3905 — delivery is deferred out of the send transaction.
+    const delivery = await result.deliverEmail();
 
-    expect(result.emailed).toBe(true);
+    expect(delivery.emailed).toBe(true);
     expect(capturedPdfArgs).toBeNull(); // renderQuotePdf never invoked
     const sent = sendEmailMock.mock.calls[0]![0] as { attachments?: unknown; html: string };
     expect(sent.attachments).toBeUndefined();
@@ -553,10 +700,13 @@ describe('sendQuote email delivery status', () => {
       { name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } },
       { emailSignature: 'Todd @ Acme MSP' },
     );
-    queueResult([]); // portalBranding
+    // #3905 — the final re-select now runs INSIDE the send transaction,
+    // before the deferred delivery's own reads.
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+    queueResult([]); // portalBranding
 
-    await sendQuote('q1', actor, { subject: 'Your workstation refresh' });
+    // #3905 — delivery is deferred out of the send transaction.
+    await (await sendQuote('q1', actor, { subject: 'Your workstation refresh' })).deliverEmail();
 
     const sent = sendEmailMock.mock.calls[0]![0] as { subject: string; html: string };
     expect(sent.subject).toBe('Your workstation refresh');
@@ -565,12 +715,132 @@ describe('sendQuote email delivery status', () => {
 
   it('omits reply-to when the partner has no billing email', async () => {
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
-    queueResult([]); // portalBranding
+    // #3905 — the final re-select now runs INSIDE the send transaction,
+    // before the deferred delivery's own reads.
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+    queueResult([]); // portalBranding
 
-    await sendQuote('q1', actor);
+    // #3905 — delivery is deferred out of the send transaction.
+    await (await sendQuote('q1', actor)).deliverEmail();
 
     expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({ replyTo: undefined }));
+  });
+
+  /**
+   * #3905 — the contract of the deferred itself.
+   *
+   * sendQuote used to render the PDF and run the mail round-trip INSIDE the
+   * request transaction, holding a pooled Postgres connection and (on a
+   * revision) the parent quote's FOR UPDATE lock for as long as the mail server
+   * cared to stall. The transition now commits first and hands the email back.
+   */
+  describe('the deferred email (#3905)', () => {
+    it('does not touch the email transport or the PDF renderer until it is invoked', async () => {
+      queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+      queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+      queueResult([]); // portalBranding — only read once the deferred runs
+
+      const result = await sendQuote('q1', actor);
+
+      // The whole point: the state transition is complete and the row is
+      // returned, with nothing rendered and nothing mailed yet.
+      expect(result.quote.status).toBe('sent');
+      expect(sendEmailMock).not.toHaveBeenCalled();
+      expect(capturedPdfArgs).toBeNull();
+
+      await result.deliverEmail();
+      expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('is idempotent — a second invocation does not mail the customer twice', async () => {
+      queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+      queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+      queueResult([]); // portalBranding
+
+      const result = await sendQuote('q1', actor);
+      const first = await result.deliverEmail();
+      const second = await result.deliverEmail();
+
+      expect(sendEmailMock).toHaveBeenCalledTimes(1);
+      expect(second).toEqual(first);
+    });
+
+    it('reports the outcome and still resolves when persisting send_email_reason throws', async () => {
+      // Post-commit the quote IS sent. Throwing here would surface as "could
+      // not send the proposal" and the tech's next move is to send again —
+      // into a 409. Losing the banner is the smaller harm, and it is reported.
+      queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+      queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent', sendEmailReason: null }]);
+      queueResult([]); // portalBranding
+      sendEmailMock.mockRejectedValue(new Error('smtp down'));
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      // Make ONLY the outcome-marker write fail. Update #1 is the draft→sent
+      // claim (inside the transaction); #2 is the deferred's marker write.
+      const { db } = await import('../db');
+      const realUpdate = db.update;
+      let updateCount = 0;
+      (db as unknown as { update: unknown }).update = vi.fn((...args: unknown[]) => {
+        updateCount += 1;
+        if (updateCount >= 2) throw new Error('db gone');
+        return (realUpdate as (...a: unknown[]) => unknown)(...args);
+      });
+
+      try {
+        const result = await sendQuote('q1', actor);
+        const delivery = await result.deliverEmail();
+
+        expect(delivery.emailed).toBe(false);
+        expect(delivery.emailReason).toBe('send_failed');
+        // The row reflects the DATABASE, which the failed write did not change
+        // — reporting a persisted reason the next page load contradicts would
+        // be worse than reporting none.
+        expect(delivery.quote.sendEmailReason).toBeNull();
+        expect(consoleError).toHaveBeenCalledWith(
+          expect.stringContaining('persisting its email outcome failed'),
+          expect.anything(),
+        );
+      } finally {
+        (db as unknown as { update: unknown }).update = realUpdate;
+        consoleError.mockRestore();
+      }
+    });
+
+    it('never rejects — a throw from the email-service lookup becomes send_failed', async () => {
+      // The swallow must cover the WHOLE delivery, not just the render and the
+      // transport. Three call sites rely on "never rejects": a rejection here
+      // 500s an already-COMMITTED send, and the tech's next move is to send
+      // again — into a 409, or a duplicate customer email on the re-send path.
+      const { getEmailService } = await import('./email');
+      vi.mocked(getEmailService).mockImplementationOnce(() => { throw new Error('email config exploded'); });
+      queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+      queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+      queueResult([]); // outcome-marker update
+
+      const result = await sendQuote('q1', actor);
+      const delivery = await result.deliverEmail();
+
+      expect(delivery.emailed).toBe(false);
+      expect(delivery.emailReason).toBe('send_failed');
+      expect(delivery.quote.sendEmailReason).toBe('send_failed');
+    });
+
+    it('skips every DB read when there is no email service configured', async () => {
+      // A quote that was never going to be emailed must not open a context at
+      // all — the no-op cases resolve before any read.
+      const { getEmailService } = await import('./email');
+      vi.mocked(getEmailService).mockReturnValueOnce(null as never);
+      queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+      queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+      // Deliberately NOTHING queued for portalBranding: reaching it would be
+      // the bug this asserts against.
+
+      const result = await sendQuote('q1', actor);
+      const delivery = await result.deliverEmail();
+
+      expect(delivery.emailed).toBe(false);
+      expect(delivery.emailReason).toBe('no_email_service');
+      expect(capturedPdfArgs).toBeNull();
+    });
   });
 });
 
@@ -595,7 +865,7 @@ describe('sendQuote bill-to snapshot', () => {
     queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([quote]); // getQuote: quote
     queueResult([]);       // getQuote: blocks
-    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([{ line: { quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }, deviceGroup: null, site: null }]); // getQuote: lines
     queueResult([]);       // getQuote: no staged Pax8 order
     queueResult([]);       // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -739,7 +1009,7 @@ describe('sendQuote presentation snapshot', () => {
     queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([quote]); // getQuote: quote
     queueResult([]);       // getQuote: blocks
-    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([{ line: { quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }, deviceGroup: null, site: null }]); // getQuote: lines
     queueResult([]);       // getQuote: no staged Pax8 order
     queueResult([]);       // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -797,7 +1067,8 @@ describe('sendQuote presentation snapshot', () => {
       documentTheme: 'condensed', documentPageSize: 'letter',
     });
 
-    await sendQuote('q1', actor);
+    // #3905 — delivery is deferred out of the send transaction.
+    await (await sendQuote('q1', actor)).deliverEmail();
 
     expect(capturedPdfArgs).not.toBeNull();
     // renderQuotePdf(quote, blocks, lines, loadImage, branding, loadCatalogImage, contractRenderData) — branding is arg index 4.
@@ -825,7 +1096,7 @@ describe('sendQuote document_locale stamp', () => {
     queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([quote]); // getQuote: quote
     queueResult([]);       // getQuote: blocks
-    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([{ line: { quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }, deviceGroup: null, site: null }]); // getQuote: lines
     queueResult([]);       // getQuote: no staged Pax8 order
     queueResult([]);       // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -867,7 +1138,8 @@ describe('sendQuote document_locale stamp', () => {
 
   it('never overwrites a documentLocale the draft already carries, and renders the send-time PDF with it', async () => {
     queueSendPath({ ...baseQuote, documentLocale: 'pt-BR' }, { id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, settings: { language: 'it-IT' } });
-    await sendQuote('q1', actor);
+    // #3905 — delivery is deferred out of the send transaction.
+    await (await sendQuote('q1', actor)).deliverEmail();
     expect(claimSet().documentLocale).toBe('pt-BR');
     // frozenQuote carries the stamp so the same-request PDF renders with it.
     expect(capturedPdfArgs).not.toBeNull();
@@ -876,7 +1148,8 @@ describe('sendQuote document_locale stamp', () => {
 
   it('threads the freshly stamped locale into the same-request PDF render (frozenQuote)', async () => {
     queueSendPath(baseQuote, { id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, settings: { language: 'it-IT' } });
-    await sendQuote('q1', actor);
+    // #3905 — delivery is deferred out of the send transaction.
+    await (await sendQuote('q1', actor)).deliverEmail();
     expect(capturedPdfArgs).not.toBeNull();
     expect((capturedPdfArgs![0] as Record<string, unknown>).documentLocale).toBe('it-IT');
   });
@@ -996,7 +1269,7 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([{ id: 'q1' }]);                              // sendQuote: child row lock
     queueResult([baseQuote]);                                   // getQuote: quote
     queueResult([contractBlock({ governing_state: 'Texas' })]); // getQuote: blocks — filled in
-    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([{ line: { quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }, deviceGroup: null, site: null }]); // getQuote: lines
     queueResult([]);                        // getQuote: no staged Pax8 order
     queueResult([]);                        // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -1007,6 +1280,9 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow
     queueResult([org]);                     // org (billing snapshot + recipient)
     queueResult([{ id: 'q1' }]);            // update ... returning (claimed)
+    // #3905 — the final re-select now runs INSIDE the send transaction, before
+    // the deferred delivery's own reads.
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
     queueResult([]);                        // portalBranding
     // Task 14: the emailed-PDF attachment pre-fetches contract render data via
     // loadContractPdfInputs, which calls loadContractBlockRenderData a SECOND
@@ -1014,10 +1290,12 @@ describe('sendQuote contract-variable gate', () => {
     // version + template selects, since the read is a plain (uncached) DB call.
     queueResult([versionRow]);              // loadContractPdfInputs: version select
     queueResult([templateRow]);             // loadContractPdfInputs: template select
-    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
 
     const result = await sendQuote('q1', actor);
     expect(result.quote.status).toBe('sent');
+    // The deferred still delivers off the same queue — proving the reordered
+    // reads belong to delivery, not to the committed state transition.
+    expect((await result.deliverEmail()).emailed).toBe(true);
   });
 
   it('overlays the just-frozen billTo/seller onto the quote before rendering the contract + PDF', async () => {
@@ -1038,7 +1316,7 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([{ id: 'q1' }]);             // sendQuote: child row lock
     queueResult([draftNullBillTo]);          // getQuote: quote (NULL billTo)
     queueResult([contractBlock({})]);        // getQuote: blocks
-    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([{ line: { quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }, deviceGroup: null, site: null }]); // getQuote: lines
     queueResult([]);                         // getQuote: no staged Pax8 order
     queueResult([]);                         // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -1049,12 +1327,15 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow
     queueResult([org]);                      // org (billing snapshot + recipient)
     queueResult([{ id: 'q1' }]);             // update ... returning (claimed)
+    // #3905 — the final re-select now runs INSIDE the send transaction, before
+    // the deferred delivery's own reads.
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
     queueResult([]);                         // portalBranding
     queueResult([autoOnlyVersion]);          // loadContractPdfInputs: version
     queueResult([templateRow]);              // loadContractPdfInputs: template
-    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
 
-    await sendQuote('q1', actor);
+    // #3905 — delivery is deferred out of the send transaction.
+    await (await sendQuote('q1', actor)).deliverEmail();
 
     expect(capturedPdfArgs).not.toBeNull();
     // renderQuotePdf(quote, ...) — arg 0 is the quote object that was rendered.
@@ -1093,7 +1374,11 @@ describe('resendQuote', () => {
   function queueGetQuote(quote: Record<string, unknown>) {
     queueResult([quote]);
     queueResult([]); // blocks
-    queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
+    queueResult([{
+      line: { quantity: '1', unitPrice: '1000.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false },
+      deviceGroup: null,
+      site: null,
+    }]);
     queueResult([]); // no staged Pax8 order
     queueResult([]); // no successor revision
     queueResult([]); // listQuoteOrders — headers
@@ -1122,9 +1407,13 @@ describe('resendQuote', () => {
     queueResult([{ email: 'ap@customer.example' }]);     // existing recipients
     queueResult([]);                                     // portalBranding
     queueResult([]);                                     // outcome-marker update
-    queueResult([{ ...OPEN_QUOTE }]);                    // final re-select
+    // #3905 — resendQuote no longer re-selects the row: the deferred overlays
+    // this attempt's outcome onto the row getQuote already read.
 
     const result = await resendQuote('q1', actor);
+    // #3905 — delivery (and the outcome-marker write it owns) is deferred out
+    // of the re-send transaction.
+    await result.deliverEmail();
 
     expect(result.acceptUrl).toBe(buildPublicQuoteAcceptUrl(expected!));
     expect(result.origin).toBe('reproduced');
@@ -1159,8 +1448,10 @@ describe('resendQuote', () => {
     queueResult([{ ...OPEN_QUOTE }]);
 
     const result = await resendQuote('q1', actor);
+    // #3905 — delivery is deferred out of the send transaction.
+    const delivery = await result.deliverEmail();
 
-    expect(result.emailed).toBe(true);
+    expect(delivery.emailed).toBe(true);
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
     expect(sendEmailMock.mock.calls[0]![0].to).toEqual(['first@customer.example', 'second@customer.example']);
   });
@@ -1228,9 +1519,10 @@ describe('resendQuote', () => {
     queueResult([{ email: 'ap@customer.example' }]);
     queueResult([]);                                     // portalBranding
     queueResult([]);                                     // outcome-marker update
-    queueResult([{ ...OPEN_QUOTE }]);
 
-    await resendQuote('q1', actor);
+    // #3905 — the marker write moved into the deferred, which is exactly why
+    // running it is what proves the stale failure gets cleared.
+    await (await resendQuote('q1', actor)).deliverEmail();
 
     expect(setCalls.some((p) => p.sendEmailReason === null)).toBe(true);
   });
@@ -1244,9 +1536,11 @@ describe('resendQuote', () => {
     queueResult([{ ...OPEN_QUOTE }]);
 
     const result = await resendQuote('q1', actor);
+    // #3905 — delivery is deferred out of the send transaction.
+    const delivery = await result.deliverEmail();
 
-    expect(result.emailed).toBe(false);
-    expect(result.emailReason).toBe('no_billing_contact');
+    expect(delivery.emailed).toBe(false);
+    expect(delivery.emailReason).toBe('no_billing_contact');
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
 });

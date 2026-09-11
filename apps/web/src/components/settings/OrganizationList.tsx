@@ -27,13 +27,25 @@ export type Organization = {
   /**
    * Set (`true`) only on rows read through the archived-org list/detail door
    * (`GET /orgs/organizations?includeArchived=true`, `archivedOrgReads.ts`).
-   * Absent on every ordinary live row — never `false` — so a plain
-   * `org.archived` truthiness check is the same test as `status === 'archived'`
-   * without re-deriving it from the status string at every call site.
+   * Absent on every ordinary live row — never `false`.
+   *
+   * It means "read through the READ ONLY archived door", NOT literally
+   * `status === 'archived'`: since #4166 the door also serves an org mid-ARCHIVE
+   * drain (`status: 'offboarding'`, `offboardingTarget: 'archive'`), which is
+   * equally read-only but is still uninstalling agents. Branch on THIS flag for
+   * read-onlyness and on `status` for what to display — see
+   * `isArchiveLifecycleOrg` in OrganizationsPage.tsx.
    */
   archived?: true;
   /** ISO timestamp, or `null` for "kept indefinitely" — only meaningful when `archived`. */
   purgeAt?: string | null;
+  /**
+   * Which terminal status an `offboarding` drain is headed for. `'archive'` is
+   * the reversible archive drain (Restore aborts it); `'churn'` is the
+   * one-way churn exit. Present on the full partner/system row projection;
+   * absent from the organization-scoped minimal projection.
+   */
+  offboardingTarget?: string | null;
 };
 
 type OrganizationListProps = {

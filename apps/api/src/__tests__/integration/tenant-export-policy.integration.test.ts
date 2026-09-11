@@ -60,4 +60,20 @@ describe('tenant export policy registry (live schema)', () => {
       `);
     }
   });
+
+  it('exports every portal visibility flag', () => {
+    const columns = getTenantExportPolicyRegistry()
+      .portal_branding?.columns;
+    expect(columns).toBeDefined();
+
+    for (const column of [
+      'enable_dashboard',
+      'enable_security',
+      'enable_backups',
+      'enable_reports',
+      'enable_support_usage',
+    ]) {
+      expect(columns?.[column]?.decision).toBe('include');
+    }
+  });
 });

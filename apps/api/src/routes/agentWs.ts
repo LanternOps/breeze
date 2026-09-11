@@ -1,12 +1,14 @@
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
+import type Redis from 'ioredis';
 import { z } from 'zod';
-import { eq, and, notInArray, sql } from 'drizzle-orm';
+import { renewRevocationLease } from '../services/remoteRevocationLease';
+import { eq, and, ne, notInArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
 import { commandCasPriorStatusTags } from '../services/commandCasDiagnostics';
-import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs, tunnelSessions, supportSessions } from '../db/schema';
+import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs, tunnelSessions, supportSessions, organizations } from '../db/schema';
 import {
   handleTerminalOutput,
   getActiveTerminalSession,
@@ -18,7 +20,7 @@ import { enqueueDiscoveryResults, type DiscoveredHostResult, type DeviceAdjacenc
 import { enqueueBackupResults } from '../jobs/backupWorker';
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult, recordMonitorCheckResult, type MonitorCheckResult } from '../jobs/monitorWorker';
-import { isRedisAvailable } from '../services/redis';
+import { getRedis, isRedisAvailable } from '../services/redis';
 import { isIP } from 'node:net';
 import { processDeviceIPHistoryUpdate } from '../services/deviceIpHistory';
 import { processBackupVerificationResult } from './backup/verificationService';
@@ -33,6 +35,7 @@ import {
   applyBackupProgress,
   applyBackupStartedAck,
   isBackupStartedAck,
+  isBackupQueuedAck,
   isLegacyBackupTimeoutResult,
   tryParseBackupResultPayload,
 } from '../services/backupProgress';
@@ -55,11 +58,17 @@ import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../serv
 import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
-import { logSessionAudit, classifyConsentDenyAction, resolveConsentMarkerSessionId } from './remote/helpers';
+import {
+  logSessionAudit,
+  classifyConsentDenyAction,
+  resolveConsentMarkerSessionId,
+  parseDesktopStartCommandId,
+} from './remote/helpers';
 import { getActiveTrustKeyset } from '../services/manifestSigning';
 import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
 import {
   applySoftwareInstallResult,
+  reconcileSoftwareInstallResult,
   SW_INSTALL_COMMAND_ID_REGEX,
 } from '../services/softwareDeploymentResult';
 import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
@@ -72,13 +81,25 @@ import { commandResultHandlers, normalizeDiscoveryHosts } from '../services/comm
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import { applyCommandAutomationTerminal } from '../services/automationTerminalEvidence';
-import { commandAcceptsAgentResultCondition } from '../services/commandResultAcceptance';
+import {
+  commandAcceptsAgentResultCondition,
+  BACKUP_QUEUE_ACK_RESULT_STATUS,
+} from '../services/commandResultAcceptance';
+import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../services/commandTypes';
 import { redactResultAgainstCommandSecrets } from '../services/commandSecretRedaction';
 import { INSTANCE_ID } from '../services/instanceIdentity';
 import { clearAgentPresence, clearAgentPresenceUnfenced, setAgentPresence, refreshAgentPresence } from '../services/agentPresence';
 import { breezeRole } from '../config/env';
+import { partnerTrustMode } from '../config/partnerTrustMode';
+import type { PartnerTrustState } from '../db/schema/orgs';
+import {
+  evaluateCapability,
+  isLifecycleCommand,
+  loadTrustState,
+  partnerIdForDevice,
+} from '../services/partnerTrust';
 /** Capabilities advertised to agents in the post-connect `connected` message. */
-export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async'] as const;
+export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async', 'backup_queue_async'] as const;
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -126,7 +147,7 @@ async function updateTunnelSessionForAuthenticatedDevice(
   return row ?? null;
 }
 
-function extractDesktopSessionId(commandId: string, prefix: 'desk-start-' | 'desk-stop-' | 'desk-disconnect-'): string | null {
+function extractDesktopSessionId(commandId: string, prefix: 'desk-disconnect-'): string | null {
   if (!commandId.startsWith(prefix)) return null;
   const sessionId = commandId.slice(prefix.length);
   if (!sessionId || sessionId.length > MAX_DESKTOP_SESSION_ID_BYTES) {
@@ -187,9 +208,227 @@ const TERMINAL_TRANSITION_FAMILIES_ON_VALIDATION_FAILURE = new Set<CriticalResul
   'restore',
 ]);
 
-// Store active WebSocket connections by agentId
-// Map<agentId, WSContext>
-const activeConnections = new Map<string, WSContext>();
+interface ActiveAgentConnection {
+  ws: WSContext;
+  partnerId: string | null;
+  trustState: PartnerTrustState;
+  credentialTokenHash?: string;
+  credentialRevoked: boolean;
+}
+
+// Store active WebSocket connections and their connect-time trust snapshot by agentId.
+const activeConnections = new Map<string, ActiveAgentConnection>();
+
+const PARTNER_TRUST_CHANGED_CHANNEL = 'partner-trust:changed';
+let partnerTrustSubscriber: Redis | null = null;
+let partnerTrustSubscriptionPromise: Promise<void> | null = null;
+
+const AGENT_CREDENTIAL_REVOKED_CHANNEL = 'agent-credential:revoked';
+let agentCredentialSubscriber: Redis | null = null;
+let agentCredentialSubscriptionPromise: Promise<void> | null = null;
+
+export const AGENT_CREDENTIAL_RECHECK_TTL_MS = 5_000;
+export const AGENT_CREDENTIAL_RECHECK_TIMEOUT_MS = 2_000;
+export const AGENT_CREDENTIAL_SUBSCRIBE_TIMEOUT_MS = 1_000;
+
+type AgentCredentialRevocation = {
+  agentId: string;
+  revokedTokenHashes: string[];
+};
+
+function parseAgentCredentialRevocation(msg: unknown): AgentCredentialRevocation | null {
+  let parsed: unknown = msg;
+  if (typeof msg === 'string') {
+    try {
+      parsed = JSON.parse(msg);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const { agentId, revokedTokenHashes } = parsed as Record<string, unknown>;
+  if (typeof agentId !== 'string' || !Array.isArray(revokedTokenHashes)) return null;
+  const hashes = revokedTokenHashes.filter(
+    (value): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value),
+  );
+  if (hashes.length === 0) return null;
+  return { agentId, revokedTokenHashes: [...new Set(hashes)] };
+}
+
+/** Apply a cluster revocation only to the socket admitted by a revoked hash. */
+export function handleAgentCredentialRevocation(msg: unknown): boolean {
+  const event = parseAgentCredentialRevocation(msg);
+  if (!event) return false;
+  return disconnectAgentCredentialGeneration(
+    event.agentId,
+    event.revokedTokenHashes,
+    'Agent credentials revoked',
+  ) !== 'not-connected';
+}
+
+export function disconnectAgentCredentialGeneration(
+  agentId: string,
+  revokedTokenHashes: string[],
+  reason: string,
+): AgentWsDisconnectResult {
+  const connection = activeConnections.get(agentId);
+  if (!connection?.credentialTokenHash) return 'not-connected';
+  if (!revokedTokenHashes.includes(connection.credentialTokenHash)) return 'not-connected';
+  connection.credentialRevoked = true;
+  try {
+    connection.ws.close(4001, reason);
+  } catch (error) {
+    console.error(`credential revocation close failed for ${agentId.slice(0, 12)}:`, error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    return 'close-failed';
+  }
+  return 'closed';
+}
+
+function initializeAgentCredentialSubscription(): Promise<void> {
+  if (agentCredentialSubscriptionPromise) return agentCredentialSubscriptionPromise;
+  const redis = getRedis();
+  if (!redis || typeof redis.duplicate !== 'function') return Promise.resolve();
+
+  const subscriber = redis.duplicate({ connectionName: 'breeze:agent-ws:credential-revocation' });
+  agentCredentialSubscriber = subscriber;
+  subscriber.on('message', (channel: string, message: string) => {
+    if (channel === AGENT_CREDENTIAL_REVOKED_CHANNEL) {
+      handleAgentCredentialRevocation(message);
+    }
+  });
+  subscriber.on('error', (error: Error) => {
+    console.error('[AgentWs] Credential-revocation Redis subscriber error:', error.message);
+  });
+
+  let subscribePromise: Promise<unknown>;
+  try {
+    subscribePromise = subscriber.subscribe(AGENT_CREDENTIAL_REVOKED_CHANNEL);
+  } catch (error) {
+    console.error('[AgentWs] Failed to start credential-revocation subscription:', error);
+    try {
+      subscriber.disconnect();
+    } catch {
+      // Best-effort cleanup of a subscriber that failed during construction.
+    }
+    agentCredentialSubscriber = null;
+    return Promise.resolve();
+  }
+
+  let boundedStartup: Promise<void>;
+  boundedStartup = new Promise<void>((resolve) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      console.warn('[AgentWs] Credential-revocation subscription startup timed out; using DB lease');
+      try {
+        subscriber.disconnect();
+      } catch {
+        // The authoritative DB generation check below remains available.
+      }
+      if (agentCredentialSubscriber === subscriber) agentCredentialSubscriber = null;
+      if (agentCredentialSubscriptionPromise === boundedStartup) agentCredentialSubscriptionPromise = null;
+      resolve();
+    }, AGENT_CREDENTIAL_SUBSCRIBE_TIMEOUT_MS);
+
+    void subscribePromise.then(() => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve();
+    }).catch((error: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      console.error('[AgentWs] Failed to subscribe to credential revocations:', error);
+      try {
+        subscriber.disconnect();
+      } catch {
+        // Best-effort cleanup; admission still falls back to the DB lease.
+      }
+      if (agentCredentialSubscriber === subscriber) agentCredentialSubscriber = null;
+      if (agentCredentialSubscriptionPromise === boundedStartup) agentCredentialSubscriptionPromise = null;
+      resolve();
+    });
+  });
+  agentCredentialSubscriptionPromise = boundedStartup;
+  return boundedStartup;
+}
+
+export type AgentCredentialRevocationPublishResult = 'published' | 'unavailable' | 'failed';
+
+/** Broadcast hashes invalidated by a committed reset/re-enrollment. */
+export async function publishAgentCredentialRevocation(
+  event: AgentCredentialRevocation,
+): Promise<AgentCredentialRevocationPublishResult> {
+  const parsed = parseAgentCredentialRevocation(event);
+  if (!parsed) return 'unavailable';
+  const redis = getRedis();
+  if (!redis || typeof redis.publish !== 'function') return 'unavailable';
+  try {
+    await redis.publish(AGENT_CREDENTIAL_REVOKED_CHANNEL, JSON.stringify(parsed));
+    return 'published';
+  } catch (error) {
+    console.error('[AgentWs] Failed to publish credential revocation:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    return 'failed';
+  }
+}
+
+export async function handleTrustChanged(msg: unknown): Promise<void> {
+  let parsed: unknown = msg;
+  if (typeof msg === 'string') {
+    try {
+      parsed = JSON.parse(msg);
+    } catch {
+      return;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') return;
+
+  const { partnerId, trustState } = parsed as {
+    partnerId?: unknown;
+    trustState?: unknown;
+  };
+  if (
+    typeof partnerId !== 'string'
+    || !['probation', 'trusted', 'restricted'].includes(String(trustState))
+  ) {
+    return;
+  }
+
+  for (const connection of activeConnections.values()) {
+    if (connection.partnerId === partnerId) {
+      connection.trustState = trustState as PartnerTrustState;
+    }
+  }
+}
+
+function initializePartnerTrustSubscription(): Promise<void> {
+  if (partnerTrustSubscriptionPromise) return partnerTrustSubscriptionPromise;
+  const redis = getRedis();
+  if (!redis || typeof redis.duplicate !== 'function') return Promise.resolve();
+
+  const subscriber = redis.duplicate({ connectionName: 'breeze:agent-ws:partner-trust' });
+  partnerTrustSubscriber = subscriber;
+  subscriber.on('message', (channel: string, message: string) => {
+    if (channel === PARTNER_TRUST_CHANGED_CHANNEL) {
+      void handleTrustChanged(message);
+    }
+  });
+  subscriber.on('error', (error: Error) => {
+    console.error('[AgentWs] Partner-trust Redis subscriber error:', error.message);
+  });
+  partnerTrustSubscriptionPromise = subscriber.subscribe(PARTNER_TRUST_CHANGED_CHANNEL)
+    .then(() => undefined)
+    .catch((error: unknown) => {
+      console.error('[AgentWs] Failed to subscribe to partner-trust changes:', error);
+      partnerTrustSubscriber = null;
+      partnerTrustSubscriptionPromise = null;
+    });
+  return partnerTrustSubscriptionPromise;
+}
 
 // Delivery epoch, monotonic per agent. Bumped every time a socket is installed
 // in `activeConnections`, so every command is dispatched on a known epoch.
@@ -216,7 +455,7 @@ function installAgentSocketEpoch(agentId: string): number {
  * identity rules out a socket that was never installed at all.
  */
 function ownsCurrentAgentSocket(agentId: string, ws: WSContext, epoch: number): boolean {
-  return agentSocketEpochs.get(agentId) === epoch && activeConnections.get(agentId) === ws;
+  return agentSocketEpochs.get(agentId) === epoch && activeConnections.get(agentId)?.ws === ws;
 }
 
 /**
@@ -613,6 +852,14 @@ const backupProgressMessageSchema = z.object({
   progress: z.record(z.string(), z.unknown()).optional(),
 });
 
+// Revocation-lease renewal ping from the agent. Handled on the fast path
+// (before the id-less-frame skip) rather than through agentMessageSchema,
+// alongside terminal_output and update_status.
+const revocationLeaseRenewSchema = z.object({
+  type: z.literal('revocation_lease_renew'),
+  sessionId: z.string().uuid(),
+});
+
 const agentMessageSchema = z.discriminatedUnion('type', [
   commandResultSchema,
   heartbeatMessageSchema,
@@ -630,6 +877,18 @@ export interface AgentCommand {
 type AgentDbContext = {
   deviceId: string;
   orgId: string;
+  /** SHA-256 of the exact bearer credential that authorized this socket. */
+  credentialTokenHash?: string;
+  /**
+   * #4673 W02 — the MSP that owns this device's org, from the auth select's
+   * join to `organizations` (NOT NULL, so always present after a successful
+   * token validation). Feeds `currentPartnerId` on every org context this
+   * socket opens, so Wave 1's SELECT-only partner-wide branches can match.
+   *
+   * Read-only axis. It must never be spread into `accessiblePartnerIds`,
+   * which is the write-capable partner-AXIS predicate.
+   */
+  partnerId: string;
   role?: AgentCredentialRole;
 };
 
@@ -645,37 +904,65 @@ type AgentTokenValidation =
 const WS_AUDIT_REQUEST = requestLikeFromSnapshot({});
 
 /**
- * Finding #3 (defense-in-depth): re-verify a live agent's device lifecycle
- * state with ONE lightweight indexed SELECT, so a socket that outlived a
- * containment change (decommission, quarantine, or org/partner/token
- * suspension) stops acting on the next sensitive operation.
+ * Re-verify a live agent's lifecycle and the exact credential generation that
+ * admitted its socket. Production sockets pass the authenticated token hash,
+ * so missing rows and transient lookup failures fail closed; an admin reset or
+ * in-place re-enrollment therefore takes effect through the cluster revocation
+ * signal or the socket's bounded database-validation lease. Direct handler unit
+ * tests may omit the hash and retain the older lifecycle-only, fail-open
+ * compatibility seam.
  *
- * Fail-OPEN on a transient DB error or a missing row: the pre-upgrade auth gate
- * already proved the device existed, and the authoritative containment paths
- * (credential suspension + disconnectAgent) still fail closed on the next
- * (re)connect. Failing closed here would let a DB blip mass-drop the fleet. We
- * only sever on a POSITIVE containment signal (terminal status / suspend
- * timestamp). System DB context because `devices` is RLS-guarded and this can
- * run outside a tenant context.
+ * System DB context is required because `devices` is RLS-guarded and this runs
+ * outside a tenant request context.
  */
-async function isAgentDeviceStillAuthorized(agentId: string): Promise<boolean> {
+export async function isAgentDeviceStillAuthorized(
+  agentId: string,
+  authenticatedTokenHash?: string,
+): Promise<boolean> {
   try {
     const [row] = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>
         db
-          .select({ status: devices.status, agentTokenSuspendedAt: devices.agentTokenSuspendedAt })
+          .select({
+            status: devices.status,
+            agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
+            agentTokenHash: devices.agentTokenHash,
+            previousTokenHash: devices.previousTokenHash,
+            previousTokenExpiresAt: devices.previousTokenExpiresAt,
+            watchdogTokenHash: devices.watchdogTokenHash,
+            previousWatchdogTokenHash: devices.previousWatchdogTokenHash,
+            previousWatchdogTokenExpiresAt: devices.previousWatchdogTokenExpiresAt,
+            pendingTokenHash: devices.pendingTokenHash,
+            pendingWatchdogTokenHash: devices.pendingWatchdogTokenHash,
+            pendingTokenExpiresAt: devices.pendingTokenExpiresAt,
+          })
           .from(devices)
           .where(eq(devices.agentId, agentId))
           .limit(1)
       )
     );
-    if (!row) return true; // fail-open: existence already validated pre-upgrade
+    // Production sockets always carry authenticatedTokenHash. Missing/error is
+    // fail-closed for those sockets: credential reset and in-place re-enrollment
+    // can remove/change the row between upgrade and the next frame. The absent
+    // hash compatibility branch exists only for direct unit-test handler seams.
+    if (!row) return authenticatedTokenHash === undefined;
     if (row.status === 'decommissioned' || row.status === 'quarantined') return false;
     if (row.agentTokenSuspendedAt) return false;
+    if (authenticatedTokenHash !== undefined) {
+      const match = matchRoleScopedAgentTokenHash({
+        ...row,
+        tokenHash: authenticatedTokenHash,
+      });
+      if (!match || match.role !== 'agent') return false;
+    }
     return true;
   } catch (err) {
-    console.error(`[AgentWs] lifecycle recheck query failed for ${agentId}; failing open:`, err);
-    return true;
+    const failClosed = authenticatedTokenHash !== undefined;
+    console.error(
+      `[AgentWs] lifecycle/credential recheck query failed for ${agentId}; failing ${failClosed ? 'closed' : 'open'}:`,
+      err,
+    );
+    return !failClosed;
   }
 }
 
@@ -734,8 +1021,14 @@ export async function validateAgentToken(
         pendingTokenExpiresAt: devices.pendingTokenExpiresAt,
         status: devices.status,
         agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
+        // #4673 W02 — owning MSP, for `currentPartnerId` on this socket's org
+        // contexts. INNER join: org_id and partner_id are both NOT NULL behind
+        // an FK, so a device with no org row is not authenticable anyway, and a
+        // LEFT join would silently degrade it to the pre-W02 blind behaviour.
+        partnerId: organizations.partnerId,
       })
       .from(devices)
+      .innerJoin(organizations, eq(organizations.id, devices.orgId))
       .where(eq(devices.agentId, agentId))
       .limit(1);
     return row ?? null;
@@ -818,7 +1111,9 @@ export async function validateAgentToken(
     ctx: {
       deviceId: device.id,
       orgId: device.orgId,
+      partnerId: device.partnerId,
       role: match.role,
+      credentialTokenHash: tokenHash,
     },
   };
 }
@@ -1294,12 +1589,12 @@ export async function processOrphanedCommandResult(
     // the backup completes. Treat it as a progress ping, not a terminal
     // result.
     const startedAckPayload = tryParseBackupResultPayload(result.result, result.stdout);
-    if (isBackupStartedAck(startedAckPayload)) {
+    if (isBackupStartedAck(startedAckPayload) || isBackupQueuedAck(startedAckPayload)) {
       // applyBackupStartedAck's guarded update no-ops (returns false) when the
       // job is already terminal — only log the "started-ack" line when it
       // actually applied, so an incident timeline isn't misled by a started-ack
       // that landed after the job had already completed/failed/been reaped.
-      const startedAckApplied = await applyBackupStartedAck({ jobId: backupJob.id, deviceId: backupJob.deviceId });
+      const startedAckApplied = await applyBackupStartedAck({ jobId: backupJob.id, deviceId: backupJob.deviceId, queued: isBackupQueuedAck(startedAckPayload) });
       if (startedAckApplied) {
         console.log(`[AgentWs] Backup job ${backupJob.id} started-ack from agent ${agentId}`);
       } else {
@@ -1385,6 +1680,8 @@ export async function processOrphanedCommandResult(
             referencedBytes: backupData?.referencedBytes,
             backupType: backupData?.backupType,
             systemStateManifest: backupData?.systemStateManifest,
+            layoutManifest: backupData?.layoutManifest,
+            bareMetal: backupData?.bareMetal,
             vssMetadata: backupData?.vssMetadata,
             snapshot: backupData?.snapshot,
             error: malformedPayloadError || result.error || result.stderr,
@@ -1495,17 +1792,26 @@ export async function processOrphanedCommandResult(
  * follow-up, now bounded by short per-operation wraps instead of a
  * message-long one.
  */
-async function runWithAgentOrgDbAccess<T>(label: string, orgId: string, fn: () => Promise<T>): Promise<T> {
+async function runWithAgentOrgDbAccess<T>(
+  label: string,
+  orgId: string,
+  partnerId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
   return withDbAccessContext(
     {
       scope: 'organization',
       orgId,
       accessibleOrgIds: [orgId],
-      // Agents are org-scoped; they have no access to partner-level tables.
+      // Partner-AXIS access gates `breeze_has_partner_access`, which admits
+      // WRITES to partner-owned rows. Agents get none of it — this stays empty.
       accessiblePartnerIds: [],
-      // Agents don't browse the catalog as org users; null disables the
-      // partner-wide read branch (safe).
-      currentPartnerId: null,
+      // #4673 W02 — the device org's owning MSP. Feeds the
+      // `breeze.current_partner_id` GUC that Wave 1's SELECT-ONLY branches read
+      // (`org_id IS NULL AND partner_id = breeze_current_partner_id()`), so an
+      // agent socket can see its own MSP's partner-wide config directly.
+      // A separate, read-only axis from `accessiblePartnerIds` above.
+      currentPartnerId: partnerId,
       label
     },
     fn
@@ -1535,7 +1841,13 @@ async function processCommandResult(
   agentId: string,
   result: z.infer<typeof commandResultSchema>,
   deviceId: string | undefined,
-  orgId: string
+  orgId: string,
+  // #4673 W02 — threaded in (rather than re-looked-up) so every short-lived
+  // org context this function opens carries the same `currentPartnerId` the
+  // socket authenticated with. Without it these contexts would be the one
+  // remaining agent path where partner-wide rows stay invisible.
+  partnerId: string,
+  credentialAlreadyReauthorized = false,
 ): Promise<void> {
   try {
     // #2434 chokepoint — FIRST statement, so "any agent result that enters this
@@ -1566,7 +1878,7 @@ async function processCommandResult(
     // the ambient db, so they need the tenant context the removed
     // message-level wrap used to provide.
     if (!UUID_REGEX.test(result.commandId)) {
-      await runWithAgentOrgDbAccess('agentWs.commandResult.orphaned', orgId, () =>
+      await runWithAgentOrgDbAccess('agentWs.commandResult.orphaned', orgId, partnerId, () =>
         processOrphanedCommandResult(agentId, deviceId ?? '', result)
       );
       return;
@@ -1651,7 +1963,7 @@ async function processCommandResult(
       // Discovery and SNMP commands are dispatched directly via WebSocket
       // without creating a deviceCommands record. Handle them here (short org
       // wrap for the same reason as the non-UUID branch above, #3021).
-      await runWithAgentOrgDbAccess('agentWs.commandResult.orphaned', orgId, () =>
+      await runWithAgentOrgDbAccess('agentWs.commandResult.orphaned', orgId, partnerId, () =>
         processOrphanedCommandResult(agentId, deviceId ?? '', result)
       );
       return;
@@ -1670,7 +1982,7 @@ async function processCommandResult(
     // device-bound (UUID) command result — acceptable, and NOT run on the
     // high-frequency pong/terminal-output frames. If contained, sever
     // the authoritative socket and abort without persisting the result.
-    if (!(await isAgentDeviceStillAuthorized(agentId))) {
+    if (!credentialAlreadyReauthorized && !(await isAgentDeviceStillAuthorized(agentId))) {
       console.warn(
         `[AgentWs] Aborting command result ${result.commandId} for ${agentId}: device contained (decommissioned/quarantined/suspended). Severing socket.`
       );
@@ -1702,6 +2014,27 @@ async function processCommandResult(
       rawStdout,
     );
 
+    // D20-D: mssql_backup/hyperv_backup are QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES
+    // — the agent's FIRST reply for these can be a non-terminal queue-
+    // admission/started ack ({"queued":true}/{"started":true}), not the real
+    // backup outcome (agent/cmd/breeze-backup/main.go's QueueAsync/Async
+    // branches). Detected the same way the backup_run orphaned-result branch
+    // already does (tryParseBackupResultPayload + isBackupQueuedAck/
+    // isBackupStartedAck) so this is one guard, not two. `normalizedResult`
+    // survives the reparse in toWSCommandResult (heartbeat.go) into `.result`
+    // as a real object for a single-encoded ack (post D20-B agent) and as a
+    // once-parseable JSON string for a double-encoded one (pre-fix agent) —
+    // tryParseBackupResultPayload already tolerates both.
+    const isQueuedBackupWorkload = QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES.includes(
+      command.type as (typeof QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES)[number],
+    );
+    const isBackupAck =
+      isQueuedBackupWorkload &&
+      (() => {
+        const parsed = tryParseBackupResultPayload(normalizedResult.result, stdout);
+        return isBackupQueuedAck(parsed) || isBackupStartedAck(parsed);
+      })();
+
     // Update outside transaction for same visibility reasons as the lookup, and
     // under an explicit system context so the compare-and-set is not a
     // contextless bare-pool write (#1375). device_commands is intentionally
@@ -1728,6 +2061,14 @@ async function processCommandResult(
     // what tells those apart in Sentry. Non-throwing, so the stale-result
     // early-return keeps its existing behaviour.
     const terminalCompletedAt = new Date();
+    // D20-D: the ack write still sets device_commands.status: 'completed' —
+    // NOT some other non-terminal status — so executeCommand()'s
+    // waitForCommandResult poll (commandQueue.ts, which only ever checks the
+    // top-level status column) returns promptly with the ack instead of
+    // blocking for the whole backup/restore. What makes the row reopenable
+    // for the REAL result later is the BACKUP_QUEUE_ACK_RESULT_STATUS marker
+    // written into the STORED result.status (see commandAcceptsAgentResultCondition).
+    const storedResult = buildStoredCommandResult(command.type, normalizedResult, stdout);
     const updatedCommands = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>
         dbWriteExpectingRows(
@@ -1738,7 +2079,9 @@ async function processCommandResult(
               .set({
                   status: normalizedResult.status === 'completed' ? 'completed' : 'failed',
                   completedAt: terminalCompletedAt,
-                  result: buildStoredCommandResult(command.type, normalizedResult, stdout),
+                  result: isBackupAck
+                    ? { ...storedResult, status: BACKUP_QUEUE_ACK_RESULT_STATUS }
+                    : storedResult,
                   ...terminalPayloadErasureSet(),
               })
               .where(
@@ -1750,6 +2093,8 @@ async function processCommandResult(
                   // terminalized by a server-side timeout is still acceptable,
                   // but the first late result rewrites `result.status` away
                   // from 'timeout', so a duplicate frame still finds 0 rows.
+                  // D20-D: same idea for a queue-ack-marked row — see
+                  // BACKUP_QUEUE_ACK_RESULT_STATUS.
                   commandAcceptsAgentResultCondition()
                 )
               )
@@ -1761,6 +2106,20 @@ async function processCommandResult(
 
     if (updatedCommands.length === 0) {
       console.warn(`[AgentWs] Ignoring stale or already-processed command result ${result.commandId} for agent ${agentId}`);
+      return;
+    }
+
+    if (isBackupAck) {
+      // Non-terminal signal: device_commands is 'completed' only so the
+      // synchronous executeCommand() caller unblocks with the ack (item C in
+      // routes/backup/mssql.ts, hyperv.ts decides what to do with it from
+      // there). No terminal side effect fires for a mere queue admission —
+      // NOT applyCommandAutomationTerminal, NOT the audit event below, and
+      // critically NOT the per-type handler dispatch further down
+      // (handleProviderBackedBackupResult would otherwise parse
+      // {"queued":true}/{"started":true} against backupCommandResultSchema —
+      // which is all-optional-fields and would vacuously "succeed" — and mark
+      // the backup_jobs row completed with no snapshot at all).
       return;
     }
 
@@ -1808,7 +2167,7 @@ async function processCommandResult(
           try {
             // Short org wrap (#3021): handlers touch RLS-guarded org tables
             // through the ambient db (same as the happy-path dispatch below).
-            await runWithAgentOrgDbAccess('agentWs.commandResult.handler', orgId, () =>
+            await runWithAgentOrgDbAccess('agentWs.commandResult.handler', orgId, partnerId, () =>
               rejectedHandler({ agentId, command, commandId: result.commandId, result: normalizedResult, resolvedDeviceId: resolvedDeviceId!, stdout })
             );
           } catch (handlerErr) {
@@ -1831,7 +2190,7 @@ async function processCommandResult(
         const { handleDrCommandResult } = await import('./backup/drResultHandler');
         // Short org wrap (#3021): DR result persistence reads/writes
         // RLS-guarded org tables through the ambient db.
-        await runWithAgentOrgDbAccess('agentWs.commandResult.drResult', orgId, () =>
+        await runWithAgentOrgDbAccess('agentWs.commandResult.drResult', orgId, partnerId, () =>
           handleDrCommandResult({
             commandId: result.commandId,
             commandType: command.type,
@@ -1858,6 +2217,28 @@ async function processCommandResult(
       }
     }
 
+    // #5128 — software installs now arrive here. A software_install pushed over
+    // this socket used to carry the synthetic
+    // `sw-install-<deployment>-<device>-<attempt>` id and was reconciled by the
+    // regex branch above; new dispatches persist a device_commands row FIRST and
+    // push with its UUID, so they land on this generic path instead. Without
+    // this the deployment_results row would strand as `pending` forever on the
+    // websocket transport. The regex branch above is kept for frames already in
+    // flight from before the deploy. Reconciliation is idempotent (guarded on
+    // status='pending' + matching attempt), so a result that reaches BOTH
+    // transports is still applied once.
+    if (command.type === 'software_install') {
+      try {
+        // Short org wrap (#3021): deployment_results is an RLS-guarded org table.
+        await runWithAgentOrgDbAccess('agentWs.commandResult.softwareInstall', orgId, partnerId, () =>
+          reconcileSoftwareInstallResult(command, resolvedDeviceId!, normalizedResult)
+        );
+      } catch (err) {
+        console.error(`[AgentWs] Failed to reconcile software-install result ${result.commandId}:`, err);
+        captureException(err);
+      }
+    }
+
     // Dispatch to per-command-type handler if one is registered.
     // Short org wrap (#3021): handlers read/write RLS-guarded org tables
     // (script_executions, discovery_jobs, backup/restore jobs, …) through the
@@ -1865,7 +2246,7 @@ async function processCommandResult(
     // why the wrap sits here instead of around the whole message.
     const handler = commandResultHandlers[command.type];
     if (handler) {
-      await runWithAgentOrgDbAccess('agentWs.commandResult.handler', orgId, () =>
+      await runWithAgentOrgDbAccess('agentWs.commandResult.handler', orgId, partnerId, () =>
         handler({ agentId, command, commandId: result.commandId, result: normalizedResult, resolvedDeviceId: resolvedDeviceId!, stdout })
       );
     }
@@ -1896,7 +2277,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
    * sessionId) — they become a Sentry tag and part of the grouping message.
    */
   const runWithAgentDbAccess = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
-    return runWithAgentOrgDbAccess(label, agentDb.orgId, fn);
+    return runWithAgentOrgDbAccess(label, agentDb.orgId, agentDb.partnerId, fn);
   };
 
   // The delivery epoch this handler set owns, stamped when its socket is
@@ -1909,8 +2290,62 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
   // server-side Lua compare-and-delete only acts when the token matches.
   const connectionToken = randomUUID();
 
+  let credentialValidUntil = 0;
+  let credentialValidationInFlight: Promise<boolean> | null = null;
+  let credentialDenied = false;
+
+  const reauthorizeCredentialGeneration = async (ws: WSContext): Promise<boolean> => {
+    if (agentDb.credentialTokenHash === undefined) return true;
+    if (credentialDenied) {
+      ws.close(4001, 'Device no longer authorized');
+      return false;
+    }
+    const active = activeConnections.get(agentId);
+    if (active?.ws === ws && active.credentialRevoked) {
+      credentialDenied = true;
+      ws.close(4001, 'Agent credentials revoked');
+      return false;
+    }
+    if (Date.now() < credentialValidUntil) return true;
+
+    if (!credentialValidationInFlight) {
+      credentialValidationInFlight = new Promise<boolean>((resolve) => {
+        const timeout = setTimeout(() => resolve(false), AGENT_CREDENTIAL_RECHECK_TIMEOUT_MS);
+        void isAgentDeviceStillAuthorized(agentId, agentDb.credentialTokenHash)
+          .then(resolve)
+          .catch(() => resolve(false))
+          .finally(() => clearTimeout(timeout));
+      }).finally(() => {
+        credentialValidationInFlight = null;
+      });
+    }
+    const authorized = await credentialValidationInFlight;
+    if (authorized) {
+      credentialValidUntil = Date.now() + AGENT_CREDENTIAL_RECHECK_TTL_MS;
+      return true;
+    }
+    // Close this exact socket. An old orphan must never be able to make the
+    // agentId registry close a newer, valid connection.
+    credentialDenied = true;
+    if (active?.ws === ws) active.credentialRevoked = true;
+    ws.close(4001, 'Device no longer authorized');
+    return false;
+  };
+
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
+      // Healthy Redis closes revoked sockets immediately across API instances.
+      // If subscription setup is unavailable, the fail-closed DB lease below
+      // still bounds stale authority to TTL + query timeout (7 seconds).
+      await initializeAgentCredentialSubscription();
+      // Close the validate→upgrade race before presence, status or socket-map
+      // side effects. A reset can commit after HTTP auth but before onOpen.
+      if (!(await reauthorizeCredentialGeneration(ws))) return;
+
+      const trustMode = partnerTrustMode();
+      if (trustMode !== 'off') {
+        await initializePartnerTrustSubscription();
+      }
       // Finding #4: enforce the one-socket-per-agent invariant. A second socket
       // for the same agentId would otherwise overwrite the map entry WITHOUT
       // closing the previous socket, leaving an orphaned-but-authorized socket
@@ -1918,7 +2353,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
       // revocation/disconnect (which only act on the mapped socket) miss it.
       // Close the previous socket before replacing it so `activeConnections`
       // stays authoritative and disconnectAgent can never miss a live socket.
-      const previousWs = activeConnections.get(agentId);
+      const previousWs = activeConnections.get(agentId)?.ws;
       if (previousWs && previousWs !== ws) {
         try {
           previousWs.close(4002, 'Superseded by newer connection');
@@ -1934,8 +2369,35 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         agentPingStates.delete(agentId);
       }
 
+      // Trust mode off preserves the pre-gate connection path without trust DB reads.
+      // Shadow/enforce keep the socket open but fail closed in the cached snapshot
+      // whenever partner or trust resolution is missing or unavailable.
+      let partnerId: string | null = null;
+      let trustState: PartnerTrustState = 'trusted';
+      if (trustMode !== 'off') {
+        try {
+          partnerId = await partnerIdForDevice(agentDb.deviceId);
+          const trust = partnerId ? await loadTrustState(partnerId) : null;
+          if (!trust) {
+            trustState = 'restricted';
+            console.warn(`[AgentWs] Partner trust unresolved for device ${agentDb.deviceId}; restricting connection`);
+          } else {
+            trustState = trust.trustState;
+          }
+        } catch {
+          trustState = 'restricted';
+          console.warn(`[AgentWs] Partner trust resolution failed for device ${agentDb.deviceId}; restricting connection`);
+        }
+      }
+
       // Store connection and stamp this socket's delivery epoch.
-      activeConnections.set(agentId, ws);
+      activeConnections.set(agentId, {
+        ws,
+        partnerId,
+        trustState,
+        credentialTokenHash: agentDb.credentialTokenHash,
+        credentialRevoked: false,
+      });
       socketEpoch = installAgentSocketEpoch(agentId);
       void setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
       console.log(`Agent ${agentId} connected via WebSocket. Active connections: ${activeConnections.size}`);
@@ -2052,6 +2514,10 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
       try {
         const authenticatedAgent = agentDb;
 
+        // This is deliberately the first frame operation: stale oversized or
+        // malformed input must not allocate/convert/parse, log, or reach a sink.
+        if (!(await reauthorizeCredentialGeneration(ws))) return;
+
         // Binary fast-path for desktop frames: [0x02][36-byte sessionId][JPEG data]
         if (event.data instanceof ArrayBuffer || Buffer.isBuffer(event.data)) {
           const buf = Buffer.isBuffer(event.data) ? event.data : Buffer.from(event.data);
@@ -2099,7 +2565,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             void refreshAgentPresence(agentId, connectionToken).then((refreshed) => {
               // Self-heal: an evict-path unconditional delete may have raced a
               // reconnect; if we are still the live socket, re-establish the lease.
-              if (!refreshed && activeConnections.get(agentId) === ws) {
+              if (!refreshed && activeConnections.get(agentId)?.ws === ws) {
                 return setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
               }
             });
@@ -2113,7 +2579,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
           if (state) {
             state.lastPongAt = Date.now();
             void refreshAgentPresence(agentId, connectionToken).then((refreshed) => {
-              if (!refreshed && activeConnections.get(agentId) === ws) {
+              if (!refreshed && activeConnections.get(agentId)?.ws === ws) {
                 return setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
               }
             });
@@ -2149,6 +2615,62 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             sessionId,
             decodedOutput,
           );
+          return;
+        }
+
+        // Revocation-lease renewal from the agent (fail-closed desktop session
+        // revalidation). The agent renews every 25s over this socket; the API
+        // runs the live authorization recheck and answers on the same socket.
+        //
+        // No `id` on this frame, so it must be handled BEFORE the id-less skip
+        // further down. A superseded socket may not renew: the answer carries
+        // authority to keep a live screen/input session running.
+        if (message?.type === 'revocation_lease_renew') {
+          const parsedRenew = revocationLeaseRenewSchema.safeParse(message);
+          if (!parsedRenew.success) {
+            console.warn(
+              `[AgentWs] Dropping malformed revocation_lease_renew from agent ${agentId}: ` +
+              `${parsedRenew.error.issues[0]?.message ?? 'invalid shape'}`
+            );
+            return;
+          }
+          if (!ownsCurrentAgentSocket(agentId, ws, socketEpoch)) {
+            console.warn(`[AgentWs] Dropping revocation_lease_renew from superseded socket for agent ${agentId}`);
+            return;
+          }
+          const { sessionId: leaseSessionId } = parsedRenew.data;
+          // Bind the renew to the device this socket authenticated as: an agent
+          // must never be able to renew (or learn about) another tenant's
+          // session by guessing a session id.
+          const leaseResult = await renewRevocationLease(leaseSessionId, {
+            expectDeviceId: authenticatedAgent.deviceId,
+          });
+          if (leaseResult.status === 'renewed') {
+            ws.send(JSON.stringify({
+              type: 'revocation_lease',
+              sessionId: leaseSessionId,
+              expiresAt: leaseResult.expiresAt,
+              hardDeadline: leaseResult.hardDeadline,
+              renewEverySec: leaseResult.renewEverySec,
+              graceSec: leaseResult.graceSec,
+            }));
+          } else if (leaseResult.status === 'revoked' || leaseResult.status === 'forbidden') {
+            // `forbidden` is reported as a revocation on purpose: from the
+            // agent's point of view a session it may not renew is a session it
+            // must stop streaming. It reveals nothing about the real session.
+            ws.send(JSON.stringify({
+              type: 'revocation_lease_revoked',
+              sessionId: leaseSessionId,
+              reason: leaseResult.status === 'revoked' ? leaseResult.reason : 'not_authorized',
+            }));
+          } else {
+            // Infrastructure blip: say nothing conclusive and let the agent ride
+            // its grace window. Silence here is the whole point of the grace.
+            ws.send(JSON.stringify({
+              type: 'revocation_lease_unavailable',
+              sessionId: leaseSessionId,
+            }));
+          }
           return;
         }
 
@@ -2252,11 +2774,30 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                 ? expectedSessionId
                 : null;
             if (sessionId && fastResult.event === 'peer_disconnected') {
+              // #5300: the no-video watchdog records the swallowed capture
+              // error via Session.StopWithReason/LastStopReason and the agent
+              // rides it here as `stopReason` (agentWs.desktop.peerDisconnected
+              // path — heartbeat.sendDesktopDisconnectNotification). Every
+              // other disconnect (peer-connection grace timeout, lifetime
+              // policy, operator stop, darwin handoff) omits the field, so
+              // this stays null for them, same as before this change.
+              const stopReason = redactSecretsFromOutput(
+                typeof fastResult.stopReason === 'string' ? fastResult.stopReason.slice(0, 1024) : ''
+              ) || null;
               try {
                 await runWithAgentDbAccess('agentWs.desktop.peerDisconnected', async () => {
                   const result = await db
                     .update(remoteSessions)
-                    .set({ status: 'disconnected', endedAt: new Date() })
+                    .set({
+                      status: 'disconnected',
+                      endedAt: new Date(),
+                      // Only fills errorMessage when it's still empty — never
+                      // overwrites a startup-probe failure text (#5284/#5295)
+                      // that a `desk-start` failure already stored there.
+                      ...(stopReason
+                        ? { errorMessage: sql`COALESCE(${remoteSessions.errorMessage}, ${stopReason})` }
+                        : {}),
+                    })
                     .where(
                       and(
                         eq(remoteSessions.id, sessionId),
@@ -2283,13 +2824,13 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
           // returns a COMPLETED desk-start result carrying a `consent_denied`
           // marker (no capture started) when the end user declined, the prompt
           // timed out, or the consent-unavailable policy chose to block. Finalize
-          // the session as `denied` and audit the decision. Mirrors the
-          // operator-facing POST /sessions/:id/deny path (remote/sessions.ts).
+          // the session as `denied` and audit the authenticated endpoint report.
           if (fastCommandId.startsWith('desk-start-') &&
               fastStatus === 'completed' &&
               fastResult &&
               fastResult.event === 'consent_denied') {
-            const expectedSessionId = extractDesktopSessionId(fastCommandId, 'desk-start-');
+            const startCommand = parseDesktopStartCommandId(fastCommandId);
+            const expectedSessionId = startCommand?.sessionId ?? null;
             const resultSessionId = typeof fastResult.sessionId === 'string' && fastResult.sessionId.length <= MAX_DESKTOP_SESSION_ID_BYTES
               ? fastResult.sessionId
               : null;
@@ -2305,10 +2846,17 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                       and(
                         eq(remoteSessions.id, sessionId),
                         eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
-                        eq(remoteSessions.status, 'connecting')
+                        eq(remoteSessions.status, 'connecting'),
+                        eq(remoteSessions.desktopStartCommandId, fastCommandId),
                       )
                     )
-                    .returning({ id: remoteSessions.id, orgId: remoteSessions.orgId, userId: remoteSessions.userId, type: remoteSessions.type });
+                    .returning({
+                      id: remoteSessions.id,
+                      orgId: remoteSessions.orgId,
+                      userId: remoteSessions.userId,
+                      type: remoteSessions.type,
+                      promptMode: remoteSessions.desktopPromptMode,
+                    });
 
                   if (updated) {
                     // Kill the viewer token so a lingering token can't resurrect
@@ -2317,14 +2865,26 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                     // A genuine user denial or a consent timeout is a "denied"
                     // decision; any other reason (no user present, helper absent,
                     // malformed reply) is a bypass/unavailable path, audited
-                    // distinctly. Shared classifier keeps this in lockstep with
-                    // the operator deny route (remote/sessions.ts).
-                    const action = classifyConsentDenyAction(reason);
+                    // distinctly.
+                    const action = updated.promptMode === 'consent'
+                      ? classifyConsentDenyAction(reason)
+                      : 'session_consent_bypassed';
                     await logSessionAudit(
                       action,
-                      updated.userId,
+                      authenticatedAgent.deviceId,
                       updated.orgId,
-                      { sessionId, type: updated.type, reason }
+                      {
+                        sessionId,
+                        type: updated.type,
+                        reason,
+                        sessionOwnerId: updated.userId,
+                        deviceId: authenticatedAgent.deviceId,
+                        startCommandId: fastCommandId,
+                        promptMode: updated.promptMode,
+                        reportedBy: 'authenticated_agent',
+                      },
+                      undefined,
+                      'agent',
                     );
                     console.log(`[AgentWs] Session ${sessionId} denied by consent gate (reason=${reason})`);
                   } else {
@@ -2342,7 +2902,8 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               fastStatus === 'completed' &&
               fastResult &&
               fastResult.event !== 'consent_denied') {
-            const expectedSessionId = extractDesktopSessionId(fastCommandId, 'desk-start-');
+            const startCommand = parseDesktopStartCommandId(fastCommandId);
+            const expectedSessionId = startCommand?.sessionId ?? null;
             const resultSessionId = typeof fastResult.sessionId === 'string' && fastResult.sessionId.length <= MAX_DESKTOP_SESSION_ID_BYTES
               ? fastResult.sessionId
               : null;
@@ -2351,6 +2912,12 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             if (sessionId && answer && answer.length < 65536) {
               try {
                 await runWithAgentDbAccess('agentWs.desktop.webrtcAnswer', async () => {
+                  // A consent-mode generation may become active only when the
+                  // exact agent result carries the explicit user-grant marker.
+                  // Notify/off generations do not require that marker.
+                  const consentPredicate = fastResult.consentReason === 'user'
+                    ? []
+                    : [ne(remoteSessions.desktopPromptMode, 'consent')];
                   const [updated] = await db
                     .update(remoteSessions)
                     .set({
@@ -2362,10 +2929,18 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                       and(
                         eq(remoteSessions.id, sessionId),
                         eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
-                        eq(remoteSessions.status, 'connecting')
+                        eq(remoteSessions.status, 'connecting'),
+                        eq(remoteSessions.desktopStartCommandId, fastCommandId),
+                        ...consentPredicate,
                       )
                     )
-                    .returning({ id: remoteSessions.id, orgId: remoteSessions.orgId, userId: remoteSessions.userId, type: remoteSessions.type });
+                    .returning({
+                      id: remoteSessions.id,
+                      orgId: remoteSessions.orgId,
+                      userId: remoteSessions.userId,
+                      type: remoteSessions.type,
+                      promptMode: remoteSessions.desktopPromptMode,
+                    });
 
                   if (updated) {
                     console.log(`[AgentWs] Stored WebRTC answer for session ${sessionId}`);
@@ -2373,13 +2948,24 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                     // user allowed, the agent rides a `consentReason: 'user'`
                     // marker alongside the answer. Emit a dedicated
                     // `session_consent_granted` audit so the grant is recorded
-                    // independently of activation. Mirrors the /answer route.
-                    if (fastResult.consentReason === 'user') {
+                    // independently of activation.
+                    if (fastResult.consentReason === 'user' && updated.promptMode === 'consent') {
                       await logSessionAudit(
                         'session_consent_granted',
-                        updated.userId,
+                        authenticatedAgent.deviceId,
                         updated.orgId,
-                        { sessionId, type: updated.type, reason: 'user' }
+                        {
+                          sessionId,
+                          type: updated.type,
+                          reason: 'user',
+                          sessionOwnerId: updated.userId,
+                          deviceId: authenticatedAgent.deviceId,
+                          startCommandId: fastCommandId,
+                          promptMode: updated.promptMode,
+                          reportedBy: 'authenticated_agent',
+                        },
+                        undefined,
+                        'agent',
                       );
                     }
                   } else {
@@ -2397,7 +2983,8 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
           if (fastCommandId.startsWith('desk-start-') &&
               fastStatus === 'failed') {
             const failResult = fastResult ?? {};
-            const expectedSessionId = extractDesktopSessionId(fastCommandId, 'desk-start-');
+            const startCommand = parseDesktopStartCommandId(fastCommandId);
+            const expectedSessionId = startCommand?.sessionId ?? null;
             const resultSessionId = typeof failResult.sessionId === 'string' && failResult.sessionId.length <= MAX_DESKTOP_SESSION_ID_BYTES
               ? failResult.sessionId
               : null;
@@ -2429,7 +3016,8 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                       and(
                         eq(remoteSessions.id, sessionId),
                         eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
-                        eq(remoteSessions.status, 'connecting')
+                        eq(remoteSessions.status, 'connecting'),
+                        eq(remoteSessions.desktopStartCommandId, fastCommandId),
                       )
                     )
                     .returning({ id: remoteSessions.id });
@@ -2494,7 +3082,9 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               agentId,
               parsed.data as z.infer<typeof commandResultSchema>,
               authenticatedAgent.deviceId,
-              authenticatedAgent.orgId
+              authenticatedAgent.orgId,
+              authenticatedAgent.partnerId,
+              authenticatedAgent.credentialTokenHash !== undefined,
             );
             ws.send(JSON.stringify({
               type: 'ack',
@@ -2558,7 +3148,10 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               // socket that outlived a containment change (decommission,
               // quarantine, token/tenant suspension) still drops on the next
               // heartbeat instead of staying online.
-              if (!(await isAgentDeviceStillAuthorized(agentId))) {
+              if (
+                agentDb.credentialTokenHash === undefined
+                && !(await isAgentDeviceStillAuthorized(agentId))
+              ) {
                 console.warn(
                   `[AgentWs] Severing heartbeat socket for ${agentId}: device contained (decommissioned/quarantined/suspended).`
                 );
@@ -2656,14 +3249,16 @@ onClose: async (_event: unknown, ws: WSContext) => {
         agentPingStates.delete(agentId);
       }
 
-      // Reset M-D1 cross-tenant probe counter on disconnect
-      clearCrossTenantDropCounter(agentId);
-
-
       // Only remove from active connections if this ws is still the current one.
       // A reconnecting agent may have already replaced us in the map — deleting
       // the new connection's entry would make the agent unreachable.
-      if (activeConnections.get(agentId) === ws) {
+      if (activeConnections.get(agentId)?.ws === ws) {
+        // Only the exact authoritative socket generation owns this counter.
+        // A delayed close from an old socket must not forgive the new socket's
+        // cross-tenant probes.
+        if (agentSocketEpochs.get(agentId) === socketEpoch) {
+          clearCrossTenantDropCounter(agentId);
+        }
         activeConnections.delete(agentId);
         if (agentSocketEpochs.get(agentId) === socketEpoch) {
           agentSocketEpochs.delete(agentId);
@@ -2724,7 +3319,7 @@ onClose: async (_event: unknown, ws: WSContext) => {
         clearInterval(pingState.pingInterval);
         agentPingStates.delete(agentId);
       }
-if (activeConnections.get(agentId) === ws) {
+if (activeConnections.get(agentId)?.ws === ws) {
         activeConnections.delete(agentId);
         if (agentSocketEpochs.get(agentId) === socketEpoch) {
           agentSocketEpochs.delete(agentId);
@@ -2913,6 +3508,12 @@ const desktopCommandResultSchema = z.object({
     // server-side, but must be accepted so the result isn't dropped as
     // malformed (#2307).
     stopped: z.boolean().optional(),
+    // #5300: rides alongside a `peer_disconnected` event when the session's
+    // Session.LastStopReason() was non-empty — currently only the no-video
+    // watchdog's swallowed capture error. Bounded to match the agent's own
+    // cap (Session.StopWithReason / desktopStopReasonMaxBytes). Absent on
+    // every routine disconnect and from any agent build predating this field.
+    stopReason: z.string().max(300).optional(),
   }).strict().optional(),
 }).passthrough();
 
@@ -2994,7 +3595,7 @@ function recordCrossTenantDrop(agentId: string, deviceId: string | undefined, ki
     }
 
     // Close any active WS for this agent so it has to re-auth (and fail).
-    const activeWs = activeConnections.get(agentId);
+    const activeWs = activeConnections.get(agentId)?.ws;
     if (activeWs) {
       try {
         activeWs.close(4001, 'Token suspended');
@@ -3034,12 +3635,27 @@ export function __resetCrossTenantDropsForTest() {
 // wave 3.5b (#4084) relay integration suite, which needs a "locally connected"
 // agent on ONE simulated process while dispatching from another. Never usable
 // in production — a real socket must come through createAgentWsHandlers.
-export function __installAgentSocketForTest(agentId: string, ws: { send(data: string): void }): void {
+export function registerConnection(
+  agentId: string,
+  ws: { send(data: string): void },
+  trust: { partnerId: string; trustState: PartnerTrustState } = {
+    partnerId: 'test-partner',
+    trustState: 'trusted',
+  },
+): void {
   if (process.env.NODE_ENV === 'production') {
-    throw new Error('__installAgentSocketForTest is test-only');
+    throw new Error('registerConnection is test-only');
   }
-  activeConnections.set(agentId, ws as never);
+  activeConnections.set(agentId, {
+    ws: ws as never,
+    ...trust,
+    credentialRevoked: false,
+  });
   installAgentSocketEpoch(agentId);
+}
+
+export function __installAgentSocketForTest(agentId: string, ws: { send(data: string): void }): void {
+  registerConnection(agentId, ws);
 }
 
 /**
@@ -3132,15 +3748,27 @@ function assertSocketLocalDispatchAllowed(fn: string): void {
  */
 export function sendCommandToAgent(agentId: string, command: AgentCommand): boolean {
   assertSocketLocalDispatchAllowed('sendCommandToAgent');
-  const ws = activeConnections.get(agentId);
-  if (!ws) {
+  const conn = activeConnections.get(agentId);
+  if (!conn) {
     return false;
+  }
+
+  const mode = partnerTrustMode();
+  if (mode !== 'off' && conn.trustState !== 'trusted' && !isLifecycleCommand(command.type)) {
+    if (mode === 'enforce') return false;
+    if (conn.partnerId) {
+      void evaluateCapability('device_execute', {
+        partnerId: conn.partnerId,
+        commandType: command.type,
+        detail: { via: 'ws_fast_path' },
+      });
+    }
   }
 
   try {
     const json = JSON.stringify(command);
     // Send command directly - agent expects {id, type, payload} at top level
-    ws.send(json);
+    conn.ws.send(json);
     recordOrphanedResultExpectation(agentId, command);
     return true;
   } catch (error) {
@@ -3171,10 +3799,10 @@ export type AgentWsDisconnectResult = 'closed' | 'close-failed' | 'not-connected
  * a live-but-orphaned socket.
  */
 export function disconnectAgent(agentId: string, code: number = 4040, reason: string = 'orgId changed, reconnect required'): AgentWsDisconnectResult {
-  const ws = activeConnections.get(agentId);
-  if (!ws) return 'not-connected';
+  const conn = activeConnections.get(agentId);
+  if (!conn) return 'not-connected';
   try {
-    ws.close(code, reason);
+    conn.ws.close(code, reason);
   } catch (error) {
     console.error(`disconnectAgent(${agentId.slice(0,12)}) close threw:`, error);
     captureException(error instanceof Error ? error : new Error(String(error)));
@@ -3217,13 +3845,13 @@ export function broadcastToAgents(
   let sent = 0;
   const payload = JSON.stringify(message);
 
-  for (const [agentId, ws] of activeConnections) {
+  for (const [agentId, conn] of activeConnections) {
     if (filter && !filter(agentId)) {
       continue;
     }
 
     try {
-      ws.send(payload);
+      conn.ws.send(payload);
       sent++;
     } catch (error) {
       console.error(`Failed to broadcast to agent ${agentId}:`, error);

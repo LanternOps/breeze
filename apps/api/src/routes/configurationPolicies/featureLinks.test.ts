@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 // Hoist mock values so they're available in vi.mock factories
 const {
@@ -39,11 +40,22 @@ vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
+// The MFA answer is per-test controllable, DEFAULTING TO TRUE so every
+// pre-existing case in this file keeps exactly its current meaning (they are
+// about inline-settings validation and partner-wide scope, not MFA).
+// This is an ORDERING stand-in: it proves `requireMfa()` runs ahead of every
+// handler body. What the real gate ACCEPTS is asserted in `crud.test.ts`,
+// which mounts the genuine middleware via `importOriginal`.
+const { mfaState } = vi.hoisted(() => ({ mfaState: { satisfied: true } }));
+
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
-  hasSatisfiedMfa: vi.fn(() => true),
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    if (!mfaState.satisfied) return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+    await next();
+  }),
 }));
 
 import { featureLinkRoutes } from './featureLinks';
@@ -83,6 +95,8 @@ const STUB_POLICY = {
   featureLinks: [],
 };
 
+const PARENT_POLICY_ID = '55555555-5555-5555-5555-555555555555';
+
 const STUB_POLICY_WITH_PATCH_LINK = {
   ...STUB_POLICY,
   featureLinks: [{ id: LINK_ID, featureType: 'patch' }],
@@ -94,9 +108,37 @@ const STUB_POLICY_WITH_PAM_LINK = {
 };
 
 describe('featureLinks routes', () => {
+  describe('MFA boundary for every feature-link mutation', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+      mfaState.satisfied = false;
+    });
+
+    it.each([
+      ['add', `/${POLICY_ID}/features`, 'POST', { featureType: 'pam', inlineSettings: {} }, addFeatureLinkMock],
+      ['update', `/${POLICY_ID}/features/${LINK_ID}`, 'PATCH', { inlineSettings: {} }, updateFeatureLinkMock],
+      ['remove', `/${POLICY_ID}/features/${LINK_ID}`, 'DELETE', undefined, removeFeatureLinkMock],
+    ] as const)('denies %s before policy lookup, mutation, or audit', async (_name, path, method, body, sink) => {
+      const app = buildApp();
+      const res = await app.request(path, {
+        method,
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(getConfigPolicyMock).not.toHaveBeenCalled();
+      expect(sink).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+  });
+
   let app: Hono;
 
   beforeEach(() => {
+    // A case that flips the MFA answer must not leak into the next one.
+    mfaState.satisfied = true;
     vi.clearAllMocks();
     app = buildApp();
   });
@@ -908,5 +950,223 @@ describe('featureLinks routes', () => {
       expect(JSON.stringify(body.issues)).toContain('moved to the Alerts feature');
       expect(updateFeatureLinkMock).not.toHaveBeenCalled();
     });
+  });
+  // ============================================================
+  // MFA gate on every persistent feature-link mutation
+  // ============================================================
+
+  describe('MFA gate on feature-link mutations', () => {
+    const STUB_POLICY_WITH_MAINTENANCE_LINK = {
+      ...STUB_POLICY,
+      featureLinks: [{ id: LINK_ID, featureType: 'maintenance' }],
+    };
+
+    it('refuses to ADD a maintenance link from a session that has not satisfied MFA', async () => {
+      // A maintenance feature link is the canonical suppression source: every
+      // alert/patch/script/reboot consumer reads it through
+      // featureConfigResolver.checkDeviceMaintenanceWindow. Authoring one from
+      // an un-assured session is the same capability the device route now
+      // gates, reached by another door.
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+      // Armed so an UN-gated route would actually COMPLETE the write (201) —
+      // the red is then "the write happened", not merely "a status differed".
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'maintenance' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'maintenance', inlineSettings: { recurrence: 'weekly', durationHours: 2 } }),
+      });
+
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'MFA required' });
+    });
+
+    it('refuses to UPDATE an existing maintenance link from a non-assured session', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY_WITH_MAINTENANCE_LINK);
+      updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'maintenance' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { recurrence: 'daily', durationHours: 4 } }),
+      });
+
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'MFA required' });
+    });
+
+    it('requires MFA to remove a maintenance link', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY_WITH_MAINTENANCE_LINK);
+      removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'maintenance' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(403);
+      expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    // #5080: "removal ends suppression" stops holding once a link can be
+    // inherited — deleting the child's override REVERTS to the parent's window.
+    it('gates REMOVING a maintenance override when the parent has a maintenance link', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY_WITH_MAINTENANCE_LINK,
+        parentPolicyId: PARENT_POLICY_ID,
+        parentPolicy: {
+          id: PARENT_POLICY_ID,
+          name: 'Baseline',
+          featureLinks: [{ id: 'parent-link', featureType: 'maintenance' }],
+        },
+      });
+      // Armed so an un-gated route would actually complete the delete.
+      removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'maintenance' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'MFA required' });
+    });
+
+    it('requires MFA to remove a maintenance link even when the parent has none', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY_WITH_MAINTENANCE_LINK,
+        parentPolicyId: PARENT_POLICY_ID,
+        parentPolicy: {
+          id: PARENT_POLICY_ID,
+          name: 'Baseline',
+          featureLinks: [{ id: 'parent-link', featureType: 'event_log' }],
+        },
+      });
+      removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'maintenance' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(403);
+      expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('requires MFA to remove a non-maintenance override', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY,
+        featureLinks: [{ id: LINK_ID, featureType: 'event_log' }],
+        parentPolicyId: PARENT_POLICY_ID,
+        parentPolicy: {
+          id: PARENT_POLICY_ID,
+          name: 'Baseline',
+          featureLinks: [{ id: 'parent-link', featureType: 'event_log' }],
+        },
+      });
+      removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'event_log' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(403);
+      expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    // FAIL-CLOSED regression. parentPolicyId set + parentPolicy null means the
+    // parent row was invisible to the read — an anomaly, since the write-time
+    // trigger only ever accepted a parent this tenant could see. Treating it as
+    // "no parent" would silently drop the MFA requirement.
+    it('gates removal when the parent CANNOT be resolved (fails closed)', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY_WITH_MAINTENANCE_LINK,
+        parentPolicyId: PARENT_POLICY_ID,
+        parentPolicy: null,
+      });
+      removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'maintenance' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'MFA required' });
+    });
+
+    it('requires MFA to remove a link from a root policy', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY_WITH_MAINTENANCE_LINK,
+        parentPolicyId: null,
+        parentPolicy: null,
+      });
+      removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'maintenance' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(403);
+      expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps patch DELETE unconditionally gated even with an inheriting parent', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY_WITH_PATCH_LINK,
+        parentPolicyId: PARENT_POLICY_ID,
+        parentPolicy: { id: PARENT_POLICY_ID, name: 'Baseline', featureLinks: [] },
+      });
+      removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'patch' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(403);
+    });
+
+    it('gates patch the same way it always did (the gate that existed but was never tested)', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'patch' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'patch', inlineSettings: { scheduleTime: '02:00' } }),
+      });
+
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(403);
+    });
+
+    it('requires MFA for monitoring feature mutations too', async () => {
+      mfaState.satisfied = false;
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'monitoring' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'monitoring', inlineSettings: { checkIntervalSeconds: 60, watches: [] } }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('an assured session is unaffected on every gated type', async () => {
+      mfaState.satisfied = true;
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'maintenance' });
+
+      const res = await buildApp().request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'maintenance', inlineSettings: { recurrence: 'weekly', durationHours: 2 } }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(addFeatureLinkMock).toHaveBeenCalled();
+    });
+
   });
 });

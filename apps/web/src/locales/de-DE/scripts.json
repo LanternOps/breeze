@@ -149,12 +149,23 @@
       "webhookSecret": "Webhook-Geheimnis (optional)",
       "mode": "Modus",
       "script": "Skript",
+      "runAs": "Ausführen als",
       "notificationChannel": "Benachrichtigungskanal",
       "severity": "Schweregrad",
       "message": "Nachricht",
       "command": "Befehl",
+      "whenOffline": "Wenn das Gerät offline ist",
       "software": "Software",
       "failureNotificationChannel": "Fehlerbenachrichtigungskanal"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "In die Warteschlange (Standard)",
+        "skip": "Überspringen"
+      }
+    },
+    "hints": {
+      "whenOffline": "Eingereihte Aufgaben warten auf das Gerät und werden bei der nächsten Verbindung ausgeführt oder verfallen nach 7 Tagen. Überspringen lässt den Schritt sofort fehlschlagen."
     },
     "placeholders": {
       "name": "Tägliche Wartungskontrolle",
@@ -250,7 +261,8 @@
     "resultCount": {
       "passed": "{{count}} erfolgreich",
       "failed": "{{count}} fehlgeschlagen",
-      "skipped": "{{count}} übersprungen"
+      "skipped": "{{count}} übersprungen",
+      "cancelled": "{{count}} abgebrochen"
     },
     "duration": "Dauer: {{duration}}",
     "progress": {
@@ -264,7 +276,15 @@
     },
     "actions": {
       "hideLogs": "Protokolle ausblenden",
-      "viewLogs": "Protokolle anzeigen"
+      "viewLogs": "Protokolle anzeigen",
+      "cancelRun": "Ausführung abbrechen",
+      "partnerScopeTooltip": "Diese Ausführung gilt für alle Organisationen unter Ihrem Partnerkonto. Bitten Sie einen vollständigen Partneradministrator, sie abzubrechen, oder stoppen Sie stattdessen einzelne Ausführungen auf Ihren eigenen Geräten.",
+      "confirmCancelRunTitle": "Diese Ausführung abbrechen?",
+      "confirmCancelRunMessage": "Breeze stoppt jede Skriptausführung, auf die diese Ausführung noch wartet. Bereits laufende Aktionen können abgeschlossen werden, bevor sie gestoppt werden können.",
+      "uncancellableActions_one": "{{count}} Aktion konnte nicht gestoppt werden und läuft möglicherweise weiterhin eigenständig.",
+      "uncancellableActions_other": "{{count}} Aktionen konnten nicht gestoppt werden und laufen möglicherweise weiterhin eigenständig.",
+      "cancelRunSuccess_one": "Abgebrochen — {{count}} Ausführung gestoppt.",
+      "cancelRunSuccess_other": "Abgebrochen — {{count}} Ausführungen gestoppt."
     },
     "timestamps": {
       "started": "Gestartet: {{date}}",
@@ -281,7 +301,8 @@
       "partial": "Teilweise",
       "running": "Wird ausgeführt",
       "pending": "Ausstehend",
-      "skipped": "Übersprungen"
+      "skipped": "Übersprungen",
+      "cancelled": "Abgebrochen"
     },
     "empty": "Kein Ausführungsverlauf verfügbar.",
     "triggeredBy": {
@@ -302,6 +323,9 @@
       "untitled": "Skript",
       "awaiting": "Warten auf Rückmeldung des Agenten…",
       "truncated": "Ausgabe gekürzt — vollständiger Text im Skriptverlauf des Geräts."
+    },
+    "errors": {
+      "cancelRun": "Die Ausführung konnte nicht abgebrochen werden."
     }
   },
   "automationsPage": {
@@ -618,8 +642,33 @@
       "stdout": "Standardausgabe (stdout)",
       "stderr": "Standardfehler (stderr)"
     },
+    "customFields": {
+      "title": "Skript-Schreibvorgänge für benutzerdefinierte Felder",
+      "applied": "Übernommen",
+      "rejected": "Abgelehnt",
+      "none": "Keine",
+      "reasons": {
+        "unknown_field": "Keine passende Felddefinition",
+        "not_script_writable": "Feld ist nicht per Skript beschreibbar",
+        "not_applicable_to_device": "Feld gilt nicht für diesen Gerätetyp",
+        "device_not_found": "Gerät nicht gefunden",
+        "invalid_type": "Wert hat den falschen Typ",
+        "out_of_range": "Wert liegt außerhalb des zulässigen Bereichs",
+        "not_a_choice": "Wert ist keine der zulässigen Optionen des Feldes",
+        "too_long": "Wert ist zu lang",
+        "invalid_date": "Wert ist kein gültiges Datum",
+        "marker_unparseable": "Marker konnte nicht als JSON geparst werden",
+        "too_many_lines": "Zu viele Marker-Zeilen in diesem Lauf",
+        "too_many_keys": "Zu viele Schlüssel im Marker",
+        "marker_too_large": "Marker hat das Größenlimit überschritten",
+        "forbidden_key": "Schlüssel ist nicht zulässig",
+        "envelope_unparseable": "Strukturiertes Ergebnis konnte nicht geparst werden",
+        "envelope_unsupported_version": "Strukturiertes Ergebnis verwendet eine nicht unterstützte Version"
+      }
+    },
     "actions": {
-      "copyToClipboard": "In die Zwischenablage kopieren"
+      "copyToClipboard": "In die Zwischenablage kopieren",
+      "runAgain": "Erneut ausführen"
     },
     "title": "Ausführungsdetails",
     "statusDescription": {
@@ -627,20 +676,32 @@
       "completed": "Skript erfolgreich abgeschlossen",
       "failed": "Die Skriptausführung ist fehlgeschlagen",
       "timeout": "Zeitüberschreitung bei der Skriptausführung",
-      "pending": "Das Skript wartet darauf, ausgeführt zu werden"
+      "pending": "Das Skript wartet darauf, ausgeführt zu werden",
+      "queued": "Das Skript wartet auf die Übermittlung an das Gerät",
+      "cancelling": "Abbruch angefordert – warte auf Bestätigung durch das Gerät.",
+      "cancelled": "Das Skript wurde auf dem Gerät gestoppt"
     },
     "fields": {
       "startedAt": "Begonnen um",
       "duration": "Dauer",
       "exitCode": "Exit-Code",
-      "completedAt": "Abgeschlossen am"
+      "completedAt": "Abgeschlossen am",
+      "runAs": "Ausführungskontext"
     },
     "status": {
       "running": "Wird ausgeführt...",
       "pending": "Ausstehend",
       "completed": "Abgeschlossen",
       "failed": "Fehlgeschlagen",
-      "timeout": "Zeitüberschreitung"
+      "timeout": "Zeitüberschreitung",
+      "queued": "In Warteschlange",
+      "cancelling": "Wird gestoppt…",
+      "cancelled": "Abgebrochen",
+      "completedCancelTooLate": "Abgeschlossen — Ihre Abbruchanfrage kam zu spät",
+      "failedCancelTooLate": "Fehlgeschlagen — Ihre Abbruchanfrage kam zu spät",
+      "timeoutCancelTooLate": "Zeitüberschreitung — Ihre Abbruchanfrage kam zu spät",
+      "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen",
+      "queuedOffline": "In Warteschlange — Gerät offline"
     }
   },
   "executionHistory": {
@@ -661,7 +722,15 @@
       "running": "Wird ausgeführt...",
       "completed": "Abgeschlossen",
       "failed": "Fehlgeschlagen",
-      "timeout": "Zeitüberschreitung"
+      "timeout": "Zeitüberschreitung",
+      "queued": "In Warteschlange",
+      "cancelling": "Wird gestoppt…",
+      "cancelled": "Abgebrochen",
+      "completedCancelTooLate": "Abgeschlossen — Ihre Abbruchanfrage kam zu spät",
+      "failedCancelTooLate": "Fehlgeschlagen — Ihre Abbruchanfrage kam zu spät",
+      "timeoutCancelTooLate": "Zeitüberschreitung — Ihre Abbruchanfrage kam zu spät",
+      "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen",
+      "queuedOffline": "In Warteschlange — Gerät offline"
     },
     "summary": "{{shown}} von {{total}}",
     "headers": {
@@ -672,11 +741,19 @@
     },
     "empty": "Keine Hinrichtungen gefunden. Versuchen Sie, Ihre Filter anzupassen.",
     "actions": {
-      "viewDetails": "Details anzeigen"
+      "viewDetails": "Details anzeigen",
+      "stop": "Stoppen",
+      "forceStop": "Sofort stoppen",
+      "confirmStopTitle": "Diese Ausführung stoppen?",
+      "confirmStopMessage": "Breeze bittet das Gerät, {{script}} zu stoppen. Das kann einige Sekunden dauern — „Sofort stoppen“ überspringt die Karenzzeit und beendet den Prozess sofort."
     },
     "pagination": {
       "showing": "Zeigt {{start}} bis {{end}} von {{total}}",
       "page": "Seite {{page}} von {{total}}"
+    },
+    "errors": {
+      "noLongerCancellable": "Diese Ausführung ist bereits abgeschlossen und kann nicht mehr gestoppt werden.",
+      "cancelFailed": "Der Stopp der Ausführung ist fehlgeschlagen."
     }
   },
   "scriptAiInput": {
@@ -762,7 +839,8 @@
     "errors": {
       "fetch": "Das Skript konnte nicht abgerufen werden",
       "generic": "Es ist ein Fehler aufgetreten",
-      "save": "Das Skript konnte nicht gespeichert werden"
+      "save": "Das Skript konnte nicht gespeichert werden",
+      "duplicate": "Das Skript konnte nicht dupliziert werden"
     },
     "toast": {
       "created": "Skript erstellt",
@@ -772,6 +850,7 @@
     "actions": {
       "backToScripts": "Zurück zu Skripten",
       "executionHistory": "Ausführungsgeschichte",
+      "duplicate": "Duplizieren",
       "create": "Skript erstellen",
       "saveChanges": "Änderungen speichern"
     },
@@ -860,6 +939,9 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "toasts": {
+      "runsWhenOnline": "Wird ausgeführt, sobald das Gerät online ist"
     }
   },
   "secretParameters": {
@@ -1035,6 +1117,8 @@
       "variablePlaceholder": "z.B. vendor_token",
       "fieldLabel": "Schlüssel des benutzerdefinierten Felds",
       "fieldPlaceholder": "z.B. asset_tag",
+      "fieldHelp": "Geben Sie den Feldschlüssel ein, der unter Einstellungen → Benutzerdefinierte Felder angezeigt wird (Groß-/Kleinschreibung beachten). Lesen: Der aufgelöste Wert wird dem Skript als Umgebungsvariable BREEZE_PARAM_<KEY> (Parametername in Großbuchstaben mit Unterstrichen) und als Platzhalter {{paramName}} übergeben — es erscheint keine Eingabeaufforderung. Schreiben: Geben Sie ::breeze:custom-fields:: {\"key\": \"value\"} auf stdout aus, für ein Feld mit aktivierter Option „Skripte dürfen dieses Feld schreiben“. Ein Beispiel finden Sie unter „Benutzerdefinierte Felder lesen und schreiben“ unterhalb des Editors.",
+      "fieldHelpAriaLabel": "Über die Bindung des benutzerdefinierten Gerätefelds",
       "builtinLabel": "Eigenschaft",
       "chooseTitle": "Variable auswählen",
       "secretRejected": "„{{key}}“ ist geheim – das Speichern wird abgelehnt. Wählen Sie eine Variable, die nicht geheim ist.",
@@ -1042,6 +1126,26 @@
       "notSecretRow": "Nicht geheim – „Aus einer Variablen“ verwenden",
       "secretHint": "Wird ausschließlich als Umgebungsvariable {{env}} übergeben – niemals in das Skript geschrieben. Erfordert die Ausführung im Systemkontext und einen Agenten, der die sichere Übergabe von Geheimnissen unterstützt.",
       "hint": "Wird bei der Ausführung für jedes Zielgerät aufgelöst – niemand wird danach gefragt."
+    },
+    "securityReview": {
+      "title": "Sicherheitsprüfung",
+      "blockedHint_one": "Dieses Skript entspricht 1 Muster, das der Agent ohne Bestätigung nicht ausführen wird.",
+      "blockedHint_other": "Dieses Skript entspricht {{count}} Mustern, die der Agent ohne Bestätigung nicht ausführen wird. Bestätigen Sie jedes Muster, das Sie zulassen möchten.",
+      "clearedHint": "Alle erkannten Muster wurden bestätigt.",
+      "willBlock": "Nicht bestätigt — der Agent wird die Ausführung dieses Skripts verweigern.",
+      "footnote": "Eine Bestätigung gilt nur für dieses Skript und deckt nur die hier aufgeführten Muster ab. Wenn Sie später einen anderen riskanten Vorgang hinzufügen, wird dieser blockiert, bis Sie auch ihn bestätigen."
+    },
+    "customFieldHelp": {
+      "title": "Benutzerdefinierte Felder lesen und schreiben",
+      "readLabel": "Lesen:",
+      "read": "Binden Sie einen Parameter an ein benutzerdefiniertes Feld (Quelle „Aus einem Gerätefeld“). Der Wert kommt als Umgebungsvariable an",
+      "readPlaceholders": "und als Platzhalter",
+      "writeLabel": "Schreiben:",
+      "write": "Geben Sie eine Zeile auf stdout in der Form aus",
+      "writeGate": "Für das Feld muss unter Einstellungen → Benutzerdefinierte Felder „Skripte dürfen dieses Feld schreiben“ aktiviert sein. Werte werden gegen den Feldtyp geprüft; abgelehnte Schlüssel erscheinen in den Ausführungsdetails.",
+      "secretCaveat": "Der geschriebene Wert erscheint auch in der gespeicherten Skriptausgabe — schreiben Sie so niemals ein Geheimnis. Verwenden Sie stattdessen eine geheime Variable.",
+      "insertExample": "Beispiel einfügen",
+      "docsLink": "Dokumentation zu benutzerdefinierten Feldern"
     }
   },
   "scriptList": {
@@ -1080,6 +1184,7 @@
     "actions": {
       "runTitle": "Skript ausführen",
       "editTitle": "Skript bearbeiten",
+      "duplicateTitle": "Skript duplizieren",
       "deleteTitle": "Skript löschen"
     },
     "pagination": {
@@ -1200,7 +1305,8 @@
       "delete": "Das Skript konnte nicht gelöscht werden",
       "deleteTryAgain": "Das Skript konnte nicht gelöscht werden. Bitte versuchen Sie es erneut.",
       "alreadyInLibrary": "„{{name}}“ ist bereits in Ihrer Bibliothek",
-      "import": "Skript konnte nicht importiert werden"
+      "import": "Skript konnte nicht importiert werden",
+      "duplicate": "Das Skript konnte nicht dupliziert werden"
     },
     "toast": {
       "deleting": "„{{name}}“ wird gelöscht...",
@@ -1287,6 +1393,8 @@
     "offlineWarning": "Das ausgewählte Gerät ist offline — der Lauf wartet, bis es sich wieder verbindet.",
     "exitCode": "Exit {{code}}",
     "viewHistory": "Verlauf anzeigen",
+    "runAgain": "Erneut ausführen",
+    "viewOnDevice": "Auf Gerät anzeigen",
     "status": {
       "pending": "In Warteschlange",
       "running": "Läuft",
@@ -1294,7 +1402,8 @@
       "failed": "Fehlgeschlagen",
       "timeout": "Zeitüberschreitung",
       "queued": "In Warteschlange",
-      "cancelled": "Abgebrochen"
+      "cancelled": "Abgebrochen",
+      "cancelling": "Wird gestoppt…"
     },
     "errors": {
       "execute": "Testlauf konnte nicht gestartet werden",

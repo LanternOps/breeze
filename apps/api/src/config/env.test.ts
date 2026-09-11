@@ -16,7 +16,6 @@ const OAUTH_ENV_KEYS = [
   'MFA_FORCE_FOR_PARTNER_ADMIN',
   'M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED',
   'M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED',
-  'AUTH_BROWSER_TRANSITIONS_ENFORCED',
   'AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED',
 ] as const;
 
@@ -39,21 +38,16 @@ describe('config env', () => {
     expect(mod.MCP_OAUTH_ENABLED).toBe(false);
   });
 
-  it('keeps browser transition enforcement and terminal preparation disabled by default', async () => {
+  it('keeps terminal preparation disabled by default', async () => {
     const mod = await loadEnv();
-    expect(mod.authBrowserTransitionsEnforced()).toBe(false);
     expect(mod.authBrowserTerminalPreparationEnabled()).toBe(false);
   });
 
-  it('reads browser transition rollout flags at call time', async () => {
+  it('reads the terminal preparation rollout flag at call time', async () => {
     const mod = await loadEnv();
-    process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED = 'true';
     process.env.AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED = 'true';
-    expect(mod.authBrowserTransitionsEnforced()).toBe(true);
     expect(mod.authBrowserTerminalPreparationEnabled()).toBe(true);
-    process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED = 'false';
     process.env.AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED = 'false';
-    expect(mod.authBrowserTransitionsEnforced()).toBe(false);
     expect(mod.authBrowserTerminalPreparationEnabled()).toBe(false);
   });
 
@@ -145,12 +139,16 @@ describe('config env', () => {
   });
 
   // mfaForcePartnerAdmin is the kill-switch for the role-level MFA gate
-  // introduced in Task 8 of the launch-readiness sprint. Defaults ON so
-  // the secure-by-default posture holds, but ops can flip it OFF without
-  // a code change when an enrollment outage locks legitimate users out.
-  it('defaults mfaForcePartnerAdmin to true when unset', async () => {
+  // introduced in Task 8 of the launch-readiness sprint. Defaults OFF for
+  // this release (#4491): the reconcile migration
+  // (2026-10-11-170000-partner-admin-force-mfa-reconcile.sql) flips
+  // force_mfa on every EXISTING Partner Admin role, so enforcing on
+  // upgrade with no warning would lock admins into enrolment with zero
+  // notice. Enforcement returns to default ON once the notification-period
+  // feature (#5306) ships; MFA_FORCE_FOR_PARTNER_ADMIN=true opts in now.
+  it('defaults mfaForcePartnerAdmin to false when unset', async () => {
     const mod = await loadEnv();
-    expect(mod.mfaForcePartnerAdmin()).toBe(true);
+    expect(mod.mfaForcePartnerAdmin()).toBe(false);
   });
 
   it('returns false when MFA_FORCE_FOR_PARTNER_ADMIN is explicitly disabled', async () => {
@@ -283,6 +281,90 @@ describe('config env', () => {
       delete process.env.ABUSE_SIGNALS_ENABLED;
       expect(mod.abuseSignalsEnabled()).toBe(false);
       expect(mod.abuseSignalsExplicitlyDisabled()).toBe(false);
+    });
+  });
+
+  describe('Apple App Attest configuration (#1374 W03)', () => {
+    afterEach(() => {
+      delete process.env.APPLE_APP_ATTEST_ENVIRONMENT;
+      delete process.env.APPLE_APP_ATTEST_APP_ID;
+    });
+
+    // The verifier's entire environment gate rests on this one comparison. A
+    // refactor that inverted it (`!== 'production'`) would silently start
+    // accepting developer-signed App Attest attestations in production, which
+    // is exactly the L4 bypass wave W03 exists to close — and nothing else in
+    // the suite would notice.
+    it('resolves production for anything that is not exactly "development"', async () => {
+      const mod = await loadEnv();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        for (const value of ['Development', 'develop', 'dev', 'DEVELOPMENT', 'prod', 'true', '']) {
+          process.env.APPLE_APP_ATTEST_ENVIRONMENT = value;
+          expect(mod.appleAppAttestEnvironment()).toBe('production');
+        }
+        delete process.env.APPLE_APP_ATTEST_ENVIRONMENT;
+        expect(mod.appleAppAttestEnvironment()).toBe('production');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('resolves development only for the exact string, whitespace tolerated', async () => {
+      const mod = await loadEnv();
+      process.env.APPLE_APP_ATTEST_ENVIRONMENT = 'development';
+      expect(mod.appleAppAttestEnvironment()).toBe('development');
+      process.env.APPLE_APP_ATTEST_ENVIRONMENT = '  development  ';
+      expect(mod.appleAppAttestEnvironment()).toBe('development');
+    });
+
+    // Failing safe silently is what makes a misconfiguration take weeks to
+    // find: every genuine development-build attestation would be rejected with
+    // no hint that the cause is a typo rather than a forged blob.
+    it('warns on an unrecognized value but stays on production', async () => {
+      const mod = await loadEnv();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        process.env.APPLE_APP_ATTEST_ENVIRONMENT = 'Development';
+        expect(mod.appleAppAttestEnvironment()).toBe('production');
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('APPLE_APP_ATTEST_ENVIRONMENT'),
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does not warn for the two recognized values or for unset', async () => {
+      const mod = await loadEnv();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        for (const value of ['production', 'development']) {
+          process.env.APPLE_APP_ATTEST_ENVIRONMENT = value;
+          mod.appleAppAttestEnvironment();
+        }
+        delete process.env.APPLE_APP_ATTEST_ENVIRONMENT;
+        mod.appleAppAttestEnvironment();
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('falls back to the shipped appId when unset or blank', async () => {
+      // Read at MODULE LOAD, unlike the environment selector — so each case
+      // needs its own module instance.
+      delete process.env.APPLE_APP_ATTEST_APP_ID;
+      vi.resetModules();
+      expect((await loadEnv()).APPLE_APP_ATTEST_APP_ID).toBe('D8W6N2JYMA.com.breeze.rmm');
+
+      process.env.APPLE_APP_ATTEST_APP_ID = '   ';
+      vi.resetModules();
+      expect((await loadEnv()).APPLE_APP_ATTEST_APP_ID).toBe('D8W6N2JYMA.com.breeze.rmm');
+
+      process.env.APPLE_APP_ATTEST_APP_ID = '  OTHER00000.com.example.app  ';
+      vi.resetModules();
+      expect((await loadEnv()).APPLE_APP_ATTEST_APP_ID).toBe('OTHER00000.com.example.app');
     });
   });
 });

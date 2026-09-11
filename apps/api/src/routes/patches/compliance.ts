@@ -18,6 +18,13 @@ import {
 } from '../../db/schema';
 import { complianceSchema, complianceReportSchema } from './schemas';
 import { resolvePatchReportOrgId, resolvePartnerIdForOrg } from './helpers';
+import {
+  decodeSiteScope,
+  isSiteScopeSubset,
+  persistedSiteScopeValues,
+  resolveRequestReportAuthority,
+  type PersistedSiteScopeColumns,
+} from '../../services/siteScope';
 
 export const complianceRoutes = new Hono();
 
@@ -91,6 +98,7 @@ complianceRoutes.get(
             compliantDevices: 0,
             criticalSummary: { total: 0, patched: 0, pending: 0 },
             importantSummary: { total: 0, patched: 0, pending: 0 },
+            unratedSummary: { total: 0, patched: 0, pending: 0 },
             devicesNeedingPatches: []
           }
         });
@@ -114,6 +122,7 @@ complianceRoutes.get(
           compliantDevices: 0,
           criticalSummary: { total: 0, patched: 0, pending: 0 },
           importantSummary: { total: 0, patched: 0, pending: 0 },
+          unratedSummary: { total: 0, patched: 0, pending: 0 },
           devicesNeedingPatches: []
         }
       });
@@ -193,6 +202,7 @@ complianceRoutes.get(
             compliantDevices: deviceIds.length,
             criticalSummary: { total: 0, patched: 0, pending: 0 },
             importantSummary: { total: 0, patched: 0, pending: 0 },
+            unratedSummary: { total: 0, patched: 0, pending: 0 },
             devicesNeedingPatches: [],
             ringId: query.ringId ?? null
           }
@@ -345,10 +355,21 @@ complianceRoutes.get(
 
     const severityMap: Record<string, { total: number; patched: number; pending: number }> = {};
     for (const row of severityCounts) {
+      // NULL severity and the literal 'unknown' sentinel both coalesce to the
+      // 'unknown' key here, but Postgres GROUP BY emits them as separate rows
+      // (NULL != 'unknown'), so this must accumulate rather than overwrite or
+      // whichever row is processed last silently wins and undercounts.
       const key = row.severity ?? 'unknown';
       const patched = Number(row.installed);
       const pending = Number(row.outstanding);
-      severityMap[key] = { total: patched + pending, patched, pending };
+      const existing = severityMap[key];
+      severityMap[key] = existing
+        ? {
+            total: existing.total + patched + pending,
+            patched: existing.patched + patched,
+            pending: existing.pending + pending
+          }
+        : { total: patched + pending, patched, pending };
     }
 
     // Device-level compliance: a device is compliant if it has zero outstanding
@@ -363,6 +384,7 @@ complianceRoutes.get(
         compliantDevices: compliantDeviceCount,
         criticalSummary: severityMap['critical'] ?? { total: 0, patched: 0, pending: 0 },
         importantSummary: severityMap['important'] ?? { total: 0, patched: 0, pending: 0 },
+        unratedSummary: severityMap['unknown'] ?? { total: 0, patched: 0, pending: 0 },
         devicesNeedingPatches,
         filters: {
           source: query.source ?? null,
@@ -390,6 +412,15 @@ complianceRoutes.get(
     }
     const targetOrgId = orgResolution.orgId;
 
+    const authorityResult = await resolveRequestReportAuthority(
+      auth,
+      targetOrgId,
+      'export',
+    );
+    if (!authorityResult.ok) {
+      return c.json({ error: 'Access to report scope denied' }, 403);
+    }
+
     const [report] = await db
       .insert(patchComplianceReports)
       .values({
@@ -398,7 +429,8 @@ complianceRoutes.get(
         source: query.source ?? null,
         severity: query.severity ?? null,
         format: query.format ?? 'csv',
-        status: 'pending'
+        status: 'pending',
+        ...persistedSiteScopeValues(authorityResult.authority),
       })
       .returning({
         id: patchComplianceReports.id,
@@ -458,7 +490,14 @@ complianceRoutes.get(
         startedAt: patchComplianceReports.startedAt,
         completedAt: patchComplianceReports.completedAt,
         createdAt: patchComplianceReports.createdAt,
-        outputPath: patchComplianceReports.outputPath
+        outputPath: patchComplianceReports.outputPath,
+        executionScopeVersion: patchComplianceReports.executionScopeVersion,
+        executionScopeKind: patchComplianceReports.executionScopeKind,
+        executionScopeSiteIds: patchComplianceReports.executionScopeSiteIds,
+        executionScopeUserId: patchComplianceReports.executionScopeUserId,
+        executionScopeFingerprint: patchComplianceReports.executionScopeFingerprint,
+        executionScopeCapturedAt: patchComplianceReports.executionScopeCapturedAt,
+        executionScopePrincipalKind: patchComplianceReports.executionScopePrincipalKind,
       })
       .from(patchComplianceReports)
       .where(eq(patchComplianceReports.id, reportId))
@@ -468,8 +507,26 @@ complianceRoutes.get(
       return c.json({ error: 'Report not found' }, 404);
     }
 
-    if (!auth.canAccessOrg(report.orgId)) {
-      return c.json({ error: 'Access denied to this organization' }, 403);
+    const authorityResult = await resolveRequestReportAuthority(
+      auth,
+      report.orgId,
+      'read',
+    );
+    try {
+      if (
+        !authorityResult.ok
+        || !isSiteScopeSubset(
+          decodeSiteScope(
+            report as unknown as PersistedSiteScopeColumns,
+            report.orgId,
+          ),
+          authorityResult.authority.scope,
+        )
+      ) {
+        return c.json({ error: 'Report not found' }, 404);
+      }
+    } catch {
+      return c.json({ error: 'Report not found' }, 404);
     }
 
     return c.json({
@@ -508,7 +565,14 @@ complianceRoutes.get(
         orgId: patchComplianceReports.orgId,
         status: patchComplianceReports.status,
         format: patchComplianceReports.format,
-        outputPath: patchComplianceReports.outputPath
+        outputPath: patchComplianceReports.outputPath,
+        executionScopeVersion: patchComplianceReports.executionScopeVersion,
+        executionScopeKind: patchComplianceReports.executionScopeKind,
+        executionScopeSiteIds: patchComplianceReports.executionScopeSiteIds,
+        executionScopeUserId: patchComplianceReports.executionScopeUserId,
+        executionScopeFingerprint: patchComplianceReports.executionScopeFingerprint,
+        executionScopeCapturedAt: patchComplianceReports.executionScopeCapturedAt,
+        executionScopePrincipalKind: patchComplianceReports.executionScopePrincipalKind,
       })
       .from(patchComplianceReports)
       .where(eq(patchComplianceReports.id, reportId))
@@ -518,8 +582,26 @@ complianceRoutes.get(
       return c.json({ error: 'Report not found' }, 404);
     }
 
-    if (!auth.canAccessOrg(report.orgId)) {
-      return c.json({ error: 'Access denied to this organization' }, 403);
+    const authorityResult = await resolveRequestReportAuthority(
+      auth,
+      report.orgId,
+      'export',
+    );
+    try {
+      if (
+        !authorityResult.ok
+        || !isSiteScopeSubset(
+          decodeSiteScope(
+            report as unknown as PersistedSiteScopeColumns,
+            report.orgId,
+          ),
+          authorityResult.authority.scope,
+        )
+      ) {
+        return c.json({ error: 'Report not found' }, 404);
+      }
+    } catch {
+      return c.json({ error: 'Report not found' }, 404);
     }
 
     if (report.status !== 'completed') {

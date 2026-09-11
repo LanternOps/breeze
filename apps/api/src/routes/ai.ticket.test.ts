@@ -30,6 +30,9 @@ const routeMocks = vi.hoisted(() => ({
   getAnthropicClientForPartnerMock: vi.fn(),
   resolveWireModelMock: vi.fn<(resolved: unknown, model: string) => { model: string; catalogPricing?: unknown }>((_resolved: unknown, model: string) => ({ model })),
   anthropicClient: { messages: { create: vi.fn() } },
+  reserveAiBudget: vi.fn(),
+  markAiBudgetReservationIndeterminate: vi.fn(),
+  releaseUnusedAiBudgetReservation: vi.fn(),
 }));
 
 const configRef = vi.hoisted(() => ({
@@ -145,6 +148,14 @@ vi.mock('../services/aiCostTracker', () => ({
   getUsageSummary: vi.fn(),
   updateBudget: vi.fn(),
   recordUsage: vi.fn(),
+  calculateCostCents: vi.fn(() => 1),
+  calculateCatalogCostCents: vi.fn(() => 1),
+}));
+
+vi.mock('../services/aiBudgetReservations', () => ({
+  reserveAiBudget: routeMocks.reserveAiBudget,
+  markAiBudgetReservationIndeterminate: routeMocks.markAiBudgetReservationIndeterminate,
+  releaseUnusedAiBudgetReservation: routeMocks.releaseUnusedAiBudgetReservation,
 }));
 
 vi.mock('../services/aiTicketDraft', () => ({
@@ -154,6 +165,11 @@ vi.mock('../services/aiTicketDraft', () => ({
       super('Not enough conversation to draft a ticket');
       this.name = 'ThinTranscriptError';
     }
+  },
+  TicketDraftFailedError: class TicketDraftFailedError extends Error {
+    inputTokens = 0;
+    outputTokens = 0;
+    providerOutcomeUnknown = false;
   },
 }));
 
@@ -245,6 +261,19 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     authHarness.currentAuth.value = partnerAuth;
     app = new Hono();
     app.route('/ai', aiRoutes);
+    routeMocks.reserveAiBudget.mockResolvedValue({
+      kind: 'unlimited',
+      reservationId: '66666666-6666-4666-8666-666666666666',
+      dailyPeriodKey: '2026-09-06',
+      monthlyPeriodKey: '2026-09-01',
+      status: 'active',
+    });
+    routeMocks.markAiBudgetReservationIndeterminate.mockResolvedValue({
+      kind: 'indeterminate', reservationId: '66666666-6666-4666-8666-666666666666',
+    });
+    routeMocks.releaseUnusedAiBudgetReservation.mockResolvedValue({
+      kind: 'released', reservationId: '66666666-6666-4666-8666-666666666666',
+    });
 
     routeMocks.getAnthropicClientForPartnerMock.mockResolvedValue({
       client: routeMocks.anthropicClient,
@@ -271,6 +300,24 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
       headers: { Authorization: 'Bearer token' },
     });
   }
+
+  it('does not call the ticket drafter when durable budget admission denies', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: {
+        id: 's1', orgId: 'org1', deviceId: null, model: null,
+        createdAt: new Date(), contextSnapshot: null,
+      },
+      messages: [{ role: 'assistant', content: 'fixed' }],
+    } as any);
+    routeMocks.reserveAiBudget.mockResolvedValueOnce({
+      kind: 'denied', reason: 'daily_budget', message: 'Daily AI budget exhausted ($1.00)',
+    });
+
+    const res = await postDraft('s1', partnerAuth);
+
+    expect(res.status).toBe(429);
+    expect(draftTicketFromTranscript).not.toHaveBeenCalled();
+  });
 
   it('returns a draft assembled from the session + summarizer', async () => {
     const createdAt = new Date(Date.now() - 25 * 60000);
@@ -332,6 +379,7 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
       false,
       'partner_key',
       undefined,
+      '66666666-6666-4666-8666-666666666666',
     );
   });
 
@@ -375,6 +423,7 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     // ledger keeps the platform-logical id.
     expect(recordUsage).toHaveBeenCalledWith(
       's1', 'org1', 'claude-sonnet-4-6', 10, 5, false, 'partner_key', CATALOG_PRICING,
+      '66666666-6666-4666-8666-666666666666',
     );
   });
 

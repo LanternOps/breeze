@@ -59,6 +59,34 @@ function makeApp() {
   return app;
 }
 
+/**
+ * Flattens a drizzle condition (real `eq`/`and`/`or`/`isNull` from
+ * drizzle-orm, not mocked) to its static text — same introspection approach
+ * as channels.list.test.ts / policies.list.test.ts.
+ */
+function sqlText(q: unknown): string {
+  if (q == null) return '';
+  if (typeof q === 'string') return q;
+  if (typeof q === 'number' || typeof q === 'boolean') return String(q);
+  const obj = q as { queryChunks?: unknown[]; value?: unknown; name?: string };
+  if (Array.isArray(obj.queryChunks)) {
+    return obj.queryChunks.map(sqlText).join(' ');
+  }
+  if (Array.isArray(obj.value)) {
+    return (obj.value as unknown[]).map(sqlText).join('');
+  }
+  if (typeof obj.value === 'string' || typeof obj.value === 'number') {
+    return String(obj.value);
+  }
+  if (typeof obj.name === 'string') {
+    return obj.name;
+  }
+  return '';
+}
+
+const ORG_ID = '11111111-1111-1111-1111-111111111111';
+const PARTNER_ID = '33333333-3333-3333-3333-333333333333';
+
 describe('GET /alerts/routing-rules (list-on-load)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -137,5 +165,56 @@ describe('GET /alerts/routing-rules (list-on-load)', () => {
 
     const res = await makeApp().request('/alerts/routing-rules');
     expect(res.status).toBe(403);
+  });
+});
+
+// Sweep 2026-09-08 (G6-4) — GET /alerts/routing-rules?orgId=<org> for a
+// partner-scoped caller built the per-org filter as a bare
+// `eq(notificationRoutingRules.orgId, query.orgId)`, unlike the "all orgs"
+// branch (no ?orgId=) right below it, which already ORs in the partner's own
+// partner-wide rules (org_id NULL, partner_id = auth.partnerId, #2130). A
+// routing rule created via POST /alerts/routing-rules with
+// ownerScope: 'partner' was therefore invisible from every per-org view even
+// though it applies to that org's devices.
+describe('GET /alerts/routing-rules?orgId= — partner-wide read branch (sweep G6-4)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedWhere.current = undefined;
+    rowsRef.current = [];
+  });
+
+  it('includes the partner-wide branch for a PARTNER-scoped caller with ?orgId=', async () => {
+    authRef.current = {
+      scope: 'partner',
+      user: { id: 'u-1', name: 'Pat', email: 'pat@partner.example' },
+      partnerId: PARTNER_ID, orgId: null, accessibleOrgIds: [ORG_ID], canAccessOrg: () => true,
+    } as typeof authRef.current;
+
+    const res = await makeApp().request(`/alerts/routing-rules?orgId=${ORG_ID}`);
+    expect(res.status).toBe(200);
+
+    const whereText = sqlText(capturedWhere.current);
+    expect(whereText).toContain('org_id');
+    expect(whereText).toContain(ORG_ID);
+    expect(whereText).toContain('is null');
+    expect(whereText).toContain('partner_id');
+    expect(whereText).toContain(PARTNER_ID);
+  });
+
+  it('does NOT include a partner-wide branch for an ORG-scoped caller with ?orgId= (RLS is stricter than the app layer; never claim parity)', async () => {
+    authRef.current = {
+      scope: 'organization',
+      user: { id: 'u-2', name: 'Olive Org', email: 'olive@org.example' },
+      // An org token carries a partnerId too — this must not leak the branch.
+      partnerId: PARTNER_ID, orgId: ORG_ID, accessibleOrgIds: null, canAccessOrg: () => true,
+    } as typeof authRef.current;
+
+    const res = await makeApp().request(`/alerts/routing-rules?orgId=${ORG_ID}`);
+    expect(res.status).toBe(200);
+
+    const whereText = sqlText(capturedWhere.current);
+    expect(whereText).toContain('org_id');
+    expect(whereText).not.toContain('is null');
+    expect(whereText).not.toContain(PARTNER_ID);
   });
 });

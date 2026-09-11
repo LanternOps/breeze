@@ -176,6 +176,7 @@ export interface CustomFieldDefinition {
   required: boolean;
   defaultValue: unknown;
   deviceTypes: string[] | null; // null = all device types
+  scriptWrite: boolean; // #2698 — may a script on the device write this field?
   createdAt: Date;
   updatedAt: Date;
 }

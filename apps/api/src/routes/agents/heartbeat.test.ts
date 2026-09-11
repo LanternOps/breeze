@@ -13,6 +13,8 @@ const ingestRollbackObservationMock = vi.hoisted(() => vi.fn());
 // manifest-trust-keyset fetch happens AFTER the org DB context closes
 // (the #1105 pool-poison fix). Reset per test.
 const callOrder: string[] = [];
+// #4673 W02 — org contexts opened by the heartbeat's self-managed wrap.
+const orgDbContexts: Array<Record<string, unknown>> = [];
 
 const recordAgentHealthObservationMock = vi.hoisted(() => vi.fn(async (_input: unknown) => ({
   observationId: 'health-observation-1',
@@ -46,7 +48,13 @@ vi.mock('../../db', () => ({
   // Pass-through that records when the org-scoped context opens and when its
   // callback resolves — in production the org transaction is released at the
   // latter point.
-  withDbAccessContext: async (_ctx: unknown, fn: () => Promise<unknown>) => {
+  // #4673 W02 — also RECORDS the context object. The heartbeat is in
+  // SELF_MANAGED_DB_CONTEXT_ACTIONS, so it skips agentAuthMiddleware's
+  // request-long wrap and hand-builds this context itself; the only way to
+  // prove it copies `currentPartnerId` across from the agent context is to
+  // inspect what it passed.
+  withDbAccessContext: async (ctx: unknown, fn: () => Promise<unknown>) => {
+    orgDbContexts.push(ctx as Record<string, unknown>);
     callOrder.push('dbContext:opened');
     const result = await fn();
     callOrder.push('dbContext:released');
@@ -64,6 +72,18 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('../../db/schema', () => ({
+  bareMetalRecoveries: {
+    id: 'bare_metal_recoveries.id',
+    orgId: 'bare_metal_recoveries.org_id',
+    deviceId: 'bare_metal_recoveries.device_id',
+    snapshotId: 'bare_metal_recoveries.snapshot_id',
+    identity: 'bare_metal_recoveries.identity',
+    nonceHash: 'bare_metal_recoveries.nonce_hash',
+    status: 'bare_metal_recoveries.status',
+    rebootedAt: 'bare_metal_recoveries.rebooted_at',
+    checkedInAt: 'bare_metal_recoveries.checked_in_at',
+    updatedAt: 'bare_metal_recoveries.updated_at',
+  },
   devices: {
     id: 'devices.id',
     status: 'devices.status',
@@ -269,9 +289,18 @@ vi.mock('../metrics', () => ({
   resolveResponseStatus: (c: any) => (c?.finalized ? (c.res?.status ?? 500) : 500),
 }));
 
+// #4630 — the heartbeat's dynamic-group re-evaluation ENQUEUE site. The
+// evaluation itself never runs on the request path any more; the handler only
+// hands the device id to the coalescing BullMQ queue.
+const requestDeviceGroupReevaluationMock = vi.hoisted(() => vi.fn().mockResolvedValue('job-1'));
+vi.mock('../../jobs/deviceGroupJobs', () => ({
+  requestDeviceGroupReevaluation: requestDeviceGroupReevaluationMock,
+}));
+
 import { and, eq, notInArray } from 'drizzle-orm';
 import { heartbeatRoutes } from './heartbeat';
-import { devices } from '../../db/schema';
+import { devices, bareMetalRecoveries } from '../../db/schema';
+import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 
 // Builds a thenable mock-chain so any `.from().where().limit()` access
 // resolves to the given value.
@@ -308,6 +337,7 @@ function buildApp(): Hono {
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
+      partnerId: 'partner-1',
       siteId: 'site-1',
       role: 'agent',
     });
@@ -324,6 +354,7 @@ function buildWatchdogApp(): Hono {
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
+      partnerId: 'partner-1',
       siteId: 'site-1',
       role: 'watchdog',
     });
@@ -342,6 +373,7 @@ function buildDrainingApp(role: 'agent' | 'watchdog' = 'agent'): Hono {
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
+      partnerId: 'partner-1',
       siteId: 'site-1',
       role,
       tenantDraining: true,
@@ -367,6 +399,7 @@ function buildDeviceDrainApp(): Hono {
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
+      partnerId: 'partner-1',
       siteId: 'site-1',
       role: 'agent',
       tenantDraining: false,
@@ -445,6 +478,38 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
     insertMock.mockReset();
     getActiveTrustKeysetMock.mockResolvedValue([]);
     getActiveManifestKeyDelegationsMock.mockResolvedValue([]);
+    orgDbContexts.length = 0;
+  });
+
+  // #4673 W02 — the heartbeat is THE agent config-delivery path, and it is in
+  // SELF_MANAGED_DB_CONTEXT_ACTIONS: it skips agentAuthMiddleware's
+  // request-long wrap and hand-builds its own org context. So it must copy
+  // `currentPartnerId` over from the agent context explicitly — nothing
+  // inherits it here.
+  //
+  // Reverting that field to `null` in heartbeat.ts passes every other test in
+  // this file (verified by mutation), while silently making Wave 1's
+  // partner-wide SELECT branches unmatched for every heartbeat — the exact
+  // silent-zero bug this wave fixes. This assertion is the only thing that
+  // catches it.
+  it('carries currentPartnerId from the agent context onto its self-managed org context (#4673 W02)', async () => {
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })) });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(response.status).toBe(200);
+    const orgCtx = orgDbContexts.find((c) => c.scope === 'organization');
+    expect(orgCtx).toBeDefined();
+    expect(orgCtx!.currentPartnerId).toBe('partner-1');
+    // Read-only axis only — the write-capable partner AXIS stays empty.
+    expect(orgCtx!.accessiblePartnerIds).toEqual([]);
   });
 
   it('an authenticated main-agent heartbeat promotes pending to online and advances lastSeenAt', async () => {
@@ -3686,6 +3751,117 @@ describe('POST /agents/:id/heartbeat — watchdogVersion telemetry (#1802)', () 
   });
 });
 
+describe('POST /agents/:id/heartbeat — dynamic device group re-evaluation enqueue (#4630)', () => {
+  const deviceRow = {
+    id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'old-host',
+    osType: 'windows', osVersion: '10.0.19045', osBuild: '19045',
+    architecture: 'amd64', agentVersion: '0.66.0', deviceRole: 'workstation',
+    deviceRoleSource: 'auto', lastSeenAt: new Date(), mainAgentSilentSince: null,
+  };
+
+  function arrange() {
+    vi.clearAllMocks();
+    requestDeviceGroupReevaluationMock.mockResolvedValue('job-1');
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })) });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  }
+
+  async function post(body: Record<string, unknown>) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', metrics: minimalHeartbeatBody.metrics, ...body }),
+    });
+  }
+
+  it('enqueues a device.updated re-evaluation with the changed filterable fields', async () => {
+    arrange();
+
+    const resp = await post({ agentVersion: '0.66.0', hostname: 'new-host' });
+
+    expect(resp.status).toBe(200);
+    expect(requestDeviceGroupReevaluationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deviceId: 'device-1',
+        orgId: 'org-1',
+        eventType: 'device.updated',
+        changedFields: ['hostname'],
+      }),
+    );
+  });
+
+  it('reports every changed filterable field at once', async () => {
+    arrange();
+
+    const resp = await post({
+      agentVersion: '0.66.0',
+      hostname: 'new-host',
+      osVersion: '10.0.22631',
+      osBuild: '22631',
+      deviceRole: 'server',
+    });
+
+    expect(resp.status).toBe(200);
+    const request = requestDeviceGroupReevaluationMock.mock.calls[0]?.[0];
+    expect(request?.changedFields).toEqual(
+      expect.arrayContaining(['hostname', 'osVersion', 'osBuild', 'deviceRole']),
+    );
+  });
+
+  it('does not enqueue when no filterable field changes (steady-state heartbeat)', async () => {
+    arrange();
+
+    const resp = await post({ agentVersion: '0.66.0' });
+
+    expect(resp.status).toBe(200);
+    expect(requestDeviceGroupReevaluationMock).not.toHaveBeenCalled();
+  });
+
+  it('does not enqueue when the agent re-reports its unchanged auto deviceRole (real steady state)', async () => {
+    // The Go agent sends deviceRole on EVERY heartbeat (heartbeat.go
+    // sendHeartbeat), and deviceRoleSource defaults to 'auto' fleet-wide, so a
+    // body that omits deviceRole is not the steady state — this is.
+    arrange();
+
+    const resp = await post({
+      agentVersion: '0.66.0',
+      hostname: 'old-host',
+      osVersion: '10.0.19045',
+      osBuild: '19045',
+      deviceRole: 'workstation',
+    });
+
+    expect(resp.status).toBe(200);
+    expect(requestDeviceGroupReevaluationMock).not.toHaveBeenCalled();
+  });
+
+  it('does not enqueue for a non-filterable-only change (agentServerUrl)', async () => {
+    arrange();
+
+    const resp = await post({ agentVersion: '0.66.0', serverUrl: 'https://api.example.com' });
+
+    expect(resp.status).toBe(200);
+    expect(requestDeviceGroupReevaluationMock).not.toHaveBeenCalled();
+  });
+
+  it('answers without waiting on the enqueue — a stalled Redis must not hold the transaction', async () => {
+    // The whole point of the queue is that no Redis round trip happens while
+    // this request's Postgres transaction is open. A never-settling enqueue
+    // proves the call site is `void`-ed rather than awaited: if the route ever
+    // regains an `await`, this test hangs to its timeout instead of passing.
+    arrange();
+    requestDeviceGroupReevaluationMock.mockReturnValue(new Promise(() => {}));
+
+    const resp = await post({ agentVersion: '0.66.0', hostname: 'new-host' });
+
+    expect(resp.status).toBe(200);
+    expect(requestDeviceGroupReevaluationMock).toHaveBeenCalled();
+  });
+});
+
 describe('POST /agents/:id/heartbeat — backupVersion telemetry', () => {
   // Mirrors the watchdogVersion telemetry suite above (#1802): breeze-backup
   // is a separate agent-shipped component, so devices.backup_version is kept
@@ -4279,6 +4455,196 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
     expect(calls).toHaveLength(1); // ONE event, not three
     const fields = (calls[0]![1] as unknown as { details: { changes: any[] } }).details.changes.map((c) => c.field);
     expect(fields).toEqual(expect.arrayContaining(['status', 'hostname', 'agentServerUrl']));
+  });
+});
+
+// ---------------------------------------------------------------------
+// #5250 — desktopAccess change publishes device.updated so pages holding the
+// event stream open (Remote Tools' Connect Desktop button) can refresh
+// without a remount. Was previously written to devices + audited (finding
+// #10 above) but never pushed as a live event, unlike agentVersion.
+// ---------------------------------------------------------------------
+describe('POST /agents/:id/heartbeat — desktopAccess change publishes device.updated (#5250)', () => {
+  const baselineDevice = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'macos',
+    osVersion: '14.5',
+    osBuild: null,
+    architecture: 'arm64',
+    agentVersion: '0.65.10',
+    deviceRole: 'workstation',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date(),
+    status: 'online',
+    desktopAccess: { mode: 'unavailable', loginUiReachable: false, virtualDisplayReady: false, checkedAt: '2026-09-01T00:00:00.000Z' },
+    mainAgentSilentSince: null,
+  };
+
+  function arrange(deviceOverrides: Record<string, unknown> = {}) {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([{ ...baselineDevice, ...deviceOverrides }]),
+    );
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning([{ id: 'device-1' }])) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+  }
+
+  async function beat(body: Record<string, unknown>) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('desktopAccess recovering from unavailable → available publishes device.updated with fields:[desktopAccess]', async () => {
+    arrange(); // baseline: mode 'unavailable'
+    const recovered = {
+      mode: 'user_session',
+      loginUiReachable: true,
+      virtualDisplayReady: true,
+      checkedAt: '2026-09-08T12:00:00.000Z',
+    };
+
+    const resp = await beat({ ...minimalHeartbeatBody, desktopAccess: recovered });
+    expect(resp.status).toBe(200);
+
+    const { publishEvent } = await import('../../services/eventBus');
+    expect(publishEvent).toHaveBeenCalledWith(
+      'device.updated',
+      'org-1',
+      expect.objectContaining({
+        deviceId: 'device-1',
+        fields: ['desktopAccess'],
+        desktopAccess: recovered,
+      }),
+      'heartbeat',
+      expect.objectContaining({ siteId: 'site-1' }),
+    );
+  });
+
+  it('desktopAccess dropping from user_session → unavailable publishes device.updated (degrading transition)', async () => {
+    arrange({
+      desktopAccess: { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-01T00:00:00.000Z' },
+    });
+    const dropped = {
+      mode: 'unavailable',
+      loginUiReachable: false,
+      virtualDisplayReady: false,
+      reason: 'helper_not_connected',
+      checkedAt: '2026-09-08T12:00:00.000Z',
+    };
+
+    const resp = await beat({ ...minimalHeartbeatBody, desktopAccess: dropped });
+    expect(resp.status).toBe(200);
+
+    const { publishEvent } = await import('../../services/eventBus');
+    expect(publishEvent).toHaveBeenCalledWith(
+      'device.updated',
+      'org-1',
+      expect.objectContaining({ deviceId: 'device-1', fields: ['desktopAccess'], desktopAccess: dropped }),
+      'heartbeat',
+      expect.objectContaining({ siteId: 'site-1' }),
+    );
+  });
+
+  // #5250 review — the agent recomputes `checkedAt` fresh on EVERY heartbeat
+  // regardless of whether access actually changed (it calls time.Now().UTC()
+  // unconditionally on mac/Linux). A test that reuses an IDENTICAL
+  // checkedAt for baseline and report (as a naive re-report test would) can
+  // never catch a raw JSON.stringify diff spamming device.updated on every
+  // heartbeat — production heartbeats never repeat a timestamp. This is the
+  // realistic steady-state case: same mode/reachability, DIFFERENT
+  // checkedAt, must still NOT publish.
+  it('steady-state desktopAccess re-report with only checkedAt differing does NOT publish device.updated', async () => {
+    arrange({
+      desktopAccess: { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-01T00:00:00.000Z' },
+    });
+
+    const resp = await beat({
+      ...minimalHeartbeatBody,
+      // Same mode/reachability as baseline; only the timestamp moved, as a
+      // real re-report from the agent always does.
+      desktopAccess: { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-08T12:00:00.000Z' },
+    });
+    expect(resp.status).toBe(200);
+
+    const { publishEvent } = await import('../../services/eventBus');
+    expect(publishEvent).not.toHaveBeenCalledWith(
+      'device.updated',
+      expect.anything(),
+      expect.objectContaining({ fields: ['desktopAccess'] }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('heartbeat with no desktopAccess reported does NOT publish device.updated for desktopAccess', async () => {
+    arrange(); // baseline desktopAccess 'unavailable'
+
+    const resp = await beat({ ...minimalHeartbeatBody }); // no desktopAccess field at all
+    expect(resp.status).toBe(200);
+
+    const { publishEvent } = await import('../../services/eventBus');
+    expect(publishEvent).not.toHaveBeenCalledWith(
+      'device.updated',
+      expect.anything(),
+      expect.objectContaining({ fields: ['desktopAccess'] }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+});
+
+describe('desktopAccessMeaningfullyChanged (#5250)', () => {
+  it('is false when both are null/undefined', async () => {
+    const { desktopAccessMeaningfullyChanged } = await import('./heartbeat');
+    expect(desktopAccessMeaningfullyChanged(null, undefined)).toBe(false);
+  });
+
+  it('is false when only checkedAt differs', async () => {
+    const { desktopAccessMeaningfullyChanged } = await import('./heartbeat');
+    expect(
+      desktopAccessMeaningfullyChanged(
+        { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-01T00:00:00.000Z' },
+        { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-08T00:00:00.000Z' },
+      ),
+    ).toBe(false);
+  });
+
+  it('is true when mode differs', async () => {
+    const { desktopAccessMeaningfullyChanged } = await import('./heartbeat');
+    expect(
+      desktopAccessMeaningfullyChanged(
+        { mode: 'unavailable', loginUiReachable: false, virtualDisplayReady: false, checkedAt: '2026-09-01T00:00:00.000Z' },
+        { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-08T00:00:00.000Z' },
+      ),
+    ).toBe(true);
+  });
+
+  it('is true when reason differs (mode unchanged)', async () => {
+    const { desktopAccessMeaningfullyChanged } = await import('./heartbeat');
+    expect(
+      desktopAccessMeaningfullyChanged(
+        { mode: 'unavailable', loginUiReachable: false, virtualDisplayReady: false, reason: 'helper_not_connected', checkedAt: '2026-09-01T00:00:00.000Z' },
+        { mode: 'unavailable', loginUiReachable: false, virtualDisplayReady: false, reason: 'missing_permission', checkedAt: '2026-09-08T00:00:00.000Z' },
+      ),
+    ).toBe(true);
+  });
+
+  it('is true when transitioning from null to a value and vice versa', async () => {
+    const { desktopAccessMeaningfullyChanged } = await import('./heartbeat');
+    const state = { mode: 'user_session' as const, loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-01T00:00:00.000Z' };
+    expect(desktopAccessMeaningfullyChanged(null, state)).toBe(true);
+    expect(desktopAccessMeaningfullyChanged(state, null)).toBe(true);
   });
 });
 
@@ -5000,5 +5366,328 @@ describe('POST /agents/:id/heartbeat — device-remove uninstall drain (#3986)',
     const body = (await resp.json()) as Record<string, unknown>;
     expect(Object.keys(body)).toContain('configUpdate');
     expect(Object.keys(body)).toContain('manifestTrustKeys');
+  });
+});
+
+// ---------------------------------------------------------------------
+// #3207 W5 — scheduled-restart status denormalized from the heartbeat
+// ---------------------------------------------------------------------
+
+describe('POST /agents/:id/heartbeat — reboot status (#3207 W5)', () => {
+  const SCHEDULED_AT = '2026-09-02T13:00:00.000Z';
+  const DEADLINE = '2026-09-02T16:00:00.000Z';
+
+  function arrange(deviceOverrides: Record<string, unknown> = {}) {
+    vi.clearAllMocks();
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host-1',
+          osType: 'windows',
+          osVersion: 'Microsoft Windows 11 Pro',
+          osBuild: null,
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          deviceRole: 'workstation',
+          deviceRoleSource: 'auto',
+          agentTokenHash: 'hash',
+          tokenIssuedAt: new Date(),
+          // A device with nothing scheduled — the steady state for most of a
+          // fleet. Overridden below by the tests that need a live schedule.
+          rebootScheduledAt: null,
+          rebootDeadline: null,
+          rebootSource: null,
+          rebootDeferralsUsed: null,
+          rebootMaxDeferrals: null,
+          ...deviceOverrides,
+        },
+      ]),
+    );
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+    return setSpy;
+  }
+
+  async function beat(body: Record<string, unknown>) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, ...body }),
+    });
+  }
+
+  function updateArgOf(setSpy: ReturnType<typeof arrange>) {
+    return (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+  }
+
+  const LIVE_SCHEDULE = {
+    rebootScheduledAt: new Date(SCHEDULED_AT),
+    rebootDeadline: new Date(DEADLINE),
+    rebootSource: 'patch_job',
+    rebootDeferralsUsed: 1,
+    rebootMaxDeferrals: 3,
+  };
+
+  it('persists the reboot snapshot the agent reports', async () => {
+    const setSpy = arrange();
+    const resp = await beat({
+      pendingReboot: true,
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        deadline: DEADLINE,
+        source: 'patch_job',
+        deferralsUsed: 1,
+        maxDeferrals: 3,
+      },
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = updateArgOf(setSpy);
+    expect(updateArg.rebootScheduledAt).toEqual(new Date(SCHEDULED_AT));
+    expect(updateArg.rebootDeadline).toEqual(new Date(DEADLINE));
+    expect(updateArg.rebootSource).toBe('patch_job');
+    expect(updateArg.rebootDeferralsUsed).toBe(1);
+    expect(updateArg.rebootMaxDeferrals).toBe(3);
+  });
+
+  it('persists maxDeferrals=0 so the console can say "cannot be postponed"', async () => {
+    // 0 and NULL mean different things: 0 is "this restart has no deferral
+    // budget", NULL is "this agent predates deferral reporting". A falsy-guard
+    // regression here would collapse the two and the badge would silently stop
+    // distinguishing them.
+    const setSpy = arrange();
+    await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        source: 'maintenance_window',
+        deferralsUsed: 0,
+        maxDeferrals: 0,
+      },
+    });
+
+    const updateArg = updateArgOf(setSpy);
+    expect(updateArg.rebootDeferralsUsed).toBe(0);
+    expect(updateArg.rebootMaxDeferrals).toBe(0);
+  });
+
+  it('leaves stored values alone when rebootStatus is absent (old agent)', async () => {
+    // Absent must mean "no news", not "cancelled" — otherwise every pre-#3207
+    // agent in the fleet wipes the console's view on its next heartbeat.
+    const setSpy = arrange(LIVE_SCHEDULE);
+    await beat({ pendingReboot: true });
+
+    const updateArg = updateArgOf(setSpy);
+    expect(Object.hasOwn(updateArg, 'rebootScheduledAt')).toBe(false);
+    expect(Object.hasOwn(updateArg, 'rebootDeadline')).toBe(false);
+    expect(Object.hasOwn(updateArg, 'rebootSource')).toBe(false);
+    expect(Object.hasOwn(updateArg, 'rebootDeferralsUsed')).toBe(false);
+    expect(Object.hasOwn(updateArg, 'rebootMaxDeferrals')).toBe(false);
+  });
+
+  it('clears the stored schedule when the agent reports rebootStatus: null', async () => {
+    // An explicit null IS news: the restart was cancelled, or it already fired.
+    const setSpy = arrange(LIVE_SCHEDULE);
+    await beat({ rebootStatus: null });
+
+    const updateArg = updateArgOf(setSpy);
+    expect(updateArg.rebootScheduledAt).toBeNull();
+    expect(updateArg.rebootDeadline).toBeNull();
+    expect(updateArg.rebootSource).toBeNull();
+    expect(updateArg.rebootDeferralsUsed).toBeNull();
+    expect(updateArg.rebootMaxDeferrals).toBeNull();
+  });
+
+  it('does not touch the reboot columns when null is reported and nothing was stored', async () => {
+    // The steady state for most of a fleet: no restart scheduled, so the agent
+    // reports null on every beat forever. Writing five NULLs over five NULLs on
+    // every heartbeat from every device is pure SET-list noise.
+    const setSpy = arrange();
+    await beat({ rebootStatus: null });
+
+    const updateArg = updateArgOf(setSpy);
+    expect(Object.hasOwn(updateArg, 'rebootScheduledAt')).toBe(false);
+    expect(Object.hasOwn(updateArg, 'rebootMaxDeferrals')).toBe(false);
+    // The rest of the heartbeat still landed.
+    expect(updateArg.status).toBe('online');
+  });
+
+  it('stores NULLs for the optional members an agent omits', async () => {
+    const setSpy = arrange(LIVE_SCHEDULE);
+    await beat({ rebootStatus: { scheduledAt: SCHEDULED_AT } });
+
+    const updateArg = updateArgOf(setSpy);
+    expect(updateArg.rebootScheduledAt).toEqual(new Date(SCHEDULED_AT));
+    expect(updateArg.rebootDeadline).toBeNull();
+    expect(updateArg.rebootSource).toBeNull();
+    expect(updateArg.rebootDeferralsUsed).toBeNull();
+    expect(updateArg.rebootMaxDeferrals).toBeNull();
+  });
+
+  // NOTE: the zod-level drops (malformed scheduledAt, out-of-range counters,
+  // a source outside ^[a-z0-9_]{1,32}$) are NOT testable from here — this file
+  // mocks '@hono/zod-validator' so the handler reads the raw body. They live in
+  // schemas.heartbeatTolerance.test.ts, and what reaches this route once a
+  // field has been dropped is exactly the "absent" case covered above.
+});
+
+// ---------------------------------------------------------------------
+// Bare-metal recovery W04a — heartbeat recovery-marker check-in.
+// ---------------------------------------------------------------------
+describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
+  const baselineDevice = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'linux',
+    osVersion: 'Ubuntu 22.04',
+    osBuild: null,
+    architecture: 'amd64',
+    agentVersion: '0.65.10',
+    deviceRole: 'server',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date(),
+    status: 'online',
+  };
+
+  const NONCE = 'a'.repeat(64);
+  const RECOVERY_ID = '11111111-1111-4111-8111-111111111111';
+
+  let recoverySetCalls: Record<string, unknown>[];
+  let deviceSetCalls: Record<string, unknown>[];
+
+  function arrange(recoveryRows: unknown[]) {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    recoverySetCalls = [];
+    deviceSetCalls = [];
+
+    selectMock
+      .mockReturnValueOnce(selectChainResolving([baselineDevice])) // device lookup
+      .mockReturnValueOnce(selectChainResolving(recoveryRows)); // bare_metal_recoveries lookup
+    selectMock.mockReturnValue(selectChainResolving([]));
+
+    updateMock.mockImplementation((table: unknown) => {
+      if (table === bareMetalRecoveries) {
+        return {
+          set: vi.fn((values: Record<string, unknown>) => {
+            recoverySetCalls.push(values);
+            return { where: vi.fn(() => Promise.resolve(undefined)) };
+          }),
+        };
+      }
+      return {
+        set: vi.fn((values: Record<string, unknown>) => {
+          deviceSetCalls.push(values);
+          return { where: vi.fn(() => whereResultWithReturning([{ id: 'device-1' }])) };
+        }),
+      };
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  }
+
+  async function beat(body: Record<string, unknown>) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('completes a rebooted recovery when the nonce matches and acks', async () => {
+    arrange([{
+      id: RECOVERY_ID, orgId: 'org-1', deviceId: 'device-1', snapshotId: 'snap-1',
+      identity: 'original', status: 'rebooted', nonceHash: hashRecoveryNonce(NONCE), rebootedAt: null,
+    }]);
+
+    const res = await beat({
+      ...minimalHeartbeatBody,
+      recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.recoveryMarkerAck).toBe(true);
+    expect(recoverySetCalls).toHaveLength(1);
+    expect(recoverySetCalls[0]!.status).toBe('checked_in');
+    expect(recoverySetCalls[0]!.checkedInAt).toBeInstanceOf(Date);
+    expect(deviceSetCalls[0]!.recoveredAt).toBeInstanceOf(Date);
+    expect(deviceSetCalls[0]!.recoveredFromSnapshotId).toBe('snap-1');
+  });
+
+  it('ignores a marker whose nonce does not match (no ack, no update, audit failure)', async () => {
+    arrange([{
+      id: RECOVERY_ID, orgId: 'org-1', deviceId: 'device-1', snapshotId: 'snap-1',
+      identity: 'original', status: 'rebooted', nonceHash: hashRecoveryNonce('b'.repeat(64)), rebootedAt: null,
+    }]);
+
+    const res = await beat({
+      ...minimalHeartbeatBody,
+      recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.recoveryMarkerAck).toBeUndefined();
+    expect(recoverySetCalls).toHaveLength(0);
+    const { writeAuditEvent } = await import('../../services/auditEvents');
+    const failureCall = vi.mocked(writeAuditEvent).mock.calls.find(
+      (c) => (c[1] as { action?: string })?.action === 'bmr.recovery.checked_in',
+    );
+    expect(failureCall?.[1]).toMatchObject({ result: 'failure' });
+  });
+
+  it('ignores a marker for a recovery in a terminal failed state', async () => {
+    arrange([{
+      id: RECOVERY_ID, orgId: 'org-1', deviceId: 'device-1', snapshotId: 'snap-1',
+      identity: 'original', status: 'failed', nonceHash: hashRecoveryNonce(NONCE), rebootedAt: null,
+    }]);
+
+    const res = await beat({
+      ...minimalHeartbeatBody,
+      recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).recoveryMarkerAck).toBeUndefined();
+    expect(recoverySetCalls).toHaveLength(0);
+  });
+
+  it('re-acks an already checked_in recovery without writing again', async () => {
+    arrange([{
+      id: RECOVERY_ID, orgId: 'org-1', deviceId: 'device-1', snapshotId: 'snap-1',
+      identity: 'original', status: 'checked_in', nonceHash: hashRecoveryNonce(NONCE), rebootedAt: new Date(),
+    }]);
+
+    const res = await beat({
+      ...minimalHeartbeatBody,
+      recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).recoveryMarkerAck).toBe(true);
+    expect(recoverySetCalls).toHaveLength(0);
+    expect(deviceSetCalls[0]?.recoveredAt).toBeUndefined();
+  });
+
+  it('ignores a marker for a recovery belonging to another device (query filters it out)', async () => {
+    // The lookup filters on deviceId server-side; simulate "not found" since a
+    // recovery scoped to a different device would never match this device's row.
+    arrange([]);
+
+    const res = await beat({
+      ...minimalHeartbeatBody,
+      recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).recoveryMarkerAck).toBeUndefined();
+    expect(recoverySetCalls).toHaveLength(0);
   });
 });

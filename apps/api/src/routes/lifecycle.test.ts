@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockMobileDevices: Record<string, any> = {};
 const mockGrants: Record<string, any> = {};
 const mockClientBlocks: any[] = [];
+const selectWheres: unknown[] = [];
 
 const dbState = {
   selectFrom: '',
@@ -22,7 +23,8 @@ function buildSelectChain<T>(rows: () => T[]) {
     from: vi.fn(function (this: any, _table: any) {
       return this;
     }),
-    where: vi.fn(function (this: any, _: any) {
+    where: vi.fn(function (this: any, expr: unknown) {
+      selectWheres.push(expr);
       return this;
     }),
     innerJoin: vi.fn(function (this: any, _: any, __: any) {
@@ -42,6 +44,23 @@ function buildSelectChain<T>(rows: () => T[]) {
       return Promise.resolve(rows()).then(resolve);
     },
   };
+}
+
+function sqlValues(expr: unknown): unknown[] {
+  const out: unknown[] = [];
+  const visit = (node: any): void => {
+    if (node === null || node === undefined) return;
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+    } else if (typeof node === 'object') {
+      if (Array.isArray(node.queryChunks)) node.queryChunks.forEach(visit);
+      else if ('value' in node) visit(node.value);
+    } else {
+      out.push(node);
+    }
+  };
+  visit(expr);
+  return out;
 }
 
 let nextSelectRows: any[] = [];
@@ -92,6 +111,15 @@ vi.mock('../db/schema/approvals', () => {
 vi.mock('../services', () => ({
   rateLimiter: vi.fn(async () => ({ allowed: true, resetAt: new Date(Date.now() + 60000) })),
   getRedis: vi.fn(() => ({})),
+  publishFamilyRevocationSentinel: vi.fn(async () => true),
+}));
+
+const familyRevocationMocks = vi.hoisted(() => ({
+  revokeMobileDeviceRefreshFamilies: vi.fn(async () => ['family-mobile-1']),
+}));
+
+vi.mock('../services/authLifecycle', () => ({
+  revokeMobileDeviceRefreshFamilies: familyRevocationMocks.revokeMobileDeviceRefreshFamilies,
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -131,18 +159,24 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => fn()),
 }));
 
 import { lifecycleRoutes, lifecycleAdminRoutes, MOBILE_DEVICE_ID_HEADER } from './lifecycle';
+import { publishFamilyRevocationSentinel } from '../services';
+
+import { db } from '../db';
 
 beforeEach(() => {
   vi.clearAllMocks();
   nextSelectRows = [];
+  selectWheres.length = 0;
   nextUpdateReturning = [];
   nextInsertReturning = [];
   mockAuth = {
     scope: 'organization',
     partnerId: 'p-1',
+    partnerOrgAccess: null,
     orgId: 'o-1',
     accessibleOrgIds: ['o-1'],
     canAccessOrg: (id: string) => id === 'o-1',
@@ -235,6 +269,13 @@ describe('POST /me/mobile-devices/:id/block', () => {
     );
 
     expect(res.status).toBe(204);
+    expect(familyRevocationMocks.revokeMobileDeviceRefreshFamilies).toHaveBeenCalledWith(
+      expect.anything(),
+      '11111111-1111-1111-1111-111111111111',
+      'install-other',
+      'mobile-device-blocked'
+    );
+    expect(publishFamilyRevocationSentinel).toHaveBeenCalledWith('family-mobile-1');
   });
 
   it('refuses to block the current device with 409 + self_revoke_blocked', async () => {
@@ -273,6 +314,8 @@ describe('POST /me/mobile-devices/:id/block', () => {
       }
     );
     expect(res.status).toBe(404);
+    expect(familyRevocationMocks.revokeMobileDeviceRefreshFamilies).not.toHaveBeenCalled();
+    expect(publishFamilyRevocationSentinel).not.toHaveBeenCalled();
   });
 
   it('returns 409 when device is already blocked', async () => {
@@ -290,6 +333,80 @@ describe('POST /me/mobile-devices/:id/block', () => {
 // ============================================================
 
 describe('POST /admin/users/:userId/mobile-devices/:id/block', () => {
+  it('revokes only the target installation families when an admin blocks the device', async () => {
+    mockAuth = {
+      ...mockAuth,
+      scope: 'system',
+      user: { ...mockAuth.user, id: '99999999-9999-4999-8999-999999999999', isPlatformAdmin: true },
+    };
+    nextSelectRows = [{
+      id: '00000000-0000-0000-0000-000000000099',
+      deviceId: 'install-target',
+      userId: '00000000-0000-0000-0000-000000000007',
+      status: 'active',
+    }];
+    nextUpdateReturning = [{
+      id: '00000000-0000-0000-0000-000000000099',
+      deviceId: 'install-target',
+      userId: '00000000-0000-0000-0000-000000000007',
+      status: 'blocked',
+    }];
+
+    const res = await lifecycleAdminRoutes.request(
+      '/admin/users/00000000-0000-0000-0000-000000000007/mobile-devices/00000000-0000-0000-0000-000000000099/block',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason: 'lost phone' }),
+      }
+    );
+
+    expect(res.status).toBe(204);
+    expect(familyRevocationMocks.revokeMobileDeviceRefreshFamilies).toHaveBeenCalledWith(
+      expect.anything(),
+      '00000000-0000-0000-0000-000000000007',
+      'install-target',
+      'mobile-device-blocked'
+    );
+    expect(publishFamilyRevocationSentinel).toHaveBeenCalledWith('family-mobile-1');
+  });
+
+  it.each(['selected', 'none'] as const)(
+    'denies a partnerOrgAccess=%s caller targeting another partner staff member',
+    async (partnerOrgAccess) => {
+      mockAuth = {
+        ...mockAuth,
+        scope: 'partner',
+        orgId: null,
+        partnerOrgAccess,
+        accessibleOrgIds: partnerOrgAccess === 'selected' ? ['o-1'] : [],
+        canAccessOrg: () => false,
+      };
+      vi.mocked(db.select).mockImplementationOnce(() =>
+        buildSelectChain(() => [{ partnerId: 'p-1' }]) as any
+      );
+      nextSelectRows = [{
+        id: '00000000-0000-0000-0000-000000000099',
+        deviceId: 'target-phone',
+        userId: '00000000-0000-0000-0000-000000000007',
+        status: 'active',
+      }];
+      nextUpdateReturning = [{ id: '00000000-0000-0000-0000-000000000099' }];
+
+      const res = await lifecycleAdminRoutes.request(
+        '/admin/users/00000000-0000-0000-0000-000000000007/mobile-devices/00000000-0000-0000-0000-000000000099/block',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ reason: 'lost phone' }),
+        }
+      );
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    }
+  );
+
   it('refuses to admin-block self (use /me path instead)', async () => {
     const res = await lifecycleAdminRoutes.request(
       '/admin/users/11111111-1111-1111-1111-111111111111/mobile-devices/00000000-0000-0000-0000-000000000099/block',
@@ -362,6 +479,90 @@ describe('POST /admin/orgs/:orgId/oauth-clients/:clientId/block-globally', () =>
 // ============================================================
 
 describe('GET /admin/users/:userId/mobile-devices', () => {
+  it.each(['selected', 'none'] as const)(
+    'denies a partnerOrgAccess=%s caller enumerating another partner staff member devices',
+    async (partnerOrgAccess) => {
+      mockAuth = {
+        ...mockAuth,
+        scope: 'partner',
+        orgId: null,
+        partnerOrgAccess,
+        accessibleOrgIds: partnerOrgAccess === 'selected' ? ['o-1'] : [],
+        canAccessOrg: () => false,
+      };
+      vi.mocked(db.select).mockImplementationOnce(() =>
+        buildSelectChain(() => [{ partnerId: 'p-1' }]) as any
+      );
+      nextSelectRows = [{
+        id: 'mobile-1',
+        deviceId: 'target-phone',
+        platform: 'ios',
+        model: 'Phone',
+        osVersion: '18',
+        appVersion: '1.0',
+        lastActiveAt: new Date(),
+        status: 'active',
+        blockedAt: null,
+        blockedReason: null,
+        createdAt: new Date(),
+      }];
+
+      const res = await lifecycleAdminRoutes.request(
+        '/admin/users/00000000-0000-0000-0000-000000000007/mobile-devices'
+      );
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'User not in your tenant' });
+    }
+  );
+
+  it('allows an all-access partner to administer another partner staff member', async () => {
+    mockAuth = {
+      ...mockAuth,
+      scope: 'partner',
+      orgId: null,
+      partnerOrgAccess: 'all',
+      accessibleOrgIds: null,
+      canAccessOrg: () => true,
+    };
+    vi.mocked(db.select).mockImplementationOnce(() =>
+      buildSelectChain(() => [{ partnerId: 'p-1' }]) as any
+    );
+    nextSelectRows = [];
+
+    const res = await lifecycleAdminRoutes.request(
+      '/admin/users/00000000-0000-0000-0000-000000000007/mobile-devices'
+    );
+
+    expect(res.status).toBe(200);
+    expect(sqlValues(selectWheres[0])).toEqual(expect.arrayContaining([
+      'partner_users',
+      '00000000-0000-0000-0000-000000000007',
+      'p-1',
+    ]));
+  });
+
+  it('allows a selected-access partner to administer an org user inside their selection', async () => {
+    mockAuth = {
+      ...mockAuth,
+      scope: 'partner',
+      orgId: null,
+      partnerOrgAccess: 'selected',
+      accessibleOrgIds: ['o-1'],
+      canAccessOrg: (id: string) => id === 'o-1',
+    };
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => buildSelectChain(() => []) as any)
+      .mockImplementationOnce(() => buildSelectChain(() => [{ orgId: 'o-1' }]) as any);
+    nextSelectRows = [];
+
+    const res = await lifecycleAdminRoutes.request(
+      '/admin/users/00000000-0000-0000-0000-000000000007/mobile-devices'
+    );
+
+    expect(res.status).toBe(200);
+  });
+
   it('rejects bad userId', async () => {
     const res = await lifecycleAdminRoutes.request(
       '/admin/users/not-uuid/mobile-devices'

@@ -38,7 +38,7 @@ export default defineConfig({
         },
         {
           label: 'Agent',
-          items: [{ autogenerate: { directory: 'agents' } }],
+          items: [{ autogenerate: { directory: 'agents' } }, { slug: 'features/watchdog' }],
         },
         {
           label: 'Migration',
@@ -56,6 +56,7 @@ export default defineConfig({
               items: [
                 { slug: 'features/remote-access' },
                 { slug: 'features/scripts' },
+                { slug: 'scripts/stopping-a-running-script' },
                 { slug: 'features/script-ai' },
                 { slug: 'features/ai-agents' },
                 { slug: 'features/ai-impact' },
@@ -86,6 +87,7 @@ export default defineConfig({
                 { slug: 'features/browser-security' },
                 { slug: 'features/dns-security' },
                 { slug: 'features/edr-integrations' },
+                { slug: 'features/incident-response' },
                 { slug: 'features/sensitive-data' },
                 { slug: 'features/peripheral-control' },
                 { slug: 'features/user-risk' },
@@ -93,6 +95,10 @@ export default defineConfig({
                 { slug: 'features/user-sessions' },
                 { slug: 'features/approval-security' },
               ],
+            },
+            {
+              label: 'Service Desk',
+              items: [{ slug: 'features/ticketing' }],
             },
             {
               label: 'Billing & Invoicing',
@@ -178,6 +184,7 @@ export default defineConfig({
                 { slug: 'features/identity-console' },
                 { slug: 'features/webhooks' },
                 { slug: 'features/plugins' },
+                { slug: 'features/extensions' },
                 { slug: 'features/branding' },
                 { slug: 'features/portal' },
                 { slug: 'features/setup-wizard' },

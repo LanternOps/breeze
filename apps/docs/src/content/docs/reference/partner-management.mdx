@@ -55,6 +55,7 @@ Every API query automatically scopes data to the caller's position in this hiera
 | `active` | Fully operational partner with API access. |
 | `suspended` | Temporarily suspended (e.g., payment failure). Blocked from API access. |
 | `churned` | Permanently inactive partner. Blocked from API access. |
+| `offboarding` | Terminal-intent drain in progress across every organization under the partner. See [Offboarding a Partner](#offboarding-a-partner). |
 
 ### Organization Access Levels
 
@@ -70,7 +71,7 @@ Partner users are associated with their partner through the `partner_users` tabl
 
 ## Self-Registration
 
-Partner self-registration allows MSPs and IT companies to create their own Breeze account without administrator intervention. The registration flow creates a partner, an admin role, a user account, and links them together in a single operation.
+Partner self-registration allows MSPs and IT companies to create their own Breeze account without administrator intervention. The registration flow is **email-verified and two-step**: no partner, role, user, or token exists until the emailed verification link is clicked.
 
 ### Registration Flow
 
@@ -79,29 +80,25 @@ Partner self-registration allows MSPs and IT companies to create their own Breez
 
 2. **User fills out the registration form** -- Required fields are company name (min 2 characters), full name, email address, password (min 8 characters), password confirmation, and terms of service acceptance.
 
-3. **Frontend submits to `POST /auth/register-partner`** -- The API validates the request body against the `registerPartnerSchema` Zod schema.
+3. **Frontend submits to `POST /auth/register-partner`** -- The API validates the request body against the `registerPartnerSchema` Zod schema, enforces a rate limit of **3 attempts per IP address per hour** (`429` if exceeded), and checks server-side password strength (`400` with the first error message if it fails).
 
-4. **Rate limit check** -- The API enforces a limit of **3 registration attempts per IP address per hour** using the Redis-backed sliding window rate limiter. If the limit is exceeded, a `429` response is returned.
+4. **No account is created yet.** The endpoint performs **no email-existence lookup** -- doing so would let an attacker learn whether an address already has an account from response timing alone. Instead the API hashes the password, parks a pending registration keyed by a hashed, single-use verification token, and queues a verification email. Every accepted request -- new address or one that already has an account -- gets the same generic body: `{ "success": true, "message": "If registration can proceed, you will receive next steps shortly." }`.
 
-5. **Password strength validation** -- The password is checked against the server-side strength rules. If it fails, a `400` response with the first error message is returned.
+5. **User clicks the verification link** in the email, which submits the token to `POST /auth/verify-email`.
 
-6. **Email uniqueness check** -- The API checks if a user with the same email already exists. If so, it returns a generic success message to prevent email enumeration: `"If registration can proceed, you will receive next steps shortly."`
-
-7. **Slug generation** -- A URL-safe slug is derived from the company name by lowercasing, replacing non-alphanumeric characters with hyphens, and trimming to 50 characters. If the slug already exists, a numeric suffix is appended (up to 100 attempts).
-
-8. **Transaction: create partner, role, user, and association** -- The API creates four records:
+6. **Slug generation and account creation** -- Inside a single database transaction, the API derives a URL-safe slug from the company name (lowercased, non-alphanumeric characters replaced with hyphens, trimmed to 50 characters, with a numeric suffix appended on collision), then creates four records:
    - A **partner** with type `msp` and plan `free`
    - A **Partner Admin role** with `scope: partner` and `isSystem: true`
    - A **user** with the hashed password and `status: active`
    - A **partner_users** association with `orgAccess: all`
 
-9. **JWT tokens issued** -- Access and refresh tokens are created with `scope: partner` and the new partner ID. The refresh token is set as an HTTP-only cookie.
+7. **JWT tokens issued** -- Access and refresh tokens are created with `scope: partner` and the new partner ID. The refresh token is set as an HTTP-only cookie.
 
-10. **Redirect to dashboard** -- The frontend stores the tokens and redirects the authenticated user. If this is the first-ever user in the system, the setup wizard may appear.
+8. **Redirect to dashboard** -- The frontend stores the tokens and redirects the authenticated user. If this is the first-ever user in the system, the setup wizard may appear.
 </Steps>
 
-<Aside type="caution">
-  The self-registration endpoint does **not** use a database transaction wrapper. If user creation fails after the partner and role have been inserted, the API performs manual cleanup by deleting the role and partner records. In rare failure scenarios, orphaned records may remain and should be cleaned up manually.
+<Aside type="note">
+  Because account creation happens inside a real database transaction in step 6, a failure partway through rolls back cleanly rather than leaving orphaned partner/role records. `POST /auth/register` (the legacy, pre-verification signup path) is now a **no-op**: it performs the same rate limit and password checks and returns the identical generic success body, but never creates a user. It exists only so old clients don't observe a breaking response shape.
 </Aside>
 
 ### Registration Form Fields
@@ -147,14 +144,7 @@ Partner self-registration is controlled by an environment variable that can be s
 
 <Tabs>
   <TabItem label="API (Server-side)">
-    The API reads `ENABLE_REGISTRATION` from the environment using the `envFlag` utility. When set to `false`, both `POST /auth/register` and `POST /auth/register-partner` return:
-
-    ```json
-    {
-      "error": "Registration is currently disabled",
-      "code": "REGISTRATION_DISABLED"
-    }
-    ```
+    The API reads `ENABLE_REGISTRATION` from the environment using the `envFlag` utility. When set to `false`, both `POST /auth/register` and `POST /auth/register-partner` answer with a plain `404 Not Found` (`{"error": "Not Found"}`), so the endpoints are indistinguishable from routes that do not exist.
 
     **Default:** `true` (registration is enabled unless explicitly disabled).
 
@@ -207,7 +197,9 @@ When the allowlist is non-empty, it is enforced at three points:
 |-------|------|-------|
 | `settings.security.ipAllowlist` | `string[]` | Literal IPv4/IPv6 addresses and CIDR ranges (e.g. `203.0.113.10`, `10.0.0.0/8`, `2001:db8::/32`). Each entry is validated on write; invalid entries are rejected with `400`. Empty array = disabled. |
 
-Because the allowlist depends on knowing the true client IP, the API refuses to enable it unless trusted-proxy parsing is configured (`TRUST_PROXY_HEADERS` plus `TRUSTED_PROXY_CIDRS`); turning it on without that returns `400 proxy_trust_required`. If the source IP cannot be trusted at runtime (a proxy misconfiguration), enforcement fails **open** and logs a rate-limited warning rather than locking everyone out; a database/read error during the check fails **closed** (`503`). A `PATCH` to partner settings that omits `ipAllowlist` preserves the existing list — you must send `ipAllowlist: []` to deliberately clear it.
+Because the allowlist depends on knowing the true client IP, the API refuses to enable it unless trusted-proxy parsing is configured (`TRUST_PROXY_HEADERS` plus `TRUSTED_PROXY_CIDRS`); turning it on without that returns `400 proxy_trust_required`. If the source IP cannot be trusted at runtime (a proxy misconfiguration), enforcement fails **closed** and denies the request (`403`, `untrusted_ip`) rather than letting an unverifiable IP through; a database/read error during the check also fails **closed** (`503`). A `PATCH` to partner settings that omits `ipAllowlist` preserves the existing list — you must send `ipAllowlist: []` to deliberately clear it.
+
+Platform admins are exempt from the allowlist entirely, on every check, so a locked-out partner can still be reached by system support.
 
 <Aside type="caution">
   An incorrect allowlist will lock you (and every other admin) out of the dashboard and API. Before saving, confirm your current IP — and any VPN/egress ranges your team uses — are covered, and prefer CIDR ranges over single addresses for connections with dynamic IPs. Changes propagate to other API instances within roughly 30 seconds (the allowlist is cached per partner). A deployment-wide break-glass switch (`IP_ALLOWLIST_ENFORCEMENT_MODE=off`) disables all enforcement if you are locked out and have host access.
@@ -216,6 +208,14 @@ Because the allowlist depends on knowing the true client IP, the API refuses to 
 ---
 
 ## Managing Partners
+
+<Aside type="note" title="MFA on writes">
+  Creating, updating, and deleting a partner (system-scoped create/update/delete, and the partner's own `PATCH /partners/me`) additionally requires the caller's session to have completed an **MFA challenge**, on top of the scope shown for each endpoint. A partner service-principal key (`brz_sp_…`) is not subject to this gate.
+</Aside>
+
+<Aside type="tip" title="Provisioning tenancy unattended">
+  Organizations, sites, and enrollment keys can all be created by a partner service principal rather than a signed-in user, which is how a migration script or an onboarding integration stands a customer up end to end. `POST /partner-api/v1/enrollment-keys` completes that set — see [Partner API (Service Principals)](/reference/api/#partner-api-service-principals) for the routes, scopes, and the tighter mint limits that apply to enrollment keys specifically.
+</Aside>
 
 ### Creating Partners (System Scope)
 
@@ -244,10 +244,12 @@ curl -X POST https://breeze.example.com/api/v1/orgs/partners \
 | `name` | `varchar(255)` | Display name. Required |
 | `slug` | `varchar(100)` | URL-safe unique identifier. Required |
 | `type` | `enum` | `msp`, `enterprise`, or `internal`. Default: `msp` |
-| `plan` | `enum` | `free`, `pro`, `enterprise`, or `unlimited`. Default: `free` |
+| `plan` | `enum` | `free`, `starter`, `community`, `pro`, `enterprise`, or `unlimited`. Default: `free` |
 | `maxOrganizations` | `integer` | Optional cap on organization count |
 | `maxDevices` | `integer` | Optional cap on total devices across all organizations |
 | `settings` | `jsonb` | Partner-level settings (timezone, business hours, contact info) |
+| `serviceManagementMode` | `enum` | `native`, `external`, or `off`. Default: `native`. See [Service Management mode](#service-management-mode) |
+| `serviceManagementPsaConnectionId` | `uuid` | The partner-wide PSA connection bound to `external` mode. Required when the mode is `external`, and must be null otherwise |
 | `ssoConfig` | `jsonb` | SSO configuration |
 | `billingEmail` | `varchar(255)` | Billing contact email |
 | `createdAt` | `timestamp` | Record creation time |
@@ -275,6 +277,50 @@ curl -X PATCH https://breeze.example.com/api/v1/orgs/partners/me \
   }'
 ```
 
+### Service Management mode
+
+Not every MSP runs its service desk in Breeze. **Service Management mode** is a
+partner-level switch that decides whether Breeze's own service desk and customer
+billing are part of this MSP's product at all. Find it on the **Modules** card
+under **Settings → Partner → Company**.
+
+| Mode | What the MSP gets |
+|---|---|
+| **Breeze service desk & billing** (`native`) | Everything. The default, and what every existing partner keeps. |
+| **Off — RMM only** (`off`) | Breeze is monitoring and management only. The **Service Desk** section (Tickets, Timesheets) and the **Billing** section (Quotes, Invoices, Contracts, Product Catalog) disappear from the sidebar, and **no new ticket can be created anywhere**. |
+| `external` | For an MSP whose tickets live in a third-party PSA. **No UI in this release** — see below. |
+
+**What `off` actually refuses.** Turning the module off is a product decision, not
+a permission: it hides the service-desk and billing surfaces and refuses *new*
+ticket creation on every path — the web UI, the customer portal, inbound
+email-to-ticket, the AI assistant's ticket tool, and vulnerability-driven ticket
+creation all answer `409 service_management_off`. **Existing tickets stay
+readable** and nothing is deleted, so turning the module back on restores the
+surfaces with their history intact.
+
+<Aside type="note" title="`external` has no selector yet">
+  `external` is reachable only through the API in this release, and only for a
+  partner that already has a **partner-wide** PSA connection bound to it — the
+  mode and the connection are enforced as a pair, so neither can be set without
+  the other. The Modules card deliberately offers only `native` and `off`; a
+  partner already on `external` keeps it and sees a note that changing it is not
+  available here yet. A UI selector ships with the external service-desk feature.
+  See [PSA Integrations](/features/psa-integrations/).
+</Aside>
+
+Both the mode and the bound PSA connection are top-level fields on
+`PATCH /partners/me` — they are **not** keys inside the merged `settings` object:
+
+```bash
+curl -X PATCH https://breeze.example.com/api/v1/orgs/partners/me \
+  -H "Authorization: Bearer <partner-token>" \
+  -H "Content-Type: application/json" \
+  -d '{ "serviceManagementMode": "off" }'
+```
+
+An unrecognised or missing mode is read as `native`, so a partner is never
+accidentally locked out of its own service desk by bad data.
+
 ### Soft Deleting a Partner
 
 Partners use soft deletes. When deleted via `DELETE /partners/:id`, the `deletedAt` timestamp is set. The partner and its data remain in the database but are excluded from all queries.
@@ -282,6 +328,24 @@ Partners use soft deletes. When deleted via `DELETE /partners/:id`, the `deleted
 <Aside type="caution">
   Soft-deleting a partner does **not** cascade to its organizations, sites, or devices. Those records remain active in the database. Clean them up separately before or after deleting the partner.
 </Aside>
+
+### Offboarding a Partner
+
+Setting a partner's status to `offboarding` starts a terminal-intent **drain** across every organization it owns -- it is not an instant cutoff. The moment it starts:
+
+- Every organization's users, API keys, and OAuth grants under the partner are revoked **immediately**.
+- Agents across the entire fleet are **not** severed right away. They stay authenticated in a narrowed mode (heartbeat + claiming a queued `self_uninstall` command only; the WebSocket channel is refused) so each device can self-uninstall cleanly.
+- A background reaper finalizes the drain once every device has uninstalled or the drain window closes (`OFFBOARDING_DRAIN_WINDOW_HOURS`, default 72h) -- whichever comes first -- then severs any remaining agent credentials and flips the partner to `churned`.
+- The transition is reversible up until the reaper finalizes it: setting `status` back to `active` cancels any un-collected uninstalls and restores agent access partner-wide.
+
+```bash
+curl -X PATCH https://breeze.example.com/api/v1/orgs/partners/:id \
+  -H "Authorization: Bearer <system-token>" \
+  -H "Content-Type: application/json" \
+  -d '{ "status": "offboarding" }'
+```
+
+This requires system scope and a satisfied MFA challenge, same as any other partner update.
 
 ---
 
@@ -309,11 +373,14 @@ Partner admins can invite users via the user management endpoints. Invited users
 
 ### Self-Registration
 
+Registration is two calls: `POST /auth/register-partner` requests the signup and `POST /auth/verify-email` completes it once the emailed link is clicked. No user, partner, or token exists between the two calls.
+
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `POST` | `/auth/register-partner` | None | Self-service partner registration. Rate limited to 3/IP/hour |
+| `POST` | `/auth/register-partner` | None | Request self-service partner registration. Rate limited to 3/IP/hour. Creates nothing; queues a verification email. |
+| `POST` | `/auth/verify-email` | None | Complete registration with the emailed token. Creates the partner, admin role, user, and association, and issues tokens. |
 
-**Request body:**
+**Request body (`POST /auth/register-partner`):**
 
 ```json
 {
@@ -325,10 +392,28 @@ Partner admins can invite users via the user management endpoints. Invited users
 }
 ```
 
-**Success response (201):**
+**Response (200)** -- identical for every accepted input, including an email that already has an account, so the response cannot be used to enumerate registered addresses:
 
 ```json
 {
+  "success": true,
+  "message": "If registration can proceed, you will receive next steps shortly."
+}
+```
+
+**Request body (`POST /auth/verify-email`):**
+
+```json
+{
+  "token": "<token from the verification email link>"
+}
+```
+
+**Success response (200):**
+
+```json
+{
+  "verified": true,
   "user": {
     "id": "uuid",
     "email": "admin@acme-it.com",
@@ -338,13 +423,14 @@ Partner admins can invite users via the user management endpoints. Invited users
   "partner": {
     "id": "uuid",
     "name": "Acme IT Services",
-    "slug": "acme-it-services"
+    "slug": "acme-it-services",
+    "status": "active"
   },
+  "mfaRequired": false,
   "tokens": {
     "accessToken": "eyJ...",
     "expiresInSeconds": 900
-  },
-  "mfaRequired": false
+  }
 }
 ```
 
@@ -352,8 +438,8 @@ Partner admins can invite users via the user management endpoints. Invited users
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Validation error (weak password, missing required fields, terms not accepted) |
-| `429` | Rate limit exceeded (3 attempts per IP per hour) |
+| `400` | `/auth/register-partner`: validation error (weak password, missing required fields, terms not accepted). `/auth/verify-email`: invalid or expired token -- one identical body for every failure reason, to avoid leaking which reason applied. |
+| `429` | Rate limit exceeded (3 attempts per IP per hour on `register-partner`; a separate limit on `verify-email`) |
 | `503` | Redis unavailable (rate limiter cannot function) |
 
 ### Partner Administration (System Scope)

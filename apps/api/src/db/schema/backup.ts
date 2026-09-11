@@ -132,6 +132,15 @@ export const backupConfigs = pgTable(
     isDefault: boolean('is_default').notNull().default(false),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
+    /**
+     * Bumped on every PATCH (site-ceiling gate contract §3). Snapshotted onto
+     * the queued job / backup_jobs row at schedule time and compared at
+     * dispatch by backupWorker; mismatch fails the job closed
+     * (`backup_config_changed`) instead of dispatching against a
+     * since-edited destination, and the scheduler re-enqueues against the
+     * new generation.
+     */
+    approvalGeneration: integer('approval_generation').notNull().default(1),
   },
   (table) => ({
     orgIdIdx: index('backup_configs_org_id_idx').on(table.orgId),
@@ -257,6 +266,22 @@ export const backupJobs = pgTable(
     // dedup (legacy agent, or nothing was referenced).
     referencedSize: bigint('referenced_size', { mode: 'number' }),
     referencedFiles: integer('referenced_files'),
+    // D18 W01 (#5429/§3.1): server-chosen incremental-dedupe base for this
+    // run. Deliberately NOT a FK — a pin must survive independent of the base
+    // row's own lifecycle; retention checks this column directly.
+    baseSnapshotId: varchar('base_snapshot_id', { length: 255 }),
+    // Fixed publish deadline, set once at dispatch for EVERY dispatched
+    // file/system_image job (base or not) — never renewed (no delivery
+    // channel exists to renew it on progress). A pin is live while
+    // status IN ('pending','running') OR
+    // publish_lease_expires_at + BACKUP_PUBLISH_MARGIN_MS > now().
+    publishLeaseExpiresAt: timestamp('publish_lease_expires_at', { withTimezone: true }),
+    // D18 W01 (#5429/§3.6): the identity of the providerConfig actually
+    // placed in the DISPATCH payload — stamped once, at dispatch, regardless
+    // of whether a base was found. Copied onto backup_snapshots.storageIdentity
+    // at publication so GC groups by write-time identity, not the config's
+    // possibly-since-edited current one.
+    storageIdentity: text('storage_identity'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
@@ -274,6 +299,11 @@ export const backupJobs = pgTable(
       .on(table.snapshotId)
       .where(sql`snapshot_id IS NOT NULL`),
     createdAtIdx: index('backup_jobs_created_at_idx').on(table.createdAt),
+    // D18 W01 (#5429/§3.1): matches migration 160201's
+    // backup_jobs_base_snapshot_id_idx.
+    baseSnapshotIdIdx: index('backup_jobs_base_snapshot_id_idx')
+      .on(table.baseSnapshotId)
+      .where(sql`base_snapshot_id IS NOT NULL`),
   })
 );
 
@@ -298,8 +328,13 @@ export const backupSnapshots = pgTable(
     size: bigint('size', { mode: 'number' }),
     fileCount: integer('file_count'),
     isIncremental: boolean('is_incremental').notNull().default(false),
+    // ON DELETE SET NULL (2026-10-15-140004): an incremental snapshot's
+    // parent pointer must not block the parent's own retention deletion —
+    // see the migration and deleteSnapshotRow's comment above for the D17
+    // history/lineage rationale.
     parentSnapshotId: uuid('parent_snapshot_id').references(
-      (): AnyPgColumn => backupSnapshots.id
+      (): AnyPgColumn => backupSnapshots.id,
+      { onDelete: 'set null' }
     ),
     expiresAt: timestamp('expires_at'),
     metadata: jsonb('metadata'),
@@ -317,6 +352,16 @@ export const backupSnapshots = pgTable(
     backupType: backupTypeEnum('backup_type').default('file'),
     hardwareProfile: jsonb('hardware_profile'),
     systemStateManifest: jsonb('system_state_manifest'),
+    // D18 W01 (#5429/§3.6): copied from the owning job's storageIdentity at
+    // publication (or by reconcile from the adoptable job). Nullable FOREVER
+    // — the W02 sweep self-heals a NULL row from the storage listing; there
+    // is no follow-up NOT NULL migration.
+    storageIdentity: text('storage_identity'),
+    // Bare-metal recovery (W01): disk layout captured at run time and the
+    // guard verdict. NULL verdict = not assessed (file-only run / old agent).
+    layoutManifest: jsonb('layout_manifest'),
+    bareMetalRestorable: boolean('bare_metal_restorable'),
+    bareMetalReasons: text('bare_metal_reasons').array(),
   },
   (table) => ({
     orgIdIdx: index('backup_snapshots_org_id_idx').on(table.orgId),
@@ -350,6 +395,47 @@ export const backupSnapshotFiles = pgTable(
   })
 );
 
+export const backupSnapshotRetirementReasonEnum = pgEnum('backup_snapshot_retirement_reason', [
+  'expired',
+  'max_versions',
+  'manual',
+]);
+
+// D18 W01 (#5429/§3.3): a durable tombstone written the instant retention
+// deletes a backup_snapshots row. Age alone cannot distinguish "expired" from
+// "orphan" and cannot stop reconcile re-adopting an expired prefix mid-sweep
+// — see the design doc's "why" note. Shape 1 (plain org_id) tenancy.
+export const backupSnapshotRetirements = pgTable(
+  'backup_snapshot_retirements',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => organizations.id),
+    configId: uuid('config_id').references(() => backupConfigs.id, { onDelete: 'cascade' }),
+    deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
+    snapshotId: varchar('snapshot_id', { length: BACKUP_SNAPSHOT_ID_MAX_LENGTH }).notNull(),
+    storageIdentity: text('storage_identity').notNull(),
+    backupType: backupTypeEnum('backup_type'),
+    reason: backupSnapshotRetirementReasonEnum('reason').notNull(),
+    retiredAt: timestamp('retired_at', { withTimezone: true }).defaultNow().notNull(),
+    // Set by the GC sweep (W02) once the prefix is confirmed empty. NULL =
+    // not yet swept. Rows are pruned 30d after this is set.
+    sweptAt: timestamp('swept_at', { withTimezone: true }),
+  },
+  (table) => ({
+    orgIdIdx: index('backup_snapshot_retirements_org_id_idx').on(table.orgId),
+    storageIdentitySnapshotUq: uniqueIndex('backup_snapshot_retirements_identity_snapshot_uq').on(
+      table.storageIdentity,
+      table.snapshotId
+    ),
+    identitySweptIdx: index('backup_snapshot_retirements_identity_swept_idx').on(
+      table.storageIdentity,
+      table.sweptAt
+    ),
+  })
+);
+
 export const restoreJobs = pgTable(
   'restore_jobs',
   {
@@ -357,9 +443,12 @@ export const restoreJobs = pgTable(
     orgId: uuid('org_id')
       .notNull()
       .references(() => organizations.id),
-    snapshotId: uuid('snapshot_id')
-      .notNull()
-      .references(() => backupSnapshots.id),
+    // Nullable + ON DELETE SET NULL (2026-10-15-140004): a restore job is
+    // history and must survive its snapshot's retention deletion — see D17 /
+    // deleteSnapshotRow's comment on backup_snapshots above.
+    snapshotId: uuid('snapshot_id').references(() => backupSnapshots.id, {
+      onDelete: 'set null',
+    }),
     deviceId: uuid('device_id')
       .notNull()
       .references(() => devices.id),
@@ -374,7 +463,7 @@ export const restoreJobs = pgTable(
     initiatedBy: uuid('initiated_by').references(() => users.id),
     targetConfig: jsonb('target_config'),
     recoveryTokenId: uuid('recovery_token_id'),
-    commandId: uuid('command_id').references(() => deviceCommands.id),
+    commandId: uuid('command_id').references(() => deviceCommands.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
     ...recoveryAuthorizationSubjectColumns(),

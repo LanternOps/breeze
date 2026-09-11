@@ -10,16 +10,18 @@ import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import {
   configurationPolicies,
-  configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configPolicyAssignments,
+  deviceCommands,
   patchJobs,
   devices,
   deviceGroupMemberships,
+  deviceGroups,
   organizations,
   partners,
   sites,
 } from '../db/schema';
-import { and, eq, gte, inArray } from 'drizzle-orm';
+import { and, eq, gte, inArray, ne } from 'drizzle-orm';
 import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
@@ -32,6 +34,8 @@ import {
 } from './patchJobExecutor';
 import { captureException } from '../services/sentry';
 import { buildPatchesSnapshot } from '../services/patchJobSnapshot';
+import { finalizePatchJobDevice } from '../services/patchJobFinalizer';
+import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import {
   backfillMissingPatchSettings,
   listAllPatchInventory,
@@ -49,6 +53,7 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 function isRelationNotFoundError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const cause = (error as { cause?: { code?: string } }).cause;
+  // eslint-disable-next-line breeze/no-direct-sqlstate -- Existing guard explicitly reads the Drizzle driver cause.
   return cause?.code === '42P01';
 }
 
@@ -183,6 +188,221 @@ function getDueOccurrenceKey(settings: PatchInlineSettings, timezone: string, no
   return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
 }
 
+const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
+type WeekdayKey = (typeof WEEKDAY_KEYS)[number];
+
+/** The zone's UTC offset (ms) in force at `instant`. */
+function zoneOffsetMsAt(instant: number, timezone: string): number {
+  const local = getLocalTimeParts(new Date(instant), timezone);
+  return (
+    Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, 0) - instant
+  );
+}
+
+/**
+ * The UTC instant of a wall-clock time in `timezone`.
+ *
+ * Deliberately NOT a convergence loop. The naive guess uses the offset in force
+ * at `wallAsUtc`, which is the wrong offset for a wall clock on the far side of
+ * a DST transition; correcting once and re-checking is right for every ordinary
+ * time, but on a SPRING-FORWARD day the requested wall clock does not exist at
+ * all (02:00 is skipped) and the two candidates oscillate forever — a loop
+ * settles on 01:00, an hour BEFORE the window the admin asked for.
+ *
+ * So: try the correction, accept it if the offset it implies is self-consistent,
+ * and otherwise take the later of the two candidates — the same "shift forward
+ * into the gap" rule Luxon and date-fns-tz use. Ambiguous fall-back times
+ * resolve to the first (pre-transition) occurrence.
+ */
+function zonedWallClockToUtc(
+  parts: { year: number; month: number; day: number; hour: number; minute: number },
+  timezone: string,
+): Date {
+  const wallAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0);
+
+  const firstOffset = zoneOffsetMsAt(wallAsUtc, timezone);
+  const firstCandidate = wallAsUtc - firstOffset;
+
+  const secondOffset = zoneOffsetMsAt(firstCandidate, timezone);
+  if (secondOffset === firstOffset) return new Date(firstCandidate);
+
+  const secondCandidate = wallAsUtc - secondOffset;
+  if (zoneOffsetMsAt(secondCandidate, timezone) === secondOffset) {
+    return new Date(secondCandidate);
+  }
+
+  return new Date(Math.max(firstCandidate, secondCandidate));
+}
+
+/**
+ * The next occurrence of a patch schedule, strictly after `now`, as a UTC
+ * instant (#5128 §F.4).
+ *
+ * This is what bounds a queued install's delivery deadline: an install queued
+ * for an offline device must expire no later than the next scheduled run, so a
+ * device that reconnects at (or after) that run installs ONCE, from the fresh
+ * approved set, instead of twice.
+ *
+ * Returns null for a schedule frequency `getDueOccurrenceKey` would never fire
+ * on — those jobs simply fall back to the standard TTL.
+ */
+export function getNextOccurrenceAt(
+  settings: PatchInlineSettings,
+  timezone: string,
+  now: Date,
+): Date | null {
+  const [targetHourRaw, targetMinuteRaw] = (settings.scheduleTime || '02:00').split(':');
+  const targetHour = Number.parseInt(targetHourRaw ?? '2', 10);
+  const targetMinute = Number.parseInt(targetMinuteRaw ?? '0', 10);
+  if (!Number.isFinite(targetHour) || !Number.isFinite(targetMinute)) return null;
+
+  const frequency = settings.scheduleFrequency;
+  if (frequency !== 'daily' && frequency !== 'weekly' && frequency !== 'monthly') return null;
+
+  // Enough days to clear a full month even from the 1st, plus slack.
+  const horizonDays = frequency === 'daily' ? 2 : frequency === 'weekly' ? 8 : 70;
+  const today = getLocalTimeParts(now, timezone);
+
+  for (let offset = 0; offset <= horizonDays; offset += 1) {
+    // Calendar arithmetic on the LOCAL date, done in a fictitious UTC so month
+    // and year rollover come for free. The weekday of a calendar date does not
+    // depend on the zone, so it can be read straight off this value.
+    const candidate = new Date(Date.UTC(today.year, today.month - 1, today.day + offset));
+    const year = candidate.getUTCFullYear();
+    const month = candidate.getUTCMonth() + 1;
+    const day = candidate.getUTCDate();
+
+    if (frequency === 'weekly') {
+      const weekday: WeekdayKey = WEEKDAY_KEYS[candidate.getUTCDay()]!;
+      if (weekday !== (settings.scheduleDayOfWeek ?? 'sun')) continue;
+    } else if (frequency === 'monthly') {
+      if (day !== (settings.scheduleDayOfMonth ?? 1)) continue;
+    }
+
+    const instant = zonedWallClockToUtc(
+      { year, month, day, hour: targetHour, minute: targetMinute },
+      timezone,
+    );
+    // Strictly after `now`: the occurrence being created RIGHT NOW must not be
+    // returned as the next one, or every queued install would get a deadline of
+    // roughly zero.
+    if (instant.getTime() > now.getTime()) return instant;
+  }
+
+  return null;
+}
+
+/**
+ * Cancel the still-undelivered installs from the PREVIOUS occurrence of this
+ * policy for the devices the new occurrence just targeted (#5128 §F.4).
+ *
+ * Without this a device that stayed offline across two occurrences would come
+ * back to two queued `install_patches` commands and install twice — the second
+ * from a stale approved set. Only `pending` rows are taken: a row already `sent`
+ * is running on the machine and must be left alone. The CAS is what makes that
+ * safe against a claim racing this sweep.
+ */
+async function supersedePreviousOccurrenceInstalls(params: {
+  configPolicyId: string;
+  orgId: string;
+  newJobId: string;
+  deviceIds: string[];
+  now: Date;
+}): Promise<number> {
+  const { configPolicyId, orgId, newJobId, deviceIds, now } = params;
+  if (deviceIds.length === 0) return 0;
+
+  const previousJobs = await runWithSystemDbAccess(() =>
+    db
+      .select({ id: patchJobs.id })
+      .from(patchJobs)
+      .where(
+        and(
+          eq(patchJobs.configPolicyId, configPolicyId),
+          eq(patchJobs.orgId, orgId),
+          ne(patchJobs.id, newJobId),
+          inArray(patchJobs.status, ['scheduled', 'running']),
+        ),
+      ),
+  );
+  if (previousJobs.length === 0) return 0;
+  const previousJobIds = new Set(previousJobs.map((j) => j.id));
+
+  const candidates = await runWithSystemDbAccess(() =>
+    db
+      .select({
+        id: deviceCommands.id,
+        deviceId: deviceCommands.deviceId,
+        payload: deviceCommands.payload,
+      })
+      .from(deviceCommands)
+      .where(
+        and(
+          inArray(deviceCommands.deviceId, deviceIds),
+          eq(deviceCommands.type, 'install_patches'),
+          eq(deviceCommands.status, 'pending'),
+        ),
+      ),
+  );
+
+  let superseded = 0;
+  for (const row of candidates) {
+    const payload =
+      row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+        ? (row.payload as Record<string, unknown>)
+        : null;
+    const priorJobId = typeof payload?.patchJobId === 'string' ? payload.patchJobId : null;
+    if (!priorJobId || !previousJobIds.has(priorJobId)) continue;
+
+    // Per-candidate, so one device's failure does not silently strip the
+    // remaining devices of their supersession — and so the log names the rows
+    // that were actually left half-cancelled, which the caller's outer catch
+    // cannot.
+    try {
+      const [updated] = await runWithSystemDbAccess(() =>
+        db
+          .update(deviceCommands)
+          .set({
+            status: 'cancelled',
+            completedAt: now,
+            result: {
+              status: 'cancelled',
+              reason: 'superseded_by_next_occurrence',
+              cancelledBy: 'patch_scheduler',
+            },
+            ...terminalPayloadErasureSet(),
+          })
+          // CAS on `pending`: a row claimed between the SELECT and here is
+          // already on its way to the device and must not be cancelled out from
+          // under it.
+          .where(and(eq(deviceCommands.id, row.id), eq(deviceCommands.status, 'pending')))
+          .returning({ id: deviceCommands.id }),
+      );
+      if (!updated) continue;
+
+      await runWithSystemDbAccess(() =>
+        finalizePatchJobDevice({
+          patchJobId: priorJobId,
+          deviceId: row.deviceId,
+          commandId: row.id,
+          terminal: { kind: 'superseded', byJobId: newJobId },
+          completedAt: now,
+          source: { kind: 'deferred' },
+        }),
+      );
+      superseded += 1;
+    } catch (err) {
+      const message =
+        `[PatchScheduler] failed to supersede install ${row.id} (device ${row.deviceId}, ` +
+        `prior job ${priorJobId}); its command may be cancelled with the patch result still queued`;
+      console.error(`${message}:`, err instanceof Error ? err.message : err);
+      captureException(err instanceof Error ? err : new Error(message));
+    }
+  }
+
+  return superseded;
+}
+
 /**
  * Quick Support exclusion (applies to every set-resolution query below):
  * ephemeral devices (`devices.isEphemeral`) live in the hidden per-partner
@@ -269,12 +489,40 @@ async function resolveDeviceIdsForAssignment(
     }
 
     case 'device_group': {
+      // #3182 — the group id arrives from an assignment row and is
+      // dereferenced through device_group_memberships, so BOTH joins carry an
+      // org-equality condition rather than a bare id match. Neither of the two
+      // clamps below is sufficient on its own:
+      //   * the partner branch joins organizations through the MEMBERSHIP's
+      //     org_id, so it only ever proved that the membership's own org sits
+      //     under the policy's partner — never that the group does;
+      //   * the org branch's `memberships.org_id = policyOrgId` proved the same
+      //     for the policy's org.
+      // A membership row was free to name a group in a different org until
+      // #3182's composite FK landed, and a cross-org device move produced
+      // exactly that shape, so an org A group could resolve an org B device.
+      // Requiring group.org_id = membership.org_id = device.org_id makes the
+      // query reject it independently of the constraint. This worker runs under
+      // a system DB context, so there is no RLS behind it to catch a miss.
       if (needsPartnerClamp) {
         const members = await db
           .select({ deviceId: deviceGroupMemberships.deviceId })
           .from(deviceGroupMemberships)
           .innerJoin(organizations, eq(deviceGroupMemberships.orgId, organizations.id))
-          .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
+          .innerJoin(
+            deviceGroups,
+            and(
+              eq(deviceGroupMemberships.groupId, deviceGroups.id),
+              eq(deviceGroups.orgId, deviceGroupMemberships.orgId)
+            )
+          )
+          .innerJoin(
+            devices,
+            and(
+              eq(deviceGroupMemberships.deviceId, devices.id),
+              eq(devices.orgId, deviceGroupMemberships.orgId)
+            )
+          )
           .where(
             and(
               eq(deviceGroupMemberships.groupId, assignmentTargetId),
@@ -292,7 +540,20 @@ async function resolveDeviceIdsForAssignment(
       const members = await db
         .select({ deviceId: deviceGroupMemberships.deviceId })
         .from(deviceGroupMemberships)
-        .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
+        .innerJoin(
+          deviceGroups,
+          and(
+            eq(deviceGroupMemberships.groupId, deviceGroups.id),
+            eq(deviceGroups.orgId, deviceGroupMemberships.orgId)
+          )
+        )
+        .innerJoin(
+          devices,
+          and(
+            eq(deviceGroupMemberships.deviceId, devices.id),
+            eq(devices.orgId, deviceGroupMemberships.orgId)
+          )
+        )
         .where(and(...conditions));
       return members.map((m) => m.deviceId);
     }
@@ -455,17 +716,17 @@ async function scanAndCreateJobs(): Promise<{
       policyName: configurationPolicies.name,
       policyOrgId: configurationPolicies.orgId,
       policyPartnerId: configurationPolicies.partnerId,
-      featureLinkId: configPolicyFeatureLinks.id,
+      featureLinkId: configPolicyEffectiveFeatureLinks.id,
     })
-    .from(configPolicyFeatureLinks)
+    .from(configPolicyEffectiveFeatureLinks)
     .innerJoin(
       configurationPolicies,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active')
       )
     )
-    .where(eq(configPolicyFeatureLinks.featureType, 'patch'))
+    .where(eq(configPolicyEffectiveFeatureLinks.featureType, 'patch'))
   );
 
   for (const row of patchPoliciesWithSchedules) {
@@ -561,6 +822,11 @@ async function scanAndCreateJobs(): Promise<{
           continue;
         }
 
+        // #5128 W3: bounds the delivery deadline of any install this job queues
+        // for an offline device — never past the next scheduled run, which will
+        // supersede it anyway.
+        const nextOccurrenceAt = getNextOccurrenceAt(policyLocal.settings, group.timezone, now);
+
         const [job] = await runWithSystemDbAccess(() =>
           db
           .insert(patchJobs)
@@ -577,6 +843,7 @@ async function scanAndCreateJobs(): Promise<{
               deployment: policyLocal.settings,
               resolvedTimezone: group.timezone,
               scheduleOccurrenceKey: group.occurrenceKey,
+              scheduleNextOccurrenceAt: nextOccurrenceAt ? nextOccurrenceAt.toISOString() : null,
             },
             status: 'scheduled',
             scheduledAt: now,
@@ -592,6 +859,28 @@ async function scanAndCreateJobs(): Promise<{
           console.log(
             `[PatchScheduler] Created job ${job.id} for config policy ${row.configPolicyId} (${eligibleDeviceIds.length} devices, ${group.timezone}, ${group.occurrenceKey})`
           );
+
+          // A failure here must not lose the job that was just created — the
+          // worst case is a device that installs twice, which is recoverable;
+          // an aborted occurrence is not.
+          try {
+            const superseded = await supersedePreviousOccurrenceInstalls({
+              configPolicyId: row.configPolicyId,
+              orgId: group.orgId,
+              newJobId: job.id,
+              deviceIds: eligibleDeviceIds,
+              now,
+            });
+            if (superseded > 0) {
+              console.log(
+                `[PatchScheduler] Superseded ${superseded} queued install(s) from a previous occurrence of config policy ${row.configPolicyId}`
+              );
+            }
+          } catch (err) {
+            const message = `[PatchScheduler] Failed to supersede queued installs for config policy ${row.configPolicyId}`;
+            console.error(`${message}:`, err instanceof Error ? err.message : err);
+            captureException(err instanceof Error ? err : new Error(message));
+          }
         }
       }
     } catch (err) {
@@ -981,4 +1270,5 @@ export const __testOnly = {
   },
   scanAndCreateJobs,
   resolveDeviceIdsForAssignment,
+  supersedePreviousOccurrenceInstalls,
 };

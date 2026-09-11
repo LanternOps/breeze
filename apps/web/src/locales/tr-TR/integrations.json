@@ -722,9 +722,10 @@
     "createNew": "Yeni oluştur",
     "unlink": "Bağlantıyı kaldır",
     "syncNow": "Şimdi senkronize et",
-    "pending": "Beklemede",
-    "synced": "Senkronize edildi",
-    "syncError": "Senkronizasyon hatası",
+    "notSynced": "Eşitlenmedi",
+    "notSyncedHint": "Breeze'de onaylandı, henüz QuickBooks'a gönderilmedi",
+    "inQuickbooks": "QuickBooks'ta",
+    "syncFailed": "Eşitleme başarısız",
     "incomeAccount": "Gelir hesabı",
     "incomeAccountRequired": "QuickBooks'ta ürün oluşturmadan veya senkronize etmeden önce varsayılan bir gelir hesabı belirleyin.",
     "saveIncomeAccount": "Gelir hesabını kaydet",
@@ -782,11 +783,17 @@
     "pullPaymentsEnabled": "Ödemeler QuickBooks'tan eşitlenecek",
     "pullPaymentsDisabled": "Ödemeler artık QuickBooks'tan eşitlenmeyecek",
     "failedToUpdatePullPayments": "Ödeme eşitleme ayarı güncellenemedi.",
+    "pushPayments": "Ödeme gönderimi",
+    "pushPaymentsDescription": "Breeze'de kaydedilen ödemeleri QuickBooks'a gönder ve iptal edildiklerinde oradan kaldır.",
+    "pushPaymentsEnabled": "Ödemeler QuickBooks'a gönderilecek",
+    "pushPaymentsDisabled": "Ödemeler artık QuickBooks'a gönderilmeyecek",
+    "failedToUpdatePushPayments": "Ödeme gönderimi ayarı güncellenemedi.",
     "lastPaymentSync": "Son ödeme eşitlemesi",
     "never": "Hiçbir zaman",
     "syncNow": "Şimdi eşitle",
     "syncNowQueued": "Ödeme eşitlemesi kuyruğa alındı.",
     "syncNowNotQueued": "Ödeme eşitlemesi kuyruğa alınamadı. Kısa süre sonra yeniden deneyin.",
+    "syncNowPullDisabled": "Bu bağlantı için ödeme eşitlemesi kapalı — şimdi eşitlemek için Ödeme eşitleme veya Ödeme gönderimi seçeneğini açın.",
     "failedToSyncNow": "Ödeme eşitlemesi başlatılamadı."
   },
   "securityIntegration": {
@@ -867,7 +874,8 @@
     "couldNotRefresh": "Stripe hesap bilgileri yenilenemedi.",
     "notCached": "Para birimi henüz önbelleğe alınmadı — Stripe'tan almak için yenileyin.",
     "staleCache": "Stripe'a ulaşılamadı — önbelleğe alınan son hesap ayrıntıları gösteriliyor.",
-    "reconnectRequired": "Kayıtlı Stripe anahtarınız (•••• {{last4}}) artık çalışmıyor: {{reason}} Yeniden bağlanmak için yeni bir anahtar yapıştırın; o zamana kadar çevrimiçi ödemeler başarısız olur."
+    "reconnectRequired": "Kayıtlı Stripe anahtarınız (•••• {{last4}}) artık çalışmıyor: {{reason}} Yeniden bağlanmak için yeni bir anahtar yapıştırın; o zamana kadar çevrimiçi ödemeler başarısız olur.",
+    "reconciliationError": "Ödeme ters ibraz mutabakatı çalışmıyor: {{reason}} Stripe anahtarını Olayları okuyabilen bir anahtarla değiştirin."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Site eşlemeleri kaydedilemedi.",

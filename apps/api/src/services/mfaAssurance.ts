@@ -7,6 +7,10 @@ import {
   type PostCommitCleanupResult,
 } from './authLifecycle';
 import { terminateUserRemoteSessions } from './remoteSessionTeardown';
+import { officeAddinUserBindings } from '../db/schema/officeAddin';
+import { and, eq, isNull, sql } from 'drizzle-orm';
+import { getRedis } from './redis';
+import { revokeTechSessionsForUser } from './officeAddin/techSession';
 
 export interface FactorChangeResult {
   mfaEpoch: number;
@@ -23,7 +27,7 @@ export interface FactorChangeResult {
  * primitive every factor handler folds its own write into.
  *
  * Atomic durable effect (invariant 3): mfa_epoch advance + refresh-family
- * revoke + `mutate` (the caller's factor write) commit together in ONE
+ * revoke + Office binding revoke + `mutate` (the caller's factor write) commit together in ONE
  * transaction or not at all — a throw inside `mutate` rolls back the whole
  * transaction (no epoch bump, no revoke).
  *
@@ -60,15 +64,40 @@ export async function invalidateMfaAssuranceAfterFactorChange(
   userId: string,
   reason: string,
   mutate?: (tx: Tx) => Promise<void>,
+  expected?: Parameters<typeof advanceUserEpochs>[3],
 ): Promise<FactorChangeResult> {
   const epochRow = await dbModule.db.transaction(async (tx: Tx) => {
-    const row = await advanceUserEpochs(tx, userId, { mfa: true });
+    // Self-service proof may have completed before a concurrent reset. Bind
+    // its terminal write to the same epochs under the user-row write lock.
+    const row = await advanceUserEpochs(tx, userId, { mfa: true }, expected);
     await revokeAllRefreshFamilies(tx, userId, reason);
+    await tx
+      .update(officeAddinUserBindings)
+      .set({ revokedAt: sql`COALESCE(revoked_at, now())`, revokedBy: null })
+      .where(
+        and(
+          eq(officeAddinUserBindings.userId, userId),
+          isNull(officeAddinUserBindings.revokedAt),
+        ),
+      );
     if (mutate) await mutate(tx);
     return row;
   });
 
   const cleanup = await runPostCommitCleanup(userId);
+  const redis = getRedis();
+  if (redis) {
+    try {
+      await revokeTechSessionsForUser(redis, userId);
+    } catch (err) {
+      // The binding revoke above is durable and every request re-reads it, so
+      // a Redis cleanup failure can retain only unusable session bytes.
+      console.error('[mfa-assurance] Office add-in session cleanup failed', {
+        userId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
   const remoteSessionsTerminated = await terminateUserRemoteSessions(userId);
 
   return { mfaEpoch: epochRow.mfaEpoch, cleanup, remoteSessionsTerminated };

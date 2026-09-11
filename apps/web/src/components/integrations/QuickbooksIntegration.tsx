@@ -54,6 +54,12 @@ interface QuickbooksStatus {
   pullPayments?: boolean;
   /** When the reconcile worker last completed a pull for this connection. */
   lastReconcileAt?: string | null;
+  /**
+   * Phase D2 — whether Breeze pushes its own payments INTO QuickBooks for
+   * this connection. GET /accounting/quickbooks answers with it on BOTH
+   * branches (connected and disconnected), same story as pullPayments.
+   */
+  pushPayments?: boolean;
 }
 
 function isMfaError(err: unknown): boolean {
@@ -77,6 +83,16 @@ export default function QuickbooksIntegration() {
    */
   const canWriteInvoices = usePermissions().can("invoices", "write");
 
+  /**
+   * SEC-2026-09-05-057: the QuickBooks routes now carry dedicated
+   * `accounting:read` / `accounting:manage` capabilities on top of the
+   * full-partner authority check. Every mutating control below is disabled or
+   * hidden without `accounting:manage`, matching the server gate (the panel
+   * itself only renders for a caller holding `accounting:read` — see
+   * IntegrationsPage). UX only; every route re-checks server-side.
+   */
+  const canManageAccounting = usePermissions().can("accounting", "manage");
+
   const [status, setStatus] = useState<QuickbooksStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -85,6 +101,7 @@ export default function QuickbooksIntegration() {
   const [savingMode, setSavingMode] = useState(false);
   const [refreshingSettings, setRefreshingSettings] = useState(false);
   const [savingPullPayments, setSavingPullPayments] = useState(false);
+  const [savingPushPayments, setSavingPushPayments] = useState(false);
   const [reconciling, setReconciling] = useState(false);
 
   const onUnauthorized = useCallback(() => {
@@ -288,12 +305,58 @@ export default function QuickbooksIntegration() {
     [savingPullPayments, status?.pullPayments, onUnauthorized],
   );
 
+  // Phase D2 — the outbound half. Same non-optimistic shape as
+  // handleSetPullPayments above: the switch renders from the SERVER's echoed
+  // value, so a rejected PATCH leaves it showing the setting QuickBooks
+  // actually still has rather than a lie the operator then acts on. This one
+  // gates OUTBOUND money writes, which makes the honesty matter more, not less.
+  const handleSetPushPayments = useCallback(
+    async (next: boolean) => {
+      if (savingPushPayments || (status?.pushPayments ?? false) === next) return;
+      setSavingPushPayments(true);
+      try {
+        const updated = await runAction<QuickbooksStatus>({
+          request: () =>
+            fetchWithAuth("/accounting/quickbooks/settings", {
+              method: "PATCH",
+              body: JSON.stringify({ pushPayments: next }),
+            }),
+          errorFallback: t("quickbooksIntegration.failedToUpdatePushPayments"),
+          successMessage: next
+            ? t("quickbooksIntegration.pushPaymentsEnabled")
+            : t("quickbooksIntegration.pushPaymentsDisabled"),
+          onUnauthorized,
+        });
+        setStatus((prev) =>
+          prev ? { ...prev, pushPayments: updated.pushPayments } : prev,
+        );
+      } catch (err) {
+        if (isMfaError(err))
+          setLoadError(t("quickbooksIntegration.mfaRequiredHint"));
+        else if (!(err instanceof ActionError))
+          handleActionError(
+            err,
+            t("quickbooksIntegration.failedToUpdatePushPayments"),
+          );
+      } finally {
+        setSavingPushPayments(false);
+      }
+    },
+    [savingPushPayments, status?.pushPayments, onUnauthorized],
+  );
+
   // Phase D — "Sync now". POST /reconcile answers 200 with `{ enqueued }` in
   // BOTH outcomes: the route reports honestly rather than pretending a job it
   // could not hand to Redis is on its way. So there is no successMessage here —
   // the toast is chosen from the boolean, and `false` gets a warning. Toasting
   // "queued" on `enqueued: false` would leave the operator waiting on a sync
   // that will never run.
+  //
+  // Issue #4543 — a connection with BOTH payment switches off gets a distinct
+  // 409 `{ code: 'payment_sync_disabled' }` (Phase D2: pull off alone still
+  // runs, the gate is pull OR push) rather than a `{ enqueued: false }` 200, so runAction
+  // treats it as a failure and `friendly` swaps in the translated copy instead
+  // of the route's raw English message.
   const handleReconcileNow = useCallback(async () => {
     setReconciling(true);
     try {
@@ -303,6 +366,10 @@ export default function QuickbooksIntegration() {
             method: "POST",
           }),
         errorFallback: t("quickbooksIntegration.failedToSyncNow"),
+        friendly: (code) =>
+          code === "payment_sync_disabled"
+            ? t("quickbooksIntegration.syncNowPullDisabled")
+            : undefined,
         onUnauthorized,
       });
       showToast(
@@ -453,7 +520,7 @@ export default function QuickbooksIntegration() {
           <button
             type="button"
             onClick={() => void handleConnect()}
-            disabled={connecting}
+            disabled={connecting || !canManageAccounting}
             className="mt-4 inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             data-testid="quickbooks-connect"
           >
@@ -513,7 +580,7 @@ export default function QuickbooksIntegration() {
             </div>
           </dl>
 
-          {canWriteInvoices && (
+          {canWriteInvoices && canManageAccounting && (
           <div>
             <p className="text-sm font-medium">
               {t("quickbooksIntegration.invoicePush")}
@@ -555,7 +622,7 @@ export default function QuickbooksIntegration() {
           {/* Phase D: payment pull-back. Sits beside the push-mode row because
               the two together are the whole direction-of-travel story — push
               invoices out, pull payments back. */}
-          {canWriteInvoices && (
+          {canWriteInvoices && canManageAccounting && (
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-sm font-medium">
@@ -590,8 +657,45 @@ export default function QuickbooksIntegration() {
           </div>
           )}
 
+          {/* Phase D2: the outbound half. Sits under the pull toggle so the two
+              read as one direction-of-travel pair. */}
+          {canWriteInvoices && canManageAccounting && (
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium">
+                {t("quickbooksIntegration.pushPayments")}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {t("quickbooksIntegration.pushPaymentsDescription")}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={status.pushPayments === true}
+              aria-label={t("quickbooksIntegration.pushPayments")}
+              onClick={() =>
+                void handleSetPushPayments(status.pushPayments !== true)
+              }
+              disabled={savingPushPayments}
+              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition disabled:opacity-50 ${
+                status.pushPayments === true ? "bg-emerald-500/80" : "bg-muted"
+              }`}
+              data-testid="quickbooks-pushpayments"
+            >
+              <span
+                className={`inline-block h-5 w-5 rounded-full bg-white transition ${
+                  status.pushPayments === true
+                    ? "translate-x-5"
+                    : "translate-x-1"
+                }`}
+              />
+            </button>
+          </div>
+          )}
+
           <div className="flex items-center gap-3 border-t pt-4">
-            {canWriteInvoices && (
+            {canWriteInvoices && canManageAccounting && (
             <button
               type="button"
               onClick={() => void handleReconcileNow()}
@@ -618,6 +722,23 @@ export default function QuickbooksIntegration() {
             </p>
           </div>
 
+          {/* Issue #4543 (silent-failure-hunter finding): the reconcile
+              worker stamps a skip/failure reason onto `last_error` even while
+              `status` stays "connected" (pull_disabled, run failures,
+              a truncated CDC window). Without rendering it here, that stamp
+              was DB-only — invisible to anyone who only clicks "Sync now"
+              (the route's 409 already covers that click; this covers the
+              15-minute sweep / webhook triggers racing a toggle-off). Mirrors
+              the `needsReauth` block above. */}
+          {status.lastError && (
+            <p
+              className="text-xs text-amber-700"
+              data-testid="quickbooks-reconcile-last-error"
+            >
+              {status.lastError}
+            </p>
+          )}
+
           <div className="flex items-center gap-3 border-t pt-4">
             <button
               type="button"
@@ -630,7 +751,7 @@ export default function QuickbooksIntegration() {
             <button
               type="button"
               onClick={() => void handleRefreshSettings()}
-              disabled={refreshingSettings}
+              disabled={refreshingSettings || !canManageAccounting}
               className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
               data-testid="quickbooks-settings-refresh"
             >
@@ -644,7 +765,7 @@ export default function QuickbooksIntegration() {
             <button
               type="button"
               onClick={() => void handleDisconnect()}
-              disabled={disconnecting}
+              disabled={disconnecting || !canManageAccounting}
               className="inline-flex h-9 items-center gap-2 rounded-md border border-red-200 px-3 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
               data-testid="quickbooks-disconnect"
             >

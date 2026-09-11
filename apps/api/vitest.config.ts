@@ -15,8 +15,11 @@ export default defineConfig({
     include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
     exclude: [
       'src/__tests__/integration/**',
+      // Real bearer + PostgreSQL integration connection authority checks.
+      'src/routes/integrationConnectionScope.integration.test.ts',
       // Real-PostgreSQL exact request-pool role checks have a dedicated runner.
       'src/db/requestDatabaseRole.integration.test.ts',
+      'src/db/auditRetentionDefault.integration.test.ts',
       // Real-driver integration test for the inbound email pipeline. It needs the
       // integration setup (real postgres pool + autoMigrate seed) and is run by
       // vitest.integration.config.ts — not the unit runner, which has no DB.
@@ -30,6 +33,9 @@ export default defineConfig({
       // inboundEmail exclusion above.
       'src/services/vulnerability*.integration.test.ts',
       'src/services/aiToolsVulnerability.integration.test.ts',
+      // Real-DB backup queue lifecycle proof (#4923); runs under the
+      // integration config's setup (truncating), never the unit runner.
+      'src/services/backupProgress.integration.test.ts',
       'src/services/cpeMap.integration.test.ts',
       'src/services/cpeResolution.integration.test.ts',
       'src/services/exploitFeeds.integration.test.ts',
@@ -127,11 +133,6 @@ export default defineConfig({
       // the no-DB unit runner would fail it on connect. Belongs to
       // vitest.integration.config.ts (registered in its include list).
       'src/jobs/intentReleaseWorkerM365Headless.integration.test.ts',
-      // Two-replica runtime extension reconcile + failure policy (Task 8,
-      // issue #2619): imports `__tests__/integration/setup` (real postgres
-      // pool) and forks real child processes against `:5433`. Belongs to
-      // vitest.integration.config.ts (already in its include).
-      'src/extensions/twoReplicaReconcile.integration.test.ts',
       // Disabled built-in extension's table-existence probe against a real
       // server: imports `__tests__/integration/setup` (real postgres pool) and
       // provisions its own throwaway database. Belongs to
@@ -171,12 +172,17 @@ export default defineConfig({
       // so the no-DB unit runner would fail it on connect. Belongs to
       // vitest.integration.config.ts (registered in its include list).
       'src/routes/enrollmentKeysPurgeExpired.integration.test.ts',
+      // Real-Postgres rotation/redeem test belongs to the integration runner.
+      'src/routes/installerRotationRevocation.integration.test.ts',
+      // Disposable-database credential cutover proof uses the integration runner.
+      'src/db/installerBootstrapCredentialGeneration.migration.integration.test.ts',
       // Enrollment-key list-filter real-DB test (#3191 live-installer-token
       // carve-out on ?expired=): same story as the two above — imports
       // `__tests__/integration/setup` and lives outside the
       // `src/__tests__/integration/**` glob, so the no-DB unit runner would
       // fail it on connect. Belongs to vitest.integration.config.ts.
       'src/routes/enrollmentKeysExpiredFilter.integration.test.ts',
+      'src/routes/enrollmentKeysSiteScope.integration.test.ts',
       // Real-DB suites owned by vitest.integration.config.ts (#3778).
       'src/services/invoiceService.issue.integration.test.ts',
       'src/services/invoicePdf.integration.test.ts',

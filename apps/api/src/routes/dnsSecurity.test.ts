@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const { permissionGate, mfaGate, permsState } = vi.hoisted(() => ({
-  permissionGate: { deny: false },
+  permissionGate: { deny: false, deniedPermission: null as string | null },
   mfaGate: { deny: false },
   permsState: { permissions: undefined as { allowedSiteIds?: string[] } | undefined }
 }));
@@ -54,13 +54,14 @@ vi.mock('../middleware/auth', () => ({
       orgId: '11111111-1111-1111-1111-111111111111',
       accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
       canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111',
+      orgCondition: () => undefined,
       user: { id: 'user-123', email: 'test@example.com' }
     });
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (c: any, next: any) => {
-    if (permissionGate.deny) {
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (permissionGate.deny || permissionGate.deniedPermission === `${resource}:${action}`) {
       return c.json({ error: 'Forbidden' }, 403);
     }
     // Mirror prod: requirePermission (not authMiddleware) populates `permissions`.
@@ -109,10 +110,63 @@ describe('dns security routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     permissionGate.deny = false;
+    permissionGate.deniedPermission = null;
     mfaGate.deny = false;
 
     app = new Hono();
     app.route('/dns-security', dnsSecurityRoutes);
+  });
+
+  describe('DNS configuration read permission', () => {
+    it('rejects integration configuration reads before database access when devices:read is denied', async () => {
+      permissionGate.deniedPermission = 'devices:read';
+
+      const res = await app.request('/dns-security/integrations');
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('rejects policy configuration reads before database access when devices:read is denied', async () => {
+      permissionGate.deniedPermission = 'devices:read';
+
+      const res = await app.request('/dns-security/policies');
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('allows integration configuration reads with devices:read', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: () => ({
+          where: () => ({
+            orderBy: () => Promise.resolve([{ id: 'integration-1', name: 'DNS Filter' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/dns-security/integrations');
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toEqual([{ id: 'integration-1', name: 'DNS Filter' }]);
+    });
+
+    it('allows policy configuration reads with devices:read', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: () => ({
+          innerJoin: () => ({
+            where: () => ({
+              orderBy: () => Promise.resolve([{ id: 'policy-1', name: 'Block malware' }])
+            })
+          })
+        })
+      } as any);
+
+      const res = await app.request('/dns-security/policies');
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toEqual([{ id: 'policy-1', name: 'Block malware' }]);
+    });
   });
 
   it('rejects integration creation when permission check fails', async () => {
@@ -213,6 +267,58 @@ describe('dns security routes', () => {
     // DB layer isn't mocked, so a 500 is also acceptable here — the assertion
     // is that we didn't reject at validation time.
     expect(res.status).not.toBe(400);
+  });
+
+  // The next-gen Umbrella Reports API takes no organization id — the OAuth2
+  // token's own `sub` claim scopes the request — so demanding one at creation
+  // time rejects a perfectly usable credential (#4597).
+  it('accepts a Cisco Umbrella integration without config.organizationId (#4597)', async () => {
+    const res = await app.request('/dns-security/integrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'umbrella',
+        name: 'Contoso Umbrella',
+        apiKey: 'api-key-123',
+        apiSecret: 'api-secret-123'
+      })
+    });
+
+    // The DB layer isn't mocked, so anything other than 400 means validation
+    // let it through.
+    expect(res.status).not.toBe(400);
+  });
+
+  it('still accepts a Cisco Umbrella integration that supplies organizationId', async () => {
+    const res = await app.request('/dns-security/integrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'umbrella',
+        name: 'Contoso Umbrella',
+        apiKey: 'api-key-123',
+        apiSecret: 'api-secret-123',
+        config: { organizationId: 'umbrella-org-id' }
+      })
+    });
+
+    expect(res.status).not.toBe(400);
+  });
+
+  // Control: the umbrella branch of the validator is still live, so the test
+  // above is proving something.
+  it('still rejects a Cisco Umbrella integration with no apiSecret', async () => {
+    const res = await app.request('/dns-security/integrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'umbrella',
+        name: 'Contoso Umbrella',
+        apiKey: 'api-key-123'
+      })
+    });
+
+    expect(res.status).toBe(400);
   });
 
   // ──────────────── Site-scope enforcement (reads) ────────────────

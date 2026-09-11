@@ -512,6 +512,53 @@
         "passed": "Réussie",
         "failed": "Échouée"
       }
+    },
+    "aiKillSwitch": {
+      "title": "Coupe-circuit IA",
+      "description": "Arrêt d'urgence à l'échelle de la plateforme pour l'activité non supervisée des agents IA. Le basculer affecte tous les partenaires à la fois — il s'agit d'une opération de plateforme, pas d'un paramètre par tenant.",
+      "refresh": "Actualiser",
+      "loading": "Chargement de l'état du coupe-circuit…",
+      "impactNote": "Activer le coupe-circuit arrête les actions IA non supervisées pour tous les partenaires en environ 5 secondes. Les actions déjà en cours ne sont pas interrompues.",
+      "platformAdmin": {
+        "title": "Accès administrateur de plateforme requis",
+        "description": "Le coupe-circuit IA est un contrôle à l'échelle de la plateforme géré par les administrateurs de plateforme Breeze. Votre compte ne peut pas le consulter ni le modifier."
+      },
+      "status": {
+        "active": "Actions IA actives",
+        "killed": "Actions IA arrêtées"
+      },
+      "fields": {
+        "epoch": "Époque",
+        "updatedBy": "Dernière modification par",
+        "updatedAt": "Dernière modification le",
+        "lastReason": "Dernier motif",
+        "none": "—"
+      },
+      "actions": {
+        "kill": "Arrêter les actions IA à l'échelle de la plateforme",
+        "restore": "Restaurer les actions IA"
+      },
+      "confirm": {
+        "killTitle": "Arrêter les actions IA à l'échelle de la plateforme ?",
+        "killDescription": "Cela arrête immédiatement l'activité non supervisée des agents IA pour tous les partenaires sur Breeze. À utiliser uniquement en cas d'incident actif.",
+        "restoreTitle": "Restaurer les actions IA ?",
+        "restoreDescription": "Cela réactive l'activité non supervisée des agents IA pour tous les partenaires sur Breeze.",
+        "reasonLabel": "Motif (obligatoire, pour le journal d'audit)",
+        "reasonPlaceholder": "Décrivez l'incident ou le motif de ce changement…",
+        "cancel": "Annuler",
+        "killSubmit": "Arrêter les actions IA",
+        "restoreSubmit": "Restaurer les actions IA"
+      },
+      "notice": {
+        "killed": "Actions IA arrêtées à l'échelle de la plateforme.",
+        "restored": "Actions IA restaurées à l'échelle de la plateforme."
+      },
+      "errors": {
+        "load": "Échec du chargement de l'état du coupe-circuit",
+        "generic": "Une erreur s'est produite",
+        "flip": "Échec de la mise à jour du coupe-circuit",
+        "mfaRequired": "Le basculement du coupe-circuit IA nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez."
+      }
     }
   },
   "audit": {
@@ -687,80 +734,6 @@
         "previous": "Précédent",
         "page": "Page {{page}}",
         "next": "Suivant"
-      }
-    },
-    "complianceReport": {
-      "title": "Rapport de conformité",
-      "description": "Générez des résumés prêts à l’audit, alignés sur les contrôles de conformité.",
-      "generateReport": "Générer un rapport",
-      "dataAccessAudit": "Audit d’accès aux données",
-      "sensitiveOperations": "Opérations sensibles",
-      "reviewRequired": "Révision requise",
-      "categories": {
-        "gdpr": {
-          "label": "RGPD"
-        },
-        "soc2": {
-          "label": "SOC 2"
-        },
-        "hipaa": {
-          "label": "HIPAA"
-        }
-      },
-      "summary": {
-        "gdpr": {
-          "dataAccessEvents": "Événements d’accès aux données",
-          "dsarRequests": "Demandes DSAR",
-          "retentionAlerts": "Alertes de rétention"
-        },
-        "soc2": {
-          "controlExceptions": "Exceptions de contrôle",
-          "privilegedActions": "Actions privilégiées",
-          "policyAttestations": "Attestations de politique"
-        },
-        "hipaa": {
-          "phiAccessEvents": "Événements d’accès PHI",
-          "roleChanges": "Changements de rôle",
-          "encryptionChecks": "Contrôles de chiffrement"
-        },
-        "helpers": {
-          "past30Days": "30 derniers jours",
-          "pending2": "en attente 2",
-          "overdue": "En retard",
-          "last7Days": "Les 7 derniers jours",
-          "withinScope": "Dans le cadre du champ d’application",
-          "complete": "Complet",
-          "past14Days": "14 derniers jours",
-          "requiresReview": "nécessite une révision",
-          "compliant": "Conforme"
-        }
-      },
-      "table": {
-        "user": "Utilisateur",
-        "data": "Données",
-        "purpose": "Objectif",
-        "time": "Temps"
-      },
-      "data": {
-        "customerRecords": "Dossiers clients",
-        "adminPortal": "Portail administratif",
-        "payrollRecords": "Dossiers de paie",
-        "deviceGroupVip": "Groupe d’appareils - VIP"
-      },
-      "purpose": {
-        "billingReview": "Révision de la facturation",
-        "securityAudit": "Audit de sécurité",
-        "complianceSampling": "Échantillonnage de conformité",
-        "accessProvisioning": "Provisionnement d’accès"
-      },
-      "operations": {
-        "exportedCustomerDataset": "Jeu de données client exporté vers CSV",
-        "mfaWindowReduced": "MFA fenêtre réduite à 15 minutes",
-        "roleChangedExternalContractor": "Changement de rôle pour un prestataire externe"
-      },
-      "severity": {
-        "high": "Élevée",
-        "medium": "Moyenne"
       }
     },
     "userActivityReport": {

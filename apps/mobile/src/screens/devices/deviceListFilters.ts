@@ -1,4 +1,5 @@
 import type { Device } from '../../services/api';
+import { osLabel } from '../../lib/osLabel';
 
 export type DeviceStatusFilter = 'all' | 'online' | 'offline';
 
@@ -62,6 +63,21 @@ export function shapeDeviceList(devices: Device[], options: DeviceListOptions): 
     if (weight !== 0) return weight;
     return a.name.localeCompare(b.name);
   });
+}
+
+/**
+ * Row meta line for the device list: `org · site`, falling back to the OS
+ * label when neither is known for this device (#5104). A five-org MSP
+ * tenant needs org·site to tell devices apart; a single-org tenant, or a
+ * device whose org/site lookup happened to miss, still gets SOME
+ * identifying text on the row instead of a blank line.
+ */
+export function deviceRowMeta(
+  device: Pick<Device, 'organizationName' | 'siteName' | 'os'>
+): string {
+  const identifiers = [device.organizationName, device.siteName].filter(Boolean);
+  if (identifiers.length > 0) return identifiers.join(' · ');
+  return device.os ? osLabel(device.os) : '—';
 }
 
 /** Counts for the filter chips, computed off the unfiltered fleet. */

@@ -9,6 +9,7 @@ import {
   isValidReleaseSourceRepository,
 } from '../services/releaseSource';
 import { EVENT_SUBSCRIBER_IDS, isSubscriberId } from '../services/eventSubscriberIds';
+import { parsePlayIntegrityServiceAccount } from '../services/attestation/playIntegrity';
 import {
   canonicalCfAccessTeamDomain,
   decodePartnerApiCursorSigningKey,
@@ -624,6 +625,37 @@ const envObjectSchema = z
     // AGENT_AUTO_PROMOTE above.
     BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: z.string().optional(),
 
+    // #1374 — L4 (critical-tier) platform-attestation gate. Defaults TRUE; read
+    // at runtime by authenticatorAttestationEnforced() in env.ts. Validated here
+    // for boolean format only, same class as AGENT_AUTO_PROMOTE above — and for
+    // a sharper reason: this flag is a break-glass revert for a critical-tier
+    // approval bypass, so a typo must fail boot rather than leave an operator
+    // guessing which way it resolved.
+    BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED: z.string().optional(),
+
+    // #1374 W04 — Google Cloud service account (JSON, or base64 of that JSON)
+    // with the Play Integrity API enabled, used to decode Android
+    // `decodeIntegrityToken` verdicts. OPTIONAL by design: Play Integrity only
+    // ever stamps `app_integrity_verified_at`, never the trust basis, so an
+    // unconfigured deploy degrades to Key-Attestation-only rather than refusing
+    // Android approver-device registrations.
+    //
+    // Format IS validated, unlike most optional strings here: the failure mode
+    // of a mangled paste (base64 truncated, `\n` un-escaped out of the PEM) is a
+    // module that quietly reports "not configured" forever, so every Android
+    // registration silently lands with a null app_integrity_verified_at and
+    // nobody notices. A typo should stop the boot instead.
+    PLAY_INTEGRITY_SERVICE_ACCOUNT: z
+      .string()
+      .optional()
+      .refine((v) => v === undefined || parsePlayIntegrityServiceAccount(v) !== null, {
+        message:
+          'PLAY_INTEGRITY_SERVICE_ACCOUNT must be a Google service-account JSON (raw or base64) carrying client_email and private_key',
+      })
+      .describe(
+        'Google service account (raw JSON or base64) used to decode Play Integrity verdicts on Android approver-device registration (#1374). Optional — absence degrades to Key-Attestation-only.',
+      ),
+
     // Process role for the 3.5d socket/worker split (wave 3.5b, #4084). all
     // (default) = today's all-in-one process. Read at runtime by
     // breezeRole() in env.ts. Validated here for format only — absence means
@@ -739,7 +771,6 @@ const envObjectSchema = z
     CF_ACCESS_TEAM_DOMAIN: z.string().optional(),
     CF_ACCESS_AUD: z.string().optional(),
     CF_ACCESS_TRUSTS_MFA: z.string().optional(),
-    AUTH_BROWSER_TRANSITIONS_ENFORCED: z.string().optional(),
     AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: z.string().optional(),
 
     // -- Native APNs push (replaces the Expo push relay) ---------------------
@@ -1645,32 +1676,21 @@ const envSchema = envObjectSchema
       }
     }
 
-    const authTransitionFlagValues = new Set([
+    const authTerminalPreparationFlagValues = new Set([
       'true', 'false', '1', '0', 'yes', 'no', 'on', 'off',
     ]);
-    const transitionsRaw = (data.AUTH_BROWSER_TRANSITIONS_ENFORCED ?? '').trim().toLowerCase();
     const terminalPreparationRaw = (
       data.AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED ?? ''
     ).trim().toLowerCase();
-    for (const [name, value] of [
-      ['AUTH_BROWSER_TRANSITIONS_ENFORCED', transitionsRaw],
-      ['AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED', terminalPreparationRaw],
-    ] as const) {
-      if (value && !authTransitionFlagValues.has(value)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: [name],
-          message: `${name} must be a boolean (true/false, 1/0, yes/no, on/off) when set.`,
-        });
-      }
-    }
-    const flagEnabled = (value: string) => ['true', '1', 'yes', 'on'].includes(value);
-    if (flagEnabled(terminalPreparationRaw) && !flagEnabled(transitionsRaw)) {
+    if (
+      terminalPreparationRaw
+      && !authTerminalPreparationFlagValues.has(terminalPreparationRaw)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED'],
         message:
-          'AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED=true requires AUTH_BROWSER_TRANSITIONS_ENFORCED=true.',
+          'AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set.',
       });
     }
 
@@ -1723,6 +1743,25 @@ const envSchema = envObjectSchema
         path: ['ABUSE_SIGNALS_ENABLED'],
         message:
           'ABUSE_SIGNALS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to the value of IS_HOSTED — signup-abuse detection is ON for a hosted deployment and OFF for a self-hosted one. Set true to opt a self-hosted multi-tenant service in, or false to switch a hosted deployment off.',
+      });
+    }
+
+    // BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED (#1374 L4 attestation gate).
+    // Same treatment as AGENT_AUTO_PROMOTE above. The runtime reader keeps
+    // enforcement ON for an unrecognized value (fail closed), so the ONLY
+    // symptom of a typo without this guard would be an operator who believes
+    // they performed a break-glass revert and did not.
+    const attestationEnforcedRaw = (
+      data.BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED ?? ''
+    ).trim().toLowerCase();
+    if (attestationEnforcedRaw && !boolValues.has(attestationEnforcedRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED'],
+        message:
+          'BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
+          'Defaults to true (an L4/critical-tier approval requires a trusted platform_bound_basis). ' +
+          'Set false ONLY as a break-glass revert — it re-opens the critical-tier bypass for every legacy mobile approver key.',
       });
     }
 

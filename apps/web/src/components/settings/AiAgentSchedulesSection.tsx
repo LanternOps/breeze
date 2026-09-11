@@ -38,12 +38,13 @@
 // Deletes use an INLINE two-step confirm, never `window.confirm`: a native
 // dialog cannot be dismissed by the browser-automation harness, so an E2E run
 // wedges on it.
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import {
   AI_AGENT_SCHEDULE_KINDS,
   AI_SWEEP_KINDS,
+  isHourlyFloorCron,
   isStructurallyValidCron,
   isWeeklyLiteralCron,
   listIanaTimezones,
@@ -53,6 +54,8 @@ import {
   type AiSweepKind,
 } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
+import { badgeClass } from '../aiAgents/statusBadge';
+import { EmptyState } from '../shared/EmptyState';
 import { handleActionError, runAction } from '@/lib/runAction';
 import { loginPathWithNext } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
@@ -69,6 +72,15 @@ interface Props {
   /** The concrete org selected in the org switcher, or null in the fleet view.
    *  Overrides are per-org, so there is nothing to override without one. */
   orgId: string | null;
+  /**
+   * Fires whenever an unsaved schedule draft opens or closes.
+   *
+   * A schedule saves through its OWN request, not through the agent form's
+   * Save — so the form's Save used to close the drawer and silently discard a
+   * half-written cron. The parent uses this to block its Save/Cancel and say
+   * why, rather than throwing the draft away without mentioning it.
+   */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
@@ -104,6 +116,190 @@ const SCHEDULE_ERROR_COPY: Record<string, ((t: (key: string) => string) => strin
 /** The server's rule, restated client-side — see the module doc. */
 function isFiveFieldCron(value: string): boolean {
   return isStructurallyValidCron(value) && value.trim().split(/\s+/).length === 5;
+}
+
+// ---------------------------------------------------------------------------
+// Next-run preview
+//
+// A cron field is validated by `isStructurallyValidCron` but never EVALUATED
+// anywhere on the client, so `0 3 * * 7` and `0 3 * * 0` (Sunday, twice) look
+// identical to an operator and a typo'd day-of-week is invisible until the
+// sweep silently fails to fire for a week. `cron-parser` is not a dependency
+// of apps/web (only of apps/api, transitively through BullMQ), so this
+// evaluates the same grammar `isValidCronField` accepts — comma lists of `*`,
+// a value, or `a-b`, each optionally `/step`, with month and day names.
+//
+// TIMEZONE. The result is WALL-CLOCK TIME IN THE SCHEDULE'S OWN ZONE, and the
+// label says which zone, so no instant conversion is needed: "now" is read
+// into that zone's wall clock once and the search then walks a plain calendar.
+// The consequence is that a DST transition is not modelled — a preview one
+// hour off twice a year is the accepted cost of not shipping a tz library to
+// render a hint. The scheduler, not this function, decides when a sweep runs.
+// ---------------------------------------------------------------------------
+
+const CRON_MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const CRON_DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+/** Every value one cron field matches, or null when the field does not parse. */
+function expandCronField(
+  field: string,
+  min: number,
+  max: number,
+  names: readonly string[],
+): Set<number> | null {
+  const readValue = (token: string): number | null => {
+    const named = names.indexOf(token.toLowerCase());
+    // Month names are 1-based, day names 0-based — the same asymmetry
+    // `isValidCronField` encodes.
+    if (named >= 0) return names === CRON_MONTH_NAMES ? named + 1 : named;
+    if (!/^\d+$/.test(token)) return null;
+    const value = Number(token);
+    return value >= min && value <= max ? value : null;
+  };
+
+  const values = new Set<number>();
+  for (const listItem of field.split(',')) {
+    if (listItem === '') return null;
+    const [rangePart, stepPart, ...extra] = listItem.split('/');
+    if (extra.length > 0) return null;
+    if (stepPart !== undefined && !/^[1-9]\d*$/.test(stepPart)) return null;
+    const step = stepPart === undefined ? 1 : Number(stepPart);
+    let from: number;
+    let to: number;
+    if (rangePart === '*') {
+      from = min;
+      to = max;
+    } else {
+      const bounds = (rangePart ?? '').split('-');
+      if (bounds.length > 2) return null;
+      const parsed = bounds.map(readValue);
+      if (parsed.some((value) => value === null)) return null;
+      from = parsed[0] as number;
+      // A bare `5/15` means "from 5 to the end of the range, every 15" —
+      // a lone value with no step is just itself.
+      to = parsed.length === 2 ? (parsed[1] as number) : stepPart === undefined ? from : max;
+      if (from > to) return null;
+    }
+    for (let value = from; value <= to; value += step) values.add(value);
+  }
+  return values.size === 0 ? null : values;
+}
+
+interface CronFields {
+  minutes: Set<number>;
+  hours: Set<number>;
+  daysOfMonth: Set<number>;
+  months: Set<number>;
+  daysOfWeek: Set<number>;
+  domRestricted: boolean;
+  dowRestricted: boolean;
+}
+
+export function parseFiveFieldCron(cron: string): CronFields | null {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) return null;
+  const minutes = expandCronField(parts[0]!, 0, 59, []);
+  const hours = expandCronField(parts[1]!, 0, 23, []);
+  const daysOfMonth = expandCronField(parts[2]!, 1, 31, []);
+  const months = expandCronField(parts[3]!, 1, 12, CRON_MONTH_NAMES);
+  const rawDaysOfWeek = expandCronField(parts[4]!, 0, 7, CRON_DAY_NAMES);
+  if (!minutes || !hours || !daysOfMonth || !months || !rawDaysOfWeek) return null;
+  return {
+    minutes,
+    hours,
+    daysOfMonth,
+    months,
+    // 7 and 0 are both Sunday.
+    daysOfWeek: new Set([...rawDaysOfWeek].map((day) => (day === 7 ? 0 : day))),
+    domRestricted: parts[2] !== '*',
+    dowRestricted: parts[4] !== '*',
+  };
+}
+
+/**
+ * First matching wall-clock minute strictly after `fromMs`, expressed as a
+ * floating instant (the Y-M-D H:M read as if it were UTC). Null when nothing
+ * matches inside a year — `0 0 30 2 *` is structurally valid and never fires.
+ */
+export function nextCronOccurrence(fields: CronFields, fromMs: number): Date | null {
+  const cursor = new Date(Math.floor(fromMs / 60000) * 60000 + 60000);
+  for (let day = 0; day < 400; day += 1) {
+    if (fields.months.has(cursor.getUTCMonth() + 1)) {
+      const domHit = fields.daysOfMonth.has(cursor.getUTCDate());
+      const dowHit = fields.daysOfWeek.has(cursor.getUTCDay());
+      // Vixie cron: when BOTH day fields are restricted the day matches if
+      // EITHER does; otherwise the unrestricted one is a no-op `*`.
+      const dayHit = fields.domRestricted && fields.dowRestricted ? domHit || dowHit : domHit && dowHit;
+      if (dayHit) {
+        const fromHour = cursor.getUTCHours();
+        for (let hour = fromHour; hour < 24; hour += 1) {
+          if (!fields.hours.has(hour)) continue;
+          const fromMinute = hour === fromHour ? cursor.getUTCMinutes() : 0;
+          for (let minute = fromMinute; minute < 60; minute += 1) {
+            if (!fields.minutes.has(minute)) continue;
+            return new Date(Date.UTC(
+              cursor.getUTCFullYear(),
+              cursor.getUTCMonth(),
+              cursor.getUTCDate(),
+              hour,
+              minute,
+            ));
+          }
+        }
+      }
+    }
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+    cursor.setUTCHours(0, 0, 0, 0);
+  }
+  return null;
+}
+
+/** "Now" as a floating instant on `timezone`'s wall clock. */
+function wallClockNow(timezone: string, now: Date): number {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      hour12: false,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).formatToParts(now);
+    const read = (type: string) => Number(parts.find((part) => part.type === type)?.value);
+    const year = read('year');
+    if (!Number.isFinite(year)) throw new Error('unreadable parts');
+    // `hour12: false` renders midnight as 24 in some ICU versions.
+    return Date.UTC(year, read('month') - 1, read('day'), read('hour') % 24, read('minute'));
+  } catch {
+    // An unknown zone must not blank the whole row — fall back to UTC and
+    // keep the label, which names the zone the schedule actually stores.
+    return Date.UTC(
+      now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours(), now.getUTCMinutes(),
+    );
+  }
+}
+
+type NextRun =
+  | { kind: 'invalid' }
+  | { kind: 'none' }
+  | { kind: 'at'; at: string };
+
+export function describeNextRun(cron: string, timezone: string, now = new Date()): NextRun {
+  const fields = parseFiveFieldCron(cron);
+  if (!fields) return { kind: 'invalid' };
+  const occurrence = nextCronOccurrence(fields, wallClockNow(timezone, now));
+  if (!occurrence) return { kind: 'none' };
+  // Formatted as UTC because the value IS a floating wall-clock instant; the
+  // zone it belongs to is named beside it, never inferred from the viewer's.
+  return {
+    kind: 'at',
+    at: new Intl.DateTimeFormat(undefined, {
+      timeZone: 'UTC',
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(occurrence),
+  };
 }
 
 /**
@@ -164,6 +360,15 @@ function defaultTimezone(): string {
   }
 }
 
+/** The part of an IANA zone name before its first '/' ("America", "Europe",
+ *  "UTC"). Used only to group the 418-option select into `<optgroup>`s — a
+ *  bare list that long forces the operator to scan every option in order to
+ *  find their own continent. */
+function timezoneRegion(zone: string): string {
+  const slash = zone.indexOf('/');
+  return slash === -1 ? zone : zone.slice(0, slash);
+}
+
 type BaselineDraft = {
   mode: 'baseline';
   /** null = creating. */
@@ -202,6 +407,7 @@ export default function AiAgentSchedulesSection({
   agentOwnerScope,
   isPartnerScope,
   orgId,
+  onDirtyChange,
 }: Props) {
   const { t } = useTranslation('settings');
   const schedulable = agentOwnerScope === 'partner';
@@ -212,8 +418,34 @@ export default function AiAgentSchedulesSection({
   const [loading, setLoading] = useState(schedulable);
   const [failed, setFailed] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
+  /**
+   * Whether the operator has actually CHANGED a field of the open draft.
+   *
+   * Dirtiness used to be `draft !== null`, so merely opening a schedule to look
+   * at it latched the parent form dirty — wedging the agent's own Save (and,
+   * before the close guard, its Cancel) behind a "you have unsaved work"
+   * warning about work nobody had done. Seeded drafts are pure reads of the
+   * stored row, so nothing is at risk until the first edit.
+   */
+  const [touched, setTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const allOrgsHintId = useId();
+  const scheduleEnabledLabelId = useId();
+
+  // Read through a ref so an inline `onDirtyChange={...}` at the call site
+  // cannot re-fire the effect on every parent render — the effect must run on
+  // a change of DRAFTEDNESS, never on a change of callback identity.
+  const onDirtyChangeRef = useRef(onDirtyChange);
+  onDirtyChangeRef.current = onDirtyChange;
+  const hasUnsavedEdits = draft !== null && touched;
+  useEffect(() => {
+    onDirtyChangeRef.current?.(hasUnsavedEdits);
+  }, [hasUnsavedEdits]);
+  // Unmount (the agent form closing, the agent switching) is not "the operator
+  // resolved the draft", but the draft is gone with it — leaving the parent
+  // latched dirty would wedge its Save for the next agent.
+  useEffect(() => () => onDirtyChangeRef.current?.(false), []);
 
   const load = useCallback(async () => {
     if (!schedulable) return;
@@ -244,7 +476,13 @@ export default function AiAgentSchedulesSection({
     } finally {
       setLoading(false);
     }
-  }, [agentId, schedulable]);
+    // `orgId` is a dependency even though it never appears in the URL above:
+    // fetchWithAuth reads it from the org store to build the `?orgId=`
+    // query itself, but THIS callback still has to be re-created (and thus
+    // re-run by the effect below) when the org switcher changes, or the
+    // section keeps showing the previous org's merged overrides until some
+    // unrelated prop forces a reload.
+  }, [agentId, orgId, schedulable]);
 
   useEffect(() => {
     void load();
@@ -260,10 +498,40 @@ export default function AiAgentSchedulesSection({
     // field would silently rewrite it to the first option.
     return draftTimezone && !all.includes(draftTimezone) ? [draftTimezone, ...all] : all;
   }, [draftTimezone]);
+  // `listIanaTimezones()` is already alphabetical, so entries sharing a
+  // region are already contiguous — grouping by insertion order here never
+  // has to re-sort. A Map preserves that order, which is what makes the
+  // `<optgroup>`s below come out in the same order the flat list did.
+  const zoneGroups = useMemo(() => {
+    const groups = new Map<string, string[]>();
+    for (const zone of zones) {
+      const region = timezoneRegion(zone);
+      const list = groups.get(region);
+      if (list) list.push(zone);
+      else groups.set(region, [zone]);
+    }
+    return groups;
+  }, [zones]);
+
+  /**
+   * A field CHANGE. The only thing that makes this section dirty — kept
+   * separate from `seedDraft` below so opening, saving, deleting or cancelling
+   * a draft can never be mistaken for unsaved work.
+   */
+  const editDraft = (next: Draft) => {
+    setDraft(next);
+    setTouched(true);
+  };
+
+  /** Open a draft from stored values, or close one. Never an edit. */
+  const seedDraft = (next: Draft | null) => {
+    setDraft(next);
+    setTouched(false);
+  };
 
   const openCreate = () => {
     setConfirmDelete(false);
-    setDraft({
+    seedDraft({
       mode: 'baseline',
       id: null,
       kind: 'sweep',
@@ -285,7 +553,7 @@ export default function AiAgentSchedulesSection({
    * whose Save the server refuses — or, worse, silently valid but wrong.
    */
   const setCreateKind = (drafted: BaselineDraft, kind: AiAgentScheduleKind) => {
-    setDraft({
+    editDraft({
       ...drafted,
       kind,
       cron: CRON_DEFAULTS[kind],
@@ -295,7 +563,7 @@ export default function AiAgentSchedulesSection({
 
   const openBaseline = (schedule: AiAgentEffectiveScheduleDto) => {
     setConfirmDelete(false);
-    setDraft({
+    seedDraft({
       mode: 'baseline',
       id: schedule.id,
       kind: kindOf(schedule),
@@ -308,7 +576,7 @@ export default function AiAgentSchedulesSection({
 
   const openOverride = (schedule: AiAgentEffectiveScheduleDto) => {
     setConfirmDelete(false);
-    setDraft({
+    seedDraft({
       mode: 'override',
       id: schedule.override?.id ?? null,
       baselineId: schedule.id,
@@ -321,12 +589,15 @@ export default function AiAgentSchedulesSection({
     });
   };
 
-  // A narrative baseline must ALSO be a weekly literal (`isWeeklyLiteralCron`)
-  // — the same predicate the server applies, restated rather than approximated,
-  // so a cron this form accepts is never one the API then refuses.
+  // A SWEEP baseline must ALSO clear the server's hourly floor
+  // (`isHourlyFloorCron` — see the module doc), and a narrative baseline must
+  // ALSO be a weekly literal (`isWeeklyLiteralCron`) — both the same
+  // predicates the server applies, restated rather than approximated, so a
+  // cron this form accepts is never one the API then refuses.
   const cronValid = draft?.mode !== 'baseline'
     ? true
-    : isFiveFieldCron(draft.cron) && (draft.kind !== 'narrative' || isWeeklyLiteralCron(draft.cron));
+    : isFiveFieldCron(draft.cron)
+      && (draft.kind === 'narrative' ? isWeeklyLiteralCron(draft.cron) : isHourlyFloorCron(draft.cron));
   // `.min(1)` on a SWEEP baseline (a sweep baseline that sweeps nothing is
   // pointless); a narrative baseline evaluates no kinds at all, and an
   // override's `[]` is meaningful — "run no check for this org".
@@ -404,7 +675,7 @@ export default function AiAgentSchedulesSection({
       setSaving(false);
     }
     if (saved) {
-      setDraft(null);
+      seedDraft(null);
       await load();
     }
   }, [agentId, cronValid, draft, kindsValid, load, orgId, saving, t]);
@@ -435,7 +706,7 @@ export default function AiAgentSchedulesSection({
       setSaving(false);
     }
     if (deleted) {
-      setDraft(null);
+      seedDraft(null);
       await load();
     }
   }, [confirmDelete, draft, load, saving, t]);
@@ -455,6 +726,34 @@ export default function AiAgentSchedulesSection({
     kinds.length === 0
       ? t('aiAgentsPage.schedules.noKinds')
       : kinds.map(kindLabel).join(', ');
+
+  /**
+   * "Next run" beside the raw cron. Without it the only feedback a five-field
+   * expression gives is structural validity, so a wrong day-of-week reads as
+   * a working schedule until it fails to fire.
+   */
+  const nextRunLine = (cron: string, timezone: string, testId: string) => {
+    const next = describeNextRun(cron, timezone);
+    if (next.kind === 'invalid') {
+      return (
+        <span className="block text-xs text-destructive" data-testid={`${testId}-invalid`}>
+          {t('aiAgentsPage.schedules.nextRunInvalid')}
+        </span>
+      );
+    }
+    if (next.kind === 'none') {
+      return (
+        <span className="block text-xs text-muted-foreground" data-testid={`${testId}-none`}>
+          {t('aiAgentsPage.schedules.nextRunNone')}
+        </span>
+      );
+    }
+    return (
+      <span className="block text-xs text-muted-foreground" data-testid={testId}>
+        {t('aiAgentsPage.schedules.nextRun', { at: next.at, timezone })}
+      </span>
+    );
+  };
 
   const editor = (drafted: Draft) => (
     <div className="mt-3 space-y-3 rounded-md border bg-background p-3" data-testid="ai-agent-schedule-editor">
@@ -487,7 +786,7 @@ export default function AiAgentSchedulesSection({
               type="text"
               className={`${inputCls} font-mono`}
               value={drafted.cron}
-              onChange={(e) => setDraft({ ...drafted, cron: e.target.value })}
+              onChange={(e) => editDraft({ ...drafted, cron: e.target.value })}
               data-testid="ai-agent-schedule-cron"
             />
             <span
@@ -503,21 +802,42 @@ export default function AiAgentSchedulesSection({
                 {t('aiAgentsPage.schedules.cronInvalid')}
               </span>
             )}
+            {/* Only while the cron actually validates — otherwise this and
+                the cronInvalid banner above say the same "this is broken"
+                thing twice, once as a generic banner and once as the
+                preview's own "Invalid schedule" state. */}
+            {cronValid && nextRunLine(drafted.cron, drafted.timezone, 'ai-agent-schedule-editor-next-run')}
           </label>
           <label className="space-y-1 text-sm">
             <span className="font-medium">{t('aiAgentsPage.schedules.timezone')}</span>
-            <select
-              className={inputCls}
-              value={drafted.timezone}
-              onChange={(e) => setDraft({ ...drafted, timezone: e.target.value })}
-              data-testid="ai-agent-schedule-timezone"
-            >
-              {zones.map((zone) => (
-                <option key={zone} value={zone}>
-                  {zone}
-                </option>
-              ))}
-            </select>
+            <div className="flex items-center gap-2">
+              <select
+                className={inputCls}
+                value={drafted.timezone}
+                onChange={(e) => editDraft({ ...drafted, timezone: e.target.value })}
+                data-testid="ai-agent-schedule-timezone"
+              >
+                {/* Grouped by continent — a flat 418-option list forces the
+                    operator to scan every entry to find their own region. */}
+                {[...zoneGroups.entries()].map(([region, regionZones]) => (
+                  <optgroup key={region} label={region}>
+                    {regionZones.map((zone) => (
+                      <option key={zone} value={zone}>
+                        {zone}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => editDraft({ ...drafted, timezone: defaultTimezone() })}
+                className="shrink-0 whitespace-nowrap rounded-md border px-2.5 py-1.5 text-xs font-medium"
+                data-testid="ai-agent-schedule-use-my-timezone"
+              >
+                {t('aiAgentsPage.schedules.useMyTimezone')}
+              </button>
+            </div>
           </label>
         </div>
       ) : (
@@ -538,7 +858,7 @@ export default function AiAgentSchedulesSection({
                 <input
                   type="checkbox"
                   checked={drafted.sweepKinds.includes(kind)}
-                  onChange={() => setDraft({ ...drafted, sweepKinds: toggleKind(drafted.sweepKinds, kind) })}
+                  onChange={() => editDraft({ ...drafted, sweepKinds: toggleKind(drafted.sweepKinds, kind) })}
                   data-testid={`ai-agent-schedule-kind-${kind}`}
                 />
                 {kindLabel(kind)}
@@ -556,15 +876,33 @@ export default function AiAgentSchedulesSection({
         </div>
       )}
 
-      <label className="flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          checked={drafted.enabled}
-          onChange={() => setDraft({ ...drafted, enabled: !drafted.enabled })}
+      {/* A labelled switch row, set apart with its own top border — not an
+          unlabelled seventh checkbox sitting directly under "Checks to run"
+          (six of those, for a sweep draft), which read as one more item in
+          that group rather than the schedule's own on/off gate. */}
+      <div className="flex items-center justify-between gap-3 border-t pt-3">
+        <span className="text-sm font-medium" id={scheduleEnabledLabelId}>
+          {t('aiAgentsPage.schedules.enabled')}
+        </span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={drafted.enabled}
+          aria-labelledby={scheduleEnabledLabelId}
+          onClick={() => editDraft({ ...drafted, enabled: !drafted.enabled })}
           data-testid="ai-agent-schedule-enabled"
-        />
-        {t('aiAgentsPage.schedules.enabled')}
-      </label>
+          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition ${
+            drafted.enabled ? 'bg-emerald-500/80' : 'bg-muted'
+          }`}
+        >
+          <span
+            aria-hidden="true"
+            className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${
+              drafted.enabled ? 'translate-x-6' : 'translate-x-1'
+            }`}
+          />
+        </button>
+      </div>
 
       <div className="flex flex-wrap items-center gap-2">
         <button
@@ -580,7 +918,7 @@ export default function AiAgentSchedulesSection({
           type="button"
           onClick={() => {
             setConfirmDelete(false);
-            setDraft(null);
+            seedDraft(null);
           }}
           className="rounded-md border px-3 py-1.5 text-sm font-medium"
           data-testid="ai-agent-schedule-cancel"
@@ -617,6 +955,7 @@ export default function AiAgentSchedulesSection({
         {t('aiAgentsPage.schedules.title')}
       </legend>
       <p className="text-xs text-muted-foreground">{t('aiAgentsPage.schedules.description')}</p>
+      <span id={allOrgsHintId} className="sr-only">{t('aiAgentsPage.allOrgsHint')}</span>
 
       {!schedulable ? (
         <p className="text-sm text-muted-foreground" data-testid="ai-agent-schedules-partner-only">
@@ -634,10 +973,17 @@ export default function AiAgentSchedulesSection({
               {t('aiAgentsPage.schedules.loading')}
             </p>
           )}
-          {!loading && !failed && schedules.length === 0 && (
-            <p className="text-sm text-muted-foreground" data-testid="ai-agent-schedules-empty">
-              {t('aiAgentsPage.schedules.empty')}
-            </p>
+          {/* `draft === null` too: without it, the empty state rendered ABOVE
+              an already-open create editor the instant the list was empty —
+              "No sweep schedules yet" sitting directly on top of the form
+              that was already fixing that. */}
+          {!loading && !failed && schedules.length === 0 && draft === null && (
+            <EmptyState
+              size="sm"
+              headingLevel={4}
+              testId="ai-agent-schedules-empty"
+              title={t('aiAgentsPage.schedules.empty')}
+            />
           )}
 
           {schedules.length > 0 && (
@@ -648,25 +994,34 @@ export default function AiAgentSchedulesSection({
                   <li key={schedule.id} className="p-3" data-testid={`ai-agent-schedule-${schedule.id}`}>
                     <div className="flex flex-wrap items-center gap-2 text-sm">
                       <span
-                        className="rounded bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-700"
+                        className={badgeClass('info', { size: 'sm' })}
                         data-testid={`ai-agent-schedule-kind-badge-${schedule.id}`}
                       >
                         {scheduleKindLabel(kindOf(schedule))}
                       </span>
                       <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{schedule.cron}</code>
                       <span className="text-muted-foreground">{schedule.timezone}</span>
+                      {/* `title=` alone is invisible to touch and keyboard, so
+                          the explanation is a real described-by node. */}
                       <span
-                        className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary"
-                        title={t('aiAgentsPage.allOrgsHint')}
+                        className={badgeClass('info', { size: 'sm' })}
+                        aria-describedby={allOrgsHintId}
                       >
                         {t('aiAgentsPage.allOrgs')}
                       </span>
-                      <span className="text-xs text-muted-foreground">
+                      <span className={badgeClass(schedule.enabled ? 'success' : 'muted', { size: 'sm' })}>
                         {schedule.enabled
                           ? t('aiAgentsPage.stateEnabled')
                           : t('aiAgentsPage.stateDisabled')}
                       </span>
                     </div>
+                    <p className="mt-1">
+                      {nextRunLine(
+                        schedule.cron,
+                        schedule.timezone,
+                        `ai-agent-schedule-next-run-${schedule.id}`,
+                      )}
+                    </p>
                     {/* A narrative row has no checks to name — "No checks"
                         would read as a misconfiguration rather than as the
                         kind's defining property. */}

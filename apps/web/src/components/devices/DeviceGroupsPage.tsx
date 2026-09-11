@@ -7,11 +7,12 @@ import {
   type DragEvent,
   type FormEvent,
 } from "react";
-import { Plus, Pencil, Trash2, Shield, Play, X } from "lucide-react";
+import { Plus, Pencil, Trash2, Shield, Play, X, ListFilter } from "lucide-react";
 import { fetchWithAuth } from "@/stores/auth";
 import { useFleetOrgOwner } from "@/hooks/useFleetOrgOwner";
 import { asList } from "@/lib/asList";
 import type { FilterConditionGroup } from "@breeze/shared";
+import { encodeFilterToHash } from "./filterUrl";
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from "../filters/FilterBuilder";
 import { FilterPreview } from "../filters/FilterPreview";
 import { useFilterPreview } from "../../hooks/useFilterPreview";
@@ -738,7 +739,30 @@ export default function DeviceGroupsPage() {
       );
 
       if (!response.ok) {
-        throw new Error("Failed to delete group");
+        if (response.status === 409) {
+          const body = await response.json().catch(() => null) as
+            {
+              contractCount?: number;
+              contracts?: Array<{ name: string }>;
+              quoteCount?: number;
+              quotes?: Array<{ quoteNumber: string | null }>;
+            } | null;
+          const parts: string[] = [];
+          if (body?.contractCount) {
+            const names = body.contracts?.map((contract) => contract.name).join(", ");
+            parts.push(names
+              ? t("deviceGroupsPage.billedByContracts", { count: body.contractCount, names })
+              : t("deviceGroupsPage.billedByContractsCount", { count: body.contractCount }));
+          }
+          if (body?.quoteCount) {
+            const numbers = body.quotes?.map((quote) => quote.quoteNumber).filter(Boolean).join(", ");
+            parts.push(numbers
+              ? t("deviceGroupsPage.quotedByQuotes", { count: body.quoteCount, names: numbers })
+              : t("deviceGroupsPage.quotedByQuotesCount", { count: body.quoteCount }));
+          }
+          if (parts.length > 0) throw new Error(parts.join(" "));
+        }
+        throw new Error(t("deviceGroupsPage.failedToDeleteGroup"));
       }
 
       await fetchGroups();
@@ -1074,6 +1098,19 @@ export default function DeviceGroupsPage() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
+                      {/* One-click jump into the device list with this group
+                          applied as a chip (the list resolves the id server-side). */}
+                      <a
+                        href={`/devices#${encodeFilterToHash({
+                          operator: "AND",
+                          conditions: [{ field: "groupId", operator: "in", value: [group.id] }],
+                        })}`}
+                        data-testid={`group-view-devices-${group.id}`}
+                        className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium transition hover:bg-muted"
+                      >
+                        <ListFilter className="h-4 w-4" />
+                        {t("deviceGroupsPage.viewDevices")}
+                      </a>
                       <button
                         type="button"
                         onClick={() => handleOpenEdit(group)}
@@ -1514,7 +1551,7 @@ export default function DeviceGroupsPage() {
               </select>
             </div>
             {formError && (
-              <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <div role="alert" className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 {formError}
               </div>
             )}

@@ -78,6 +78,7 @@ function buildApp(opts?: {
     c.set('agent', {
       deviceId: 'device-1',
       orgId: 'org-1',
+      partnerId: 'partner-1',
       agentId: 'agent-123',
       siteId: 'site-1',
       role: 'agent',

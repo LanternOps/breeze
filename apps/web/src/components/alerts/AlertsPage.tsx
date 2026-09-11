@@ -19,6 +19,7 @@ import { normalizeMetricAnomalyContext } from './alertMlContext';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import { asList } from '@/lib/asList';
 import { useDeviceOptions } from '../../hooks/useDeviceOptions';
+import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
 import { useHashState } from '@/lib/useHashState';
 
 // Past-tense verbs for bulk-action success toasts. Without this, `${action}d`
@@ -77,7 +78,7 @@ export default function AlertsPage() {
   const [submittingId, setSubmittingId] = useState<string | null>(null);
   const [severityFilter, setSeverityFilter] = useState<AlertSeverity | null>(null);
   const [deviceFilter, setDeviceFilter] = useState<FilterConditionGroup | null>(null);
-  const [deviceFilterIds, setDeviceFilterIds] = useState<Set<string> | null>(null);
+
   const [pendingBulk, setPendingBulk] = useState<{ action: string; alerts: Alert[] } | null>(null);
   const [suppressTarget, setSuppressTarget] = useState<Alert | null>(null);
   // Bulk suppress needs a duration picker (the endpoint requires `until`), so it
@@ -176,38 +177,18 @@ export default function AlertsPage() {
     fetchAlerts();
   }, [fetchAlerts]);
 
+  const { ids: deviceFilterIds, loading: deviceFilterLoading, state: deviceFilterState, refetch: retryDeviceFilter } = useAdvancedFilterIds(deviceFilter, `${currentOrgId}:${allOrgs}`);
+  const deviceFilterBlocked = deviceFilterLoading || deviceFilterState === 'error';
   useEffect(() => {
-    if (!deviceFilter || deviceFilter.conditions.length === 0) {
-      setDeviceFilterIds(null);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        // runaction-exempt: read-only filter preview (POST carries the filter
-        // body but mutates nothing). Failure is handled inline by falling back
-        // to the unfiltered list; a toast here would be noise.
-        const res = await fetchWithAuth('/filters/preview', {
-          method: 'POST',
-          body: JSON.stringify({ conditions: deviceFilter, limit: 100 })
-        });
-        if (!res.ok || cancelled) return;
-        const data = await res.json();
-        const ids = new Set<string>((data.data?.devices ?? []).map((d: { id: string }) => d.id));
-        if (!cancelled) setDeviceFilterIds(ids);
-      } catch (err) {
-        console.error('Filter preview failed:', err);
-        if (!cancelled) setDeviceFilterIds(null);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [deviceFilter]);
+    setPendingBulk(null);
+    setBulkSuppressTarget(null);
+  }, [deviceFilter, currentOrgId, allOrgs]);
 
   const filteredAlerts = useMemo(() => {
     if (!deviceFilterIds) return alerts;
     return alerts.filter(alert => {
       const deviceId = (alert as unknown as Record<string, unknown>).deviceId as string | undefined;
-      return deviceId ? deviceFilterIds.has(deviceId) : true;
+      return deviceId ? deviceFilterIds.has(deviceId) : false;
     });
   }, [alerts, deviceFilterIds]);
 
@@ -375,6 +356,7 @@ export default function AlertsPage() {
   };
 
   const executeBulkAction = async (action: string, selectedAlerts: Alert[], until?: Date | null) => {
+    if (deviceFilterBlocked || selectedAlerts.length === 0 || selectedAlerts.some(a => !filteredAlerts.some(row => row.id === a.id))) return;
     setSubmitting(true);
     try {
       // The bulk endpoint returns HTTP 200 with per-alert counts even when
@@ -427,6 +409,7 @@ export default function AlertsPage() {
   };
 
   const handleBulkAction = async (action: string, selectedAlerts: Alert[]) => {
+    if (deviceFilterBlocked || selectedAlerts.length === 0 || selectedAlerts.some(a => !filteredAlerts.some(row => row.id === a.id))) return;
     if (action === 'suppress') {
       // Open the duration picker; executeBulkAction fires on confirm with `until`.
       setBulkSuppressTarget(selectedAlerts);
@@ -519,6 +502,10 @@ export default function AlertsPage() {
         defaultExpanded={false}
       />
 
+      {deviceFilterState === 'error' && <div role="alert" data-testid="alert-device-filter-error">
+        {t('devices:deviceList.advancedFilterFailed')}
+        <button type="button" onClick={retryDeviceFilter}>{t('common:actions.retry')}</button>
+      </div>}
       {/* Bulk action confirmation bar */}
       {pendingBulk && (
         <div className="flex items-center gap-3 rounded-md border border-warning/40 bg-warning/10 px-4 py-3">
@@ -626,6 +613,7 @@ export default function AlertsPage() {
           onSuppress={handleSuppress}
           onDismiss={handleDismiss}
           onBulkAction={handleBulkAction}
+          actionsBlocked={deviceFilterBlocked}
           submittingId={submittingId}
           alertCorrelationDisabled={alertCorrelationDisabled}
           showOrgColumn={isFleetView}

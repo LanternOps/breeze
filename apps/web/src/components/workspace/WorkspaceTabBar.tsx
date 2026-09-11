@@ -10,6 +10,7 @@ interface WorkspaceTabBarProps {
   activeTabId: string | null;
   onSelectTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
+  onRenameTab: (tabId: string, title: string) => void;
   onNewTab: () => void;
 }
 
@@ -18,6 +19,7 @@ export default function WorkspaceTabBar({
   activeTabId,
   onSelectTab,
   onCloseTab,
+  onRenameTab,
   onNewTab,
 }: WorkspaceTabBarProps) {
   const { t } = useTranslation("ai");
@@ -34,6 +36,7 @@ export default function WorkspaceTabBar({
           isStreaming={tab.isStreaming}
           onSelect={() => onSelectTab(tab.id)}
           onClose={() => onCloseTab(tab.id)}
+          onRename={(title) => onRenameTab(tab.id, title)}
         />
       ))}
 

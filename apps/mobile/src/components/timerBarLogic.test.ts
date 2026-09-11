@@ -1,24 +1,31 @@
 import { describe, it, expect } from 'vitest';
 
-import { isQueueWedged, isTimerBarVisible, shouldReplayNow, WEDGED_ATTEMPTS } from './timerBarLogic';
+import {
+  isQueueWedged,
+  isRunningTimerLong,
+  isTimerBarVisible,
+  LONG_RUNNING_TIMER_WARNING_SECONDS,
+  shouldReplayNow,
+  shouldShowWaitingToSync,
+  WAITING_TO_SYNC_GRACE_MS,
+  WEDGED_ATTEMPTS,
+} from './timerBarLogic';
 
 describe('isTimerBarVisible', () => {
-  it('stays mounted while a toast is pending even with an empty queue and no timer', () => {
-    // The replay result toast lives inside the bar. After a drain that empties
-    // the queue by DROPPING writes, remaining is 0 and running is null, so a
-    // visibility rule of "running || pending" unmounts the bar in the very
-    // render that would have shown "N offline time entries could not be saved".
-    // Discarded billable work would vanish with no signal anywhere.
-    expect(isTimerBarVisible({ hasRunningTimer: false, pendingCount: 0, hasToast: true })).toBe(true);
-  });
-
-  it('is hidden only when there is nothing running, nothing queued and nothing to say', () => {
-    expect(isTimerBarVisible({ hasRunningTimer: false, pendingCount: 0, hasToast: false })).toBe(false);
+  it('is hidden when there is nothing running and nothing queued', () => {
+    // #5368: the replay-result toast used to be a CHILD of the bar, so the rule
+    // carried a third `hasToast` input to keep the bar alive long enough to
+    // show "N offline time entries could not be saved" after a drain that
+    // dropped writes (remaining 0, nothing running). The toast now goes to the
+    // app-wide host, which outlives the bar, so the bar's own visibility is
+    // back to describing the bar. The dropped-writes case is still reported:
+    // TimerBar folds the standing needs-attention count into `pendingCount`.
+    expect(isTimerBarVisible({ hasRunningTimer: false, pendingCount: 0 })).toBe(false);
   });
 
   it('is visible for a running timer and for an unsent backlog', () => {
-    expect(isTimerBarVisible({ hasRunningTimer: true, pendingCount: 0, hasToast: false })).toBe(true);
-    expect(isTimerBarVisible({ hasRunningTimer: false, pendingCount: 2, hasToast: false })).toBe(true);
+    expect(isTimerBarVisible({ hasRunningTimer: true, pendingCount: 0 })).toBe(true);
+    expect(isTimerBarVisible({ hasRunningTimer: false, pendingCount: 2 })).toBe(true);
   });
 });
 
@@ -66,6 +73,30 @@ describe('shouldReplayNow', () => {
   });
 });
 
+describe('shouldShowWaitingToSync', () => {
+  it('does not show the label the instant something is queued', () => {
+    // A drain that completes within the grace window (the common case: Stop
+    // enqueues one write, replay drains it in well under a second) must never
+    // flash "Time entries waiting to sync" — it reads like an error for work
+    // that is about to sync fine.
+    expect(shouldShowWaitingToSync({ pendingCount: 1, elapsedMs: 0 })).toBe(false);
+    expect(
+      shouldShowWaitingToSync({ pendingCount: 1, elapsedMs: WAITING_TO_SYNC_GRACE_MS - 1 })
+    ).toBe(false);
+  });
+
+  it('shows the label once the grace period elapses with something still queued', () => {
+    expect(
+      shouldShowWaitingToSync({ pendingCount: 1, elapsedMs: WAITING_TO_SYNC_GRACE_MS })
+    ).toBe(true);
+    expect(shouldShowWaitingToSync({ pendingCount: 2, elapsedMs: 10_000 })).toBe(true);
+  });
+
+  it('never shows the label when nothing is pending, however long it has been', () => {
+    expect(shouldShowWaitingToSync({ pendingCount: 0, elapsedMs: 100_000 })).toBe(false);
+  });
+});
+
 describe('isQueueWedged', () => {
   it('is false for a first failed attempt — that is just being offline', () => {
     expect(isQueueWedged({ remaining: 3, headAttempts: 1 })).toBe(false);
@@ -82,5 +113,23 @@ describe('isQueueWedged', () => {
 
   it('is false once the queue has drained, however many attempts it took', () => {
     expect(isQueueWedged({ remaining: 0, headAttempts: 99 })).toBe(false);
+  });
+});
+
+describe('isRunningTimerLong', () => {
+  it('is false for a fresh start', () => {
+    expect(isRunningTimerLong(0)).toBe(false);
+  });
+
+  it('is false one second before the 4h threshold', () => {
+    expect(isRunningTimerLong(LONG_RUNNING_TIMER_WARNING_SECONDS - 1)).toBe(false);
+  });
+
+  it('is true exactly at the 4h threshold', () => {
+    expect(isRunningTimerLong(LONG_RUNNING_TIMER_WARNING_SECONDS)).toBe(true);
+  });
+
+  it('stays true well past the threshold — issue #5115 saw a 12h31m entry', () => {
+    expect(isRunningTimerLong(12 * 3600 + 31 * 60)).toBe(true);
   });
 });

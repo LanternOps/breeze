@@ -16,6 +16,7 @@ import {
   requireMfa,
   requirePermission,
   requireScope,
+  siteAccessCheck,
   type AuthContext,
 } from "../middleware/auth";
 import { userRateLimit } from "../middleware/userRateLimit";
@@ -54,6 +55,8 @@ import {
   hasNoLiveUnexhaustedBootstrapToken,
 } from "../services/enrollmentKeyPurgeGuards";
 import { captureException } from "../services/sentry";
+import { evaluateCapability, requireCapability } from "../services/partnerTrust";
+import { partnerTrustMode } from "../config/partnerTrustMode";
 
 // ============================================================
 // Signing-spend caps for the authenticated installer endpoint.
@@ -80,6 +83,19 @@ function ensureBuffer(buf: Buffer | null, context: string): Buffer {
     throw new Error(`Internal error: binary buffer not fetched (${context})`);
   }
   return buf;
+}
+
+/**
+ * Enrollment keys inherit the authority of their assigned site. Organization
+ * callers with an explicit site allowlist must not mutate a key, or derive a
+ * new installer credential from it, outside that allowlist. Partner and system
+ * scopes retain their existing organization-wide behavior.
+ */
+function canUseEnrollmentKeySite(
+  auth: AuthContext,
+  siteId: string | null | undefined,
+): boolean {
+  return auth.scope !== "organization" || siteAccessCheck(auth.allowedSiteIds)(siteId);
 }
 
 export const enrollmentKeyRoutes = new Hono();
@@ -580,10 +596,10 @@ const installerLinkSchema = z.object({
   ttlMinutes: z.number().int().min(1).max(MAX_TTL_MINUTES).optional(),
 }).strict();
 
-function sanitizeEnrollmentKey(
+export function sanitizeEnrollmentKey(
   enrollmentKey: typeof enrollmentKeys.$inferSelect,
 ) {
-  const { key, ...safeRecord } = enrollmentKey;
+  const { key, keySecretHash, credentialGeneration, ...safeRecord } = enrollmentKey;
   return safeRecord;
 }
 
@@ -619,14 +635,15 @@ export interface InstallerTokenUsage {
   /** Σ max_usage — total device slots those installers were minted for. */
   max: number;
   /**
-   * Σ consumed_count over UNEXPIRED tokens only (`expires_at > now()`).
-   * Additive (#3039) — `consumed`/`max` keep their all-tokens semantics so
-   * existing consumers are untouched.
+   * Σ consumed_count over UNEXPIRED tokens in the parent's CURRENT credential
+   * generation. Additive (#3039) — `consumed`/`max` keep their
+   * all-token historical semantics so existing consumers are untouched.
    */
   liveConsumed: number;
   /**
-   * Σ max_usage over UNEXPIRED tokens only. Together with `liveConsumed` this
-   * carries token liveness without a second query:
+   * Σ max_usage over UNEXPIRED tokens in the current credential generation.
+   * Together with `liveConsumed` this carries token liveness without a second
+   * query:
    *
    *   - `liveMax === 0`               → every installer from this key is dead
    *     (a "0 / 7" total is seven slots nothing can ever redeem again);
@@ -753,12 +770,12 @@ export async function fetchInstallerTokenUsage(
           parentEnrollmentKeyId: installerBootstrapTokens.parentEnrollmentKeyId,
           consumed: sql<number>`coalesce(sum(${installerBootstrapTokens.consumedCount}), 0)`,
           max: sql<number>`coalesce(sum(${installerBootstrapTokens.maxUsage}), 0)`,
-          // Liveness cut (#3039): same sums restricted to unexpired tokens.
-          // `expires_at` is NOT NULL on this table, so `> now()` is the whole
-          // predicate — see InstallerTokenUsage for how the pair encodes the
-          // purge-guard's live-token condition.
-          liveConsumed: sql<number>`coalesce(sum(${installerBootstrapTokens.consumedCount}) filter (where ${installerBootstrapTokens.expiresAt} > now()), 0)`,
-          liveMax: sql<number>`coalesce(sum(${installerBootstrapTokens.maxUsage}) filter (where ${installerBootstrapTokens.expiresAt} > now()), 0)`,
+          // Liveness cut (#3039): same sums restricted to unexpired
+          // tokens derived from the parent's current credential generation.
+          // Historical totals above remain stable across rotation; the live
+          // pair reflects what can actually redeem now.
+          liveConsumed: sql<number>`coalesce(sum(${installerBootstrapTokens.consumedCount}) filter (where ${installerBootstrapTokens.expiresAt} > now() and ${installerBootstrapTokens.parentCredentialGeneration} = (select credential_generation from enrollment_keys where id = ${installerBootstrapTokens.parentEnrollmentKeyId})), 0)`,
+          liveMax: sql<number>`coalesce(sum(${installerBootstrapTokens.maxUsage}) filter (where ${installerBootstrapTokens.expiresAt} > now() and ${installerBootstrapTokens.parentCredentialGeneration} = (select credential_generation from enrollment_keys where id = ${installerBootstrapTokens.parentEnrollmentKeyId})), 0)`,
         })
         .from(installerBootstrapTokens)
         .where(
@@ -818,6 +835,18 @@ enrollmentKeyRoutes.get(
         return c.json({ error: "Organization context required" }, 403);
       }
       conditions.push(eq(enrollmentKeys.orgId, auth.orgId));
+      if (auth.allowedSiteIds !== undefined) {
+        if (auth.allowedSiteIds.length === 0) {
+          return c.json({ data: [], pagination: { page, limit, total: 0 } });
+        }
+        // Enrollment keys are indivisible credential-bearing resources. A
+        // defined site ceiling sees only keys currently attributed to one of
+        // its sites; NULL/unattributed keys fail closed. Keep this predicate
+        // in the shared WHERE so it applies before count, ordering and paging.
+        conditions.push(
+          inArray(enrollmentKeys.siteId, auth.allowedSiteIds) as ReturnType<typeof eq>,
+        );
+      }
     } else if (auth.scope === "partner") {
       if (query.orgId) {
         const hasAccess = await ensureOrgAccess(query.orgId, auth);
@@ -1039,7 +1068,26 @@ enrollmentKeyRoutes.post(
     const capError = await assertTtlWithinCap(orgId, impliedTtlMinutes);
     if (capError) return c.json({ error: capError }, 400);
 
-    // Verify siteId belongs to the target org (if provided)
+    // Site confinement is an application-layer boundary: enrollment_keys RLS
+    // protects only org_id. A restricted organization user must not turn a
+    // known sibling-site UUID into a raw enrollment credential for that site.
+    // Use the canonical request-snapshot closure built by authMiddleware; an
+    // undefined allowlist means unrestricted, while [] denies every site.
+    // Membership changes racing this request take effect on the next request.
+    const hasRestrictedSiteScope =
+      auth.scope === "organization" && auth.allowedSiteIds !== undefined;
+
+    if (
+      data.siteId &&
+      hasRestrictedSiteScope &&
+      !siteAccessCheck(auth.allowedSiteIds)(data.siteId)
+    ) {
+      return c.json({ error: "Access to this site denied" }, 403);
+    }
+
+    // Verify siteId belongs to the target org (if provided). Restricted callers
+    // get the same opaque denial for stale-allowlist, foreign and unknown IDs;
+    // unrestricted callers retain the existing validation contract.
     if (data.siteId) {
       const [site] = await db
         .select({ id: sites.id })
@@ -1047,6 +1095,9 @@ enrollmentKeyRoutes.post(
         .where(and(eq(sites.id, data.siteId), eq(sites.orgId, orgId)))
         .limit(1);
       if (!site) {
+        if (hasRestrictedSiteScope) {
+          return c.json({ error: "Access to this site denied" }, 403);
+        }
         return c.json(
           { error: "siteId does not belong to the specified org" },
           400,
@@ -1148,6 +1199,16 @@ enrollmentKeyRoutes.post(
         return c.json({ error: "Organization context required" }, 403);
       }
       conditions.push(eq(enrollmentKeys.orgId, auth.orgId));
+      // An organization site's destructive bulk action must not reach keys
+      // outside the request's explicit site ceiling. Null-site keys are not
+      // visible to a restricted caller.
+      if (auth.allowedSiteIds !== undefined) {
+        conditions.push(
+          (auth.allowedSiteIds.length === 0
+            ? sql`false`
+            : inArray(enrollmentKeys.siteId, auth.allowedSiteIds)) as ReturnType<typeof eq>,
+        );
+      }
     } else if (auth.scope === "partner") {
       const orgIds = auth.accessibleOrgIds ?? [];
       if (orgIds.length === 0) {
@@ -1224,19 +1285,38 @@ enrollmentKeyRoutes.get(
     const auth = c.get("auth");
     const keyId = c.req.param("id")!;
 
+    const conditions: ReturnType<typeof eq>[] = [eq(enrollmentKeys.id, keyId)];
+    if (auth.scope === "organization") {
+      if (!auth.orgId) {
+        return c.json({ error: "Organization context required" }, 403);
+      }
+      conditions.push(eq(enrollmentKeys.orgId, auth.orgId));
+      if (auth.allowedSiteIds !== undefined) {
+        if (auth.allowedSiteIds.length === 0) {
+          return c.json({ error: "Enrollment key not found" }, 404);
+        }
+        conditions.push(
+          inArray(enrollmentKeys.siteId, auth.allowedSiteIds) as ReturnType<typeof eq>,
+        );
+      }
+    } else if (auth.scope === "partner") {
+      const orgIds = auth.accessibleOrgIds ?? [];
+      if (orgIds.length === 0) {
+        return c.json({ error: "Enrollment key not found" }, 404);
+      }
+      conditions.push(
+        inArray(enrollmentKeys.orgId, orgIds) as ReturnType<typeof eq>,
+      );
+    }
+
     const [enrollmentKey] = await db
       .select()
       .from(enrollmentKeys)
-      .where(eq(enrollmentKeys.id, keyId))
+      .where(and(...conditions))
       .limit(1);
 
     if (!enrollmentKey) {
       return c.json({ error: "Enrollment key not found" }, 404);
-    }
-
-    const hasAccess = await ensureOrgAccess(enrollmentKey.orgId, auth);
-    if (!hasAccess) {
-      return c.json({ error: "Access denied" }, 403);
     }
 
     // Same shape as the list route so a caller doesn't have to special-case
@@ -1283,6 +1363,9 @@ enrollmentKeyRoutes.post(
     if (!hasAccess) {
       return c.json({ error: "Access denied" }, 403);
     }
+    if (!canUseEnrollmentKeySite(auth, existingKey.siteId)) {
+      return c.json({ error: "Access denied" }, 403);
+    }
 
     // Reject (never clamp) a caller-supplied expiresAt above the partner cap
     // (fix round 2, #2776 task 3.4). rotateEnrollmentKeySchema has no
@@ -1311,6 +1394,7 @@ enrollmentKeyRoutes.post(
       .update(enrollmentKeys)
       .set({
         key: keyHash,
+        credentialGeneration: sql`${enrollmentKeys.credentialGeneration} + 1`,
         usageCount: 0,
         expiresAt,
         maxUsage,
@@ -1321,6 +1405,25 @@ enrollmentKeyRoutes.post(
     if (!rotatedKey) {
       return c.json({ error: "Failed to rotate enrollment key" }, 500);
     }
+
+    // A token redeemed before rotation can already have minted an unused child
+    // enrollment key. Revoking only the token would leave that child as a
+    // working old-credential capability. Delete only unused children from old
+    // epochs; a concurrently claimed child is preserved by usage_count = 0.
+    const revokedDerivedKeys = await db
+      .delete(enrollmentKeys)
+      .where(
+        and(
+          eq(enrollmentKeys.usageCount, 0),
+          sql`${enrollmentKeys.bootstrapTokenId} in (
+            select ${installerBootstrapTokens.id}
+            from ${installerBootstrapTokens}
+            where ${installerBootstrapTokens.parentEnrollmentKeyId} = ${keyId}
+              and ${installerBootstrapTokens.parentCredentialGeneration} < ${rotatedKey.credentialGeneration}
+          )`,
+        ),
+      )
+      .returning({ id: enrollmentKeys.id });
 
     writeEnrollmentKeyAudit(c, auth, {
       orgId: rotatedKey.orgId,
@@ -1333,6 +1436,9 @@ enrollmentKeyRoutes.post(
         nextMaxUsage: rotatedKey.maxUsage,
         previousExpiresAt: existingKey.expiresAt,
         nextExpiresAt: rotatedKey.expiresAt,
+        previousCredentialGeneration: existingKey.credentialGeneration,
+        nextCredentialGeneration: rotatedKey.credentialGeneration,
+        revokedUnusedDerivedKeys: revokedDerivedKeys.length,
       },
     });
 
@@ -1371,6 +1477,9 @@ enrollmentKeyRoutes.delete(
     if (!hasAccess) {
       return c.json({ error: "Access denied" }, 403);
     }
+    if (!canUseEnrollmentKeySite(auth, existingKey.siteId)) {
+      return c.json({ error: "Access denied" }, 403);
+    }
 
     await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, keyId));
 
@@ -1404,6 +1513,11 @@ enrollmentKeyRoutes.get(
     PERMISSIONS.ORGS_WRITE.action,
   ),
   requireMfa(),
+  // No requireCapability("installer_distribute") here: this is the console's
+  // authenticated own-device installer download (AddDeviceModal,
+  // EnrollDeviceStep, EnrollmentKeyManager) — not the abuse-relevant
+  // distribution surface. Distribution is gated below on bootstrap-token
+  // and installer-link, and on the anonymous evaluations.
   zValidator("query", installerQuerySchema),
   async (c) => {
     const auth = c.get("auth");
@@ -1433,6 +1547,9 @@ enrollmentKeyRoutes.get(
     // Verify org access
     const hasAccess = await ensureOrgAccess(parentKey.orgId, auth);
     if (!hasAccess) {
+      return c.json({ error: "Access denied" }, 403);
+    }
+    if (!canUseEnrollmentKeySite(auth, parentKey.siteId)) {
       return c.json({ error: "Access denied" }, 403);
     }
 
@@ -1903,6 +2020,7 @@ enrollmentKeyRoutes.post(
   ),
   userRateLimit("enroll-write", 10, 60),
   requireMfa(),
+  requireCapability("installer_distribute"),
   zValidator("param", idParamSchema),
   zValidator("json", bootstrapTokenBodySchema),
   async (c) => {
@@ -1922,6 +2040,9 @@ enrollmentKeyRoutes.post(
 
     const hasAccess = await ensureOrgAccess(parent.orgId, auth);
     if (!hasAccess) {
+      return c.json({ error: "Access denied" }, 403);
+    }
+    if (!canUseEnrollmentKeySite(auth, parent.siteId)) {
       return c.json({ error: "Access denied" }, 403);
     }
 
@@ -1987,6 +2108,7 @@ enrollmentKeyRoutes.post(
   ),
   userRateLimit("enroll-write", 10, 60),
   requireMfa(),
+  requireCapability("installer_distribute"),
   zValidator("json", installerLinkSchema),
   async (c) => {
     const auth = c.get("auth");
@@ -2011,6 +2133,9 @@ enrollmentKeyRoutes.post(
     // Verify org access
     const hasAccess = await ensureOrgAccess(parentKey.orgId, auth);
     if (!hasAccess) {
+      return c.json({ error: "Access denied" }, 403);
+    }
+    if (!canUseEnrollmentKeySite(auth, parentKey.siteId)) {
       return c.json({ error: "Access denied" }, 403);
     }
 
@@ -2189,6 +2314,9 @@ enrollmentKeyRoutes.post(
     // Verify org access.
     const hasAccess = await ensureOrgAccess(row.orgId, auth);
     if (!hasAccess) return c.json({ error: "Not found" }, 404);
+    if (!canUseEnrollmentKeySite(auth, row.siteId)) {
+      return c.json({ error: "Not found" }, 404);
+    }
 
     // Verify the raw token matches the stored hash. Accept legacy-pepper hashes
     // for keys created before ENROLLMENT_KEY_PEPPER was mandatory.
@@ -2511,6 +2639,27 @@ async function serveInstaller(
 
 export const publicEnrollmentRoutes = new Hono();
 
+async function anonymousInstallerDistributionAllowed(
+  orgId: string,
+  route: "public-download" | "short-link",
+): Promise<boolean> {
+  if (partnerTrustMode() === "off") return true;
+
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  if (!org?.partnerId) return false;
+
+  const decision = await evaluateCapability("installer_distribute", {
+    partnerId: org.partnerId,
+    orgId,
+    detail: { route },
+  });
+  return decision.allow;
+}
+
 const publicDownloadQuerySchema = z
   .object({
     h: z
@@ -2566,6 +2715,10 @@ publicEnrollmentRoutes.get(
         return c.json({ error: "Invalid or expired download link" }, 404);
       }
 
+      if (!await anonymousInstallerDistributionAllowed(enrollmentKey.orgId, "public-download")) {
+        return c.json({ error: "Invalid or expired download link" }, 404);
+      }
+
       return serveInstaller(c, enrollmentKey, platform, finalToken);
     });
   },
@@ -2599,6 +2752,10 @@ publicShortLinkRoutes.get("/:code", async (c) => {
       row.installerPlatform !== "windows" &&
       row.installerPlatform !== "macos"
     ) {
+      return c.json({ error: "Not found" }, 404);
+    }
+
+    if (!await anonymousInstallerDistributionAllowed(row.orgId, "short-link")) {
       return c.json({ error: "Not found" }, 404);
     }
 

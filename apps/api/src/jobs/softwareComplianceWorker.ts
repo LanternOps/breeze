@@ -21,6 +21,7 @@ import {
 import { resolveDeviceIdsForSoftwarePolicy } from '../services/featureConfigResolver';
 import { scheduleSoftwareRemediation } from './softwareRemediationWorker';
 import { captureException } from '../services/sentry';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -218,6 +219,15 @@ type CheckPolicyJobData = {
   type: 'check-policy';
   policyId: string;
   deviceIds?: string[];
+  /**
+   * Site-ceiling gate contract §3: the policy's approval_generation at
+   * enqueue time. Compared against the freshly-reloaded row at dispatch —
+   * a mismatch means the policy was edited after this job was queued, so
+   * the job is skipped rather than enforcing a policy shape that no longer
+   * applies. `undefined` means the caller did not opt into the check
+   * (existing behavior — reload + isActive check only).
+   */
+  generation?: number;
 };
 
 type SoftwareComplianceJobData = ScanPoliciesJobData | CheckPolicyJobData;
@@ -267,7 +277,7 @@ async function processScanPolicies(): Promise<{ queued: number }> {
   return { queued: activePolicies.length };
 }
 
-async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
+export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   policyId: string;
   devicesEvaluated: number;
   violations: number;
@@ -285,6 +295,22 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   if (!policy) {
     console.warn(
       `[SoftwareComplianceWorker] Policy ${data.policyId} not found or inactive — job may be stale (queued after deletion)`
+    );
+    return {
+      policyId: data.policyId,
+      devicesEvaluated: 0,
+      violations: 0,
+      remediationQueued: 0,
+    };
+  }
+
+  // Site-ceiling gate contract §3: a queued job may carry a generation
+  // snapshot from enqueue time. If the policy was edited since, this job's
+  // premise (enforce THAT config shape) no longer holds — skip rather than
+  // enforce a superseded policy.
+  if (data.generation !== undefined && policy.approvalGeneration !== data.generation) {
+    console.warn(
+      `[SoftwareComplianceWorker] Policy ${data.policyId} generation mismatch (job=${data.generation}, current=${policy.approvalGeneration}) — skipping superseded job`
     );
     return {
       policyId: data.policyId,
@@ -543,6 +569,7 @@ async function scheduleComplianceScan(): Promise<void> {
 
 export async function initializeSoftwareComplianceWorker(): Promise<void> {
   softwareComplianceWorker = createSoftwareComplianceWorker();
+  attachWorkerObservability(softwareComplianceWorker, 'softwareComplianceWorker');
 
   softwareComplianceWorker.on('error', (error) => {
     console.error('[SoftwareComplianceWorker] Worker error', { error });
@@ -583,12 +610,29 @@ export async function shutdownSoftwareComplianceWorker(): Promise<void> {
 
 export async function scheduleSoftwareComplianceCheck(
   policyId?: string,
-  deviceIds?: string[]
+  deviceIds?: string[],
+  generation?: number
 ): Promise<string> {
   const queue = getSoftwareComplianceQueue();
   const uniqueDeviceIds = Array.isArray(deviceIds)
     ? Array.from(new Set(deviceIds.filter((id) => typeof id === 'string' && id.length > 0)))
     : undefined;
+
+  // Site-ceiling gate contract §3: most callers (create, /check,
+  // agents/helpers.ts, aiToolsCompliance.ts) don't have a fresh row in hand
+  // to pass a generation with — only the PATCH route does. Backfill from the
+  // current row here so the worker's mismatch comparison is armed for every
+  // enqueue path, not just PATCH. If the row can't be found, leave it
+  // undefined — existing (opt-out) behavior.
+  let resolvedGeneration = generation;
+  if (resolvedGeneration === undefined && policyId) {
+    const [current] = await db
+      .select({ approvalGeneration: softwarePolicies.approvalGeneration })
+      .from(softwarePolicies)
+      .where(eq(softwarePolicies.id, policyId))
+      .limit(1);
+    resolvedGeneration = current?.approvalGeneration;
+  }
 
   const job = await queue.add(
     policyId ? 'check-policy' : 'scan-policies',
@@ -597,6 +641,7 @@ export async function scheduleSoftwareComplianceCheck(
         type: 'check-policy',
         policyId,
         deviceIds: uniqueDeviceIds,
+        generation: resolvedGeneration,
       }
       : {
         type: 'scan-policies',

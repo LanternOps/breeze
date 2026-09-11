@@ -1,5 +1,6 @@
 import {
   pgTable,
+  pgView,
   uuid,
   varchar,
   text,
@@ -12,6 +13,7 @@ import {
   index,
   uniqueIndex,
   primaryKey,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { organizations, partners } from './orgs';
@@ -46,6 +48,7 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'pam',
   'onedrive_helper',
   'vulnerability',
+  'device_lifecycle',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [
@@ -74,6 +77,15 @@ export const configurationPolicies = pgTable('configuration_policies', {
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
   status: configPolicyStatusEnum('status').notNull().default('active'),
+  // One-level, create-only inheritance parent (#5080). Lazy
+  // `(): AnyPgColumn =>` self-reference. Default FK action (NO ACTION): a
+  // parent with children cannot be deleted alone (the route maps that to a 409),
+  // while an org cascade that deletes parent and children in ONE statement still
+  // succeeds. Immutability and the ownership rule (same org, or partner-wide of
+  // the org's partner; parent must itself be a root) are enforced by the
+  // constraint trigger `configuration_policies_parent_guard`, migration
+  // 2026-10-12-100000-config-policy-inheritance.sql.
+  parentPolicyId: uuid('parent_policy_id').references((): AnyPgColumn => configurationPolicies.id),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -81,6 +93,9 @@ export const configurationPolicies = pgTable('configuration_policies', {
   orgIdIdx: index('config_policies_org_id_idx').on(table.orgId),
   partnerIdIdx: index('config_policies_partner_id_idx').on(table.partnerId),
   statusIdx: index('config_policies_status_idx').on(table.status),
+  parentPolicyIdIdx: index('config_policies_parent_policy_id_idx')
+    .on(table.parentPolicyId)
+    .where(sql`${table.parentPolicyId} IS NOT NULL`),
 }));
 
 // Coarse per-organization material clocks for desired-configuration exports.
@@ -111,6 +126,40 @@ export const configPolicyFeatureLinks = pgTable('config_policy_feature_links', {
     .where(sql`${table.featurePolicyId} IS NOT NULL`),
   uniqueFeaturePerPolicy: uniqueIndex('config_feature_links_unique').on(table.configPolicyId, table.featureType),
 }));
+
+// A policy's own feature links PLUS its parent's links for feature types the
+// policy has no link of its own (#5080). Created and owned by migration
+// 2026-10-12-100000-config-policy-inheritance.sql with
+// `WITH (security_invoker = true)`, hence `.existing()` — drizzle-kit must never
+// manage it, because regenerating it without security_invoker would turn the
+// view into a full RLS bypass.
+//
+// `id` is the UNDERLYING link id: an inherited row keeps the PARENT link's id so
+// joins on config_policy_*_settings.feature_link_id keep working unchanged. The
+// consequence — one link id maps to the parent AND each of its children — is why
+// callers will have to carry the ASSIGNED policy id alongside the link id rather
+// than reverse-mapping a link to "the" policy; W02 owns that change (spec:
+// execution identity). `sourcePolicyId` names which policy authored the link.
+//
+// NOT YET WIRED IN. As of W01 nothing outside tests reads this view: every
+// resolver, worker, and agent-config-delivery path still joins
+// `configPolicyFeatureLinks` directly, so a parent's patch/maintenance/event-log
+// settings do NOT reach devices under a child policy yet. W02 switches those
+// readers over and adds the enforcing contract test
+// (services/featureLinkReaders.contract.test.ts, which does not exist yet),
+// after which feature-link CRUD and standalone-entity delete guards are the only
+// readers that legitimately stay on the base table.
+export const configPolicyEffectiveFeatureLinks = pgView('config_policy_effective_feature_links', {
+  id: uuid('id').notNull(),
+  configPolicyId: uuid('config_policy_id').notNull(),
+  sourcePolicyId: uuid('source_policy_id').notNull(),
+  featureType: configFeatureTypeEnum('feature_type').notNull(),
+  featurePolicyId: uuid('feature_policy_id'),
+  inlineSettings: jsonb('inline_settings'),
+  createdAt: timestamp('created_at').notNull(),
+  updatedAt: timestamp('updated_at').notNull(),
+  inherited: boolean('inherited').notNull(),
+}).existing();
 
 export const configPolicyAssignments = pgTable('config_policy_assignments', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -203,10 +252,21 @@ export const configPolicyPatchSettings = pgTable('config_policy_patch_settings',
   // reboot fires. Replaces the hardcoded 5-minute delay that raced the
   // agent's own warning ladder and could reboot with zero notice.
   rebootDelayMinutes: integer('reboot_delay_minutes').notNull().default(15),
+  // #3207: end-user reboot deferral budget. Off by default so the shipped
+  // behaviour (warn-then-reboot, #3197) is unchanged until an admin opts in.
+  rebootAllowDeferral: boolean('reboot_allow_deferral').notNull().default(false),
+  rebootMaxDeferrals: integer('reboot_max_deferrals').notNull().default(3),
+  rebootDeferralMinutes: integer('reboot_deferral_minutes').notNull().default(60),
   // #1872: when true, the Windows agent suppresses the native Windows Update
   // automatic-install channel (NoAutoUpdate=1) so patches flow only through
   // Breeze. Breeze's own WUA-driven installs are unaffected.
   exclusiveWindowsUpdate: boolean('exclusive_windows_update').notNull().default(false),
+  // #5128 W3: what a scheduled install does when the device is offline at
+  // dispatch. 'queue' (default) persists the install_patches command with a
+  // deliver_by of min(patch TTL, next occurrence) and lets the next heartbeat
+  // claim it; 'skip' keeps the pre-#5128 behaviour of recording the device as
+  // skipped. CHECK-constrained to those two values in the migration.
+  offlineBehavior: varchar('offline_behavior', { length: 20 }).notNull().default('queue'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

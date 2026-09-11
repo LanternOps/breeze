@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/launchdplist"
+	"github.com/breeze-rmm/agent/internal/macosuninstall"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"github.com/spf13/cobra"
 )
@@ -72,65 +74,12 @@ const darwinPlist = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
-const darwinDesktopUserPlist = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.breeze.desktop-helper-user</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
-        <string>--context</string>
-        <string>user_session</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>LimitLoadToSessionType</key>
-    <string>Aqua</string>
-    <key>StandardOutPath</key>
-    <string>/dev/null</string>
-    <key>StandardErrorPath</key>
-    <string>/dev/null</string>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-    <key>ProcessType</key>
-    <string>Background</string>
-</dict>
-</plist>
-`
-
-const darwinDesktopLoginWindowPlist = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.breeze.desktop-helper-loginwindow</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
-        <string>--context</string>
-        <string>login_window</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>LimitLoadToSessionType</key>
-    <string>LoginWindow</string>
-    <key>StandardOutPath</key>
-    <string>/dev/null</string>
-    <key>StandardErrorPath</key>
-    <string>/dev/null</string>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-    <key>ProcessType</key>
-    <string>Background</string>
-</dict>
-</plist>
-`
+// darwinDesktopUserPlist and darwinDesktopLoginWindowPlist are rendered by
+// internal/launchdplist — the single source of truth for these plists (#4379).
+var (
+	darwinDesktopUserPlist        = launchdplist.DesktopHelperUser
+	darwinDesktopLoginWindowPlist = launchdplist.DesktopHelperLoginWindow
+)
 
 var serviceCmd = &cobra.Command{
 	Use:   "service",
@@ -149,6 +98,8 @@ func init() {
 	serviceCmd.AddCommand(serviceStatusCmd)
 	serviceInstallCmd.Flags().BoolVar(&withUserHelper, "with-user-helper", false, "Also install the per-user desktop helper LaunchAgent")
 	serviceInstallCmd.Flags().BoolVar(&noWatchdog, "no-watchdog", false, "Skip automatic watchdog installation")
+	// A failed start returns an error from RunE; usage text would bury it.
+	serviceInstallCmd.SilenceUsage = true
 }
 
 var serviceInstallCmd = &cobra.Command{
@@ -172,7 +123,15 @@ var serviceInstallCmd = &cobra.Command{
 		}
 
 		// Stop existing service before replacing binary (safe for upgrades).
+		//
+		// Whether it was RUNNING is sampled BEFORE the unload, because this
+		// command then decides whether to bootstrap it again — asking
+		// afterwards only reports the state this unload produced. That
+		// inversion is what stranded Linux hosts in #5252; macOS had the same
+		// shape (unload, never bootstrap).
+		wasRunning := false
 		if _, err := os.Stat(darwinPlistDst); err == nil {
+			wasRunning = isSystemServiceRunning()
 			if stopErr := exec.Command("launchctl", "unload", darwinPlistDst).Run(); stopErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to stop existing service: %v\n", stopErr)
 			} else {
@@ -207,28 +166,43 @@ var serviceInstallCmd = &cobra.Command{
 		}
 		fmt.Printf("LaunchDaemon plist installed to %s\n", darwinPlistDst)
 
-		desktopHelperSource := filepath.Join(filepath.Dir(exePath), "breeze-desktop-helper")
-		desktopHelperBytes, desktopHelperErr := os.ReadFile(desktopHelperSource)
-		if desktopHelperErr != nil {
-			desktopHelperBytes, desktopHelperErr = os.ReadFile(exePath)
+		// Stage the REAL desktop helper — sibling binary first, matching-version
+		// signed release asset second. It must never be substituted with the
+		// agent binary: see stageDesktopHelper for why (#3457). A failure here
+		// is a warning, not a fatal error, so an offline or air-gapped install
+		// still gets a working agent service (same policy as the watchdog).
+		stageHelperErr := stageDesktopHelper(desktopHelperStageOptions{
+			agentPath: exePath,
+			destPath:  darwinDesktopHelperBinaryPath,
+			version:   version,
+			goos:      runtime.GOOS,
+			goarch:    runtime.GOARCH,
+		})
+		if stageHelperErr != nil {
+			fmt.Fprint(os.Stderr, desktopHelperUnavailableWarning(stageHelperErr, version, runtime.GOOS, runtime.GOARCH))
+		} else {
+			fmt.Printf("Desktop helper installed to %s\n", darwinDesktopHelperBinaryPath)
 		}
-		if desktopHelperErr != nil {
-			return fmt.Errorf("failed to stage desktop helper binary: %w", desktopHelperErr)
-		}
-		if err := os.WriteFile(darwinDesktopHelperBinaryPath, desktopHelperBytes, 0755); err != nil {
-			return fmt.Errorf("failed to copy desktop helper to %s: %w", darwinDesktopHelperBinaryPath, err)
-		}
-		fmt.Printf("Desktop helper installed to %s\n", darwinDesktopHelperBinaryPath)
 
-		if err := os.WriteFile(darwinDesktopUserPlistDst, []byte(darwinDesktopUserPlist), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to write desktop-helper user plist: %v\n", err)
+		// Only register the helper's LaunchAgents when a helper binary is
+		// actually there — see desktopHelperLaunchAgentsWanted.
+		helperLaunchAgents := desktopHelperLaunchAgentsWanted(stageHelperErr, darwinDesktopHelperBinaryPath)
+		if helperLaunchAgents {
+			if err := os.WriteFile(darwinDesktopUserPlistDst, []byte(darwinDesktopUserPlist), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to write desktop-helper user plist: %v\n", err)
+			} else {
+				fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopUserPlistDst)
+			}
+			if err := os.WriteFile(darwinDesktopLoginWindowPlistDst, []byte(darwinDesktopLoginWindowPlist), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to write desktop-helper loginwindow plist: %v\n", err)
+			} else {
+				fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopLoginWindowPlistDst)
+			}
 		} else {
-			fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopUserPlistDst)
-		}
-		if err := os.WriteFile(darwinDesktopLoginWindowPlistDst, []byte(darwinDesktopLoginWindowPlist), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to write desktop-helper loginwindow plist: %v\n", err)
-		} else {
-			fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopLoginWindowPlistDst)
+			fmt.Fprintf(os.Stderr,
+				"Skipping desktop-helper LaunchAgent setup: no helper binary at %s.\n"+
+					"  launchd would otherwise retry a missing program indefinitely.\n",
+				darwinDesktopHelperBinaryPath)
 		}
 
 		// Create the breeze group, put the logged-in console users in it, and only
@@ -238,25 +212,47 @@ var serviceInstallCmd = &cobra.Command{
 		// would not be in the group that owns the IPC socket and would be denied
 		// (#3133/#3134/#3137). This ordering was previously reversed; it is
 		// pinned by TestInstallIPCPrereqsThenHelpersOrdering.
+		// The breeze group is set up regardless — the agent's own IPC socket
+		// belongs to it — but the helper bootstrap is skipped when there is no
+		// helper binary to bootstrap.
+		bootstrapHelpers := bootstrapDesktopHelperPlists
+		if !helperLaunchAgents {
+			bootstrapHelpers = func() {}
+		}
 		if err := installIPCPrereqsThenHelpers(
 			ensureDarwinBreezeGroup,
 			ensureDarwinBreezeGroupConsoleMembers,
-			bootstrapDesktopHelperPlists,
+			bootstrapHelpers,
 		); err != nil {
 			return err
 		}
 
-		fmt.Println()
-		fmt.Println("Breeze Agent service installed.")
-
-		// Show contextual next steps based on enrollment and service state.
+		// Start the daemon back up, so `service install` really is the upgrade
+		// path the docs describe (#5252). Runs after the breeze group and the
+		// helper LaunchAgents above: the agent inherits its group list at
+		// startup and opens its IPC socket immediately.
 		existingCfg, _ := config.Load(cfgFile)
 		enrolled := existingCfg != nil && existingCfg.AgentID != ""
-		running := isSystemServiceRunning()
+		plan := planServiceStart(wasRunning, enrolled)
+		started, startErr := applyLaunchdJob(
+			execCommandRunner, darwinLabel, darwinPlistDst, isLaunchdLoaded(darwinLabel), plan)
 
-		if enrolled && running {
-			// Already enrolled and running — nothing more to do.
-			fmt.Printf("\nAgent is enrolled and the service is running.\n")
+		fmt.Println()
+		switch {
+		case started:
+			fmt.Printf("Breeze Agent service installed and started (%s).\n", plan.Reason)
+		case startErr != nil:
+			fmt.Fprintf(os.Stderr,
+				"ERROR: the Breeze Agent daemon was stopped for this install and could NOT be started again: %v\n"+
+					"       This host is not being managed until it starts. Recover with:\n"+
+					"         sudo launchctl bootstrap system %s\n"+
+					"         tail -n 100 %s/agent.err\n",
+				startErr, darwinPlistDst, darwinLogDir)
+		default:
+			fmt.Println("Breeze Agent service installed (not started: " + plan.Reason + ").")
+		}
+
+		if started {
 			fmt.Printf("  Logs:    tail -f %s/agent.log\n", darwinLogDir)
 		} else if enrolled {
 			fmt.Println()
@@ -273,6 +269,14 @@ var serviceInstallCmd = &cobra.Command{
 			fmt.Printf("  4. Logs:    tail -f %s/agent.log\n", darwinLogDir)
 		}
 		if !noWatchdog {
+			// Describe the service state we actually left behind. This line
+			// used to assert "installed and running" unconditionally, which
+			// before #5252 was never true on this platform and is still not
+			// true for a fresh un-enrolled host or a failed start.
+			agentStateLine := "The agent service is installed but is NOT running."
+			if started {
+				agentStateLine = "The agent service is installed and running."
+			}
 			err := bootstrapWatchdog(bootstrapOptions{
 				agentPath: exePath,
 				version:   version,
@@ -282,17 +286,20 @@ var serviceInstallCmd = &cobra.Command{
 			if err != nil {
 				fmt.Fprintf(os.Stderr,
 					"Warning: watchdog bootstrap failed: %v\n"+
-						"The agent service is installed and running. The watchdog is NOT installed.\n"+
+						"%s The watchdog is NOT installed.\n"+
 						"To retry, choose one of:\n"+
 						"  1. Re-run `sudo breeze-agent service install` (will retry the download).\n"+
 						"  2. Download %s manually, place it next to breeze-agent,\n"+
 						"     then run `sudo breeze-watchdog service install`.\n"+
 						"  3. To skip the watchdog entirely, use `--no-watchdog`.\n",
-					err, watchdogDownloadURL(version, runtime.GOOS, runtime.GOARCH))
+					err, agentStateLine, watchdogDownloadURL(version, runtime.GOOS, runtime.GOARCH))
 			}
 		}
 
-		return nil
+		// Reported last so the watchdog still gets bootstrapped, but reported:
+		// a silent exit 0 on a host whose agent is down is exactly how #5252
+		// went unnoticed until the device showed Offline.
+		return startErr
 	},
 }
 
@@ -303,44 +310,11 @@ var serviceUninstallCmd = &cobra.Command{
 		if os.Geteuid() != 0 {
 			return fmt.Errorf("must run as root (sudo breeze-agent service uninstall)")
 		}
-
-		// Stop and unload the daemon
-		if isLaunchdLoaded(darwinLabel) {
-			out, err := exec.Command("launchctl", "bootout", "system/"+darwinLabel).CombinedOutput()
-			if err != nil {
-				// Fallback to legacy unload
-				out2, err2 := exec.Command("launchctl", "unload", darwinPlistDst).CombinedOutput()
-				if err2 != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to stop service: %s / %s\n",
-						strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
-				}
-			} else {
-				_ = out
-			}
-			fmt.Println("Service stopped.")
+		if err := uninstallDarwinService(func(name string, args ...string) ([]byte, error) {
+			return exec.Command(name, args...).CombinedOutput()
+		}); err != nil {
+			return err
 		}
-
-		uninstallDarwinWatchdog()
-
-		// Remove plists
-		if err := os.Remove(darwinPlistDst); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinPlistDst, err)
-		}
-		if err := os.Remove(darwinDesktopUserPlistDst); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinDesktopUserPlistDst, err)
-		}
-		if err := os.Remove(darwinDesktopLoginWindowPlistDst); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinDesktopLoginWindowPlistDst, err)
-		}
-
-		// Remove binary
-		if err := os.Remove(darwinBinaryPath); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinBinaryPath, err)
-		}
-		if err := os.Remove(darwinDesktopHelperBinaryPath); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinDesktopHelperBinaryPath, err)
-		}
-
 		fmt.Println("Breeze Agent service uninstalled.")
 		fmt.Printf("Config at %s was preserved.\n", darwinConfigDir)
 		fmt.Printf("To remove config: sudo rm -rf '%s'\n", darwinConfigDir)
@@ -348,25 +322,12 @@ var serviceUninstallCmd = &cobra.Command{
 	},
 }
 
-func uninstallDarwinWatchdog() {
-	if isLaunchdLoaded(darwinWatchdogLabel) {
-		out, err := exec.Command("launchctl", "bootout", "system/"+darwinWatchdogLabel).CombinedOutput()
-		if err != nil {
-			out2, err2 := exec.Command("launchctl", "unload", darwinWatchdogPlistDst).CombinedOutput()
-			if err2 != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to stop watchdog service: %s / %s\n",
-					strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
-			}
-		} else {
-			_ = out
-		}
+func uninstallDarwinService(run func(string, ...string) ([]byte, error)) error {
+	out, err := run("/bin/sh", "-c", macosuninstall.Script())
+	if err != nil {
+		return fmt.Errorf("uninstall package artifacts: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	if err := os.Remove(darwinWatchdogPlistDst); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinWatchdogPlistDst, err)
-	}
-	if err := os.Remove(darwinWatchdogBinaryPath); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinWatchdogBinaryPath, err)
-	}
+	return nil
 }
 
 var serviceStartCmd = &cobra.Command{

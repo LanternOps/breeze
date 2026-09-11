@@ -355,6 +355,29 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
     expect(line).not.toHaveTextContent("Never");
   });
 
+  // Issue #4543 (silent-failure-hunter review finding): the reconcile worker
+  // stamps a skip/failure reason onto `last_error` even while `status` stays
+  // "connected" — e.g. the 15-minute sweep racing a pull_payments toggle-off.
+  // Before this test (and the render it pins down) that stamp was DB-only:
+  // the connected-state card read `lastReconcileAt` but never `lastError`.
+  it("renders last_error on the connected-state card (not just the reauth banner)", async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url === "/accounting/quickbooks") {
+        return jsonResponse({
+          ...connected,
+          lastError: "Payment pull: run skipped — disabled for this connection",
+        });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(<QuickbooksIntegration />);
+
+    expect(
+      await screen.findByTestId("quickbooks-reconcile-last-error"),
+    ).toHaveTextContent("disabled for this connection");
+  });
+
   it("Sync now POSTs the reconcile route and reports a queued job as a success", async () => {
     fetchWithAuth.mockImplementation(
       async (url: string, init?: RequestInit) => {
@@ -415,6 +438,43 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
     );
   });
 
+  it("issue #4543 — shows the switched-off reason (not a generic failure) on a 409 payment_sync_disabled reconcile response", async () => {
+    fetchWithAuth.mockImplementation(
+      async (url: string, init?: RequestInit) => {
+        if (
+          url === "/accounting/quickbooks/reconcile" &&
+          init?.method === "POST"
+        ) {
+          return jsonResponse(
+            { error: "Payment sync is disabled for this connection", code: "payment_sync_disabled" },
+            409,
+          );
+        }
+        if (url === "/accounting/quickbooks") return jsonResponse(connected);
+        return jsonResponse({}, 404);
+      },
+    );
+
+    render(<QuickbooksIntegration />);
+    fireEvent.click(await screen.findByTestId("quickbooks-reconcile-now"));
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith({
+        type: "error",
+        // Names BOTH switches: the reconcile pass runs when EITHER is on
+        // (Phase D2 widened the gate), so telling the operator to turn on
+        // "Payment sync" alone described a rule that no longer exists.
+        message: "Payment sync is turned off for this connection — turn on Payment sync or Payment push to sync now.",
+      }),
+    );
+    expect(showToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "success" }),
+    );
+    expect(showToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "warning" }),
+    );
+  });
+
   it("hides the pull-payments switch and the push-mode row without invoices:write", async () => {
     canWriteInvoices = false;
     fetchWithAuth.mockImplementation(async (url: string) =>
@@ -455,5 +515,102 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
     expect(screen.queryByTestId("quickbooks-last-reconcile")).toBeNull();
     expect(screen.queryByTestId("quickbooks-reconcile-now")).toBeNull();
     expect(fetchWithAuth).not.toHaveBeenCalled();
+  });
+});
+
+describe("QuickbooksIntegration — payment push (Phase D2)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scope = "partner";
+    canWriteInvoices = true;
+    window.history.replaceState({}, "", "/integrations");
+  });
+
+  it("renders the push-payments switch from status and PATCHes { pushPayments: false } when turned off", async () => {
+    fetchWithAuth.mockImplementation(
+      async (url: string, init?: RequestInit) => {
+        if (
+          url === "/accounting/quickbooks/settings" &&
+          init?.method === "PATCH"
+        ) {
+          return jsonResponse({ ...connected, pushPayments: false });
+        }
+        if (url === "/accounting/quickbooks")
+          return jsonResponse({ ...connected, pushPayments: true });
+        return jsonResponse({}, 404);
+      },
+    );
+
+    render(<QuickbooksIntegration />);
+
+    const toggle = await screen.findByTestId("quickbooks-pushpayments");
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith(
+        "/accounting/quickbooks/settings",
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ pushPayments: false }),
+        }),
+      ),
+    );
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "success" }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("quickbooks-pushpayments").getAttribute("aria-checked"),
+      ).toBe("false"),
+    );
+  });
+
+  it("reverts the switch and toasts on a failed PATCH — it never renders optimistically", async () => {
+    fetchWithAuth.mockImplementation(
+      async (url: string, init?: RequestInit) => {
+        if (
+          url === "/accounting/quickbooks/settings" &&
+          init?.method === "PATCH"
+        ) {
+          return jsonResponse({ error: "nope" }, 500);
+        }
+        if (url === "/accounting/quickbooks")
+          return jsonResponse({ ...connected, pushPayments: true });
+        return jsonResponse({}, 404);
+      },
+    );
+
+    render(<QuickbooksIntegration />);
+    const toggle = await screen.findByTestId("quickbooks-pushpayments");
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "error" }),
+      ),
+    );
+    // The switch is driven by the SERVER-confirmed value, so a rejected PATCH
+    // leaves it reading the setting QuickBooks actually still has.
+    expect(
+      screen.getByTestId("quickbooks-pushpayments").getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(showToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "success" }),
+    );
+  });
+
+  it("hides the push-payments toggle without invoices:write", async () => {
+    canWriteInvoices = false;
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      url === "/accounting/quickbooks"
+        ? jsonResponse({ ...connected, pushPayments: true })
+        : jsonResponse({}, 404),
+    );
+
+    render(<QuickbooksIntegration />);
+
+    await screen.findByTestId("quickbooks-environment");
+    expect(screen.queryByTestId("quickbooks-pushpayments")).toBeNull();
   });
 });

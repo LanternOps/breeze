@@ -722,9 +722,10 @@
     "createNew": "Créer un nouveau",
     "unlink": "Dissocier",
     "syncNow": "Synchroniser maintenant",
-    "pending": "En attente",
-    "synced": "Synchronisé",
-    "syncError": "Erreur de synchronisation",
+    "notSynced": "Non synchronisé",
+    "notSyncedHint": "Confirmé dans Breeze, pas encore envoyé à QuickBooks",
+    "inQuickbooks": "Dans QuickBooks",
+    "syncFailed": "Échec de la synchronisation",
     "incomeAccount": "Compte de produits",
     "incomeAccountRequired": "Définissez un compte de produits par défaut avant de créer ou de synchroniser des articles dans QuickBooks.",
     "saveIncomeAccount": "Enregistrer le compte de produits",
@@ -782,11 +783,17 @@
     "pullPaymentsEnabled": "Les paiements seront synchronisés depuis QuickBooks",
     "pullPaymentsDisabled": "Les paiements ne seront plus synchronisés depuis QuickBooks",
     "failedToUpdatePullPayments": "Impossible de mettre à jour le paramètre de synchronisation des paiements.",
+    "pushPayments": "Envoi des paiements",
+    "pushPaymentsDescription": "Envoyer vers QuickBooks les paiements enregistrés dans Breeze et les y supprimer en cas d'annulation.",
+    "pushPaymentsEnabled": "Les paiements seront envoyés vers QuickBooks",
+    "pushPaymentsDisabled": "Les paiements ne seront plus envoyés vers QuickBooks",
+    "failedToUpdatePushPayments": "Impossible de mettre à jour le paramètre d'envoi des paiements.",
     "lastPaymentSync": "Dernière synchronisation des paiements",
     "never": "Jamais",
     "syncNow": "Synchroniser maintenant",
     "syncNowQueued": "Synchronisation des paiements mise en file d'attente.",
     "syncNowNotQueued": "Impossible de mettre la synchronisation des paiements en file d'attente. Réessayez dans un instant.",
+    "syncNowPullDisabled": "La synchronisation des paiements est désactivée pour cette connexion – activez Synchronisation des paiements ou Envoi des paiements pour synchroniser maintenant.",
     "failedToSyncNow": "Impossible de lancer la synchronisation des paiements."
   },
   "securityIntegration": {
@@ -867,7 +874,8 @@
     "couldNotRefresh": "Impossible d'actualiser les détails du compte Stripe.",
     "notCached": "Devise pas encore en cache — actualisez pour la récupérer depuis Stripe.",
     "staleCache": "Stripe est injoignable — affichage des derniers détails de compte en cache.",
-    "reconnectRequired": "Votre clé Stripe enregistrée (•••• {{last4}}) ne fonctionne plus : {{reason}} Collez une nouvelle clé pour reconnecter ; les paiements en ligne échoueront d'ici là."
+    "reconnectRequired": "Votre clé Stripe enregistrée (•••• {{last4}}) ne fonctionne plus : {{reason}} Collez une nouvelle clé pour reconnecter ; les paiements en ligne échoueront d'ici là.",
+    "reconciliationError": "Le rapprochement des annulations de paiement ne fonctionne pas : {{reason}} Remplacez la clé Stripe par une clé autorisée à lire les événements."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Impossible d’enregistrer les associations de sites.",

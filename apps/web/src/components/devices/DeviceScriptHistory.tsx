@@ -1,9 +1,29 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Terminal, RefreshCw, Eye, X, ChevronDown, ChevronUp, Copy, Check, CheckCircle, XCircle, Loader2, AlertTriangle, Clock, AlertOctagon } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Terminal, RefreshCw, Eye, X, ChevronDown, ChevronUp, Copy, Check, Loader2, AlertOctagon, RotateCcw, Square } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
+import { extractApiError } from '@/lib/apiError';
+import { navigateTo } from '@/lib/navigation';
+import { handleActionError } from '@/lib/runAction';
+import {
+  requestScriptExecutionCancel,
+  SCRIPT_CANCEL_DEFAULT_GRACE_SECONDS,
+} from '@/lib/cancelScriptExecution';
+import { usePermissions } from '@/lib/permissions';
+import { showToast } from '../shared/Toast';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import ScriptExecutionModal from '../scripts/ScriptExecutionModal';
+import {
+  executionRowStatusConfig,
+  executionDetailStatusConfig,
+  resolveExecutionStatusLabel,
+} from '../scripts/executionStatus';
+import type { Script } from '../scripts/ScriptList';
+import type { ScriptParameter } from '../scripts/ScriptForm';
+import type { CancelState, ExecutionStatus, ScriptAdmissionResult } from '@breeze/shared';
+import { RunContextChip, type RunContextValue } from '../common/RunContext';
 
 type ScriptExecution = {
   id?: string;
@@ -20,32 +40,47 @@ type ScriptExecution = {
   createdAt?: string;
   durationMs?: number;
   durationSeconds?: number;
+  // #4885 — the runtime values this execution was submitted with. See the
+  // same field on ExecutionHistory's ScriptExecution; the API's SELECT was
+  // extended for this device-scoped endpoint alongside this change.
+  parameters?: Record<string, string | number | boolean> | null;
+  // #4888 — the run context this execution actually used. NULL/absent means
+  // the row predates the column and is genuinely unknown; RunContextChip
+  // renders that as "Not recorded" rather than guessing "System".
+  runAs?: RunContextValue | null;
+  targetSessionId?: number | null;
+  // #4767 — set once a stop was requested; qualifies the terminal label
+  // ("your stop request arrived too late" / "stop failed"). Absent/null means
+  // no cancel was ever requested.
+  cancelState?: CancelState | null;
+};
+
+type ScriptWithDetails = Script & {
+  parameters?: ScriptParameter[];
+  content?: string;
 };
 
 type DeviceScriptHistoryProps = {
   deviceId: string;
   timezone?: string;
+  // #4886 — highlight (and auto-open) the execution a post-run redirect sent
+  // the operator here to watch. Comes from the `#scripts/<executionId>` hash
+  // (DeviceDetails.tsx); undefined for an ordinary tab visit.
+  highlightExecutionId?: string;
 };
 
-const statusStyles: Record<string, string> = {
-  success: 'bg-success/15 text-success border-success/30',
-  completed: 'bg-success/15 text-success border-success/30',
-  failed: 'bg-destructive/15 text-destructive border-destructive/30',
-  running: 'bg-warning/15 text-warning border-warning/30',
-  queued: 'bg-blue-500/20 text-blue-700 border-blue-500/40',
-  pending: 'bg-muted text-muted-foreground border-border',
-  timeout: 'bg-warning/15 text-warning border-warning/30',
-  cancelled: 'bg-muted text-muted-foreground border-border'
-};
+// #5318 — the DB enum has 8 values; this tab used to print the raw lowercase
+// enum in the table and index a private 5-member map in the detail panel.
+// Status presentation now comes from the single shared source of truth
+// (components/scripts/executionStatus.ts) that the scripts pages already use.
+function toExecutionStatus(raw: string | undefined): ExecutionStatus | null {
+  const status = (raw ?? '').toLowerCase();
+  return status in executionRowStatusConfig ? (status as ExecutionStatus) : null;
+}
 
-const statusConfig: Record<string, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
-  pending: { label: 'deviceScriptHistory.status.pending', color: 'text-gray-700', bgColor: 'bg-gray-500/10', icon: Clock },
-  running: { label: 'deviceScriptHistory.status.running', color: 'text-blue-700', bgColor: 'bg-blue-500/10', icon: Loader2 },
-  completed: { label: 'deviceScriptHistory.status.completed', color: 'text-green-700', bgColor: 'bg-green-500/10', icon: CheckCircle },
-  failed: { label: 'deviceScriptHistory.status.failed', color: 'text-red-700', bgColor: 'bg-red-500/10', icon: XCircle },
-  timeout: { label: 'deviceScriptHistory.status.timeout', color: 'text-yellow-700', bgColor: 'bg-yellow-500/10', icon: AlertTriangle },
-  cancelled: { label: 'deviceScriptHistory.status.cancelled', color: 'text-gray-700', bgColor: 'bg-gray-500/10', icon: XCircle },
-};
+// #4767 — the only statuses a Stop request is meaningful against. `cancelling`
+// gets the disabled "Stopping…" affordance instead of a new stop.
+const CANCELLABLE_STATUSES = new Set<ExecutionStatus>(['pending', 'queued', 'running']);
 
 function formatDateTime(value?: string, timezone?: string) {
   if (!value) return 'Not reported';
@@ -69,16 +104,6 @@ function computeDurationSeconds(startedAt?: string, completedAt?: string): numbe
   const end = new Date(completedAt).getTime();
   if (Number.isNaN(start) || Number.isNaN(end)) return undefined;
   return Math.max(0, Math.round((end - start) / 1000));
-}
-
-function getStatusDescription(status: string, errorMessage: string | undefined, t: (key: string) => string): string {
-  switch (status) {
-    case 'running': return t('deviceScriptHistory.statusDescriptions.running');
-    case 'completed': return t('deviceScriptHistory.statusDescriptions.completed');
-    case 'failed': return errorMessage || 'Script execution failed';
-    case 'timeout': return t('deviceScriptHistory.statusDescriptions.timeout');
-    default: return t('deviceScriptHistory.statusDescriptions.pending');
-  }
 }
 
 function normalizeOutput(raw: string): string {
@@ -197,14 +222,80 @@ function OutputSection({
   );
 }
 
-export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScriptHistoryProps) {
+/**
+ * #5318 — table badge, keyed on the SHARED status config so a new enum member
+ * is a tsc error here instead of a raw lowercase enum leaking into the UI.
+ * `status` is null only when the API sends something outside the enum, in
+ * which case the raw value is shown rather than a wrong label.
+ */
+function ExecutionStatusBadge({
+  executionId,
+  status,
+  rawStatus,
+  cancelState,
+}: {
+  executionId: string;
+  status: ExecutionStatus | null;
+  rawStatus: string;
+  cancelState?: CancelState | null;
+}) {
+  const { t } = useTranslation('scripts');
+  if (!status) {
+    return (
+      <span
+        data-testid={`device-execution-status-${executionId}`}
+        className="inline-flex items-center rounded-full border border-muted bg-muted/40 px-2.5 py-1 text-xs font-medium text-muted-foreground"
+      >
+        {rawStatus}
+      </span>
+    );
+  }
+  const config = executionRowStatusConfig[status];
+  const StatusIcon = config.icon;
+  return (
+    <span
+      data-testid={`device-execution-status-${executionId}`}
+      className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium', config.color)}
+    >
+      <StatusIcon className={cn('h-3 w-3', (status === 'running' || status === 'cancelling') && 'animate-spin')} />
+      {t(/* i18n-dynamic */ `executionHistory.${resolveExecutionStatusLabel(status, cancelState)}`)}
+    </span>
+  );
+}
+
+export default function DeviceScriptHistory({ deviceId, timezone, highlightExecutionId }: DeviceScriptHistoryProps) {
   const { t } = useTranslation('devices');
+  const { t: tScripts } = useTranslation('scripts');
   const [executions, setExecutions] = useState<ScriptExecution[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string>();
   const [siteTimezone, setSiteTimezone] = useState<string | undefined>(timezone);
-  const [selectedExecution, setSelectedExecution] = useState<ScriptExecution | null>(null);
+  const [selectedExecutionSnapshot, setSelectedExecution] = useState<ScriptExecution | null>(null);
+  // Follow refreshed results while details are open, retaining the last
+  // selected row if it falls outside the history endpoint's latest 50 runs.
+  const selectedExecution = selectedExecutionSnapshot && (
+    executions.find(item => item.id && item.id === selectedExecutionSnapshot.id) ?? selectedExecutionSnapshot
+  );
+  // #4885 "Run again" — the fetched script definition (parameters, OS types,
+  // runAs) needed to open ScriptExecutionModal, plus the loading/error state
+  // for that fetch. Cleared on close so a stale script never lingers across
+  // two different "Run again" clicks.
+  const [runAgainScript, setRunAgainScript] = useState<ScriptWithDetails | null>(null);
+  const [runAgainParameters, setRunAgainParameters] = useState<Record<string, string | number | boolean>>({});
+  const [runAgainLoading, setRunAgainLoading] = useState(false);
+  // #4886 — only auto-open the highlighted execution once per id, so closing
+  // it (or a routine 10s poll refresh) doesn't keep re-opening it in the
+  // operator's face.
+  const autoOpenedHighlightRef = useRef<string | undefined>(undefined);
+  // #5318 — Stop, wired to the same POST /scripts/executions/:id/cancel path
+  // the scripts pages use (lib/cancelScriptExecution.ts). `confirmingCancel`
+  // is the execution in the confirm dialog; `cancelSubmittingId` the one whose
+  // request is in flight.
+  const { can } = usePermissions();
+  const canCancel = can('scripts', 'execute');
+  const [confirmingCancel, setConfirmingCancel] = useState<ScriptExecution | null>(null);
+  const [cancelSubmittingId, setCancelSubmittingId] = useState<string | null>(null);
 
   const effectiveTimezone = timezone ?? siteTimezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -227,20 +318,37 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
     }
   }, [deviceId]);
 
+  // #5318 — while a run is still going (or a Stop is in flight) poll every 2s,
+  // mirroring ScriptExecutionsPage, so "Stopping…" resolves promptly instead
+  // of sitting for up to 10s. Keyed on a boolean so the interval isn't torn
+  // down and recreated on every tick.
+  const hasActiveExecutions = useMemo(
+    () => executions.some(item => {
+      const status = (item.status ?? '').toLowerCase();
+      return status === 'running' || status === 'cancelling';
+    }),
+    [executions],
+  );
+
   useEffect(() => {
     fetchHistory();
-    const interval = setInterval(() => fetchHistory(true), 10000);
-    return () => clearInterval(interval);
   }, [fetchHistory]);
+
+  useEffect(() => {
+    const interval = setInterval(() => fetchHistory(true), hasActiveExecutions ? 2000 : 10000);
+    return () => clearInterval(interval);
+  }, [fetchHistory, hasActiveExecutions]);
 
   const rows = useMemo(() => {
     return executions.map((item, index) => {
       const status = (item.status || 'unknown').toLowerCase();
+      const executionStatus = toExecutionStatus(item.status);
       const duration = computeDurationSeconds(item.startedAt ?? item.createdAt, item.completedAt);
       return {
         id: item.id ?? `${item.scriptName ?? item.name ?? 'script'}-${index}`,
         name: item.scriptName ?? item.name ?? t('deviceScriptHistory.unnamedScript'),
         status,
+        executionStatus,
         startedAt: formatDateTime(item.startedAt ?? item.createdAt, effectiveTimezone),
         completedAt: formatDateTime(item.completedAt, effectiveTimezone),
         duration: formatDuration(item.durationMs, item.durationSeconds ?? duration),
@@ -248,6 +356,96 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
       };
     });
   }, [executions, effectiveTimezone]);
+
+  // #4886 — once the highlighted execution shows up in the fetched list, open
+  // its details automatically so a post-run redirect actually lands the
+  // operator watching the result, not just staring at a list.
+  useEffect(() => {
+    if (!highlightExecutionId) {
+      autoOpenedHighlightRef.current = undefined;
+      return;
+    }
+    if (autoOpenedHighlightRef.current === highlightExecutionId) return;
+    const match = executions.find(item => item.id === highlightExecutionId);
+    if (!match) return;
+    autoOpenedHighlightRef.current = highlightExecutionId;
+    setSelectedExecution(match);
+  }, [highlightExecutionId, executions]);
+
+  // #5318 — one cancel path shared with ScriptExecutionsPage; the API
+  // re-checks scripts:execute, so `canCancel` above is UX only.
+  const handleCancel = async (execution: ScriptExecution, graceSeconds: number) => {
+    if (!execution.id) return;
+    setCancelSubmittingId(execution.id);
+    try {
+      await requestScriptExecutionCancel({
+        executionId: execution.id,
+        graceSeconds,
+        errorFallback: tScripts('executionHistory.errors.cancelFailed'),
+        noLongerCancellableMessage: tScripts('executionHistory.errors.noLongerCancellable'),
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+      });
+      await fetchHistory(true);
+    } catch (err) {
+      handleActionError(err, tScripts('executionHistory.errors.cancelFailed'));
+    } finally {
+      setCancelSubmittingId(null);
+      setConfirmingCancel(null);
+    }
+  };
+
+  // #4885 "Run again" — fetch the script's current parameter definitions
+  // (osTypes/runAs/parameters) so ScriptExecutionModal has what it needs, then
+  // open it pre-filled with this device and the execution's runtime values.
+  const handleRunAgain = async (execution: ScriptExecution) => {
+    if (!execution.scriptId) return;
+    setSelectedExecution(null);
+    setRunAgainLoading(true);
+    try {
+      const response = await fetchWithAuth(`/scripts/${execution.scriptId}`);
+      if (!response.ok) {
+        throw new Error(tScripts('scriptExecutionsPage.errors.fetchScript'));
+      }
+      const data = await response.json();
+      setRunAgainScript(data.script ?? data);
+      setRunAgainParameters(execution.parameters ?? {});
+    } catch (err) {
+      showToast({
+        type: 'error',
+        message: err instanceof Error ? err.message : tScripts('scriptExecutionsPage.errors.fetchScript'),
+      });
+    } finally {
+      setRunAgainLoading(false);
+    }
+  };
+
+  const handleCloseRunAgain = () => {
+    setRunAgainScript(null);
+    setRunAgainParameters({});
+  };
+
+  const handleExecuteRunAgain = async (
+    scriptId: string,
+    deviceIds: string[],
+    parameters: Record<string, string | number | boolean>,
+    runAs: 'system' | 'user'
+  ): Promise<ScriptAdmissionResult> => {
+    const response = await fetchWithAuth(`/scripts/${scriptId}/execute`, {
+      method: 'POST',
+      body: JSON.stringify({ deviceIds, parameters, runAs })
+    });
+
+    const data = await response.json().catch(() => ({})) as ScriptAdmissionResult & { error?: string };
+
+    if (!response.ok) {
+      throw new Error(extractApiError(data, tScripts('scriptExecutionsPage.errors.execute')));
+    }
+
+    if (data.targets.some(target => target.admission === 'admitted')) {
+      await fetchHistory(true);
+    }
+    return data;
+  };
 
   if (loading) {
     return (
@@ -322,20 +520,51 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
                 rows.map(row => (
                   <tr
                     key={row.id}
-                    className="text-sm cursor-pointer hover:bg-muted/40 transition"
+                    className={cn(
+                      'text-sm cursor-pointer hover:bg-muted/40 transition',
+                      // #4886 — the row a post-run redirect sent the operator
+                      // here to watch, so it's findable even after they close
+                      // the auto-opened details modal.
+                      row.id === highlightExecutionId && 'bg-primary/5 ring-1 ring-inset ring-primary/40'
+                    )}
                     onClick={() => setSelectedExecution(row.raw)}
                   >
                     <td className="px-4 py-3 font-medium">{row.name}</td>
                     <td className="px-4 py-3">
-                      <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyles[row.status] || 'bg-muted/40 text-muted-foreground border-muted'}`}>
-                        {row.status}
-                      </span>
+                      <ExecutionStatusBadge
+                        executionId={row.id}
+                        status={row.executionStatus}
+                        rawStatus={row.status}
+                        cancelState={row.raw.cancelState}
+                      />
                     </td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">{row.startedAt}</td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">{row.completedAt}</td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">{row.duration}</td>
                     <td className="px-4 py-3">
-                      <Eye className="h-4 w-4 text-muted-foreground" />
+                      <div className="flex items-center justify-end gap-1">
+                        {canCancel && row.raw.id && row.executionStatus
+                          && (CANCELLABLE_STATUSES.has(row.executionStatus) || row.executionStatus === 'cancelling') && (
+                          <button
+                            type="button"
+                            data-testid={`device-script-stop-${row.raw.id}`}
+                            disabled={row.executionStatus === 'cancelling'}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (row.executionStatus !== 'cancelling') setConfirmingCancel(row.raw);
+                            }}
+                            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
+                            title={row.executionStatus === 'cancelling'
+                              ? tScripts('executionHistory.status.cancelling')
+                              : tScripts('executionHistory.actions.stop')}
+                          >
+                            {row.executionStatus === 'cancelling'
+                              ? <Loader2 className="h-4 w-4 animate-spin" />
+                              : <Square className="h-4 w-4" />}
+                          </button>
+                        )}
+                        <Eye className="h-4 w-4 text-muted-foreground" />
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -347,9 +576,11 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
 
       {/* Execution Details Modal */}
       {selectedExecution && (() => {
-        const selectedStatus = (selectedExecution.status || 'pending').toLowerCase();
-        const config = statusConfig[selectedStatus] || statusConfig.pending;
+        const selectedStatus = toExecutionStatus(selectedExecution.status) ?? 'pending';
+        const config = executionDetailStatusConfig[selectedStatus];
         const StatusIcon = config.icon;
+        const showStop = canCancel && !!selectedExecution.id
+          && (CANCELLABLE_STATUSES.has(selectedStatus) || selectedStatus === 'cancelling');
         return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-4xl max-h-[90vh] overflow-hidden rounded-lg border bg-card shadow-lg flex flex-col">
@@ -376,14 +607,16 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
                   <StatusIcon className={cn(
                     'h-6 w-6',
                     config.color,
-                    selectedStatus === 'running' && 'animate-spin'
+                    (selectedStatus === 'running' || selectedStatus === 'cancelling') && 'animate-spin'
                   )} />
                   <div>
                     <p className={cn('text-lg font-semibold', config.color)}>
-                      {t(/* i18n-dynamic */ config.label)}
+                      {tScripts(/* i18n-dynamic */ `executionDetails.${resolveExecutionStatusLabel(selectedStatus, selectedExecution.cancelState)}`)}
                     </p>
                     <p className="text-sm text-muted-foreground">
-                      {getStatusDescription(selectedStatus, selectedExecution.errorMessage, t)}
+                      {selectedStatus === 'failed' && selectedExecution.errorMessage
+                        ? selectedExecution.errorMessage
+                        : tScripts(/* i18n-dynamic */ `executionDetails.statusDescription.${selectedStatus}`)}
                     </p>
                   </div>
                 </div>
@@ -436,6 +669,12 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
                     )}
                   </p>
                 </div>
+                <div className="rounded-md border bg-muted/20 p-4">
+                  <p className="text-xs font-medium text-muted-foreground">{t('deviceScriptHistory.metadata.runAs')}</p>
+                  <p className="text-sm font-medium mt-1">
+                    <RunContextChip runAs={selectedExecution.runAs} targetSessionId={selectedExecution.targetSessionId} />
+                  </p>
+                </div>
               </div>
 
               {/* Output Sections */}
@@ -458,7 +697,39 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
             </div>
 
             {/* Footer */}
-            <div className="flex items-center justify-end border-t px-6 py-4">
+            <div className="flex items-center justify-end gap-3 border-t px-6 py-4">
+              {showStop && (
+                <button
+                  type="button"
+                  data-testid="device-script-stop-details"
+                  disabled={selectedStatus === 'cancelling'}
+                  onClick={() => setConfirmingCancel(selectedExecution)}
+                  className="inline-flex h-10 items-center gap-1.5 rounded-md border px-4 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {selectedStatus === 'cancelling'
+                    ? <Loader2 className="h-4 w-4 animate-spin" />
+                    : <Square className="h-4 w-4" />}
+                  {selectedStatus === 'cancelling'
+                    ? tScripts('executionHistory.status.cancelling')
+                    : tScripts('executionHistory.actions.stop')}
+                </button>
+              )}
+              {selectedExecution.scriptId && (
+                <button
+                  type="button"
+                  data-testid="device-script-run-again"
+                  disabled={runAgainLoading}
+                  onClick={() => void handleRunAgain(selectedExecution)}
+                  className="inline-flex h-10 items-center gap-1.5 rounded-md border px-4 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {runAgainLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RotateCcw className="h-4 w-4" />
+                  )}
+                  {t('deviceScriptHistory.runAgain')}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setSelectedExecution(null)}
@@ -471,6 +742,45 @@ export default function DeviceScriptHistory({ deviceId, timezone }: DeviceScript
         </div>
         );
       })()}
+
+      {/* #5318 — Stop confirmation, same grace/force contract as the scripts page */}
+      {confirmingCancel && (
+        <ConfirmDialog
+          open={true}
+          onClose={() => setConfirmingCancel(null)}
+          onConfirm={() => void handleCancel(confirmingCancel, SCRIPT_CANCEL_DEFAULT_GRACE_SECONDS)}
+          title={tScripts('executionHistory.actions.confirmStopTitle')}
+          message={tScripts('executionHistory.actions.confirmStopMessage', {
+            script: confirmingCancel.scriptName ?? confirmingCancel.name ?? t('deviceScriptHistory.scriptFallback'),
+          })}
+          variant="warning"
+          confirmLabel={tScripts('executionHistory.actions.stop')}
+          confirmTestId="confirm-stop"
+          isLoading={cancelSubmittingId === confirmingCancel.id}
+        >
+          <button
+            type="button"
+            data-testid="confirm-force-stop"
+            disabled={cancelSubmittingId === confirmingCancel.id}
+            onClick={() => void handleCancel(confirmingCancel, 0)}
+            className="text-sm font-medium text-destructive hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {tScripts('executionHistory.actions.forceStop')}
+          </button>
+        </ConfirmDialog>
+      )}
+
+      {/* #4885 "Run again" — pre-filled execute flow */}
+      {runAgainScript && (
+        <ScriptExecutionModal
+          script={runAgainScript}
+          isOpen
+          onClose={handleCloseRunAgain}
+          onExecute={handleExecuteRunAgain}
+          initialDeviceIds={[deviceId]}
+          initialParameters={runAgainParameters}
+        />
+      )}
     </>
   );
 }

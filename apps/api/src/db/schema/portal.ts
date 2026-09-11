@@ -1,12 +1,13 @@
 import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
-import { contacts } from './contacts';
 import { devices } from './devices';
 import { users } from './users';
 
 export const ticketStatusEnum = pgEnum('ticket_status', ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed']);
 export const ticketPriorityEnum = pgEnum('ticket_priority', ['low', 'normal', 'high', 'urgent']);
 export const ticketSourceEnum = pgEnum('ticket_source', ['portal', 'email', 'alert', 'manual', 'api', 'ai']);
+// Spec #5573 §4.8: planned work (service deliverables, project tasks) is typed, not tagged.
+export const ticketWorkKindEnum = pgEnum('ticket_work_kind', ['support', 'deliverable', 'project_task']);
 export const ticketCommentTypeEnum = pgEnum('ticket_comment_type', ['comment', 'internal', 'status_change', 'assignment', 'time_entry', 'system']);
 
 export const portalBranding = pgTable('portal_branding', {
@@ -32,6 +33,13 @@ export const portalBranding = pgTable('portal_branding', {
   enableAssetCheckout: boolean('enable_asset_checkout').notNull().default(false),
   enableSelfService: boolean('enable_self_service').notNull().default(true),
   enablePasswordReset: boolean('enable_password_reset').notNull().default(true),
+  // Portal visibility Wave 1 (#4562): per-org gates for the customer portal
+  // left-nav sections. Fail-closed defaults — false for every existing org.
+  enableDashboard: boolean('enable_dashboard').notNull().default(false),
+  enableSecurity: boolean('enable_security').notNull().default(false),
+  enableBackups: boolean('enable_backups').notNull().default(false),
+  enableReports: boolean('enable_reports').notNull().default(false),
+  enableSupportUsage: boolean('enable_support_usage').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
@@ -50,6 +58,9 @@ export const portalUsers = pgTable('portal_users', {
   entraOid: text('entra_oid'),
   entraTenantId: text('entra_tenant_id'),
   authMethod: text('auth_method').notNull().default('password'), // 'password' | 'entra' (SQL CHECK)
+  // Durable generation snapshotted by portal and client-AI sessions. Redis
+  // deletion is cleanup; live authorization compares this column instead.
+  authEpoch: integer('auth_epoch').notNull().default(1),
   linkedUserId: uuid('linked_user_id').references(() => users.id),
   // A portal user is a LOGIN attached to a contact, not a second kind of
   // person (#3258). Nullable because the link is established after the fact by
@@ -65,11 +76,17 @@ export const portalUsers = pgTable('portal_users', {
   // Rows can therefore still have a null link (Entra SSO provisioning and the
   // Outlook add-in's "create contact" both create logins without one).
   //
-  // ON DELETE SET NULL so deleting a contact never silently destroys someone's
-  // portal login. The FK is single-column, so it does NOT prove login and
-  // contact share an org — routes that derive a ticket's requester from this
-  // column compare the orgs explicitly (ticketService.createTicket).
-  contactId: uuid('contact_id').references(() => contacts.id, { onDelete: 'set null' }),
+  // Declared as a plain nullable uuid on purpose: the real constraint is the
+  // COMPOSITE same-org FK `portal_users_contact_org_fk` (contact_id, org_id)
+  // -> contacts (id, org_id), DEFERRABLE INITIALLY IMMEDIATE with a column-list
+  // `ON DELETE SET NULL (contact_id)` so deleting a contact unlinks the login
+  // instead of failing on the NOT NULL org_id. A login and its contact
+  // therefore CANNOT belong to different organizations — that is a database
+  // guarantee now, not a convention every writer has to honour. It lives in
+  // SQL only (2026-10-04-100002-portal-users-contact-composite-fk.sql), the
+  // same convention as tickets.requesterContactId below and this table's
+  // partial unique index on the Entra identity.
+  contactId: uuid('contact_id'),
   receiveNotifications: boolean('receive_notifications').notNull().default(true),
   lastLoginAt: timestamp('last_login_at'),
   status: varchar('status', { length: 20 }).notNull().default('active'),
@@ -112,7 +129,6 @@ export const tickets = pgTable('tickets', {
   status: ticketStatusEnum('status').notNull().default('new'),
   priority: ticketPriorityEnum('priority').notNull().default('normal'),
   assignedTo: uuid('assigned_to').references(() => users.id),
-  assignedTeam: uuid('assigned_team'),
   deviceId: uuid('device_id').references(() => devices.id),
   tags: text('tags').array().default([]),
   customFields: jsonb('custom_fields'),
@@ -132,6 +148,7 @@ export const tickets = pgTable('tickets', {
   slaPausedAt: timestamp('sla_paused_at'),
   slaPausedMinutes: integer('sla_paused_minutes').default(0),
   source: ticketSourceEnum('source').notNull().default('portal'),
+  workKind: ticketWorkKindEnum('work_kind').notNull().default('support'),
   internalNumber: varchar('internal_number', { length: 20 }),
   emailMessageId: text('email_message_id'),
   emailThreadKey: text('email_thread_key'),
@@ -189,8 +206,12 @@ export const ticketComments = pgTable('ticket_comments', {
   // (ticketHelpdeskSubscriber, Task 3) treats anything NOT 'user' as suspect
   // and skips admission — see the migration header for the full rationale.
   originPrincipalKind: text('origin_principal_kind').notNull().default('user'),
-  // Loop-guard link to the agent run that authored this comment (Task 3
-  // reads it; nothing writes it yet — the autonomous-note lane is deferred).
+  // Loop-guard link to the agent run that authored this comment. Written by
+  // addAiTriageNote() (services/ticketService.ts, P2-4a #4300) — every
+  // AI-agent `comment` tool call that carries an agentRunId inserts a row
+  // here with a live value, so this is NOT a preemptive/unwritten column
+  // (an earlier version of this comment said otherwise; corrected alongside
+  // #4644, which found and backfilled the resulting stale-pointer rows).
   // Deliberately NOT `.references(() => aiAgentRuns.id, ...)` here: aiAgents.ts
   // already imports `tickets` from this file (for ai_agent_runs.ticket_id),
   // so a reverse import would be a circular module dependency. The actual FK

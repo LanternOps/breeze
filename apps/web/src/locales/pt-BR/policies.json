@@ -9,6 +9,8 @@
       "thisPolicyHasNoOrganizationSoAssignment": "Esta política não tem uma organização, portanto os destinos da atribuição não podem ser listados.",
       "failedToAddAssignment": "Falha ao adicionar a atribuição",
       "failedToRemoveAssignment": "Falha ao remover a atribuição",
+      "assignmentAdded": "Atribuição adicionada",
+      "assignmentRemoved": "Atribuição removida",
       "roleFilter": "Filtro de função",
       "optional": "(opcional)",
       "noRestrictionAppliesToAllDeviceRoles": "Sem restrição - aplica-se a todas as funções de dispositivo",
@@ -131,7 +133,10 @@
       "removing": "Removendo...",
       "removeConfiguration": "Remover configuração",
       "complianceStatus2": "compliance_status",
-      "assignments2": "assignments"
+      "assignments2": "assignments",
+      "managedByYourMsp": "Gerenciado pelo seu MSP",
+      "inheritedByPolicies_one": "Herdado por {{count}} política",
+      "inheritedByPolicies_other": "Herdado por {{count}} políticas"
     },
     "configPolicyList": {
       "archived": "Arquivada",
@@ -150,7 +155,8 @@
       "of2": "de",
       "itsOwningOrganization": "sua organização proprietária",
       "organizationPolicyTitle": "Política da organização — aplica-se somente a {{organization}}",
-      "summary": "{{filtered}} de {{total}} políticas"
+      "summary": "{{filtered}} de {{total}} políticas",
+      "inheritsBadge": "Herda"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Falha ao buscar as políticas de configuração",
@@ -166,7 +172,8 @@
       "areYouSureYouWantToDelete": "Tem certeza de que deseja excluir",
       "thisWillAlsoRemoveAllFeatureLinks": "? Isso também removerá todos os vínculos de recursos e atribuições. Esta ação não pode ser desfeita.",
       "delete": "excluir",
-      "deleting": "Excluindo..."
+      "deleting": "Excluindo...",
+      "deleteBlockedByChildren": "Exclua primeiro as políticas que herdam desta:"
     },
     "organizationScopePanel": {
       "failedToLoadAssignments": "Falha ao carregar as atribuições",
@@ -664,6 +671,16 @@
         "configCheck": "config_check",
         "none": "none"
       },
+      "deviceLifecycleTab": {
+        "permanentlyDeleteRemovedDevices": "Excluir permanentemente os dispositivos removidos",
+        "offKeepRemovedDevicesUntilDeletedManually": "Desativado: os dispositivos removidos são mantidos até que alguém os exclua manualmente.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "Os dispositivos removidos são excluídos permanentemente {{days}} dias após a remoção.",
+        "permanentlyDeleteRemovedDevicesAfter": "Excluir permanentemente os dispositivos removidos após",
+        "days": "dias",
+        "enterAWholeNumberOfDaysBetween": "Informe um número inteiro de dias entre 1 e 3650.",
+        "purgeIsIrreversibleAndDestroysHistory": "A exclusão é irreversível e destrói o histórico",
+        "aDailyJobPermanentlyDeletesTheDevice": "Uma tarefa diária exclui permanentemente o registro do dispositivo e tudo o que está vinculado a ele: alertas, scripts, patches, logs e inventário. Dispositivos com uma desinstalação do agente ainda na fila são ignorados até que ela seja concluída. A política mais próxima prevalece, então uma organização pode desativar isto para sair de uma janela definida para todas as organizações."
+      },
       "eventLogTab": {
         "security": "Segurança",
         "hardware": "Hardware",
@@ -694,7 +711,11 @@
       "featureTabShell": {
         "override": "Substituir",
         "revertToParent": "Reverter para o pai",
-        "saving": "Salvando..."
+        "saving": "Salvando...",
+        "revertConfirmTitle": "Reverter para a política pai?",
+        "revertConfirmMessage": "Isso exclui a substituição de {{feature}} nesta política. As configurações são perdidas e as configurações da política pai passam a valer para todos os dispositivos que usam esta política. Não é possível desfazer.",
+        "removeConfirmTitle": "Remover esta configuração?",
+        "removeConfirmMessage": "Isso exclui a configuração de {{feature}} desta política. As configurações são perdidas e o recurso deixa de ser aplicado a todos os dispositivos que usam esta política. Não é possível desfazer."
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Implantar o Breeze Assist nos dispositivos",
@@ -883,9 +904,20 @@
         "time": "Hora",
         "dayOfWeek": "Dia da semana",
         "dayOfMonth": "Dia do mês",
+        "offlineDevices": "Dispositivos offline",
+        "offlineBehaviorQueue": "Enfileirar para dispositivos offline",
+        "offlineBehaviorQueueDescription": "É executado no próximo check-in, antes da próxima execução agendada.",
+        "offlineBehaviorSkip": "Ignorar dispositivos offline",
+        "offlineBehaviorSkipDescription": "Dispositivos offline no momento da execução do trabalho são registrados como ignorados.",
         "rebootPolicy": "Política de reinicialização",
         "rebootDelayMinutes": "Reboot delay (minutes)",
         "rebootDelayMinutesDescription": "How long the logged-in user is warned before a post-patch reboot.",
+        "rebootAllowDeferral": "Let users postpone the restart",
+        "rebootAllowDeferralDescription": "Show the signed-in user a prompt with a Postpone button. Requires the Breeze helper to be running in the user's session; Linux devices fall back to the terminal warning. The restart still happens at the deadline once the postponements run out.",
+        "rebootMaxDeferrals": "Maximum postponements",
+        "rebootMaxDeferralsDescription": "How many times one user may postpone a single restart before it proceeds.",
+        "rebootDeferralMinutes": "Postpone by (minutes)",
+        "rebootDeferralMinutesDescription": "How far each postponement pushes the restart out.",
         "windowsUpdateSource": "Origem do Windows Update",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Gerenciar o Windows Update exclusivamente pelo Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Suprime o canal nativo de instalação automática do Windows Update no endpoint, para que as atualizações sejam distribuídas somente pelos anéis de aprovação do Breeze — evitando reinicializações inesperadas e patches fora do seu agendamento. Somente para Windows; o fluxo de verificação, aprovação e instalação do próprio Breeze não é afetado. A configuração é revertida de forma segura quando desativada (uma Política de Grupo administrativa preexistente permanece inalterada).",
@@ -920,7 +952,8 @@
         "loadingPolicies": "Carregando políticas...",
         "noExistingPoliciesFound": "Nenhuma política existente encontrada.",
         "selectAPolicy": "Selecionar a política...",
-        "clearSelection": "Limpar seleção"
+        "clearSelection": "Limpar seleção",
+        "allOrgs": "Todas as orgs"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",
@@ -1628,20 +1661,6 @@
       "catalogTab": "Catálogo",
       "summaryCompleted7d": "Concluídas (7 dias)",
       "summaryFailed7d": "Com falha (7 dias)"
-    },
-    "softwareComplianceReport": {
-      "softwareComplianceReport": "Relatório de conformidade de software",
-      "analyzeSoftwareVersionDriftAcrossManagedDevices": "Analise a divergência de versões de software nos dispositivos gerenciados.",
-      "bulkUpdate": "Atualização em massa",
-      "versionDriftAnalysis": "Análise de divergência de versões",
-      "clickARowToSeeOutdatedDevices": "Clique em uma linha para ver os dispositivos desatualizados.",
-      "software": "Software",
-      "expectedVersion": "Versão esperada",
-      "devicesOnVersion": "Dispositivos na versão",
-      "devicesOutdated": "Dispositivos desatualizados",
-      "details": "Detalhes",
-      "outdatedDevices": "Dispositivos desatualizados",
-      "hide": "Ocultar"
     },
     "softwareInventory": {
       "allowed": "Permitido",

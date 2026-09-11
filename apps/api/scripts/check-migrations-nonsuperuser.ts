@@ -44,6 +44,17 @@ async function provisionMigratorRole(): Promise<void> {
           -- managed-Postgres admin so the run is faithful: BYPASSRLS (doadmin
           -- has it — it is why RLS-seeding migrations apply), CREATEROLE (to
           -- create breeze_app), CREATEDB, REPLICATION.
+          --
+          -- BYPASSRLS here is LOAD-BEARING, not cosmetic (#4518). Measured
+          -- A/B on PG16 with this script, the RLS attribute as the sole
+          -- variable: WITH BYPASSRLS the full set applies; with NOBYPASSRLS it
+          -- aborts at 2026-05-22-snmp-multi-vendor-templates.sql, 42501 "new
+          -- row violates row-level security policy for table snmp_templates".
+          -- 122 shipped migrations write rows without electing
+          -- breeze.scope='system' first, so this job cannot drop BYPASSRLS
+          -- until that debt is paid. Until then the STATIC guard
+          -- src/db/migrationRlsScope.test.ts holds the line for new
+          -- migrations — it is why that debt cannot grow.
           CREATE ROLE ${MIGRATOR_ROLE} LOGIN PASSWORD '${MIGRATOR_PASSWORD}'
             NOSUPERUSER CREATEDB CREATEROLE REPLICATION BYPASSRLS;
         END IF;

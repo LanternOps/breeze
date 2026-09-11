@@ -34,8 +34,9 @@ import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { devices } from '../../db/schema/devices';
 import { checkToolPermission } from '../aiGuardrails';
 import { loadPartnerPolicy, isEnforcing } from '../authenticatorPolicy';
-import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../permissions';
+import { getUserPermissions, hasPermission, userCanDecideApprovals, canAccessOrg } from '../permissions';
 import { createPamDecisionIntent } from '../pamActuationLifecycle';
+import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
 import type { RiskTier, ApprovalProof } from '@breeze/shared';
 
 /**
@@ -217,6 +218,15 @@ export function serialize(
   /** The linked intent's org, so a partner-scope inbox can group by customer
    *  without a second fetch. Null for a row with no intent. */
   orgId: string | null = null,
+  /**
+   * The `orgId` organization's display name, resolved server-side (#4187 UI
+   * critique) so a client never has to bulk-fetch `/orgs/organizations` and
+   * map names itself. Null for a row with no intent (no `orgId` to resolve)
+   * or when the org row no longer exists. Resolved by the caller (which
+   * batches ONE `inArray(organizations.id, …)` read per page, mirroring
+   * `customerTenant`'s batching); this function stays I/O-free.
+   */
+  orgName: string | null = null,
 ) {
   const isAgentOriginated = attribution?.requestingAgentRunId != null;
   const actionArguments = r.actionArguments as Record<string, unknown> | null;
@@ -235,6 +245,7 @@ export function serialize(
     // is not action-multiplexed or the value is not a plain string.
     action: typeof actionArguments?.action === 'string' ? actionArguments.action : null,
     orgId,
+    orgName,
     targetDevice,
     riskTier: r.riskTier,
     riskSummary: r.riskSummary,
@@ -338,6 +349,62 @@ export async function decideApprovalRequest(
   }
   if (existing.expiresAt <= new Date()) {
     return { httpStatus: 410, body: { error: 'Expired', finalStatus: 'expired' } };
+  }
+
+  // §6C (fix/pam-dedicated-permissions): the PAM mobile-bridge elevation
+  // branch (elevationRequestId set — approval_requests_one_source_chk makes
+  // this mutually exclusive with intentId) used to carry NO live permission
+  // check at all — it fell straight through to the assurance ladder and CAS
+  // write below. A row is fanned out to every eligible approver at REQUEST
+  // time (services/pamApprovers.ts); nothing re-checked that the decider
+  // STILL held PAM authority at DECIDE time, so a demoted technician (or one
+  // who never should have been eligible) could approve or deny it. Checked
+  // for BOTH approve and deny — unlike the four_eyes/action-intents gates
+  // below (which only re-check on 'approved', because a deny there is
+  // harmless), denying a PAM elevation is itself a PAM decision and requires
+  // the same authority as approving one. Resolved the same way
+  // `routes/approvals.ts`'s `makeOrgDecideAuthorizer` does: a bare
+  // `withSystemDbAccessContext` from inside the ambient request context is a
+  // no-op passthrough (db/index.ts), so `runOutsideDbContext` is required to
+  // actually elevate.
+  if (existing.elevationRequestId && !existing.intentId) {
+    const elevationOrgId = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const [row] = await db
+          .select({ orgId: elevationRequests.orgId })
+          .from(elevationRequests)
+          .where(eq(elevationRequests.id, existing.elevationRequestId as string));
+        return row?.orgId ?? null;
+      }),
+    );
+    if (!elevationOrgId) {
+      // Should be unreachable (ON DELETE SET NULL leaves elevationRequestId
+      // null rather than dangling), but fail closed rather than proceed blind.
+      return { httpStatus: 404, body: { error: 'elevation_not_found' } };
+    }
+
+    const deciderPerms = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        getUserPermissions(userId, {
+          partnerId: input.auth.partnerId ?? undefined,
+          orgId: elevationOrgId,
+        }),
+      ),
+    );
+    // hasPermission alone doesn't establish that the permission reaches THIS
+    // org: getUserPermissions falls back to the partner axis when the decider
+    // has no organization_users row for elevationOrgId, so a partner-scope
+    // decider with org_access='selected' that doesn't cover elevationOrgId
+    // would otherwise still pass. canAccessOrg closes that, mirroring the
+    // intentId/four_eyes branch's `canAccessOrg(deciderPerms, linkedIntent.orgId)`
+    // check below.
+    if (
+      !deciderPerms ||
+      !canAccessOrg(deciderPerms, elevationOrgId) ||
+      !hasPermission(deciderPerms, 'pam', 'approve')
+    ) {
+      return { httpStatus: 403, body: { error: 'pam_approve_required' } };
+    }
   }
 
   // Action intents (spec docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md
@@ -1013,13 +1080,23 @@ export async function decideApprovalRequest(
               // requester whose chat turn had already ended could never be told
               // what happened to it. In the same transaction as the status
               // change, so the record cannot disagree with the decision.
-              if (status === 'approved' || status === 'denied') {
+              if (status === 'approved') {
                 await tx.insert(intentOutbox).values({
                   intentId,
-                  eventType: status === 'approved' ? 'intent_approved' : 'intent_rejected',
+                  eventType: 'intent_approved',
                   // Ids only, no argument content (spec §3.2).
                   payload: { intentId, orgId: linkedIntent.orgId },
                 });
+              } else {
+                // #5205 W05 (#5210): same intentOutbox row this always wrote,
+                // plus (when task-linked) the task_outbox leg —
+                // `linkedIntent.taskId` is the pre-transaction snapshot,
+                // which is safe because task linkage is immutable.
+                await publishIntentTerminalOutbox(
+                  tx,
+                  { id: intentId, orgId: linkedIntent.orgId, taskId: linkedIntent.taskId },
+                  'intent_rejected',
+                );
               }
             }
           }

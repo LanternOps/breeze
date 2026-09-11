@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { NavigationContainer, DefaultTheme as NavDefaultTheme } from '@react-navigation/native';
-import { Alert, Pressable, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, Text, View } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import * as Sentry from '@sentry/react-native';
 
@@ -118,6 +118,23 @@ export function RootNavigator() {
           level: 'warning',
           tags: { area: 'approver-device-registration', reason: outcome.reason },
         });
+      } else if (outcome.status === 'registered' && !outcome.attested) {
+        // #1374 W05: registered, but NOT at L4. Two causes, both worth a
+        // signal because the phone otherwise looks fully set up:
+        //  - `attestation_rejected_by_server`: App Attest ran and the server
+        //    stored the row as `unattested` (wrong appattest-environment, stale
+        //    server, revoked cert) — /verify 201s either way.
+        //  - no reason on iOS: the native attestation module was not linked or
+        //    failed to load, so the legacy path ran on hardware that supports
+        //    L4. Expected in Expo Go; a regression in a dev-client/TestFlight
+        //    build.
+        const reason = outcome.reason ?? (Platform.OS === 'ios' ? 'legacy_path_on_ios' : null);
+        if (reason) {
+          Sentry.captureMessage('approver-device registered without attestation', {
+            level: 'warning',
+            tags: { area: 'approver-device-registration', reason },
+          });
+        }
       }
       dispatch(
         setApproverRegistration({

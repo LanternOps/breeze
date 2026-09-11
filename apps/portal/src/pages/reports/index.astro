@@ -1,0 +1,35 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import ReportRunList from '../../components/portal/ReportRunList';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+import { redirectToLoginAfter401 } from '../../lib/session';
+import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
+
+const response = await portalApi.getReportRuns(
+  { page: 1, limit: 20 },
+  buildServerApiConfig(Astro.request),
+);
+
+if (response.statusCode === 401) {
+  return redirectToLoginAfter401(Astro);
+}
+
+// enable_reports off 403s with PORTAL_REPORTS_DISABLED; bounce instead of
+// rendering a dead page. This used to target /devices, which is itself gated on
+// Self-service — with both off, one deliberate switch-off became two hops ending
+// in "We couldn't load your devices just now" (#4932). Other 403s (e.g. "Account
+// is not active") still fall through and render inline via the error prop.
+if (isPortalPageDisabled(response)) {
+  return redirectToPortalHomeAfterDisabled(Astro);
+}
+---
+
+<PortalLayout title="Reports">
+  <ReportRunList
+    client:load
+    initialRuns={response.data ?? []}
+    timezone={response.timezone ?? 'UTC'}
+    error={response.error}
+  />
+</PortalLayout>

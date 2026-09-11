@@ -319,6 +319,7 @@
       },
       "loading": "Chargement des rapports...",
       "never": "Jamais",
+      "visibleInPortal": "Visible dans le portail client",
       "newReport": "Nouveau rapport",
       "nextOccurrence": "Suite : {{next}}",
       "reportTypes": {
@@ -700,6 +701,7 @@
         "templateName": "Pack de conformité trimestriel",
         "value": "Valeur"
       },
+      "recipients": { "contacts": "Contacts de l’organisation", "legacy": "Anciennes adresses e-mail", "convert": "Convertir en contact", "added": "Destinataire du rapport ajouté", "removed": "Destinataire du rapport supprimé", "converted": "Adresse e-mail convertie en contact", "updateFailed": "Impossible de mettre à jour les destinataires du rapport", "convertFailed": "Impossible de convertir cette adresse e-mail", "mfaRequired": "La conversion d’un destinataire nécessite une authentification multifacteur. Activez la MFA dans votre profil, puis réessayez.", "loadFailed": "Impossible de charger les destinataires du rapport" },
       "previewTable": {
         "selectFields": "Sélectionnez les champs pour remplir la table d’aperçu."
       },
@@ -849,10 +851,6 @@
           "description": "Alertes principales, tendances de gravité et charge de travail en réponse.",
           "name": "Rapport de résumé des alertes"
         },
-        "billing_usage": {
-          "description": "Utilisation des licences, niveaux d’utilisation et résumés de rétrofacturation.",
-          "name": "Rapport de facturation/utilisation"
-        },
         "device_health": {
           "description": "CPU, la mémoire et les tendances de temps d’activité avec le score de santé des appareils.",
           "name": "Rapport sur l’état de l’appareil"
@@ -861,21 +859,9 @@
           "description": "KPI de haut niveau, posture de risque et tendances stratégiques pour le leadership.",
           "name": "Résumé exécutif"
         },
-        "patch_compliance": {
-          "description": "Couverture des correctifs, mises à jour en retard et statut de remédiation.",
-          "name": "Rapport de conformité des correctifs"
-        },
         "security_compliance_posture": {
           "description": "Preuves prêtes à l’assurance ou à la vérification : couverture EDR, chiffrement, pare-feu, correctifs, vulnérabilités, accès privilégié et intégrations de sécurité avec des rollups en pourcentage.",
           "name": "Posture de sécurité et conformité (Assurance)"
-        },
-        "sla_compliance": {
-          "description": "SLA adhésion, risque de violation et délais de réponse.",
-          "name": "SLA Rapport de conformité"
-        },
-        "technician_activity": {
-          "description": "Volume de tickets, interventions sur les appareils et rapidité de résolution.",
-          "name": "Rapport d’activité des techniciens"
         }
       },
       "title": "Modèles de rapports",

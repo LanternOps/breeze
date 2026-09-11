@@ -86,12 +86,22 @@ export type ActionIntentOriginPrincipalKind =
 // Widened in wave 2 (#3823): a DENIED or EXPIRED intent previously wrote no
 // outbox row at all, so a requester whose chat turn had ended could never be
 // told the outcome. Pinned by a CHECK in SQL — see
-// 2026-09-04-ai-agent-notifications.sql.
+// 2026-09-04-ai-agent-notifications.sql. Widened again for #4798: a
+// CANCELLED intent had the same gap — see
+// 2026-10-08-100300-intent-cancelled-outbox-event.sql. Widened again for
+// #5205 W05 (#5210, baseline §3.3): there was no way to say a task-linked
+// intent COMPLETED or FAILED — the release worker's `terminalizeIntent` and
+// the stale-executing reaper both published nothing at all, which would
+// strand a task in `waiting` until its deadline. See
+// 2026-10-14-100300-ai-operator-intent-terminal-events.sql.
 export const intentOutboxEventEnum = [
   'intent_created',
   'intent_approved',
   'intent_rejected',
   'intent_expired',
+  'intent_cancelled',
+  'intent_completed',
+  'intent_failed',
   'pam.desired_state_changed',
 ] as const;
 export type IntentOutboxEvent = (typeof intentOutboxEventEnum)[number];
@@ -219,13 +229,41 @@ export const actionIntents = pgTable(
      * scopeDeviceId's plain single-column FK to devices(id) (a Task-2
      * design choice per the P2-4 plan): a forged cross-tenant ticket
      * pointer is 23503 even under system context, not just an app-layer
-     * check. ON DELETE SET NULL is the tombstone transition; the
+     * check. ON DELETE SET NULL (scope_ticket_id) tombstones only the
+     * ticket pointer, preserving the NOT NULL org_id. The
      * immutability trigger (action_intents_block_content_update(),
      * migrations/2026-09-25-ai-agents-ticket-triage.sql) permits only the
      * same non-null -> NULL transition it already permits for
      * scopeDeviceId, never a retarget.
      */
     scopeTicketId: uuid('scope_ticket_id'),
+    /**
+     * AI Operator operation identity, reserved ON the intent (spec §6.5,
+     * #5205 W03). All three are NULL for every legacy/non-task intent and all
+     * three are set for a task-linked one — `action_intents_task_link_chk`
+     * enforces all-or-none; the guarantee that a task-linked admission never
+     * yields a null `operation_key` comes from the single task-aware creation
+     * path added in W04, not from this CHECK.
+     *
+     * The composite `(task_id, org_id) -> ai_operator_tasks(id, org_id)` FK is
+     * SQL-ONLY (migrations/2026-10-14-100000-ai-operator-thin-slice.sql):
+     * `aiOperatorTasks.ts` imports THIS module for its own operation->intent
+     * FK, so declaring the reverse edge in Drizzle would be a module cycle.
+     * Postgres has the constraint either way. Same technique as
+     * `reports.sourceAiAgentScheduleId`.
+     *
+     * There is deliberately NO unique index on (org_id, task_id,
+     * operation_key). `createActionIntent`'s ON CONFLICT names
+     * (org_id, idempotency_key), and Postgres suppresses conflicts on the
+     * named inference target only — a second arbiter would turn an idempotent
+     * replay into a bare 23505 (baseline H1/C6). W04 derives the task-linked
+     * `idempotencyKey` from task identity so `action_intents_org_idem_uniq`
+     * stays the single arbiter; sequential replay is guarded by
+     * `ai_operator_operations_org_task_op_uq` instead.
+     */
+    taskId: uuid('task_id'),
+    taskStepKey: text('task_step_key'),
+    operationKey: text('operation_key'),
     source: text('source').notNull().$type<ActionIntentSource>(),
     /**
      * The KIND of principal that created this intent, recorded as a durable
@@ -399,6 +437,9 @@ export const actionIntents = pgTable(
     idOrgUq: uniqueIndex('action_intents_id_org_uq').on(table.id, table.orgId),
     // P2-4: composite FK so a forged cross-tenant ticket pointer is 23503
     // even under system context — see scopeTicketId's column comment above.
+    // The migration restricts SET NULL to scope_ticket_id (PG15+); Drizzle
+    // cannot model the column list. Bare SET NULL would also null org_id
+    // and fail with 23502 (#4872).
     // Also DEFERRABLE INITIALLY IMMEDIATE in the migration (org-lifecycle
     // contract) — drizzle-orm's foreignKey() builder has no deferrable
     // option, so that detail lives in the migration only (same limitation as
@@ -417,6 +458,11 @@ export const actionIntents = pgTable(
     orgCreatedIdx: index('action_intents_org_created_idx').on(table.orgId, table.createdAt),
     orgExecutedIdx: index('action_intents_org_executed_idx')
       .on(table.orgId, table.executedAt).where(sql`${table.executedAt} IS NOT NULL`),
+    // NON-UNIQUE on purpose — see the taskId column comment. A lookup aid for
+    // "which intents belong to this task operation", never an ON CONFLICT
+    // arbiter.
+    taskOperationIdx: index('action_intents_task_operation_idx')
+      .on(table.orgId, table.taskId, table.operationKey).where(sql`${table.taskId} IS NOT NULL`),
   }),
 );
 

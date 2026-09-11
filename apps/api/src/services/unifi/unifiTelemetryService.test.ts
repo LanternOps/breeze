@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { reconcileTelemetry } from './unifiTelemetryService';
 import { unifiCollectors, unifiSiteMappings, unifiDeviceTelemetry, unifiClients, discoveredAssets } from '../../db/schema';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import type { DbExecutor } from './unifiConnectionService';
 
 type WriteRecord = { table: any; values: any; conflict?: any };
@@ -29,7 +30,19 @@ function scriptedDb(opts: {
     if (t === unifiClients) return opts.existingClients ?? [];
     if (t === discoveredAssets) {
       const strings = collectStrings(whereArgs);
-      const mac = Object.keys(opts.assetByMac ?? {}).find((key) => strings.includes(key));
+      // Model what Postgres would actually do, so the mock cannot flatter the
+      // code. assetByMac keys are the STORED mac_address values, verbatim —
+      // including non-canonical ones, which really do exist because several
+      // producers write this column and no DB constraint enforces a format.
+      // The query only sees a canonicalised stored value when it wraps the
+      // column in lower(replace(...)); otherwise the raw stored form is what is
+      // compared. Detect which by looking for that SQL fragment in the where
+      // clause. Without this, a lookup that dropped the normalisation would
+      // still "match" here, because the bound parameter is already canonical.
+      const queryCanonicalises = strings.some((s) => s.includes('lower(replace('));
+      const canonicalise = (v: string) => v.trim().toLowerCase().replace(/-/g, ':');
+      const mac = Object.keys(opts.assetByMac ?? {}).find((key) =>
+        strings.includes(queryCanonicalises ? canonicalise(key) : key));
       return mac ? [opts.assetByMac?.[mac]] : [];
     }
     return [];
@@ -230,6 +243,139 @@ describe('reconcileTelemetry', () => {
     // Stored canonical (lowercase, colon-separated) and linked despite the source casing.
     expect(clientInserts[0]!.values.mac).toBe('aa:bb:cc:dd:ee:ff');
     expect(clientInserts[0]!.values.discoveredAssetId).toBe('asset-9');
+  });
+
+  // #5087: until the agent's camelCase decode fix, devices always arrived with an
+  // EMPTY mac, so this branch never ran in production and its missing normalization
+  // was invisible. The client path normalizes both sides; the device path compared
+  // raw strings, so a controller reporting uppercase/hyphenated MACs would silently
+  // fail to link (and would write a non-canonical mac into discovered_assets).
+  it('normalizes device MAC (uppercase/hyphen) for asset linking and storage', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      mappings: [],
+      assetByMac: { 'aa:bb:cc:dd:ee:ff': { id: 'asset-9' } },
+    });
+
+    await reconcileTelemetry(db, {
+      collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true,
+      devices: [{ unifiDeviceId: 'd1', mac: 'AA-BB-CC-DD-EE-FF', name: 'sw1', raw: { ipAddress: '10.0.0.5' } }],
+      clients: [],
+    });
+
+    // Linked to the EXISTING asset rather than creating a duplicate one.
+    const deviceInserts = writes.inserts.filter((w) => w.table === unifiDeviceTelemetry);
+    expect(deviceInserts).toHaveLength(1);
+    expect(deviceInserts[0]!.values.discoveredAssetId).toBe('asset-9');
+    expect(writes.inserts.filter((w) => w.table === discoveredAssets)).toHaveLength(0);
+
+    // Stored canonical (lowercase, colon-separated), matching the client path.
+    expect(deviceInserts[0]!.values.mac).toBe('aa:bb:cc:dd:ee:ff');
+    expect(deviceInserts[0]!.conflict.set.mac).toBe('aa:bb:cc:dd:ee:ff');
+
+    // The enrich write must not poison discovered_assets.mac_address with the
+    // non-canonical source form.
+    const assetUpdate = writes.updates.find((w) => w.table === discoveredAssets);
+    expect(assetUpdate?.values.macAddress).toBe('aa:bb:cc:dd:ee:ff');
+  });
+
+  // Guards the SQL half of the fix: canonicalAssetMac. The test above only proves
+  // the incoming mac is canonicalised in JS — the bound parameter is already
+  // lowercase there, so a lookup comparing the STORED column raw would still
+  // match. Here the stored row is the non-canonical side, which only matches if
+  // the query itself normalises the column.
+  it('links a device when the STORED discovered_assets mac is non-canonical', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      mappings: [],
+      assetByMac: { 'AA-BB-CC-DD-EE-FF': { id: 'asset-legacy' } },
+    });
+
+    await reconcileTelemetry(db, {
+      collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true,
+      devices: [{ unifiDeviceId: 'd1', mac: 'aa:bb:cc:dd:ee:ff', name: 'sw1', raw: { ipAddress: '10.0.0.5' } }],
+      clients: [],
+    });
+
+    const deviceInserts = writes.inserts.filter((w) => w.table === unifiDeviceTelemetry);
+    expect(deviceInserts[0]!.values.discoveredAssetId).toBe('asset-legacy');
+    // A missed match would have created a duplicate asset row for the same host.
+    expect(writes.inserts.filter((w) => w.table === discoveredAssets)).toHaveLength(0);
+  });
+
+  // A device may legitimately report no mac; it must not degrade into '' (which
+  // would match a blank-mac row) and must not break the ip fallback.
+  it('handles a device with no mac without writing an empty-string mac', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      mappings: [],
+      assetInsertReturn: { id: 'asset-new-2' },
+    });
+
+    await reconcileTelemetry(db, {
+      collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true,
+      devices: [{ unifiDeviceId: 'd1', mac: '   ', name: 'sw1', raw: { ipAddress: '10.0.0.7' } }],
+      clients: [],
+    });
+
+    const deviceInserts = writes.inserts.filter((w) => w.table === unifiDeviceTelemetry);
+    expect(deviceInserts[0]!.values.mac).toBeNull();
+    // Still linked via the ip fallback.
+    expect(deviceInserts[0]!.values.discoveredAssetId).toBe('asset-new-2');
+    const assetInsert = writes.inserts.find((w) => w.table === discoveredAssets);
+    expect(assetInsert?.values.macAddress).toBeUndefined();
+  });
+
+  // #5213 — discovered_assets.source and the now-PARTIAL (org_id, ip_address)
+  // unique index.
+  it('stamps source=unifi on the insert side and repeats the partial-index predicate', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      mappings: [],
+      assetInsertReturn: { id: 'asset-new-3' },
+    });
+
+    await reconcileTelemetry(db, {
+      collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true,
+      devices: [{ unifiDeviceId: 'd1', mac: 'ab:cd', name: 'sw1', raw: { ipAddress: '10.0.0.8' } }],
+      clients: [],
+    });
+
+    const assetInsert = writes.inserts.find((w) => w.table === discoveredAssets)!;
+    expect(assetInsert.values.source).toBe('unifi');
+    // Insert side only — the conflict branch must never relabel an existing
+    // (possibly manual) row.
+    expect(assetInsert.conflict?.set).not.toHaveProperty('source');
+    // Without targetWhere, Postgres cannot infer the partial unique index and
+    // the upsert fails at runtime with 42P10. Assert the PREDICATE, not just
+    // the key: `targetWhere: sql`true`` would satisfy a key-presence check and
+    // still 42P10 against a real server.
+    expect(Object.keys(assetInsert.conflict ?? {})).toContain('targetWhere');
+    const predicate = new PgDialect().sqlToQuery(assetInsert.conflict.targetWhere).sql;
+    expect(predicate).toMatch(/"ip_address"\s+is not null/i);
+  });
+
+  // Metrics the agent could not collect arrive absent from the body. They must
+  // persist as NULL, not undefined — the UPDATE path especially, where drizzle
+  // drops undefined keys from SET and would otherwise preserve a stale 0 written
+  // by an older agent that still sent zeros.
+  it('persists uncollected device metrics as null on both insert and update', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      mappings: [],
+    });
+
+    await reconcileTelemetry(db, {
+      collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true,
+      devices: [{ unifiDeviceId: 'd1', mac: 'aa:bb:cc:dd:ee:ff', name: 'sw1', raw: {} }],
+      clients: [],
+    });
+
+    const insert = writes.inserts.find((w) => w.table === unifiDeviceTelemetry)!;
+    for (const key of ['uptimeSeconds', 'cpuPct', 'memPct', 'txBytes', 'rxBytes', 'numClients'] as const) {
+      expect(insert.values[key], `${key} on insert`).toBeNull();
+      expect(insert.conflict.set[key], `${key} on conflict update`).toBeNull();
+    }
   });
 
   it('reconciles device ip+mac into discovered_assets and stamps discoveredAssetId on the telemetry row', async () => {

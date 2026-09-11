@@ -304,9 +304,24 @@ export async function maybeDispatchEditionMigration(args: {
     if (!result.ok) {
       // Nothing reached the device: release the claim so a future process can
       // retry, but stop THIS process from retrying every 60s heartbeat.
-      failedDevices.add(device.id);
       await releaseClaim(device.id);
       claimed = false;
+      if (result.code === 'maintenance_suppressed') {
+        // #4919 — an ORDINARY stand-down, not a fault. The migration IS this
+        // device's update, so a window that suppresses scripts suppresses it
+        // too. Note what this branch does NOT do: it does not add the device
+        // to `failedDevices`. That set is a permanent (process-lifetime) veto,
+        // and a maintenance window is temporary — poisoning it here would mean
+        // a device that happened to heartbeat during a nightly window never
+        // migrated again until the API restarted. The released claim plus an
+        // un-poisoned device is exactly "try again next heartbeat". Reporting
+        // it to Sentry would page on an operator's own maintenance schedule.
+        console.log(
+          `[edition-auto-migrate] deferred for device ${device.id}: ${result.error}`,
+        );
+        return;
+      }
+      failedDevices.add(device.id);
       console.error(
         `[edition-auto-migrate] dispatch refused for device ${device.id} (${result.code}): ${result.error}`,
       );

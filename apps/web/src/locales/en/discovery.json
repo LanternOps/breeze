@@ -143,7 +143,7 @@
     "monitored": "Monitored",
     "title": "Discovered Assets",
     "tryAgain": "Try again",
-    "sameDeviceAs": "Same device as {{name}}"
+    "agentInstalled": "Agent"
   },
   "discoveryJobList": {
     "actions": {
@@ -479,6 +479,7 @@
       "selectSite": "Select site"
     },
     "paused": "Paused",
+    "scheduleBlocked": "Recurring scan paused: re-approval required",
     "permissionManage": "Mutating actions are disabled after permission check failure. Requires `devices:write`.",
     "placeholders": {
       "subnet": "192.168.1.0/24"
@@ -688,7 +689,12 @@
     "title": "Proxy to {{target}}",
     "throughAgent": "Through agent",
     "connect": "Connect",
-    "allowSelfSigned": "Allow self-signed certificate (common for printers, iLO/IPMI, switches)"
+    "allowSelfSigned": "Allow self-signed certificate (common for printers, iLO/IPMI, switches)",
+    "discoveredThisAsset": "discovered this asset",
+    "pickAgentHint": "Pick an agent on the same network as {{ip}}.",
+    "scheme": "Protocol",
+    "allowSelfSignedHint": "Skips certificate verification for this session only.",
+    "throughAgentHelp": "Traffic to this device is relayed through the selected Breeze agent, which must be on the same network."
   },
   "assetTypes": {
     "workstation": "Workstation",
@@ -702,6 +708,8 @@
     "iot": "IoT",
     "camera": "Camera",
     "nas": "NAS",
+    "website": "Website",
+    "service": "Service",
     "unknown": "Unknown",
     "patchPanel": "Patch Panel",
     "other": "Other"

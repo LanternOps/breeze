@@ -1,11 +1,11 @@
 ---
 title: Devices
-description: Work with the device list and device Info tab — customizable columns, filters, VPN presence, and battery status.
+description: Work with the device list and device Info tab — customizable columns, filters, VPN presence, battery status, and manual (hand-entered) assets.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-The **Devices** page is the home view for every managed endpoint — servers, workstations, laptops, and discovered network devices across all the organizations you can access. This page covers the device list itself (columns and filters) and the device detail **Info** tab, including VPN presence and battery status.
+The **Devices** page is the home view for every managed endpoint — servers, workstations, laptops, discovered network devices, and hand-entered manual assets across all the organizations you can access. This page covers the device list itself (columns and filters) and the device detail **Info** tab, including VPN presence and battery status.
 
 ---
 
@@ -24,8 +24,19 @@ The list shows a compact set of columns by default — hostname, class, organiza
 - **WAN IP** and **LAN IP** — the device's public (egress) address as seen from the server, and its local network interface address. Both are sortable; see [IP History](/features/ip-history/) for the timeline of address changes.
 - **Tags, last logged-in user, uptime, enrollment date**
 - **Desktop access** and **reliability score**
+- **Serial, asset tag, location** — inventory fields for manual assets (asset tag and location) and, where reported, serial number (manual assets and agent devices); see [Manual Assets](#manual-assets).
 
 Your column selection and order are remembered per browser, so each technician can tailor the list to their workflow. Most columns are sortable by clicking the header.
+
+### Agent Version Colouring
+
+With the **Agent version** column enabled, each device's reported version is tinted against the organization's *effective* target version -- an org-level pin if one is set, otherwise the globally promoted release (see [Pinning Agent and Watchdog Versions](/deploy/upgrades/#pinning-agent-and-watchdog-versions)). Hovering the value shows which:
+
+- **Matches** the effective version.
+- **Ahead** of it -- a newer build than the target.
+- **Behind** it -- due for an update.
+
+The version renders in plain text with no tint when the comparison can't be made -- a network or manual row that has never reported an agent version, or an organization whose effective version hasn't resolved yet.
 
 ### Filters
 
@@ -33,10 +44,102 @@ Above the list you can:
 
 - **Search** by display name or hostname.
 - Build **structured filters** with the filter toolbar — status, OS, role, organization, site, group, hardware attributes, and more, combinable into saved filter conditions.
-- Switch the **class facet** between All, Agent (endpoints running the Breeze agent), and Network (devices found by network discovery).
+- Switch the **class facet** between All, Agent (endpoints running the Breeze agent), Network (devices found by network discovery), and Manual (hand-entered assets — see [Manual Assets](#manual-assets)).
 - Filter by **VPN** when the VPN column is enabled (see below).
 
 ---
+
+## Manual Assets
+
+Not everything an MSP is responsible for runs an agent or answers a ping. A spare laptop in a drawer, a desk phone, a non-networked label printer, a loaner tablet out with a field tech — a **manual asset** records that equipment as plain inventory so it shows up in the same unified Devices list as everything else.
+
+### Discovered asset vs. manual asset
+
+The rule is simple: **does it have a network identity?**
+
+- **Has an IP address, hostname, or URL** — it's a discovered network asset (the **Network** class), found automatically by network discovery scanning and eligible for monitors, alerts, and topology. See [Network Discovery](/features/discovery/) if that's what you're looking for.
+- **Does not** — it's a manual asset. You type it in by hand, and it carries no reachability at all: it was never "online" or "offline", so its **Status** column shows **Unknown** rather than a misleading Offline.
+
+Manual assets deliberately carry no IP, MAC address, monitoring, alerts, or remote access — those are all agent/network concepts a hand-entered row cannot answer.
+
+### Adding a manual asset
+
+From the Devices page, open the **Add** menu next to the device list and choose **Add asset manually…** (the other item, **Install agent…**, is the existing agent-enrollment flow — the two share one menu since they're both ways of adding something to your fleet). Fill in:
+
+- **Site** (required) — defaults to the organization's only site when it has just one.
+- **Name** (required) — the label that appears everywhere else in the list.
+- **Asset type** — the same device-type list (printer, workstation, phone, etc.) discovered devices use.
+- **Manufacturer, model, serial number, asset tag, location** — free-text inventory fields. Location is a free-text field within the site ("Closet B, shelf 2"), not a structured address.
+- **Assigned to** — an organization contact (not a Breeze technician login) responsible for the asset.
+- **Tags** and **notes**.
+
+Serial numbers are not required to be unique — the same manufacturer's serial format can legitimately repeat across vendors. If you enter a serial that already exists in the organization, the form shows a non-blocking warning; it does not stop you from saving.
+
+### Editing, linking, and deleting
+
+Select a manual asset's row to reopen the same modal for editing. From there you can also **link** the record to an agent device or a discovered network asset once one shows up for that physical machine — for example, after IT installs the agent on a spare laptop that had been tracked manually. Linking is reversible (**Unlink** restores the manual record to the list) and never merges data destructively: the manual record's inventory fields (serial, asset tag, location, assigned contact, notes) stay attached and surface alongside the linked device or asset. A linked manual asset drops out of the Manual segment — the fleet is never double-counted — until you unlink it.
+
+**Delete** permanently removes a manual asset record (no agent to uninstall, so there's no separate "remove" step). It's available from the row actions and, for a manual-only selection, from the bulk actions menu.
+
+### Filtering and search
+
+The **Manual** segment (and its Devices-list count) is independent of network discovery being enabled — a manual asset still shows up even in an environment with no network-discovered devices at all. Search matches a manual asset's name, serial number, and asset tag. Structured filters apply only where they make sense for a manual asset: name, tags, asset type, organization, site, manufacturer, model, and serial number are supported; anything that depends on reachability or an agent (status, IP/MAC, last-seen, OS, agent version, metrics) is reported as *not applicable* rather than silently hiding the row without explanation.
+
+---
+
+## Removing and Restoring Devices
+
+Removing a device takes it out of the active fleet and stops monitoring it, without deleting its history. A removed device can be restored later, or permanently deleted.
+
+### Removing a device
+
+From a device's **Actions** menu (or the bulk actions bar after selecting several active devices) choose **Remove**. The confirm dialog asks one question: what should happen to the Breeze agent still sitting on the machine.
+
+- **Uninstall the Breeze agent** (the default) -- queues a durable uninstall command. An online device collects it within moments; an offline one runs it the next time it checks in, up to a self-hosted drain window (a few days by default) after which the command is cancelled as expired rather than running late.
+- **Leave the agent installed** -- the machine keeps running the agent, but it can no longer be managed until the device is restored.
+
+Removing a device also cancels its other pending queued work (scripts, patch installs, reboots, and so on) and immediately disconnects any live remote session and the agent's own connection.
+
+### The agent-uninstall badge
+
+Once a device is removed, its detail page shows a badge next to the **Removed** status (and, in compact form, in the device's **Settings** dialog) reporting what became of the queued uninstall:
+
+| Badge | Meaning |
+|---|---|
+| Agent uninstall queued | Waiting for the device to check in. |
+| Agent uninstall delivered | The agent received the command; teardown isn't confirmed yet. |
+| Agent uninstalled | Teardown confirmed complete. |
+| Uninstall expired | The device never checked in before the drain window closed -- it may still be installed. |
+| Agent uninstall failed / cancelled | The command errored, or was cancelled (for example, by a Restore). |
+| Agent was left installed | The device was removed with "Leave the agent installed" selected. |
+
+### Restoring and permanently deleting
+
+A removed device's **Actions** menu offers two choices in place of Remove:
+
+- **Restore** -- returns the device to the active fleet and cancels any still-pending agent uninstall.
+- **Delete permanently** -- deletes the device record and every record that references it (open tickets are kept but detached from the device). This cannot be undone.
+
+Selecting several removed devices at once in the device list adds bulk equivalents: **Restore Selected** applies immediately, while **Delete Permanently…** asks you to type the device count to confirm, then runs as a background job (up to 500 devices per run) with a progress indicator -- deleting a large batch touches too many records to finish inside a single request.
+
+<Aside type="tip">
+  To purge removed devices automatically after a retention window instead of deleting them by hand, add the **Device Lifecycle** feature to a configuration policy (**Fleet Management → Config Policies**). It defaults to off; turning it on and setting a number of days (1-3650) permanently deletes any device still removed after that many days, on a daily schedule. See [Configuration Policies](/features/configuration-policies/).
+</Aside>
+
+---
+
+## Billing Coverage
+
+The device **Overview** tab carries a **Billing** card answering "which contract line bills this device?". It needs **Contracts read** access and a partner-scoped login, so techs without billing access do not see it at all. It shows one of four things:
+
+- **Covered** -- one row per active contract line that bills the device, with the contract name, the line description, and *why* it matches: **Org-wide**, **This site**, **Role: Server**, or **Group: VIP Laptops**. Two contracts can both bill the same device; both rows show.
+- **Not billed by any line** -- no active contract line reaches this device.
+- **Not billed** -- the device is decommissioned or an ephemeral support-session machine, so it is excluded from billing entirely. Nothing is wrong.
+- **Coverage unknown** -- a device group on an active contract could not be evaluated (a broken filter, for example). The card says so and offers a retry rather than reporting the device as unbilled.
+
+The **Role** chip names the contract line's configured role set, not the individual device's role.
+
+Only **active** contracts count, and the answer is computed live from the same rule the billing run uses, so the card and the contract's own coverage warning can never disagree.
 
 ## VPN Presence
 
@@ -133,6 +236,48 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 | **Agent** | Agent and watchdog versions, status, last seen, enrollment date, system uptime, logged-in user. |
 | **Desktop Access** | macOS remote-desktop readiness (macOS devices only). |
 | **Tags** and **Custom Fields** | Organizational metadata, when present. |
+
+---
+
+## Queued Actions
+
+A laptop that is asleep, a workstation someone shut down for the weekend, a
+server on a maintenance reboot — Breeze no longer throws away work aimed at a
+device that happens to be offline. Instead the action is **queued** with a
+delivery deadline and handed to the device the moment it checks in again.
+
+The device page shows a **Queued actions** section listing everything currently
+waiting for that device: what the action is, who asked for it, when it was
+queued, and when it expires. Anything in the list can be **cancelled** from
+there if you no longer want it to run.
+
+Elsewhere in the product a waiting step reads **"Queued — device offline"**
+rather than Failed, so a nightly automation over a fleet of sleeping laptops no
+longer shows a wall of red. The trade-off is worth knowing: **work that used to
+fail fast now sits pending for up to a week.** If a step is only meaningful
+against a live device, set it to skip instead — see the offline behaviour control
+in [Automations](/features/automations/) and the patch-policy equivalent in
+[Patch Management](/features/patch-management/).
+
+Deadlines depend on the kind of work:
+
+| Kind of work | Waits for |
+|---|---|
+| Scripts, patch installs, patch scans, software installs, automation actions | **7 days** |
+| Inventory refreshes and other self-superseding config syncs | **24 hours** |
+| Reboot, shutdown, and scheduled restart | **24 hours** |
+
+A queued action that reaches its deadline without the device coming back expires
+undelivered and is reported as expired — it never sits pending forever, and it
+never runs late enough to surprise someone. Self-hosters can tune all three
+deadlines; see [Environment Variables](/deploy/environment/#feature-flags).
+
+<Aside type="note">
+  Interactive work is deliberately **not** queued. Anything where you are waiting
+  on a live answer — a terminal session, a remote-desktop connection, browsing
+  files, listing or controlling processes and services — still reports the device
+  as offline immediately rather than promising an answer later.
+</Aside>
 
 ---
 

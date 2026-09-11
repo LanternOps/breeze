@@ -138,6 +138,19 @@ export interface AccountingInvoicePayload {
 }
 
 /**
+ * What a void tells Breeze. A void BUMPS the Invoice's revision, so the stored
+ * SyncToken is stale the moment it returns — persisting the new one is what
+ * stops the next write starting with a guaranteed 5010. `null` when the
+ * provider's response carried no token; the caller then keeps what it had.
+ *
+ * (The "a void carries a payload too" note that used to sit above this block
+ * documents `AccountingVoidInvoicePayload`, not this type; it has moved there.)
+ */
+export interface InvoiceVoidResult {
+  syncToken: string | null;
+}
+
+/**
  * A void carries a payload too, so no accounting method sits outside the typed
  * currency contract (multi-currency §11). Deliberately wider arity than the
  * Phase-A sketch, which had `voidInvoice(conn, mapping)`.
@@ -155,6 +168,49 @@ export interface InvoicePushResult extends RemoteRef {
   /** QBO's TotalAmt from the response, major-unit string, null if absent. */
   remoteTotal: string | null;
 }
+
+/**
+ * One Breeze payment, as sent to the accounting provider (Phase D2).
+ *
+ * Deliberately carries NO payment-method reference: mapping Breeze's
+ * `payment_method` enum onto QuickBooks `PaymentMethod` entities needs a
+ * per-realm PaymentMethod list Breeze does not fetch, and a wrong rail on a
+ * money row is worse than no rail at all (spec "Out of scope").
+ */
+export interface AccountingPaymentPayload {
+  /** Breeze `invoice_payments.id` — the QBO `requestid` AND the PrivateNote marker. */
+  invoicePaymentId: string;
+  remoteCustomerId: string;
+  remoteInvoiceId: string;
+  /** Major-unit decimal string, 2dp. Converted to a JSON number at the wire only. */
+  amount: string;
+  /** The invoice's STAMPED currency. Asserted equal to the realm home currency
+   *  by the coordinator BEFORE this payload is built; never sent as a CurrencyRef. */
+  currencyCode: string;
+  /** ISO date (YYYY-MM-DD) from `invoice_payments.received_at`. */
+  txnDate: string;
+  /** `PaymentRefNum` — cheque number, Stripe `pi_…`. Already truncated to QBO's
+   *  21-char cap by the coordinator. NEVER an ownership key. */
+  reference: string | null;
+  /** `Breeze payment <uuid>` (accountingPaymentMarker.ts). The adoption marker.
+   *  Deliberately NOT generation-tagged — the pull adopts on this exact string. */
+  privateNote: string;
+  /** `accounting_entity_mappings.push_generation`: how many times this mapping
+   *  has been re-owned for a fresh create. 0 for a first push. The provider
+   *  folds it into the idempotency `requestid` so a re-push after a hand
+   *  deletion in QuickBooks is not answered from the 24h replay cache. */
+  pushGeneration: number;
+}
+
+export interface AccountingDeletePaymentPayload {
+  remotePaymentId: string;
+  /** The SyncToken Breeze last saw. Null forces the provider to read a fresh one. */
+  syncToken: string | null;
+}
+
+/** `already_absent` = QuickBooks reports the Payment does not exist. That is
+ *  SUCCESS for a delete: the desired end state is already true. */
+export type PaymentDeleteResult = 'deleted' | 'already_absent';
 
 export interface RealmSettings {
   homeCurrency: string | null;
@@ -179,14 +235,41 @@ export interface ChangeSetPaymentLine {
   paymentMethodName: string | null;
   /** PaymentRefNum (cheque number etc.); null when absent. */
   paymentRefNum: string | null;
+  /**
+   * The Breeze `invoice_payments.id` this QuickBooks Payment claims to be,
+   * parsed from `PrivateNote` by `parseBreezePaymentMarker` — null unless the
+   * WHOLE note matches. Set on a Payment Breeze itself created; the pull uses
+   * it to ADOPT a create whose response was lost (spec decision 3).
+   */
+  breezePaymentId: string | null;
 }
 
 export interface ChangeSet {
   /** The instant the CDC window ends. Becomes the connection's next cdc_cursor. */
   cursor: Date;
   payments: ChangeSetPaymentLine[];
-  /** QBO Payment ids the realm reports as status:"Deleted", plus voided (TotalAmt 0) payments. */
+  /**
+   * QBO Payment ids the realm reports as `status: "Deleted"` — a REAL deletion
+   * and nothing else. A voided or unapplied Payment still EXISTS in QuickBooks
+   * and belongs in `unappliedPayments`; classifying it here made the pull clear
+   * a Breeze-origin row's remote id, after which the invoice fan-out re-owned
+   * the mapping and pushed a SECOND QuickBooks Payment for money that moved
+   * once (final-review finding C1).
+   */
   deletedPayments: string[];
+  /**
+   * QBO Payment ids that are ALIVE but currently settle no invoice: a Payment
+   * QuickBooks voided (`TotalAmt` 0) or whose Invoice-linked lines were all
+   * removed (unapplied, left as customer credit).
+   *
+   * Delivered as a live payment with an EMPTY line set, so the applier routes it
+   * through `reverseStaleAllocations` with an empty keep-set. That reverses a
+   * QuickBooks-origin mirror row exactly as a deletion did (the money is no
+   * longer applied to the invoice), while a Breeze-origin row KEEPS its remote
+   * id and SyncToken — a later Breeze void still has to delete that Payment, and
+   * it cannot without them.
+   */
+  unappliedPayments: string[];
   /** QBO Invoice ids the realm reports as status:"Deleted" or voided. */
   deletedInvoices: string[];
   /**
@@ -236,7 +319,31 @@ export interface AccountingProvider {
     conn: AccountingConnection,
     invoice: AccountingVoidInvoicePayload,
     mapping: AccountingEntityMapping,
-  ): Promise<void>;
+  ): Promise<InvoiceVoidResult>;
+  /**
+   * CREATE ONLY — there is deliberately no `updatePayment`. Rewriting a
+   * QuickBooks Payment's amount would rewrite receipt history, and Intuit models
+   * a refund as a separate transaction; a Breeze partial refund is therefore
+   * recorded as a divergence rather than pushed (spec decision 9).
+   */
+  createPayment(conn: AccountingConnection, payment: AccountingPaymentPayload): Promise<RemoteRef>;
+  deletePayment(conn: AccountingConnection, payment: AccountingDeletePaymentPayload): Promise<PaymentDeleteResult>;
   reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet>;
   verifyWebhook(signatureHeader: string, rawBody: string, verifierToken: string): boolean;
 }
+
+/**
+ * The exact `accounting_entity_mappings.last_error` sentinel
+ * `markInvoiceDeletedRemotely` (accountingPaymentPull.ts) writes when the
+ * reconcile worker sees QuickBooks deleted/voided an invoice Breeze pushed
+ * (Phase D decision 2: never auto-resurrected). Written UNPREFIXED so it can
+ * never collide with the `PAYMENT_PULL_ERROR_PREFIX` bucket.
+ *
+ * Kept here — a leaf module with no other imports — rather than in
+ * accountingPaymentPull.ts (which imports invoiceService, which would need
+ * this constant too) or invoiceService.ts (imported by accountingPaymentPull.ts),
+ * either of which would create a cycle. Both the writer and every reader
+ * (accountingInvoicePush.ts's push guard, invoiceService.ts's summary) import
+ * this single constant instead of duplicating or string-matching the literal.
+ */
+export const INVOICE_REMOTE_DELETED_ERROR = 'Deleted in QuickBooks';

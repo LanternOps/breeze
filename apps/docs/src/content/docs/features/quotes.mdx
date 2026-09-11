@@ -11,6 +11,8 @@ Quotes turn the products and services in your [Product Catalog](/features/produc
 
 Quotes are **partner-scoped**: you can quote any of your customer organizations from one place.
 
+Quotes, along with the rest of the Billing section, are only available when the **Service Management** module is enabled for your account; see [Service Management mode](/reference/partner-management/#service-management-mode).
+
 ## The Quote Editor
 
 The editor is where you assemble and price a quote. Add lines from the shared **catalog picker** -- start typing to search your catalog by name or SKU -- or add a **manual line** for anything not in the catalog. The running subtotal, tax, and total update live as you edit. A **last-saved** indicator in the header shows when your changes were last persisted.
@@ -60,6 +62,27 @@ Any line can carry an **image**, so a hardware quote can show the product the cu
 A quote separates **one-time** charges (hardware, project work) from **recurring** charges (monthly or annual services) into distinct pricing tables, each with its own subtotal, so the customer sees "pay once" and "pay every month" as separate figures. Set a line's cadence with its **One-time / Monthly / Annual** control. If you add a line to the wrong table, use the line's **Move to…** action to shift it between the one-time and recurring tables without deleting and re-adding it.
 
 Each pricing table also has a **Show subtotal** option you can turn on or off per table. When enabled, the table's subtotal -- split by recurrence -- appears on both the in-app **Preview** and the **PDF** the customer sees, so you can choose which sections show a running figure.
+
+## Quoting by device set
+
+A **recurring** quote line can price a live device count instead of a fixed number. Turn on **Bill by device set** on a monthly or annual line and pick one of four:
+
+| Device set | Bills |
+|---|---|
+| Per device | Every device on the organization, optionally narrowed to one site |
+| Per device role | Only devices with the roles you choose (servers, workstations, firewalls...), optionally narrowed to one site |
+| Per device group | The members of one device group. Dynamic groups are evaluated live |
+| Per seat | The organization's active users |
+
+The quantity is counted by Breeze, not typed in. The quantity box disappears while a device set is on. Any of the four can also carry an **included quantity**: the line then bills that quantity every period even when the live count is lower, and you choose whether the units above it are billed at a separate rate or just reported for review.
+
+**The number on the quote is an estimate**, and the customer's document labels every such line as an estimated quantity that will be billed at the actual count each billing period. A brand-new customer with nothing enrolled yet quotes at zero, and the document still shows the line and the explanation. That is the point.
+
+Counts refresh when you add the line or edit its device-set or allowance settings, and when you press **Refresh counts** on a draft quote. The read-only estimate can show the current count without changing the quote. Counts deliberately do **not** refresh when the quote is sent or accepted: sending reports which lines have drifted and leaves the numbers alone, so a scheduled send can never reprice a document you already approved.
+
+A device set cannot be added to a one-time line or to a component of a bundle, and the **kind** of device set cannot be changed after the line is created — to switch a line from device roles to a device group, remove it and add it again. What the set contains stays editable: you can change which roles are included, or point the line at a different device group, at any time. A device group that a draft, sent, or viewed quote prices cannot be deleted until that line is removed.
+
+Accepting the quote creates a contract line of the matching type, with the price frozen at what the customer signed. From then on the contract counts for itself every billing period.
 
 ### Customer Bill-To ("Prepared for")
 

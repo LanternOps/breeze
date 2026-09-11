@@ -73,6 +73,9 @@ export interface Alert {
   message: string;
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   type: string;
+  /** Rule-template category (e.g. "Security", "Performance"); absent for
+   * alerts created without a rule. */
+  category?: string;
   deviceId?: string;
   deviceName?: string;
   acknowledged: boolean;
@@ -106,6 +109,15 @@ export interface Device {
   };
   createdAt: string;
   updatedAt: string;
+  /** Device Details v1 fields (#5140, decision #5117-2). */
+  osVersion?: string;
+  lastUser?: string;
+  /** Best current LAN address (ranked, see mobile.ts's #2503-style pick). */
+  lanIp?: string;
+  /** WAN address the agent last authenticated from. */
+  publicIp?: string;
+  openAlertCount?: number;
+  openTicketCount?: number;
 }
 
 export interface User {
@@ -152,10 +164,24 @@ export type LoginResult =
   | { kind: 'mfaRequired'; challenge: MfaChallenge }
   | { kind: 'mfaEnrollmentRequired'; handoff: MfaEnrollmentRequired };
 
-export interface ApiError {
-  message: string;
+/**
+ * A real `Error` subclass (mirrors `TimeEntryError` in `./timeEntries`) so
+ * `err instanceof Error` narrowing at call sites actually matches. Before
+ * #4747 this was a plain `interface` and every throw site threw an object
+ * literal cast `as ApiError`, so `instanceof Error` was always false and the
+ * server's message never reached the user (ChangePasswordSheet,
+ * errorReporting) — it silently fell back to a generic string instead.
+ */
+export class ApiError extends Error {
   code?: string;
   statusCode?: number;
+
+  constructor(params: { message: string; code?: string; statusCode?: number }) {
+    super(params.message);
+    this.name = 'ApiError';
+    this.code = params.code;
+    this.statusCode = params.statusCode;
+  }
 }
 
 interface ListResponse<T> {
@@ -268,6 +294,12 @@ type MobileAlertRecord = {
   acknowledgedBy?: string | null;
   resolvedAt?: string | null;
   type?: string;
+  /**
+   * The rule's alert-template category, joined server-side (#4535). Alerts
+   * created without a rule carry no category, hence nullable rather than
+   * always-present.
+   */
+  category?: string | null;
   deviceId?: string | null;
   deviceName?: string | null;
   device?: {
@@ -294,6 +326,23 @@ type MobileDeviceRecord = {
     diskUsage?: number;
   };
   siteName?: string;
+  // List endpoint (`GET /mobile/devices`) sends `organizationName`; the
+  // single-device endpoint (`GET /devices/:id`, devices/core.ts) sends the
+  // same value under `orgName`. Both are read in mapDevice() below (#5104).
+  organizationName?: string | null;
+  orgName?: string | null;
+  // Device Details v1 fields (#5140, decision #5117-2). Sent by the list
+  // endpoint (`GET /mobile/devices`, routes/mobile.ts) today — see that
+  // route's loadDeviceDetailsV1Fields for how each is computed. Absent
+  // (rather than null) on any response shape that doesn't send them yet.
+  // The counts are also explicitly `null` (never a false `0`) when the
+  // server-side count query itself failed — see loadDeviceDetailsV1Fields.
+  osVersion?: string | null;
+  lastUser?: string | null;
+  lanIp?: string | null;
+  publicIp?: string | null;
+  openAlertCount?: number | null;
+  openTicketCount?: number | null;
 };
 
 // Token management
@@ -520,8 +569,7 @@ async function requestWithPrefix<T>(
         assertCurrentSession(capturedGeneration);
       }
 
-      const error: ApiError = { message, code, statusCode: response.status };
-      throw error;
+      throw new ApiError({ message, code, statusCode: response.status });
     }
 
     const text = await response.text();
@@ -534,10 +582,10 @@ async function requestWithPrefix<T>(
 
 function assertCurrentSession(capturedGeneration: number): void {
   if (capturedGeneration === currentSessionGeneration()) return;
-  throw {
+  throw new ApiError({
     message: 'Response belongs to a superseded session',
     code: 'session_superseded',
-  } as ApiError;
+  });
 }
 
 async function request<T>(
@@ -575,6 +623,7 @@ function mapAlert(alert: MobileAlertRecord): Alert {
     message: alert.message,
     severity: normalizedSeverity,
     type: alert.type || 'alert',
+    category: alert.category ?? undefined,
     deviceId: alert.device?.id || alert.deviceId || undefined,
     deviceName: alert.device?.hostname || alert.deviceName || undefined,
     acknowledged: alert.status === 'acknowledged' || alert.status === 'resolved' || Boolean(alert.acknowledgedAt),
@@ -603,11 +652,21 @@ function mapDevice(device: MobileDeviceRecord): Device {
     status: mapStatus(device.status),
     lastSeen: device.lastSeenAt || undefined,
     organizationId: device.orgId || undefined,
+    organizationName: device.organizationName || device.orgName || undefined,
     siteId: device.siteId || undefined,
     siteName: device.siteName || undefined,
     metrics: device.metrics,
     createdAt,
-    updatedAt
+    updatedAt,
+    // Device Details v1 fields (#5140). `?? undefined` rather than `||`:
+    // openAlertCount/openTicketCount are legitimately 0, which `||` would
+    // discard the same as a missing field.
+    osVersion: device.osVersion ?? undefined,
+    lastUser: device.lastUser ?? undefined,
+    lanIp: device.lanIp ?? undefined,
+    publicIp: device.publicIp ?? undefined,
+    openAlertCount: device.openAlertCount ?? undefined,
+    openTicketCount: device.openTicketCount ?? undefined
   };
 }
 
@@ -635,14 +694,14 @@ export async function login(email: string, password: string): Promise<LoginResul
   if (response.mfaRequired) {
     const challenge = parseMfaChallengePayload(response);
     if (!challenge) {
-      throw { message: 'Invalid MFA challenge from server' } as ApiError;
+      throw new ApiError({ message: 'Invalid MFA challenge from server' });
     }
     return { kind: 'mfaRequired', challenge };
   }
 
   const token = response.tokens?.accessToken || response.accessToken;
   if (!response.user || !token) {
-    throw { message: response.error || 'Invalid login response' } as ApiError;
+    throw new ApiError({ message: response.error || 'Invalid login response' });
   }
 
   return {
@@ -665,7 +724,7 @@ export async function verifyMfa(
 
   const token = response.tokens?.accessToken || response.accessToken;
   if (!response.user || !token) {
-    throw { message: response.error || 'Invalid MFA response' } as ApiError;
+    throw new ApiError({ message: response.error || 'Invalid MFA response' });
   }
 
   return { token, user: response.user, registerGrant: response.authenticatorRegisterGrantId ?? null };
@@ -737,16 +796,16 @@ export async function refreshToken(): Promise<{ token: string }> {
     });
   const token = response.tokens?.accessToken || response.accessToken;
   if (!token) {
-    throw { message: 'Failed to refresh token' } as ApiError;
+    throw new ApiError({ message: 'Failed to refresh token' });
   }
   // Callers such as aiChat persist the returned token. Refuse to hand them a
   // response that began before logout advanced the generation, otherwise the
   // caller could reinstall access authority after local teardown completed.
   if (generation !== currentSessionGeneration()) {
-    throw {
+    throw new ApiError({
       message: 'Refresh response belongs to a superseded session',
       code: 'session_superseded',
-    } as ApiError;
+    });
   }
   return { token };
 }
@@ -1010,27 +1069,25 @@ export interface PagedResult<T> {
  * Fetch ONE page of a mobile list endpoint and report how much of the set it
  * represents.
  *
- * Deliberately one request, not a walk. Neither pagination mode on
- * `/mobile/devices` or `/mobile/alerts/inbox` can produce a trustworthy
- * full-set walk today:
+ * Deliberately one request, not a walk — even though the server-side bug that
+ * originally justified this (#3770) is now fixed: `/mobile/devices` and
+ * `/mobile/alerts/inbox` both compute `nextCursor` on every response,
+ * including a cold-start caller's first one, and — for `/devices` — the
+ * default (no `?page=`) request now runs on the immutable, NOT NULL
+ * `hostname` keyset instead of the mutable, nullable `last_seen_at` one, so a
+ * caller that walks `nextCursor` no longer risks the skip/dup hazards
+ * described below for that path. `/alerts/inbox` additionally used to
+ * truncate its cursor to millisecond precision, which could skip rows sitting
+ * between the truncated boundary and the real one; the cursor now carries the
+ * full microsecond value.
  *
- *  - CURSOR mode is unreachable. The routes compute `nextCursor` only inside
- *    `if (cursor)`, so a cold-start caller — which has no cursor to send — gets
- *    `nextCursor: null` on its first response and can never obtain the token
- *    for page two. The previous walk here treated that null as clean
- *    exhaustion, so it stopped after one page AND suppressed its own truncation
- *    warning.
- *  - OFFSET mode is reachable but skews. Both routes order by a MUTABLE key
- *    (`last_seen_at`, rewritten by every heartbeat), so rows reorder between
- *    page requests: page two can repeat rows page one already returned and
- *    never return the ones that moved ahead of the offset. A row-count check
- *    cannot detect that, because the duplicates make the count come out right.
- *
- * So the walk is not the fix — the honest claim is. One page, plus the server's
- * exact `total`, lets the caller say "showing N of M" instead of presenting a
- * sample as the whole set. Fixing the underlying keyset (the way
- * `routes/devices/core.ts` did, by keying cursor mode on the NOT NULL,
- * immutable `hostname`) is filed separately.
+ * None of that makes a client-side walk trustworthy on its own — it only
+ * removes the server-side reasons one couldn't be. Implementing the walk
+ * (retry/backoff, mid-walk auth/network failure, cancellation, resuming a
+ * mid-flight session) is real client work nobody has done, so this still
+ * fetches one page and reports honestly whether it's the whole set: the
+ * server's exact `total`, plus this page, lets the caller say "showing N of
+ * M" instead of presenting a sample as the whole thing.
  */
 async function fetchPage<TRow>(
   buildPath: (params: URLSearchParams) => string,
@@ -1102,20 +1159,45 @@ export async function getDevice(id: string): Promise<Device> {
   return mapDevice(response);
 }
 
+export interface FleetFindingCounts {
+  total: number;
+  byOrg: Record<string, number>;
+}
+
+/**
+ * Calls GET /api/v1/fleet/findings/counts — open fleet-hygiene finding
+ * counts per org, plus the fleet total (#5139 / #5117 decision 1). Folds
+ * fleet findings (VSS/Universal Print/Intel ME/SCEP failures, etc.) into the
+ * same "issue count" the AI's get_fleet_findings tool already reports, so
+ * the Systems tab shows the same picture. This route lives outside the
+ * `/mobile` surface, so it goes through the core `/api/v1` prefix like
+ * `getDevice` above, not the `/mobile`-prefixed `request()` helper.
+ */
+export async function getFleetFindingCounts(): Promise<FleetFindingCounts> {
+  return requestWithPrefix<FleetFindingCounts>('/fleet/findings/counts', API_CORE_PREFIX);
+}
+
 export async function getDeviceMetrics(id: string): Promise<Device['metrics']> {
+  // GET /devices/:id/metrics (apps/api/src/routes/devices/metrics.ts) returns
+  // buckets keyed `cpu`/`ram`/`disk` (aggregateMetricsByInterval), not
+  // `avgCpuPercent`/`avgRamPercent`/`avgDiskPercent` — those are the internal
+  // DB-row field names used before aggregation, never sent over the wire
+  // (#5104). Buckets are ordered ascending (queryMetricRollups /
+  // queryRawMetricBuckets both `orderBy(asc(...))`), so the last element is
+  // genuinely the most recent sample.
   const response = await requestWithPrefix<{
     data?: {
-      avgCpuPercent?: number;
-      avgRamPercent?: number;
-      avgDiskPercent?: number;
+      cpu?: number;
+      ram?: number;
+      disk?: number;
     }[];
   }>(`/devices/${id}/metrics`, API_CORE_PREFIX);
   const latest = response.data?.[response.data.length - 1];
   if (!latest) return undefined;
   return {
-    cpuUsage: latest.avgCpuPercent,
-    memoryUsage: latest.avgRamPercent,
-    diskUsage: latest.avgDiskPercent
+    cpuUsage: latest.cpu,
+    memoryUsage: latest.ram,
+    diskUsage: latest.disk
   };
 }
 

@@ -92,6 +92,18 @@ Click a run to expand it and view:
 
 Use the status filter dropdown to narrow results to Success, Failed, Partial, or Running.
 
+### Cancelling a run
+
+A **Cancel run** button appears on any run that is still `running`. It requires the `automations:write` permission — without it the button does not appear at all, not just disabled. For a partner-wide automation's run, cancelling also requires permission to manage partner-wide policies; a technician who can see the run but not cancel it sees a tooltip explaining why instead of the button.
+
+Clicking **Cancel run** asks for confirmation, then stops the run:
+
+- Actions not yet dispatched to any device are marked cancelled immediately.
+- `run_script` actions already sent to a device get a best-effort stop request; the confirmation reports how many were confirmed stopped versus only asked to stop, since a device may not acknowledge in time.
+- `execute_command` and `deploy_software` actions cannot be recalled once dispatched -- the shell command or software install runs to completion on the device regardless. These are listed separately as actions the cancel could not reach, so the run is never reported as fully stopped when one of these is still in flight.
+
+The run's status becomes `cancelled` once the stop is processed.
+
 ---
 
 ## Key Concepts
@@ -130,6 +142,7 @@ Use the status filter dropdown to narrow results to Success, Failed, Partial, or
 | `success` | All target devices executed their actions successfully |
 | `failed` | All actions failed, or the automation could not start |
 | `partial` | Some device targets succeeded and some failed; at least one of each |
+| `cancelled` | The run was stopped before all actions completed |
 
 <Aside>
   When filtering runs by status in the API, use `completed` (not `success`).
@@ -208,6 +221,10 @@ You can define multiple automations per feature link by adding additional items 
 ### Viewing policy-managed automations
 
 Automations created through Configuration Policies appear in `GET /automations` alongside legacy standalone automations. Policy-managed automations include a `configPolicyId` field in the response. Their runs include both `configPolicyId` and `configItemName`; the `automationId` field is `null` for policy-managed runs.
+
+<Aside type="tip">
+  Devices in an active maintenance window with automation suppression enabled are automatically excluded from a policy-managed automation's run, for both schedule and event triggers. This does not apply to standalone automations created directly on the Automations page. See [Automation and Patching Suppression](/features/maintenance-windows/#automation-and-patching-suppression) for the full behavior.
+</Aside>
 
 ---
 
@@ -297,7 +314,8 @@ Executes a script from the Breeze script library on each target device.
   "type": "run_script",
   "scriptId": "uuid",
   "parameters": { "param1": "value" },
-  "runAs": "system"
+  "runAs": "system",
+  "whenOffline": "queue"
 }
 ```
 
@@ -306,6 +324,9 @@ Executes a script from the Breeze script library on each target device.
 | `scriptId` | Yes | UUID of the script in the library |
 | `parameters` | No | Key-value pairs passed to the script at runtime |
 | `runAs` | No | Execution context: `system`, `user`, or `elevated`. Defaults to `system` |
+| `whenOffline` | No | What to do when a target device is offline: `queue` (default) delivers the run automatically on the device's next successful heartbeat, up to a 7-day deadline; `skip` fails that device immediately instead of waiting. |
+
+In the automation editor this appears as the **Run as** selector, with a **Script default** option that leaves the choice to the script itself. There is no target-session picker here, unlike a run started from a single device: an automation fans out across many machines, so naming one signed-in session would mean nothing.
 
 ### send_notification
 
@@ -355,7 +376,8 @@ Runs a raw shell command on each target device.
 {
   "type": "execute_command",
   "command": "systemctl restart nginx",
-  "shell": "bash"
+  "shell": "bash",
+  "whenOffline": "queue"
 }
 ```
 
@@ -363,6 +385,7 @@ Runs a raw shell command on each target device.
 |-------|----------|-------------|
 | `command` | Yes | The shell command to execute |
 | `shell` | No | Shell to use: `bash`, `powershell`, or `cmd`. Defaults based on device OS |
+| `whenOffline` | No | What to do when a target device is offline: `queue` (default) delivers the command automatically on the device's next successful heartbeat, up to a 7-day deadline; `skip` fails that device immediately instead of waiting. |
 
 ### deploy_software
 
@@ -475,6 +498,7 @@ The `?secret=` query-string parameter has been **removed entirely** — there is
 | GET | `/automations/runs/:runId` | Get run detail with logs |
 | POST | `/automations/:id/trigger` | Manually trigger a run |
 | POST | `/automations/:id/run` | Alias for trigger |
+| POST | `/automations/runs/:runId/cancel` | Cancel a running run (optional body: `graceSeconds`, integer 0-30, defaults to 5). Requires `automations:write`. |
 | POST | `/automations/webhooks/:id` | (Public) Inbound webhook trigger |
 
 ### Configuration Policy endpoints
@@ -514,5 +538,5 @@ Verify the URL is `/automations/webhooks/:id` where `:id` is the automation's UU
 **Run status is `partial`.**
 Retrieve the full run detail via `GET /automations/runs/:runId` and examine the `logs` array for entries with `level: "error"`. If `onFailure` was `continue` or `notify`, later actions may have still executed on devices that had earlier failures — review logs per `actionIndex` separately.
 
-**Script action failing.**
-The script referenced by `scriptId` must exist in the library and be accessible to the automation's organization. Target devices must be online when the run executes — offline devices produce a failure entry in the run logs.
+**Script/command action failing.**
+The script referenced by `scriptId` must exist in the library and be accessible to the automation's organization. For `run_script` and `execute_command` actions, an offline target device is not an automatic failure: by default (`whenOffline: queue`) the run is queued and delivered on the device's next successful heartbeat, up to a 7-day deadline. Set `whenOffline: skip` on the action if you want an offline device to produce an immediate failure entry in the run logs instead.

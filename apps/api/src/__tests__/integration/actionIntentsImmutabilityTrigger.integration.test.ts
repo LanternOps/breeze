@@ -229,6 +229,16 @@ describe('action_intents immutability trigger (live DB)', () => {
     // direction; the allowed tombstone (non-null -> NULL) is exercised
     // elsewhere once a Task A3/A6 fixture seeds a non-null starting value.
     scope_ticket_id: { scopeTicketId: randomUUID() },
+    // 2026-10-14-100200 (#5205 W04, #5209): AI Operator operation identity.
+    // Unconditional guards — no tombstone direction to permit, because
+    // `action_intents_task_org_fk` is ON DELETE RESTRICT. The seeded intent
+    // starts with all three NULL, so setting any one of them is the blocked
+    // direction, and the BEFORE UPDATE trigger raises before either the
+    // all-or-none CHECK (`action_intents_task_link_chk`) or the FK gets to
+    // complain — which is what makes a single-column patch a valid probe here.
+    task_id: { taskId: randomUUID() },
+    task_step_key: { taskStepKey: 'restart-service' },
+    operation_key: { operationKey: 'restart:spooler:1' },
   };
 
   it('has a behavioral case for every column on the trigger deny-list', () => {

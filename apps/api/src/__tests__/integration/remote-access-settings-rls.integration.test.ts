@@ -58,13 +58,23 @@ interface Fixture {
   orgBContext: DbAccessContext;
 }
 
-function orgContext(orgId: string): DbAccessContext {
+/**
+ * An ORG-scoped session. `currentPartnerId` mirrors what
+ * `buildDbAccessContext` (middleware/auth.ts) actually puts on an org token —
+ * the token's OWN partner, populated for every scope and distinct from
+ * `accessiblePartnerIds`, which stays empty for org scope. It is what the
+ * `*_partner_wide_select` read branch (#2468) keys on, so a test that omits it
+ * is exercising the AGENT context shape (currentPartnerId null), not an org
+ * token's, and any "org scope sees nothing" assertion under it is vacuous.
+ */
+function orgContext(orgId: string, currentPartnerId: string | null = null): DbAccessContext {
   return {
     scope: 'organization',
     orgId,
     accessibleOrgIds: [orgId],
     accessiblePartnerIds: [],
     userId: null,
+    currentPartnerId,
   };
 }
 
@@ -152,6 +162,9 @@ interface PartnerFixture {
   partnerAContext: DbAccessContext;
   partnerBContext: DbAccessContext;
   orgAContext: DbAccessContext;
+  /** Same org row, but a token whose OWN partner is partnerB — proves the
+   *  #2468 read branch is keyed on the caller's partner, not on the org. */
+  orgOtherPartnerContext: DbAccessContext;
 }
 
 async function seedPartnerFixture(): Promise<PartnerFixture> {
@@ -208,7 +221,9 @@ async function seedPartnerFixture(): Promise<PartnerFixture> {
       settingsPartnerA: { id: settingsPartnerA.id },
       partnerAContext: partnerContext(partnerA.id, [orgA.id]),
       partnerBContext: partnerContext(partnerB.id, []),
-      orgAContext: orgContext(orgA.id),
+      // Real org-token shape: carries partnerA as its OWN partner (#2468).
+      orgAContext: orgContext(orgA.id, partnerA.id),
+      orgOtherPartnerContext: orgContext(orgA.id, partnerB.id),
     };
   });
 }
@@ -377,13 +392,43 @@ describe('partner-owned policy consent settings (dual-axis)', () => {
     expect(readBack[0]?.mode).toBe('notify');
   });
 
-  // Org tokens never pass breeze_has_partner_access — RLS stays stricter than
-  // the app layer. Do not "fix" this by loosening the policy; a partner-wide
-  // row is visible only to callers holding partner-axis access.
-  runDb('org-scope token in the owning partner CANNOT see partner-wide child rows', async () => {
+  // #2468 flipped this. It used to assert an org token could not see the
+  // partner-wide child row at all — but the fixture's orgContext never set
+  // `currentPartnerId`, so it was asserting the AGENT context shape and passed
+  // for the wrong reason. `config_policy_remote_access_settings_partner_wide_select`
+  // (2026-10-05-110000-config-policy-partner-wide-select.sql) now lets an org
+  // token READ its OWN partner's partner-wide consent settings — which is what
+  // the request path previously bought with a nested system-context escalation.
+  // Org tokens still never pass `breeze_has_partner_access`, so writes are
+  // unchanged; that half is asserted below and exhaustively in
+  // configPolicyPartnerWideSelect.integration.test.ts.
+  runDb('org-scope token in the owning partner CAN read, but not write, partner-wide child rows', async () => {
     const { settingsPartnerA, orgAContext } = await seedPartnerFixture();
 
     const rows = await withDbAccessContext(orgAContext, () =>
+      db
+        .select({ id: configPolicyRemoteAccessSettings.id })
+        .from(configPolicyRemoteAccessSettings)
+        .where(eq(configPolicyRemoteAccessSettings.id, settingsPartnerA.id))
+    );
+    expect(rows.map((r) => r.id)).toEqual([settingsPartnerA.id]);
+
+    // FOR SELECT only: the UPDATE's target row is filtered out silently, so
+    // the row count — not an absence of throwing — is the real assertion.
+    const updated = await withDbAccessContext(orgAContext, () =>
+      db
+        .update(configPolicyRemoteAccessSettings)
+        .set({ sessionPromptMode: 'silent' })
+        .where(eq(configPolicyRemoteAccessSettings.id, settingsPartnerA.id))
+        .returning({ id: configPolicyRemoteAccessSettings.id })
+    );
+    expect(updated).toEqual([]);
+  });
+
+  runDb('org-scope token of a DIFFERENT partner still cannot see partner-wide child rows', async () => {
+    const { settingsPartnerA, orgOtherPartnerContext } = await seedPartnerFixture();
+
+    const rows = await withDbAccessContext(orgOtherPartnerContext, () =>
       db
         .select({ id: configPolicyRemoteAccessSettings.id })
         .from(configPolicyRemoteAccessSettings)

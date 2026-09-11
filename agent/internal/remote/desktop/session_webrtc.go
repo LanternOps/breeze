@@ -10,7 +10,6 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/breeze-rmm/agent/internal/remote/clipboard"
-	"github.com/breeze-rmm/agent/internal/remote/filedrop"
 )
 
 // SessionPolicy is the server-resolved, agent-enforced policy for a desktop
@@ -25,7 +24,14 @@ type SessionPolicy struct {
 	ClipboardHostToViewer bool
 	ClipboardViewerToHost bool
 	IdleTimeout           time.Duration // 0 = disabled
-	MaxDuration           time.Duration // 0 = disabled
+	// MaxDuration is clamped to MaxSessionDurationCap (12h) by both decoders
+	// and again by shouldStopForLifetime. 0 means the cap, NOT "unlimited".
+	MaxDuration time.Duration
+	// RevocationLease is the server-issued lease this session must keep alive
+	// to keep streaming. Required: a start without one is refused with
+	// ErrRevocationLeaseRequired, because the API is not in the peer-to-peer
+	// data path and the lease is its only way to end a live session.
+	RevocationLease *RevocationLease
 }
 
 // StartSession creates and starts a new remote desktop session.
@@ -130,45 +136,24 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		}
 	}()
 
-	// Session-lifetime enforcement (finding #2). The API server is NOT in the
-	// peer-to-peer media/input path, so these agent-side timers are the
-	// authoritative backstop bounding how long an operator can hold control —
-	// even when the server can't reach the agent to send stop_desktop. The
-	// goroutine exits on session.done (closed by Stop) and is intentionally not
-	// in session.wg, so the StopSession call below cannot deadlock on wg.Wait.
-	session.recordInputActivity()
-	if policy.MaxDuration > 0 || policy.IdleTimeout > 0 {
-		startWall := time.Now()
-		go func() {
-			ticker := time.NewTicker(15 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-session.done:
-					return
-				case <-ticker.C:
-					now := time.Now()
-					lastActivity := time.Unix(0, session.lastInputUnixNano.Load())
-					stop, reason := shouldStopForLifetime(now, startWall, lastActivity, policy)
-					if !stop {
-						continue
-					}
-					if reason == "idle_timeout_exceeded" {
-						slog.Warn("Desktop session idle timeout, stopping",
-							"session", sessionID, "idleFor", now.Sub(lastActivity).Round(time.Second))
-					} else {
-						slog.Warn("Desktop session reached max duration, stopping",
-							"session", sessionID, "maxDuration", policy.MaxDuration)
-					}
-					m.StopSession(sessionID)
-					if m.OnSessionStopped != nil {
-						go m.OnSessionStopped(sessionID)
-					}
-					return
-				}
-			}
-		}()
+	// A start with no revocation lease is refused. The API is not in the
+	// peer-to-peer media/input path, so the lease is its ONLY way to end a live
+	// session once the operator's authorization changes; running without one
+	// would be an unrevokable remote-control session.
+	if policy.RevocationLease == nil {
+		return "", ErrRevocationLeaseRequired
 	}
+	session.leaseState = newRevocationLeaseState(*policy.RevocationLease)
+
+	// Session-lifetime + revocation-lease enforcement (finding #2). The API
+	// server is NOT in the peer-to-peer media/input path, so these agent-side
+	// timers are the authoritative backstop bounding how long an operator can
+	// hold control — even when the server can't reach the agent to send
+	// stop_desktop. The goroutine exits on session.done (closed by Stop) and is
+	// intentionally not in session.wg, so the StopSession call below cannot
+	// deadlock on wg.Wait.
+	session.recordInputActivity()
+	go m.watchSessionLifetime(sessionID, session, policy, watchdogTickInterval)
 
 	// Create H264 video track
 	videoTrack, err := webrtc.NewTrackLocalStaticSample(
@@ -276,9 +261,20 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	if probeErr != nil {
 		// The display is inaccessible (disconnected Windows session, no input
 		// desktop, GDI handle churn). Abort instead of returning a WebRTC
-		// answer that will stream zero frames. The defer at line 80 calls
-		// StopSession which closes the capturer.
-		return "", fmt.Errorf("screen capture failed (display may be unavailable): %w", probeErr)
+		// answer that will stream zero frames. StartSession's own deferred
+		// cleanup calls StopSession, which closes the capturer.
+		//
+		// describeCaptureFailure appends the last error the capturer swallowed
+		// as a nil frame, which is the only place a GDI-fallback failure is
+		// recorded. Without it the technician sees probeCapture's generic "no
+		// frame after N attempts" and nothing else: #5284 spent an entire
+		// investigation on a Winlogon console whose actual failure — a Win32
+		// error inside GetDIBits, every single frame — reached the dashboard as
+		// "This remote session has ended" and was legible only in the endpoint's
+		// own helper log. This error string is what the API stores in
+		// remote_sessions.errorMessage and the viewer shows verbatim.
+		return "", fmt.Errorf("screen capture failed (display may be unavailable): %w",
+			describeCaptureFailure(capturer, probeErr))
 	}
 	pw, ph := probeImg.Rect.Dx(), probeImg.Rect.Dy()
 	if pw != w || ph != h {
@@ -423,13 +419,12 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		slog.Info("Clipboard sync disabled by policy", "session", sessionID)
 	}
 
-	// Create filedrop DataChannel
-	filedropDC, err := peerConn.CreateDataChannel("filedrop", nil)
-	if err != nil {
-		slog.Warn("Failed to create filedrop DataChannel", "session", sessionID, "error", err.Error())
-	} else if filedropDC != nil {
-		session.fileDropHandler = filedrop.NewFileDropHandler(filedropDC, "")
-	}
+	// Do not register a filedrop channel. Desktop media and input are peer to
+	// peer, so the API cannot authorize or centrally audit file writes that
+	// arrive over an ad-hoc data channel. The legacy handler also has no
+	// first-party viewer consumer or completed-file owner. A future transfer
+	// feature must start from an explicit server-resolved capability and add
+	// durable audit, quota, acknowledgement and cleanup semantics end to end.
 
 	// Create cursor DataChannel — streams remote cursor position to viewer for
 	// instant cursor rendering independent of video frame rate.
@@ -607,7 +602,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 					logSelectedPair("disconnect-timeout")
 					m.StopSession(sessionID)
 					if m.OnSessionStopped != nil {
-						go m.OnSessionStopped(sessionID)
+						// #5300: carries the no-video watchdog's swallowed
+						// capture error through, when StopWithReason already
+						// closed peerConn and landed the session here.
+						go m.OnSessionStopped(sessionID, session.LastStopReason())
 					}
 				}
 			})
@@ -616,7 +614,8 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			logSelectedPair("failed-or-closed")
 			m.StopSession(sessionID)
 			if m.OnSessionStopped != nil {
-				go m.OnSessionStopped(sessionID)
+				// #5300: same rationale as the disconnect-timeout branch above.
+				go m.OnSessionStopped(sessionID, session.LastStopReason())
 			}
 		}
 	})

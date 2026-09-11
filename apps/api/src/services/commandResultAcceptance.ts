@@ -1,5 +1,6 @@
 import { and, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
 import { deviceCommands } from '../db/schema';
+import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from './commandTypes';
 
 /**
  * #3607 — which `device_commands` rows may still accept a result from the agent.
@@ -47,6 +48,23 @@ export type AcceptedCommandResultStatus = (typeof ACCEPTED_COMMAND_RESULT_STATUS
 export const SERVER_TIMEOUT_RESULT_STATUS = 'timeout';
 
 /**
+ * Marker written into `device_commands.result.status` (D20) when the stored
+ * "completed" result is actually just a queue-admission/started ack for a
+ * queued-workload command (mssql_backup, hyperv_backup) — never the top-level
+ * `device_commands.status` column, which stays 'completed' so
+ * `waitForCommandResult`'s poll (commandQueue.ts) returns promptly with the
+ * ack rather than blocking for the whole backup.
+ *
+ * Mirrors SERVER_TIMEOUT_RESULT_STATUS: a row that LOOKS terminal may still
+ * accept one more agent result, discriminated by this string rather than by
+ * the top-level status column alone. Scoped to
+ * QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES in both predicates below — narrow on
+ * purpose, so an unrelated command type can never be reopened just because
+ * its result payload happens to contain this string.
+ */
+export const BACKUP_QUEUE_ACK_RESULT_STATUS = 'queue_ack';
+
+/**
  * Drizzle predicate for "this row may still accept an agent result".
  *
  * Use it in BOTH the ingest lookup and the terminal compare-and-set. Applying
@@ -59,20 +77,38 @@ export function commandAcceptsAgentResultCondition(): SQL {
       eq(deviceCommands.status, 'failed'),
       sql`${deviceCommands.result}->>'status' = ${SERVER_TIMEOUT_RESULT_STATUS}`,
     ),
+    and(
+      eq(deviceCommands.status, 'completed'),
+      inArray(deviceCommands.type, [...QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES]),
+      sql`${deviceCommands.result}->>'status' = ${BACKUP_QUEUE_ACK_RESULT_STATUS}`,
+    ),
   )!;
 }
 
 /**
  * In-memory twin of {@link commandAcceptsAgentResultCondition}, for the REST
  * route's pre-read short-circuit which already holds the row.
+ *
+ * `type` is optional so every existing call keeps its old (pre-D20) meaning
+ * when omitted — the queue-ack branch never fires without it, matching the
+ * SQL twin's inArray(deviceCommands.type, ...) scoping.
  */
 export function commandAcceptsAgentResult(
   status: string | null | undefined,
   result: unknown,
+  type?: string | null,
 ): boolean {
   if (!status) return true;
   if ((ACCEPTED_COMMAND_RESULT_STATUSES as readonly string[]).includes(status)) return true;
-  if (status !== 'failed') return false;
   const resultStatus = (result as Record<string, unknown> | null | undefined)?.status;
-  return resultStatus === SERVER_TIMEOUT_RESULT_STATUS;
+  if (status === 'failed' && resultStatus === SERVER_TIMEOUT_RESULT_STATUS) return true;
+  if (
+    status === 'completed' &&
+    resultStatus === BACKUP_QUEUE_ACK_RESULT_STATUS &&
+    !!type &&
+    (QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES as readonly string[]).includes(type)
+  ) {
+    return true;
+  }
+  return false;
 }

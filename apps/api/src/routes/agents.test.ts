@@ -33,6 +33,15 @@ vi.mock('../services/auditEvents', () => ({
 vi.mock('../services/tenantStatus', () => ({
   getActiveOrgTenant: vi.fn(async () => ({ orgId: 'org-active', partnerId: 'partner-active' })),
 }));
+vi.mock('../services/partnerDeviceCapacity', () => ({
+  admitPartnerDeviceCapacity: vi.fn(async (_tx: unknown, input: { expectedPartnerId: string }) => ({
+    allowed: true,
+    partnerId: input.expectedPartnerId,
+    maxDevices: null,
+    activeCount: null,
+  })),
+  PartnerDeviceCapacityError: class PartnerDeviceCapacityError extends Error {},
+}));
 vi.mock('../services/filesystemAnalysis', () => ({
   parseFilesystemAnalysisStdout: vi.fn(() => ({ summary: { filesScanned: 1 } })),
   saveFilesystemSnapshot: vi.fn(() => Promise.resolve({ id: 'snapshot-1' })),
@@ -74,6 +83,16 @@ const defaultUpdateChain = () => ({
     }))
   }))
 });
+
+function mockResolvedEnrollmentPartner(partnerId = 'partner-123') {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([{ partnerId }]),
+      }),
+    }),
+  } as any);
+}
 
 vi.mock('../db', () => ({
   db: {
@@ -150,6 +169,10 @@ vi.mock('../db/schema', () => ({
     'workstation', 'server', 'printer', 'router', 'switch', 'firewall',
     'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown',
   ] },
+  // unifiTelemetryService.ts builds a canonical-MAC sql fragment from
+  // discoveredAssets.macAddress at module load (#5087), and this suite reaches
+  // it transitively, so the partial mock must expose the column too.
+  discoveredAssets: { id: 'id', macAddress: 'mac_address' },
 }));
 
 vi.mock('../services/enrollmentKeySecurity', async () => {
@@ -356,6 +379,8 @@ describe('agent routes', () => {
         })
       } as any);
 
+      mockResolvedEnrollmentPartner();
+
       // Then checks for colliding devices:
       // db.select().from(devices).where(...).orderBy(devices.createdAt) — every
       // match, oldest first, no `.limit` (#2764).
@@ -486,6 +511,8 @@ describe('agent routes', () => {
         })
       } as any);
 
+      mockResolvedEnrollmentPartner();
+
       // Colliding-device lookup: `.orderBy(devices.createdAt)`, no `.limit` (#2764).
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -598,6 +625,8 @@ describe('agent routes', () => {
           })
         })
       } as any);
+
+      mockResolvedEnrollmentPartner();
 
       const tx = {
         insert: vi.fn().mockReturnValue({
@@ -1445,6 +1474,17 @@ describe('agent routes', () => {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue(undefined)
+          })
+        }),
+        // No existing device_patches row for this device+patch — the
+        // installed-path version-aware flip (#2736) falls back to the global
+        // patches.version, which this fixture (installedAt-null handling) does
+        // not otherwise exercise.
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
           })
         }),
         insert: vi.fn()

@@ -574,6 +574,38 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #2787: async bulk permanent delete of removed devices.
+    //
+    // socket-owner because the closure contract test says so, not by judgement:
+    // deviceBulkPurge -> services/deviceLifecycle -> services/deviceDeletion
+    // reaches routes/agentWs.ts and services/agentCommandAwait.ts. Same class
+    // as orgMerge above. Do NOT flip this to 'global' without re-running
+    // workerEntrypointClosure.contract.test.ts — it is the mechanical authority
+    // and it fails the build on a wrong placement.
+    name: 'deviceBulkPurge',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/deviceBulkPurge');
+      return { init: m.initializeDeviceBulkPurgeWorker, shutdown: m.shutdownDeviceBulkPurgeWorker };
+    },
+  },
+  {
+    // #2787 item 4: daily purge of removed devices past their org's
+    // device_lifecycle retention window.
+    //
+    // socket-owner because the closure contract test says so, not by judgement:
+    // removedDevicePurge -> services/deviceLifecycle -> services/deviceDeletion
+    // reaches routes/agentWs.ts and services/agentCommandAwait.ts — the same
+    // chain that puts deviceBulkPurge above in this class. Do NOT flip this to
+    // 'global' without re-running workerEntrypointClosure.contract.test.ts.
+    name: 'removedDevicePurge',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/removedDevicePurge');
+      return { init: m.initializeRemovedDevicePurge, shutdown: m.shutdownRemovedDevicePurge };
+    },
+  },
+  {
     name: 'desktopSessionFinalization',
     placement: 'socket-owner',
     load: async () => {
@@ -790,6 +822,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #4630 — dynamic device group membership re-evaluation. socket-owner, not
+    // global: its closure reaches jobs/peripheralJobs.ts (via
+    // services/groupMembership.ts), which is itself socket-owner. Verified by
+    // workerEntrypointClosure.contract.test.ts, not by guessing.
+    name: 'deviceGroupJobs',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/deviceGroupJobs');
+      return { init: m.initializeDeviceGroupJobs, shutdown: m.shutdownDeviceGroupJobs };
+    },
+  },
+  {
     name: 'browserSecurityWorker',
     placement: 'global',
     load: async () => {
@@ -933,6 +977,42 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/intentOutboxPublisher');
       return { init: m.initializeIntentOutboxPublisher, shutdown: m.shutdownIntentOutboxPublisher };
+    },
+  },
+  {
+    // #5205 W05 (#5210): drains ai_operator_task_outbox into the
+    // ai-operator-coordinator queue W06's coordinator will consume. Same
+    // placement/precedent as intentOutboxPublisher above.
+    name: 'aiOperatorTaskOutboxPublisher',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiOperatorTaskOutboxPublisher');
+      return {
+        init: m.initializeAiOperatorTaskOutboxPublisher,
+        shutdown: m.shutdownAiOperatorTaskOutboxPublisher,
+      };
+    },
+  },
+  {
+    // #5205 W06 (#5211): consumes the `ai-operator-coordinator` queue the W05
+    // publisher feeds, plus its own 15s reconciler tick.
+    name: 'aiOperatorTaskWorker',
+    // SOCKET-OWNER, not global — same placement as `intentReleaseWorker` just
+    // below, and for the same reason. The coordinator's verification step
+    // issues a real `list_services` device read (`actVerify.ts`), so its
+    // runtime import closure reaches `routes/agentWs.ts` via
+    // `services/agentCommandAwait.ts`. On a non-socket-owner process that
+    // reach fails SILENTLY rather than loudly, which would quietly turn every
+    // criterion evaluation `inconclusive` and hand off tasks that had in fact
+    // recovered. Caught by `workerEntrypointClosure.contract.test.ts`, which
+    // is exactly what that contract exists for (#4086).
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/aiOperatorTaskWorker');
+      return {
+        init: m.initializeAiOperatorTaskWorker,
+        shutdown: m.shutdownAiOperatorTaskWorker,
+      };
     },
   },
   {
@@ -1173,6 +1253,22 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/aiAgentGraduationWorker');
       return { init: m.initializeAiAgentGraduationWorker, shutdown: m.shutdownAiAgentGraduationWorker };
+    },
+  },
+  {
+    // SEC-142/143 (review B3): reclaims durable AI budget reservations whose
+    // TTL passed without settling. `global` — the sweep is one UPDATE with no
+    // socket-local state, and leaving it to the socket owner would mean a
+    // worker-only deployment never reclaims a held cap. Its module closure
+    // reaches only `db`, `services/redis` and `services/sentry`.
+    name: 'aiBudgetReservationSweep',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiBudgetReservationSweep');
+      return {
+        init: m.initializeAiBudgetReservationSweep,
+        shutdown: m.shutdownAiBudgetReservationSweep,
+      };
     },
   },
 ];

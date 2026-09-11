@@ -62,6 +62,17 @@ export interface InvoiceSummary {
   termsAndConditions: string | null;
   sellerSnapshot: SellerSnapshot | null;
   createdAt: string;
+  /**
+   * Last write to the invoice row. Always present on the detail payload (the
+   * API returns the whole row), but optional here because it was undeclared
+   * until now and list projections may omit it. Used by AccountingSyncCard as
+   * the only sub-minute "was this just issued?" signal the payload has —
+   * `issueDate` is a DATE and `sentAt` is null for an Issue that sent no
+   * email.
+   */
+  updatedAt?: string | null;
+  /** null identifies an invoice created before device evidence was recorded. */
+  evidenceVersion?: number | null;
 }
 
 export interface InvoiceLine {
@@ -81,6 +92,19 @@ export interface InvoiceLine {
   lineTotal: string;
   isUnapprovedTime: boolean;
   sortOrder: number;
+  /** Evidence rows attached to this line, populated on invoice detail reads. */
+  deviceCount: number;
+}
+
+export interface InvoiceLineDevice {
+  /** The immutable evidence-row id; use this as the React key. */
+  id: string;
+  /** null when the source device was deleted or moved out of scope. */
+  deviceId: string | null;
+  hostname: string;
+  deviceRole: string;
+  siteId: string | null;
+  countedAs: 'included' | 'overage' | 'flagged';
 }
 
 // A line's title falls back to its description for legacy lines created before
@@ -120,6 +144,21 @@ export interface AccountingSyncSummary {
   lastSyncedAt: string | null;
   lastError: string | null;
   remoteDocNumber: string | null;
+  /**
+   * True when the API found the `markInvoiceDeletedRemotely` marker (#4544)
+   * on this mapping row — QuickBooks deleted or voided an invoice Breeze
+   * previously pushed, and Phase D deliberately never auto-resurrects it.
+   * Computed server-side (invoiceService.ts) from the exact sentinel
+   * `lastError` string, so this component never has to string-match
+   * `lastError` itself to decide whether "Push to QuickBooks" is safe.
+   * Optional and defaults to `false` (AccountingSyncCard.tsx) — absent on an
+   * older API response (deploy skew), same convention as `stripeConnected`
+   * above. This is a UI hint only: the API's push route enforces the same
+   * guard server-side (409 `remote_deleted`) regardless of what this field
+   * says, so a stale/missing value here degrades to "the button renders and
+   * the click gets rejected," never to a duplicate push actually landing.
+   */
+  remoteDeleted?: boolean;
 }
 
 export interface InvoiceDetail {
@@ -156,6 +195,13 @@ export interface InvoicePayment {
    *  are not hand-voidable either — a Breeze-side reverse would not touch the
    *  books and the next reconcile would pull the payment straight back in. */
   source?: 'stripe' | 'manual' | 'quickbooks';
+  /** QuickBooks push state for a BREEZE-ORIGIN payment (Phase D2). Null when the
+   *  payment has no QuickBooks mapping, and always null for `source: 'quickbooks'`
+   *  (that badge already says QuickBooks owns the row). */
+  accountingSync?: {
+    status: 'pending' | 'synced' | 'error' | 'synced_with_tax_variance';
+    lastError: string | null;
+  } | null;
 }
 
 export const STATUS_LABELS: Record<InvoiceStatus, string> = {

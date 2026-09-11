@@ -643,10 +643,20 @@ func (h *DarwinInputHandler) SendMouseScroll(x, y int, delta int) error {
 }
 
 func (h *DarwinInputHandler) SendKeyPress(key string, modifiers []string) error {
+	return h.sendKeyPress(key, modifiers, nil)
+}
+
+// sendKeyPress is SendKeyPress plus the viewer's Caps Lock assertion. capsLock
+// is nil for callers that have no state to assert (the exported interface
+// method, the AI computer-use paths), and those behave exactly as before.
+func (h *DarwinInputHandler) sendKeyPress(key string, modifiers []string, capsLock *bool) error {
 	if !h.inputAvailable {
 		return errInputUnavailable
 	}
 	key = normalizeKeyName(key)
+	if suppressCapsLockKey(key, capsLock) {
+		return nil
+	}
 	keycode, ok := keyNameToKeycode[key]
 	if !ok {
 		return fmt.Errorf("unknown key: %s", key)
@@ -657,7 +667,12 @@ func (h *DarwinInputHandler) SendKeyPress(key string, modifiers []string) error 
 	// held from an earlier event bleed in, which is the stuck-Shift uppercasing
 	// of issue #4089. The IOHIDPostEvent path already passes flags on every
 	// event, so it needs no equivalent.
-	flags := modifiersToFlags(modifiers)
+	//
+	// modifiersToFlags never carries AlphaShift, so without the fold below a
+	// key_press would strip Caps Lock while a bare key_down (which inherits the
+	// ambient flags) kept it — the inconsistent casing reported in #3595.
+	rawFlags, _ := applyCapsLockFlag(int(modifiersToFlags(modifiers)), capsLock)
+	flags := C.int(rawFlags)
 	switch {
 	case h.shouldUseHID():
 		C.hidKeyDown(C.int(keycode), flags)
@@ -708,43 +723,79 @@ func (h *DarwinInputHandler) TypeChar(ch rune) error {
 }
 
 func (h *DarwinInputHandler) SendKeyDown(key string) error {
+	return h.sendKeyDown(key, nil)
+}
+
+func (h *DarwinInputHandler) sendKeyDown(key string, capsLock *bool) error {
 	if !h.inputAvailable {
 		return errInputUnavailable
 	}
 	key = normalizeKeyName(key)
+	if suppressCapsLockKey(key, capsLock) {
+		return nil
+	}
 	keycode, ok := keyNameToKeycode[key]
 	if !ok {
 		return fmt.Errorf("unknown key: %s", key)
 	}
+	flags, authoritative := applyCapsLockFlag(0, capsLock)
+	setFlags := capsLockSetFlags(authoritative)
 	switch {
 	case h.shouldUseHID():
-		C.hidKeyDown(C.int(keycode), 0)
+		C.hidKeyDown(C.int(keycode), C.int(flags))
 	case h.shouldUseSessionTap():
-		C.sessionKeyDown(C.int(keycode), 0, 0)
+		C.sessionKeyDown(C.int(keycode), C.int(flags), setFlags)
 	default:
-		C.inputKeyDown(C.int(keycode), 0, 0)
+		C.inputKeyDown(C.int(keycode), C.int(flags), setFlags)
 	}
 	return nil
 }
 
 func (h *DarwinInputHandler) SendKeyUp(key string) error {
+	return h.sendKeyUp(key, nil)
+}
+
+func (h *DarwinInputHandler) sendKeyUp(key string, capsLock *bool) error {
 	if !h.inputAvailable {
 		return errInputUnavailable
 	}
 	key = normalizeKeyName(key)
+	if suppressCapsLockKey(key, capsLock) {
+		return nil
+	}
 	keycode, ok := keyNameToKeycode[key]
 	if !ok {
 		return fmt.Errorf("unknown key: %s", key)
 	}
+	flags, authoritative := applyCapsLockFlag(0, capsLock)
+	setFlags := capsLockSetFlags(authoritative)
 	switch {
 	case h.shouldUseHID():
-		C.hidKeyUp(C.int(keycode), 0)
+		C.hidKeyUp(C.int(keycode), C.int(flags))
 	case h.shouldUseSessionTap():
-		C.sessionKeyUp(C.int(keycode), 0, 0)
+		C.sessionKeyUp(C.int(keycode), C.int(flags), setFlags)
 	default:
-		C.inputKeyUp(C.int(keycode), 0, 0)
+		C.inputKeyUp(C.int(keycode), C.int(flags), setFlags)
 	}
 	return nil
+}
+
+// capsLockSetFlags picks the C helpers' setFlags argument (see the setFlags
+// contract on inputKeyDown above). Only a viewer that actually stated its Caps
+// Lock state earns the unconditional CGEventSetFlags call; without one the
+// ambient-flags branch is preserved unchanged.
+//
+// Worth knowing before assuming this endangers held modifiers: it cannot, on
+// this platform. keyNameToKeycode below has no "shift"/"ctrl"/"alt"/"meta"
+// entries, so the viewer's standalone modifier key_down/key_up return
+// "unknown key" before reaching either branch — the agent never holds a
+// modifier on macOS, and the ambient flags this branch preserves are the
+// remote console's own physical state, not anything the agent set.
+func capsLockSetFlags(authoritative bool) C.int {
+	if authoritative {
+		return 1
+	}
+	return 0
 }
 
 func (h *DarwinInputHandler) HandleEvent(event InputEvent) error {
@@ -763,11 +814,11 @@ func (h *DarwinInputHandler) HandleEvent(event InputEvent) error {
 	case "mouse_scroll":
 		return h.SendMouseScroll(event.X, event.Y, event.Delta)
 	case "key_press":
-		return h.SendKeyPress(event.Key, event.Modifiers)
+		return h.sendKeyPress(event.Key, event.Modifiers, event.CapsLock)
 	case "key_down":
-		return h.SendKeyDown(event.Key)
+		return h.sendKeyDown(event.Key, event.CapsLock)
 	case "key_up":
-		return h.SendKeyUp(event.Key)
+		return h.sendKeyUp(event.Key, event.CapsLock)
 	default:
 		return fmt.Errorf("unknown event type: %s", event.Type)
 	}

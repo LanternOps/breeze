@@ -1,7 +1,9 @@
-import { and, eq, sql, desc, gte, lte, inArray, type SQL } from 'drizzle-orm';
+import { and, eq, sql, desc, gte, lte, inArray, isNull, type SQL } from 'drizzle-orm';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import {
   devices,
+  manualAssets,
   deviceSoftware,
   deviceMetrics,
   deviceHardware,
@@ -134,16 +136,27 @@ function emptyRowsReport() {
   return { rows: [], rowCount: 0 };
 }
 
+/**
+ * Push the authority's allowed-site predicate onto `conditions`, returning true
+ * when the authority can see nothing at all (restricted to zero sites).
+ *
+ * `siteColumn` exists because `device_inventory` now queries two tables
+ * (#4622): the predicate must be applied to EACH branch against that branch's
+ * own site column. Defaulting to `devices.siteId` keeps every existing caller
+ * unchanged — a branch that forgets to pass its own column would silently
+ * return every row in the org.
+ */
 function addAllowedSiteCondition(
   conditions: SQL[],
   authority: ReportExecutionAuthority,
+  siteColumn: AnyPgColumn = devices.siteId,
 ): boolean {
   if (authority.scope.kind === 'unrestricted') return false;
   if (authority.scope.kind !== 'restricted') {
     throw new UnexecutableReportScopeError();
   }
   if (authority.scope.siteIds.length === 0) return true;
-  conditions.push(inArray(devices.siteId, authority.scope.siteIds));
+  conditions.push(inArray(siteColumn, authority.scope.siteIds));
   return false;
 }
 
@@ -166,6 +179,31 @@ function assertExecutableAuthority(
   }
   if (authority.scope.kind === 'legacy_unscoped') {
     throw new UnexecutableReportScopeError('Legacy report scope cannot execute');
+  }
+  switch (authority.principalKind) {
+    case 'user':
+      if (!authority.principalUserId) {
+        throw new UnexecutableReportScopeError('User report execution authority requires a principal user');
+      }
+      break;
+    case 'portal_user':
+      if (authority.scope.kind !== 'unrestricted') {
+        throw new UnexecutableReportScopeError('Portal-user report execution authority must be unrestricted');
+      }
+      if (
+        'principalUserId' in authority
+        && authority.principalUserId !== null
+        && authority.principalUserId !== undefined
+      ) {
+        throw new UnexecutableReportScopeError('Portal-user report execution authority cannot carry a staff principal');
+      }
+      break;
+    default: {
+      const exhaustive: never = authority;
+      throw new UnexecutableReportScopeError(
+        `Unsupported report execution authority: ${String(exhaustive)}`,
+      );
+    }
   }
 }
 
@@ -195,17 +233,60 @@ export function assertReportExecutionPreflight(
   orgId: string,
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority | null | undefined,
+  reportType?: ReportType,
 ): asserts authority is ReportExecutionAuthority {
   assertExecutableAuthority(orgId, authority);
-  assertRequestedScopeWithinAuthority(config, authority);
+  if (
+    reportType
+    && authority.principalKind === 'portal_user'
+    && reportType !== 'executive_summary'
+    && reportType !== 'security_compliance_posture'
+  ) {
+    throw new UnexecutableReportScopeError(
+      `Portal-user authority cannot generate report type ${reportType}`,
+    );
+  }
+  switch (authority.principalKind) {
+    case 'user':
+      assertRequestedScopeWithinAuthority(config, authority);
+      return;
+    case 'portal_user':
+      return;
+    default: {
+      const exhaustive: never = authority;
+      throw new UnexecutableReportScopeError(
+        `Unsupported report execution authority: ${String(exhaustive)}`,
+      );
+    }
+  }
 }
+
+/**
+ * One `device_inventory` row. Both branches (#4622: agent devices and manual
+ * assets) project onto exactly these twelve columns — a report consumer reads
+ * one header row, so a second shape would silently truncate.
+ */
+type DeviceInventoryRow = {
+  hostname: string | null;
+  displayName: string | null;
+  osType: string | null;
+  osVersion: string | null;
+  agentVersion: string | null;
+  status: string | null;
+  lastSeenAt: Date | null;
+  enrolledAt: Date | null;
+  cpuModel: string | null;
+  ramTotalMb: number | null;
+  diskTotalGb: number | null;
+  serialNumber: string | null;
+};
 
 export async function generateDeviceInventoryReport(
   orgId: string,
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
 ) {
-  assertExecutableAuthority(orgId, authority);
+  assertReportExecutionPreflight(orgId, config, authority, 'device_inventory');
   // `isEphemeral = false` on every device predicate in this file: Quick Support
   // devices live in the partner's hidden 'quick_support' org, which deliberately
   // stays inside accessibleOrgIds so RLS lets a tech reach their own session.
@@ -247,7 +328,68 @@ export async function generateDeviceInventoryReport(
     .where(whereCondition)
     .orderBy(devices.hostname);
 
-  return { rows: data, rowCount: data.length };
+  const rows: DeviceInventoryRow[] = [...data];
+
+  // #4622 — hand-entered assets are a third class of inventory and belong in an
+  // inventory report. They are projected onto the agent column shape rather
+  // than given columns of their own: a report consumer (CSV, PDF, the portal
+  // table) reads one header row, and a second shape would silently truncate.
+  //
+  // An OS-type filter drops the branch entirely: a hand-entered asset has no OS
+  // to match, so keeping it would widen a report the requester explicitly
+  // narrowed.
+  const includeManualAssets = filters?.includeManualAssets !== false
+    && !(Array.isArray(filters?.osTypes) && filters.osTypes.length > 0);
+
+  if (includeManualAssets) {
+    const manualConditions: SQL[] = [
+      eq(manualAssets.orgId, orgId),
+      // Retired assets are history, not current inventory.
+      isNull(manualAssets.retiredAt),
+    ];
+
+    if (filters?.siteIds && Array.isArray(filters.siteIds) && filters.siteIds.length > 0) {
+      manualConditions.push(inArray(manualAssets.siteId, filters.siteIds));
+    }
+
+    // Applied against manual_assets.site_id, NOT devices.site_id — the branches
+    // are independent queries and a site-restricted authority must be honoured
+    // in each one.
+    addAllowedSiteCondition(manualConditions, authority, manualAssets.siteId);
+
+    const manualData = await db
+      .select({
+        name: manualAssets.name,
+        serialNumber: manualAssets.serialNumber,
+        createdAt: manualAssets.createdAt,
+      })
+      .from(manualAssets)
+      .where(and(...manualConditions))
+      .orderBy(manualAssets.name);
+
+    for (const asset of manualData) {
+      rows.push({
+        hostname: asset.name,
+        displayName: asset.name,
+        osType: null,
+        osVersion: null,
+        agentVersion: null,
+        // Not 'offline': a hand-entered asset has no agent to be offline. The
+        // honest answer is that its state is unknown.
+        status: 'unknown',
+        lastSeenAt: null,
+        enrolledAt: asset.createdAt,
+        cpuModel: null,
+        ramTotalMb: null,
+        diskTotalGb: null,
+        serialNumber: asset.serialNumber,
+      });
+    }
+
+    rows.sort((a, b) => (a.hostname ?? '').localeCompare(b.hostname ?? ''));
+  }
+
+  return { rows, rowCount: rows.length };
 }
 
 export async function generateSoftwareInventoryReport(
@@ -255,7 +397,7 @@ export async function generateSoftwareInventoryReport(
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
 ) {
-  assertExecutableAuthority(orgId, authority);
+  assertReportExecutionPreflight(orgId, config, authority, 'software_inventory');
   const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
 
   const filters = config.filters as Record<string, unknown> | undefined;
@@ -290,7 +432,7 @@ export async function generateAlertSummaryReport(
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
 ) {
-  assertExecutableAuthority(orgId, authority);
+  assertReportExecutionPreflight(orgId, config, authority, 'alert_summary');
   const conditions: SQL[] = [eq(alerts.orgId, orgId)];
 
   const dateRange = config.dateRange as Record<string, string> | undefined;
@@ -355,7 +497,7 @@ export async function generateComplianceReport(
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
 ) {
-  assertExecutableAuthority(orgId, authority);
+  assertReportExecutionPreflight(orgId, config, authority, 'compliance');
   const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
 
   const filters = config.filters as Record<string, unknown> | undefined;
@@ -426,7 +568,7 @@ export async function generatePerformanceReport(
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
 ) {
-  assertExecutableAuthority(orgId, authority);
+  assertReportExecutionPreflight(orgId, config, authority, 'performance');
   const deviceConditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
   if (addAllowedSiteCondition(deviceConditions, authority)) {
     return emptyRowsReport();
@@ -491,7 +633,7 @@ export async function generateExecutiveSummaryReport(
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
 ) {
-  assertExecutableAuthority(orgId, authority);
+  assertReportExecutionPreflight(orgId, config, authority, 'executive_summary');
   if (authority.scope.kind === 'restricted' && authority.scope.siteIds.length === 0) {
     return zeroSafeReport('executive_summary', orgId);
   }
@@ -604,7 +746,16 @@ export async function generateReport(
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
 ): Promise<ReportResult> {
-  assertReportExecutionPreflight(orgId, config, authority);
+  assertReportExecutionPreflight(orgId, config, authority, type);
+  if (
+    authority.principalKind === 'portal_user'
+    && type !== 'executive_summary'
+    && type !== 'security_compliance_posture'
+  ) {
+    throw new UnexecutableReportScopeError(
+      `Portal-user authority cannot generate report type ${type}`,
+    );
+  }
   if (authority.scope.kind === 'restricted' && authority.scope.siteIds.length === 0) {
     return zeroSafeReport(type, orgId);
   }

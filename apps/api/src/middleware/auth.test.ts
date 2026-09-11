@@ -54,6 +54,19 @@ vi.mock('./ipAllowlistGuard', () => ({
   ipAllowlistGuard: ipGuardMocks.ipAllowlistGuard
 }));
 
+const mobileBlockMocks = vi.hoisted(() => ({
+  getBoundMobileDeviceBlock: vi.fn(async (): Promise<{ reason: string | null } | null> => null)
+}));
+
+vi.mock('./mobileDeviceBlocked', () => ({
+  getBoundMobileDeviceBlock: mobileBlockMocks.getBoundMobileDeviceBlock,
+  mobileDeviceBlockedResponse: (c: any, block: { reason: string | null }) => c.json({
+    error: 'This device has been deactivated. Please re-pair to continue.',
+    code: 'device_blocked',
+    reason: block.reason
+  }, 403)
+}));
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
@@ -71,6 +84,7 @@ vi.mock('../db/schema', () => ({
     status: 'status',
     passwordChangedAt: 'passwordChangedAt',
     mfaEnabled: 'mfaEnabled',
+    partnerId: 'partnerId',
     isPlatformAdmin: 'isPlatformAdmin',
     authEpoch: 'authEpoch',
     mfaEpoch: 'mfaEpoch'
@@ -133,6 +147,7 @@ const activeUser = {
   // Default to enrolled so existing tests don't pick up the new role-MFA
   // gate; the gate-specific tests below override this explicitly.
   mfaEnabled: true,
+  partnerId: 'partner-123',
   isPlatformAdmin: false,
   // Matches basePayload's aep/mep so the new epoch gate (Task 8) doesn't
   // reject these pre-existing tests.
@@ -316,6 +331,30 @@ describe('authMiddleware', () => {
     );
   });
 
+  it('rejects a blocked signed mobile binding on an ordinary authenticated API path', async () => {
+    const app = buildAuthApp();
+    const boundPayload = { ...basePayload, mdid: 'blocked-installation-id' };
+    vi.mocked(verifyToken).mockResolvedValue(boundPayload);
+    mobileBlockMocks.getBoundMobileDeviceBlock.mockResolvedValueOnce({
+      reason: 'lost phone'
+    });
+    mockUserSelect([activeUser]);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer blocked-bound-token' }
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({
+      code: 'device_blocked',
+      reason: 'lost phone'
+    });
+    expect(mobileBlockMocks.getBoundMobileDeviceBlock).toHaveBeenCalledWith(
+      boundPayload.sub,
+      boundPayload.mdid
+    );
+  });
+
   it('propagates the ipAllowlistGuard deny Response instead of swallowing it', async () => {
     // Regression: the guard returns its 403 as a value (it does not throw).
     // authMiddleware must return the withDbAccessContext result, otherwise
@@ -335,6 +374,29 @@ describe('authMiddleware', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body.code).toBe('ip_not_allowed');
+  });
+
+  it('uses the live owning partner for an organization token whose authorization partnerId is null', async () => {
+    const app = buildAuthApp();
+    vi.mocked(verifyToken).mockResolvedValue({ ...basePayload, partnerId: null });
+    mockUserSelect([{ ...activeUser, partnerId: 'partner-current' }]);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(ipGuardMocks.ipAllowlistGuard).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.any(Function),
+      {
+        partnerId: 'partner-current',
+        isPlatformAdmin: false,
+        actorId: activeUser.id,
+        actorEmail: activeUser.email,
+      },
+    );
+    expect((await res.json()).auth.partnerId).toBeNull();
   });
 
   it('rejects active users when their tenant context is inactive or deleted', async () => {
@@ -582,6 +644,23 @@ describe('authMiddleware', () => {
   it('does not exempt other /sso paths', () => {
     expect(isMfaEnrollmentExemptPath('/api/v1/sso/providers')).toBe(false);
     expect(isMfaEnrollmentExemptPath('/api/v1/sso/link/start/abc')).toBe(false);
+  });
+
+  it('exempts /auth/cf-access-logout/prepare (a logout action) from forced MFA enrollment (RMM-QA-164)', () => {
+    // The route durably revokes refresh authority and mints a one-time
+    // navigation ticket to the Cloudflare Access logout hops — pure
+    // teardown, the CF-fronted twin of /auth/logout. A policy-required,
+    // unenrolled Partner Admin (every fresh-install bootstrap admin since
+    // RMM-QA-164) must still be able to sign out; without this the gate
+    // 428s the prepare call and the CF session can never be terminated.
+    expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout/prepare')).toBe(true);
+    expect(isMfaEnrollmentExemptPath('/auth/cf-access-logout/prepare')).toBe(true);
+  });
+
+  it('does not widen the logout exemption beyond the prepare route', () => {
+    expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout')).toBe(false);
+    expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout/complete')).toBe(false);
+    expect(isMfaEnrollmentExemptPath('/api/v1/auth/cf-access-logout/prepare/extra')).toBe(false);
   });
 
   it('permits an enrolled user without consulting the resolver at all', async () => {

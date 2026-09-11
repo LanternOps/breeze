@@ -506,6 +506,195 @@ export interface AiAgentDto {
   disabledAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /**
+   * The agent's most recent run, as the LIST route projects it (`loadLastRuns`
+   * in apps/api/src/routes/aiAgents.ts batches one query for the whole page).
+   *
+   * Optional because only the list route computes them; `null` — which that
+   * route always sends, computed or not — means "this agent has never run in
+   * an org this caller can see". The settings page used to declare its own
+   * `AgentListItem = AiAgentDto & {...}` for exactly these two fields, which
+   * made the DTO a description of the wire shape that the wire did not match.
+   */
+  lastRunAt?: string | null;
+  lastRunStatus?: string | null;
+  /**
+   * How many things that most recent run left for a human to look at — the
+   * same number `AiAgentRunListItemDto.findingsToReview` carries, from the
+   * same helper (`countFindingsToReview` / `findingsToReviewSql`,
+   * apps/api/src/services/aiAgents/runFindings.ts), computed over the SAME
+   * `DISTINCT ON` row `lastRunStatus` above comes from.
+   *
+   * `lastRunStatus` alone understates the agent: a sweep that found six
+   * problems and was allowed to execute none of them reports `completed`, so
+   * the settings list showed a healthy-looking agent sitting on unread
+   * findings. `null` — never 0 — when there is no visible last run at all,
+   * matching its two siblings; 0 means "there IS a last run and it left
+   * nothing to review".
+   *
+   * Optional for the same reason as its siblings: only the list route
+   * computes it, and every other route that returns an `AiAgentDto` answers
+   * `null` rather than omitting the key.
+   */
+  lastRunFindingsToReview?: number | null;
+  /**
+   * Whether `resolveEffectiveAgentInner` would treat this row as effective
+   * (#4170) — always `true` for a partner-wide row (`allOrgs`), since it IS
+   * the baseline; for an org row, `true` only when an active partner-wide
+   * baseline of the same `kind` exists for this org's partner. An org row
+   * with `false` here shows `enabled`/`mode` from its own columns but the
+   * resolver returns `null` for it: it overrides nothing and has no effect.
+   *
+   * Optional for the same reason as the `lastRun*` fields above: only the
+   * LIST route computes it (one query for the whole page, not per row) —
+   * every other route that returns an `AiAgentDto` omits the key rather than
+   * guessing at it.
+   */
+  hasPartnerBaseline?: boolean;
+}
+
+/**
+ * Agent tool catalog (spec `2026-09-06-ai-agent-builder-design.md` §4.1). One
+ * operation within a reachable tool's catalog entry: a bare tool (no
+ * discriminator) has exactly one operation with `action: null` whose `key`
+ * equals the tool name; a multi-operation tool has one entry per
+ * discriminator value with `key: '<tool>:<action>'`. `tier`/`readOnly` are
+ * resolved through `checkGuardrails`, never hand-declared — see
+ * `apps/api/src/services/aiAgents/agentToolCatalog.ts`.
+ */
+export interface AgentToolOperationDto {
+  key: string;
+  action: string | null;
+  tier: 1 | 2 | 3;
+  readOnly: boolean;
+  /** `key` is a member of `POLICY_DECIDABLE_TIER3`. */
+  policyDecidable: boolean;
+  /** `key`'s tool (at this action) is one `ACT_MANIFEST` can dispatch unattended. */
+  actEligible: boolean;
+  /**
+   * `actEligible` holds only while the agent's `actAssets.scriptIds` is
+   * non-empty (`run_script` — the run loop refuses an unauthorized script and
+   * proposes instead). The outcome rule (`outcomeFor`, packages/shared) turns
+   * this into an approval request until a script is authorized.
+   */
+  actRequiresAuthorizedScripts: boolean;
+}
+
+/** One agent-reachable tool's catalog entry — `capability` is an `AgentCapabilityId`. */
+export interface AgentToolCatalogToolDto {
+  name: string;
+  capability: string;
+  tier: 1 | 2 | 3;
+  /** True only when every operation on this tool is read-only. */
+  readOnly: boolean;
+  operations: AgentToolOperationDto[];
+}
+
+/** `GET /ai/agents/tool-catalog` response body's `data`. */
+export interface AgentToolCatalogDto {
+  capabilities: { id: string; tone: 'standard' | 'high' }[];
+  tools: AgentToolCatalogToolDto[];
+  presets: Record<AiAgentKind, string[]>;
+  /**
+   * Every registered tool NOT in `tools` — not in `TOOL_TIERS`,
+   * `AGENT_HUMAN_ONLY_TOOLS`, `BLOCKED_TOOLS`, or secret-bearing. Lets the
+   * picker tell a stale allowlist entry that names a real-but-unreachable
+   * tool (`unreachable_tool`) apart from one that never existed
+   * (`unknown_tool`) — see `apps/api/src/services/aiAgents/agentToolCatalog.ts`'s
+   * `listUnreachableRegisteredTools`.
+   */
+  unreachableTools: string[];
+}
+
+/**
+ * `GET /ai/agents/ceiling?kind=` response body's `data` — the partner-wide
+ * baseline's tool ceiling for one `kind`, projected for an org- or
+ * partner-scoped caller. `null` for a system-scope session, a caller with no
+ * `partnerId` at all, or when no live baseline exists for that kind.
+ */
+export interface AgentCeilingDto {
+  toolAllowlist: string[];
+  supervisedActionKeys: string[];
+  /**
+   * The baseline's `actAssets.scriptIds`. The effective policy an org agent
+   * runs under is `intersect(partner.scriptIds, org.scriptIds)`
+   * (`effectivePolicy.ts`), so a script the org row lists but the baseline
+   * does not is never dispatched unattended — the preview and the edit
+   * drawer intersect against this before counting authorized scripts.
+   */
+  scriptIds: string[];
+}
+
+/**
+ * `POST /ai/agents/preview` response body's `data` (Task 11, #5051; spec
+ * §4.6 step 4). Evaluates a DRAFT agent policy through the SAME
+ * `AgentToolCatalogDto` and `AgentCeilingDto` the picker and run loop use, so
+ * the guided create flow's review card can never drift from what
+ * create/update would actually enforce. Built by
+ * `apps/api/src/services/aiAgents/agentPreview.ts`'s `buildAgentPreview` —
+ * pure, no DB read beyond the ceiling the route already resolved.
+ */
+export interface AgentPreviewDto {
+  mode: AiAgentMode;
+  kind: AiAgentKind;
+  /** `catalog.tools.filter(t => t.readOnly).length` — the "always on" reads, independent of `operations` below. */
+  readOnlyToolCount: number;
+  /**
+   * Scripts the draft is effectively authorized to run unattended:
+   * `actAssets.scriptIds` (deduped), intersected with the partner ceiling's
+   * list when there is a ceiling (#5065). Always `0` when the draft's own
+   * allowlist, or the ceiling's, does not admit `run_script` — the
+   * allowlists intersect first, so nothing could run whatever the lists
+   * share (#5089 review). Drives the `run_script` outcome and the review
+   * card's "N scripts authorized" note.
+   */
+  authorizedScriptCount: number;
+  /**
+   * One entry per resolved MUTATING operation the draft's `toolAllowlist`
+   * admits, deduplicated by `key`. A bare entry on a multi-operation tool
+   * expands to every one of that tool's non-read-only operations (its
+   * always-on reads are already counted in `readOnlyToolCount`, not listed
+   * here); an entry the catalog cannot resolve — unknown tool, unreachable
+   * tool, or an action the tool does not have — contributes to
+   * `unrecognised` instead of an operation here.
+   */
+  operations: Array<{
+    key: string;
+    capability: string;
+    /**
+     * `mode === 'act' && op.actEligible` -> `'unattended'`; else tier 3 ->
+     * `'approval_request'`; else (tier 1/2, never selected alone but
+     * reachable via a bare multi-op expansion) -> `'logged_proposal'`.
+     */
+    outcome: 'approval_request' | 'logged_proposal' | 'unattended';
+    /**
+     * Non-null when act mode WOULD dispatch this operation unattended but a
+     * prerequisite is still missing — today only `'authorized_scripts'`
+     * (`run_script` with an empty `actAssets.scriptIds`), in which case
+     * `outcome` is the truthful `'approval_request'`. Lets the review card say
+     * why rather than silently downgrade.
+     */
+    unattendedBlockedBy: 'authorized_scripts' | null;
+    /** `key` is inside the intersection of the ceiling's and the draft's own `supervisedActionKeys` (or just the draft's own, on a partner draft with no ceiling). */
+    preauthorized: boolean;
+    /** `true` unconditionally when there is no ceiling (a partner draft, or an org draft with no live partner baseline yet). */
+    withinCeiling: boolean;
+  }>;
+  /** Raw `toolAllowlist` entries the catalog could not resolve, verbatim (never rewritten). */
+  unrecognised: string[];
+  triggers: {
+    alertSeverities: AiAgentTriggers['alertSeverities'];
+    respectMaintenanceWindows: boolean;
+    ticketAutonomousWrites: boolean;
+  };
+  protectedResources: AiAgentProtectedResources;
+  limits: AiAgentLimits;
+  /** `AiAgentPolicy.cooldownSeconds` is a sibling of `limits`, not one of its
+   *  fields — carried through separately so the review card's "six exposed
+   *  limits" (spec §4.6 step 4) can render it alongside the five in `limits`
+   *  without reaching into a differently-shaped policy row. */
+  cooldownSeconds: number;
+  recipients: AiAgentRecipients;
 }
 
 /**

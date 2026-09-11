@@ -142,6 +142,20 @@ describe('QuoteBlocks — line rendering (title/blurb + thumbnail)', () => {
     renderLines([{ id: 'l4', name: 'Widget', description: 'x', imageUrl: null, ...base }]);
     expect(screen.queryByTestId('quote-line-image-l4')).toBeNull();
   });
+
+  it('renders the customer estimate sentence from stamped names without exposing ids', () => {
+    renderLines([{
+      id: 'l5', name: 'VIP support', description: 'Managed fleet', ...base,
+      quantity: '0', unitPrice: '40', lineTotal: '0', recurrence: 'monthly',
+      contractLineType: 'per_device_group', deviceRoles: null,
+      deviceGroupId: 'secret-group-id', deviceGroupName: 'VIP Laptops',
+      siteId: null, siteName: null, includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12',
+    } as never]);
+    const row = screen.getByTestId('quote-line-l5');
+    expect(row.textContent).toContain('Estimated quantity — billed at the actual number of devices in “VIP Laptops” each billing period.');
+    expect(row.textContent).toContain('Includes 25; additional units billed at $12.00 each.');
+    expect(row.textContent).not.toContain('secret-group-id');
+  });
 });
 
 describe('QuoteBlocks — table block rendering', () => {

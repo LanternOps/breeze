@@ -51,7 +51,32 @@ const defaults: RemoteAccessSettings = {
   technicianIdentityLevel: "name_email",
 };
 const idleTimeoutOptions = [1, 2, 5, 10, 15, 30];
-const maxSessionOptions = [1, 2, 4, 8, 12, 24];
+// Remote desktop sessions are hard-capped at 12 hours server-side and
+// agent-side; "unlimited" (0) is no longer a supported value and a write above
+// 12 is rejected by the policy routes. Keep the picker inside the range so the
+// UI cannot offer a setting the backend will refuse.
+const maxSessionOptions = [1, 2, 4, 8, 12];
+const MIN_MAX_SESSION_DURATION_HOURS = 1;
+const MAX_MAX_SESSION_DURATION_HOURS = 12;
+/**
+ * Stored policies predate the [1, 12] bound and can hold `0` ("unlimited") or
+ * anything up to 168. Feeding those straight into component state renders a
+ * select with no matching option AND makes an unrelated save fail write-time
+ * validation on a field the operator never touched, so clamp on the way in.
+ *
+ * Mirrors `clampSettings` in apps/api/src/services/remoteAccessPolicy.ts:
+ * non-finite, zero, or negative resolves to the 12 h cap (0 is no longer an
+ * "unlimited" sentinel), anything above 12 clamps down to 12.
+ */
+function clampMaxSessionDurationHours(value: unknown): number {
+  const truncated = typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : NaN;
+  if (!Number.isFinite(truncated) || truncated <= 0)
+    return MAX_MAX_SESSION_DURATION_HOURS;
+  return Math.min(
+    Math.max(truncated, MIN_MAX_SESSION_DURATION_HOURS),
+    MAX_MAX_SESSION_DURATION_HOURS,
+  );
+}
 function ToggleRow({
   label,
   description,
@@ -85,33 +110,46 @@ export default function RemoteAccessTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
+  parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
+  // #5080: inheritance display — mirrors PamTab.tsx. `effectiveLink` seeds the
+  // form from the parent's settings when this policy has no override of its
+  // own; FeatureTabShell renders the form read-only (opacity + pointer-events)
+  // whenever isInherited is true.
+  const isInherited = !!parentLink && !existingLink;
+  const effectiveLink = existingLink ?? parentLink;
   const [settings, setSettings] = useState<RemoteAccessSettings>(() => {
-    const stored = existingLink?.inlineSettings as
+    const stored = effectiveLink?.inlineSettings as
       | Partial<RemoteAccessSettings>
       | undefined;
     const merged = { ...defaults, ...stored };
     if (!Array.isArray(merged.defaultAllowedPorts))
       merged.defaultAllowedPorts = [...defaults.defaultAllowedPorts];
+    merged.maxSessionDurationHours = clampMaxSessionDurationHours(
+      merged.maxSessionDurationHours,
+    );
     return merged;
   });
   const [newPort, setNewPort] = useState("");
   useEffect(() => {
-    if (existingLink?.inlineSettings) {
+    const link = existingLink ?? parentLink;
+    if (link?.inlineSettings) {
       setSettings((prev) => {
         const merged = {
           ...prev,
-          ...(existingLink.inlineSettings as Partial<RemoteAccessSettings>),
+          ...(link.inlineSettings as Partial<RemoteAccessSettings>),
         };
         if (!Array.isArray(merged.defaultAllowedPorts))
           merged.defaultAllowedPorts = [...defaults.defaultAllowedPorts];
+        merged.maxSessionDurationHours = clampMaxSessionDurationHours(
+          merged.maxSessionDurationHours,
+        );
         return merged;
       });
     }
-  }, [existingLink]);
+  }, [existingLink, parentLink]);
   const meta = FEATURE_META.remote_access;
   const update = <K extends keyof RemoteAccessSettings>(
     key: K,
@@ -138,7 +176,7 @@ export default function RemoteAccessTab({
     clearError();
     const result = await save(existingLink?.id ?? null, {
       featureType: "remote_access",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: settings,
     });
     if (result) onLinkChanged(result, "remote_access");
@@ -148,16 +186,33 @@ export default function RemoteAccessTab({
     const ok = await remove(existingLink.id);
     if (ok) onLinkChanged(null, "remote_access");
   };
+  // Revert = delete the child's own override link, falling back to the
+  // parent's (spec "Semantics"). Reported via onLinkChanged like every other
+  // remove path, so the detail page's own featureLinks state doesn't go stale.
+  const handleRevert = async () => {
+    if (!existingLink) return;
+    const ok = await remove(existingLink.id);
+    if (ok) onLinkChanged(null, "remote_access");
+  };
   return (
     <FeatureTabShell
       title={meta.label}
       description={meta.description}
       icon={<Monitor className="h-5 w-5" />}
-      isConfigured={!!existingLink}
+      isConfigured={!!existingLink || isInherited}
       saving={saving}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink ? handleRemove : undefined}
+      // Gated on THIS FEATURE's own parentLink, not the policy-level
+      // linkedPolicyId the older inline tabs use — see SecurityTab.tsx for the
+      // rationale (a policy-level gate would show "Revert to Parent" when the
+      // parent has no link for this feature, reverting to nothing).
+      onRemove={!parentLink ? handleRemove : undefined}
+      isInherited={isInherited}
+      onOverride={isInherited ? handleSave : undefined}
+      onRevert={
+        !isInherited && !!parentLink && !!existingLink ? handleRevert : undefined
+      }
     >
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Desktop Access */}

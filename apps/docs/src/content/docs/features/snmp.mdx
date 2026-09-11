@@ -11,6 +11,14 @@ The system supports SNMP v1, v2c, and v3 (including SNMPv3 authentication and pr
 
 ---
 
+## In the console
+
+SNMP is managed from **Network Monitor** in the sidebar (`/monitoring`) and from the Network Discovery page:
+
+- **Monitoring > SNMP Templates tab** lists built-in and custom OID templates. **Add template** lets you name a template and add the OIDs to poll (name, OID, data type). Custom templates can be edited or deleted; built-in templates cannot.
+- **Monitoring > Assets tab** lists every asset with SNMP configured, showing its version, polling interval, last-polled time, and status (online/warning/offline). Each row can pause or resume polling.
+- To enable SNMP on a new asset, go to **Network Discovery** (`/discovery`), open the asset's detail view, and use its Monitoring section's **Enable Monitoring** form: pick the SNMP version, enter credentials (community string for v1/v2c, or username/auth/priv protocol and passwords for v3), choose a template, and set the polling interval.
+
 ## Key Concepts
 
 ### SNMP Versions
@@ -35,7 +43,7 @@ The agent automatically infers the security level from the credentials you provi
 
 | Authentication | Privacy |
 |---------------|---------|
-| MD5, SHA, SHA-224, SHA-256, SHA-384, SHA-512 | DES, AES-128, AES-192, AES-256, AES-192C, AES-256C |
+| MD5, SHA, SHA-256 | DES, AES, AES-256 |
 
 ### Templates
 

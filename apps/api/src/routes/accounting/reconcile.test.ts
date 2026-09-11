@@ -17,7 +17,8 @@ const {
   const writeRouteAuditMock = vi.fn();
   const authState = {
     scope: 'partner' as 'partner' | 'system' | 'organization',
-    permissions: new Set<string>(['invoices:write']),
+    partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
+    permissions: new Set<string>(['accounting:read', 'accounting:manage', 'invoices:write']),
     mfa: true,
   };
   return { getConnectionMock, enqueueAccountingReconcileMock, writeRouteAuditMock, authState };
@@ -95,6 +96,7 @@ vi.mock('../../middleware/auth', () => ({
     c.set('auth', {
       scope: authState.scope,
       partnerId: authState.scope === 'organization' ? null : 'p1',
+      partnerOrgAccess: authState.partnerOrgAccess,
       user: { id: 'u1' },
     });
     await next();
@@ -144,7 +146,7 @@ function connectionRow(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   authState.scope = 'partner';
-  authState.permissions = new Set(['invoices:write']);
+  authState.permissions = new Set(['accounting:read', 'accounting:manage', 'invoices:write']);
   authState.mfa = true;
 });
 
@@ -198,6 +200,39 @@ describe('POST /accounting/:provider/reconcile', () => {
     expect(writeRouteAuditMock).not.toHaveBeenCalled();
   });
 
+  // Issue #4543: before this, POST /reconcile always answered
+  // `{ enqueued: true }` without checking `pull_payments` — the worker then
+  // silently no-oped, so a connection with pull disabled looked like it
+  // synced but never did. Refuses with 409 + a stable `code` (matching the
+  // `{ error, code }` shape `AccountingConnectionError`/`AccountingMappingError`
+  // already use elsewhere in this file) instead of a false "queued" toast.
+  // Phase D2 (spec decision 6): the reconcile gate is pull OR push, because the
+  // CDC pass is what adopts a Breeze-created Payment whose phase 2 never landed
+  // and what notices a Breeze-origin Payment deleted in QuickBooks. Pull off
+  // alone must therefore still enqueue; only both switches off refuses.
+  it('409 { code: "payment_sync_disabled" } when BOTH pull_payments and push_payments are off, and never enqueues', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow({ pullPayments: false, pushPayments: false }));
+
+    const res = await reconcile();
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: expect.stringMatching(/payment sync.*disabled/i),
+      code: 'payment_sync_disabled',
+    });
+    expect(enqueueAccountingReconcileMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('still enqueues when pull_payments is off but push_payments is on (Phase D2 gate)', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow({ pullPayments: false, pushPayments: true }));
+
+    const res = await reconcile();
+
+    expect(res.status).toBe(200);
+    expect(enqueueAccountingReconcileMock).toHaveBeenCalledTimes(1);
+  });
+
   it('denies an org-scoped token (403) before touching the connection', async () => {
     authState.scope = 'organization';
 
@@ -218,7 +253,7 @@ describe('POST /accounting/:provider/reconcile', () => {
   });
 
   it('denies a partner-scoped caller without INVOICES_WRITE (403)', async () => {
-    authState.permissions = new Set();
+    authState.permissions = new Set(['accounting:read', 'accounting:manage']);
 
     const res = await reconcile();
 
@@ -229,7 +264,7 @@ describe('POST /accounting/:provider/reconcile', () => {
 
   it('allows a SYSTEM-scope caller that holds no per-partner role (bypasses the permission check)', async () => {
     authState.scope = 'system';
-    authState.permissions = new Set();
+    authState.permissions = new Set(['accounting:read', 'accounting:manage']);
     getConnectionMock.mockResolvedValue(connectionRow({ id: 'c2', partnerId: 'p9' }));
     enqueueAccountingReconcileMock.mockResolvedValue(true);
 

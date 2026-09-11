@@ -20,7 +20,16 @@ vi.mock('drizzle-orm', async (importOriginal) => {
 const authMocks = vi.hoisted(() => ({
   authMiddlewareMock: vi.fn(),
   requireScopeMock: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermissionMock: vi.fn(() => async (_c: any, next: any) => next()),
+  // Defaults to "always granted" so every pre-existing test in this file
+  // (which never configures this) keeps behaving exactly as before. The new
+  // permission-gate describe block at the end of this file overrides it per
+  // test to simulate a caller who does/doesn't hold a given resource:action,
+  // and restores the default in its own afterEach.
+  hasPermMock: vi.fn((_resource: string, _action: string) => true),
+  requirePermissionMock: vi.fn(
+    (resource: string, action: string) => async (c: any, next: any) =>
+      authMocks.hasPermMock(resource, action) ? next() : c.json({ error: 'Permission denied' }, 403),
+  ),
   requireMfaMock: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 vi.mock('../middleware/auth', () => ({
@@ -28,6 +37,17 @@ vi.mock('../middleware/auth', () => ({
   requireScope: authMocks.requireScopeMock,
   requirePermission: authMocks.requirePermissionMock,
   requireMfa: authMocks.requireMfaMock,
+}));
+
+// #3128 tier-drift predicate. Mocked here on purpose: the real module reaches
+// the full AI tool registry (aiGuardrails -> aiTools), which this file's narrow
+// ../db/schema stub cannot satisfy. Its own correctness is covered against the
+// REAL tier tables in services/pamRuleTierDrift.test.ts; what the routes owe is
+// (a) calling it with the right selector and (b) translating a hit into a 400.
+const tierDriftMocks = vi.hoisted(() => ({ describePamRuleTierDrift: vi.fn() }));
+vi.mock('../services/pamRuleTierDrift', () => ({
+  describePamRuleTierDrift: tierDriftMocks.describePamRuleTierDrift,
+  PAM_RULE_TIER_UNREACHABLE_CODE: 'pam_rule_risk_tier_unreachable',
 }));
 
 vi.mock('../db', () => ({
@@ -1097,6 +1117,11 @@ describe('POST /pam/elevation-requests/:id/revoke', () => {
   });
 });
 
+beforeEach(() => {
+  // Default for every suite in this file: the tier selector is healthy.
+  tierDriftMocks.describePamRuleTierDrift.mockReturnValue(null);
+});
+
 describe('POST /pam/rules', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1416,6 +1441,120 @@ describe('PATCH /pam/rules/:id shape validation (Phase 1)', () => {
   });
 });
 
+describe('PATCH /pam/rules/:id — reapprove a suspended auto_approve rule (§6B)', () => {
+  const RULE_ID = '7b41c9a2-0000-4000-8000-00000000000a';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+  });
+
+  const suspendedRule = {
+    id: RULE_ID,
+    orgId: ORG_ID,
+    siteId: null,
+    name: 'auto-elevate installer',
+    matchSigner: 'Acme Corp',
+    matchHash: null,
+    matchPathGlob: null,
+    matchParentImage: null,
+    matchCommandLine: null,
+    matchUser: null,
+    matchAdGroup: null,
+    matchToolName: null,
+    matchRiskTier: null,
+    verdict: 'require_approval',
+    suspendedVerdict: 'auto_approve',
+    reapprovedAt: null,
+    reapprovedByUserId: null,
+  };
+
+  function mockExistingRule(rule: Record<string, unknown>) {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([rule]),
+        })),
+      })),
+    } as any);
+  }
+
+  function rigUpdate() {
+    const setCalls: unknown[] = [];
+    const returning = vi.fn().mockResolvedValue([{ ...suspendedRule, verdict: 'auto_approve', suspendedVerdict: null }]);
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn(() => ({
+          set: vi.fn((arg: unknown) => {
+            setCalls.push(arg);
+            return { where: vi.fn(() => ({ returning })) };
+          }),
+        })),
+      };
+      return fn(tx);
+    });
+    return { setCalls };
+  }
+
+  it('rejects reapprove:true on a rule that is not suspended (400)', async () => {
+    mockExistingRule({ ...suspendedRule, suspendedVerdict: null });
+    const { setCalls } = rigUpdate();
+
+    const res = await app().request(`/pam/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reapprove: true }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(setCalls).toHaveLength(0);
+  });
+
+  it('restores verdict from suspended_verdict, clears it, and stamps reapproved_at/reapproved_by_user_id', async () => {
+    mockExistingRule(suspendedRule);
+    const { setCalls } = rigUpdate();
+
+    const res = await app().request(`/pam/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reapprove: true }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(setCalls[0]).toEqual(
+      expect.objectContaining({
+        verdict: 'auto_approve',
+        suspendedVerdict: null,
+        reapprovedAt: expect.any(Date),
+        reapprovedByUserId: USER_ID,
+      }),
+    );
+  });
+
+  // An explicit verdict edit on a suspended rule supersedes the quarantine:
+  // without clearing suspendedVerdict here, a later plain Re-approve click
+  // (payload.reapprove, no explicit verdict) would restore the STALE
+  // pre-suspension verdict and silently overwrite the admin's fresh edit.
+  it('an explicit verdict edit on a suspended rule also clears suspended_verdict', async () => {
+    mockExistingRule(suspendedRule);
+    const { setCalls } = rigUpdate();
+
+    const res = await app().request(`/pam/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ verdict: 'auto_deny' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(setCalls[0]).toEqual(
+      expect.objectContaining({
+        verdict: 'auto_deny',
+        suspendedVerdict: null,
+      }),
+    );
+  });
+});
+
 // ============================================================
 // Rules CRUD — site-axis enforcement (intra-tenant site privilege escalation).
 // pam_rules is RLS Shape-1 (org_id only), so the SITE axis is app-layer-only.
@@ -1678,7 +1817,10 @@ describe('PAM rules — site-axis enforcement', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(body.rules).toEqual([allowedRule]);
+    // #3128 adds two computed fields to every list row (healthy here).
+    expect(body.rules).toEqual([
+      { ...allowedRule, matchRiskTierStale: false, matchRiskTierValidTiers: null },
+    ]);
     // A site-scoping WHERE predicate was applied (not just the bare org condition).
     expect(chain.where).toHaveBeenCalled();
     // Load-bearing: the narrowing MUST be inArray(pamRules.siteId, allowedSiteIds).
@@ -1701,7 +1843,9 @@ describe('PAM rules — site-axis enforcement', () => {
     const res = await app().request('/pam/rules');
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.rules).toEqual([orgWide]);
+    expect(body.rules).toEqual([
+      { ...orgWide, matchRiskTierStale: false, matchRiskTierValidTiers: null },
+    ]);
     // No site narrowing for an unrestricted caller: inArray is never invoked
     // with the pam_rules site column.
     expect(inArray).not.toHaveBeenCalledWith('siteId', expect.anything());
@@ -2343,5 +2487,328 @@ describe('Signer groups', () => {
     });
     expect(res.status).toBe(400);
     expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// #3128 — risk-tier drift on tool-action rules.
+//
+// pamRuleEngine matches matchRiskTier by EXACT equality, and tool tiers are
+// static code that ships with the API, so a re-classification (#3105) can leave
+// a stored rule permanently unmatchable. These cover what the ROUTES owe:
+// calling the predicate with the right selector, and turning a hit into a 400
+// carrying a machine-readable code. The predicate itself is exercised against
+// the real tier tables in services/pamRuleTierDrift.test.ts.
+// ============================================================
+describe('PAM rules — risk-tier drift (#3128)', () => {
+  const RULE_ID = '7b41c9a2-0000-4000-8000-0000000000d1';
+
+  const drift = {
+    matchRiskTier: 1,
+    matchToolName: 'execute_command',
+    validTiers: [2, 3],
+    message: 'matchRiskTier 1 does not match any current risk tier for tool "execute_command"',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+    tierDriftMocks.describePamRuleTierDrift.mockReturnValue(null);
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) =>
+      fn({ select: db.select, insert: db.insert, update: db.update, delete: db.delete }),
+    );
+  });
+
+  afterEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    vi.mocked(db.update).mockReset();
+  });
+
+  function mockInsertReturning() {
+    const returning = vi.fn().mockResolvedValue([
+      { id: RULE_ID, name: 'r', verdict: 'auto_approve', priority: 100 },
+    ]);
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn(() => ({ returning })) } as any);
+  }
+
+  function mockExistingRule(rule: Record<string, unknown>) {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([rule]) })) })),
+    } as any);
+  }
+
+  // ---- POST /pam/rules ----
+
+  it('rejects a create whose tier no tool can resolve to, with a machine-readable code', async () => {
+    tierDriftMocks.describePamRuleTierDrift.mockReturnValue(drift);
+    mockInsertReturning();
+
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'dead rule',
+        verdict: 'auto_approve',
+        matchToolName: 'execute_command',
+        matchRiskTier: 1,
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe('pam_rule_risk_tier_unreachable');
+    expect(body.validTiers).toEqual([2, 3]);
+    expect(body.error).toContain('execute_command');
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('checks the tier selector the caller actually submitted', async () => {
+    mockInsertReturning();
+
+    await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'ok rule',
+        verdict: 'auto_approve',
+        matchToolName: 'execute_command',
+        matchRiskTier: 3,
+      }),
+    });
+
+    expect(tierDriftMocks.describePamRuleTierDrift).toHaveBeenCalledWith(
+      expect.objectContaining({ matchToolName: 'execute_command', matchRiskTier: 3 }),
+    );
+  });
+
+  it('still creates the rule when the tier is merely narrowed, not dead', async () => {
+    // The literal #3128 rule (execute_command + tier 3) is narrowed by #3105
+    // but still matches file_read/kill_process — it must keep working.
+    mockInsertReturning();
+
+    const res = await app().request('/pam/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'narrowed rule',
+        verdict: 'auto_approve',
+        matchToolName: 'execute_command',
+        matchRiskTier: 3,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(vi.mocked(db.insert)).toHaveBeenCalled();
+  });
+
+  // ---- PATCH /pam/rules/:id ----
+
+  it('validates the MERGED selector — a tier-only PATCH is checked against the STORED tool', async () => {
+    mockExistingRule({
+      id: RULE_ID,
+      orgId: ORG_ID,
+      name: 'tool rule',
+      matchSigner: null,
+      matchHash: null,
+      matchPathGlob: null,
+      matchParentImage: null,
+      matchUser: null,
+      matchAdGroup: null,
+      matchToolName: 'execute_command',
+      matchRiskTier: 3,
+      verdict: 'require_approval',
+    });
+    tierDriftMocks.describePamRuleTierDrift.mockReturnValue(drift);
+
+    const res = await app().request(`/pam/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchRiskTier: 1 }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('pam_rule_risk_tier_unreachable');
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    // The payload alone carries no tool name — only the merge does.
+    expect(tierDriftMocks.describePamRuleTierDrift).toHaveBeenLastCalledWith(
+      expect.objectContaining({ matchToolName: 'execute_command', matchRiskTier: 1 }),
+    );
+  });
+
+  // ---- GET /pam/rules ----
+
+  it('badges stale rules in the list response and leaves healthy ones alone', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          orderBy: vi.fn().mockResolvedValue([
+            { id: 'stale-rule', matchToolName: 'execute_command', matchRiskTier: 1 },
+            { id: 'healthy-rule', matchToolName: 'execute_command', matchRiskTier: 3 },
+          ]),
+        })),
+      })),
+    } as any);
+    tierDriftMocks.describePamRuleTierDrift.mockImplementation((rule: any) =>
+      rule.matchRiskTier === 1 ? drift : null,
+    );
+
+    const res = await app().request('/pam/rules');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.rules[0]).toMatchObject({
+      id: 'stale-rule',
+      matchRiskTierStale: true,
+      matchRiskTierValidTiers: [2, 3],
+    });
+    expect(body.rules[1]).toMatchObject({
+      id: 'healthy-rule',
+      matchRiskTierStale: false,
+      matchRiskTierValidTiers: null,
+    });
+  });
+
+  // ---- POST /pam/rules/preview ----
+
+  it('does NOT gate the dry-run preview on tier drift', async () => {
+    // Preview is the diagnostic that SHOWS a stale rule matching nothing —
+    // 400ing it would remove the only way to see the problem.
+    tierDriftMocks.describePamRuleTierDrift.mockReturnValue(drift);
+    vi.mocked(db.select).mockImplementation((() => {
+      const chain: any = Promise.resolve([]);
+      chain.from = vi.fn(() => chain);
+      chain.where = vi.fn(() => chain);
+      chain.orderBy = vi.fn(() => chain);
+      chain.limit = vi.fn(() => chain);
+      return chain;
+    }) as any);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchToolName: 'execute_command', matchRiskTier: 1 }),
+    });
+
+    expect(res.status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dedicated pam:approve / pam:manage_policy permission gates
+// (fix/pam-dedicated-permissions). Before this change, respond/revoke/
+// assertion-challenge rode on devices:execute and rules/config/signer-groups
+// writes rode on devices:write — so an Org Technician (who holds both, for
+// ordinary device work) could approve elevations and author PAM policy with
+// no dedicated grant. These tests exercise the REAL requirePermission
+// call-site wiring (via the resource/action-aware mock above), not just that
+// SOME permission check ran.
+// ---------------------------------------------------------------------------
+describe('PAM routes require dedicated pam:approve / pam:manage_policy permissions', () => {
+  // A generic empty-results chain so any db.select()/insert()/update()/delete()
+  // call reaches a clean 404/empty-list rather than crashing — only exercised
+  // on the "not blocked" side of these tests, since the "denied" side never
+  // reaches the handler at all.
+  function chainResolve(value: unknown = []) {
+    const chain: any = Promise.resolve(value);
+    chain.from = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.orderBy = vi.fn(() => chain);
+    chain.limit = vi.fn(() => chain);
+    chain.offset = vi.fn(() => chain);
+    chain.leftJoin = vi.fn(() => chain);
+    chain.values = vi.fn(() => chain);
+    chain.set = vi.fn(() => chain);
+    chain.returning = vi.fn(() => chain);
+    return chain;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+    vi.mocked(db.select).mockImplementation((() => chainResolve([])) as any);
+    vi.mocked(db.insert).mockImplementation((() => chainResolve([])) as any);
+    vi.mocked(db.update).mockImplementation((() => chainResolve([])) as any);
+    vi.mocked(db.delete).mockImplementation((() => chainResolve(undefined)) as any);
+  });
+
+  afterEach(() => {
+    // Never let an override bleed into a describe block that runs after this
+    // one (vi.clearAllMocks() clears call history, not a configured
+    // mockImplementation).
+    authMocks.hasPermMock.mockImplementation(() => true);
+  });
+
+  /** Org Technician shape: broad device/script/alert grants, but NOT pam:*. */
+  function orgTechnicianGrants(resource: string, _action: string): boolean {
+    return resource !== 'pam';
+  }
+
+  type Case = {
+    label: string;
+    method: 'POST' | 'PATCH' | 'DELETE' | 'PUT';
+    path: string;
+    body?: unknown;
+    resource: 'pam';
+    action: 'approve' | 'manage_policy';
+  };
+
+  const CASES: Case[] = [
+    { label: 'assertion-challenge', method: 'POST', path: `/pam/elevation-requests/${REQ_ID}/assertion-challenge`, resource: 'pam', action: 'approve' },
+    { label: 'respond', method: 'POST', path: `/pam/elevation-requests/${REQ_ID}/respond`, body: {}, resource: 'pam', action: 'approve' },
+    { label: 'revoke', method: 'POST', path: `/pam/elevation-requests/${REQ_ID}/revoke`, body: { reason: 'no longer needed' }, resource: 'pam', action: 'approve' },
+    { label: 'rules create', method: 'POST', path: '/pam/rules', body: {}, resource: 'pam', action: 'manage_policy' },
+    { label: 'rules preview', method: 'POST', path: '/pam/rules/preview', body: {}, resource: 'pam', action: 'manage_policy' },
+    { label: 'rules update', method: 'PATCH', path: `/pam/rules/${REQ_ID}`, body: {}, resource: 'pam', action: 'manage_policy' },
+    { label: 'rules delete', method: 'DELETE', path: `/pam/rules/${REQ_ID}`, resource: 'pam', action: 'manage_policy' },
+    { label: 'config put', method: 'PUT', path: '/pam/config', body: {}, resource: 'pam', action: 'manage_policy' },
+    { label: 'signer-groups create', method: 'POST', path: '/pam/signer-groups', body: {}, resource: 'pam', action: 'manage_policy' },
+    { label: 'signer-groups update', method: 'PATCH', path: `/pam/signer-groups/${REQ_ID}`, body: {}, resource: 'pam', action: 'manage_policy' },
+    { label: 'signer-groups delete', method: 'DELETE', path: `/pam/signer-groups/${REQ_ID}`, resource: 'pam', action: 'manage_policy' },
+  ];
+
+  async function fire(tc: Case) {
+    return app().request(tc.path, {
+      method: tc.method,
+      ...(tc.body !== undefined
+        ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tc.body) }
+        : {}),
+    });
+  }
+
+  for (const tc of CASES) {
+    it(`${tc.label}: an Org Technician (devices:* but no pam:*) is denied with 403`, async () => {
+      authMocks.hasPermMock.mockImplementation(orgTechnicianGrants);
+      const res = await fire(tc);
+      expect(res.status).toBe(403);
+    });
+
+    it(`${tc.label}: a caller holding ${tc.resource}:${tc.action} is NOT blocked`, async () => {
+      authMocks.hasPermMock.mockImplementation(
+        (resource: string, action: string) => resource === tc.resource && action === tc.action,
+      );
+      const res = await fire(tc);
+      expect(res.status).not.toBe(403);
+    });
+
+    it(`${tc.label}: a caller holding the '*:*' wildcard is NOT blocked`, async () => {
+      authMocks.hasPermMock.mockImplementation(() => true);
+      const res = await fire(tc);
+      expect(res.status).not.toBe(403);
+    });
+  }
+
+  it('GET routes remain gated on devices:read (unchanged) — an Org Technician can still read', async () => {
+    authMocks.hasPermMock.mockImplementation(
+      (resource: string, action: string) => resource === 'devices' && action === 'read',
+    );
+    vi.mocked(db.select).mockImplementation((sel: unknown) => {
+      const isCount = Boolean(sel && typeof sel === 'object' && 'total' in (sel as Record<string, unknown>));
+      return chainResolve(isCount ? [{ total: 0 }] : []);
+    });
+    const resRules = await app().request('/pam/rules');
+    expect(resRules.status).not.toBe(403);
+    const resActive = await app().request('/pam/active');
+    expect(resActive.status).not.toBe(403);
   });
 });

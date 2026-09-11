@@ -10,7 +10,7 @@ const selectLimitMock = vi.fn();
 // C1 (final review #4191): recorder for tx.delete(ticketDrafts).where(w).
 const txDeleteWhereMock = vi.fn();
 
-const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, dbMocks, configMocks, formMocks, ctxMocks, matchContactMock } = vi.hoisted(() => {
+const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, assigneeEligibleMock, dbMocks, configMocks, formMocks, ctxMocks, matchContactMock, assertTicketCreationAllowedMock } = vi.hoisted(() => {
   const insertReturning = vi.fn();
   const updateReturning = vi.fn();
   const selectResult = vi.fn();
@@ -22,6 +22,7 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, db
     auditMock: vi.fn().mockResolvedValue(undefined),
     allocateMock: vi.fn().mockResolvedValue('T-2026-0042'),
     guardMock: vi.fn().mockResolvedValue(null),
+    assigneeEligibleMock: vi.fn().mockResolvedValue(true),
     dbMocks: { insertReturning, updateReturning, selectResult, txExecuteMock, txUpdateReturning },
     // #3258 W03 review I6: SPIES, not passthrough arrows. The system-context
     // escape opens a SECOND pooled connection that cannot see the caller's
@@ -32,6 +33,14 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, db
       withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
     },
     matchContactMock: vi.fn(),
+    // #5075 W04 — Service Management gate. `getServiceManagementMode` (called
+    // by `assertTicketCreationAllowed`) issues its OWN db.select() call, which
+    // would otherwise consume a slot in the `dbMocks.selectResult` sequence
+    // every other createTicket test queues up (org lookup, then
+    // device/assignee/category lookups, in order) — breaking every test with
+    // 2+ queued selects. Mocked at the module boundary instead, defaulting to
+    // "allowed" so the gate is a no-op for every test that doesn't opt in.
+    assertTicketCreationAllowedMock: vi.fn().mockResolvedValue(undefined),
     configMocks: {
       getOrgSlaOverride: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
       getPartnerPrioritySla: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
@@ -50,6 +59,10 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, db
 });
 
 vi.mock('./ticketEvents', () => ({ emitTicketEvent: emitMock }));
+vi.mock('./ticketPush', async () => {
+  const actual = await vi.importActual<typeof import('./ticketPush')>('./ticketPush');
+  return { ...actual, isEligibleTicketRecipient: assigneeEligibleMock };
+});
 vi.mock('./mlFeedbackEmitters', () => ({ emitTicketTriageFeedback: emitTriageFeedbackMock }));
 vi.mock('./auditService', () => ({ createAuditLogAsync: auditMock }));
 vi.mock('./ticketNumbers', () => ({ allocateInternalTicketNumber: allocateMock }));
@@ -78,6 +91,14 @@ vi.mock('./ticketFormService', async () => {
 vi.mock('./contacts/crud', async () => {
   const actual = await vi.importActual<typeof import('./contacts/crud')>('./contacts/crud');
   return { ...actual, matchContactByEmail: matchContactMock };
+});
+
+// #5075 W04 — mock only `assertTicketCreationAllowed`; keep every other export
+// (notably `ServiceManagementOffError`, which `createTicket` checks with
+// `instanceof`) real, so mocked-rejection tests can throw the ACTUAL class.
+vi.mock('./serviceManagement', async () => {
+  const actual = await vi.importActual<typeof import('./serviceManagement')>('./serviceManagement');
+  return { ...actual, assertTicketCreationAllowed: assertTicketCreationAllowedMock };
 });
 
 vi.mock('../db', () => ({
@@ -211,7 +232,14 @@ vi.mock('../db/schema', () => ({
     requesterContactId: 'requesterContactId',
     deletedAt: 'deletedAt'
   },
-  ticketComments: {},
+  // #4524: moveTicketOrg nulls the reverse pointer ticket_comments.agent_run_id,
+  // so these two columns must exist on the mock or the WHERE builds on undefined.
+  ticketComments: { ticketId: 'ticketId', agentRunId: 'agentRunId' },
+  // #4524: moveTicketOrg severs ai_agent_runs.ticket_id in the same transaction.
+  aiAgentRuns: { id: 'id', orgId: 'orgId', ticketId: 'ticketId' },
+  // #4645: moveTicketOrg severs device_vulnerabilities.ticket_id in the same
+  // transaction (the ticket-axis twin of the ai_agent_runs detach above).
+  deviceVulnerabilities: { id: 'id', orgId: 'orgId', deviceId: 'deviceId', ticketId: 'ticketId' },
   ticketDrafts: {
     id: 'id', ticketId: 'ticketId', orgId: 'orgId', runId: 'runId', intentId: 'intentId',
     kind: 'kind', content: 'content', state: 'state', supersededBy: 'supersededBy',
@@ -243,6 +271,8 @@ import {
   TicketServiceError, TICKET_STATUS_TRANSITIONS, SYSTEM_COMMENT_TYPES
 } from './ticketService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
+import { ServiceManagementOffError } from './serviceManagement';
+import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 
 const actor = { userId: 'u-1', name: 'Tess Tech' };
 
@@ -259,6 +289,42 @@ describe('createTicket', () => {
     valuesMock.mockClear();
     setMock.mockClear();
     allocateMock.mockResolvedValue('T-2026-0042');
+    assertTicketCreationAllowedMock.mockReset().mockResolvedValue(undefined);
+    assigneeEligibleMock.mockResolvedValue(true);
+  });
+
+  // #5075 W04 — Service Management 'off' withdraws NEW ticket creation. This is
+  // the ONE gate every creation surface routes through; ticketService.ts
+  // translates the thrown ServiceManagementOffError into a TicketServiceError so
+  // every existing `instanceof TicketServiceError` handler picks it up unchanged.
+  describe('Service Management gate (#5075 W04)', () => {
+    it('translates a ServiceManagementOffError into a 409 TicketServiceError', async () => {
+      dbMocks.selectResult.mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }]);
+      assertTicketCreationAllowedMock.mockRejectedValueOnce(new ServiceManagementOffError());
+
+      const err = await createTicket(
+        { orgId: 'o-1', subject: 'Printer offline', source: 'manual' }, actor
+      ).catch(e => e);
+
+      expect(err).toBeInstanceOf(TicketServiceError);
+      expect(err.status).toBe(409);
+      expect(err.code).toBe('service_management_off');
+      expect(err.message).toBe('Service Management is turned off for this partner');
+      // Refused before number allocation and before any insert.
+      expect(allocateMock).not.toHaveBeenCalled();
+      expect(valuesMock).not.toHaveBeenCalled();
+    });
+
+    it('checks the gate with the RESOLVED org partnerId, and proceeds to create when it resolves', async () => {
+      dbMocks.selectResult.mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }]);
+      dbMocks.insertReturning.mockResolvedValue([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+      assertTicketCreationAllowedMock.mockResolvedValueOnce(undefined);
+
+      const t = await createTicket({ orgId: 'o-1', subject: 'Printer offline', source: 'manual' }, actor);
+
+      expect(assertTicketCreationAllowedMock).toHaveBeenCalledWith('p-1');
+      expect(t.internalNumber).toBe('T-2026-0042');
+    });
   });
 
   it('resolves partnerId from the org, allocates a number, inserts, emits ticket.created', async () => {
@@ -306,6 +372,26 @@ describe('createTicket', () => {
 
     const insertPayload = valuesMock.mock.calls[0]![0];
     expect(insertPayload).toMatchObject({ status: 'open', assignedTo: 'u-99' });
+  });
+
+  it('rejects an ineligible assignee before number allocation or any write', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'u-99', partnerId: 'p-1' }]);
+    assigneeEligibleMock.mockResolvedValueOnce(false);
+
+    const err = await createTicket({ orgId: 'o-1', subject: 'Secret subject', source: 'manual', assigneeId: 'u-99' }, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.code).toBe('ASSIGNEE_NOT_ELIGIBLE');
+    expect(assigneeEligibleMock).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'u-99', partnerId: 'p-1' }),
+      'p-1',
+      'o-1',
+      undefined,
+    );
+    expect(allocateMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
   });
 
   it('rejects a deviceId belonging to a different org with a 400 TicketServiceError', async () => {
@@ -1376,6 +1462,7 @@ describe('assignTicket', () => {
     vi.clearAllMocks();
     valuesMock.mockClear();
     setMock.mockClear();
+    assigneeEligibleMock.mockResolvedValue(true);
   });
 
   it('updates assignee, writes an assignment feed entry, emits ticket.assigned', async () => {
@@ -1402,6 +1489,26 @@ describe('assignTicket', () => {
       eventType: 'ticket.assignee_changed',
       dedupeKey: 'assignedTo:null:"u-2"',
     }));
+  });
+
+  it('rejects an ineligible same-partner assignee before ticket mutation or event emission', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', deviceId: 'd-hidden', status: 'new', assignedTo: null }])
+      .mockResolvedValueOnce([{ id: 'u-2', partnerId: 'p-1' }]);
+    assigneeEligibleMock.mockResolvedValueOnce(false);
+
+    const err = await assignTicket('t-1', 'u-2', actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.code).toBe('ASSIGNEE_NOT_ELIGIBLE');
+    expect(assigneeEligibleMock).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'u-2', partnerId: 'p-1' }),
+      'p-1',
+      'o-1',
+      'd-hidden',
+    );
+    expect(setMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
   });
 
   // #3828 wave-6-3 task 2: in-transaction ticket_outbox write, id-only payload.
@@ -2069,6 +2176,77 @@ describe('updateTicketFields', () => {
   //   submittedBy: null    -> a login that WAS there is gone; its derived link goes too
   //   submitterEmail changed, no login -> re-resolve by (org, lower(email))
   //   submitterName only   -> neither id is touched
+
+  // #5367: naming the CONTACT directly. The three rules above derive the link
+  // from a login or an address; an explicit `requesterContactId` states it, and
+  // wins — the same precedence createTicket gives a named contact.
+  it('sets the requester contact named explicitly and backfills the name/email snapshot', async () => {
+    // selects in order: ticket, contact
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ ...BASE_TICKET, submittedBy: null, submitterName: 'Tess Tech', submitterEmail: null, requesterContactId: null }])
+      .mockResolvedValueOnce([{ id: 'ct-1', orgId: 'o-1', name: 'Jane Doe', email: 'jane@acme.test' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, requesterContactId: 'ct-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { requesterContactId: 'ct-1' }, actor);
+
+    expect(setMock.mock.calls[0]![0]).toMatchObject({
+      requesterContactId: 'ct-1',
+      submitterName: 'Jane Doe',
+      submitterEmail: 'jane@acme.test',
+    });
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Updated requester' }));
+  });
+
+  it('rejects a requesterContactId from another org and writes nothing', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ ...BASE_TICKET, requesterContactId: null }])
+      .mockResolvedValueOnce([{ id: 'ct-x', orgId: 'o-OTHER', name: 'Intruder', email: 'x@evil.test' }]);
+
+    const err = await updateTicketFields('t-1', { requesterContactId: 'ct-x' }, actor).catch((e) => e);
+
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+    expect(err.code).toBe('REQUESTER_CONTACT_WRONG_ORG');
+    expect(setMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+  });
+
+  it('clears the contact link on requesterContactId: null without touching the snapshot', async () => {
+    dbMocks.selectResult.mockResolvedValue([
+      { ...BASE_TICKET, submittedBy: null, submitterName: 'Jane Doe', submitterEmail: 'jane@acme.test', requesterContactId: 'ct-1' },
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, requesterContactId: null }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { requesterContactId: null }, actor);
+
+    const payload = setMock.mock.calls[0]![0];
+    expect(payload).toMatchObject({ requesterContactId: null });
+    expect(payload).not.toHaveProperty('submitterName');
+    expect(payload).not.toHaveProperty('submitterEmail');
+  });
+
+  it('keeps the login-derived name/email when a contact is named alongside a portal user', async () => {
+    // selects in order: ticket, portal user, contact
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ ...BASE_TICKET, submittedBy: null, submitterName: null, submitterEmail: null, requesterContactId: null }])
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Login Name', email: 'login@acme.test', contactId: 'ct-login' }])
+      .mockResolvedValueOnce([{ id: 'ct-1', orgId: 'o-1', name: 'Jane Doe', email: 'jane@acme.test' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, requesterContactId: 'ct-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { submittedBy: 'pu-1', requesterContactId: 'ct-1' }, actor);
+
+    expect(setMock.mock.calls[0]![0]).toMatchObject({
+      submittedBy: 'pu-1',
+      // The explicit contact wins the LINK...
+      requesterContactId: 'ct-1',
+      // ...but the login still owns the snapshot, exactly as on create.
+      submitterName: 'Login Name',
+      submitterEmail: 'login@acme.test',
+    });
+  });
 
   it('leaves requesterContactId ALONE when only submitterName changes', async () => {
     dbMocks.selectResult.mockResolvedValue([
@@ -3426,14 +3604,123 @@ describe('moveTicketOrg', () => {
 
   // Extracts the raw table identifier drizzle's sql.identifier() embeds as
   // queryChunks[1].value (verified shape: UPDATE <identifier> SET ... WHERE ...).
+  //
+  // Statements that carry no sql.identifier() chunk are skipped rather than
+  // crashing on `chunks[1]!.value`: since #4596 the transaction opens with a
+  // plain `SET CONSTRAINTS time_entries_ticket_org_fk,
+  // ticket_parts_ticket_org_fk DEFERRED`, which names no table. That statement
+  // is asserted on its own in the '#4596' test below, so skipping it here
+  // cannot hide its removal.
   function executedTableNames(): string[] {
+    return dbMocks.txExecuteMock.mock.calls
+      .map((call) => {
+        const chunks = (call[0] as { queryChunks?: Array<{ value?: unknown }> }).queryChunks ?? [];
+        return chunks[1]?.value;
+      })
+      .filter((v): v is string => typeof v === 'string');
+  }
+
+  // Renders a tx.execute() call back to its literal SQL text (the non-parameter
+  // chunks), for statements that are not table-identifier UPDATEs.
+  function executedSqlTexts(): string[] {
     return dbMocks.txExecuteMock.mock.calls.map((call) => {
-      const chunks = (call[0] as { queryChunks: Array<{ value?: unknown }> }).queryChunks;
-      return chunks[1]!.value as string;
+      const chunks = (call[0] as { queryChunks?: Array<{ value?: unknown }> }).queryChunks ?? [];
+      return chunks
+        .map((c) => (Array.isArray(c?.value) ? c.value.join('') : typeof c?.value === 'string' ? c.value : ''))
+        .join('')
+        .replace(/\s+/g, ' ')
+        .trim();
     });
   }
 
-  it('moves ticket to a same-partner org, detaches device, re-stamps child org_id on 5 tables including ticket_attachments', async () => {
+  // invocationCallOrder of the first tx.execute() that actually rewrites a
+  // child table. Since #4596 the transaction's FIRST execute is a
+  // `SET CONSTRAINTS ... DEFERRED` that names no table, so index 0 is no
+  // longer the first rewrite.
+  function firstRewriteInvocationOrder(): number {
+    const calls = dbMocks.txExecuteMock.mock.calls;
+    for (let i = 0; i < calls.length; i++) {
+      const chunks = (calls[i]![0] as { queryChunks?: Array<{ value?: unknown }> }).queryChunks ?? [];
+      if (typeof chunks[1]?.value === 'string') {
+        return dbMocks.txExecuteMock.mock.invocationCallOrder[i]!;
+      }
+    }
+    throw new Error('no child-table rewrite tx.execute() was issued');
+  }
+
+  it.each([
+    { actor: { userId: 'human', name: 'Human' }, userId: 'human', authorType: 'internal', originPrincipalKind: 'user' },
+    { actor: { kind: 'ai_agent' as const, agentId: 'agent', name: 'Ticket Agent' }, userId: null, authorType: 'ai_agent', originPrincipalKind: 'ai_agent' },
+  ])('preserves comment and event attribution for $authorType moves', async ({ actor, userId, authorType, originPrincipalKind }) => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta', currencyCode: 'USD' },
+      ]);
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB' }]);
+    dbMocks.txExecuteMock.mockResolvedValue(undefined);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'comment' }]);
+
+    await moveTicketOrg('t1', 'oB', actor);
+
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      ticketId: 't1', userId, authorName: actor.name, authorType, originPrincipalKind,
+      agentRunId: null, commentType: 'system', isPublic: false,
+    }));
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ticket.updated', orgId: 'oB', actorUserId: userId,
+    }));
+    expect(auditMock).toHaveBeenCalledTimes(2);
+    for (const [audit] of auditMock.mock.calls) {
+      expect(audit).toMatchObject(userId === null
+        ? { actorType: 'ai_agent', actorId: 'agent', initiatedBy: 'ai' }
+        : { actorId: 'human' });
+    }
+  });
+
+  it('#4596: defers the two ticket/org composite FKs BY NAME as the first statement', async () => {
+    // The tickets UPDATE below changes tickets.org_id while time_entries and
+    // ticket_parts still point at the old org, so both composite FKs must be
+    // deferred to COMMIT or the UPDATE 23503s the instant it completes.
+    // BY NAME, never ALL: tickets_requester_contact_org_fk,
+    // ticket_drafts_ticket_org_fk and action_intents_scope_ticket_org_fk are
+    // deliberately left IMMEDIATE as fail-fast guards.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: 'd1' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta Corp', currencyCode: 'USD' }
+      ]);
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB', deviceId: null }]);
+    dbMocks.txExecuteMock.mockResolvedValue(undefined);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-sys' }]);
+
+    await moveTicketOrg('t1', 'oB', { userId: 'admin' });
+
+    const texts = executedSqlTexts();
+    expect(texts[0]).toBe(
+      'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED'
+    );
+    // Never `SET CONSTRAINTS ALL DEFERRED` — that would also defer the three
+    // constraints this path relies on failing fast.
+    expect(texts.some((t) => /SET CONSTRAINTS ALL/i.test(t))).toBe(false);
+    // Pin the total tx.execute() count so a regression that issues the
+    // SET CONSTRAINTS statement twice, or interposes an extra unnamed raw
+    // statement, is visible here — executedTableNames() only counts
+    // statements with a table identifier chunk and would not catch either.
+    // 1 SET CONSTRAINTS + 6 child-table rewrites (time_entries, ticket_parts,
+    // ticket_alert_links, ticket_outbox, ticket_attachments, ticket_email_links
+    // — same 6 tables as the 'moves ticket to a same-partner org' test below).
+    expect(texts).toHaveLength(7);
+    expect(texts.filter((t) => t === 'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED')).toHaveLength(1);
+  });
+
+  it('moves ticket to a same-partner org, detaches device, re-stamps child org_id on 6 tables including ticket_email_links', async () => {
     // Ticket { id:'t1', orgId:'oA', partnerId:'p1', deviceId:'d1' }
     // Target org { id:'oB', partnerId:'p1', name:'Beta Corp' }
     dbMocks.selectResult
@@ -3461,11 +3748,21 @@ describe('moveTicketOrg', () => {
     // ticket_alert_links, ticket_outbox — #3828 wave-6-3 review fix: an
     // unpublished outbox row must move with the ticket or it keeps routing
     // to the source org's helpdesk agents after the move).
-    // W08 #3902 added ticket_attachments as the 5th and LAST entry.
-    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(5);
-    expect(executedTableNames()).toEqual(
-      expect.arrayContaining(['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox', 'ticket_attachments'])
-    );
+    // W08 #3902 added ticket_attachments as the 5th entry.
+    // #4643 added ticket_email_links as the 6th and LAST entry.
+    // Counts the child-table rewrites specifically: since #4596 the
+    // transaction also issues a leading SET CONSTRAINTS that names no table,
+    // so this must NOT be asserted against dbMocks.txExecuteMock's raw call
+    // count (which would include that statement) — executedTableNames()
+    // already filters to statements with a table identifier chunk.
+    //
+    // Ordered, not arrayContaining: the ORDER is the lock order this path
+    // shares with the device move (#4657), so an order-agnostic assertion here
+    // would let the loop be rewritten as hand-written statements in a
+    // different sequence without anything failing — the mirror of the bug
+    // #4657 fixed on the device axis, which moveOrg.test.ts pins the same way.
+    // Compared against the shared constant so the two stay coupled.
+    expect(executedTableNames()).toEqual([...TICKET_ORG_DENORMALIZED_TABLES]);
 
     // System feed comment inserted with "Moved to <org name>"
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -3521,7 +3818,7 @@ describe('moveTicketOrg', () => {
     );
   });
 
-  it('re-stamps ticket_attachments.org_id LAST on ticket move (W08 #3902)', async () => {
+  it('re-stamps ticket_attachments.org_id before ticket_email_links on ticket move (W08 #3902, #4643)', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: 'd1' }])
       .mockResolvedValueOnce([{ currencyCode: 'USD' }])
@@ -3538,10 +3835,13 @@ describe('moveTicketOrg', () => {
 
     const tables = executedTableNames();
     expect(tables).toContain('ticket_attachments');
-    // Appended last so the device-move path (routes/devices/moveOrg.ts) and
-    // this path touch the ticket-linked tables in the same relative order —
-    // see the lock-order comment at moveOrg.ts:~311.
-    expect(tables[tables.length - 1]).toBe('ticket_attachments');
+    expect(tables).toContain('ticket_email_links');
+    // ticket_email_links is appended last (after ticket_attachments) so the
+    // device-move path (routes/devices/moveOrg.ts) and this path touch the
+    // ticket-linked tables in the same relative order — the shared order
+    // lives in ticketOrgMoveLockOrder.ts.
+    expect(tables[tables.length - 1]).toBe('ticket_email_links');
+    expect(tables.indexOf('ticket_attachments')).toBeLessThan(tables.indexOf('ticket_email_links'));
   });
 
 
@@ -3623,7 +3923,9 @@ describe('moveTicketOrg', () => {
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), {
       ticketIds: ['t1'], sourceCurrency: 'USD', targetCurrency: 'EUR', targetOrgName: 'Beta Corp', acceptCurrencyMismatch: false
     });
-    expect(dbMocks.txExecuteMock).not.toHaveBeenCalled();
+    // No child-table rewrite ran. (tx.execute WAS called once, for the #4596
+    // leading SET CONSTRAINTS, which is issued before the guard can block.)
+    expect(executedTableNames()).toHaveLength(0);
     expect(valuesMock).not.toHaveBeenCalled();
     expect(emitMock).not.toHaveBeenCalled();
     expect(auditMock).not.toHaveBeenCalled();
@@ -3637,7 +3939,7 @@ describe('moveTicketOrg', () => {
     const result = await moveTicketOrg('t1', 'oB', { userId: 'admin' }, { acceptCurrencyMismatch: true });
     expect(result.orgId).toBe('oB');
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ acceptCurrencyMismatch: true }));
-    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(5); // W08 #3902 added ticket_attachments
+    expect(executedTableNames()).toHaveLength(6); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links; #4596 SET CONSTRAINTS is not a rewrite
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
       commentType: 'system',
       content: 'Moved to Beta Corp — 2 unbilled items stay in USD'
@@ -3676,7 +3978,7 @@ describe('moveTicketOrg', () => {
 
     await moveTicketOrg('t1', 'oB', { userId: 'admin' });
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ sourceCurrency: 'USD', targetCurrency: 'USD', acceptCurrencyMismatch: false }));
-    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(5); // W08 #3902 added ticket_attachments
+    expect(executedTableNames()).toHaveLength(6); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links; #4596 SET CONSTRAINTS is not a rewrite
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Moved to Beta Corp' }));
     const sourceAudit = auditMock.mock.calls.find((c) => c[0].action === 'ticket.move_org.source')![0];
     expect(sourceAudit.details).not.toHaveProperty('currencyMismatchAccepted');
@@ -3689,7 +3991,7 @@ describe('moveTicketOrg', () => {
     await moveTicketOrg('t1', 'oB', { userId: 'admin' });
     const updateOrder = setMock.mock.invocationCallOrder[0]!;
     const guardOrder = guardMock.mock.invocationCallOrder[0]!;
-    const firstRewriteOrder = dbMocks.txExecuteMock.mock.invocationCallOrder[0]!;
+    const firstRewriteOrder = firstRewriteInvocationOrder();
     expect(updateOrder).toBeLessThan(guardOrder);
     expect(guardOrder).toBeLessThan(firstRewriteOrder);
   });

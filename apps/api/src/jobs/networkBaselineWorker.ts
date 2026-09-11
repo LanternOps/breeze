@@ -12,6 +12,11 @@ import { captureException } from '../services/sentry';
 import { compareBaselineScan, normalizeBaselineScanSchedule } from '../services/networkBaseline';
 import { enqueueDiscoveryScan, type DiscoveredHostResult } from './discoveryWorker';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
+import { attachWorkerObservability } from './workerObservability';
+import {
+  resolveBaselineDispatchAuthority,
+  type BaselineBlockedReason
+} from '../services/networkBaselineAuthority';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -33,6 +38,15 @@ interface ExecuteBaselineScanJobData {
   orgId: string;
   siteId: string;
   subnet: string;
+  /**
+   * SEC-2026-09-05-146. `schedule` = the recurring planner issued this tick and
+   * it must match `authorityGeneration` exactly. `manual` = an interactive
+   * operator scan, already authorized live by the request that triggered it, so
+   * it carries no generation. An absent trigger is a pre-upgrade payload still
+   * sitting in Redis and is treated as `schedule` — fail closed.
+   */
+  trigger?: 'schedule' | 'manual';
+  authorityGeneration?: number;
 }
 
 interface CompareBaselineJobData {
@@ -95,7 +109,7 @@ function createNetworkBaselineWorker(): Worker<NetworkBaselineJobData> {
   );
 }
 
-async function processScheduleScans(): Promise<{ enqueued: number }> {
+async function processScheduleScans(): Promise<{ enqueued: number; blocked: number }> {
   const now = new Date();
 
   const dueBaselines = await db
@@ -104,7 +118,13 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
       orgId: networkBaselines.orgId,
       siteId: networkBaselines.siteId,
       subnet: networkBaselines.subnet,
-      scanSchedule: networkBaselines.scanSchedule
+      scanSchedule: networkBaselines.scanSchedule,
+      authorityUserId: networkBaselines.authorityUserId,
+      authoritySiteIds: networkBaselines.authoritySiteIds,
+      authorityPermissionsEpoch: networkBaselines.authorityPermissionsEpoch,
+      authorityMfaEpoch: networkBaselines.authorityMfaEpoch,
+      authorityFingerprint: networkBaselines.authorityFingerprint,
+      authorityGeneration: networkBaselines.authorityGeneration
     })
     .from(networkBaselines)
     .where(
@@ -113,15 +133,32 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
     );
 
   if (dueBaselines.length === 0) {
-    return { enqueued: 0 };
+    return { enqueued: 0, blocked: 0 };
   }
 
   const queue = getNetworkBaselineQueue();
 
   let enqueued = 0;
+  let blocked = 0;
   for (const baseline of dueBaselines) {
     try {
       const schedule = normalizeBaselineScanSchedule(baseline.scanSchedule);
+
+      // SEC-146: an enabled schedule is only a REQUEST to scan. The authority
+      // that armed it must still resolve before anything is enqueued, so a
+      // revoked schedule produces no Redis effect at all — not merely a job
+      // that later declines to run.
+      const decision = await resolveBaselineDispatchAuthority(baseline, {
+        expectedGeneration: baseline.authorityGeneration
+      });
+      if (!decision.allowed) {
+        blocked++;
+        await recordScheduleBlocked(baseline.id, decision.reason);
+        // Still advance nextScanAt: a blocked baseline must not be re-evaluated
+        // every 15 minutes forever, and must not starve the rest of the tick.
+        await advanceNextScanAt(baseline.id, schedule);
+        continue;
+      }
 
       await queue.add(
         'execute-baseline-scan',
@@ -130,7 +167,9 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
           baselineId: baseline.id,
           orgId: baseline.orgId,
           siteId: baseline.siteId,
-          subnet: baseline.subnet
+          subnet: baseline.subnet,
+          trigger: 'schedule',
+          authorityGeneration: baseline.authorityGeneration
         },
         {
           jobId: `baseline-scan-${baseline.id}`,
@@ -141,17 +180,7 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
 
       enqueued++;
 
-      const nextScanAt = new Date(Date.now() + schedule.intervalHours * 60 * 60 * 1000).toISOString();
-      await db
-        .update(networkBaselines)
-        .set({
-          scanSchedule: {
-            ...schedule,
-            nextScanAt
-          },
-          updatedAt: new Date()
-        })
-        .where(eq(networkBaselines.id, baseline.id));
+      await advanceNextScanAt(baseline.id, schedule);
     } catch (error) {
       console.error(
         `[NetworkBaselineWorker] Failed to schedule scan for baseline ${baseline.id} (${baseline.subnet}):`,
@@ -164,23 +193,95 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
   if (enqueued > 0) {
     console.log(`[NetworkBaselineWorker] Scheduled ${enqueued} baseline scan job(s)`);
   }
+  if (blocked > 0) {
+    console.warn(
+      `[NetworkBaselineWorker] Skipped ${blocked} due baseline scan(s) whose arming authority no longer resolves (SEC-146)`
+    );
+  }
 
-  return { enqueued };
+  return { enqueued, blocked };
 }
 
-async function processExecuteScan(data: ExecuteBaselineScanJobData): Promise<{
+/**
+ * Record why a recurring schedule was not dispatched. Surfaced to operators on
+ * the network baseline page; the existing enable/save control re-arms it.
+ */
+async function recordScheduleBlocked(baselineId: string, reason: BaselineBlockedReason): Promise<void> {
+  console.warn(`[NetworkBaselineWorker] Baseline ${baselineId} recurring scan blocked: ${reason} (SEC-146)`);
+  await db
+    .update(networkBaselines)
+    .set({ scheduleBlockedReason: reason, updatedAt: new Date() })
+    .where(eq(networkBaselines.id, baselineId));
+}
+
+async function advanceNextScanAt(
+  baselineId: string,
+  schedule: ReturnType<typeof normalizeBaselineScanSchedule>
+): Promise<void> {
+  const nextScanAt = new Date(Date.now() + schedule.intervalHours * 60 * 60 * 1000).toISOString();
+  await db
+    .update(networkBaselines)
+    .set({
+      scanSchedule: { ...schedule, nextScanAt },
+      updatedAt: new Date()
+    })
+    .where(eq(networkBaselines.id, baselineId));
+}
+
+export async function processExecuteScan(data: ExecuteBaselineScanJobData): Promise<{
   queued: boolean;
   discoveryJobId: string | null;
+  blockedReason?: BaselineBlockedReason;
 }> {
+  // SEC-146: lock the baseline row for the remainder of this job's transaction
+  // (the worker's withSystemDbAccessContext IS the transaction) before deciding
+  // anything. A concurrent re-arm or disable then serialises against this read
+  // instead of racing it, and the authority resolution below observes state that
+  // cannot change underneath the dispatch.
   const [baseline] = await db
     .select()
     .from(networkBaselines)
     .where(eq(networkBaselines.id, data.baselineId))
-    .limit(1);
+    .limit(1)
+    .for('update');
 
   if (!baseline) {
     console.warn(`[NetworkBaselineWorker] Baseline ${data.baselineId} not found — may have been deleted. Skipping scan.`);
     return { queued: false, discoveryJobId: null };
+  }
+
+  // SEC-146: the recurring gate answers "may this schedule keep firing with
+  // nobody watching". An interactive "Scan Now" is a live request that
+  // POST /network/baselines/:id/scan already authorized (org reach + site
+  // ceiling + devices:write), so it is NOT subject to the envelope, schedule-
+  // enabled or generation checks — running them there broke manual scans for
+  // exactly the baselines an operator most needs to reach: paused ones and every
+  // legacy row awaiting re-approval. A manual run also never writes
+  // scheduleBlockedReason, in either direction: it must neither block a schedule
+  // nor silently clear a block the recurring path recorded.
+  //
+  // An absent trigger is a pre-upgrade queue payload: treat it as scheduled with
+  // no generation, so a legacy row (no envelope) fails closed.
+  const isScheduled = data.trigger !== 'manual';
+
+  if (isScheduled) {
+    const decision = await resolveBaselineDispatchAuthority(baseline, {
+      expectedGeneration:
+        typeof data.authorityGeneration === 'number' ? data.authorityGeneration : null
+    });
+
+    if (!decision.allowed) {
+      // No discovery job, no auto-created profile, no Redis effect — and no
+      // throw, so one revoked baseline never takes down the tick.
+      console.warn(
+        `[NetworkBaselineWorker] Baseline ${baseline.id} dispatch denied: ${decision.reason} (SEC-146)`
+      );
+      await db
+        .update(networkBaselines)
+        .set({ scheduleBlockedReason: decision.reason, updatedAt: new Date() })
+        .where(eq(networkBaselines.id, baseline.id));
+      return { queued: false, discoveryJobId: null, blockedReason: decision.reason };
+    }
   }
 
   let [profile] = await db
@@ -266,6 +367,9 @@ async function processExecuteScan(data: ExecuteBaselineScanJobData): Promise<{
     .update(networkBaselines)
     .set({
       lastScanJobId: discoveryJob.id,
+      // Only a recurring dispatch that passed the gate may clear the block — a
+      // manual scan proves nothing about the schedule's authority.
+      ...(isScheduled ? { scheduleBlockedReason: null } : {}),
       updatedAt: new Date()
     })
     .where(eq(networkBaselines.id, baseline.id));
@@ -351,7 +455,11 @@ export async function enqueueBaselineScan(
       baselineId,
       orgId,
       siteId,
-      subnet
+      subnet,
+      // Interactive operator scan: authorized live by the request that triggered
+      // it, so it carries no recurring-authority generation. The dispatch gate
+      // still runs — it just does not require a generation match.
+      trigger: 'manual'
     },
     {
       jobId: `baseline-scan-${baselineId}`,
@@ -399,6 +507,7 @@ export async function enqueueBaselineComparison(
 
 export async function initializeNetworkBaselineWorker(): Promise<void> {
   networkBaselineWorkerInstance = createNetworkBaselineWorker();
+  attachWorkerObservability(networkBaselineWorkerInstance, 'networkBaselineWorker');
 
   networkBaselineWorkerInstance.on('error', (error) => {
     console.error('[NetworkBaselineWorker] Worker error:', error);

@@ -30,7 +30,16 @@ export type InvoiceServiceErrorCode =
   | 'ORG_NOT_FOUND'
   | 'SITE_DENIED'
   | 'INVOICE_NOT_FOUND'
+  | 'INVOICE_LINE_NOT_FOUND'
+  // #5180: voidInvoice refused because invoice_payments rows still settle the
+  // invoice. QuickBooks will not void an invoice a Payment settles, and the
+  // void also releases the source rows for re-invoicing while the collected
+  // money stays recorded — so the payments come off first, through the
+  // audited voidPayment path, and the void is retried after.
+  | 'INVOICE_HAS_PAYMENTS'
+  | 'INVALID_CURSOR'
   | 'CURRENCY_MISMATCH'
+  | 'STRIPE_PAYMENT_MANAGED_EXTERNALLY'
   // Draft currency immutability (#3774): the change-currency op refused because
   // monetary lines exist and the caller didn't opt into clearLines.
   | 'CURRENCY_LOCKED'
@@ -75,13 +84,29 @@ export type InvoiceServiceErrorCode =
   | 'INVALID_AMOUNT'
   | 'LINE_NOT_FOUND'
   | 'PAYMENT_NOT_FOUND'
+  // QuickBooks Phase D2 (spec decision 15): the payment came from QuickBooks,
+  // which is its system of record. A Breeze-side void would not touch the books
+  // and the next CDC sweep would pull the payment straight back in, so the void
+  // is refused at the service layer rather than only hidden in the UI. Raised
+  // ONLY while such a sweep would actually run — see voidPayment's connection
+  // probe (review wave 2, finding 8).
+  | 'QUICKBOOKS_OWNED_PAYMENT'
+  // The caller cannot SEE `accounting_entity_mappings`: it is partner-axis under
+  // RLS and this is an organization-scoped principal, so the QuickBooks-origin
+  // probe would read empty and pass a payment it should refuse. Fails closed
+  // rather than answering from a view it does not have (review wave 2, finding 5).
+  | 'PARTNER_SCOPE_REQUIRED'
   | 'NUMBER_ALLOCATION_FAILED'
   | 'NOT_PAYABLE'
   | 'NOTHING_TO_PAY'
   | 'STRIPE_NOT_CONNECTED'
   | 'STRIPE_NO_URL'
   | 'STRIPE_INIT_FAILED'
-  | 'STRIPE_CURRENCY_UNSUPPORTED';
+  | 'STRIPE_CURRENCY_UNSUPPORTED'
+  // #3205 W07: the draft-guarded device-appendix override in
+  // routes/invoices/lifecycle.ts matched 0 rows — the invoice was not (or no
+  // longer) a draft when POST /:id/send tried to persist includeDeviceAppendix.
+  | 'INVOICE_ALREADY_ISSUED';
 
 export class InvoiceServiceError extends Error {
   constructor(

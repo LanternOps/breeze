@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { scriptParametersSchema } from '@breeze/shared';
-import { and, desc, eq, gte, ilike, inArray, like, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ilike, inArray, like, ne, or, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db } from '../db';
 import {
@@ -11,9 +11,12 @@ import {
   alertRules,
   alertTemplates,
   deviceCommands,
+  deviceNetwork,
   devices,
   mobileDevices,
-  sites
+  organizations,
+  sites,
+  tickets
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { userRateLimit } from '../middleware/userRateLimit';
@@ -38,6 +41,11 @@ import { captureMessage } from '../services/sentry';
 import { createReportThrottle } from '../utils/reportThrottle';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { UUID_REGEX } from '../utils/uuid';
+import {
+  assertDeviceExecuteAllowed,
+  TrustDeniedError,
+} from '../services/partnerTrust.commands';
+import { trustDenyBody } from '../services/partnerTrust';
 // Shared with the web device routes rather than re-declared locally. This file
 // used to carry a byte-identical private copy, which is precisely why the #2968
 // uuid guard — added to the shared helper — silently did not apply to
@@ -50,6 +58,147 @@ const requireMobileAlertAcknowledge = requirePermission(PERMISSIONS.ALERTS_ACKNO
 const requireMobileAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
 const requireMobileDeviceRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 const requireMobileDeviceExecute = requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action);
+
+// Device Details v1 fields (#5140, decision #5117-2): "open" for the
+// mobile device row's alert/ticket counts means "still needs attention" —
+// mirrors the /summary endpoint's active+acknowledged bucket, not the full
+// history (excludes resolved/dismissed/suppressed).
+const OPEN_ALERT_STATUSES = ['active', 'acknowledged'] as const;
+// Same status set as services/portal/ticketReadModel.ts's OPEN_TICKET_STATUSES
+// and services/ticketService.ts's ADDIN_OPEN_STATUSES — both module-private,
+// so kept local here rather than importing either.
+const OPEN_TICKET_STATUSES = ['new', 'open', 'pending', 'on_hold'] as const;
+
+/** One device_network row as read for LAN-IP ranking below. */
+interface LanIpCandidate {
+  deviceId: string;
+  ipAddress: string | null;
+  ipType: string;
+  isPrimary: boolean;
+  interfaceName: string;
+}
+
+// APIPA/link-local/loopback — worse than useless in a scan column. Mirrors
+// the ILIKE/LIKE set in devices/core.ts's LAN-IP lateral (#2503).
+function isUnroutableIp(ip: string): boolean {
+  return ip.startsWith('169.254.') || ip.startsWith('127.') || ip.toLowerCase().startsWith('fe80:') || ip === '::1';
+}
+
+/**
+ * Best-first comparator for a device's candidate LAN addresses: is_primary
+ * first, IPv4 before IPv6, routable before APIPA/link-local/loopback,
+ * interface name as a stable tiebreak. Same ranking as devices/core.ts's
+ * per-page LATERAL join (#2503), done here in application code (over a plain
+ * batched SELECT) rather than a second SQL LATERAL, since device_network rows
+ * per page are few enough that ranking in JS avoids a raw sql`` query in this
+ * route.
+ */
+function compareLanCandidates(a: LanIpCandidate, b: LanIpCandidate): number {
+  if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+  const aV4 = a.ipType === 'ipv4';
+  const bV4 = b.ipType === 'ipv4';
+  if (aV4 !== bV4) return aV4 ? -1 : 1;
+  const aUnroutable = isUnroutableIp(a.ipAddress!);
+  const bUnroutable = isUnroutableIp(b.ipAddress!);
+  if (aUnroutable !== bUnroutable) return aUnroutable ? 1 : -1;
+  return a.interfaceName.localeCompare(b.interfaceName);
+}
+
+/**
+ * Batched lookups for the Device Details v1 fields (#5140) — one LAN-IP pick
+ * plus two GROUP BY counts per page, keyed by device id. Each is a SEPARATE
+ * query from the main device-row select (never a LEFT JOIN on it), so a
+ * device with many network interfaces, alerts, or tickets can never fan the
+ * page's row count out — verified by
+ * "...without fanning out the row" in mobile.test.ts.
+ *
+ * Each of the three lookups is independently fault-isolated: a failure in
+ * any one (a lock/timeout blip on `device_network`/`alerts`/`tickets`, say)
+ * must not 500 the whole device list when the core device-row query already
+ * succeeded — this is pure enrichment on top of an otherwise-working page.
+ * The count maps are `| null` on failure (never silently coerced to an empty
+ * map) specifically so the caller can tell "the query failed" apart from
+ * "the query succeeded and found zero open alerts/tickets" — collapsing
+ * those into the same `0` would render a false "Open alerts · 0" for a
+ * device that may have several unresolved critical alerts.
+ */
+async function loadDeviceDetailsV1Fields(deviceIds: string[]): Promise<{
+  lanIpByDevice: Map<string, string>;
+  openAlertCountByDevice: Map<string, number> | null;
+  openTicketCountByDevice: Map<string, number> | null;
+}> {
+  const lanIpByDevice = new Map<string, string>();
+
+  if (deviceIds.length === 0) {
+    return { lanIpByDevice, openAlertCountByDevice: new Map(), openTicketCountByDevice: new Map() };
+  }
+
+  try {
+    const networkRows = await db
+      .select({
+        deviceId: deviceNetwork.deviceId,
+        ipAddress: deviceNetwork.ipAddress,
+        ipType: deviceNetwork.ipType,
+        isPrimary: deviceNetwork.isPrimary,
+        interfaceName: deviceNetwork.interfaceName
+      })
+      .from(deviceNetwork)
+      .where(and(inArray(deviceNetwork.deviceId, deviceIds), sql`${deviceNetwork.ipAddress} IS NOT NULL`));
+
+    const candidatesByDevice = new Map<string, LanIpCandidate[]>();
+    for (const row of networkRows) {
+      if (!row.ipAddress) continue;
+      const list = candidatesByDevice.get(row.deviceId) ?? [];
+      list.push(row as LanIpCandidate);
+      candidatesByDevice.set(row.deviceId, list);
+    }
+    for (const [deviceId, candidates] of candidatesByDevice) {
+      const best = candidates.slice().sort(compareLanCandidates)[0];
+      if (best?.ipAddress) lanIpByDevice.set(deviceId, best.ipAddress);
+    }
+  } catch (error) {
+    // Degrades to "no LAN IP known" for this page — indistinguishable from a
+    // device that genuinely has none, which is an acceptable fallback (unlike
+    // the counts below, there's no "confirmed zero" reading for an IP).
+    console.error('[MobileRoutes] Failed to load LAN IPs for device list:', error);
+  }
+
+  let openAlertCountByDevice: Map<string, number> | null = new Map();
+  try {
+    const alertCountRows = await db
+      .select({ deviceId: alerts.deviceId, count: sql<number>`count(*)::int` })
+      .from(alerts)
+      .where(and(inArray(alerts.deviceId, deviceIds), inArray(alerts.status, OPEN_ALERT_STATUSES)))
+      .groupBy(alerts.deviceId);
+    for (const row of alertCountRows) {
+      openAlertCountByDevice.set(row.deviceId, Number(row.count));
+    }
+  } catch (error) {
+    console.error('[MobileRoutes] Failed to load open alert counts for device list:', error);
+    openAlertCountByDevice = null;
+  }
+
+  let openTicketCountByDevice: Map<string, number> | null = new Map();
+  try {
+    const ticketCountRows = await db
+      .select({ deviceId: tickets.deviceId, count: sql<number>`count(*)::int` })
+      .from(tickets)
+      .where(and(inArray(tickets.deviceId, deviceIds), inArray(tickets.status, OPEN_TICKET_STATUSES)))
+      .groupBy(tickets.deviceId);
+    for (const row of ticketCountRows) {
+      // tickets.deviceId is nullable in general, but inArray(...) above
+      // already excludes NULL rows (`NULL IN (...)` is never true in SQL) —
+      // this guard can't actually trip today. Kept as defense-in-depth
+      // against a future refactor (e.g. a LEFT JOIN) loosening that filter.
+      if (row.deviceId) openTicketCountByDevice.set(row.deviceId, Number(row.count));
+    }
+  } catch (error) {
+    console.error('[MobileRoutes] Failed to load open ticket counts for device list:', error);
+    openTicketCountByDevice = null;
+  }
+
+  return { lanIpByDevice, openAlertCountByDevice, openTicketCountByDevice };
+}
 
 async function requireScriptExecuteForRunScript(c: import('hono').Context, next: import('hono').Next) {
   const data = (c.req as unknown as { valid: (target: 'json') => { action?: string } }).valid('json');
@@ -66,28 +215,56 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-// Keyset cursor: opaque base64url JSON {ts,id}. Optional and additive — when
+// Keyset cursor: opaque base64url JSON {key,id}. Optional and additive — when
 // not supplied, page/limit semantics are unchanged. When supplied, paginates
-// past the (timestamp,id) pair on the ordering column.
+// past the (key,id) pair on the route's chosen ordering column.
+//
+// `key` is carried as a raw, already-serialized string and never re-parsed
+// into a JS `Date` here — `Date` only holds millisecond precision, so
+// round-tripping a Postgres `timestamp` (microsecond precision) through one
+// truncates it and can skip rows whose actual value sits between the
+// truncated cursor and the next real boundary (#3770). Callers that key on a
+// timestamp column are responsible for reading it back as raw text (see
+// `/alerts/inbox`'s `triggeredAtKey`) rather than a parsed `Date`; callers
+// that key on a NOT NULL string column (e.g. `/devices`'s `hostname`, ported
+// from `routes/devices/core.ts`) just pass the string through.
 // Exported for unit testing.
-export type CursorTuple = { ts: Date; id: string };
-export function encodeCursor(ts: Date | string | null | undefined, id: string): string | null {
-  if (!ts || !id) return null;
-  const iso = ts instanceof Date ? ts.toISOString() : ts;
-  return Buffer.from(JSON.stringify({ ts: iso, id }), 'utf8').toString('base64url');
+export type CursorTuple = { key: string; id: string };
+export function encodeCursor(key: string | null | undefined, id: string | null | undefined): string | null {
+  if (!key || !id) return null;
+  return Buffer.from(JSON.stringify({ key, id }), 'utf8').toString('base64url');
 }
 export function decodeCursor(raw: string | undefined): CursorTuple | null {
   if (!raw) return null;
   try {
     const json = Buffer.from(raw, 'base64url').toString('utf8');
-    const parsed = JSON.parse(json) as { ts?: unknown; id?: unknown };
-    if (typeof parsed.ts !== 'string' || typeof parsed.id !== 'string' || !UUID_REGEX.test(parsed.id)) return null;
-    const ts = new Date(parsed.ts);
-    if (Number.isNaN(ts.getTime())) return null;
-    return { ts, id: parsed.id };
+    const parsed = JSON.parse(json) as { key?: unknown; id?: unknown };
+    if (typeof parsed.key !== 'string' || parsed.key.length === 0) return null;
+    if (typeof parsed.id !== 'string' || !UUID_REGEX.test(parsed.id)) return null;
+    return { key: parsed.key, id: parsed.id };
   } catch {
     return null;
   }
+}
+
+// `/alerts/inbox` keys on a timestamp column, so on top of the structural
+// checks above, reject a cursor whose `key` doesn't even parse as a
+// timestamp — otherwise it reaches the raw SQL comparison in the route and
+// Postgres 500s on the bad cast instead of a clean "start over".
+//
+// Matches the EXACT shape `to_char(..., 'YYYY-MM-DD"T"HH24:MI:SS.US')` emits
+// on the encode side (4-digit year, fixed-width fields, 6-digit
+// microseconds) rather than deferring to `new Date(...)` parseability —
+// `Date` accepts a much wider grammar than Postgres `timestamp` does, so a
+// crafted `key` like `-271821-04-20T00:00:00.000Z` parses fine as a `Date`
+// (round-trips through `.getTime()` with no NaN) but sits nowhere near
+// Postgres's actual range and 500s on `::timestamp` instead of failing this
+// check.
+const TIMESTAMP_CURSOR_KEY_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}$/;
+export function decodeTimestampCursor(raw: string | undefined): CursorTuple | null {
+  const cursor = decodeCursor(raw);
+  if (!cursor) return null;
+  return TIMESTAMP_CURSOR_KEY_RE.test(cursor.key) ? cursor : null;
 }
 
 /**
@@ -780,6 +957,18 @@ mobileRoutes.delete(
 //   - Cursor: opaque `cursor` from a prior response's `nextCursor`; keyset on
 //     (triggered_at DESC, id DESC). Stable under concurrent inserts and cheap
 //     on deep pages. When `cursor` is supplied, `page` is ignored.
+//
+// `nextCursor` is computed on EVERY response, cursor or not — including the
+// very first page/limit request (#3770). `triggered_at` is NOT NULL and
+// write-once (never updated after insert), so ordering never needs a
+// NULLS-LAST branch or an immutable-column swap the way `/devices` does
+// below. It DOES need full precision: Postgres keeps six fractional digits,
+// but a JS `Date` — what a plain Drizzle column read produces — only holds
+// three, so round-tripping the cursor through one can truncate a boundary
+// and skip rows sitting between the truncated value and the next real one.
+// `triggeredAtKey` reads the same column back as raw microsecond text via
+// `to_char` instead, and that text — never a `Date` — is what goes into the
+// token and the keyset predicate.
 mobileRoutes.get(
   '/alerts/inbox',
   requireScope('organization', 'partner', 'system'),
@@ -789,7 +978,7 @@ mobileRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
-    const cursor = decodeCursor(query.cursor);
+    const cursor = decodeTimestampCursor(query.cursor);
 
     const orgCheck = await getOrgIdsForAuth(auth, query.orgId);
     if (orgCheck.error) {
@@ -822,7 +1011,7 @@ mobileRoutes.get(
 
     if (cursor) {
       conditions.push(
-        sql`(${alerts.triggeredAt} < ${cursor.ts.toISOString()} OR (${alerts.triggeredAt} = ${cursor.ts.toISOString()} AND ${alerts.id} < ${cursor.id}))`
+        sql`(${alerts.triggeredAt} < ${cursor.key}::timestamp OR (${alerts.triggeredAt} = ${cursor.key}::timestamp AND ${alerts.id} < ${cursor.id}::uuid))`
       );
     }
 
@@ -834,7 +1023,10 @@ mobileRoutes.get(
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
-    const fetchLimit = cursor ? limit + 1 : limit;
+    // Always over-fetch by one to know whether another page exists — not
+    // gated on `cursor`, or a cold-start caller's first response could never
+    // carry a usable `nextCursor` (#3770).
+    const fetchLimit = limit + 1;
     const alertRows = await db
       .select({
         id: alerts.id,
@@ -844,29 +1036,36 @@ mobileRoutes.get(
         title: alerts.title,
         message: alerts.message,
         triggeredAt: alerts.triggeredAt,
+        // Full microsecond-precision text of the same column, for the cursor
+        // only — see the route comment above. Never surfaced in `data`.
+        triggeredAtKey: sql<string>`to_char(${alerts.triggeredAt}, 'YYYY-MM-DD"T"HH24:MI:SS.US')`,
         acknowledgedAt: alerts.acknowledgedAt,
         resolvedAt: alerts.resolvedAt,
         deviceId: alerts.deviceId,
         deviceHostname: devices.hostname,
         deviceOsType: devices.osType,
-        deviceStatus: devices.status
+        deviceStatus: devices.status,
+        // Alerts carry no type/category of their own — only a rule reference.
+        // The category one hop away on the rule's template is the closest
+        // thing mobile has to a meaningful alert "type" (#4535). Nullable:
+        // alerts can be created without a rule.
+        category: alertTemplates.category
       })
       .from(alerts)
       .leftJoin(devices, eq(alerts.deviceId, devices.id))
+      .leftJoin(alertRules, eq(alerts.ruleId, alertRules.id))
+      .leftJoin(alertTemplates, eq(alertRules.templateId, alertTemplates.id))
       .where(whereCondition)
       .orderBy(desc(alerts.triggeredAt), desc(alerts.id))
       .limit(fetchLimit)
       .offset(cursor ? 0 : offset);
 
-    let trimmedRows = alertRows;
+    const hasMore = alertRows.length > limit;
+    const trimmedRows = hasMore ? alertRows.slice(0, limit) : alertRows;
     let nextCursor: string | null = null;
-    if (cursor) {
-      const hasMore = alertRows.length > limit;
-      trimmedRows = hasMore ? alertRows.slice(0, limit) : alertRows;
-      const last = trimmedRows[trimmedRows.length - 1];
-      if (hasMore && last) {
-        nextCursor = encodeCursor(last.triggeredAt, last.id);
-      }
+    const last = trimmedRows[trimmedRows.length - 1];
+    if (hasMore && last) {
+      nextCursor = encodeCursor(last.triggeredAtKey, last.id);
     }
 
     const data = trimmedRows.map(alert => ({
@@ -879,6 +1078,7 @@ mobileRoutes.get(
       triggeredAt: alert.triggeredAt,
       acknowledgedAt: alert.acknowledgedAt,
       resolvedAt: alert.resolvedAt,
+      category: alert.category ?? null,
       device: alert.deviceId ? {
         id: alert.deviceId,
         hostname: alert.deviceHostname,
@@ -1107,10 +1307,23 @@ mobileRoutes.post(
 // GET /devices - Get simplified device list for mobile
 //
 // Pagination is dual-mode (additive):
-//   - Legacy: page+limit; response carries `total` so callers can show "N of M".
-//   - Cursor: opaque `cursor` from a prior response's `nextCursor`; keyset on
-//     (last_seen_at DESC, id DESC). Stable under concurrent inserts and cheap
-//     on deep pages. When `cursor` is supplied, `page` is ignored.
+//   - Legacy: an EXPLICIT `?page=N` (no `cursor`); response carries `total`
+//     so callers can show "N of M". Keeps the pre-existing `last_seen_at
+//     DESC` order, and never returns a `nextCursor` — this contract doesn't
+//     upgrade into cursor mode mid-walk (ordering differs — see below).
+//   - Cursor: the DEFAULT — no `page` given, or an explicit `cursor` from a
+//     prior response's `nextCursor`. Keyset on `(hostname ASC, id ASC)`,
+//     ported from `routes/devices/core.ts`'s cursor mode rather than
+//     `last_seen_at`, because `last_seen_at` is both nullable (Postgres
+//     sorts NULLs first on DESC with no NULLS LAST clause, so never-checked-
+//     in devices would lead the walk) and mutable (every heartbeat rewrites
+//     it, so a device can cross the page boundary mid-walk and be skipped
+//     entirely). `hostname` is NOT NULL and effectively immutable, so the
+//     keyset is stable under concurrent heartbeats. This is a genuine
+//     ordering change for any caller that doesn't pass `page` (#3770) —
+//     intentional; the mobile client already re-sorts this list client-side
+//     (see `screens/devices/deviceListFilters.ts`) and never reads
+//     `nextCursor` today, so it is unaffected either way.
 mobileRoutes.get(
   '/devices',
   requireScope('organization', 'partner', 'system'),
@@ -1120,6 +1333,9 @@ mobileRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
+    // Cursor mode is the default (matches `routes/devices/core.ts`): an
+    // explicit `?page=N` with no `cursor` opts into the legacy contract.
+    const isCursorMode = query.page === undefined || query.cursor !== undefined;
     const cursor = decodeCursor(query.cursor);
 
     const orgCheck = await getOrgIdsForAuth(auth, query.orgId);
@@ -1156,8 +1372,10 @@ mobileRoutes.get(
     }
 
     if (cursor) {
+      // Tuple comparison on a NOT NULL pair needs no NULLS branch — unlike
+      // the previous `last_seen_at` keyset, there's only one phase to walk.
       conditions.push(
-        sql`(${devices.lastSeenAt} < ${cursor.ts.toISOString()} OR (${devices.lastSeenAt} = ${cursor.ts.toISOString()} AND ${devices.id} < ${cursor.id}))`
+        sql`(${devices.hostname}, ${devices.id}) > (${cursor.key}, ${cursor.id}::uuid)`
       );
     }
 
@@ -1169,7 +1387,12 @@ mobileRoutes.get(
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
-    const fetchLimit = cursor ? limit + 1 : limit;
+    // Over-fetch by one to know whether another page exists — not gated on
+    // `cursor` (a cold-start caller's first response could otherwise never
+    // carry a usable `nextCursor`, #3770), but legacy `?page=N` never mints
+    // one anyway (see above), so there's nothing to gain from the extra row
+    // there. Matches devices/core.ts's identical guard.
+    const fetchLimit = isCursorMode ? limit + 1 : limit;
     const deviceRows = await db
       .select({
         id: devices.id,
@@ -1178,28 +1401,63 @@ mobileRoutes.get(
         hostname: devices.hostname,
         displayName: devices.displayName,
         osType: devices.osType,
+        // Device Details v1 fields (#5140): plain columns, no extra query.
+        osVersion: devices.osVersion,
+        lastUser: devices.lastUser,
+        // Public/WAN address the agent last authenticated from — device_network's
+        // own public_ip column is never written by any code path (see its
+        // schema comment), so this is the only real source. Renamed to
+        // publicIp in the response below.
+        lastSeenIp: devices.lastSeenIp,
         status: devices.status,
-        lastSeenAt: devices.lastSeenAt
+        lastSeenAt: devices.lastSeenAt,
+        // #5104: the mobile row meta line needs the org name on a
+        // multi-org (partner-scoped) tenant — leftJoin so a device whose
+        // org lookup somehow fails (should not happen under FK integrity)
+        // degrades to a null name instead of dropping the row.
+        organizationName: organizations.name
       })
       .from(devices)
+      .leftJoin(organizations, eq(devices.orgId, organizations.id))
       .where(whereCondition)
-      .orderBy(desc(devices.lastSeenAt), desc(devices.id))
+      .orderBy(...(isCursorMode ? [asc(devices.hostname), asc(devices.id)] : [desc(devices.lastSeenAt), desc(devices.id)]))
       .limit(fetchLimit)
       .offset(cursor ? 0 : offset);
 
-    let items = deviceRows;
+    const hasMore = deviceRows.length > limit;
+    const items = hasMore ? deviceRows.slice(0, limit) : deviceRows;
+    // Legacy `?page=N` never returns a nextCursor — its order (`last_seen_at
+    // DESC`) doesn't match the keyset above, so a cursor minted from it would
+    // silently switch a walking client onto a different ordering (#3770).
     let nextCursor: string | null = null;
-    if (cursor) {
-      const hasMore = deviceRows.length > limit;
-      items = hasMore ? deviceRows.slice(0, limit) : deviceRows;
+    if (isCursorMode) {
       const last = items[items.length - 1];
       if (hasMore && last) {
-        nextCursor = encodeCursor(last.lastSeenAt, last.id);
+        nextCursor = encodeCursor(last.hostname, last.id);
       }
     }
 
+    // Device Details v1 fields (#5140): batched once for this page, not
+    // per-row — see loadDeviceDetailsV1Fields for why this can't fan out.
+    const { lanIpByDevice, openAlertCountByDevice, openTicketCountByDevice } =
+      await loadDeviceDetailsV1Fields(items.map((d) => d.id));
+
+    const data = items.map((d) => {
+      const { lastSeenIp, ...rest } = d;
+      return {
+        ...rest,
+        publicIp: lastSeenIp ?? null,
+        lanIp: lanIpByDevice.get(d.id) ?? null,
+        // `null` map = the count query itself failed for this page — send
+        // `null` (never a false `0`) so the client renders "unknown" rather
+        // than a confident, wrong zero. See loadDeviceDetailsV1Fields.
+        openAlertCount: openAlertCountByDevice === null ? null : (openAlertCountByDevice.get(d.id) ?? 0),
+        openTicketCount: openTicketCountByDevice === null ? null : (openTicketCountByDevice.get(d.id) ?? 0)
+      };
+    });
+
     return c.json({
-      data: items,
+      data,
       pagination: { page, limit, total, nextCursor }
     });
   }
@@ -1315,16 +1573,33 @@ mobileRoutes.post(
       }, 202);
     }
 
-    const cmdResult = await db
-      .insert(deviceCommands)
-      .values({
-        deviceId: device.id,
-        type: data.action,
-        payload: { source: 'mobile' },
-        status: 'pending',
-        createdBy: auth.user.id
-      })
-      .returning();
+    let cmdResult;
+    try {
+      await assertDeviceExecuteAllowed(device.id, data.action, auth.user.id);
+      cmdResult = await db
+        .insert(deviceCommands)
+        .values({
+          deviceId: device.id,
+          type: data.action,
+          payload: { source: 'mobile' },
+          status: 'pending',
+          createdBy: auth.user.id
+        })
+        .returning();
+    } catch (e) {
+      if (e instanceof TrustDeniedError) {
+        return c.json(
+          trustDenyBody({
+            allow: false,
+            code: e.code,
+            capability: 'device_execute',
+            reason: e.reason,
+          }, false),
+          403,
+        );
+      }
+      throw e;
+    }
     const cmd = cmdResult[0];
 
     if (!cmd) {
@@ -1370,7 +1645,7 @@ mobileRoutes.get(
     if (orgCheck.orgIds !== null) {
       if (orgCheck.orgIds.length === 0) {
         return c.json({
-          devices: { total: 0, online: 0, offline: 0, maintenance: 0 },
+          devices: { total: 0, online: 0, offline: 0, maintenance: 0, decommissioned: 0 },
           alerts: { total: 0, active: 0, acknowledged: 0, resolved: 0, critical: 0 }
         });
       }
@@ -1383,7 +1658,7 @@ mobileRoutes.get(
     if (perms?.allowedSiteIds) {
       if (perms.allowedSiteIds.length === 0) {
         return c.json({
-          devices: { total: 0, online: 0, offline: 0, maintenance: 0 },
+          devices: { total: 0, online: 0, offline: 0, maintenance: 0, decommissioned: 0 },
           alerts: { total: 0, active: 0, acknowledged: 0, resolved: 0, critical: 0 }
         });
       }
@@ -1394,10 +1669,15 @@ mobileRoutes.get(
 
     const deviceStats = await db
       .select({
-        total: sql<number>`count(*)`,
+        // Excludes decommissioned devices so this matches the
+        // online/offline/maintenance/decommissioned buckets below (#5106 —
+        // count(*) previously included decommissioned rows, inflating the
+        // hero total past what the status legend summed to).
+        total: sql<number>`sum(case when ${devices.status} != 'decommissioned' then 1 else 0 end)`,
         online: sql<number>`sum(case when ${devices.status} = 'online' then 1 else 0 end)`,
         offline: sql<number>`sum(case when ${devices.status} = 'offline' then 1 else 0 end)`,
-        maintenance: sql<number>`sum(case when ${devices.status} = 'maintenance' then 1 else 0 end)`
+        maintenance: sql<number>`sum(case when ${devices.status} = 'maintenance' then 1 else 0 end)`,
+        decommissioned: sql<number>`sum(case when ${devices.status} = 'decommissioned' then 1 else 0 end)`
       })
       .from(devices)
       .where(deviceWhere);
@@ -1416,7 +1696,8 @@ mobileRoutes.get(
             total: Number(deviceStats[0]?.total ?? 0),
             online: Number(deviceStats[0]?.online ?? 0),
             offline: Number(deviceStats[0]?.offline ?? 0),
-            maintenance: Number(deviceStats[0]?.maintenance ?? 0)
+            maintenance: Number(deviceStats[0]?.maintenance ?? 0),
+            decommissioned: Number(deviceStats[0]?.decommissioned ?? 0)
           },
           alerts: { total: 0, active: 0, acknowledged: 0, resolved: 0, critical: 0 }
         });
@@ -1441,7 +1722,8 @@ mobileRoutes.get(
         total: Number(deviceStats[0]?.total ?? 0),
         online: Number(deviceStats[0]?.online ?? 0),
         offline: Number(deviceStats[0]?.offline ?? 0),
-        maintenance: Number(deviceStats[0]?.maintenance ?? 0)
+        maintenance: Number(deviceStats[0]?.maintenance ?? 0),
+        decommissioned: Number(deviceStats[0]?.decommissioned ?? 0)
       },
       alerts: {
         total: Number(alertStats[0]?.total ?? 0),

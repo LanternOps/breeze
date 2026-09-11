@@ -225,6 +225,9 @@ snapshotsRoutes.get(
     if (query.configId) {
       conditions.push(eq(backupSnapshots.configId, query.configId));
     }
+    if (query.bareMetalRestorable !== undefined) {
+      conditions.push(eq(backupSnapshots.bareMetalRestorable, query.bareMetalRestorable));
+    }
 
     const rows = await db
       .select()
@@ -670,6 +673,8 @@ function toSnapshotResponse(row: typeof backupSnapshots.$inferSelect) {
     jobId: row.jobId,
     createdAt: row.timestamp.toISOString(),
     backupType: row.backupType ?? 'file',
+    bareMetalRestorable: row.bareMetalRestorable ?? null,
+    bareMetalReasons: row.bareMetalReasons ?? [],
     sizeBytes: row.size ?? null,
     fileCount: row.fileCount ?? null,
     label: row.label ?? null,

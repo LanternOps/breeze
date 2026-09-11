@@ -2,6 +2,40 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Hono } from "hono";
 import { randomUUID } from "crypto";
 
+const { evaluateCapability, partnerTrustMode, requireCapability } = vi.hoisted(() => {
+  const evaluateCapability = vi.fn(async (_cap?: string, _ctx?: unknown): Promise<any> => ({ allow: true }));
+  return {
+    evaluateCapability,
+    partnerTrustMode: vi.fn((): "off" | "shadow" | "enforce" => "off"),
+    requireCapability: vi.fn((capability: string) => async (c: any, next: any) => {
+      const auth = c.get("auth");
+      if (!auth?.partnerId) return next();
+      const decision = await evaluateCapability(capability, {
+        partnerId: auth.partnerId,
+        userId: auth.user?.id,
+        orgId: auth.orgId ?? undefined,
+      });
+      if (!decision.allow) {
+        return c.json({
+          error: decision.code,
+          capability: decision.capability,
+          reason: decision.reason,
+          reviewRequested: false,
+          meetingUrl: null,
+        }, 403);
+      }
+      return next();
+    }),
+  };
+});
+
+const { routeAuth } = vi.hoisted(() => ({
+  routeAuth: { current: null as Record<string, unknown> | null },
+}));
+
+vi.mock("../services/partnerTrust", () => ({ evaluateCapability, requireCapability }));
+vi.mock("../config/partnerTrustMode", () => ({ partnerTrustMode }));
+
 // ============================================================
 // Mocks — must appear before any `import` of the source
 // ============================================================
@@ -23,6 +57,7 @@ vi.mock("../db", () => ({
 
 vi.mock("../db/schema", () => ({
   enrollmentKeys: {},
+  organizations: { id: "organizations.id", partnerId: "organizations.partnerId" },
   installerBootstrapTokens: {},
 }));
 
@@ -42,10 +77,13 @@ vi.mock("../services/installerBootstrapToken", () => ({
 }));
 
 vi.mock("../middleware/auth", () => ({
+  siteAccessCheck: (allowed?: string[]) => (siteId?: string | null) =>
+    allowed === undefined || (!!siteId && allowed.includes(siteId)),
   authMiddleware: vi.fn((c: any, next: any) => {
-    c.set("auth", {
+    c.set("auth", routeAuth.current ?? {
       scope: "system",
       orgId: null,
+      partnerId: "22222222-2222-4222-8222-222222222222",
       user: { id: "user-system", email: "system@example.com" },
       canAccessOrg: () => true,
       accessibleOrgIds: [],
@@ -181,6 +219,30 @@ const SITE_ID = randomUUID();
 const KEY_ID = randomUUID();
 const CHILD_KEY_ID = randomUUID();
 
+/** Awaitable Drizzle limit result that also supports a terminal SHARE lock. */
+function lockableLimitRows<T>(rows: T[]) {
+  const result = Promise.resolve(rows) as Promise<T[]> & {
+    for: (mode: string) => Promise<T[]>;
+  };
+  result.for = (mode: string) => {
+    expect(mode).toBe('share');
+    return Promise.resolve(rows);
+  };
+  return result;
+}
+
+function restrictOrganizationToSites(siteIds: string[]) {
+  routeAuth.current = {
+    scope: "organization",
+    orgId: ORG_ID,
+    partnerId: null,
+    user: { id: "user-restricted", email: "restricted@example.com" },
+    canAccessOrg: (id: string) => id === ORG_ID,
+    accessibleOrgIds: [ORG_ID],
+    allowedSiteIds: siteIds,
+  };
+}
+
 function makeKeyRow(overrides: Record<string, unknown> = {}) {
   return {
     id: KEY_ID,
@@ -189,6 +251,7 @@ function makeKeyRow(overrides: Record<string, unknown> = {}) {
     name: "Test Key",
     key: "hashed:rawkey",
     keySecretHash: null,
+    credentialGeneration: 1,
     shortCode: null,
     installerPlatform: null,
     maxUsage: 10,
@@ -227,10 +290,98 @@ function makeChildKeyRow(overrides: Record<string, unknown> = {}) {
 // that calls mockEnrollmentDefaults() would otherwise leak its cap into every
 // later test in the file.
 beforeEach(() => {
+  routeAuth.current = null;
+  partnerTrustMode.mockReturnValue("off");
+  evaluateCapability.mockResolvedValue({ allow: true });
   assertTtlWithinCapMock.mockReset();
   assertTtlWithinCapMock.mockImplementation(async () => null);
   clampTtlToCapMock.mockReset();
   clampTtlToCapMock.mockImplementation(async (_orgId: string, ttlMinutes: number) => ttlMinutes);
+});
+
+describe("partner trust gates on authenticated installer distribution", () => {
+  it.each([
+    ["installer link", `/enrollment-keys/${KEY_ID}/installer-link`, "POST", { platform: "windows" }],
+    ["bootstrap token", `/enrollment-keys/${KEY_ID}/bootstrap-token`, "POST", {}],
+  ])("returns 403 for probation before creating the %s", async (_name, path, method, body) => {
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: "TRUST_PROBATION",
+      capability: "installer_distribute",
+      reason: "probation_default_deny",
+    });
+    const app = new Hono();
+    app.route("/enrollment-keys", enrollmentKeyRoutes);
+
+    const res = await app.request(path, {
+      method,
+      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({
+      error: "TRUST_PROBATION",
+      capability: "installer_distribute",
+    }));
+    expect(evaluateCapability).toHaveBeenCalledWith(
+      "installer_distribute",
+      expect.objectContaining({ partnerId: "22222222-2222-4222-8222-222222222222" }),
+    );
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("GET /:id/installer/:platform is NOT gated on installer_distribute — a probation partner can still download their own installer", async () => {
+    // This is the console's authenticated own-device installer download
+    // (AddDeviceModal, EnrollDeviceStep, EnrollmentKeyManager), not the
+    // abuse-relevant distribution surface (installer-link / bootstrap-token /
+    // the anonymous public routes) — so it must behave identically for a
+    // probation partner as for a trusted one, even if evaluateCapability
+    // would have denied.
+    //
+    // Clear call history first: the preceding it.each cases in this describe
+    // block call evaluateCapability (via installer-link / bootstrap-token),
+    // and this describe has no local `vi.clearAllMocks()`, so their history
+    // would otherwise leak into the `not.toHaveBeenCalled()` assertion below.
+    // Deliberately NOT queuing a mockResolvedValueOnce deny here: this route
+    // must never consult evaluateCapability at all, so priming a deny value
+    // that's never consumed would only leak into (and pollute) a later test.
+    evaluateCapability.mockClear();
+    partnerTrustMode.mockReturnValue("enforce");
+
+    process.env.PUBLIC_API_URL = "https://api.example.com";
+    const app = new Hono();
+    app.route("/enrollment-keys", enrollmentKeyRoutes);
+
+    const parentRow = makeKeyRow();
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parentRow]),
+        }),
+      }),
+    } as any);
+
+    const issueSpy = vi
+      .spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey")
+      .mockResolvedValueOnce({
+        id: "token-row-uuid-1",
+        token: "ABC1234567",
+        expiresAt: new Date("2026-04-20T00:00:00.000Z"),
+        parentKeyName: "Test Key",
+      });
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/installer/windows`,
+    );
+
+    expect(res.status).toBe(200);
+    // The route never consults installer_distribute at all — same behavior
+    // regardless of trust state.
+    expect(evaluateCapability).not.toHaveBeenCalled();
+
+    issueSpy.mockRestore();
+  });
 });
 
 // ============================================================
@@ -245,6 +396,26 @@ describe("POST /enrollment-keys/:id/installer-link", () => {
     process.env.PUBLIC_API_URL = "https://api.example.com";
     app = new Hono();
     app.route("/enrollment-keys", enrollmentKeyRoutes);
+  });
+
+  it("denies a restricted organization caller before creating a hidden-site link", async () => {
+    restrictOrganizationToSites([randomUUID()]);
+    const parentRow = makeKeyRow();
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([parentRow]) }),
+      }),
+    } as any);
+
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform: "windows" }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(issueDownloadHandleMock).not.toHaveBeenCalled();
+    expect(createAuditLogAsync).not.toHaveBeenCalled();
   });
 
   it("returns shortUrl in response", async () => {
@@ -605,6 +776,47 @@ describe("GET /s/:code", () => {
     app.route("/s", publicShortLinkRoutes);
   });
 
+  it("hides an installer-distribution trust denial behind 404", async () => {
+    partnerTrustMode.mockReturnValue("enforce");
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: "TRUST_PROBATION",
+      capability: "installer_distribute",
+      reason: "probation_default_deny",
+    });
+    const shortLinkRow = makeKeyRow({
+      shortCode: "probation1",
+      installerPlatform: "windows",
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([shortLinkRow]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ partnerId: "partner-1" }]),
+          }),
+        }),
+      } as any);
+
+    const res = await app.request("/s/probation1");
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "Not found" });
+    expect(evaluateCapability).toHaveBeenCalledWith("installer_distribute", {
+      partnerId: "partner-1",
+      orgId: ORG_ID,
+      detail: { route: "short-link" },
+    });
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
   it("serves installer for valid code", async () => {
     const shortLinkRow = makeKeyRow({
       shortCode: "abc1234567",
@@ -616,7 +828,7 @@ describe("GET /s/:code", () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+          limit: vi.fn().mockReturnValue(lockableLimitRows([shortLinkRow])),
         }),
       }),
     } as any);
@@ -647,11 +859,22 @@ describe("GET /s/:code", () => {
         parentKeyName: "Test Key",
       });
 
+    // Precondition: mode 'off' (the module-level default from the outer
+    // beforeEach), so anonymousInstallerDistributionAllowed short-circuits
+    // before ever resolving a partner id.
+    expect(partnerTrustMode()).toBe("off");
+
     const res = await app.request("/s/abc1234567");
 
     expect(res.status).toBe(200);
     const buf = await res.arrayBuffer();
     expect(buf.byteLength).toBeGreaterThan(0);
+
+    // Under mode 'off' the trust gate must short-circuit entirely: no
+    // capability evaluation, and no second db.select for the org's partner id
+    // — only the one lookup-by-shortCode select above.
+    expect(evaluateCapability).not.toHaveBeenCalled();
+    expect(db.select).toHaveBeenCalledTimes(1);
 
     issueSpy.mockRestore();
   });
@@ -675,7 +898,7 @@ describe("GET /s/:code", () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+          limit: vi.fn().mockReturnValue(lockableLimitRows([shortLinkRow])),
         }),
       }),
     } as any);
@@ -964,7 +1187,7 @@ describe("GET /s/:code", () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+          limit: vi.fn().mockReturnValue(lockableLimitRows([shortLinkRow])),
         }),
       }),
     } as any);
@@ -1288,6 +1511,46 @@ describe("GET /public-download/:platform", () => {
     app.route("/enrollment-keys", publicEnrollmentRoutes);
   });
 
+  it("hides an installer-distribution trust denial behind 404", async () => {
+    partnerTrustMode.mockReturnValue("enforce");
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: "TRUST_PROBATION",
+      capability: "installer_distribute",
+      reason: "probation_default_deny",
+    });
+    const row = makeKeyRow({ installerPlatform: "windows" });
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([row]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ partnerId: "partner-1" }]),
+          }),
+        }),
+      } as any);
+
+    const res = await app.request(
+      `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
+    );
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "Invalid or expired download link" });
+    expect(evaluateCapability).toHaveBeenCalledWith("installer_distribute", {
+      partnerId: "partner-1",
+      orgId: ORG_ID,
+      detail: { route: "public-download" },
+    });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
   it("does not bump child key usage_count on download — leaves the slot for the agent enroll call", async () => {
     // Regression test for the root cause of the MSI "401 Invalid or
     // expired enrollment key" bug. Previously serveInstaller ran
@@ -1338,12 +1601,23 @@ describe("GET /public-download/:platform", () => {
         parentKeyName: "Test Key",
       });
 
+    // Precondition: mode 'off' (the module-level default from the outer
+    // beforeEach), so anonymousInstallerDistributionAllowed short-circuits
+    // before ever resolving a partner id.
+    expect(partnerTrustMode()).toBe("off");
+
     const res = await app.request(
       `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
     );
 
     expect(res.status).toBe(200);
     expect(db.update).not.toHaveBeenCalled();
+
+    // Under mode 'off' the trust gate must short-circuit entirely: no
+    // capability evaluation, and no second db.select for the org's partner id
+    // — only the one lookup-by-token-hash select above.
+    expect(evaluateCapability).not.toHaveBeenCalled();
+    expect(db.select).toHaveBeenCalledTimes(1);
 
     issueSpy.mockRestore();
   });
@@ -1359,13 +1633,22 @@ describe("GET /public-download/:platform", () => {
       usageCount: 0,
     });
 
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([row]),
+    partnerTrustMode.mockReturnValue("enforce");
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([row]),
+          }),
         }),
-      }),
-    } as any);
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ partnerId: "partner-1" }]),
+          }),
+        }),
+      } as any);
 
     const issueSpy = vi
       .spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey")
@@ -1381,6 +1664,11 @@ describe("GET /public-download/:platform", () => {
     );
 
     expect(res.status).toBe(200);
+    expect(evaluateCapability).toHaveBeenCalledWith("installer_distribute", {
+      partnerId: "partner-1",
+      orgId: ORG_ID,
+      detail: { route: "public-download" },
+    });
     expect(res.headers.get("Content-Type")).toBe("application/octet-stream");
     expect(res.headers.get("Content-Disposition")).toMatch(
       /^attachment; filename="Breeze Agent \(ABCDE12345@api\.example\.com\)\.msi"$/,
@@ -1772,6 +2060,27 @@ describe("POST /:id/bootstrap-token", () => {
     app.route("/enrollment-keys", enrollmentKeyRoutes);
   });
 
+  it("denies a restricted organization caller before issuing a hidden-site token", async () => {
+    restrictOrganizationToSites([randomUUID()]);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([makeKeyRow()]) }),
+      }),
+    } as any);
+
+    const issueSpy = vi.spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey");
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/bootstrap-token`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ maxUsage: 1 }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(issueSpy).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(createAuditLogAsync).not.toHaveBeenCalled();
+    issueSpy.mockRestore();
+  });
+
   it("issues a bootstrap token for a valid parent key", async () => {
     const parent = makeKeyRow();
 
@@ -1779,7 +2088,7 @@ describe("POST /:id/bootstrap-token", () => {
     const parentSelectMock = {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([parent]),
+          limit: vi.fn().mockReturnValue(lockableLimitRows([parent])),
         }),
       }),
     } as any;
@@ -1811,7 +2120,7 @@ describe("POST /:id/bootstrap-token", () => {
   });
 
   it("rejects unknown parent key with 404", async () => {
-    vi.mocked(db.select).mockReturnValueOnce({
+    vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([]),
@@ -1854,7 +2163,7 @@ describe("POST /:id/bootstrap-token", () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([parent]),
+          limit: vi.fn().mockReturnValue(lockableLimitRows([parent])),
         }),
       }),
     } as any);
@@ -2020,10 +2329,10 @@ describe("POST /:id/bootstrap-token", () => {
   it("allows a ttlMinutes at exactly the partner cap on the bootstrap-token route (#2776)", async () => {
     mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
     const parent = makeKeyRow();
-    vi.mocked(db.select).mockReturnValueOnce({
+    vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([parent]),
+          limit: vi.fn().mockReturnValue(lockableLimitRows([parent])),
         }),
       }),
     } as any);
@@ -2461,6 +2770,27 @@ describe("POST / - siteId ownership validation", () => {
 // both paths must be gated. Capping only ttlMinutes would leave expiresAt as
 // a wide-open bypass.
 // ============================================================
+describe("POST /:id/download-handle — site ceiling", () => {
+  it("denies a restricted organization caller before issuing a handle for a hidden-site key", async () => {
+    restrictOrganizationToSites([randomUUID()]);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([makeKeyRow()]) }),
+      }),
+    } as any);
+    const app = new Hono();
+    app.route("/enrollment-keys", enrollmentKeyRoutes);
+
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/download-handle`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rawToken: "rawkey" }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(issueDownloadHandleMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("POST / - partner cap enforcement (fix round 1, #2776)", () => {
   let app: Hono;
 

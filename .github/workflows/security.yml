@@ -32,7 +32,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -128,7 +128,7 @@ jobs:
           exit-code: '0'
 
       - name: Upload Trivy filesystem SARIF
-        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         if: always()
         with:
           sarif_file: 'trivy-fs.sarif'
@@ -160,9 +160,9 @@ jobs:
   # Builds and scans every container image this repo publishes, using the SAME
   # Dockerfile the release lanes ship.
   #
-  # This list used to be hand-maintained beside the publish lists in release.yml
-  # and hosted-images.yml, and the two drifted: the job built the
-  # `docker/Dockerfile.api|web` compose variants while release/hosted shipped
+  # This list used to be hand-maintained beside the publish list in release.yml,
+  # and the two drifted: the job built the
+  # `docker/Dockerfile.api|web` compose variants while release.yml shipped
   # `apps/api|web/Dockerfile`, so the two most widely deployed images in the
   # product were gated by nothing and shipped a known HIGH CVE
   # (issues #4273 / #4260). `apps/api/src/config/dockerfileImageScanCoverage.test.ts`
@@ -175,7 +175,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # --- Published to GHCR by release.yml and hosted-images.yml ---
+          # --- Published to GHCR by release.yml (emergency manual builds go
+          # through `docker buildx` + a GHCR push from a maintainer machine
+          # instead of a workflow) ---
           - image: api
             dockerfile: apps/api/Dockerfile
           - image: web
@@ -241,7 +243,8 @@ jobs:
         run: |
           node --test \
             .github/scripts/check-workflow-security.test.mjs \
-            scripts/security/pin-github-actions.test.mjs
+            scripts/security/pin-github-actions.test.mjs \
+            scripts/release/attest-macos-pkg.test.mjs
           node .github/scripts/check-workflow-security.mjs
 
       - name: Install actionlint (pinned + checksum-verified)

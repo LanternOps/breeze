@@ -32,11 +32,14 @@ import {
   Link2,
   Cloud,
   History,
+  Bot,
 } from "lucide-react";
 import { formatPercent } from "@/lib/i18n/format";
 import { formatUptime } from "../../lib/utils";
 import type { Device, DeviceStatus } from "./DeviceList";
 import { formatDeviceSummaryOs } from "./osDisplay";
+import RebootScheduledBadge from "./RebootScheduledBadge";
+import UninstallStateBadge from "./UninstallStateBadge";
 import DeviceActions from "./DeviceActions";
 import DeviceInfoTab from "./DeviceInfoTab";
 import DeviceHardwareInventory from "./DeviceHardwareInventory";
@@ -47,6 +50,7 @@ import DeviceOneDriveTab from "./DeviceOneDriveTab";
 import DeviceSecurityTab from "./DeviceSecurityTab";
 import DeviceAlertHistory from "./DeviceAlertHistory";
 import DeviceActivityFeed from "./DeviceActivityFeed";
+import DeviceQueuedActions from "./DeviceQueuedActions";
 import DeviceScriptHistory from "./DeviceScriptHistory";
 import DevicePerformanceGraphs from "./DevicePerformanceGraphs";
 import DeviceEventLogViewer from "./DeviceEventLogViewer";
@@ -61,13 +65,16 @@ import DeviceBootPerformanceTab from "./DeviceBootPerformanceTab";
 import DevicePlaybookHistory from "./DevicePlaybookHistory";
 import DevicePeripheralsTab from "./DevicePeripheralsTab";
 import DeviceWarrantyCard from "./DeviceWarrantyCard";
+import DeviceBillingCard from "./DeviceBillingCard";
 import DeviceUserIdleStat from "./DeviceUserIdleStat";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
 import PossibleReplacementBanner from "./PossibleReplacementBanner";
 import { navigateTo } from "@/lib/navigation";
+import { decodeScriptExecutionId } from "@/lib/deviceScriptsLink";
 import { OverflowTabs } from "../shared/OverflowTabs";
 import DeviceBackupTab from "../backup/DeviceBackupTab";
 import DeviceTicketsTab from "../tickets/DeviceTicketsTab";
+import OperatorTaskActivityFeed from "../aiOperator/OperatorTaskActivityFeed";
 import DeviceAnomaliesPanel from "./DeviceAnomaliesPanel";
 import DeviceReliabilityPanel from "./DeviceReliabilityPanel";
 import DeviceMonitoringTab from "./DeviceMonitoringTab";
@@ -108,7 +115,8 @@ type CoreTab =
   | "peripherals"
   | "backup"
   | "linked-profiles"
-  | "tickets";
+  | "tickets"
+  | "operator-tasks";
 
 /**
  * Extension-contributed `device.detail.tabs` tab id:
@@ -140,6 +148,7 @@ const statusColors: Record<DeviceStatus, string> = {
   quarantined: "bg-warning/15 text-warning border-warning/30",
   updating: "bg-info/15 text-info border-info/30",
   pending: "bg-muted text-muted-foreground border-border",
+  unknown: "bg-muted text-muted-foreground border-border",
 };
 
 const statusLabels: Record<DeviceStatus, string> = {
@@ -150,6 +159,10 @@ const statusLabels: Record<DeviceStatus, string> = {
   quarantined: "Quarantined",
   updating: "Updating",
   pending: "Pending",
+  // No detail page exists for a manual asset in v1 (#4622 W04 spec), and
+  // `unknown` is only produced for unprobed network rows (#5213), so this
+  // never renders today — kept for the shared DeviceStatus exhaustiveness.
+  unknown: "Unknown",
 };
 
 function formatLastSeen(dateString: string, timezone?: string): string {
@@ -201,6 +214,7 @@ const VALID_TABS: CoreTab[] = [
   "backup",
   "linked-profiles",
   "tickets",
+  "operator-tasks",
 ];
 
 // Mirrors the character set an `ExtensionSlotDescriptor.key` can contain:
@@ -226,6 +240,18 @@ export function tabFromHash(hash: string): Tab | undefined {
 function anomalyIdFromHash(hash: string): string | undefined {
   const [tab, anomalyId] = hash.split("/");
   return tab === "anomalies" && anomalyId ? anomalyId : undefined;
+}
+
+// #4886 — mirrors anomalyIdFromHash: `#scripts/<executionId>` both selects the
+// Scripts tab (via tabFromHash, which only looks at the first segment) and
+// tells DeviceScriptHistory which execution to auto-open/highlight, so a
+// post-run redirect lands the operator watching the right row rather than a
+// generic tab switch. The segment is percent-decoded — deviceScriptsHash()
+// (the only writer) percent-encodes it, so this must reverse that or a
+// highlight for any id needing an escape would silently never match.
+function scriptExecutionIdFromHash(hash: string): string | undefined {
+  const [tab, executionId] = hash.split("/");
+  return tab === "scripts" ? decodeScriptExecutionId(executionId) : undefined;
 }
 
 type LinkedNetworkAsset = { id: string; label: string };
@@ -319,6 +345,9 @@ export default function DeviceDetails({
   const [focusedAnomalyId, setFocusedAnomalyId] = useHashState<
     string | undefined
   >(undefined, anomalyIdFromHash);
+  const [highlightedExecutionId, setHighlightedExecutionId] = useHashState<
+    string | undefined
+  >(undefined, scriptExecutionIdFromHash);
   // Whether the Overview Activity rail is collapsed to its thin vertical bar.
   // Starts collapsed so the page paints at full width during the async load and
   // never flashes a rail that then vanishes (the v0.85.0 stretch bug). Once the
@@ -351,6 +380,7 @@ export default function DeviceDetails({
     window.location.hash = tab;
     setActiveTab(tab);
     setFocusedAnomalyId(undefined);
+    setHighlightedExecutionId(undefined);
   };
 
   // Use provided timezone or browser default
@@ -424,6 +454,12 @@ export default function DeviceDetails({
       label: t("deviceDetails.tickets"),
       icon: <Ticket className="h-4 w-4" />,
       title: t("deviceDetails.ticketsLinkedToThisDevice"),
+    },
+    {
+      id: "operator-tasks",
+      label: t("deviceDetails.operatorTasks"),
+      icon: <Bot className="h-4 w-4" />,
+      title: t("deviceDetails.operatorTasksForThisDevice"),
     },
     {
       id: "eventlog",
@@ -587,6 +623,13 @@ export default function DeviceDetails({
                 >
                   {statusLabels[device.status]}
                 </span>
+                {/* "Removed" says the record was offboarded; this says what
+                    happened to the agent on the actual machine (#3987).
+                    Renders nothing for any device that is not removed. */}
+                <UninstallStateBadge
+                  uninstall={device.uninstall}
+                  status={device.status}
+                />
                 {device.pendingReboot && (
                   <span
                     data-testid="device-pending-reboot-badge"
@@ -596,6 +639,17 @@ export default function DeviceDetails({
                     {t("deviceDetails.rebootPending")}{" "}
                   </span>
                 )}
+                {/* A restart BOOKED for a specific instant (#3207 W5) — the
+                    complement of the OS-level "reboot pending" flag beside it,
+                    not a replacement for it. Renders nothing when nothing is
+                    scheduled, which is the steady state for most devices. */}
+                <RebootScheduledBadge
+                  rebootScheduledAt={device.rebootScheduledAt}
+                  rebootDeadline={device.rebootDeadline}
+                  rebootSource={device.rebootSource}
+                  rebootDeferralsUsed={device.rebootDeferralsUsed}
+                  rebootMaxDeferrals={device.rebootMaxDeferrals}
+                />
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
                 <span>
@@ -712,6 +766,12 @@ export default function DeviceDetails({
             <DevicePerformanceGraphs deviceId={device.id} compact />
 
             <DeviceWarrantyCard deviceId={device.id} compact />
+
+            <DeviceBillingCard deviceId={device.id} />
+
+            {device.status !== "decommissioned" && (
+              <DeviceQueuedActions deviceId={device.id} />
+            )}
           </div>
 
           <div
@@ -817,10 +877,15 @@ export default function DeviceDetails({
 
       {activeTab === "tickets" && <DeviceTicketsTab deviceId={device.id} />}
 
+      {activeTab === "operator-tasks" && (
+        <OperatorTaskActivityFeed deviceId={device.id} />
+      )}
+
       {activeTab === "scripts" && (
         <DeviceScriptHistory
           deviceId={device.id}
           timezone={effectiveTimezone}
+          highlightExecutionId={highlightedExecutionId}
         />
       )}
 
@@ -889,7 +954,11 @@ export default function DeviceDetails({
       {activeTab === "backup" && (
         <DeviceBackupTab
           deviceId={device.id}
-          deviceStatus={device.status}
+          // 'unknown' (#5213 network rows, #4622 manual assets) never reaches
+          // this agent-only detail page; DeviceBackupTab's status prop predates
+          // that value, so treat it as "not provided" rather than widening a
+          // backup-module type for a status it can never actually see.
+          deviceStatus={device.status === "unknown" ? undefined : device.status}
           timezone={effectiveTimezone}
         />
       )}

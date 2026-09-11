@@ -1031,12 +1031,14 @@
       "loadWithStatus": "Regeln konnten nicht geladen werden (HTTP {{status}})",
       "load": "Regeln konnten nicht geladen werden",
       "updateRule": "Die Regel konnte nicht aktualisiert werden",
-      "deleteRule": "Die Regel konnte nicht gelöscht werden"
+      "deleteRule": "Die Regel konnte nicht gelöscht werden",
+      "reapproveRule": "Regel konnte nicht erneut genehmigt werden"
     },
     "toasts": {
       "defaultVerdictSet": "Standardurteil auf {{verdict}} gesetzt",
       "ruleToggled": "Regel „{{name}}“ {{state}}",
-      "ruleDeleted": "Regel „{{name}}“ gelöscht"
+      "ruleDeleted": "Regel „{{name}}“ gelöscht",
+      "ruleReapproved": "Regel „{{name}}“ erneut genehmigt – automatische Genehmigung wiederhergestellt"
     },
     "states": {
       "disabled": "deaktiviert",
@@ -1044,7 +1046,8 @@
     },
     "description": "Softwarerichtlinien werden zuerst ausgewertet – vor diesen Regeln entscheidet eine Zulassungs-/Blockierlistenübereinstimmung. Die Regeln werden dann in der Reihenfolge ihrer Priorität ausgeführt (niedrigste zuerst); Das erste Spiel entscheidet.",
     "actions": {
-      "addRule": "Regel hinzufügen"
+      "addRule": "Regel hinzufügen",
+      "reapprove": "Erneut genehmigen"
     },
     "defaultVerdict": {
       "label": "Standardurteil",
@@ -1070,6 +1073,15 @@
       "title": "PAM-Regel löschen",
       "message": "Regel „{{name}}“ löschen? Rechteerhöhungsanfragen werden dieser Regel nicht mehr zugeordnet.",
       "confirm": "Regel löschen"
+    },
+    "staleTierBadge": {
+      "label": "Veraltet",
+      "tooltip": "Risikostufe {{tier}} entspricht nichts mehr, was diese Regel auswählen kann, sodass sie nie wieder zutreffen kann.",
+      "tooltipWithTiers": "Risikostufe {{tier}} entspricht nichts mehr, was diese Regel auswählen kann, sodass sie nie wieder zutreffen kann. Aktuell verwendete Stufen: {{tiers}}."
+    },
+    "suspendedBadge": {
+      "label": "Automatische Genehmigung ausgesetzt",
+      "tooltip": "Diese Regel hat vor dem Upgrade automatisch genehmigt. Bis ein Administrator sie erneut genehmigt, ist eine manuelle Genehmigung erforderlich."
     }
   },
   "pamPamSignerGroupsTab": {

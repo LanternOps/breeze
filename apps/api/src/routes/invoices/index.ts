@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { authMiddleware } from '../../middleware/auth';
+import { invoiceEvidenceRoutes } from './evidence';
 import { invoiceCrudRoutes } from './invoices';
 import { invoiceLifecycleRoutes } from './lifecycle';
 import { invoicePaymentRoutes } from './payments';
@@ -14,4 +15,5 @@ invoiceRoutes.route('/', invoiceLifecycleRoutes);  // /:id/issue, /:id/send, /:i
 invoiceRoutes.route('/', invoicePaymentRoutes);    // /:id/payments...
 invoiceRoutes.route('/', invoiceStripeRoutes);     // /:id/pay-link
 invoiceRoutes.route('/', invoicePdfRoutes);        // /:id/pdf (Phase 5)
+invoiceRoutes.route('/', invoiceEvidenceRoutes);   // /:id/lines/:lineId/devices (#3205 W07)
 invoiceRoutes.route('/', invoiceCrudRoutes);       // /, /:id, /:id/lines... (param matchers last)

@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// vi.hoisted: referenced from a vi.mock factory below, which is hoisted above
+// normal const declarations.
+const platform = vi.hoisted(() => ({ OS: 'ios' as 'ios' | 'android' }));
+vi.mock('react-native', () => ({ Platform: platform }));
+
 const coreRequest = vi.fn();
 const launchCameraAsync = vi.fn();
 const launchImageLibraryAsync = vi.fn();
@@ -35,13 +40,25 @@ vi.mock('expo-file-system', () => {
   // `File` and `Directory` are real classes upstream and `downloadFileAsync` is
   // a STATIC on File — a plain-object double would let `new File(...)` throw
   // only at runtime on a device, which is exactly the bug this suite exists for.
+  //
+  // `File` extends the real `Blob` here (rather than a bare class) because the
+  // real upstream class "implements Blob" (#5103's fix depends on that), and
+  // Node's own `FormData.append(name, value, filename)` — unlike React
+  // Native's own FormData, which this app runs against on-device — strictly
+  // rejects a 3-arg append whose value isn't genuinely `instanceof Blob`. A
+  // bare-class double would make `uploadTicketAttachment`'s real `form.append`
+  // call throw in every test below, for a reason that has nothing to do with
+  // the code under test.
   class Directory {
     constructor(...segments: unknown[]) { this.segments = segments; }
     segments: unknown[];
   }
-  class File {
-    constructor(...segments: unknown[]) { this.segments = segments; }
-    segments: unknown[];
+  class File extends Blob {
+    readonly uri: string;
+    constructor(...segments: unknown[]) {
+      super([], { type: 'application/octet-stream' });
+      this.uri = segments.filter((s): s is string => typeof s === 'string').join('/');
+    }
     static downloadFileAsync = (...a: unknown[]) => downloadFileAsync(...a);
   }
   return { File, Directory, Paths: { cache: { uri: 'file:///cache/' } } };
@@ -92,6 +109,7 @@ function apiError(code: string, statusCode: number, message = 'server said no') 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  platform.OS = 'ios';
   requestCameraPermissionsAsync.mockResolvedValue({ granted: true });
   requestMediaLibraryPermissionsAsync.mockResolvedValue({ granted: true });
   isAvailableAsync.mockResolvedValue(true);
@@ -130,6 +148,32 @@ describe('pickers', () => {
       selectionLimit: 2,
       allowsMultipleSelection: true,
     });
+  });
+
+  it('never requests Photo Library permission on iOS — the picker (PHPickerViewController) needs none', async () => {
+    launchImageLibraryAsync.mockResolvedValue({ canceled: true, assets: null });
+
+    await pickFromLibrary(5);
+
+    expect(requestMediaLibraryPermissionsAsync).not.toHaveBeenCalled();
+    expect(launchImageLibraryAsync).toHaveBeenCalled();
+  });
+
+  it('still requests Photo Library permission on Android', async () => {
+    platform.OS = 'android';
+    launchImageLibraryAsync.mockResolvedValue({ canceled: true, assets: null });
+
+    await pickFromLibrary(5);
+
+    expect(requestMediaLibraryPermissionsAsync).toHaveBeenCalled();
+  });
+
+  it('reports a denied Android library permission distinctly from a cancel, without ever opening the picker', async () => {
+    platform.OS = 'android';
+    requestMediaLibraryPermissionsAsync.mockResolvedValue({ granted: false });
+
+    await expect(pickFromLibrary(5)).resolves.toEqual({ ok: false, reason: 'permission-denied' });
+    expect(launchImageLibraryAsync).not.toHaveBeenCalled();
   });
 
   it('reports a denied camera permission distinctly from a cancel', async () => {
@@ -270,10 +314,41 @@ describe('uploadTicketAttachment', () => {
     expect(timeoutMs).toBe(120_000);
   });
 
-  it('sends the file under the field name the server expects', () => {
-    expect(attachmentFilePart(jpeg)).toEqual({
-      uri: 'file:///tmp/shot.jpg', name: 'shot.jpg', type: 'image/jpeg',
-    });
+  it('builds the multipart part as a Blob, not the bare {uri,name,type} shape that broke winter fetch (#5103)', () => {
+    const part = attachmentFilePart(jpeg);
+
+    // The OLD shape here was a plain `{ uri, name, type }` object — exactly
+    // what expo's `fetch` (`winter/fetch/convertFormData.ts`) throws
+    // `Unsupported FormDataPart implementation` on, because it accepts only a
+    // `Blob` or an object exposing `bytes()`. See the two tests below, which
+    // exercise the real converter against both shapes.
+    expect(part).toBeInstanceOf(Blob);
+    expect(part).not.toEqual({ uri: jpeg.uri, name: jpeg.name, type: jpeg.mimeType });
+  });
+
+  it("names the part using the picker's filename, not whatever segment the cache URI ends in", () => {
+    // `File.name` on a real device derives from the URI, and a picker's
+    // cache URI (e.g. `.../ImagePicker/8F3C1234-ABCD.jpg`) rarely matches
+    // what the picker itself reported (`IMG_1234.JPG`) — the mismatch this
+    // test guards against.
+    const cameraRoll = { ...jpeg, uri: 'file:///cache/ImagePicker/8F3C1234-ABCD.jpg', name: 'IMG_1234.JPG' };
+
+    expect(attachmentFilePart(cameraRoll).name).toBe('IMG_1234.JPG');
+  });
+
+  it('passes the filename as the THIRD `append` argument, not read off the File instance', async () => {
+    coreRequest.mockResolvedValue({ data: { id: 'att-1' } });
+
+    await uploadTicketAttachment('t-1', jpeg);
+
+    const [, options] = coreRequest.mock.calls[0]!;
+    const form = (options as RequestInit).body as FormData;
+    const value = form.get('file');
+    // Node's own FormData wraps an appended Blob into a File carrying
+    // whatever filename was passed as the 3rd argument — asserting `.name`
+    // here proves the picked filename (not a URI-derived guess) won
+    expect(value).toBeInstanceOf(Blob);
+    expect((value as unknown as { name?: string }).name).toBe(jpeg.name);
   });
 
   it('returns the attachment metadata the server minted', async () => {
@@ -372,6 +447,86 @@ describe('uploadTicketAttachment', () => {
   });
 });
 
+/**
+ * Feeds `attachmentFilePart`'s output — and the shape it replaced — straight
+ * into Expo's REAL multipart serialiser (#5103's actual failure point), via a
+ * minimal fake `FormData` whose `.entries()` yields the same
+ * `[name, value]` tuples winter fetch reads off React Native's own
+ * (patched) `FormData`. This is what makes the test a regression test rather
+ * than an assertion about our own code's opinion of itself.
+ */
+function entriesOnlyFormData(entries: [string, unknown][]): FormData {
+  return { entries: () => entries } as unknown as FormData;
+}
+
+/**
+ * `convertFormDataAsync` is internal — it is not re-exported from the public
+ * `expo/fetch` entry, only from the deep `expo/src/winter/fetch/...` source
+ * path (which has no compiled `.d.ts` of its own reachable that way). A
+ * static `import` of that path pulls the raw source into THIS PROJECT's
+ * `tsc --noEmit` graph and fails on a pre-existing type error inside expo's
+ * own file that nothing public ever reaches. A dynamic import with a
+ * runtime-built specifier resolves at test time exactly the same way (proving
+ * the real, shipped behaviour — not a reimplementation of its rules) without
+ * asking our tsc to type-check third-party internals it was never meant to.
+ */
+async function realConvertFormDataAsync(
+  fd: FormData
+): Promise<{ body: Uint8Array; boundary: string }> {
+  const specifier = ['expo', 'src', 'winter', 'fetch', 'convertFormData'].join('/');
+  const mod: { convertFormDataAsync: (fd: FormData) => Promise<{ body: Uint8Array; boundary: string }> } =
+    await import(/* @vite-ignore */ specifier);
+  return mod.convertFormDataAsync(fd);
+}
+
+describe('attachmentFilePart against the real winter-fetch converter (#5103)', () => {
+  it('THE BUG: the old {uri,name,type} RN shape throws "Unsupported FormDataPart implementation"', async () => {
+    const oldShape = { uri: jpeg.uri, name: jpeg.name, type: jpeg.mimeType };
+
+    await expect(
+      realConvertFormDataAsync(entriesOnlyFormData([['file', oldShape]]))
+    ).rejects.toThrow(/Unsupported FormDataPart implementation/);
+  });
+
+  it('THE FIX: attachmentFilePart() serialises cleanly through the real converter', async () => {
+    // The mocked `expo-file-system` File extends the real `Blob` class (see
+    // the mock above) purely so Node's own, stricter
+    // `FormData.append(name, value, filename)` — exercised throughout this
+    // file's `uploadTicketAttachment` tests — accepts it. That happens to
+    // route THIS test through convertFormDataAsync's `entry instanceof Blob`
+    // branch rather than the `'bytes' in entry` branch a real on-device File
+    // takes (see the next test for that one).
+    const part = attachmentFilePart(jpeg);
+
+    const result = await realConvertFormDataAsync(entriesOnlyFormData([['file', part]]));
+
+    expect(result.body.length).toBeGreaterThan(0);
+    expect(new TextDecoder().decode(result.body)).toContain(`--${result.boundary}`);
+  });
+
+  it('THE FIX, real device shape: a Blob-implementing-but-not-instanceof part (bytes(), no Blob) also serialises cleanly', async () => {
+    // A real `expo-file-system` File is declared `implements Blob` (satisfies
+    // the interface — has `bytes()`, `type`, `size`, …) but does NOT extend
+    // the JS `Blob` class, so `entry instanceof Blob` is false for it on a
+    // real device; convertFormDataAsync instead takes its `'bytes' in entry'`
+    // branch. The mock above can't model that shape (it must extend Blob for
+    // the reason noted in the previous test), so this fixture stands in for
+    // the genuine on-device shape and proves THAT branch works too.
+    const realDeviceShapedPart = {
+      name: jpeg.name,
+      type: jpeg.mimeType,
+      bytes: async () => new Uint8Array([1, 2, 3]),
+    };
+
+    const result = await realConvertFormDataAsync(
+      entriesOnlyFormData([['file', realDeviceShapedPart]])
+    );
+
+    expect(result.body.length).toBeGreaterThan(0);
+    expect(new TextDecoder().decode(result.body)).toContain(`--${result.boundary}`);
+  });
+});
+
 describe('attachmentContentUrl', () => {
   it('builds an absolute URL against the configured server', async () => {
     await expect(attachmentContentUrl('t-1', 'att-1')).resolves.toBe(
@@ -403,5 +558,46 @@ describe('openAttachmentExternally', () => {
       openAttachmentExternally('t-1', 'att-1', 'report.pdf', 'application/pdf')
     ).rejects.toBeInstanceOf(AttachmentUploadError);
     expect(downloadFileAsync).not.toHaveBeenCalled();
+  });
+});
+
+describe('uploadTicketAttachment — failures that are NOT a bad connection', () => {
+  const jpeg = { uri: 'file:///tmp/a.jpg', name: 'a.jpg', mimeType: 'image/jpeg', size: 1000, width: 10, height: 10 };
+  const GENERIC = 'Upload failed. Check your connection and try again.';
+
+  it.each([
+    [401, 'Not authenticated'],
+    [403, 'Insufficient permissions'],
+    [404, 'Not Found'],
+  ])('surfaces the server\'s own reason for an HTTP %i instead of blaming the connection', async (status, message) => {
+    coreRequest.mockRejectedValue({ statusCode: status, message });
+
+    const err = (await uploadTicketAttachment('t-1', jpeg).catch((e: unknown) => e)) as AttachmentUploadError;
+
+    expect(err).toBeInstanceOf(AttachmentUploadError);
+    expect(err.message).not.toBe(GENERIC);
+    expect(err.message).toContain(message);
+    expect(err.message).toContain(String(status));
+    // A stale token or a permission gap does not get better by tapping Retry.
+    expect(err.retryable).toBe(false);
+  });
+
+  it('maps ORG_CONTEXT_REQUIRED to its own non-retryable copy', async () => {
+    coreRequest.mockRejectedValue(apiError('ORG_CONTEXT_REQUIRED', 403));
+    const err = (await uploadTicketAttachment('t-1', jpeg).catch((e: unknown) => e)) as AttachmentUploadError;
+    expect(err.code).toBe('ORG_CONTEXT_REQUIRED');
+    expect(err.retryable).toBe(false);
+    expect(err.message).not.toBe(GENERIC);
+  });
+
+  it('names the underlying cause for a failure that never produced a response', async () => {
+    // RN's fetch rejects with a TypeError when it cannot read the file URI or
+    // build the multipart body; that is not a connectivity problem either, and
+    // hiding the message is what made the camera-upload defect undiagnosable.
+    coreRequest.mockRejectedValue(new TypeError('Network request failed'));
+    const err = (await uploadTicketAttachment('t-1', jpeg).catch((e: unknown) => e)) as AttachmentUploadError;
+    expect(err.code).toBe('UPLOAD_FAILED');
+    expect(err.retryable).toBe(true);
+    expect(err.message).toContain('Network request failed');
   });
 });

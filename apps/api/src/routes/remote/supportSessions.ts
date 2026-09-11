@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { createSupportSessionSchema, formatSupportCode } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db } from '../../db';
 import { devices, remoteSessions, supportSessions } from '../../db/schema';
 import { getOrCreateQuickSupportOrg } from '../../services/quickSupportOrg';
 import {
@@ -14,6 +14,8 @@ import {
 import { getTrustedClientIp } from '../../services/clientIp';
 import { endSupportSession } from '../../services/quickSupportEnd';
 import { logSessionAudit } from './helpers';
+import { createRemoteSession, RemoteSessionDeniedError } from '../../services/remoteSessionCreate';
+import { trustDenyBody } from '../../services/partnerTrust';
 
 export const supportSessionRoutes = new Hono();
 
@@ -83,10 +85,10 @@ supportSessionRoutes.post(
     const code = generateSupportCode();
     const now = Date.now();
 
-    // System context: when the hidden org was just created it is not in this
-    // request's accessible_org_ids yet, so the RLS INSERT policy would reject.
-    const [created] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-      db.insert(supportSessions).values({
+    let created: SupportSessionRow;
+    try {
+      created = await createRemoteSession('support', {
+        partnerId: auth.partnerId,
         orgId,
         createdByUserId: auth.user.id,
         codeHash: hashSupportCode(code),
@@ -94,8 +96,18 @@ supportSessionRoutes.post(
         hardExpiresAt: new Date(now + SUPPORT_SESSION_HARD_CAP_HOURS * 3_600_000),
         attributedOrgId: data.attributedOrgId ?? null,
         attributionLabel: data.attributionLabel ?? null,
-      }).returning()
-    ));
+      });
+    } catch (e) {
+      if (e instanceof RemoteSessionDeniedError) {
+        return c.json(trustDenyBody({
+          allow: false,
+          code: e.code,
+          capability: 'remote_control',
+          reason: e.reason,
+        }, false), 403);
+      }
+      throw e;
+    }
 
     // RETURNING on a single-row INSERT always yields a row; narrow it so a
     // future refactor that makes the insert conditional fails loudly here

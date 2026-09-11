@@ -47,6 +47,8 @@ Both connectors live in the organization's **Integrations** area as dedicated ca
     The card covers creating the Entra app registration, copying the tenant and client IDs, generating a client secret, and granting **admin consent** for the required Microsoft Graph permissions. It also maps which permissions back which capabilities -- reads need directory and audit-log read scopes, while disabling a user or resetting a password additionally require user read/write and the **User Administrator** role.
 
     On save, Breeze acquires a token and makes a **live Microsoft Graph call** to confirm the credentials and admin consent are in place before storing anything.
+
+    This is the direct, single-tenant client-secret method. Breeze also supports two separate delegated-consent connection profiles -- **Customer Graph Read** (read-only) and **Customer Graph Actions** (adds write permissions) -- that avoid managing a client secret yourself; see [Identity Integrations](/features/identity-integrations/) for that flow. If both a direct connection and a delegated profile exist for the same tenant, the direct connection takes precedence.
   </TabItem>
 </Tabs>
 
@@ -131,8 +133,8 @@ Every identity action carries one of two tiers:
 
 When an approved Microsoft 365 password reset runs through the durable approval path (for example, it was approved after your chat session ended), the temporary password is stored encrypted and surfaced as a **one-time reveal**:
 
-- Open **Monitoring → AI Risk Engine → Approval History** and find the executed reset. A **Reveal temporary password** button appears on it.
-- Only the technician who **requested** the reset can reveal it, and it can be revealed **exactly once** -- copy it when it is shown, because it will not be shown again.
+- Open **Security → AI Risk → Approval History** and find the executed reset. A **Reveal temporary password** button appears on it.
+- Normally, only the technician who **requested** the reset can reveal it. If the reset was raised without a specific requesting user (for example, by an API key or MCP client), any user who can approve requests for that organization may reveal it instead. Either way it can be revealed **exactly once** -- copy it when it is shown, because it will not be shown again.
 - An un-revealed password expires after **7 days** and is then permanently discarded.
 
 The reset always sets **force-change at next sign-in**, so the temporary credential is only good for one first login.

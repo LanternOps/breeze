@@ -8,7 +8,8 @@ import {
   claimPendingCommandForDelivery,
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
-import { queueCommand } from './commandQueue';
+import { CommandTypes, queueCommand } from './commandQueue';
+import { defaultOfflinePolicy, deliverByFor, type OfflinePolicy } from './commandOfflinePolicy';
 import {
   decryptCommandForDelivery,
   toAgentCommandFrame,
@@ -16,6 +17,7 @@ import {
 } from './sensitiveCommandPayload';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
+import { checkScriptMaintenanceSuppression } from './scriptMaintenanceGate';
 import {
   describeVariableFailure,
   resolveForOrg,
@@ -46,8 +48,15 @@ import {
  * build → sensitive-field encryption at enqueue → queueCommand (audit +
  * dispatch metrics) → claim / JIT-decrypt / WS send / release.
  *
- * Callers own: auth, site permissions, maintenance windows, batching, and
- * any caller-specific status bookkeeping (e.g. automation's 'queued' state).
+ * Maintenance windows are OWNED HERE (#4919). They used to be "the caller's
+ * job", and three of the four callers never did it — an assistant-, automation-
+ * or auto-migration-initiated script ran on a device where the identical
+ * human-initiated run would have been suppressed. The gate now lives on this
+ * seam so every path inherits it, and it is fail-closed: `bypassMaintenanceWindow`
+ * is the only way past it and no caller sets it today.
+ *
+ * Callers own: auth, site permissions, batching, and any caller-specific
+ * status bookkeeping (e.g. automation's 'queued' state).
  * Inserts run in the caller's ambient DB context — request paths stay under
  * RLS; system-context callers must validate ownership before calling.
  */
@@ -78,12 +87,27 @@ export type DispatchScriptInput = {
   timeoutSeconds?: number;
   targetSessionId?: number;
   batchId?: string | null;
-  requireOnline?: boolean;
+  /**
+   * #5128 — explicit offline policy. Omit to take the registry default for
+   * `script` (queue, standard TTL), which is what manual Run Script has always
+   * done in practice.
+   */
+  offlinePolicy?: OfflinePolicy;
   // A snapshot preloaded ONCE per fan-out by the caller (#3409 PR2 Task 4) —
   // see tenantVariableResolution.ts. Required only when `source.kind ===
   // 'saved'` and the script content actually contains a {{var.*}} token; the
   // common token-free path never needs one.
   variableScope?: TenantVariableScope;
+  /**
+   * #4919 — skip the device maintenance-window gate for this dispatch.
+   *
+   * NO caller sets this today, and the default (`false`) is what makes every
+   * path at least as strict as the human `POST /scripts/:id/execute` path has
+   * always been. It exists so a future per-automation "ignore maintenance
+   * windows" option has a seam to land on that is an explicit, greppable
+   * opt-in rather than a fourth path that quietly never checked.
+   */
+  bypassMaintenanceWindow?: boolean;
 };
 
 export type DispatchScriptResult =
@@ -92,6 +116,12 @@ export type DispatchScriptResult =
       commandId: string;
       executionId: string | null;
       delivered: boolean;
+      /**
+       * #5128 — the instant after which the command expires undelivered. For a
+       * queued (offline) dispatch this is the honest answer to "how long will
+       * this wait?"; the UI copy renders it as the expiry date.
+       */
+      deliverBy: Date | null;
       // Distinguishes WHY `delivered` is false. 'no_agent' is the normal
       // "queued for later" case; 'claim_lost', 'decrypt_failed', and
       // 'send_failed' all mean we had a connected agent and still failed to
@@ -116,12 +146,39 @@ export type DispatchScriptResult =
       // action is validated without consulting the referenced script's
       // definitions and so literally cannot pre-validate against a binding.
       ignoredParameters: string[];
+      // The run context this dispatch RESOLVED to — `input.runAs` when the
+      // caller overrode it, otherwise the saved script default (#4888). One
+      // source of truth for every caller that has to report or echo what
+      // actually ran: recomputing `input.runAs ?? script.runAs` at the call
+      // site is how a UI ends up disagreeing with the payload it sent.
+      runAs: 'system' | 'user' | 'elevated';
+      /** The Windows session a `runAs: 'user'` dispatch was pinned to, if any. */
+      targetSessionId: number | null;
     }
   | {
       ok: false;
       code:
         | 'device_decommissioned'
         | 'device_offline'
+        // #4919 — an active maintenance window with `suppressScripts`. The
+        // operator's own schedule: every caller records this as a SKIP, keeps
+        // the run green, and does not retry now.
+        | 'maintenance_suppressed'
+        // #4919 — the maintenance check could not be EVALUATED (the config
+        // resolve threw). We still refuse — fail-closed — but this is a fault
+        // in a safety dependency, not a policy decision, and it must not be
+        // reported as a scheduled skip.
+        //
+        // It is a separate code rather than a field on `maintenance_suppressed`
+        // BECAUSE of how callers are written: each one tests
+        // `code === 'maintenance_suppressed'` for its skip branch and lets
+        // everything else fall through to its existing failure handling. A
+        // caller that never learns this code therefore treats it as a failure
+        // — which is the correct, conservative outcome. Folding both into one
+        // code had the opposite failure mode: a fleet-wide maintenance-check
+        // outage rendered as green automation runs with zero on-failure
+        // notifications.
+        | 'maintenance_check_failed'
         | 'os_mismatch'
         | 'org_mismatch'
         | 'insert_failed'
@@ -182,7 +239,31 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   if (device.status === 'decommissioned') {
     return { ok: false, code: 'device_decommissioned', error: 'Device is decommissioned' };
   }
-  if (input.requireOnline) {
+  // #4919 — before the liveness read and before any row is written. Ordered
+  // ahead of the offline gate deliberately: "we would not have run this
+  // anyway" is the more useful answer than "the device is offline", and it
+  // stays the reported reason whatever the device's status happens to be.
+  if (!input.bypassMaintenanceWindow) {
+    const maintenance = await checkScriptMaintenanceSuppression(device.id);
+    if (maintenance.suppressed) {
+      // The gate's `reason` is carried through as the CODE, not flattened into
+      // free text: callers branch on `code` and never parse `error`, so a
+      // discriminator that survives only in the message reaches no decision.
+      return {
+        ok: false,
+        code: maintenance.reason === 'check_failed' ? 'maintenance_check_failed' : 'maintenance_suppressed',
+        error: maintenance.message,
+      };
+    }
+  }
+
+  const offlinePolicy: OfflinePolicy =
+    input.offlinePolicy ?? defaultOfflinePolicy(CommandTypes.SCRIPT);
+  // A `reject` row is only created against a device we just observed online, so
+  // it gets the short race grace rather than a queue window.
+  const deliverBy = deliverByFor(offlinePolicy);
+
+  if (offlinePolicy.kind === 'reject') {
     // Re-read live status rather than trusting `device.status` (the caller's
     // snapshot). Automation fleet runs snapshot every target device ONCE at
     // run start (automationRuntime.ts:1712/2269) and can dispatch minutes
@@ -191,7 +272,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     // (commandQueue.ts:650), which re-selected `devices.status` fresh on
     // every dispatch — a deleted test once pinned the opposite contract
     // ("must NOT pre-filter on it") for this codepath, which this restores.
-    // Only requireOnline gets the extra query: manual/route dispatch
+    // Only a `reject` policy gets the extra query: manual/route dispatch
     // deliberately queues offline devices, so no live read runs for it.
     const [liveDevice] = await db
       .select({ status: devices.status })
@@ -228,6 +309,17 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   const runAs = input.runAs ?? (source.kind === 'saved' ? source.script.runAs : 'system');
   const timeoutSeconds = input.timeoutSeconds ?? (source.kind === 'saved' ? source.script.timeoutSeconds : 300);
   const payloadScriptId = source.kind === 'saved' ? source.script.id : source.provenance;
+  // #5129 — the agent STRICT-pattern descriptions a human acknowledged on the
+  // script record. Server-decided and delivered over the authenticated command
+  // channel; the agent never supplies it.
+  //
+  // A `raw` source has no script record and therefore no acknowledgement, so
+  // ad-hoc content (the automation `execute_command` action, remediation
+  // suggestions) keeps the pre-#5129 behaviour exactly: any Strict match is
+  // refused on the device. That is deliberate — there is no human decision on
+  // file for content that exists only for the duration of one dispatch.
+  const acknowledgedSecurityPatterns =
+    source.kind === 'saved' ? (source.script.acknowledgedSecurityPatterns ?? []) : [];
 
   // #3409 PR2 Task 4: resolve {{var.*}} tokens for this device's org before
   // anything else happens with `content`. `hasVariableTokens` comes first so
@@ -411,6 +503,11 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
         // can answer "which variable fed this run" without carrying what it
         // was worth.
         parameters: buildExecutionParameters(parameters, parameterBindings, degradedActorId),
+        // #4888 — stamp the RESOLVED run context onto the execution row so
+        // history can answer "SYSTEM or the logged-in user?" without reading
+        // the (sanitised, independently reaped) command payload.
+        runAs,
+        targetSessionId: input.targetSessionId ?? null,
         status: 'pending',
       })
       .returning({ id: scriptExecutions.id });
@@ -495,11 +592,21 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       ...(hasSecrets ? { secretEnv } : {}),
       timeoutSeconds,
       runAs,
+      // #5129. Omitted when empty so the wire stays identical to pre-#5129 for
+      // every script that acknowledges nothing — and an absent key is what the
+      // agent already treats as fail-closed.
+      ...(acknowledgedSecurityPatterns.length > 0 ? { acknowledgedSecurityPatterns } : {}),
       ...(input.targetSessionId != null ? { targetSessionId: input.targetSessionId } : {}),
     }, { commandId: reservedCommandId, deviceId: device.id });
     stage = 'queueCommand';
     command = await queueCommand(device.id, 'script', payload, safeCreatedBy ?? undefined, {
       commandId: reservedCommandId,
+      // #5128: the DELIVERY deadline. Before this, a script queued for an
+      // offline laptop was reaped after ~10 min by its own 300 s EXECUTION
+      // timeout, even though the UI promised "the run will wait until it
+      // reconnects".
+      deliverBy,
+      submittedOrgId: device.orgId,
     });
   } catch (err) {
     await discardPendingExecution(`${stage} threw`);
@@ -619,7 +726,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     }
   }
 
-  return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, ignoredParameters };
+  return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, deliverBy, ignoredParameters, runAs, targetSessionId: input.targetSessionId ?? null };
 }
 
 // #3826 Wave 4A Task 3: reserved sidecar key for the users-FK probe-and-degrade

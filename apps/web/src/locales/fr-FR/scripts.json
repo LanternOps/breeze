@@ -149,12 +149,23 @@
       "webhookSecret": "Secret du webhook (facultatif)",
       "mode": "Mode",
       "script": "Script",
+      "runAs": "Exécuter en tant que",
       "notificationChannel": "Canal de notification",
       "severity": "Gravité",
       "message": "Message",
       "command": "Commande",
+      "whenOffline": "Si l'appareil est hors ligne",
       "software": "Logiciel",
       "failureNotificationChannel": "Canal de notification d’échec"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "Mettre en file d'attente (par défaut)",
+        "skip": "Ignorer"
+      }
+    },
+    "hints": {
+      "whenOffline": "Le travail en file d'attente attend l'appareil et s'exécute à sa prochaine connexion, ou expire après 7 jours. Ignorer fait échouer l'étape immédiatement."
     },
     "placeholders": {
       "name": "Contrôle de maintenance quotidien",
@@ -250,7 +261,8 @@
     "resultCount": {
       "passed": "{{count}} réussis",
       "failed": "{{count}} en échec",
-      "skipped": "{{count}} ignorés"
+      "skipped": "{{count}} ignorés",
+      "cancelled": "{{count}} annulés"
     },
     "duration": "Durée : {{duration}}",
     "progress": {
@@ -264,7 +276,15 @@
     },
     "actions": {
       "hideLogs": "Masquer les journaux",
-      "viewLogs": "Voir les journaux"
+      "viewLogs": "Voir les journaux",
+      "cancelRun": "Annuler l'exécution",
+      "partnerScopeTooltip": "Cette exécution s'applique à toutes les organisations de votre compte partenaire. Demandez à un administrateur partenaire complet de l'annuler, ou arrêtez plutôt des exécutions individuelles sur vos propres appareils.",
+      "confirmCancelRunTitle": "Annuler cette exécution ?",
+      "confirmCancelRunMessage": "Breeze arrêtera chaque exécution de script que cette exécution attend encore. Les actions déjà en cours peuvent se terminer avant de pouvoir être arrêtées.",
+      "uncancellableActions_one": "{{count}} action n'a pas pu être arrêtée et pourrait continuer à s'exécuter seule.",
+      "uncancellableActions_other": "{{count}} actions n'ont pas pu être arrêtées et pourraient continuer à s'exécuter seules.",
+      "cancelRunSuccess_one": "Annulé — {{count}} exécution arrêtée.",
+      "cancelRunSuccess_other": "Annulé — {{count}} exécutions arrêtées."
     },
     "timestamps": {
       "started": "Démarré le {{date}}",
@@ -281,7 +301,8 @@
       "partial": "Partiel",
       "running": "En cours",
       "pending": "En attente",
-      "skipped": "Ignoré"
+      "skipped": "Ignoré",
+      "cancelled": "Annulée"
     },
     "empty": "Aucun historique d’exécution disponible.",
     "triggeredBy": {
@@ -302,6 +323,9 @@
       "untitled": "Script",
       "awaiting": "En attente de la réponse de l'agent…",
       "truncated": "Sortie tronquée — voir l'historique des scripts de l'appareil pour le texte complet."
+    },
+    "errors": {
+      "cancelRun": "Impossible d'annuler l'exécution."
     }
   },
   "automationsPage": {
@@ -618,8 +642,33 @@
       "stdout": "Sortie standard (stdout)",
       "stderr": "Erreur standard (stderr)"
     },
+    "customFields": {
+      "title": "Écritures de champs personnalisés",
+      "applied": "Appliquées",
+      "rejected": "Rejetées",
+      "none": "Aucune",
+      "reasons": {
+        "unknown_field": "Aucune définition de champ correspondante",
+        "not_script_writable": "Le champ n'est pas modifiable par script",
+        "not_applicable_to_device": "Le champ ne s'applique pas à ce type d'appareil",
+        "device_not_found": "Appareil introuvable",
+        "invalid_type": "La valeur est du mauvais type",
+        "out_of_range": "La valeur est hors plage",
+        "not_a_choice": "La valeur ne fait pas partie des choix autorisés du champ",
+        "too_long": "La valeur est trop longue",
+        "invalid_date": "La valeur n'est pas une date valide",
+        "marker_unparseable": "Le marqueur n'a pas pu être analysé comme JSON",
+        "too_many_lines": "Trop de lignes de marqueur dans cette exécution",
+        "too_many_keys": "Trop de clés dans le marqueur",
+        "marker_too_large": "Le marqueur a dépassé la limite de taille",
+        "forbidden_key": "La clé n'est pas autorisée",
+        "envelope_unparseable": "Le résultat structuré n'a pas pu être analysé",
+        "envelope_unsupported_version": "Le résultat structuré utilise une version non prise en charge"
+      }
+    },
     "actions": {
-      "copyToClipboard": "Copier dans le presse-papiers"
+      "copyToClipboard": "Copier dans le presse-papiers",
+      "runAgain": "Exécuter à nouveau"
     },
     "title": "Détails d’exécution",
     "statusDescription": {
@@ -627,20 +676,32 @@
       "completed": "Script terminé avec succès",
       "failed": "Échec de l’exécution du script",
       "timeout": "Délai d’exécution du script dépassé",
-      "pending": "Le script attend son exécution"
+      "pending": "Le script attend son exécution",
+      "queued": "Le script est en file d'attente pour être envoyé à l'appareil",
+      "cancelling": "Arrêt demandé — en attente de confirmation de l'appareil.",
+      "cancelled": "Le script a été arrêté sur l'appareil"
     },
     "fields": {
       "startedAt": "Démarré le",
       "duration": "Durée",
       "exitCode": "Code de sortie",
-      "completedAt": "Terminé le"
+      "completedAt": "Terminé le",
+      "runAs": "Contexte d’exécution"
     },
     "status": {
       "running": "En cours…",
       "pending": "En attente",
       "completed": "Terminée",
       "failed": "Échec",
-      "timeout": "Délai dépassé"
+      "timeout": "Délai dépassé",
+      "queued": "En file d'attente",
+      "cancelling": "Arrêt en cours…",
+      "cancelled": "Annulée",
+      "completedCancelTooLate": "Terminée — votre demande d'arrêt est arrivée trop tard",
+      "failedCancelTooLate": "Échec — votre demande d'arrêt est arrivée trop tard",
+      "timeoutCancelTooLate": "Délai dépassé — votre demande d'arrêt est arrivée trop tard",
+      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus",
+      "queuedOffline": "En file d'attente — appareil hors ligne"
     }
   },
   "executionHistory": {
@@ -661,7 +722,15 @@
       "running": "En cours…",
       "completed": "Terminée",
       "failed": "Échec",
-      "timeout": "Délai dépassé"
+      "timeout": "Délai dépassé",
+      "queued": "En file d'attente",
+      "cancelling": "Arrêt en cours…",
+      "cancelled": "Annulée",
+      "completedCancelTooLate": "Terminée — votre demande d'arrêt est arrivée trop tard",
+      "failedCancelTooLate": "Échec — votre demande d'arrêt est arrivée trop tard",
+      "timeoutCancelTooLate": "Délai dépassé — votre demande d'arrêt est arrivée trop tard",
+      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus",
+      "queuedOffline": "En file d'attente — appareil hors ligne"
     },
     "summary": "{{shown}} sur {{total}}",
     "headers": {
@@ -672,11 +741,19 @@
     },
     "empty": "Aucune exécution trouvée. Essayez d’ajuster vos filtres.",
     "actions": {
-      "viewDetails": "Voir les détails"
+      "viewDetails": "Voir les détails",
+      "stop": "Arrêter",
+      "forceStop": "Arrêter immédiatement",
+      "confirmStopTitle": "Arrêter cette exécution ?",
+      "confirmStopMessage": "Breeze demandera à l'appareil d'arrêter {{script}}. Cela peut prendre quelques secondes — « Arrêter immédiatement » ignore le délai de grâce et met fin au processus sur-le-champ."
     },
     "pagination": {
       "showing": "Affichage de {{start}} à {{end}} sur {{total}}",
       "page": "Page {{page}} sur {{total}}"
+    },
+    "errors": {
+      "noLongerCancellable": "Cette exécution est déjà terminée et ne peut plus être arrêtée.",
+      "cancelFailed": "Impossible d'arrêter l'exécution."
     }
   },
   "scriptAiInput": {
@@ -762,7 +839,8 @@
     "errors": {
       "fetch": "Impossible de récupérer le script",
       "generic": "Une erreur est survenue",
-      "save": "Impossible d’enregistrer le script"
+      "save": "Impossible d’enregistrer le script",
+      "duplicate": "Impossible de dupliquer le script"
     },
     "toast": {
       "created": "Script créé",
@@ -772,6 +850,7 @@
     "actions": {
       "backToScripts": "Retour aux scripts",
       "executionHistory": "Historique d’exécution",
+      "duplicate": "Dupliquer",
       "create": "Créer le script",
       "saveChanges": "Enregistrer les modifications"
     },
@@ -860,6 +939,9 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "toasts": {
+      "runsWhenOnline": "S'exécute quand l'appareil est en ligne"
     }
   },
   "secretParameters": {
@@ -1035,6 +1117,8 @@
       "variablePlaceholder": "p. ex. vendor_token",
       "fieldLabel": "Clé du champ personnalisé",
       "fieldPlaceholder": "p. ex. asset_tag",
+      "fieldHelp": "Saisissez la Clé du champ affichée dans Paramètres → Champs personnalisés (sensible à la casse). Lecture : la valeur résolue est transmise au script sous forme de variable d’environnement BREEZE_PARAM_<KEY> (nom du paramètre en majuscules avec des tirets bas) et de l’espace réservé {{paramName}} — aucune invite n’est affichée. Écriture : affichez ::breeze:custom-fields:: {\"key\": \"value\"} sur stdout pour un champ dont l’option « Autoriser les scripts à écrire ce champ » est activée. Voir « Lire et écrire les champs personnalisés » sous l’éditeur pour un exemple.",
+      "fieldHelpAriaLabel": "À propos de la liaison du champ personnalisé de l’appareil",
       "builtinLabel": "Propriété",
       "chooseTitle": "Choisir une variable",
       "secretRejected": "« {{key}} » est un secret — l’enregistrement sera refusé. Choisissez une variable non secrète.",
@@ -1042,6 +1126,26 @@
       "notSecretRow": "Pas un secret — utilisez « À partir d’une variable »",
       "secretHint": "Transmise uniquement comme variable d’environnement {{env}} — jamais écrite dans le script. Nécessite une exécution dans le contexte système et un agent prenant en charge la transmission sécurisée des secrets.",
       "hint": "Résolu pour chaque appareil ciblé au moment de l’exécution — personne n’a à le saisir."
+    },
+    "securityReview": {
+      "title": "Revue de sécurité",
+      "blockedHint_one": "Ce script correspond à 1 motif que l'agent refuse d'exécuter sans confirmation.",
+      "blockedHint_other": "Ce script correspond à {{count}} motifs que l'agent refuse d'exécuter sans confirmation. Confirmez chacun de ceux que vous souhaitez autoriser.",
+      "clearedHint": "Tous les motifs détectés ont été confirmés.",
+      "willBlock": "Non confirmé — l'agent refusera d'exécuter ce script.",
+      "footnote": "Une confirmation s'applique uniquement à ce script et ne couvre que les motifs listés ici. Si vous ajoutez plus tard une autre opération à risque, elle sera bloquée jusqu'à ce que vous la confirmiez aussi."
+    },
+    "customFieldHelp": {
+      "title": "Lire et écrire les champs personnalisés",
+      "readLabel": "Lecture :",
+      "read": "liez un paramètre à un champ personnalisé (source « Depuis un champ personnalisé de l’appareil »). La valeur arrive sous forme de variable d’environnement",
+      "readPlaceholders": "et d’espace réservé",
+      "writeLabel": "Écriture :",
+      "write": "affichez une ligne sur stdout sous la forme",
+      "writeGate": "Le champ doit avoir l’option « Autoriser les scripts à écrire ce champ » activée dans Paramètres → Champs personnalisés. Les valeurs sont validées selon le type du champ ; les clés rejetées sont listées dans les détails de l’exécution.",
+      "secretCaveat": "La valeur écrite apparaît aussi dans la sortie enregistrée du script — n’écrivez jamais un secret de cette façon. Utilisez plutôt une variable secrète.",
+      "insertExample": "Insérer un exemple",
+      "docsLink": "Documentation des champs personnalisés"
     }
   },
   "scriptList": {
@@ -1080,6 +1184,7 @@
     "actions": {
       "runTitle": "Exécuter le script",
       "editTitle": "Modifier le script",
+      "duplicateTitle": "Dupliquer le script",
       "deleteTitle": "Supprimer le script"
     },
     "pagination": {
@@ -1200,7 +1305,8 @@
       "delete": "Impossible de supprimer un script",
       "deleteTryAgain": "Impossible de supprimer le script. Veuillez réessayer.",
       "alreadyInLibrary": "\"{{name}}\" est déjà dans votre bibliothèque",
-      "import": "Impossible d’importer un script"
+      "import": "Impossible d’importer un script",
+      "duplicate": "Impossible de dupliquer le script"
     },
     "toast": {
       "deleting": "Suppression de \"{{name}}\"...",
@@ -1287,6 +1393,8 @@
     "offlineWarning": "L'appareil sélectionné est hors ligne — l'exécution attendra sa reconnexion.",
     "exitCode": "sortie {{code}}",
     "viewHistory": "Voir l'historique",
+    "runAgain": "Exécuter à nouveau",
+    "viewOnDevice": "Voir sur l'appareil",
     "status": {
       "pending": "En attente",
       "running": "En cours",
@@ -1294,7 +1402,8 @@
       "failed": "Échouée",
       "timeout": "Délai expiré",
       "queued": "En file",
-      "cancelled": "Annulée"
+      "cancelled": "Annulée",
+      "cancelling": "Arrêt en cours…"
     },
     "errors": {
       "execute": "Impossible de démarrer l'exécution de test",

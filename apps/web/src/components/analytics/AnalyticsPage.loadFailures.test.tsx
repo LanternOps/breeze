@@ -117,6 +117,16 @@ beforeEach(() => {
 });
 
 describe('AnalyticsPage load failures', () => {
+  it('renders denied alert counts as unavailable without a zero count or alert link', async () => {
+    routeFetch({ '/alerts/summary': () => jsonResponse({ error: 'Permission denied' }, { status: 403 }) });
+    render(<AnalyticsPage />);
+    await waitForLoadedPage();
+    const label = screen.getByText('Critical');
+    const card = label.closest('a') ?? label.parentElement!.parentElement!;
+    expect(card.textContent).toContain('—');
+    expect(card.textContent).not.toMatch(/0 warnings/i);
+    expect(card.closest('a[href="/alerts"]')).toBeNull();
+  });
   it('reports a 200 with an unparseable body instead of rendering it as an empty card', async () => {
     routeFetch({ '/alerts/summary': () => unparseableResponse() });
 

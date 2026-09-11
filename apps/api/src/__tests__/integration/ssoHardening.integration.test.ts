@@ -695,11 +695,18 @@ describe('SSO hardening — real-DB (SR2-10 … SR2-12)', () => {
       return a;
     }
 
-    function patchIssuer(a: Hono, providerId: string, token: string, issuer: string, prefix = '/api/v1/sso') {
+    function patchIssuer(
+      a: Hono,
+      providerId: string,
+      token: string,
+      issuer: string,
+      prefix = '/api/v1/sso',
+      extra: Record<string, unknown> = {},
+    ) {
       return a.request(`${prefix}/providers/${providerId}`, {
         method: 'PATCH',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ issuer }),
+        body: JSON.stringify({ issuer, ...extra }),
       });
     }
 
@@ -741,7 +748,14 @@ describe('SSO hardening — real-DB (SR2-10 … SR2-12)', () => {
         } as any;
       });
 
-      const res = await patchIssuer(apiApp(), provider.id, token, newIssuer);
+      // The token endpoint origin is changing (idp.example.test →
+      // new-idp.example.test), so the credential-origin fence
+      // (oidc_client_secret_reentry_required) requires the secret to be
+      // re-entered in the same PATCH — this test is about the conn-hold
+      // behavior, not the fence, so satisfy it rather than route around it.
+      const res = await patchIssuer(apiApp(), provider.id, token, newIssuer, '/api/v1/sso', {
+        clientSecret: 're-entered-test-client-secret',
+      });
       expect(res.status).toBe(200);
       expect(contextDuringDiscovery).toBeUndefined();
 
@@ -779,7 +793,9 @@ describe('SSO hardening — real-DB (SR2-10 … SR2-12)', () => {
       // for the /api/v1 path before this fix.
       const bare = new Hono();
       bare.route('/sso', ssoRoutes);
-      const res = await patchIssuer(bare, provider.id, token, newIssuer, '/sso');
+      const res = await patchIssuer(bare, provider.id, token, newIssuer, '/sso', {
+        clientSecret: 're-entered-test-client-secret',
+      });
       expect(res.status).toBe(200);
       expect(contextDuringDiscovery).toMatchObject({ scope: 'organization', orgId: org.id });
     });

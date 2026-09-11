@@ -64,6 +64,46 @@ Standalone maintenance windows use a `targetType` field to determine which devic
 
 ---
 
+## Manual Maintenance Mode
+
+Distinct from the scheduled windows the rest of this page describes, a technician can put a **single device** into maintenance mode by hand -- from the device page, or several devices at once from the device list. This is a per-device action with its own gate and its own record. It is not a maintenance window, it is not resolved through the configuration policy hierarchy, and it does not appear in `GET /maintenance/active`.
+
+### What entering requires
+
+<Steps>
+1. **A signed-in technician.** API keys, MCP tools, and other machine principals cannot enter, extend, or exit maintenance mode on a device. The route requires an interactive user session, and that requirement holds whether or not two-factor authentication is enabled for the deployment.
+
+2. **A fresh second factor, on entry *and* on extension.** An assured session is not enough on its own -- the technician re-verifies at the moment of the action. The console verifies with an authenticator app code or a passkey, so a technician whose only second factor is SMS must add an authenticator app or a passkey before they can use maintenance mode. Exiting needs no factor.
+
+3. **A reason and a duration.** Both are required. The reason is 3--500 characters; the duration is a whole number of hours from 1 to 168 (one week). Both are stored on the device record alongside who started the window and when, and both are written to the audit trail.
+</Steps>
+
+### Extending means "N hours from now"
+
+Submitting maintenance for a device that is already in a manual window **replaces** the window rather than adding to it. Choosing 4 hours always means "until four hours from now," whether the device had three hours left or three minutes. Submitting repeatedly cannot compound a window into a longer one.
+
+The original start time and the technician who started it are preserved across extensions; only the end time and the reason change. An extension is audited as `device.maintenance.extend` rather than `device.maintenance.enable`.
+
+### Exiting
+
+Exit is not gated by a second factor. If the device still has a `maintenance` status, exit recomputes it from when its agent was last seen, so a device that dropped off the network returns as `offline`. Other statuses remain unchanged.
+
+Exiting a device that was not in a manual window succeeds, changes nothing, and writes no audit event.
+
+### Which devices can enter
+
+A device must be `online`, `offline`, or already in `maintenance`. A device that is `quarantined`, `pending`, or `updating` is refused with a `409` (`MAINTENANCE_STATE_CONFLICT`) until it settles, and a `decommissioned` device is refused with a `400`.
+
+### Several devices at once
+
+`POST /devices/bulk/maintenance` takes a list of device IDs with one reason and one duration, and costs a **single** second-factor prompt for the whole batch. It covers entry and extension only -- exiting stays per-device. The response reports `succeeded` and `failed` separately, so a call in which every selected device was ineligible still returns `200` with an empty `succeeded` list.
+
+<Aside type="caution">
+**What manual maintenance mode does not do yet.** Entering manual maintenance mode records and audits a window on the device. It does not by itself change which alerts fire, which patches install, or which automations and scripts run. Suppression is still governed by the configuration policy maintenance feature and by the scheduled windows documented above.
+</Aside>
+
+---
+
 ## Creating a Maintenance Window
 
 ### Via Configuration Policy (Recommended)
@@ -251,10 +291,10 @@ Matching devices are rebooted right away -- Breeze doesn't wait for the window t
 
 <Tabs>
 <TabItem label="Windows">
-Breeze issues a scheduled reboot with a 15-minute grace period. The signed-in user gets a "save your work" warning about 5 minutes before the reboot fires.
+Breeze issues a scheduled reboot with a grace period pulled from the device's effective patch Configuration Policy — the same [`rebootDelayMinutes`](/features/patch-management/#patch-settings-fields) setting used after a patch job installs updates (default 15 minutes; 15 is also the fallback if the policy can't be resolved). The signed-in user is warned as soon as the reboot is scheduled, with a reminder ladder counting down to the reboot.
 </TabItem>
 <TabItem label="Linux">
-Breeze schedules the reboot 15 minutes out (equivalent to running `shutdown -r +15`), which also warns any logged-in users.
+Breeze schedules the reboot using the same effective-policy grace period (equivalent to running `shutdown -r +N`), which also warns any logged-in users.
 </TabItem>
 <TabItem label="macOS">
 Not supported. Breeze cannot detect a pending-reboot state on macOS, so macOS devices are never rebooted by this feature -- reboot them manually or through a script instead.
@@ -329,26 +369,6 @@ Query parameters are all optional (except `orgId` for partner/system scope):
 | `groupId` | Filter to windows affecting this specific device group |
 
 The endpoint finds occurrences that are either explicitly `active` or `scheduled` with their time range encompassing the current moment. Results include the parent window's suppression flags.
-
----
-
-## Device Maintenance Mode
-
-In addition to scheduled maintenance windows, individual devices can be placed into maintenance mode manually:
-
-```bash
-POST /devices/:id/maintenance
-{
-  "enable": true,
-  "durationHours": 4
-}
-```
-
-This sets the device status to `maintenance` (or back to `online` when `enable` is `false`). The `durationHours` field accepts a positive integer up to 168 (one week). Decommissioned devices cannot be placed into maintenance mode.
-
-<Aside type="note">
-Device-level maintenance mode is a simple status toggle on the device record. It is separate from maintenance windows and does not interact with the suppression flag system. Maintenance windows provide time-bounded, policy-driven suppression; device maintenance mode is an immediate, manual override.
-</Aside>
 
 ---
 
@@ -445,7 +465,8 @@ All routes are mounted under `/maintenance` and require authentication. Scope re
 |--------|------|-------------|
 | `GET` | `/maintenance/device/:deviceId/status` | Resolve the current maintenance status for a device (checks config policy first, then standalone windows). |
 | `GET` | `/maintenance/active` | List currently active maintenance windows, optionally filtered by device, site, or group. |
-| `POST` | `/devices/:id/maintenance` | Toggle device-level maintenance mode (separate from maintenance windows). |
+| `POST` | `/devices/:id/maintenance` | Enter, extend, or exit [manual maintenance mode](#manual-maintenance-mode) on one device. Entry and extension require an interactive session and a fresh second factor. |
+| `POST` | `/devices/bulk/maintenance` | Enter or extend manual maintenance mode on many devices, with one second-factor prompt for the batch. |
 
 ---
 

@@ -18,7 +18,10 @@ export const backupVerifications = pgTable('backup_verifications', {
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
   backupJobId: uuid('backup_job_id').notNull().references(() => backupJobs.id, { onDelete: 'cascade' }),
-  snapshotId: uuid('snapshot_id').references(() => backupSnapshots.id),
+  // ON DELETE SET NULL (2026-10-15-140004): a verification record is history
+  // and must survive its snapshot's retention deletion — see D17 /
+  // deleteSnapshotRow's comment on backup_snapshots.
+  snapshotId: uuid('snapshot_id').references(() => backupSnapshots.id, { onDelete: 'set null' }),
   verificationType: varchar('verification_type', { length: 30 }).notNull(), // integrity|test_restore
   status: varchar('status', { length: 20 }).notNull(), // passed|failed|partial
   startedAt: timestamp('started_at').notNull(),
@@ -32,6 +35,8 @@ export const backupVerifications = pgTable('backup_verifications', {
 }, (table) => ({
   orgDeviceIdx: index('backup_verify_org_device_idx').on(table.orgId, table.deviceId),
   statusIdx: index('backup_verify_status_idx').on(table.status),
+  orgCompletedAtIdx: index('backup_verifications_org_completed_at_idx')
+    .on(table.orgId, table.completedAt),
 }));
 
 export const recoveryReadiness = pgTable('recovery_readiness', {

@@ -21,6 +21,8 @@ export type TimeEntryServiceErrorCode =
   | 'PARTNER_UNRESOLVABLE'
   | 'INVALID_RANGE'
   | 'CURRENCY_MISMATCH'
+  /** 409 — `billed` is written only by the locked invoice-issue transition. */
+  | 'BILLING_STATUS_RESERVED'
   /** 409 — issueInvoice already flipped the row to `billed`; only description-class fields may change. */
   | 'ENTRY_BILLED'
   | 'PART_BILLED'
@@ -127,6 +129,17 @@ function assertRepresentable(value: string | null, currencyCode: string | null):
     throw new TimeEntryServiceError(
       `${value} is not representable in ${currencyCode} — this currency has ${minorUnitExponent(currencyCode)} decimal place(s)`,
       400, 'PRICE_NOT_REPRESENTABLE'
+    );
+  }
+}
+
+/** Reject a forged invoice lifecycle fact at every routine service entrypoint. */
+function assertRoutineBillingStatus(status: BillingStatus | undefined): void {
+  if (status === 'billed') {
+    throw new TimeEntryServiceError(
+      'Billed status is assigned only when an invoice is issued',
+      409,
+      'BILLING_STATUS_RESERVED',
     );
   }
 }
@@ -252,6 +265,32 @@ async function resolveTicketLink(ticketId: string, actor: TimeEntryActor) {
     defaultBillable: orgSettings?.defaultBillable ?? category?.defaultBillable ?? false,
     // D6 + match-or-skip: a default rate is used only when entered in the org's currency.
     defaultHourlyRate: resolveDefaultRate(org!.currencyCode, orgSettings, category)
+  };
+}
+
+/**
+ * The billing defaults the server WOULD stamp on a new ticket-linked time entry
+ * — the resolved match-or-skip rate, the org's locked currency, and the
+ * billable default (#5321).
+ *
+ * Read-only (no ticket lock): a UI prefill must not queue behind, or contend
+ * with, a concurrent org move. The value is advisory — `createTimeEntry` always
+ * re-resolves under its own lock, so a stale prefill can never write a rate in
+ * the wrong currency.
+ *
+ * Exists because a NULL rate is invisible at log time and only surfaces much
+ * later as the ALL_MISSING_RATE 409 on "Create invoice". Exposing the default
+ * lets the ticket quick-add prefill the rate and warn when there is none.
+ */
+export async function getTicketTimeEntryDefaults(
+  ticketId: string,
+  actor: TimeEntryActor,
+): Promise<{ hourlyRate: string | null; currencyCode: string; isBillable: boolean }> {
+  const link = await resolveTicketLink(ticketId, actor);
+  return {
+    hourlyRate: link.defaultHourlyRate,
+    currencyCode: link.currencyCode,
+    isBillable: link.defaultBillable,
   };
 }
 
@@ -418,6 +457,7 @@ export async function createTimeEntry(
   actor: TimeEntryActor,
   provenance: TimeEntryProvenance = { source: 'manual' },
 ) {
+  assertRoutineBillingStatus(input.billingStatus);
   let partnerId = actor.partnerId;
   let orgId: string | null = null;
   let defaultBillable = false;
@@ -714,6 +754,7 @@ function assertCanMutate(entry: { userId: string; isApproved: boolean }, actor: 
 }
 
 export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, actor: TimeEntryActor) {
+  assertRoutineBillingStatus(input.billingStatus);
   // Global lock order: the TARGET ticket (relink) before the entry row.
   const link = typeof input.ticketId === 'string' ? await resolveAndLockTicketLink(input.ticketId, actor) : null;
   const entry = await getEntryOr404(id, actor); // FOR UPDATE — re-read under lock
@@ -808,6 +849,13 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
 export async function deleteTimeEntry(id: string, actor: TimeEntryActor) {
   const entry = await getEntryOr404(id, actor);
   assertCanMutate(entry, actor);
+  if (entry.billingStatus === 'billed') {
+    throw new TimeEntryServiceError(
+      'This entry has been invoiced and cannot be deleted; void the invoice first',
+      409,
+      'ENTRY_BILLED',
+    );
+  }
   const deleted = await db
     .delete(timeEntries)
     .where(eq(timeEntries.id, id))
@@ -916,6 +964,7 @@ export async function approveTimeEntries(ids: string[], approve: boolean, actor:
 // ── Parts ────────────────────────────────────────────────────────────────
 
 export async function addTicketPart(ticketId: string, input: TicketPartInput, actor: TimeEntryActor) {
+  assertRoutineBillingStatus(input.billingStatus);
   // Lock order tickets → ticket_parts (see lockTicketRow).
   const link = await resolveAndLockTicketLink(ticketId, actor);
   const partUnitPrice = (input.unitPrice ?? 0).toFixed(2);
@@ -959,6 +1008,7 @@ async function getPartOr404(id: string) {
 
 /** `set` must never contain currencyCode: the part's currency is a creation-time snapshot. */
 export async function updateTicketPart(id: string, input: Partial<TicketPartInput>, _actor: TimeEntryActor) {
+  assertRoutineBillingStatus(input.billingStatus);
   const part = await getPartOr404(id);
   if (part.billingStatus === 'billed' && BILLED_LOCKED_PART_FIELDS.some((k) => input[k] !== undefined)) {
     throw new TimeEntryServiceError('This part has been invoiced; only its description, vendor, part number and notes can change', 409, 'PART_BILLED');
@@ -985,7 +1035,14 @@ export async function updateTicketPart(id: string, input: Partial<TicketPartInpu
 }
 
 export async function deleteTicketPart(id: string, _actor: TimeEntryActor) {
-  await getPartOr404(id);
+  const part = await getPartOr404(id);
+  if (part.billingStatus === 'billed') {
+    throw new TimeEntryServiceError(
+      'This part has been invoiced and cannot be deleted; void the invoice first',
+      409,
+      'PART_BILLED',
+    );
+  }
   await db.delete(ticketParts).where(eq(ticketParts.id, id));
 }
 

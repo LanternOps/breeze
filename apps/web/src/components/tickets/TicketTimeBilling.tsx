@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
@@ -18,6 +18,12 @@ interface CurrencyAmount {
 interface BillingSummary {
   time: { totalMinutes: number; billableMinutes: number; billableAmounts: CurrencyAmount[] };
   parts: { partsCount: number; billableTotals: CurrencyAmount[] };
+  /** What the server would stamp on a new entry for this ticket (#5321):
+   *  the match-or-skip default rate, the org's locked currency, and the
+   *  billable default. Absent on an older API, and null when the server could
+   *  not resolve them — the quick-add then behaves exactly as it did before
+   *  (blank rate, server default applies) plus the missing-rate warning. */
+  defaults?: { hourlyRate: string | null; currencyCode: string; isBillable: boolean } | null;
 }
 
 interface EntryRow {
@@ -61,10 +67,21 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
   const [minutes, setMinutes] = useState('');
   const [description, setDescription] = useState('');
   const [billable, setBillable] = useState(true);
+  // #5321: the rate box shows the ticket's resolved default until the tech
+  // types over it, so a prefill still lands when the summary resolves after the
+  // panel is already open.
+  const [rate, setRate] = useState('');
+  const [rateDirty, setRateDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [startingTimer, setStartingTimer] = useState(false);
 
+  // Assigned during render so it is already current when the ticketId prop
+  // changes — a state update would land a tick too late for an in-flight fetch.
+  const latestTicketId = useRef(ticketId);
+  latestTicketId.current = ticketId;
+
   const refresh = useCallback(async () => {
+    const requested = ticketId;
     const [sumRes, listRes] = await Promise.all([
       fetchWithAuth(`/tickets/${ticketId}/billing-summary`)
         .then((r) => (r.ok ? r.json() : null))
@@ -73,6 +90,11 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null),
     ]);
+    // The workbench swaps this component's ticketId prop without remounting, so
+    // a response for the PREVIOUSLY selected ticket can land after the switch.
+    // Applying it would prefill the rate box with another org's number under
+    // another org's currency (#5321 review) — drop it instead.
+    if (requested !== latestTicketId.current) return;
     if (sumRes?.data) setSummary(sumRes.data as BillingSummary);
     if (listRes?.data) setEntries(listRes.data as EntryRow[]);
   }, [ticketId]);
@@ -89,7 +111,25 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
     setMinutes('');
     setDescription('');
     setBillable(true);
+    setRate('');
+    setRateDirty(false);
   }, [ticketId]);
+
+  // Derived, not stored: an untouched box mirrors the ticket default the moment
+  // the summary lands; once the tech types, their value wins.
+  const defaultRate = summary?.defaults?.hourlyRate ?? null;
+  const rateCurrency = summary?.defaults?.currencyCode ?? null;
+  const rateValue = rateDirty ? rate : (defaultRate ?? '');
+  // `<input type="number" min={0}>` does not stop a typed negative here — the
+  // submit is an onClick, not a form submit, so no constraint validation runs.
+  // Name the problem rather than letting the button be a dead no-op.
+  const typedRate = rateValue.trim();
+  const parsedRate = typedRate === '' ? undefined : Math.round(Number(typedRate) * 100) / 100;
+  const rateInvalid = parsedRate !== undefined && (!Number.isFinite(parsedRate) || parsedRate < 0);
+  // Billable + no rate is precisely the row invoice assembly refuses to bill
+  // (ALL_MISSING_RATE 409). Say it here, not three screens later. A bad rate is
+  // a different complaint — never show both.
+  const missingRate = billable && typedRate === '';
 
   const startTimer = () => {
     // Guard against double-fire: a start request takes a beat server-side, and
@@ -105,6 +145,12 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
   const submitQuickAdd = async () => {
     const mins = Math.round(Number(minutes));
     if (!Number.isFinite(mins) || mins <= 0) return;
+    // Blank stays blank: omit hourlyRate so the server's org/category default
+    // still applies (unchanged behavior). A typed rate is sent at the minor-unit
+    // precision the API validator accepts (multipleOf 0.01). An invalid one is
+    // already named inline by `rateInvalid`, so returning here is not silent.
+    if (rateInvalid) return;
+    const rateNumber = parsedRate;
     setBusy(true);
     try {
       const end = new Date();
@@ -119,6 +165,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
               endedAt: end.toISOString(),
               description: description || undefined,
               isBillable: billable,
+              ...(rateNumber !== undefined ? { hourlyRate: rateNumber } : {}),
             }),
           }),
         errorFallback: t('ticketTimeBilling.toast.logFailed'),
@@ -127,6 +174,8 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
       setQuickAddOpen(false);
       setMinutes('');
       setDescription('');
+      setRate('');
+      setRateDirty(false);
       await refresh();
       // Notify the workbench feed (and other billing listeners) so the new
       // time-entry line appears without a manual reload — mirrors the timer
@@ -216,6 +265,28 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
             className="w-full rounded-md border bg-background px-2 py-1 text-xs"
             data-testid="ticket-billing-quick-add-description"
           />
+          <div className="flex items-center gap-1.5">
+            <input
+              type="number"
+              min={0}
+              step={0.01}
+              value={rateValue}
+              onChange={(e) => { setRate(e.target.value); setRateDirty(true); }}
+              placeholder={t('ticketTimeBilling.rate')}
+              aria-label={rateCurrency
+                ? t('ticketTimeBilling.rateWithCurrency', { currency: rateCurrency })
+                : t('ticketTimeBilling.rate')}
+              className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-xs"
+              data-testid="ticket-billing-quick-add-rate"
+            />
+            {/* Persistent, not a placeholder: the box is prefilled in the common
+                case, and a placeholder would hide the currency exactly then. */}
+            {rateCurrency && (
+              <span className="shrink-0 text-[11px] text-muted-foreground" data-testid="ticket-billing-quick-add-rate-currency">
+                {rateCurrency}
+              </span>
+            )}
+          </div>
           <label className="flex items-center gap-1.5 text-xs">
             <input
               type="checkbox"
@@ -225,6 +296,16 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
             />
             {t('ticketTimeBilling.billable')}
           </label>
+          {rateInvalid && (
+            <p className="text-[11px] text-destructive" data-testid="ticket-billing-quick-add-rate-invalid">
+              {t('ticketTimeBilling.rateInvalid')}
+            </p>
+          )}
+          {missingRate && (
+            <p className="text-[11px] text-amber-600 dark:text-amber-500" data-testid="ticket-billing-quick-add-no-rate">
+              {t('ticketTimeBilling.noRateWarning')}
+            </p>
+          )}
           <button
             type="button"
             onClick={() => void submitQuickAdd()}

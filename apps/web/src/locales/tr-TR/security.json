@@ -1031,12 +1031,14 @@
       "loadWithStatus": "Kurallar yüklenemedi (HTTP {{status}})",
       "load": "Kurallar yüklenemedi",
       "updateRule": "Kural güncellenemedi",
-      "deleteRule": "Kural silinemedi"
+      "deleteRule": "Kural silinemedi",
+      "reapproveRule": "Kural yeniden onaylanamadı"
     },
     "toasts": {
       "defaultVerdictSet": "Varsayılan karar {{verdict}} olarak ayarlandı",
       "ruleToggled": "Kural \"{{name}}\" {{state}}",
-      "ruleDeleted": "\"{{name}}\" kuralı silindi"
+      "ruleDeleted": "\"{{name}}\" kuralı silindi",
+      "ruleReapproved": "\"{{name}}\" kuralı yeniden onaylandı — otomatik onay geri yüklendi"
     },
     "states": {
       "disabled": "devre dışı bırakıldı",
@@ -1044,7 +1046,8 @@
     },
     "description": "İlk önce yazılım politikaları değerlendirilir; izin verilenler listesi/engellenenler listesi eşleşmesi bu kurallardan önce karar verir. Daha sonra kurallar öncelik sırasına göre (önce en düşük) çalıştırılır; ilk maç belirler.",
     "actions": {
-      "addRule": "Kural ekle"
+      "addRule": "Kural ekle",
+      "reapprove": "Yeniden onayla"
     },
     "defaultVerdict": {
       "label": "Varsayılan karar",
@@ -1070,6 +1073,15 @@
       "title": "PAM kuralını sil",
       "message": "\"{{name}}\" kuralı silinsin mi? Yükseklik istekleri artık bununla eşleşmeyecek.",
       "confirm": "Kuralı sil"
+    },
+    "staleTierBadge": {
+      "label": "Eskimiş",
+      "tooltip": "Risk seviyesi {{tier}} artık bu kuralın seçebileceği hiçbir şeyle eşleşmiyor, bu nedenle asla eşleşemez.",
+      "tooltipWithTiers": "Risk seviyesi {{tier}} artık bu kuralın seçebileceği hiçbir şeyle eşleşmiyor, bu nedenle asla eşleşemez. Şu anda kullanılan seviyeler: {{tiers}}."
+    },
+    "suspendedBadge": {
+      "label": "Otomatik onay askıya alındı",
+      "tooltip": "Bu kural yükseltmeden önce otomatik onay veriyordu. Bir yönetici yeniden onaylayana kadar artık insan onayı gerektirir."
     }
   },
   "pamPamSignerGroupsTab": {

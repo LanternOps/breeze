@@ -1,17 +1,10 @@
-import { CommandTypes } from './commandQueue';
+import { CommandTypes } from './commandTypes';
 
 // ── Timeout tiers (milliseconds) ──────────────────────────────────
 const FIVE_MINUTES = 5 * 60 * 1000;
 const THIRTY_MINUTES = 30 * 60 * 1000;
 const SIXTY_MINUTES = 60 * 60 * 1000;
 const TWO_HOURS = 2 * 60 * 60 * 1000;
-// Matches SOFTWARE_QUEUED_EXPIRY_MS in jobs/staleCommandReaper.ts (not imported
-// to avoid a cycle): a queued software_install may wait days for an offline
-// device to reconnect. The dedicated software-deployment reaper already fails
-// the deployment_results row after 55 min once the command is DELIVERED, so
-// this long timeout only governs how long an undelivered queued command may
-// sit before the generic reaper closes it out.
-const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = THIRTY_MINUTES;
 // Extra buffer on top of a script's own timeout, so the agent-side timeout
 // always fires first. Exported because the stale reaper needs it as the floor
@@ -106,6 +99,20 @@ const RESTORE_TIMEOUT_TYPES = new Set<string>([
 
 const LONG_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.AGENT_ROLLBACK_V1,
+  // #3525: deliberately NOT SHORT_TIMEOUT_TYPES. The generic reaper clocks
+  // `pending` rows from createdAt (jobs/staleCommandReaper.ts), so a 5-minute
+  // tier would expire a cancel that a merely-offline device never received —
+  // while the cancellation clock, which starts at DELIVERY, has not started.
+  // Two hours strictly exceeds the longest possible script lifetime
+  // (MaxTimeout 3600s + SCRIPT_GRACE_BUFFER_MS = 65 min), so a cancel never
+  // outlives the script it is chasing.
+  CommandTypes.SCRIPT_CANCEL,
+  // #5128: software_install used to get a bespoke SEVEN_DAYS here, standing in
+  // for a delivery deadline this module has no business owning. `deliver_by`
+  // now carries that, so this is purely the EXECUTION budget for an install the
+  // agent has already claimed — two hours, above the agent's own 15 min
+  // download + 30 min install ceilings.
+  CommandTypes.SOFTWARE_INSTALL,
   CommandTypes.INSTALL_PATCHES,
   CommandTypes.BACKUP_VERIFY,
   CommandTypes.BACKUP_TEST_RESTORE,
@@ -135,7 +142,6 @@ export function getCommandTimeoutMs(
         : DEFAULT_SCRIPT_TIMEOUT_S;
     return timeoutSeconds * 1000 + SCRIPT_GRACE_BUFFER_MS;
   }
-  if (commandType === CommandTypes.SOFTWARE_INSTALL) return SEVEN_DAYS;
   if (SHORT_TIMEOUT_TYPES.has(commandType)) return FIVE_MINUTES;
   if (MEDIUM_TIMEOUT_TYPES.has(commandType)) return THIRTY_MINUTES;
   if (RESTORE_TIMEOUT_TYPES.has(commandType)) return SIXTY_MINUTES;

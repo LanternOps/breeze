@@ -15,6 +15,7 @@ import {
   peripheralPolicyDeliveryEvents,
   peripheralPolicyDeviceStates,
 } from '../db/schema';
+import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 
 export type PeripheralReconcileReason =
   | 'policy_changed'
@@ -180,11 +181,17 @@ export async function reconcilePeripheralPolicyDevice(
         id: devices.id,
         orgId: devices.orgId,
         peripheralPolicyProtocolVersion: devices.peripheralPolicyProtocolVersion,
+        status: devices.status,
       })
       .from(devices)
       .where(eq(devices.id, deviceId))
       .limit(1)
       .for('update');
+    // A decommissioned device can never execute a command, and reconciling it
+    // would reach the partner-trust gate below and spam capability_denied audit
+    // rows every sweep (issue #5590). Bail before any trust check or write.
+    if (device?.status === 'decommissioned') return 'incompatible';
+
     const resolved = device
       ? await loadAndResolveEffectivePeripheralPolicySetInCurrentDbContext(deviceId)
       : null;
@@ -212,6 +219,17 @@ export async function reconcilePeripheralPolicyDevice(
       reason,
     });
     if (plan.kind === 'coalesced') return 'coalesced';
+
+    try {
+      await assertDeviceExecuteAllowed(deviceId, 'peripheral_policy_sync_v2', null);
+    } catch (error) {
+      if (!(error instanceof TrustDeniedError)) throw error;
+      console.warn('Skipping peripheral policy push because partner trust denied device execution', {
+        deviceId,
+        code: error.code,
+      });
+      return 'incompatible';
+    }
 
     const now = new Date(generatedAt);
     if (current) {

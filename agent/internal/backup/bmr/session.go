@@ -85,6 +85,9 @@ func RunRecoveryWithTokenContext(ctx context.Context, cfg RecoveryConfig) (*Reco
 	if len(effectiveCfg.TargetPaths) == 0 {
 		effectiveCfg.TargetPaths = targetPathsFromConfig(bootstrap.TargetConfig)
 	}
+	if bootstrap.Snapshot != nil {
+		effectiveCfg.ExpectSystemState = hasSystemStateManifest(bootstrap.Snapshot.SystemStateManifest)
+	}
 
 	runResult, runErr := runRecovery(ctx, effectiveCfg, provider)
 	if runResult != nil {
@@ -93,8 +96,46 @@ func RunRecoveryWithTokenContext(ctx context.Context, cfg RecoveryConfig) (*Reco
 	return completeAndReturn(runErr)
 }
 
+// hasSystemStateManifest reports whether raw (bootstrap.Snapshot's
+// SystemStateManifest field) represents an actual manifest rather than an
+// absent/null value. json.RawMessage is nil (len 0) when the server omits
+// the field entirely, and literal "null" when the server sends the field
+// with a SQL NULL jsonb column (see recoveryBootstrap.ts /
+// routes/backup/bmr.ts, which both populate this from
+// backup_snapshots.system_state_manifest) — both mean "no system state was
+// captured for this snapshot", not "system state exists".
+func hasSystemStateManifest(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return false
+	}
+	return !bytes.Equal(trimmed, []byte("null"))
+}
+
 func authenticateRecoverySession(serverURL, token string) (*BootstrapResponse, error) {
 	return authenticateRecoverySessionContext(context.Background(), serverURL, token)
+}
+
+// AuthenticateRecoverySession is the exported wrapper of
+// authenticateRecoverySessionContext for token-driven bare-metal recovery
+// (W04a): breeze-backup rebuild --token calls this to fetch a fresh
+// bootstrap (device/snapshot/provider access + the Recovery binding) for an
+// already-minted recovery token.
+func AuthenticateRecoverySession(ctx context.Context, serverURL, token string) (*BootstrapResponse, error) {
+	return authenticateRecoverySessionContext(ctx, serverURL, token)
+}
+
+// NewRecoveryProvider builds the backup provider that downloads snapshot
+// content through the server's authenticated recovery-download proxy,
+// exactly like RunRecoveryWithTokenContext's own bootstrap.Download branch
+// above. Returns an error when the bootstrap carries no download descriptor
+// (a token authenticated against a provider config the helper must build
+// itself instead — not the bare-metal recovery path).
+func NewRecoveryProvider(ctx context.Context, serverURL, token string, bs *BootstrapResponse) (providers.BackupProvider, error) {
+	if bs == nil || bs.Download == nil {
+		return nil, fmt.Errorf("bmr: bootstrap has no download descriptor")
+	}
+	return newRecoveryDownloadProvider(ctx, serverURL, token, bs.Download), nil
 }
 
 func authenticateRecoverySessionContext(ctx context.Context, serverURL, token string) (*BootstrapResponse, error) {

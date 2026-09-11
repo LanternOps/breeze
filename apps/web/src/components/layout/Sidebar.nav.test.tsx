@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { vi } from 'vitest';
 const fetchWithAuthMock = vi.hoisted(() => vi.fn());
 vi.mock('../../stores/auth', () => ({
+  // #5075 W04 — Sidebar now reads the Service Management mode from orgStore,
+  // whose module scope calls registerOrgIdProvider on import. Without this the
+  // whole suite dies at import time, before any test runs.
+  registerOrgIdProvider: vi.fn(),
   fetchWithAuth: fetchWithAuthMock,
   useAuthStore: Object.assign(
     (selector: (state: { user: { isPlatformAdmin: boolean; permissions: Array<{ resource: string; action: string }> } }) => unknown) =>
@@ -62,6 +66,13 @@ function hrefsOf(id: string) {
 }
 
 describe('navSections structure (#1321, #1324)', () => {
+  it('includes a Billing entry in the Settings section (#4605)', () => {
+    const settings = section('settings');
+    const billingItem = settings.items.find((i) => i.href === '/settings/billing');
+    expect(billingItem, 'Settings section should link to /settings/billing').toBeDefined();
+    expect(billingItem?.labelKey).toBe('nav.billing');
+  });
+
   it('has a dedicated Backup section with Backup, Cloud Backup, Disaster Recovery, in that order', () => {
     const backup = section('backup');
     expect(backup.label).toBe('Backup');
@@ -78,13 +89,15 @@ describe('navSections structure (#1321, #1324)', () => {
   });
 
   it('groups billing surfaces under Billing and device config under Fleet Management', () => {
+    // #5075 W04 — Timesheets moved to the new Service Desk section (logging
+    // time is service-desk work, not billing document work).
     expect(hrefsOf('billing')).toEqual([
       '/billing/quotes',
       '/billing/invoices',
       '/contracts',
-      '/timesheet',
       '/settings/catalog',
     ]);
+    expect(hrefsOf('service-desk')).toEqual(['/tickets', '/timesheet']);
     expect(hrefsOf('fleet-management')).toEqual([
       '/devices/groups',
       '/configuration-policies',
@@ -111,18 +124,19 @@ describe('navSections structure (#1321, #1324)', () => {
 
   it('each moved href appears in exactly one section (no duplicate membership)', () => {
     const allHrefs = navSections.flatMap((s) => s.items.map((i) => i.href));
-    for (const href of ['/monitoring', '/discovery', '/backup', '/c2c', '/dr']) {
+    for (const href of ['/monitoring', '/discovery', '/backup', '/c2c', '/dr', '/tickets', '/timesheet']) {
       const count = allHrefs.filter((h) => h === href).length;
       expect(count, `${href} should appear exactly once across all sections`).toBe(1);
     }
   });
 
-  it('orders sections AI -> Fleet Management -> Security -> Backup -> Billing -> Reporting -> Settings -> Administration', () => {
+  it('orders sections AI -> Fleet Management -> Security -> Backup -> Service Desk -> Billing -> Reporting -> Settings -> Administration', () => {
     expect(navSections.map((s) => s.id)).toEqual([
       'ai',
       'fleet-management',
       'security',
       'backup',
+      'service-desk',
       'billing',
       'reporting',
       'settings',

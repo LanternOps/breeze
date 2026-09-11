@@ -27,12 +27,15 @@ import {
   scriptTemplates,
   scriptExecutions,
 } from '../db/schema';
-import { eq, and, desc, sql, ilike, isNull, or, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, ilike, inArray, isNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
+// Type-only: the runtime import stays dynamic inside the handler.
+import type { CancelOutcome } from './scriptCancellation';
 import type { ToolExecutionContext, VerifiedRunScript } from './toolExecutionContext';
 import { dispatchScriptToDevice } from './scriptDispatch';
+import { executeScriptSchema, AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES } from './scriptRunRequest';
 import { loadTenantVariableScope } from './tenantVariableResolution';
 import { captureException } from './sentry';
 import { scriptNeedsVariableScope } from './sourcedParameters';
@@ -93,7 +96,10 @@ async function verifyDeviceAccess(
   if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
     return { error: 'Device not found or access denied' };
   }
-  if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
+  if (requireOnline && device.status !== 'online')
+    return {
+      error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
+    };
   return { device };
 }
 
@@ -219,7 +225,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'execute_command',
-      description: 'Execute a system command on a device. Read-only command types (list_processes, file_list, event_logs_list) run without a durable approval step in auto-execute session modes (still audit logged); under the default per-step mode they still take a lightweight inline confirmation. list_services, event_logs_query, and all mutating/file_read command types always require full user approval. Use for process management, service control, file operations, etc. Paging/filter payload params: list_processes { page, limit (max 500; larger values reset to 50), search, sortBy, sortDesc }; event_logs_query (Windows only) { page (max 20), limit (max 500), logName, level, source, eventId }; file_list { path, limit (max 5000) } — no paging, narrow the path to see more. Large results are compacted for chat — if the result carries stdoutTruncation/_chat metadata, page or narrow the payload rather than repeating the same call.',
+      description: 'Execute a system command on a device. Read-only command types (list_processes, file_list, event_logs_list) run without a durable approval step in auto-execute session modes (still audit logged); under the default per-step mode they still take a lightweight inline confirmation. list_services, event_logs_query, and all mutating/file_read command types always require full user approval. Use for process management, service control, file operations, etc. Paging/filter payload params: list_processes { page, limit (max 500; larger values reset to 50), search, sortBy, sortDesc }; event_logs_query (Windows only) { page (max 20), limit (max 500), logName, level, source, eventId }; file_list { path, limit (max 5000) } — no paging, narrow the path to see more. Other payload keys: start_service/stop_service/restart_service { serviceName } (same key manage_services takes; `name` also works — either key reaches the agent as `name`, which is what it actually reads); kill_process { processName, pid }; file_read { path }. Large results are compacted for chat — if the result carries stdoutTruncation/_chat metadata, page or narrow the payload rather than repeating the same call.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -241,15 +247,35 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       const deviceId = input.deviceId as string;
+      const commandType = input.commandType as string;
 
       // Verify device access
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
       const { device } = access;
 
+      const payload = { ...((input.payload as Record<string, unknown>) ?? {}) };
+
+      // The tool description tells the model to send { serviceName } for the
+      // three service commands — the same key manage_services' own input
+      // schema takes — but unlike manage_services (which normalizes it to
+      // `name` at ~L668 before calling executeCommand), this handler used to
+      // forward the payload verbatim. The agent only reads payload["name"]
+      // (agent/internal/remote/tools/services.go), so a model-issued
+      // serviceName call silently no-oped on the device while the approval
+      // headline still confidently named the service. Accept either key;
+      // `name` wins if a caller somehow sends both.
+      if (
+        (commandType === 'start_service' || commandType === 'stop_service' || commandType === 'restart_service') &&
+        payload.serviceName !== undefined
+      ) {
+        if (payload.name === undefined) payload.name = payload.serviceName;
+        delete payload.serviceName;
+      }
+
       // Import and use executeCommand from commandQueue
       const { executeCommand } = await getCommandQueue();
-      const result = await executeCommand(deviceId, input.commandType as string, (input.payload as Record<string, unknown>) ?? {}, {
+      const result = await executeCommand(deviceId, commandType, payload, {
         userId: auth.user.id,
         timeoutMs: 30000
       });
@@ -267,13 +293,17 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'run_script',
-      description: 'Execute a script on one or more devices. Existing scripts can be referenced by ID; inline scripts require approval.',
+      description: 'Execute a script on one or more devices. Existing scripts can be referenced by ID; inline scripts require approval. A device inside a maintenance window that suppresses scripts is skipped, not failed: that device\'s result carries status "suppressed" with a message — report it as deferred and do not retry it now.',
       input_schema: {
         type: 'object' as const,
         properties: {
           scriptId: { type: 'string', description: 'UUID of an existing script to run' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs to run on' },
-          parameters: { type: 'object', description: 'Script parameters' }
+          parameters: { type: 'object', description: 'Script parameters' },
+          // #4888 — see services/scriptRunRequest.ts. Shared with the three
+          // other declarations of this tool's input shape so the model can
+          // express a run context on every surface, not just some of them.
+          ...AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES
         },
         required: ['scriptId', 'deviceIds']
       }
@@ -282,6 +312,29 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const { waitForCommandResult } = await getCommandQueue();
       const deviceIds = input.deviceIds as string[];
       const results: Record<string, unknown> = {};
+
+      // #4888 — an assistant-chosen run context clears the SAME gate a human
+      // one does. Not a copy of the rules, the actual object the HTTP route
+      // validates with (`POST /scripts/:id/execute`), so the enum ('elevated'
+      // excluded — that stays a property of the saved script) and both
+      // cross-field rules ("targetSessionId requires runAs=user", "…and
+      // exactly one device") can never drift between the two callers.
+      //
+      // `parameters` is deliberately NOT re-parsed here: the AI path has never
+      // validated them against `scriptParametersSchema` and tightening that is
+      // a separate behaviour change with its own blast radius. The field being
+      // optional in the schema is what lets this validate the run context
+      // alone. Nothing about the privilege decision depends on it.
+      const runContext = executeScriptSchema.safeParse({
+        deviceIds,
+        runAs: input.runAs,
+        targetSessionId: input.targetSessionId,
+      });
+      if (!runContext.success) {
+        return JSON.stringify({
+          error: runContext.error.issues[0]?.message ?? 'Invalid run context',
+        });
+      }
 
       // #3409 PR4c-1 — a release path may have ALREADY read this script row and
       // resolved its tenant variables, in order to recompute the approval's
@@ -449,12 +502,36 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
                 triggerType: 'manual',
                 triggeredBy: auth.user.id,
                 createdBy: auth.user.id,
-                requireOnline: true,
+                // #4888 — undefined when the assistant did not choose one, in
+                // which case dispatch falls back to `script.runAs` exactly as
+                // it always did.
+                runAs: runContext.data.runAs,
+                targetSessionId: runContext.data.targetSessionId,
+                // #5128 W4 — the AI run_script tool answers synchronously and
+                // has no way to surface a later result, so it keeps the hard
+                // offline rejection the `requireOnline` alias used to give it.
+                // W5 softens the error TEXT, not the behaviour.
+                offlinePolicy: { kind: 'reject' },
                 variableScope,
               });
             })
           );
           if (!dispatch.ok) {
+            if (dispatch.code === 'maintenance_suppressed') {
+              // #4919 — NOT an error. A maintenance window is the operator's
+              // deliberate "not now", and reporting it as a failure is how an
+              // assistant ends up retrying, escalating, or telling the user
+              // the script broke. `status: 'suppressed'` keeps it out of the
+              // error shape every other branch here uses; the message carries
+              // the distinction between an open window and a window we could
+              // not evaluate (fail-closed), so the assistant can say which.
+              results[deviceId] = {
+                status: 'suppressed',
+                suppressedBy: 'maintenance_window',
+                message: dispatch.error,
+              };
+              continue;
+            }
             results[deviceId] = { error: dispatch.error };
             continue;
           }
@@ -472,6 +549,13 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
             ...(cmd.result as unknown as Record<string, unknown> ?? { status: 'failed', error: 'Command did not complete' }),
             commandId: cmd.id,
             executionId: dispatch.executionId,
+            // #4888 — the RESOLVED context, echoed from dispatch rather than
+            // recomputed here, so the assistant can tell "ran as SYSTEM
+            // because I asked" from "ran as SYSTEM because that is the
+            // script's default" and reason about a user-context failure
+            // instead of retrying blind (the #4882 debugging shape).
+            runAs: dispatch.runAs,
+            ...(dispatch.targetSessionId != null ? { targetSessionId: dispatch.targetSessionId } : {}),
           };
         } catch (err) {
           // A thrown error here is indistinguishable from "device unsupported"
@@ -486,6 +570,95 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
       return JSON.stringify({ results });
     }
+  });
+
+  // ============================================
+  // cancel_script_execution - Tier 3 (requires approval)
+  // ============================================
+
+  registerTool({
+    tier: 3,
+    // The device is derived from the execution, not supplied — so there is no
+    // device-id property for the central `enforceDeviceArgs` gate to check.
+    // The handler therefore gates inline. It uses the shared
+    // `verifyDeviceAccess` helper (org + site on the DEVICE row), which is
+    // STRICTER than `get_script_execution`'s hand-rolled site-only check on
+    // the read side: this is a write, so the device's own org is re-checked
+    // rather than inferred from the execution.
+    deviceArgs: [],
+    definition: {
+      name: 'cancel_script_execution',
+      description: 'Stop a running script execution on a device. Cancellation is a de-escalation: it never starts work. The execution moves to "cancelling" and only reports "cancelled" once the device proves the process stopped — re-read it with get_script_execution rather than assuming the stop succeeded.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          executionId: { type: 'string', description: 'UUID of the script_executions row to stop' },
+          graceSeconds: { type: 'number', description: 'Seconds to wait after SIGTERM before SIGKILL (0-30, default 5). No graceful phase on Windows.' },
+        },
+        required: ['executionId'],
+      },
+    },
+    handler: async (input, auth) => {
+      const executionId = input.executionId as string;
+
+      // Org axis on the execution itself (script_executions carries the DEVICE's
+      // org, so a partner-wide script's run is still scoped to where it ran),
+      // then the site axis and device visibility via the shared write-path gate.
+      const conditions: SQL[] = [eq(scriptExecutions.id, executionId)];
+      const orgCond = auth.orgCondition(scriptExecutions.orgId);
+      if (orgCond) conditions.push(orgCond);
+      const [execution] = await db
+        .select({ id: scriptExecutions.id, deviceId: scriptExecutions.deviceId })
+        .from(scriptExecutions)
+        .where(and(...conditions))
+        .limit(1);
+      if (!execution) return JSON.stringify({ error: 'Execution not found or access denied' });
+
+      const access = await verifyDeviceAccess(execution.deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+
+      // Same service the HTTP route and the automation fan-out use, so the
+      // state machine has exactly one implementation.
+      const { cancelScriptExecution, deliverCancelCommand } = await import('./scriptCancellation');
+      const outcome = await cancelScriptExecution({
+        executionId,
+        // May be a synthetic principal id; the service probes-and-degrades it
+        // against `users` rather than raising 23503.
+        actorId: auth.user.id,
+        actorLabel: `AI assistant (${auth.user.email})`,
+        graceSeconds: input.graceSeconds as number | undefined,
+      });
+
+      if (outcome.kind === 'cancelling' && !outcome.alreadyQueued) {
+        await deliverCancelCommand(outcome.cancelCommandId, outcome.deviceId);
+      }
+
+      // Report the OUTCOME, never a claimed stop: only `retracted` proves the
+      // script never ran, and `cancelling` is still awaiting the device.
+      //
+      // Each kind carries a plain-English `detail` because the bare kind names
+      // are not self-describing to a model — `recovered` in particular reads as
+      // "successfully resolved" when it means the opposite: the cancel was too
+      // late and the script already finished on its own.
+      const CANCEL_OUTCOME_DETAIL: Record<CancelOutcome['kind'], string> = {
+        not_found: 'No such execution, or it is outside your access.',
+        already_terminal: 'The execution had already finished; nothing was cancelled.',
+        idempotent: 'A cancellation was already recorded for this execution; nothing new was sent.',
+        retracted: 'Proven stopped: the script had not reached the device and the command was withdrawn.',
+        recovered: 'TOO LATE — the script already finished on its own and the cancel had no effect. Read the execution to see how it ended.',
+        cancelling: 'A stop was sent to the device. The script is NOT stopped yet; re-read the execution to see whether it was.',
+        inconsistent: 'Refused: the execution has no paired command, so a stop cannot be proven either way.',
+      };
+
+      return JSON.stringify({
+        executionId,
+        outcome: outcome.kind,
+        detail: CANCEL_OUTCOME_DETAIL[outcome.kind],
+        ...(outcome.kind === 'already_terminal' || outcome.kind === 'idempotent'
+          ? { status: outcome.status }
+          : {}),
+      });
+    },
   });
 
   // ============================================
@@ -847,22 +1020,39 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 10), 50);
 
+      const executionConditions: SQL[] = [eq(scriptExecutions.scriptId, input.scriptId as string)];
+      const executionOrgCondition = auth.orgCondition(scriptExecutions.orgId);
+      if (executionOrgCondition) executionConditions.push(executionOrgCondition);
+      if (auth.allowedSiteIds !== undefined) {
+        executionConditions.push(inArray(devices.siteId, auth.allowedSiteIds));
+      }
+
       const results = await db
         .select({
           id: scriptExecutions.id,
           status: scriptExecutions.status,
           exitCode: scriptExecutions.exitCode,
-          stdout: scriptExecutions.stdout,
-          stderr: scriptExecutions.stderr,
+          stdout: sql<string | null>`left(${scriptExecutions.stdout}, 16385)`,
+          stderr: sql<string | null>`left(${scriptExecutions.stderr}, 8193)`,
           createdAt: scriptExecutions.createdAt,
           completedAt: scriptExecutions.completedAt,
         })
         .from(scriptExecutions)
-        .where(eq(scriptExecutions.scriptId, input.scriptId as string))
+        .innerJoin(devices, eq(devices.id, scriptExecutions.deviceId))
+        .where(and(...executionConditions))
         .orderBy(desc(scriptExecutions.createdAt))
         .limit(limit);
 
-      return JSON.stringify({ executions: results, count: results.length });
+      const executions = results.map((execution) => ({
+        ...execution,
+        ...(execution.stdout && execution.stdout.length > 16_384
+          ? { stdout: execution.stdout.slice(0, 16_384), stdoutTruncated: true }
+          : {}),
+        ...(execution.stderr && execution.stderr.length > 8_192
+          ? { stderr: execution.stderr.slice(0, 8_192), stderrTruncated: true }
+          : {}),
+      }));
+      return JSON.stringify({ executions, count: executions.length });
     },
   });
 

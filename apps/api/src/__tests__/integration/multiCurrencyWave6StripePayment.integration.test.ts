@@ -25,6 +25,11 @@ const stripeMocks = vi.hoisted(() => ({
   // omits defaultCurrency makes the "USD account, EUR document" assertion
   // structurally unreachable. Per-test knob; default 'USD'.
   defaultCurrency: 'USD' as string | null,
+  // createInvoicePayLink re-checks the durable stripe_connect_accounts row inside
+  // the mapping transaction (SEC-151): the account the mock reports must exist
+  // for the seeded partner, and stripe_account_id is globally unique, so each
+  // seeded partner gets its own id and the mock follows it.
+  accountId: 'acct_test' as string,
 }));
 
 vi.mock('../../services/partnerStripe', async (orig) => {
@@ -37,7 +42,7 @@ vi.mock('../../services/partnerStripe', async (orig) => {
           sessions: { create: stripeMocks.sessionsCreate, retrieve: stripeMocks.sessionsRetrieve },
         },
       },
-      stripeAccountId: 'acct_test',
+      stripeAccountId: stripeMocks.accountId,
       defaultCurrency: stripeMocks.defaultCurrency,
     })),
   };
@@ -45,7 +50,7 @@ vi.mock('../../services/partnerStripe', async (orig) => {
 
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { invoicePayments, invoiceStripePayments, invoices } from '../../db/schema';
+import { invoicePayments, invoiceStripePayments, invoices, stripeConnectAccounts } from '../../db/schema';
 import { addManualLine, createManualInvoice, issueInvoice } from '../../services/invoiceService';
 import { createInvoicePayLink } from '../../services/invoiceCheckout';
 import { recordStripePayment } from '../../services/stripeReconcile';
@@ -73,6 +78,12 @@ function assertionMessage(
 /** Seed a USD partner + non-USD org and issue a single-line invoice for `amount`. */
 async function seedIssuedInvoice(currencyCode: string, amount: number) {
   const fixture: GateOrgFixture = await seedGateOrg(currencyCode);
+  const accountId = `acct_wave6_${Math.random().toString(36).slice(2, 10)}`;
+  await withSystemDbAccessContext(() => db.insert(stripeConnectAccounts).values({
+    partnerId: fixture.partnerId, stripeAccountId: accountId,
+    apiKey: 'enc:synthetic', keyLast4: 'test', livemode: false,
+  }));
+  stripeMocks.accountId = accountId;
   const draft = await withSystemDbAccessContext(() =>
     createManualInvoice({ orgId: fixture.orgId }, fixture.actor));
   await withSystemDbAccessContext(() => addManualLine(draft.id, {
@@ -285,7 +296,7 @@ describe.runIf(RUN)(gateLabel('G6', 'Stripe checkout + settlement on a non-USD o
     const res = await recordStripePayment({
       stripeObjectId: mismatchSession,
       stripePaymentIntentId: `pi_${mismatchSession}`,
-      stripeAccountId: 'acct_test',
+      stripeAccountId: stripeMocks.accountId,
       amount: '123.45',
       currency: 'USD',
     });

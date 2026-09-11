@@ -17,6 +17,8 @@ const {
   resolveLiveConnectionMock,
   syncMappedEntityMock,
   enqueueAccountingInvoiceVoidMock,
+  enqueuePaymentPushMock,
+  fanOutOwedPaymentsMock,
   pushInvoiceMock,
   voidInvoiceMock,
   captureExceptionMock,
@@ -40,6 +42,8 @@ const {
     resolveLiveConnectionMock: vi.fn(),
     syncMappedEntityMock: vi.fn(),
     enqueueAccountingInvoiceVoidMock: vi.fn(),
+    enqueuePaymentPushMock: vi.fn(),
+    fanOutOwedPaymentsMock: vi.fn(),
     pushInvoiceMock: vi.fn(),
     voidInvoiceMock: vi.fn(),
     captureExceptionMock: vi.fn(),
@@ -63,6 +67,14 @@ vi.mock('./accountingMappingService', () => ({
 
 vi.mock('../../jobs/accountingSyncWorker', () => ({
   enqueueAccountingInvoiceVoid: enqueueAccountingInvoiceVoidMock,
+  enqueueAccountingPaymentPush: enqueuePaymentPushMock,
+}));
+
+// Phase D2, spec decision 10: a landed invoice push fans its payments out. The
+// coordinator's own suite proves what fanOutOwedPayments selects; this file
+// proves the invoice push CALLS it, in the right place, and survives it failing.
+vi.mock('./accountingPaymentPush', () => ({
+  fanOutOwedPayments: fanOutOwedPaymentsMock,
 }));
 
 /**
@@ -111,7 +123,7 @@ function conn(overrides: Record<string, unknown> = {}) {
     id: CONN_ID, partnerId: PARTNER, provider: 'quickbooks', realmId: 'r1',
     environment: 'sandbox', status: 'connected', homeCurrency: 'USD', multiCurrencyEnabled: false,
     defaultIncomeAccountRef: '79', defaultTaxCodeRef: 'TAX-1',
-    realmIdFingerprint: null, pullPayments: true, lastReconcileAt: null, cdcCursor: null,
+    realmIdFingerprint: null, pullPayments: true, pushPayments: true, lastReconcileAt: null, cdcCursor: null,
     ...overrides,
   };
 }
@@ -229,6 +241,19 @@ function orgMappingRow(overrides: Partial<MappingRow> = {}): MappingRow {
     id: 'map-org-1', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'org', breezeEntityId: ORG,
     remoteEntityType: 'Customer', remoteEntityId: 'qb-cust-1', remoteSyncToken: '0',
     remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+    ...overrides,
+  };
+}
+
+// #4544: the exact shape `markInvoiceDeletedRemotely` (accountingPaymentPull.ts)
+// leaves behind — sync_status flipped to 'error', last_error the sentinel
+// literal, remote_entity_id deliberately NOT cleared (Phase D decision 2).
+function remoteDeletedInvoiceMappingRow(overrides: Partial<MappingRow> = {}): MappingRow {
+  return {
+    id: 'map-inv-1', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+    remoteEntityType: 'Invoice', remoteEntityId: 'qb-inv-1', remoteSyncToken: '3',
+    remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'confirmed', syncStatus: 'error',
+    lastError: 'Deleted in QuickBooks',
     ...overrides,
   };
 }
@@ -351,7 +376,9 @@ beforeEach(() => {
     id: 'qb-inv-1', syncToken: '0', docNumber: 'INV-2026-0001',
     remoteTaxTotal: '7.00', remoteTotal: '107.00',
   });
-  voidInvoiceMock.mockResolvedValue(undefined);
+  voidInvoiceMock.mockResolvedValue({ syncToken: null });
+  fanOutOwedPaymentsMock.mockResolvedValue([]);
+  enqueuePaymentPushMock.mockResolvedValue(true);
 });
 
 // ---------------------------------------------------------------------------
@@ -425,6 +452,96 @@ describe('pushInvoiceToAccounting', () => {
     expect(pushInvoiceMock).not.toHaveBeenCalled();
   });
 
+  // #4544: markInvoiceDeletedRemotely leaves the invoice's mapping row
+  // sync_status='error' — pushable per PUSHABLE_STATUSES/isPushable on its
+  // own — so the remote-deleted marker must be its own guard, not folded
+  // into invoice_not_pushable.
+  it('rejects with remote_deleted (never re-creating the invoice in QuickBooks) when the mapping carries the remote-deleted marker, without ever calling org sync', async () => {
+    setup({ mappings: [orgMappingRow(), remoteDeletedInvoiceMappingRow()] });
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+      code: 'remote_deleted', status: 409,
+    });
+    expect(pushInvoiceMock).not.toHaveBeenCalled();
+    // Phase 1's early exit (before the currency/dependency-sync work) — the
+    // org mapping is already 'synced' in this fixture, so a call here would
+    // mean the guard fired too late to matter for THIS assertion; the
+    // ordering itself is covered by the "before any provider call" describe
+    // block's pattern elsewhere in this file.
+    expect(syncMappedEntityMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects with remote_deleted even when the marker appears only after Phase 1 (closes the Phase-1b re-check race)', async () => {
+    // Org mapping starts 'pending' so the coordinator actually calls
+    // syncMappedEntity between Phase 1 (no invoice mapping yet — passes) and
+    // Phase 1b (re-reads the mapping row to claim it 'pending'). The marker
+    // lands mid-sync, as if the reconcile worker ran concurrently.
+    setup({ mappings: [orgMappingRow({ syncStatus: 'pending' })] });
+    syncMappedEntityMock.mockImplementationOnce(async (...args: unknown[]) => {
+      currentMappings.push(remoteDeletedInvoiceMappingRow());
+      const [{ breezeEntityType, breezeEntityId }] = args as [{ breezeEntityType: string; breezeEntityId: string }];
+      const existing = currentMappings.find((m) => m.breezeEntityType === breezeEntityType && m.breezeEntityId === breezeEntityId)!;
+      const updated = { ...existing, syncStatus: 'synced' as const };
+      const idx = currentMappings.findIndex((m) => m.id === existing.id);
+      currentMappings[idx] = updated;
+      return updated;
+    });
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+      code: 'remote_deleted', status: 409,
+    });
+    expect(pushInvoiceMock).not.toHaveBeenCalled();
+    // The row must still carry the original marker — upsertInvoiceMappingPending
+    // must never have run and cleared it.
+    const row = currentMappings.find((m) => m.breezeEntityType === 'invoice' && m.breezeEntityId === INVOICE);
+    expect(row?.lastError).toBe('Deleted in QuickBooks');
+  });
+
+  // The two tests above prove the OUTCOME (the checked-then-thrown JS path).
+  // Neither can prove the row-claiming UPDATE itself is conditioned on the
+  // marker at the SQL level — this mock harness applies a patch synchronously
+  // against the same `currentMappings` array both the JS check and the UPDATE
+  // read, so there is no way to make the marker "invisible to the JS check but
+  // visible to the UPDATE" the way two genuinely concurrent Postgres
+  // transactions would be. Proving THAT requires a live database (out of
+  // scope for this fully-mocked unit file). This test instead proves the
+  // UPDATE's compiled WHERE clause — a REAL (unmocked) drizzle-orm SQL tree,
+  // same technique as `sqlColumnsAndValues` elsewhere in this file — actually
+  // carries the remote-deleted guard predicate, so a future edit that quietly
+  // drops the `or(isNull(...), ne(...))` condition (leaving only the
+  // check-then-write JS guard, reopening the TOCTOU code review flagged) fails
+  // this test instead of shipping silently.
+  it('the claiming UPDATE conditions on the row NOT already carrying the remote-deleted marker (SQL-level regression guard)', async () => {
+    setup({
+      mappings: [
+        orgMappingRow(),
+        { ...remoteDeletedInvoiceMappingRow(), lastError: null, syncStatus: 'synced' }, // marker cleared — claimable
+      ],
+    });
+    // Capture only the FIRST update (the claim-pending write) — a successful
+    // push issues a second one later (persistInvoiceRemoteRef) whose WHERE
+    // clause has no reason to carry this predicate and would overwrite the
+    // capture if not guarded against.
+    let capturedWhereCond: unknown;
+    let captured = false;
+    updateMock.mockImplementation(() => ({
+      set: (patch: Record<string, unknown>) => ({
+        where: (cond: unknown) => ({
+          returning: () => {
+            if (!captured) { capturedWhereCond = cond; captured = true; }
+            const idx = currentMappings.findIndex((row) => conditionContainsValue(cond, row.id));
+            currentMappings[idx] = { ...currentMappings[idx], ...patch } as MappingRow;
+            return Promise.resolve([currentMappings[idx]]);
+          },
+        }),
+      }),
+    }));
+
+    await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+    expect(conditionContainsValue(capturedWhereCond, 'Deleted in QuickBooks')).toBe(true);
+  });
+
   describe('currency guard runs before any provider call', () => {
     it('blocks with home_currency_unknown when the realm home currency is unavailable', async () => {
       resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: null }));
@@ -468,6 +585,150 @@ describe('pushInvoiceToAccounting', () => {
       expect(caught?.status).toBe(409);
       expect(caught?.message).toContain('foreign-currency invoice push is not yet supported');
       expect(pushInvoiceMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // #4498: the currency guard used to throw with no trace at all — no
+  // accounting_entity_mappings row for the invoice, so getInvoiceAccountingSync
+  // had nothing to read and the AccountingSyncCard showed nothing. It now
+  // persists an error-only mapping row so the card's existing
+  // syncStatus:'error' branch (no new UI plumbing) surfaces it.
+  describe('currency_mismatch persists an error-only mapping row (#4498)', () => {
+    it('inserts a new error-only mapping row (no remoteEntityId) naming both currencies, in a FRESH context opened AFTER Phase 1 rolled back', async () => {
+      setup({ invoice: { currencyCode: 'EUR' } });
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: 'USD', multiCurrencyEnabled: false }));
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+        code: 'currency_mismatch', status: 409,
+      });
+      expect(pushInvoiceMock).not.toHaveBeenCalled();
+
+      // Phase 1 enters/exits (and throws inside), THEN a separate context opens
+      // for the persist — never inside the same enter/exit pair Phase 1 used,
+      // which is exactly the shape that would roll back on a real Postgres
+      // transaction (see the DB ACCESS CONTRACT doc comment).
+      expect(ctx.events).toEqual(['ctx:enter', 'ctx:exit', 'ctx:enter', 'ctx:exit']);
+
+      const row = currentMappings.find((m) => m.breezeEntityType === 'invoice' && m.breezeEntityId === INVOICE);
+      expect(row).toMatchObject({
+        integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+        remoteEntityType: 'Invoice', linkStatus: 'create_new', syncStatus: 'error',
+      });
+      expect(row?.remoteEntityId ?? null).toBeNull(); // omitted from the insert -> nullable column, no remote id
+      expect(row?.lastError).toContain('EUR');
+      expect(row?.lastError).toContain('USD');
+    });
+
+    it('does NOT persist any mapping row for home_currency_unknown (scoped to currency_mismatch only)', async () => {
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: null }));
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+        code: 'home_currency_unknown', status: 409,
+      });
+
+      expect(currentMappings.find((m) => m.breezeEntityType === 'invoice')).toBeUndefined();
+      expect(insertedValues).toHaveLength(0);
+    });
+
+    it('UPDATEs an existing invoice mapping row in place (never a duplicate insert) and never touches remoteEntityId/linkStatus of an already-synced row', async () => {
+      // Simulates the invoice having synced successfully in the past, then the
+      // connection's home currency changing so this push attempt now 409s.
+      setup({
+        invoice: { currencyCode: 'EUR' },
+        mappings: [
+          orgMappingRow(),
+          {
+            id: 'map-inv-old', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+            remoteEntityType: 'Invoice', remoteEntityId: 'qb-inv-old', remoteSyncToken: '2',
+            remoteCurrencyCode: null, remoteDocNumber: 'INV-QBO-1', linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+          },
+        ],
+      });
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: 'GBP', multiCurrencyEnabled: false }));
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'currency_mismatch' });
+
+      expect(insertedValues).toHaveLength(0); // updated in place, never inserted a second row
+      const row = currentMappings.find((m) => m.breezeEntityType === 'invoice' && m.breezeEntityId === INVOICE);
+      expect(row).toMatchObject({
+        id: 'map-inv-old', syncStatus: 'error', remoteEntityId: 'qb-inv-old', remoteDocNumber: 'INV-QBO-1', linkStatus: 'confirmed',
+      });
+      expect(row?.lastError).toContain('EUR');
+    });
+
+    // Same rationale/technique as the remote-deleted claiming-UPDATE test above:
+    // the mock harness can't fake a genuine concurrent-transaction race, but it
+    // CAN prove the compiled WHERE clause carries the same never-clobber guard,
+    // so a future edit that quietly drops it fails this test instead of shipping
+    // a currency-guard write that can resurrect a remote-deleted invoice.
+    it('the error-row UPDATE conditions on the row NOT already carrying the remote-deleted marker (SQL-level regression guard)', async () => {
+      setup({
+        invoice: { currencyCode: 'EUR' },
+        mappings: [orgMappingRow(), { ...remoteDeletedInvoiceMappingRow(), lastError: null, syncStatus: 'synced' }],
+      });
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: 'USD', multiCurrencyEnabled: false }));
+
+      let capturedWhereCond: unknown;
+      updateMock.mockImplementation(() => ({
+        set: (patch: Record<string, unknown>) => ({
+          where: (cond: unknown) => ({
+            returning: () => {
+              capturedWhereCond = cond;
+              const idx = currentMappings.findIndex((row) => conditionContainsValue(cond, row.id));
+              if (idx !== -1) currentMappings[idx] = { ...currentMappings[idx], ...patch } as MappingRow;
+              return Promise.resolve(idx === -1 ? [] : [currentMappings[idx]]);
+            },
+          }),
+        }),
+      }));
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'currency_mismatch' });
+
+      expect(conditionContainsValue(capturedWhereCond, 'Deleted in QuickBooks')).toBe(true);
+    });
+
+    it('is best-effort: a failure persisting the error row still raises the original currency_mismatch, and reports to Sentry', async () => {
+      setup({ invoice: { currencyCode: 'EUR' } });
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: 'USD', multiCurrencyEnabled: false }));
+      insertMock.mockImplementation(() => ({ values: () => ({ returning: () => Promise.reject(new Error('db down')) }) }));
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+        code: 'currency_mismatch', status: 409,
+      });
+      expect(captureExceptionMock).toHaveBeenCalled();
+    });
+
+    it('a concurrent-insert race (unique violation) on the error-row insert is swallowed silently — NOT reported to Sentry — since another write already owns the row', async () => {
+      // Two auto-push attempts for the same invoice racing to insert the
+      // FIRST invoice mapping row: whichever loses the race must not treat
+      // "someone else already recorded a row here" as a failure worth paging
+      // on, distinct from a genuine DB error (covered by the test above).
+      setup({ invoice: { currencyCode: 'EUR' } });
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: 'USD', multiCurrencyEnabled: false }));
+      insertMock.mockImplementation(() => ({
+        values: () => ({ returning: () => Promise.reject(pgUniqueViolation('accounting_entity_mappings_breeze_uniq')) }),
+      }));
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+        code: 'currency_mismatch', status: 409,
+      });
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+    });
+
+    it('a DIFFERENT insert failure (not the unique-violation race) still reports to Sentry rather than being swallowed like the race above', async () => {
+      // Guards the `isPgUniqueViolation` branch from silently widening: only
+      // THIS exact constraint name is treated as benign; any other error
+      // (wrong constraint, or no constraint at all) must still surface.
+      setup({ invoice: { currencyCode: 'EUR' } });
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: 'USD', multiCurrencyEnabled: false }));
+      insertMock.mockImplementation(() => ({
+        values: () => ({ returning: () => Promise.reject(pgUniqueViolation('some_other_unrelated_constraint')) }),
+      }));
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+        code: 'currency_mismatch', status: 409,
+      });
+      expect(captureExceptionMock).toHaveBeenCalled();
     });
   });
 
@@ -720,6 +981,34 @@ describe('pushInvoiceToAccounting', () => {
     expect(payload.mapping).toEqual({ remoteEntityId: 'qb-inv-1', remoteSyncToken: '3' });
   });
 
+  // Phase C bug (#4624 follow-up): QuickBooks bumps an Invoice's SyncToken on
+  // every payment applied to or removed from it, so the token Breeze stored at
+  // push time is routinely behind. The provider re-reads the live revision and
+  // retries; the coordinator's half of that contract is that the token it
+  // persists comes from the RESPONSE, never from what it happened to send.
+  it('persists the SyncToken the provider returned, not the stale one it held, on a re-push', async () => {
+    setup({
+      mappings: [
+        orgMappingRow(),
+        {
+          id: 'map-inv-1', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+          remoteEntityType: 'Invoice', remoteEntityId: 'qb-inv-1', remoteSyncToken: '0',
+          remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+        },
+      ],
+    });
+    pushInvoiceMock.mockResolvedValue({
+      id: 'qb-inv-1', syncToken: '5', docNumber: 'INV-2026-0001',
+      remoteTaxTotal: '7.00', remoteTotal: '107.00',
+    });
+
+    await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+    const mappingUpdate = updatedPatches.find((u) => 'remoteSyncToken' in u.patch && u.patch.remoteEntityId === 'qb-inv-1');
+    expect(mappingUpdate?.patch.remoteSyncToken).toBe('5');
+    expect(mappingUpdate?.patch.syncStatus).toBe('synced');
+  });
+
   it('maps a concurrent-insert race (unique violation on first push) to quickbooks_error instead of a raw 500', async () => {
     setup({ mappings: [orgMappingRow()] });
     stubInsertWithViolation();
@@ -857,6 +1146,23 @@ describe('voidInvoiceInAccounting', () => {
     expect(voidInvoiceMock).not.toHaveBeenCalled();
   });
 
+  // #4544: markInvoiceDeletedRemotely deliberately leaves remoteEntityId set
+  // (see its own doc comment), so a remote-deleted mapping does NOT take the
+  // no-remote-id no-op path above — without this guard it would call
+  // provider.voidInvoice against an id QuickBooks no longer recognizes, and
+  // the resulting failure's catch block would overwrite (clobber) this exact
+  // marker with a generic QuickBooks error, silently reopening the door for
+  // a later push to re-create the invoice — the same bug via a different path.
+  it('no-ops for an already remote-deleted mapping and preserves the marker, never calling the provider', async () => {
+    setup({ mappings: [orgMappingRow(), remoteDeletedInvoiceMappingRow()] });
+
+    await expect(voidInvoiceInAccounting(INVOICE, PARTNER, runCtx)).resolves.toBeUndefined();
+    expect(voidInvoiceMock).not.toHaveBeenCalled();
+    const row = currentMappings.find((m) => m.breezeEntityType === 'invoice' && m.breezeEntityId === INVOICE);
+    expect(row?.lastError).toBe('Deleted in QuickBooks');
+    expect(row?.syncStatus).toBe('error');
+  });
+
   it('calls provider.voidInvoice with the stored mapping for a pushed invoice, and leaves sync_status/last_error untouched on success', async () => {
     setup({
       mappings: [
@@ -879,6 +1185,98 @@ describe('voidInvoiceInAccounting', () => {
     const mapping = currentMappings.find((m) => m.id === 'map-inv-1')!;
     expect(mapping.syncStatus).toBe('synced');
     expect(mapping.lastError).toBeNull();
+  });
+
+  it('persists the SyncToken the void returned, so the NEXT write does not start stale', async () => {
+    // The void bumps the Invoice's revision. Leaving the old token stored just
+    // hands the next push a guaranteed 5010 (walk item 37).
+    setup({
+      mappings: [
+        orgMappingRow(),
+        {
+          id: 'map-inv-1', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+          remoteEntityType: 'Invoice', remoteEntityId: 'qb-inv-1', remoteSyncToken: '3',
+          remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+        },
+      ],
+    });
+    voidInvoiceMock.mockResolvedValueOnce({ syncToken: '9' });
+
+    await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx);
+
+    const mapping = currentMappings.find((m) => m.id === 'map-inv-1')!;
+    expect(mapping.remoteSyncToken).toBe('9');
+    expect(mapping.syncStatus).toBe('synced');
+    expect(mapping.lastError).toBeNull();
+  });
+
+  it('KEEPS the stored SyncToken when the void reply carries none', async () => {
+    // The sibling above proves a returned token is persisted. This is the other
+    // half: a reply with `syncToken: null` must not NULL the stored one —
+    // clearing it costs the next write an extra read at best, and on the delete
+    // path an unnecessary round trip that can race a concurrent edit. The
+    // Payment's revision did not become unknown just because the reply omitted
+    // it.
+    setup({
+      mappings: [
+        orgMappingRow(),
+        {
+          id: 'map-inv-1', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+          remoteEntityType: 'Invoice', remoteEntityId: 'qb-inv-1', remoteSyncToken: '3',
+          remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+        },
+      ],
+    });
+    voidInvoiceMock.mockResolvedValueOnce({ syncToken: null });
+
+    await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx);
+
+    const mapping = currentMappings.find((m) => m.id === 'map-inv-1')!;
+    expect(mapping.remoteSyncToken).toBe('3');
+    expect(mapping.syncStatus).toBe('synced');
+  });
+
+  // #5180 — the production incident: QuickBooks refused the void because the
+  // invoice was settled by a QuickBooks Payment, the failure was typed
+  // `quickbooks_error`, and BullMQ burned five attempts (and five Sentry
+  // alerts) on an answer that could never change.
+  it('classifies a QuickBooks "payment applied" refusal as the NON-retryable void_blocked_by_payments', async () => {
+    setup({
+      mappings: [
+        orgMappingRow(),
+        {
+          id: 'map-inv-1', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+          remoteEntityType: 'Invoice', remoteEntityId: 'qb-inv-1', remoteSyncToken: '3',
+          remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+        },
+      ],
+    });
+    voidInvoiceMock.mockRejectedValue(Object.assign(new Error('QuickBooks invoice void failed with 400'), {
+      status: 400,
+      qboFaultCode: '6000',
+      qboFaultMessage: 'Business Validation Error',
+      qboPaymentLinked: true,
+    }));
+
+    let caught: AccountingInvoicePushError | undefined;
+    try {
+      await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx);
+    } catch (err) {
+      caught = err as AccountingInvoicePushError;
+    }
+
+    expect(caught?.code).toBe('void_blocked_by_payments');
+    expect(caught?.status).toBe(409);
+    // The message must name the remedy — the old one said only that something
+    // was rejected, five times, on a mapping card an operator had to act on.
+    expect(caught?.message).toBe(
+      'QuickBooks will not void this invoice because a payment is applied to it there'
+      + ' — remove or unapply that payment in QuickBooks, then void the invoice again'
+      + ' (HTTP 400: Business Validation Error)',
+    );
+    const mapping = currentMappings.find((m) => m.id === 'map-inv-1')!;
+    expect(mapping.syncStatus).toBe('error');
+    expect(mapping.lastError).toBe(caught?.message);
   });
 
   it('on provider void failure, marks the mapping error with a sanitized message and rethrows', async () => {
@@ -907,5 +1305,92 @@ describe('voidInvoiceInAccounting', () => {
     const mapping = currentMappings.find((m) => m.id === 'map-inv-1')!;
     expect(mapping.syncStatus).toBe('error');
     expect(mapping.lastError).toBe('QuickBooks rejected the invoice sync (HTTP 500)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase D2 (Task 5) — payment fan-out after a landed invoice push.
+// ---------------------------------------------------------------------------
+
+describe('pushInvoiceToAccounting payment fan-out (spec decision 10)', () => {
+  it('fans out the invoice payments after the remote ref is recorded, and enqueues each', async () => {
+    // Runs in BOTH push modes: in `manual` this is the ONLY way payments reach
+    // QuickBooks, and in `auto` it catches payments recorded while this push was
+    // still in flight (their own requestPaymentPush returned null because the
+    // invoice had no remote id yet).
+    let patchesWhenFannedOut: Array<Record<string, unknown>> = [];
+    fanOutOwedPaymentsMock.mockImplementation(async () => {
+      patchesWhenFannedOut = updatedPatches.map((u) => u.patch);
+      return ['map-a', 'map-b'];
+    });
+
+    const res = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+    expect(res.syncStatus).toBe('synced');
+    expect(fanOutOwedPaymentsMock).toHaveBeenCalledWith(INVOICE, PARTNER, runCtx);
+    // Ordering, proven from the fan-out's own vantage point: the mapping row
+    // already carried the QuickBooks id when it ran. A payment pushed before the
+    // invoice's remote ref lands has nothing to attach itself to.
+    expect(patchesWhenFannedOut.some((p) => p.remoteEntityId === 'qb-inv-1')).toBe(true);
+    expect(enqueuePaymentPushMock).toHaveBeenCalledWith('map-a', PARTNER);
+    expect(enqueuePaymentPushMock).toHaveBeenCalledWith('map-b', PARTNER);
+  });
+
+  it('enqueues nothing when no payment is owed a push', async () => {
+    fanOutOwedPaymentsMock.mockResolvedValue([]);
+
+    await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+    expect(enqueuePaymentPushMock).not.toHaveBeenCalled();
+  });
+
+  it('never fails a landed invoice push because the payment fan-out threw', async () => {
+    // The invoice IS in QuickBooks and the mapping row already says so. Failing
+    // the call here would report an error for work that succeeded, and the
+    // caller's retry would take the create path again.
+    fanOutOwedPaymentsMock.mockRejectedValue(new Error('boom'));
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).resolves.toMatchObject({
+      syncStatus: 'synced', remoteEntityId: 'qb-inv-1',
+    });
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      expect.objectContaining({ service: 'accountingInvoicePush', invoice_id: expect.any(String) }),
+    );
+  });
+
+  it('never fails a landed invoice push because the payment enqueue threw', async () => {
+    fanOutOwedPaymentsMock.mockResolvedValue(['map-a']);
+    enqueuePaymentPushMock.mockRejectedValue(new Error('redis down'));
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).resolves.toMatchObject({ syncStatus: 'synced' });
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
+  it('does NOT fan out when the invoice was voided while the push was in flight', async () => {
+    // The void enqueue above already fired for this invoice. Fanning out here
+    // would give every payment a pending mapping that the coordinator refuses
+    // terminally with `invoice_void` — a red badge per payment for work that was
+    // never going to happen.
+    pushInvoiceMock.mockImplementationOnce(async () => {
+      currentInvoices = [defaultInvoice({ status: 'void' })];
+      return { id: 'qb-inv-1', syncToken: '0', docNumber: 'INV-2026-0001', remoteTaxTotal: '7.00', remoteTotal: '107.00' };
+    });
+
+    await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+    expect(enqueueAccountingInvoiceVoidMock).toHaveBeenCalledWith(INVOICE, PARTNER);
+    expect(fanOutOwedPaymentsMock).not.toHaveBeenCalled();
+    expect(enqueuePaymentPushMock).not.toHaveBeenCalled();
+  });
+
+  it('does not fan out when the push itself failed', async () => {
+    pushInvoiceMock.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }));
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'quickbooks_error' });
+
+    expect(fanOutOwedPaymentsMock).not.toHaveBeenCalled();
+    expect(enqueuePaymentPushMock).not.toHaveBeenCalled();
   });
 });

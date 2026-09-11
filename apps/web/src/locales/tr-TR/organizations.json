@@ -1,0 +1,133 @@
+{
+  "orgRecord": {
+    "documentTitle": "Kuruluş",
+    "header": {
+      "type": {
+        "customer": "Müşteri",
+        "internal": "Dahili"
+      },
+      "primaryContact": "Birincil kişi",
+      "noPrimaryContact": "Birincil kişi yok",
+      "sites_one": "{{count}} site",
+      "sites_other": "{{count}} site",
+      "scopeChip": "Çalışma alanı: {{orgName}}",
+      "scopeChipHint": "Çalışma alanınız başka bir kuruluşa ayarlı. Bu sayfa her zaman {{orgName}} kuruluşunu gösterir.",
+      "created": "{{date}} tarihinden beri müşteri"
+    },
+    "actions": {
+      "workHere": "Bu kuruluşta çalış",
+      "workHereToast": "{{orgName}} kuruluşuna geçildi",
+      "settings": "Ayarlar",
+      "more": "Diğer işlemler",
+      "archive": "Arşivle",
+      "merge": "Birleştir",
+      "restore": "Geri yükle",
+      "retry": "Tekrar dene"
+    },
+    "tabs": {
+      "overview": "Genel bakış",
+      "contacts": "Kişiler",
+      "sites": "Siteler",
+      "devices": "Cihazlar",
+      "tickets": "Biletler",
+      "billing": "Sözleşmeler ve Faturalandırma",
+      "service": "Hizmet",
+      "activity": "Etkinlik"
+    },
+    "comingSoon": {
+      "title": "Yakında geliyor",
+      "description": "Bu sekme, kuruluş kaydının bir sonraki güncellemesinde eklenecek."
+    },
+    "devices": {
+      "loadError": "Bu kuruluşun cihazları yüklenemedi.",
+      "searchPlaceholder": "Cihazlarda ara",
+      "allStatuses": "Tüm durumlar",
+      "allSites": "Tüm siteler",
+      "status": {
+        "online": "Çevrimiçi",
+        "offline": "Çevrimdışı",
+        "maintenance": "Bakım",
+        "decommissioned": "Çıkarıldı",
+        "quarantined": "Karantinaya alındı",
+        "updating": "Güncelleniyor",
+        "pending": "Beklemede"
+      }
+    },
+    "overview": {
+      "tiles": {
+        "devices": "Cihazlar",
+        "devicesSub": "{{total}} cihazdan {{online}} çevrimiçi",
+        "alerts": "Açık uyarılar",
+        "alertsSub": "{{critical}} kritik · {{high}} yüksek",
+        "tickets": "Açık biletler",
+        "ticketsSub": "{{count}} müşteri yanıtı bekliyor",
+        "contracts": "Aktif sözleşmeler",
+        "contractsSub": "Sonraki yenileme {{date}}",
+        "contractsNoRenewal": "Yaklaşan yenileme yok",
+        "invoices": "Bekleyen tutar",
+        "invoicesSub": "Sonraki vade {{date}}",
+        "invoicesOverdue_one": "{{count}} gecikmiş",
+        "invoicesOverdue_other": "{{count}} gecikmiş",
+        "invoicesNothingDue": "Vadesi gelen yok",
+        "contacts": "Kişiler",
+        "portalUsers": "Portal kullanıcıları",
+        "sites": "Siteler"
+      },
+      "activity": {
+        "title": "Son etkinlik",
+        "empty": "Henüz kayıtlı etkinlik yok.",
+        "failed": "Son etkinlik yüklenemedi.",
+        "viewAll": "Tüm etkinliği görüntüle"
+      },
+      "criticalAlerts": {
+        "title": "Açık kritik uyarılar",
+        "empty": "Açık kritik uyarı yok.",
+        "failed": "Açık kritik uyarılar kontrol edilemedi.",
+        "viewAll": "Tüm uyarıları görüntüle"
+      },
+      "lastActivity": "Son etkinlik {{date}}",
+      "noSummary": "Özet sayılar şu anda kullanılamıyor."
+    },
+    "archived": {
+      "banner": "Bu kuruluş arşivlendi ve salt okunur. Değişiklik yapmak için geri yükleyin.",
+      "restoreError": "Bu kuruluş geri yüklenemedi."
+    },
+    "lifecycle": {
+      "inaccessible": "Bu kuruluş {{status}} durumunda, bu nedenle canlı verileri kullanılamıyor. Yine de kuruluşlar listesinde görebilirsiniz.",
+      "backToList": "Kuruluşlara dön"
+    },
+    "unavailable": {
+      "title": "Bu çalışma alanında kullanılamıyor",
+      "description": "Kuruluş kayıtları partner düzeyinde bir görünümdür. Oturumunuz tek bir kuruluşla sınırlı, bu yüzden burada geçiş yapılacak bir şey yok.",
+      "action": "Panele git"
+    },
+    "notFound": {
+      "title": "Kuruluş bulunamadı",
+      "description": "Bu kuruluş mevcut değil veya artık erişiminiz yok.",
+      "action": "Kuruluşlara dön"
+    },
+    "error": {
+      "title": "Bu kuruluş yüklenemedi",
+      "description": "Kaydı getirirken bir sorun oluştu. Bağlantınızı kontrol edip tekrar deneyin."
+    },
+    "loading": "Kuruluş yükleniyor…",
+    "tickets": {
+      "tabs": {
+        "open": "Açık",
+        "all": "Hepsi",
+        "closed": "Kapalı"
+      },
+      "newTicket": "Yeni bilet",
+      "loadFailed": "Biletler yüklenemedi.",
+      "forbidden": "Biletleri görüntüleme izniniz yok.",
+      "truncated": "{{total}} biletten {{shown}} tanesi gösteriliyor."
+    },
+    "billing": {
+      "sections": {
+        "contracts": "Sözleşmeler",
+        "invoices": "Faturalar",
+        "quotes": "Alıntılar"
+      }
+    }
+  }
+}

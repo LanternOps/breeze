@@ -5,7 +5,7 @@ import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
-import { formatNumber } from '@/lib/i18n/format';
+import { formatPing, pingColor } from './pingFormat';
 import {
   parseDiscoveredAssetLinkSource,
   parseDiscoveredAssetTypeSource,
@@ -31,6 +31,9 @@ export type DiscoveredAssetType =
   | 'iot'
   | 'camera'
   | 'nas'
+  // website/service (#5213 W03): an IP-less manual asset whose identity is a URL.
+  | 'website'
+  | 'service'
   | 'unknown';
 
 export type OpenPortEntry = { port: number; service: string };
@@ -95,19 +98,26 @@ export type ApiDiscoveryAsset = {
   updatedAt?: string;
 };
 
-export const typeConfig: Record<DiscoveredAssetType, { labelKey: string; color: string }> = {
-  workstation: { labelKey: 'discovery:assetTypes.workstation', color: 'bg-indigo-500/20 text-indigo-700 border-indigo-500/40' },
-  server: { labelKey: 'discovery:assetTypes.server', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
-  printer: { labelKey: 'discovery:assetTypes.printer', color: 'bg-orange-500/20 text-orange-700 border-orange-500/40' },
-  router: { labelKey: 'discovery:assetTypes.router', color: 'bg-emerald-500/20 text-emerald-700 border-emerald-500/40' },
-  switch: { labelKey: 'discovery:assetTypes.switch', color: 'bg-cyan-500/20 text-cyan-700 border-cyan-500/40' },
-  firewall: { labelKey: 'discovery:assetTypes.firewall', color: 'bg-red-500/20 text-red-700 border-red-500/40' },
-  access_point: { labelKey: 'discovery:assetTypes.accessPoint', color: 'bg-teal-500/20 text-teal-700 border-teal-500/40' },
-  phone: { labelKey: 'discovery:assetTypes.phone', color: 'bg-violet-500/20 text-violet-700 border-violet-500/40' },
-  iot: { labelKey: 'discovery:assetTypes.iot', color: 'bg-amber-500/20 text-amber-700 border-amber-500/40' },
-  camera: { labelKey: 'discovery:assetTypes.camera', color: 'bg-pink-500/20 text-pink-700 border-pink-500/40' },
-  nas: { labelKey: 'discovery:assetTypes.nas', color: 'bg-sky-500/20 text-sky-700 border-sky-500/40' },
-  unknown: { labelKey: 'discovery:assetTypes.unknown', color: 'bg-muted text-muted-foreground border-muted' }
+// `color` is the badge treatment (light-only `*-700` text on a `*-500/20`
+// fill — fine for a bordered pill, illegible for a filled tile in dark mode).
+// `tile` is the same hue tuned for a filled icon tile: a softer fill plus a
+// text color with its own dark-theme step, so callers never have to parse or
+// re-derive one from the other.
+export const typeConfig: Record<DiscoveredAssetType, { labelKey: string; color: string; tile: string }> = {
+  workstation: { labelKey: 'discovery:assetTypes.workstation', color: 'bg-indigo-500/20 text-indigo-700 border-indigo-500/40', tile: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 border-indigo-500/30' },
+  server: { labelKey: 'discovery:assetTypes.server', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', tile: 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/30' },
+  printer: { labelKey: 'discovery:assetTypes.printer', color: 'bg-orange-500/20 text-orange-700 border-orange-500/40', tile: 'bg-orange-500/15 text-orange-600 dark:text-orange-400 border-orange-500/30' },
+  router: { labelKey: 'discovery:assetTypes.router', color: 'bg-emerald-500/20 text-emerald-700 border-emerald-500/40', tile: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30' },
+  switch: { labelKey: 'discovery:assetTypes.switch', color: 'bg-cyan-500/20 text-cyan-700 border-cyan-500/40', tile: 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400 border-cyan-500/30' },
+  firewall: { labelKey: 'discovery:assetTypes.firewall', color: 'bg-red-500/20 text-red-700 border-red-500/40', tile: 'bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30' },
+  access_point: { labelKey: 'discovery:assetTypes.accessPoint', color: 'bg-teal-500/20 text-teal-700 border-teal-500/40', tile: 'bg-teal-500/15 text-teal-600 dark:text-teal-400 border-teal-500/30' },
+  phone: { labelKey: 'discovery:assetTypes.phone', color: 'bg-violet-500/20 text-violet-700 border-violet-500/40', tile: 'bg-violet-500/15 text-violet-600 dark:text-violet-400 border-violet-500/30' },
+  iot: { labelKey: 'discovery:assetTypes.iot', color: 'bg-amber-500/20 text-amber-700 border-amber-500/40', tile: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30' },
+  camera: { labelKey: 'discovery:assetTypes.camera', color: 'bg-pink-500/20 text-pink-700 border-pink-500/40', tile: 'bg-pink-500/15 text-pink-600 dark:text-pink-400 border-pink-500/30' },
+  nas: { labelKey: 'discovery:assetTypes.nas', color: 'bg-sky-500/20 text-sky-700 border-sky-500/40', tile: 'bg-sky-500/15 text-sky-600 dark:text-sky-400 border-sky-500/30' },
+  website: { labelKey: 'discovery:assetTypes.website', color: 'bg-lime-500/20 text-lime-700 border-lime-500/40', tile: 'bg-lime-500/15 text-lime-600 dark:text-lime-400 border-lime-500/30' },
+  service: { labelKey: 'discovery:assetTypes.service', color: 'bg-fuchsia-500/20 text-fuchsia-700 border-fuchsia-500/40', tile: 'bg-fuchsia-500/15 text-fuchsia-600 dark:text-fuchsia-400 border-fuchsia-500/30' },
+  unknown: { labelKey: 'discovery:assetTypes.unknown', color: 'bg-muted text-muted-foreground border-muted', tile: 'bg-muted text-muted-foreground border-muted' }
 };
 
 export const approvalStatusConfig: Record<DiscoveredAssetApprovalStatus, { labelKey: string; color: string }> = {
@@ -128,6 +138,8 @@ const assetTypeMap: Record<string, DiscoveredAssetType> = {
   iot: 'iot',
   camera: 'camera',
   nas: 'nas',
+  website: 'website',
+  service: 'service',
   unknown: 'unknown'
 };
 
@@ -136,20 +148,6 @@ function formatLastSeen(value?: string, timezone?: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return formatDateTime(date, { timeZone: timezone });
-}
-
-function formatPing(ms?: number | null) {
-  if (ms == null) return '—';
-  if (ms < 1) return '<1 ms';
-  return `${formatNumber(ms, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ms`;
-}
-
-function pingColor(ms?: number | null) {
-  if (ms == null) return 'text-muted-foreground';
-  if (ms < 5) return 'text-green-600';
-  if (ms < 50) return 'text-emerald-600';
-  if (ms < 200) return 'text-yellow-600';
-  return 'text-red-600';
 }
 
 function normalizeOpenPorts(raw: ApiDiscoveryAsset['openPorts']): OpenPortEntry[] {
@@ -491,12 +489,11 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
               href={`/devices/${asset.linkedDeviceId}`}
               onClick={event => event.stopPropagation()}
               data-testid="discovered-asset-same-device-badge"
+              title={asset.linkedDeviceName || undefined}
               className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-primary hover:underline"
             >
               <CheckCircle2 className="h-3 w-3" />
-              {t('discoveredAssetList.sameDeviceAs', {
-                name: asset.linkedDeviceName || t('common:states.unknown')
-              })}
+              {t('discoveredAssetList.agentInstalled')}
             </a>
           )}
         </div>

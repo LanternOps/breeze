@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
-  stripSensitiveDeviceFields,
+  PUBLIC_DEVICE_FIELDS,
+  buildPublicDeviceProjection,
+  projectPublicDevice,
   canAccessDeviceSite,
   getDeviceWithOrgCheck,
   getDeviceWithOrgAndSiteCheck,
@@ -21,8 +23,9 @@ vi.mock('../../db', () => ({
 // client. Credential verifiers + mTLS material must never reach any client,
 // even an authenticated same-tenant dashboard user.
 
-describe('stripSensitiveDeviceFields (SR-008)', () => {
+describe('public device projection', () => {
   const sensitive = {
+    agentId: 'internal-agent-id',
     agentTokenHash: 'a'.repeat(64),
     previousTokenHash: 'b'.repeat(64),
     watchdogTokenHash: 'c'.repeat(64),
@@ -39,6 +42,12 @@ describe('stripSensitiveDeviceFields (SR-008)', () => {
     mtlsCertCfId: 'cf-cert-id',
     mtlsCertExpiresAt: new Date(),
     mtlsCertIssuedAt: new Date(),
+    pendingTokenHash: 'g'.repeat(64),
+    pendingWatchdogTokenHash: 'h'.repeat(64),
+    pendingHelperTokenHash: 'i'.repeat(64),
+    pendingTokenExpiresAt: new Date(),
+    agentTokenSuspendedAt: new Date(),
+    agentTokenSuspendedReason: 'probe-detected',
   };
   const safe = {
     id: 'dev-1',
@@ -50,21 +59,30 @@ describe('stripSensitiveDeviceFields (SR-008)', () => {
   };
 
   it('removes every credential verifier and mTLS field', () => {
-    const out = stripSensitiveDeviceFields({ ...safe, ...sensitive }) as Record<string, unknown>;
+    const out = projectPublicDevice({ ...safe, ...sensitive }) as Record<string, unknown>;
     for (const key of Object.keys(sensitive)) {
       expect(out).not.toHaveProperty(key);
     }
   });
 
   it('preserves all non-sensitive operational fields', () => {
-    const out = stripSensitiveDeviceFields({ ...safe, ...sensitive }) as Record<string, unknown>;
+    const out = projectPublicDevice({ ...safe, ...sensitive }) as Record<string, unknown>;
     expect(out).toEqual(safe);
   });
 
   it('does not mutate the input object (internal logic still needs the full row)', () => {
     const input = { ...safe, ...sensitive };
-    stripSensitiveDeviceFields(input);
+    projectPublicDevice(input);
     expect(input.agentTokenHash).toBe('a'.repeat(64));
+  });
+
+  it('is an allowlist of real schema columns and builds the same SQL projection', () => {
+    expect(Object.keys(buildPublicDeviceProjection())).toEqual([...PUBLIC_DEVICE_FIELDS]);
+  });
+
+  it('drops unknown future columns by default', () => {
+    expect(projectPublicDevice({ ...safe, futureCredential: 'private' }))
+      .not.toHaveProperty('futureCredential');
   });
 });
 
@@ -192,5 +210,146 @@ describe('device helpers reject a malformed uuid before querying (#2968)', () =>
     const device = { id: '9f6d5f4e-1b2a-4c3d-8e9f-0a1b2c3d4e5f', orgId: 'org-1', siteId: null };
     mockSelect([device]);
     await expect(getDeviceWithOrgCheck(device.id, auth)).resolves.toEqual(device);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2787 minor — batched sibling of getDeviceWithOrgAndSiteCheck.
+//
+// POST /devices/bulk/permanent-delete used to issue up to 500 single-row
+// SELECTs inside the ambient request transaction, one per selected device.
+// The batched helper must reach EXACTLY the same verdict per device; the
+// site-restriction case is the one worth pinning hardest, because a batch
+// lookup that forgot it would silently hand a site-scoped tech devices from
+// sites they cannot see.
+// ---------------------------------------------------------------------------
+describe('getDevicesWithOrgAndSiteCheck (#2787)', () => {
+  const D1 = '11111111-1111-4111-8111-111111111111';
+  const D2 = '22222222-2222-4222-8222-222222222222';
+  const D3 = '33333333-3333-4333-8333-333333333333';
+
+  const partnerAuth = {
+    scope: 'partner' as const,
+    orgId: null as unknown as string,
+    accessibleOrgIds: ['org-1'],
+    canAccessOrg: (orgId: string) => orgId === 'org-1',
+  };
+
+  /** `db.select().from().where()` resolving to `rows` (no `.limit()` — batched). */
+  function mockBatchSelect(rows: unknown[]) {
+    const where = vi.fn().mockResolvedValue(rows);
+    vi.mocked(db.select).mockReturnValue({
+      from: () => ({ where }),
+    } as unknown as ReturnType<typeof db.select>);
+    return where;
+  }
+
+  function ctx(userPerms: UserPermissions | undefined) {
+    return { get: (k: string) => (k === 'permissions' ? userPerms : undefined) } as never;
+  }
+
+  const noSiteRestriction = { allowedSiteIds: null } as unknown as UserPermissions;
+
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('issues ONE query for the whole batch, not one per device', async () => {
+    const { getDevicesWithOrgAndSiteCheck } = await import('./helpers');
+    mockBatchSelect([
+      { id: D1, orgId: 'org-1', siteId: 'site-1' },
+      { id: D2, orgId: 'org-1', siteId: 'site-1' },
+    ]);
+
+    await getDevicesWithOrgAndSiteCheck(ctx(noSiteRestriction), [D1, D2], partnerAuth);
+
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns SITE_ACCESS_DENIED for a device outside the site allowlist, and the row for one inside it', async () => {
+    const { getDevicesWithOrgAndSiteCheck, SITE_ACCESS_DENIED } = await import('./helpers');
+    mockBatchSelect([
+      { id: D1, orgId: 'org-1', siteId: 'site-allowed' },
+      { id: D2, orgId: 'org-1', siteId: 'site-other' },
+    ]);
+
+    const out = await getDevicesWithOrgAndSiteCheck(
+      ctx({ allowedSiteIds: ['site-allowed'] } as unknown as UserPermissions),
+      [D1, D2],
+      partnerAuth,
+    );
+
+    expect(out.get(D1)).toMatchObject({ id: D1 });
+    expect(out.get(D2)).toBe(SITE_ACCESS_DENIED);
+  });
+
+  it('denies a device whose siteId is not a string when a site allowlist is in force', async () => {
+    // Fail closed: a null site cannot be proven to be inside the allowlist.
+    const { getDevicesWithOrgAndSiteCheck, SITE_ACCESS_DENIED } = await import('./helpers');
+    mockBatchSelect([{ id: D1, orgId: 'org-1', siteId: null }]);
+
+    const out = await getDevicesWithOrgAndSiteCheck(
+      ctx({ allowedSiteIds: ['site-allowed'] } as unknown as UserPermissions),
+      [D1],
+      partnerAuth,
+    );
+
+    expect(out.get(D1)).toBe(SITE_ACCESS_DENIED);
+  });
+
+  it('returns null for an org the caller cannot access, and for a row that does not exist', async () => {
+    const { getDevicesWithOrgAndSiteCheck } = await import('./helpers');
+    mockBatchSelect([
+      { id: D1, orgId: 'org-1', siteId: 'site-1' },
+      { id: D2, orgId: 'org-elsewhere', siteId: 'site-9' },
+      // D3 is absent from the result entirely.
+    ]);
+
+    const out = await getDevicesWithOrgAndSiteCheck(
+      ctx(noSiteRestriction),
+      [D1, D2, D3],
+      partnerAuth,
+    );
+
+    expect(out.get(D1)).toMatchObject({ id: D1 });
+    expect(out.get(D2)).toBeNull();
+    expect(out.get(D3)).toBeNull();
+  });
+
+  it('returns null for a malformed uuid without putting it in the query', async () => {
+    const { getDevicesWithOrgAndSiteCheck } = await import('./helpers');
+    const where = mockBatchSelect([{ id: D1, orgId: 'org-1', siteId: 'site-1' }]);
+
+    const out = await getDevicesWithOrgAndSiteCheck(
+      ctx(noSiteRestriction),
+      [D1, 'not-a-uuid'],
+      partnerAuth,
+    );
+
+    expect(out.get('not-a-uuid')).toBeNull();
+    expect(out.get(D1)).toMatchObject({ id: D1 });
+    expect(where).toHaveBeenCalledTimes(1);
+  });
+
+  it('never queries at all when every id is malformed', async () => {
+    const { getDevicesWithOrgAndSiteCheck } = await import('./helpers');
+    mockBatchSelect([]);
+
+    const out = await getDevicesWithOrgAndSiteCheck(ctx(noSiteRestriction), ['x', 'y'], partnerAuth);
+
+    expect(db.select).not.toHaveBeenCalled();
+    expect(out.get('x')).toBeNull();
+    expect(out.get('y')).toBeNull();
+  });
+
+  it('throws a 500-class error when requirePermission never ran', async () => {
+    // Same programmer-error guard as the single helper: a missing permissions
+    // context must fail loudly, never silently grant cross-site access.
+    const { getDevicesWithOrgAndSiteCheck } = await import('./helpers');
+    mockBatchSelect([{ id: D1, orgId: 'org-1', siteId: 'site-1' }]);
+
+    await expect(
+      getDevicesWithOrgAndSiteCheck(ctx(undefined), [D1], partnerAuth),
+    ).rejects.toMatchObject({ status: 500 });
   });
 });

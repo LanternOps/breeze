@@ -10,6 +10,9 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.breeze.rmm",
       "buildNumber": "8",
+      "entitlements": {
+        "com.apple.developer.devicecheck.appattest-environment": "production"
+      },
       "associatedDomains": [
         "webcredentials:us.2breeze.app",
         "webcredentials:eu.2breeze.app"
@@ -34,6 +37,7 @@
       }
     },
     "android": {
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",

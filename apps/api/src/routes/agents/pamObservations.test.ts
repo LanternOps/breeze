@@ -64,6 +64,7 @@ function buildApp(options: {
       c.set('agent', {
         deviceId: DEVICE_ID,
         orgId: '40000000-0000-4000-8000-000000000001',
+        partnerId: '70000000-0000-4000-8000-000000000001',
         agentId: options.agentId ?? AGENT_ID,
         siteId: '50000000-0000-4000-8000-000000000001',
         role: options.role ?? 'agent',

@@ -1,6 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
+const onPortalFlagsChanged = vi.hoisted(() => vi.fn());
+
+vi.mock('../services/portal/portalFlags', async () => {
+  const actual = await vi.importActual<
+    typeof import('../services/portal/portalFlags')
+  >('../services/portal/portalFlags');
+
+  return {
+    ...actual,
+    onPortalFlagsChanged
+  };
+});
+
 const { authRef, dbSelectResult, dbUpsertReturning, auditSpy } = vi.hoisted(() => ({
   authRef: {
     current: {
@@ -62,6 +75,11 @@ vi.mock('../db/schema', () => ({
     enableAssetCheckout: 'enableAssetCheckout',
     enableSelfService: 'enableSelfService',
     enablePasswordReset: 'enablePasswordReset',
+    enableDashboard: 'enableDashboard',
+    enableSecurity: 'enableSecurity',
+    enableBackups: 'enableBackups',
+    enableReports: 'enableReports',
+    enableSupportUsage: 'enableSupportUsage',
     supportEmail: 'supportEmail',
     supportPhone: 'supportPhone',
     welcomeMessage: 'welcomeMessage',
@@ -87,6 +105,11 @@ const FULL_ROW = {
   enableAssetCheckout: true,
   enableSelfService: true,
   enablePasswordReset: true,
+  enableDashboard: false,
+  enableSecurity: false,
+  enableBackups: false,
+  enableReports: false,
+  enableSupportUsage: false,
   supportEmail: 'help@msp.example',
   supportPhone: null,
   welcomeMessage: 'Welcome',
@@ -134,6 +157,11 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableAssetCheckout: true,
       enableSelfService: true,
       enablePasswordReset: true,
+      enableDashboard: false,
+      enableSecurity: false,
+      enableBackups: false,
+      enableReports: false,
+      enableSupportUsage: false,
       supportEmail: 'help@msp.example',
       supportPhone: null,
       welcomeMessage: 'Welcome',
@@ -156,10 +184,34 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableAssetCheckout: false, // parked — the portal has no checkout UI yet
       enableSelfService: true,
       enablePasswordReset: true,
+      enableDashboard: false,
+      enableSecurity: false,
+      enableBackups: false,
+      enableReports: false,
+      enableSupportUsage: false,
       supportEmail: null,
       supportPhone: null,
       welcomeMessage: null,
       footerText: null
+    });
+  });
+
+  it('returns false defaults for every visibility flag', async () => {
+    dbSelectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([]);
+
+    const response = await makeApp().request(
+      `/organizations/${ORG_ID}/portal-settings`
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toMatchObject({
+      enableDashboard: false,
+      enableSecurity: false,
+      enableBackups: false,
+      enableReports: false,
+      enableSupportUsage: false
     });
   });
 
@@ -248,5 +300,52 @@ describe('PATCH /organizations/:id/portal-settings', () => {
     dbSelectResult.mockResolvedValueOnce([]);
     const res = await patch({ enableTickets: false });
     expect(res.status).toBe(404);
+  });
+
+  it('persists visibility flags and invokes the W09 seam', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{
+      ...FULL_ROW,
+      enableDashboard: true,
+      enableReports: true
+    }]);
+
+    const res = await patch({
+      enableDashboard: true,
+      enableReports: true
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({
+      enableDashboard: true,
+      enableSecurity: false,
+      enableBackups: false,
+      enableReports: true,
+      enableSupportUsage: false
+    });
+    expect(onPortalFlagsChanged).toHaveBeenCalledWith({
+      orgId: ORG_ID,
+      createdBy: 'u-1',
+      requested: {
+        enableDashboard: true,
+        enableReports: true
+      },
+      current: {
+        enableDashboard: true,
+        enableSecurity: false,
+        enableBackups: false,
+        enableReports: true,
+        enableSupportUsage: false
+      }
+    });
+  });
+
+  it('does not invoke the visibility seam for unrelated settings', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([FULL_ROW]);
+
+    await patch({ supportEmail: 'support@example.test' });
+
+    expect(onPortalFlagsChanged).not.toHaveBeenCalled();
   });
 });

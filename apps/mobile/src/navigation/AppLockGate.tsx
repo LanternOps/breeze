@@ -71,6 +71,12 @@ export function AppLockGate({ children }: Props) {
   const machine = useRef(initialLockState);
   const lifecycle = useRef<AppLifecycle>((AppState.currentState ?? 'unknown') as AppLifecycle);
   const bootStarted = useRef(false);
+  // Mirrored so the always-on AppState listener below can consult the live
+  // session without re-subscribing (and missing transitions) on every change.
+  const tokenRef = useRef(token);
+  useEffect(() => {
+    tokenRef.current = token;
+  }, [token]);
 
   const send = useCallback((event: LockEvent) => {
     const { state, persist } = reduceLock(machine.current, event, LOCK_GRACE_MS);
@@ -107,10 +113,22 @@ export function AppLockGate({ children }: Props) {
       // late verdict from locking the login screen; the `signedOut` effect above
       // has already cleared the cover by then.
       if (cancelled) return;
+      // Ask React Native for the lifecycle NOW rather than trusting the value
+      // captured at mount. On iOS the JS bundle evaluates while the process is
+      // still `inactive` (before `applicationDidBecomeActive`), and any
+      // transition that fires before our own listener attaches — or during an
+      // interactive sign-in, when the login screen's autofill / Face ID sheet
+      // bounces the app through `inactive` — is missed by the ref. A stale
+      // non-`active` value here raised the privacy cover with no later event to
+      // lower it, which is the "stuck on the Breeze wordmark after login" bug.
+      // `AppState.currentState` is maintained by RN from the same event stream
+      // and is never stale in that way.
+      const current = (AppState.currentState ?? lifecycle.current) as AppLifecycle;
+      lifecycle.current = current;
       send({
         type: 'bootResolved',
         record,
-        lifecycle: lifecycle.current,
+        lifecycle: current,
         now: Date.now(),
       });
     })();
@@ -120,17 +138,21 @@ export function AppLockGate({ children }: Props) {
     };
   }, [token, send]);
 
-  // Gated on `token` so a signed-out app never stamps the record — an unlocked
-  // stamp written after sign-out would outlive the session it describes.
+  // Subscribed for the life of the component, NOT only while signed in: the
+  // `lifecycle` ref must track every transition, including the ones that happen
+  // on the login screen, or the cold-launch check reads a stale value (see the
+  // boot effect above). Only the *machine* is gated on the session — a
+  // signed-out app must never stamp the record, since an unlocked stamp written
+  // after sign-out would outlive the session it describes.
   useEffect(() => {
-    if (!token) return;
     const sub = AppState.addEventListener('change', (next) => {
       const prev = lifecycle.current;
       lifecycle.current = next as AppLifecycle;
+      if (!tokenRef.current) return;
       send({ type: 'lifecycle', prev, next: next as AppLifecycle, now: Date.now() });
     });
     return () => sub.remove();
-  }, [token, send]);
+  }, [send]);
 
   const attemptUnlock = useCallback(async () => {
     setUnlocking(true);

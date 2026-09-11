@@ -20,6 +20,77 @@ The Breeze agent is a single Go binary (~8 MB) with no runtime dependencies. It 
 | macOS | arm64 (Apple Silicon) | `breeze-agent-darwin-arm64` |
 | Windows | amd64 | `breeze-agent-windows-amd64.exe` |
 
+### Supported Windows Versions
+
+The agent requires **Windows 10 or Windows Server 2016 or later**. This is a
+hard floor set by the Go toolchain the agent is built with (Go 1.22+ dropped
+support for older Windows kernels) -- it is not a Breeze-specific choice and
+cannot be worked around by an older agent build.
+
+| Windows version | Supported |
+|---|---|
+| Windows 10 / 11 | Yes |
+| Windows Server 2016 / 2019 / 2022 / 2025 | Yes |
+| Windows 8.1 / Server 2012 R2 and earlier | No |
+| Windows 7 / Server 2008 R2 | No |
+
+Legacy boxes are not silently accepted: the MSI installer refuses to run
+below this floor (`Breeze Agent requires Windows 10 or Windows Server 2016 or
+later.`), and the PowerShell quick-install command checks the same floor
+before it downloads anything, so an unsupported machine fails fast with a
+clear message instead of installing a binary that can't run.
+
+<Aside type="caution" title="MSI installs on Windows 10/11 failed in v0.110.0 – v0.111.1">
+  Agent MSIs published with those releases refused **every fresh install** on
+  Windows 10, Windows 11 and Server 2016+ with the legacy-OS message above.
+  Windows Installer reports the Windows 8.1 version number to MSI packages on
+  every newer Windows by design, so the floor check tripped on supported
+  machines. From **v0.112.0** the MSI reads the Windows version from the
+  registry instead, which is not affected. Already-enrolled agents were never
+  affected (self-update does not run the MSI), and repair, upgrade and
+  uninstall of an installed agent are never blocked by the floor check. If you
+  handed out installer links or MSIs from those releases, replace them with the
+  current ones.
+</Aside>
+
+<Aside type="note">
+  Monitoring a Windows 7 / Server 2008 R2 fleet? There's no supported Breeze
+  agent path today. Agentless coverage (SNMP/WMI from a modern jump-box
+  agent) and a legacy build track are both open roadmap questions, not
+  shipped features -- reach out if this is blocking you.
+</Aside>
+
+### Supported Linux Distributions
+
+The Linux agent is a statically linked binary, so it runs on any amd64 or
+arm64 distribution, and it is installed as a **systemd** service. What works
+beyond that depends on the distribution's package manager and display server:
+
+| Capability | Debian, Ubuntu | RHEL, Fedora, Rocky, AlmaLinux | openSUSE | Arch, other systemd distributions |
+|---|---|---|---|---|
+| Install, enrollment, heartbeat, monitoring, alerts | Yes | Yes | Yes | Yes |
+| Remote terminal, scripts, automations | Yes | Yes | Yes | Yes |
+| Software inventory | Yes (dpkg) | Yes (rpm) | Yes (rpm) | No (pacman not collected) |
+| OS patch management | Yes (apt) | Yes (dnf/yum) | No (zypper) | No (pacman) |
+| Disk encryption (LUKS) and firewall (ufw, firewalld) status | Yes | Yes | Yes | Yes |
+| Remote desktop and screenshots | X11 sessions only | X11 sessions only | X11 sessions only | X11 sessions only |
+
+<Aside type="caution" title="Wayland sessions">
+  Remote desktop and screenshots require an X11 session. Wayland-only
+  sessions -- the default GNOME and KDE sessions on current Ubuntu and Fedora
+  releases, and compositors such as Hyprland and Sway -- are not supported
+  yet. When no X11 display exists the device page reports **Wayland
+  Unsupported** and **Connect Desktop** is disabled; on compositors that run
+  XWayland the agent may attach to that display instead and show only X11
+  application windows. Everything else works normally. Where the login
+  screen offers an X11 session, selecting it restores remote desktop.
+</Aside>
+
+Distributions without systemd (for example Alpine with OpenRC) can run the
+binary but are not supported by the service installer. There is no `.deb`,
+`.rpm`, or Arch package -- see [Mass Deployment](/migration/mass-deployment/)
+for the script-based fleet install.
+
 ## Quick Install
 
 <Tabs>
@@ -55,6 +126,17 @@ The Breeze agent is a single Go binary (~8 MB) with no runtime dependencies. It 
   </TabItem>
   <TabItem label="Windows">
     ```powershell
+    # Check the minimum supported OS before downloading anything
+    $osv = [System.Environment]::OSVersion.Version
+    if ($osv.Major -lt 10) {
+      throw "Breeze: Windows 10 or Windows Server 2016 or later is required (detected $($osv.Major).$($osv.Minor))"
+    }
+
+    # Older PowerShell/.NET defaults (e.g. Windows Server 2016) can omit
+    # TLS 1.2, which makes Invoke-WebRequest fail outright.
+    [Net.ServicePointManager]::SecurityProtocol = `
+      [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
     # Download the agent
     Invoke-WebRequest -Uri "https://breeze.yourdomain.com/api/v1/agents/download/windows/amd64" `
       -OutFile "breeze-agent.exe"
@@ -85,7 +167,7 @@ Instead of running manual enrollment commands, you can download a ready-to-run i
 
 <Steps>
 1. Open the **Add Device** dialog from the Devices page.
-2. Select **Download Installer** and choose **Windows MSI** or **macOS PKG**.
+2. Select **Download Installer** and choose **Windows MSI** or **macOS**.
 3. Set a **device count** to control how many devices can enroll with this installer.
 4. Run the installer on the target machine. The agent enrolls automatically with the correct organization and site -- no enrollment commands needed.
 </Steps>
@@ -120,17 +202,30 @@ The GUI installer uses bootstrap tokens generated server-side from an enrollment
 
 ### Windows MSI Zero-Config Enrollment
 
-Windows MSI installers downloaded from the dashboard or via a public link also auto-enroll with zero configuration. The enrollment token is embedded directly in the downloaded filename as a `[TOKEN@HOST]` block — for example:
+Windows MSI installers downloaded from the dashboard or via a public link also auto-enroll with zero configuration. The enrollment token is embedded directly in the downloaded filename as a `(TOKEN@HOST)` block — for example:
 
 ```
-breeze-agent [ABCD1234XY@breeze.example.com].msi
+Breeze Agent (ABCD1234XY@breeze.example.com).msi
 ```
 
-The installer parses this block at runtime using a regex search anywhere in the filename, so a browser-added dedup suffix such as `(1)` — producing `breeze-agent [ABCD1234XY@breeze.example.com] (1).msi` — does not break enrollment. Just run the file as downloaded.
+The installer parses this block at runtime using a regex search anywhere in the filename, so a browser-added dedup suffix such as `(1)` — producing `Breeze Agent (ABCD1234XY@breeze.example.com) (1).msi` — does not break enrollment. Just run the file as downloaded. (Older installer downloads used square brackets, `[TOKEN@HOST]`; the installer still recognizes that legacy form too.)
 
 <Aside type="note">
-  If you rename the MSI before deploying it, preserve the `[TOKEN@HOST]` block exactly as downloaded. Removing the block causes the installer to fall back to requiring the enrollment key and server URL entered manually during setup.
+  If you rename the MSI before deploying it, preserve the `(TOKEN@HOST)` block exactly as downloaded. Removing the block causes the installer to fall back to requiring the enrollment key and server URL entered manually during setup.
 </Aside>
+
+### Linux/macOS One-Liner (CLI Commands Tab)
+
+There is no downloadable pre-configured installer for Linux, so the **Add Device** dialog's **CLI Commands** tab generates a copy-paste install command instead.
+
+<Steps>
+1. Open **Add Device** from the Devices page and switch to the **CLI Commands** tab (this is the default tab when Linux is the detected platform).
+2. Under **Step 1 — Copy your installation token**, set **Number of devices** and **Link expires in**, then click **Generate new token** if you change either.
+3. Under **Step 2 — Run the install command**, copy the one-liner shown for the Linux/macOS tab.
+4. Paste and run it on the target machine.
+</Steps>
+
+The generated command downloads and runs the same `install.sh` used by [Quick Install](#quick-install) above, with `--token` and `--server` filled in for you. Generating a token requires MFA on your account. Behind the scenes, the token is a short-lived **enrollment key** minted specifically for this dialog (`POST /devices/onboarding-token`) — not the same bootstrap-token mechanism the macOS GUI installer uses above — scoped to the device count and expiry you chose, up to 1000 devices and 365 days.
 
 ---
 
@@ -144,12 +239,13 @@ Pre-provisioned devices land in `status: 'pending'` and stay there until the age
 
 ## What Gets Installed
 
-All platform installers (MSI, PKG, and manual service install) include two components:
+All platform installers (MSI, PKG, and manual service install) include these components:
 
 | Component | Description |
 |-----------|-------------|
 | **Breeze Agent** | The main service that communicates with the Breeze server, runs commands, and reports device status. |
 | **Watchdog** | A companion service that monitors the agent and automatically restarts it after crashes or hangs. |
+| **Desktop helper** (macOS) | A per-user helper that runs in the logged-in user's session so features like screen sharing work. Installed at `/usr/local/bin/breeze-desktop-helper`. |
 
 The watchdog runs alongside the agent as a separate process. You do not need to configure it -- it starts automatically with the agent service. See the [Watchdog documentation](/features/watchdog) for details.
 
@@ -168,7 +264,13 @@ When running `breeze-agent service install` manually, the agent fetches the matc
   </TabItem>
 </Tabs>
 
-If a previously agent-only install needs the watchdog added, re-run `breeze-agent service install`. This reinstalls the agent binary and restarts the agent service (safe for upgrades) and registers the missing watchdog. To add *only* the watchdog without touching the agent service, run `breeze-watchdog service install` directly.
+On macOS the desktop helper is resolved the same way: `breeze-agent service install` uses a `breeze-desktop-helper` binary staged next to the agent if there is one, and otherwise downloads the matching-version signed binary from GitHub releases. If neither is available (for example on an air-gapped host), the install prints a warning and continues -- the agent service is still installed and running, and only the helper's features are unavailable until you place the binary next to `breeze-agent` and re-run `service install`. The agent binary is never installed under the helper's name: doing so would give the helper the agent's code-signing identity, and macOS would drop the Screen Recording and Accessibility grants once a real helper replaced it. The macOS `.pkg` always ships the signed helper, so this only affects raw-binary installs.
+
+If a previously agent-only install needs the watchdog added, re-run `breeze-agent service install`. It records whether the agent service was running before the install, rewrites and re-enables the unit, and starts the service again if it was running before or the host is already enrolled -- a fresh, unenrolled host is left stopped until you enroll it. If the service was stopped for the install and can't be started again, the command now fails with recovery instructions instead of exiting successfully. It also registers the missing watchdog, which is always restarted so a newly staged binary takes over. To add *only* the watchdog without touching the agent service, run `breeze-watchdog service install` directly.
+
+<Aside type="note">
+On agent v0.110.0 and earlier, `service install` stopped the service and did not start it again. On those versions, follow it with `sudo systemctl restart breeze-agent breeze-watchdog` (Linux), or prefer the in-band auto-update instead.
+</Aside>
 
 ---
 
@@ -181,7 +283,7 @@ During enrollment, the agent:
 3. Receives a unique `brz_` bearer token
 4. Stores configuration in `/etc/breeze/agent.yaml` (Linux), `/Library/Application Support/Breeze/agent.yaml` (macOS), or `C:\ProgramData\Breeze\agent.yaml` (Windows)
 5. Stores secrets in a separate `secrets.yaml` file with `0600` permissions
-6. Sets file permissions: `0750` for directory, `0640` for config file (`agent.yaml`), `0600` for secrets file (`secrets.yaml`)
+6. Sets file permissions: `0755` for directory, `0644` for config file (`agent.yaml`), `0600` for secrets file (`secrets.yaml`)
 
 <Aside>
   The enrollment secret (`AGENT_ENROLLMENT_SECRET`) is different from the agent's bearer token. The enrollment secret is a shared secret used once during registration. The bearer token is unique per device and used for all subsequent communication.
@@ -216,7 +318,7 @@ After enrollment, the agent stores its configuration at:
 | Windows | `C:\ProgramData\Breeze\agent.yaml` | `C:\ProgramData\Breeze\secrets.yaml` |
 
 ```yaml
-# agent.yaml (0640 — readable by Breeze Helper)
+# agent.yaml (0644 — readable by Breeze Helper)
 server_url: "https://breeze.yourdomain.com"
 agent_id: "hex-agent-id"
 auth_token: "brz_..."
@@ -230,5 +332,5 @@ auth_token: "brz_..."
 ```
 
 <Aside type="danger">
-  The `secrets.yaml` file contains the agent's bearer token and is restricted to `0600` (owner-only read/write). The `auth_token` is intentionally duplicated in `agent.yaml` (which uses `0640` permissions) so the Breeze Helper process can discover the token without needing root access to `secrets.yaml`. Do not change these permissions.
+  The `secrets.yaml` file contains the agent's bearer token and is restricted to `0600` (owner-only read/write). The `auth_token` is intentionally duplicated in `agent.yaml` (which uses `0644` permissions) so the Breeze Helper process can discover the token without needing root access to `secrets.yaml`. Do not change these permissions.
 </Aside>

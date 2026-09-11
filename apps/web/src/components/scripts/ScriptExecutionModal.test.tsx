@@ -7,11 +7,14 @@ import ScriptExecutionModal, { type Device } from './ScriptExecutionModal';
 import type { ScriptParameter } from './ScriptFormSchema';
 import type { Script } from './ScriptList';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 import type { ScriptAdmissionResult } from '@breeze/shared';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
+const showToastMock = vi.mocked(showToast);
 
 // The advanced-filter panel is closed on open, so `useFilterPreview` is disabled
 // and never fetches — no transport stub is needed for these cases.
@@ -48,7 +51,7 @@ function renderModal(
   onClose = vi.fn(),
   availableDevices = devices,
 ) {
-  render(
+  const view = render(
     <ScriptExecutionModal
       script={{ ...baseScript, parameters }}
       devices={availableDevices}
@@ -57,7 +60,7 @@ function renderModal(
       onExecute={onExecute}
     />
   );
-  return { onExecute, onClose };
+  return { onExecute, onClose, unmount: view.unmount };
 }
 
 /** Select the one online device and drive the two-step execute button. */
@@ -250,6 +253,44 @@ describe('ScriptExecutionModal admission truth', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  // #5270 — the 1.5s auto-close timer used to outlive the component. A test
+  // that unmounted before it fired left it pending, and when it eventually ran
+  // (after that file's jsdom was torn down) it threw
+  // `ReferenceError: window is not defined` as an unhandled error, failing
+  // Test Web with every file passing.
+  it('cancels the pending auto-close timer on unmount and never calls onClose afterwards', async () => {
+    const onClose = vi.fn();
+    const { unmount } = renderModal([], vi.fn().mockResolvedValue(admittedResult), onClose);
+
+    await execute();
+    await act(async () => { await Promise.resolve(); });
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+
+    await act(async () => { await vi.runAllTimersAsync(); });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  // #5270 — the modal's own close path must cancel it too, so a re-open can't
+  // be slammed shut by a timer scheduled before the operator closed it.
+  it('cancels the pending auto-close timer when the operator closes the modal first', async () => {
+    const onClose = vi.fn();
+    renderModal([], vi.fn().mockResolvedValue(admittedResult), onClose);
+
+    await execute();
+    await act(async () => { await Promise.resolve(); });
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByText('Cancel'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    await act(async () => { await vi.runAllTimersAsync(); });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps a partial admission open and renders every target with its reason', async () => {
     const secondDevice: Device = {
       id: 'd-2', hostname: 'ws-02', os: 'windows', status: 'online', siteId: 's-1', siteName: 'HQ',
@@ -300,6 +341,44 @@ describe('ScriptExecutionModal admission truth', () => {
 
     await vi.waitFor(() => expect(screen.getByText('network unavailable')).toBeInTheDocument());
     expect(screen.queryByText('No devices were admitted. Review the reasons below.')).toBeNull();
+  });
+
+  // #5128 W2 — an admitted target is not necessarily running: one dispatched
+  // while its device was offline is `queued_offline`, and the inline
+  // "admitted and queued" panel text alone doesn't say the device has to
+  // reconnect first. Surface that as a toast.
+  it('toasts the offline-queue copy when an admitted target is queued_offline', async () => {
+    const onClose = vi.fn();
+    renderModal([], vi.fn().mockResolvedValue({
+      requestId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      status: 'queued',
+      targets: [{
+        requestedDeviceId: 'd-1',
+        admission: 'admitted',
+        executionId: 'execution-1',
+        commandId: 'command-1',
+        delivery: 'queued_offline',
+      }],
+    } satisfies ScriptAdmissionResult), onClose);
+
+    await execute();
+    await act(async () => { await Promise.resolve(); });
+
+    expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Runs when the device is online' }),
+    );
+  });
+
+  it('does not toast the offline-queue copy when every admitted target was delivered', async () => {
+    renderModal([], vi.fn().mockResolvedValue({
+      ...admittedResult,
+      targets: [{ ...admittedResult.targets[0], delivery: 'delivered' }],
+    } satisfies ScriptAdmissionResult));
+
+    await execute();
+    await act(async () => { await Promise.resolve(); });
+
+    expect(showToastMock).not.toHaveBeenCalled();
   });
 });
 
@@ -521,5 +600,99 @@ describe('ScriptExecutionModal empty state on the server options path', () => {
     // The status filter is what the probe lifts; the OS constraint must stay,
     // or `total` counts devices this script can never run on (review I-2).
     expect(probeUrl).toContain('osType=windows');
+  });
+});
+
+// #4885 — "Run again": the modal accepts the previous execution's device and
+// parameter values so the operator doesn't re-pick either from scratch.
+describe('ScriptExecutionModal initial values (#4885 Run again)', () => {
+  const twoDevices: Device[] = [
+    { id: 'd-1', hostname: 'ws-01', os: 'windows', status: 'online', siteId: 's-1', siteName: 'HQ' },
+    { id: 'd-2', hostname: 'ws-02', os: 'windows', status: 'online', siteId: 's-1', siteName: 'HQ' },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('pre-selects the device from initialDeviceIds without the operator touching the picker', async () => {
+    const onExecute = vi.fn().mockResolvedValue(admittedResult);
+    render(
+      <ScriptExecutionModal
+        script={{ ...baseScript, parameters: [] }}
+        devices={twoDevices}
+        initialDeviceIds={['d-2']}
+        isOpen
+        onClose={vi.fn()}
+        onExecute={onExecute}
+      />
+    );
+
+    // Seeded before any click — proves the selection came from the prop, not
+    // from the operator checking a box.
+    expect(screen.getByText('1 device(s) selected')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Execute'));
+    fireEvent.click(await screen.findByText('Confirm Execute'));
+
+    await waitFor(() => expect(onExecute).toHaveBeenCalledTimes(1));
+    // The exact target must be the pre-filled device, not merely "some device"
+    // — ws-01 (d-1) is also on screen and must NOT have been picked instead.
+    expect(onExecute).toHaveBeenCalledWith('sc-1', ['d-2'], {}, 'system');
+  });
+
+  it('pre-fills runtime parameter values from initialParameters, overriding the definition default', async () => {
+    const onExecute = vi.fn().mockResolvedValue(admittedResult);
+    render(
+      <ScriptExecutionModal
+        script={{
+          ...baseScript,
+          parameters: [{ name: 'message', type: 'string', defaultValue: 'hello' }],
+        }}
+        devices={twoDevices}
+        initialDeviceIds={['d-1']}
+        initialParameters={{ message: 'previous run value' }}
+        isOpen
+        onClose={vi.fn()}
+        onExecute={onExecute}
+      />
+    );
+
+    // The stored run value wins over the script's own definition default.
+    expect(screen.getByDisplayValue('previous run value')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('hello')).toBeNull();
+
+    fireEvent.click(screen.getByText('Execute'));
+    fireEvent.click(await screen.findByText('Confirm Execute'));
+
+    await waitFor(() => expect(onExecute).toHaveBeenCalledTimes(1));
+    expect(onExecute).toHaveBeenCalledWith('sc-1', ['d-1'], { message: 'previous run value' }, 'system');
+  });
+
+  it('ignores an initialParameters key the current script definition no longer has', async () => {
+    const onExecute = vi.fn().mockResolvedValue(admittedResult);
+    render(
+      <ScriptExecutionModal
+        script={{
+          ...baseScript,
+          parameters: [{ name: 'message', type: 'string' }],
+        }}
+        devices={twoDevices}
+        initialDeviceIds={['d-1']}
+        initialParameters={{ message: 'kept', removedParam: 'stale-value' }}
+        isOpen
+        onClose={vi.fn()}
+        onExecute={onExecute}
+      />
+    );
+
+    expect(screen.getByDisplayValue('kept')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('stale-value')).toBeNull();
+
+    fireEvent.click(screen.getByText('Execute'));
+    fireEvent.click(await screen.findByText('Confirm Execute'));
+
+    await waitFor(() => expect(onExecute).toHaveBeenCalledTimes(1));
+    expect(onExecute).toHaveBeenCalledWith('sc-1', ['d-1'], { message: 'kept' }, 'system');
   });
 });

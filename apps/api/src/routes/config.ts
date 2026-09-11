@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { cfAccessTrustEnabled } from '../config/env';
+import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled, cfAccessTrustEnabled } from '../config/env';
 import { envFlag } from '../utils/envFlag';
 import { isS3Configured } from '../services/s3Storage';
 import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
@@ -22,6 +22,10 @@ configRoutes.get('/', (c) => {
     features: {
       billing: hasExternalServices,
       support: hasExternalServices,
+      // W08 of #5205 (#5246) — gates the "Delegate to Operator" action; AND of
+      // `AI_OPERATOR_TASKS_ENABLED` and `AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED`,
+      // both default off (decision D2: internal/test orgs only).
+      aiOperatorTasks: aiOperatorTasksEnabled() && aiOperatorServiceRecoveryEnabled(),
     },
     cfAccessLogin: {
       enabled: cfAccessTrustEnabled(),

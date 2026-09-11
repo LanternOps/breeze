@@ -36,17 +36,18 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    // MAINTENANCE (as of this PR, #4041 is still open): once #4041 merges,
-    // it adds two new TZ-sensitive test files that belong in this list and
-    // are NOT auto-discovered (this is a manual allowlist, not a broad
-    // glob) — add both when that PR lands:
-    //   'src/routes/sso.reauth.test.ts'
-    //   'src/testUtils/pgOffsetlessTimestamp.test.ts'
+    // This is a manual allowlist, not a broad glob — a new TZ-sensitive test
+    // file must be added here explicitly or it runs under UTC only.
     include: [
       'src/routes/auth.test.ts',
       'src/routes/auth.passkeys.test.ts',
       'src/routes/authenticator.test.ts',
       'src/routes/auth/**/*.test.ts',
+      // #4041's two offsetless-timestamp-simulation suites — previously
+      // missing from this list despite the PR merging (stale MAINTENANCE
+      // note caught during #4059).
+      'src/routes/sso.reauth.test.ts',
+      'src/testUtils/pgOffsetlessTimestamp.test.ts',
       'src/services/sso.test.ts',
       'src/services/ssoDomainVerification.test.ts',
       'src/services/mfa.test.ts',
@@ -62,6 +63,10 @@ export default defineConfig({
       'src/services/apiKeyAuthorization.test.ts',
       'src/services/approverWebAuthn.test.ts',
       'src/services/authEmailQueue.test.ts',
+      // #4059 gap 1: the last hop before a request is authorized/rejected on
+      // password-change revocation, same offsetless-timestamp bug shape as
+      // #4018 (see tokenRevocation.ts's isTokenIssuedBeforePasswordChange).
+      'src/services/tokenRevocation.test.ts',
       // Canary asserting the pin itself is active — see its own file
       // header. Deliberately excluded from vitest.config.ts (main) so it
       // fails loudly there if it's ever accidentally run under UTC.

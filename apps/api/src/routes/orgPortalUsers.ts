@@ -2,14 +2,15 @@ import type { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { and, eq, isNull, desc, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { organizations, portalUsers, tickets, ticketComments, assetCheckouts, contacts } from '../db/schema';
-import { createContact, updateContact } from '../services/contacts/crud';
-import { INBOUND_CONTACT_LOCK_NAMESPACE } from '../services/inboundEmail/resolveOrg';
+import { organizations, portalUsers, tickets, ticketComments, assetCheckouts } from '../db/schema';
+import { linkLoginToContact, type LoginContactOutcome } from '../services/contacts/loginLink';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { getEmailService } from '../services/email';
-import { storePortalInviteToken, buildPortalUrl } from './portal/helpers';
+import { getRedis } from '../services/redis';
+import { purgeClientAiSessionsForUsers } from '../services/clientAiSessionStore';
+import { storePortalInviteToken, buildPortalUrl, purgePortalSessionsForUsers } from './portal/helpers';
 import { invitePortalUserSchema, bulkInvitePortalUsersSchema, updatePortalUserSchema } from '@breeze/shared';
 
 // MSP-facing customer-portal user management (portal_users): list, invite,
@@ -66,7 +67,7 @@ async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> 
 }
 
 async function getOrgScopedPortalUser(orgId: string, userId: string) {
-  const [row] = await db.select({ id: portalUsers.id, orgId: portalUsers.orgId, email: portalUsers.email, name: portalUsers.name, passwordHash: portalUsers.passwordHash, status: portalUsers.status })
+  const [row] = await db.select({ id: portalUsers.id, orgId: portalUsers.orgId, email: portalUsers.email, name: portalUsers.name, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status })
     .from(portalUsers).where(and(eq(portalUsers.id, userId), eq(portalUsers.orgId, orgId))).limit(1);
   return row ?? null;
 }
@@ -97,30 +98,30 @@ async function issueAndSendInvite(c: any, orgId: string, user: { id: string; ema
 
 /**
  * How an invite resolved to the org's contact for that address (#3258 W03).
+ *
  * Recorded in the invite's audit details AND returned in the response body,
  * because a null `contact_id` is not self-explaining after the fact:
  * 'ambiguous' means we declined to guess (and the new login will not see that
  * address's emailed tickets), 'kept' means we deliberately did not touch a
  * link that was already there.
+ *
+ * `kept` is the one outcome the shared resolver cannot produce, because it is
+ * decided BEFORE the resolver is consulted: an existing link is never
+ * re-derived, so there is nothing to resolve.
  */
-type InviteContactLink = 'linked' | 'created' | 'ambiguous' | 'kept';
+type InviteContactLink = LoginContactOutcome | 'kept';
 
 /**
  * Bind an invited portal LOGIN to the org's CONTACT for that address.
  *
- * A portal login is a login attached to a person (#3258), and tickets now
- * attribute to that person — so an invite that leaves `contact_id` null hands
- * the customer a login that cannot see the tickets they emailed in
- * (routes/portal/ticketOwnership.ts).
+ * A thin wrapper over the shared `linkLoginToContact` (services/contacts/
+ * loginLink.ts) — the same resolution the Entra exchange and the Outlook
+ * add-in use, so all three agree on the lock, the shared-mailbox refusal and
+ * the role union.
  *
  * Runs in the caller's REQUEST context, so `contacts` is read and written
  * under RLS with the acting user as `created_by` — unlike the inbound path,
  * which is a system-context ingest side effect with no acting user.
- *
- * Several contacts on one address (a shared mailbox) is left UNLINKED rather
- * than resolved by a guess: `contacts_org_email_idx` is deliberately
- * non-unique, and picking one would silently grant that person's ticket
- * history to whoever accepted the invite.
  */
 async function resolveInviteContact(
   orgId: string,
@@ -128,41 +129,18 @@ async function resolveInviteContact(
   name: string | null,
   actorUserId: string,
 ): Promise<{ contactId: string | null; link: InviteContactLink }> {
-  // The SAME namespaced advisory lock the inbound resolver takes, on the SAME
-  // (org, address) key. An invite and a first email from that address arriving
-  // together would otherwise each see "no contact" and each create one —
-  // `contacts_org_email_idx` is deliberately non-unique (shared mailboxes are
-  // real), so the database will not stop it. Transaction-scoped: the request's
-  // own transaction releases it.
-  await db.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtext(${INBOUND_CONTACT_LOCK_NAMESPACE}), hashtext(${`${orgId}:${normalizedEmail}`}))`,
-  );
-
-  // limit(2) is all the arithmetic this needs: two rows means "at least two".
-  const found = await db
-    .select({ id: contacts.id, roles: contacts.roles })
-    .from(contacts)
-    .where(and(eq(contacts.orgId, orgId), sql`lower(${contacts.email}) = ${normalizedEmail}`))
-    .limit(2);
-  if (found.length > 1) return { contactId: null, link: 'ambiguous' };
-  if (found.length === 1) {
-    const existing = found[0]!;
-    // Grant the 'portal' role the invite is actually granting. A UNION, never
-    // a replace: an existing billing/technical contact does not stop being one
-    // because someone gave them a login. Skipped when the role is already
-    // there so a re-invite writes nothing (and does not churn updated_at).
-    const roles = (existing.roles ?? []) as string[];
-    if (!roles.includes('portal')) {
-      await updateContact(db, existing.id, orgId, { roles: [...roles, 'portal'] }, { userId: actorUserId });
-    }
-    return { contactId: existing.id, link: 'linked' };
-  }
-  const created = await createContact(
-    db,
-    { orgId, email: normalizedEmail, name, roles: ['portal'] },
-    { userId: actorUserId },
-  );
-  return { contactId: created.id, link: 'created' };
+  const { contactId, outcome } = await linkLoginToContact(db, {
+    orgId,
+    email: normalizedEmail,
+    name,
+    actor: { userId: actorUserId },
+    // Stated explicitly rather than left to the default: an invite really is
+    // granting portal access, which is what earns the role — the add-in path
+    // deliberately passes [] because it grants none.
+    roles: ['portal'],
+    unionRoles: ['portal'],
+  });
+  return { contactId, link: outcome };
 }
 
 export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
@@ -192,8 +170,12 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     const { email, name, message } = c.req.valid('json');
     const normalizedEmail = email.trim().toLowerCase();
 
-    const [existing] = await db.select({ id: portalUsers.id, email: portalUsers.email, passwordHash: portalUsers.passwordHash, status: portalUsers.status, contactId: portalUsers.contactId })
+    const [existing] = await db.select({ id: portalUsers.id, email: portalUsers.email, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status, contactId: portalUsers.contactId })
       .from(portalUsers).where(and(eq(portalUsers.orgId, org.id), eq(portalUsers.email, normalizedEmail))).limit(1);
+
+    if (existing && existing.authMethod !== 'password') {
+      return c.json({ error: 'This identity is managed by an external sign-in provider.' }, 409);
+    }
 
     if (existing && existing.status === 'disabled') {
       return c.json({ error: 'This user is disabled. Reactivate them before inviting.' }, 409);
@@ -211,6 +193,13 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
       // set it (the 2026-08-19 backfill, a previous invite, a tech editing the
       // contact) knew more than an email string does. Skipping the lookup also
       // stops a re-invite from minting a duplicate contact.
+      //
+      // `resolveInviteContact` only ever returns a contact in `org.id`, and
+      // this row is in `org.id` too — but that is no longer the only thing
+      // keeping the pair same-org: `portal_users_contact_org_fk`
+      // (contact_id, org_id) -> contacts (id, org_id) makes a cross-org link
+      // unrepresentable, so a future writer that forgets the org bound gets a
+      // 23503 rather than a silent tenant leak (#3258 follow-up).
       const contactPatch: { contactId?: string } = {};
       if (existing.contactId) {
         contactLink = 'kept';
@@ -219,7 +208,10 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
         contactLink = resolved.link;
         if (resolved.contactId) contactPatch.contactId = resolved.contactId;
       }
-      await db.update(portalUsers).set({ name: name ?? undefined, status: 'invited', invitedBy: auth.user.id, invitedAt: now, updatedAt: now, ...contactPatch }).where(eq(portalUsers.id, existing.id)).returning({ id: portalUsers.id });
+      await db.update(portalUsers).set({ name: name ?? undefined, status: 'invited', authEpoch: sql`${portalUsers.authEpoch} + 1`, invitedBy: auth.user.id, invitedAt: now, updatedAt: now, ...contactPatch }).where(eq(portalUsers.id, existing.id)).returning({ id: portalUsers.id });
+      await purgePortalSessionsForUsers([existing.id]);
+      const redis = getRedis();
+      if (redis) await purgeClientAiSessionsForUsers(redis, [existing.id]);
       userId = existing.id;
     } else {
       const resolved = await resolveInviteContact(org.id, normalizedEmail, name ?? null, auth.user.id);
@@ -247,7 +239,16 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     if (Object.keys(body).length === 0) return c.json({ error: 'No updates provided' }, 400);
     const target = await getOrgScopedPortalUser(org.id, c.req.param('userId')!);
     if (!target) return c.json({ error: 'Portal user not found' }, 404);
-    const [updated] = await db.update(portalUsers).set({ ...body, updatedAt: new Date() }).where(eq(portalUsers.id, target.id)).returning({ id: portalUsers.id, status: portalUsers.status });
+    const [updated] = await db.update(portalUsers).set({
+      ...body,
+      ...(body.status !== undefined ? { authEpoch: sql`${portalUsers.authEpoch} + 1` } : {}),
+      updatedAt: new Date(),
+    }).where(eq(portalUsers.id, target.id)).returning({ id: portalUsers.id, status: portalUsers.status });
+    if (body.status !== undefined) {
+      await purgePortalSessionsForUsers([target.id]);
+      const redis = getRedis();
+      if (redis) await purgeClientAiSessionsForUsers(redis, [target.id]);
+    }
     writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.update', resourceType: 'portal_user', resourceId: target.id, details: { changedFields: Object.keys(body) } });
     return c.json({ data: { id: updated!.id, status: updated!.status } });
   });
@@ -258,6 +259,7 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     const auth = c.get('auth') as AuthContext;
     const target = await getOrgScopedPortalUser(org.id, c.req.param('userId')!);
     if (!target) return c.json({ error: 'Portal user not found' }, 404);
+    if (target.authMethod !== 'password') return c.json({ error: 'This identity is managed by an external sign-in provider.' }, 409);
     if (target.status === 'disabled') return c.json({ error: 'This user is disabled. Reactivate them first.' }, 409);
     if (target.passwordHash && target.status === 'active') return c.json({ error: 'This account is already set up.' }, 409);
     const [orgRow] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, org.id)).limit(1);
@@ -272,14 +274,17 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     const auth = c.get('auth') as AuthContext;
     const { userIds } = c.req.valid('json');
     // "Pending setup" = no password. Invite selected, or all pending in the org.
-    const baseWhere = and(eq(portalUsers.orgId, org.id), isNull(portalUsers.passwordHash), ne(portalUsers.status, 'disabled'));
+    const baseWhere = and(eq(portalUsers.orgId, org.id), eq(portalUsers.authMethod, 'password'), isNull(portalUsers.passwordHash), ne(portalUsers.status, 'disabled'));
     const candidates = await db.select({ id: portalUsers.id, email: portalUsers.email }).from(portalUsers).where(baseWhere);
     const targets = userIds && userIds.length > 0 ? candidates.filter((u) => userIds.includes(u.id)) : candidates;
     const [orgRow] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, org.id)).limit(1);
     const now = new Date();
     const results: Array<{ id: string; emailSent: boolean }> = [];
     for (const t of targets) {
-      await db.update(portalUsers).set({ status: 'invited', invitedBy: auth.user.id, invitedAt: now, updatedAt: now }).where(eq(portalUsers.id, t.id));
+      await db.update(portalUsers).set({ status: 'invited', authEpoch: sql`${portalUsers.authEpoch} + 1`, invitedBy: auth.user.id, invitedAt: now, updatedAt: now }).where(eq(portalUsers.id, t.id));
+      await purgePortalSessionsForUsers([t.id]);
+      const redis = getRedis();
+      if (redis) await purgeClientAiSessionsForUsers(redis, [t.id]);
       const emailSent = await issueAndSendInvite(c, org.id, t, orgRow?.name ?? null, auth.user.name);
       results.push({ id: t.id, emailSent });
     }

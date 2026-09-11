@@ -76,6 +76,34 @@ describe('mfaStepUpSchema operation field', () => {
     expect(parsed.operation).toBe('register_approver_device');
   });
 
+  it('accepts rotate_recovery_codes as a distinct purpose', () => {
+    const parsed = mfaStepUpSchema.parse({
+      method: 'totp',
+      code: '123456',
+      operation: 'rotate_recovery_codes',
+    });
+    expect(parsed.operation).toBe('rotate_recovery_codes');
+  });
+
+  it('accepts delete_passkey only with a UUID resource identifier', () => {
+    const parsed = mfaStepUpSchema.parse({
+      method: 'totp',
+      code: '123456',
+      operation: 'delete_passkey',
+      passkeyId: '10000000-0000-4000-8000-000000000009',
+    });
+    expect(parsed).toMatchObject({
+      operation: 'delete_passkey',
+      passkeyId: '10000000-0000-4000-8000-000000000009',
+    });
+    expect(() => mfaStepUpSchema.parse({
+      method: 'totp',
+      code: '123456',
+      operation: 'delete_passkey',
+      passkeyId: 'not-a-uuid',
+    })).toThrow();
+  });
+
   it('rejects unknown operations', () => {
     expect(() =>
       mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'admin_takeover' })
@@ -93,6 +121,32 @@ describe('mfaStepUpSchema operation field', () => {
   it('rejects enroll_first_factor — SSO-reauth-mint only, never client-requestable', () => {
     expect(() =>
       mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'enroll_first_factor' })
+    ).toThrow();
+  });
+
+  // RMM-QA-176 D11 (T12): entering/extending device maintenance mode is a
+  // client-requestable step-up operation, and its resource binding must be
+  // accepted by this schema. The duration cap is imported from the grant
+  // service, so a value the device route would refuse can never mint a grant.
+  it('accepts device_maintenance with a maintenance resource binding', () => {
+    const parsed = mfaStepUpSchema.parse({
+      method: 'totp',
+      code: '123456',
+      operation: 'device_maintenance',
+      resource: { deviceIds: ['00000000-0000-4000-8000-000000000010'], reason: 'scheduled patching', durationHours: 4 },
+    });
+    expect(parsed.operation).toBe('device_maintenance');
+    expect(parsed.resource).toMatchObject({ durationHours: 4, reason: 'scheduled patching' });
+  });
+
+  it('rejects a maintenance resource with a duration above the shared cap', () => {
+    expect(() =>
+      mfaStepUpSchema.parse({
+        method: 'totp',
+        code: '123456',
+        operation: 'device_maintenance',
+        resource: { deviceIds: ['00000000-0000-4000-8000-000000000010'], reason: 'scheduled patching', durationHours: 169 },
+      })
     ).toThrow();
   });
 });

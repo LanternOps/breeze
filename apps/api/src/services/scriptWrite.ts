@@ -16,6 +16,7 @@ import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE
 } from './partnerWideAccess';
+import { resolveScriptSecurityAcknowledgement } from './scriptSecurityAcknowledgement';
 
 export type ScriptWriteAuth = Pick<
   AuthContext,
@@ -89,6 +90,83 @@ export function resolveScriptCreateScope(
   return { orgId: requestedOrgId ?? null, partnerId: null };
 }
 
+/** The tenancy shape of the script being cloned, as read from its row. */
+export type ScriptCloneSource = { orgId: string | null; partnerId: string | null; isSystem: boolean };
+
+/**
+ * Resolve the `{ orgId, partnerId }` a CLONE of `source` should land under
+ * (#4887). Delegates every actual tenancy/capability decision to
+ * `resolveScriptCreateScope` — this function only decides WHICH availability
+ * to ask it for, based on how the clone request relates to its source, so a
+ * clone can never silently change tenancy shape:
+ *
+ * - A system-library script (`is_system`, `org_id` AND `partner_id` both
+ *   NULL) is always duplicated into a specific org — the same rule
+ *   `POST /import/:id` already applies, the other system-script duplication
+ *   path. A caller who omits `orgId` here gets the same "which org?"
+ *   resolution `POST /import/:id` and plain create use (own org for an
+ *   org-scope caller, the single accessible org for a partner-scope caller
+ *   with only one, else a 400). System scope MUST name an org explicitly —
+ *   `resolveScriptCreateScope`'s system branch has no "which org" fallback of
+ *   its own and would otherwise resolve to `org_id: null, partner_id: null`,
+ *   an ownerless row invisible under RLS to everyone who isn't system scope.
+ * - Organization scope ALWAYS lands the clone in the caller's own org,
+ *   regardless of the source's scope (mirrors `resolveScriptCreateScope`'s
+ *   own org branch, which likewise ignores `availability`/`requestedOrgId`).
+ *   This is not a "downgrade" of a capability the caller ever held: org
+ *   scope can never create OR maintain a partner-wide script through any
+ *   path in this system (`canManagePartnerWidePolicies` is unconditionally
+ *   false for it), so there is no other org-scoped-writable destination to
+ *   land in even when the source (readable to them per `canReadScript`,
+ *   which also lets org-scope callers read their own partner's partner-wide
+ *   rows — see the scripts.ts list route) happens to be partner-wide.
+ * - An explicit `requestedOrgId` on a non-system source (partner/system
+ *   scope) is always an intentional target: a genuine cross-org copy, or a
+ *   deliberate narrowing of a partner-wide script into one org. Checked with
+ *   the same org-access rule as create; this is narrowing, not widening, so
+ *   it never requires the partner-wide capability.
+ * - No `requestedOrgId` on a non-system source (partner/system scope): the
+ *   clone preserves the SOURCE's scope rather than picking a new one. An
+ *   org-owned source clones into that same org. A partner-wide source
+ *   (`org_id` NULL, `partner_id` set) stays partner-wide by default — which
+ *   still runs through `canManagePartnerWidePolicies` via
+ *   `resolveScriptCreateScope('partner', …)`, so a partner-scope caller who
+ *   could not have CREATED a partner-wide script is refused (403) rather
+ *   than silently getting an org-scoped downgrade of it (CLAUDE.md
+ *   Partner-Wide First: never silently narrow ownership either). System-scope
+ *   tokens carry no `partnerId` to preserve partner-wide under, so they must
+ *   name a target org explicitly in this case too.
+ */
+export function resolveScriptCloneScope(
+  auth: ScriptWriteAuth,
+  source: ScriptCloneSource,
+  requestedOrgId: string | null | undefined
+): ScriptCreateScope | ScriptScopeError {
+  if (source.isSystem) {
+    if (auth.scope === 'system' && !requestedOrgId) {
+      return { error: 'orgId is required to clone this script', status: 400 };
+    }
+    return resolveScriptCreateScope(auth, 'org', requestedOrgId ?? undefined);
+  }
+
+  if (auth.scope === 'organization') {
+    return resolveScriptCreateScope(auth, undefined, undefined);
+  }
+
+  if (requestedOrgId) {
+    return resolveScriptCreateScope(auth, 'org', requestedOrgId);
+  }
+
+  if (source.orgId === null) {
+    if (auth.scope !== 'partner') {
+      return { error: 'orgId is required to clone this script', status: 400 };
+    }
+    return resolveScriptCreateScope(auth, 'partner', undefined);
+  }
+
+  return resolveScriptCreateScope(auth, 'org', source.orgId);
+}
+
 export type ScriptInsertInput = {
   name: string;
   description?: string | null;
@@ -103,6 +181,12 @@ export type ScriptInsertInput = {
   timeoutSeconds: number;
   runAs: 'system' | 'user' | 'elevated';
   exitCodeSeverityMapping?: Record<string, 'critical' | 'high' | 'medium' | 'low' | 'info' | null> | null;
+  // #5129 — agent STRICT-pattern descriptions the author acknowledged. Clamped
+  // here to the patterns `content` actually matches (see insertScriptRow), so
+  // no intake can store an approval for a risk the script does not contain.
+  // Omitted by the bundle importer, which therefore imports every script with
+  // nothing acknowledged — fail closed, deliberately.
+  acknowledgedSecurityPatterns?: readonly string[] | null;
 };
 
 /**
@@ -122,6 +206,16 @@ export async function insertScriptRow(
 ) {
   const isSystem = auth.scope === 'system' ? (opts.requestedIsSystem ?? false) : false;
 
+  // Clamped at the chokepoint for the same reason `isSystem` is (#5129): both
+  // intakes — POST /scripts and the bundle importer — go through here, so
+  // neither can persist an acknowledgement for a pattern the content does not
+  // contain, whatever it asked for. The route re-runs the same resolution to
+  // decide the 400 and the audit entry; this is the write-side guard.
+  const acknowledgement = resolveScriptSecurityAcknowledgement({
+    content: input.content,
+    submitted: input.acknowledgedSecurityPatterns,
+  });
+
   const [script] = await db
     .insert(scripts)
     .values({
@@ -139,6 +233,11 @@ export async function insertScriptRow(
       isSystem,
       version: 1,
       exitCodeSeverityMapping: input.exitCodeSeverityMapping ?? null,
+      acknowledgedSecurityPatterns: acknowledgement.acknowledged,
+      // Only stamp attribution when something was actually acknowledged; an
+      // ordinary script with no risky pattern must not look risk-approved.
+      securityAcknowledgedBy: acknowledgement.acknowledged.length > 0 ? auth.user.id : null,
+      securityAcknowledgedAt: acknowledgement.acknowledged.length > 0 ? new Date() : null,
       createdBy: auth.user.id
     })
     .returning();

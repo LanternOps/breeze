@@ -65,12 +65,12 @@ Node.js and pnpm are **not required for standard Docker deployments** — the AP
 You only need these tools if you are doing local development or managing migrations manually:
 
 ```bash
-# Install Node 20+
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+# Install Node.js >= 22.22.2 (pinned to 22.23.2 in .nvmrc)
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs
 
 # Install pnpm
-npm install -g pnpm@9
+npm install -g pnpm@10
 ```
 
 ### Git

@@ -23,10 +23,7 @@ import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant } from '../../
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import type { AuthContext } from '../../middleware/auth';
 import type { RequestLike } from '../../services/auditEvents';
-import type {
-  AuthorizedUserSession,
-  LegacyUserSessionDuringTransition,
-} from '../../services/userSession';
+import type { AuthorizedUserSession } from '../../services/userSession';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import {
   decryptMfaTotpSecret,
@@ -41,6 +38,7 @@ import {
   hashRecoveryCodes as hashRecoveryCodesWithKdf,
 } from '../../services/recoveryCodeAuth';
 import { assertActiveTenantContext } from '../../services/tenantStatus';
+import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import type { PublicTokenPayload, UserTokenContext } from './schemas';
 import {
   REFRESH_COOKIE_NAME,
@@ -56,18 +54,6 @@ import {
 const { db } = dbModule;
 
 export const AUTH_BINDING_COOKIE_NAME = 'breeze_auth_binding';
-export const AUTH_TRANSITION_CAPABILITY_HEADER = 'x-breeze-auth-transition';
-
-export function isAuthTransitionV1Request(c: Context): boolean {
-  return c.req.header(AUTH_TRANSITION_CAPABILITY_HEADER)?.trim().toLowerCase() === 'v1';
-}
-
-export function authClientUpgradeRequiredResponse(c: Context): Response {
-  return c.json({
-    error: 'Authentication client upgrade required',
-    reason: 'auth_client_upgrade_required',
-  }, 426);
-}
 
 /**
  * Run `fn` inside the SYSTEM DB access context.
@@ -162,6 +148,14 @@ export function getClientIP(c: RequestLike): string {
 export function getClientRateLimitKey(c: RequestLike): string {
   const trustedIp = getClientIP(c);
   if (trustedIp && trustedIp !== 'unknown') {
+    const peerIp = getImmediatePeerIpOrUndefined(c);
+    if (peerIp === trustedIp) {
+      // Direct mode now exposes the authentic socket peer to audit consumers,
+      // but limiter keys must retain their existing `socket:` namespace. A
+      // deploy must not hand every direct client a fresh parallel bucket merely
+      // because attribution stopped returning the `unknown` sentinel.
+      return `socket:${rateLimitIpKey(peerIp)}`;
+    }
     // rateLimitIpKey, not the raw address: an IPv6 client typically owns its
     // whole /64, so a per-address bucket is free to rotate and the limit means
     // nothing. IPv4 is unchanged. Only the KEY is folded — getClientIP() still
@@ -192,21 +186,125 @@ export function getClientRateLimitKey(c: RequestLike): string {
   return `fp:${digest}`;
 }
 
+// ============================================
+// #4470: rejected-proof responses
+// ============================================
+
+/**
+ * #4470: a rejected FACTOR PROOF — the TOTP/SMS/recovery code, or the
+ * current-password / enrollment grant the user supplied IN THE REQUEST BODY —
+ * is a request-validation failure, NOT an authentication failure. It must
+ * never share a status with the bearer guard.
+ *
+ * Why this matters more than HTTP pedantry: every browser client funnels a 401
+ * into refresh-and-replay and then `handleSessionExpired` (see
+ * `apps/web/src/stores/auth.ts` `fetchWithAuth`). When a mistyped 6-digit code
+ * answered 401, that logged the user out mid-enrollment (#4413/#4414). PR
+ * #4439 patched it client-side with an opt-in `skipUnauthorizedRetry` flag,
+ * which every future caller has to remember; this is the server-side fix that
+ * makes the flag unnecessary.
+ *
+ * The invariant: **401 means "the credential that authenticates THIS request
+ * is missing, expired, or invalid"** — the bearer token, or the login
+ * challenge's `tempToken`. Everything else the user typed is body data, and a
+ * rejection of it is a 400 carrying a stable machine-readable `code`.
+ *
+ * Clients must branch on `code`, never on the human `error`/`message` text.
+ */
+export const MFA_CODE_INVALID = 'mfa_code_invalid';
+/** A step-up factor proof (TOTP/SMS/passkey) was rejected, or no usable factor exists. */
+export const MFA_PROOF_INVALID = 'mfa_proof_invalid';
+/** A step-up / enrollment credential (password, SSO re-auth grant) was rejected. */
+export const INVALID_CREDENTIALS_CODE = 'invalid_credentials';
+
+/** The status a rejected body-supplied proof answers with. */
+export type ProofRejectionStatus = 400 | 401;
+
+/**
+ * Build the uniform rejected-proof body: `{ error, message, code }`.
+ *
+ * `error` and `message` are BOTH populated because the existing clients read
+ * `data.error ?? data.message`; `code` is the stable contract.
+ *
+ * `status` is a parameter rather than a constant because the shared step-up
+ * helpers below are also used by routes whose clients still key on 401 (mobile
+ * `approvals.ts` maps a 401 decision to `STEP_UP_FAILED`). Those keep 401 by
+ * default; the MFA factor-management routes opt in to 400.
+ */
+export function rejectProof(
+  c: Context,
+  message: string,
+  code: string,
+  status: ProofRejectionStatus,
+  extra?: Record<string, unknown>,
+): Response {
+  return c.json({ error: message, message, code, ...extra }, status);
+}
+
+/**
+ * #4746: both non-rejection failure bodies of the step-up helpers populate
+ * `error` AND `message`, exactly as {@link rejectProof} does, because clients
+ * are split on which key they read. The web profile form renders
+ * `data.message` and — unlike its siblings in the same file — does NOT fall
+ * back to `data.error`, so it shows a generic "Failed to change password" when
+ * `message` is absent (`apps/web/src/components/settings/ProfilePage.tsx`).
+ *
+ * That makes both of these indistinguishable from a mistyped password unless
+ * `message` is set: a throttle the user cannot see is a throttle they will keep
+ * hammering, and a Redis outage the user cannot see is one they will retry as
+ * though they got their own password wrong. `/auth/change-password` acquired
+ * both branches when it moved onto this helper, so both are fixed together.
+ */
+const STEP_UP_THROTTLED_MESSAGE = 'Too many attempts. Please try again later.';
+const STEP_UP_UNAVAILABLE_MESSAGE = 'Service temporarily unavailable';
+
 export async function requireCurrentPasswordStepUp(
   c: Context,
   userId: string,
   currentPassword: string,
-  keyPrefix = 'auth:pwd-stepup'
+  keyPrefix = 'auth:pwd-stepup',
+  /**
+   * #4470: MFA factor-management routes pass 400 so a mistyped password is not
+   * mistaken for bearer expiry by the web client's generic 401 handler.
+   * Defaults to 401 for every pre-existing caller whose client contract keys
+   * on it (approvals/PAM step-up, users email-change, authenticator).
+   */
+  opts: {
+    rejectionStatus?: ProofRejectionStatus;
+    /**
+     * #4746: user-facing text for a rejected password. Defaults to the opaque
+     * 'Invalid credentials' every step-up caller has always sent, because on a
+     * step-up the specific reason is not the caller's to disclose.
+     *
+     * `/auth/change-password` overrides it: the request is already
+     * authenticated AS the account being changed, so opacity buys nothing
+     * there, and the web client renders `message` verbatim on the profile form
+     * (`apps/web/src/components/settings/ProfilePage.tsx`). Answering
+     * "Invalid credentials" to a mistyped current password would read as a
+     * dead session — the exact confusion #4660/#4739 just removed.
+     */
+    invalidMessage?: string;
+    /**
+     * Text for an account that has no password hash at all. Defaults to
+     * `invalidMessage`, keeping the two cases indistinguishable for callers
+     * that do not opt in.
+     */
+    noPasswordMessage?: string;
+  } = {},
 ): Promise<Response | null> {
+  const rejectionStatus = opts.rejectionStatus ?? 401;
+  const invalidMessage = opts.invalidMessage ?? 'Invalid credentials';
+  const noPasswordMessage = opts.noPasswordMessage ?? invalidMessage;
   const redis = getRedis();
   if (!redis) {
-    return c.json({ error: 'Service temporarily unavailable' }, 503);
+    return c.json({ error: STEP_UP_UNAVAILABLE_MESSAGE, message: STEP_UP_UNAVAILABLE_MESSAGE }, 503);
   }
 
   const rateCheck = await rateLimiter(redis, `${keyPrefix}:${userId}`, 5, 5 * 60);
   if (!rateCheck.allowed) {
     return c.json({
-      error: 'Too many attempts. Please try again later.',
+      error: STEP_UP_THROTTLED_MESSAGE,
+      message: STEP_UP_THROTTLED_MESSAGE,
       retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
     }, 429);
   }
@@ -218,12 +316,12 @@ export async function requireCurrentPasswordStepUp(
     .limit(1);
 
   if (!user?.passwordHash) {
-    return c.json({ error: 'Invalid credentials' }, 401);
+    return rejectProof(c, noPasswordMessage, INVALID_CREDENTIALS_CODE, rejectionStatus);
   }
 
   const valid = await verifyPassword(user.passwordHash, currentPassword);
   if (!valid) {
-    return c.json({ error: 'Invalid credentials' }, 401);
+    return rejectProof(c, invalidMessage, INVALID_CREDENTIALS_CODE, rejectionStatus);
   }
 
   return null;
@@ -234,7 +332,7 @@ export async function requireCurrentPasswordStepUp(
  * no password to satisfy {@link requireCurrentPasswordStepUp}. Verifies a fresh
  * TOTP code against the user's enrolled MFA secret. Mirrors the password
  * step-up's shape (rate limit → lookup → verify) and returns the same opaque
- * 401/429/503 responses so callers can `if (err) return err` uniformly. Only
+ * rejection/429/503 responses so callers can `if (err) return err` uniformly. Only
  * TOTP step-up is supported here; SMS/passkey L4 re-auth is out of scope.
  */
 export async function requireFreshMfaStepUp(
@@ -243,17 +341,38 @@ export async function requireFreshMfaStepUp(
   code: string,
   keyPrefix = 'auth:mfa-stepup',
 ): Promise<Response | null> {
+  // #4470: no `rejectionStatus` opt-in here — unlike its siblings this helper
+  // has no factor-management caller (only approvals/PAM L4 re-auth), so an
+  // unused knob would just be untested dead code. Add it when a caller needs
+  // it. The BODY is uniform with the siblings so a client sees one shape.
+  const rejectionStatus: ProofRejectionStatus = 401;
   const redis = getRedis();
   if (!redis) {
-    return c.json({ error: 'Service temporarily unavailable' }, 503);
+    return c.json({ error: STEP_UP_UNAVAILABLE_MESSAGE, message: STEP_UP_UNAVAILABLE_MESSAGE }, 503);
   }
 
   const rateCheck = await rateLimiter(redis, `${keyPrefix}:${userId}`, 5, 5 * 60);
   if (!rateCheck.allowed) {
     return c.json({
-      error: 'Too many attempts. Please try again later.',
+      error: STEP_UP_THROTTLED_MESSAGE,
+      message: STEP_UP_THROTTLED_MESSAGE,
       retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
     }, 429);
+  }
+
+  const auth = c.get('auth') as AuthContext | undefined;
+  if (!auth || auth.user.id !== userId) {
+    return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
+  }
+  const policy = await getEffectiveMfaPolicy({
+    scope: auth.scope,
+    userId,
+    orgId: auth.orgId ?? null,
+    partnerId: auth.partnerId ?? null,
+  }, { failClosedMethods: true });
+  if (!policy.allowedMethods.totp) {
+    const message = 'This MFA method is not permitted';
+    return c.json({ error: message, message }, 403);
   }
 
   const [user] = await db
@@ -266,12 +385,12 @@ export async function requireFreshMfaStepUp(
   // Allowlist on the method (not a denylist) so any non-TOTP/unset method is
   // rejected even if a stale secret lingers — defense-in-depth for the auth path.
   if (!user?.mfaEnabled || user.mfaMethod !== 'totp' || !user.mfaSecret) {
-    return c.json({ error: 'Invalid credentials' }, 401);
+    return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
   }
 
   const secret = decryptMfaTotpSecret(user.mfaSecret);
   if (!secret) {
-    return c.json({ error: 'Invalid credentials' }, 401);
+    return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
   }
 
   // consumeMFAToken (not verifyMFAToken): enforce single-use of the TOTP step
@@ -279,14 +398,14 @@ export async function requireFreshMfaStepUp(
   // its validity window. This L4 path had no other single-use binding. (sec review #2)
   const valid = await consumeMFAToken(secret, code, userId);
   if (!valid) {
-    return c.json({ error: 'Invalid credentials' }, 401);
+    return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
   }
 
   return null;
 }
 
 // ============================================
-// Existing-factor step-up for factor addition (SR2-20)
+// Existing-factor step-up for protected-account MFA mutations
 // ============================================
 
 /**
@@ -330,7 +449,8 @@ export async function userIsMfaProtected(userId: string): Promise<boolean> {
 }
 
 /**
- * Enforce the SR2-20 existing-factor step-up on a factor-ADDITION endpoint.
+ * Enforce an operation-bound existing-factor step-up on a protected-account
+ * MFA mutation.
  * No-factor accounts (initial enrollment) pass with password-only (returns
  * null) — this avoids a chicken-and-egg lockout. Already-protected accounts
  * must present a fresh grant bound to the live epochs + this session's
@@ -338,7 +458,7 @@ export async function userIsMfaProtected(userId: string): Promise<boolean> {
  * mint time) so a factor change since the grant was minted (which bumps
  * `mfa_epoch` + revokes refresh families) invalidates it.
  *
- * Every factor-addition route calls this TWICE, in two phases:
+ * Every protected mutation calls this TWICE, in two phases:
  *
  * `opts.consume: false` = non-consuming validate, at the gate. Runs before the
  * factor proof (TOTP/SMS code, WebAuthn assertion) so a missing/bogus/stale
@@ -347,7 +467,7 @@ export async function userIsMfaProtected(userId: string): Promise<boolean> {
  * write, once the factor proof has validated. A wrong code therefore leaves the
  * grant intact for a retry, while a successful add burns it exactly once (the
  * consume re-checks the binding against the LIVE epochs and fails CLOSED, so
- * one grant can never write two factors).
+ * one grant can never authorize two writes).
  *
  * Returns a 403/503 Response to short-circuit the caller, or null to proceed.
  */
@@ -355,7 +475,11 @@ export async function enforceExistingFactorStepUp(
   c: Context,
   auth: AuthContext,
   grantId: string | undefined,
-  opts: { consume: boolean },
+  opts: {
+    consume: boolean;
+    operation?: 'add_factor' | 'rotate_recovery_codes' | 'delete_passkey';
+    resourceDigest?: string;
+  },
 ): Promise<Response | null> {
   if (!(await userIsMfaProtected(auth.user.id))) return null;
 
@@ -366,10 +490,11 @@ export async function enforceExistingFactorStepUp(
 
   const bind = {
     userId: auth.user.id,
-    operation: 'add_factor' as const,
+    operation: opts.operation ?? 'add_factor',
     authEpoch: epochs.authEpoch,
     mfaEpoch: epochs.mfaEpoch,
     sid: auth.token.sid,
+    resourceDigest: opts.resourceDigest,
   };
 
   const ok = grantId
@@ -407,12 +532,15 @@ export async function enforceExistingFactorStepUp(
  * (SR2-20), which exists precisely to require proving an EXISTING factor
  * before adding a new one. The predicate is {@link userIsMfaProtected} — the
  * same one SR2-20 uses — so the two gates can never drift apart. A protected
- * passwordless account is REFUSED this road outright (401); it does not fall
+ * passwordless account is REFUSED this road outright; it does not fall
  * through to any other step-up here. Its route back in is the SR2-20 path,
  * proving the factor it already holds.
  *
- * Every rejection is the same opaque `Invalid credentials` 401 the password
- * path already returns, so the response never reveals whether the account has
+ * Every rejection is the same opaque `Invalid credentials` response the
+ * password path already returns — SAME status, same body, whichever road was
+ * refused (#4470 moved that status behind `opts.rejectionStatus`, so it is
+ * uniform per call site rather than globally). The response never reveals
+ * whether the account has
  * a password, has a factor, or exists at all — with ONE deliberate exception:
  * a passwordless account that offered NO proof at all gets
  * `enrollment_proof_required`. That case is not a failed authentication
@@ -440,15 +568,27 @@ export async function resolveEnrollmentStepUp(
   c: Context,
   auth: AuthContext,
   input: { currentPassword?: string; ssoReauthGrantId?: string },
-  opts: { keyPrefix: string; consume: boolean; passwordAlreadyProven?: boolean },
+  opts: {
+    keyPrefix: string;
+    consume: boolean;
+    passwordAlreadyProven?: boolean;
+    /**
+     * #4470: the status EVERY rejection below answers with. It must stay
+     * uniform within a call site or the status itself becomes the oracle the
+     * opacity rule above exists to close. MFA factor-management routes pass
+     * 400; callers that have not migrated their clients keep the 401 default.
+     */
+    rejectionStatus?: ProofRejectionStatus;
+  },
 ): Promise<Response | null> {
+  const rejectionStatus = opts.rejectionStatus ?? 401;
   // Road 1, FIRST and byte-for-byte the historical path: a password was
   // offered, so a password is what must check out. requireCurrentPasswordStepUp
   // already returns the same opaque 401 when the account has no hash at all, so
   // a passwordless account that offers a password is rejected here rather than
   // sliding onto the SSO road — one request, one road, chosen by what it sent.
   if (input.currentPassword) {
-    return requireCurrentPasswordStepUp(c, auth.user.id, input.currentPassword, opts.keyPrefix);
+    return requireCurrentPasswordStepUp(c, auth.user.id, input.currentPassword, opts.keyPrefix, { rejectionStatus });
   }
 
   // No password offered. Decide whether this account is even eligible for the
@@ -469,7 +609,7 @@ export async function resolveEnrollmentStepUp(
       .where(eq(users.id, auth.user.id))
       .limit(1)
   );
-  if (!user) return c.json({ error: 'Invalid credentials' }, 401);
+  if (!user) return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
 
   if (user.passwordHash != null) {
     // The gate of this flow already verified the password; nothing is left for
@@ -477,20 +617,24 @@ export async function resolveEnrollmentStepUp(
     // assumption that the gate ran — this must fail CLOSED for a passwordless
     // account that reaches a terminal write with no grant.
     if (opts.passwordAlreadyProven) return null;
-    return c.json({ error: 'Invalid credentials' }, 401);
+    return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
   }
 
   if (!input.ssoReauthGrantId) {
     // Distinguishable ON PURPOSE — see the doc comment. `reauthUrl` mirrors the
     // `stepUpUrl` affordance enforceExistingFactorStepUp already returns, so a
     // client can offer the one action that resolves this.
-    return c.json({ error: 'enrollment_proof_required', reauthUrl: '/sso/reauth/start' }, 401);
+    // #4470: shares `rejectionStatus` with every sibling rejection above. A
+    // status that differed here would re-open the password/passwordless oracle
+    // through the status line even though the BODY is distinguishable on
+    // purpose.
+    return c.json({ error: 'enrollment_proof_required', reauthUrl: '/sso/reauth/start' }, rejectionStatus);
   }
 
   // FIRST factor only — see the doc comment above. Checked BEFORE the grant is
   // consumed so a refused enrollment never burns the caller's grant.
   if (await userIsMfaProtected(auth.user.id)) {
-    return c.json({ error: 'Invalid credentials' }, 401);
+    return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
   }
 
   const epochs = await getUserEpochs(auth.user.id);
@@ -514,7 +658,7 @@ export async function resolveEnrollmentStepUp(
     ? await consumeStepUpGrant(input.ssoReauthGrantId, bind)
     : await validateStepUpGrant(input.ssoReauthGrantId, bind);
   if (!ok) {
-    return c.json({ error: 'Invalid credentials' }, 401);
+    return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
   }
 
   return null;
@@ -523,8 +667,9 @@ export async function resolveEnrollmentStepUp(
 /**
  * True when the account holds a re-auth factor STRONGER than a password that
  * the browser register UI can actually exercise: TOTP MFA or an active
- * passkey. Deliberately excludes SMS (no authenticated step-up SMS sender
- * exists; SMS-method users use the password path — see the #2707 spec).
+ * passkey. Deliberately excludes SMS because the authenticator-device
+ * registration UI does not exercise the authenticated SMS sender;
+ * SMS-method users use the password path there (see the #2707 spec).
  * Gates POST /authenticator/register-grant: password re-auth is refused when
  * this returns true, keeping the server tiering identical to the UI tiering.
  */
@@ -906,14 +1051,6 @@ export function setRefreshTokenCookie(c: Context, refreshToken: string): void {
 }
 
 export function installAuthorizedUserSessionCookies(c: Context, issued: AuthorizedUserSession): void {
-  setRefreshTokenCookie(c, issued.refreshToken);
-}
-
-/** Temporary companion boundary for the source-frozen enforcement-false seam. */
-export function installLegacyUserSessionCookiesDuringTransition(
-  c: Context,
-  issued: LegacyUserSessionDuringTransition,
-): void {
   setRefreshTokenCookie(c, issued.refreshToken);
 }
 

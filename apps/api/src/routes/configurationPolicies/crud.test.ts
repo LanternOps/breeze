@@ -10,6 +10,7 @@ const {
   deleteConfigPolicyMock,
   assignPolicyMock,
   dbSelectMock,
+  listEligibleParentPoliciesMock,
 } = vi.hoisted(() => ({
   listConfigPoliciesMock: vi.fn(),
   createConfigPolicyMock: vi.fn(),
@@ -18,6 +19,7 @@ const {
   deleteConfigPolicyMock: vi.fn(),
   assignPolicyMock: vi.fn(),
   dbSelectMock: vi.fn(),
+  listEligibleParentPoliciesMock: vi.fn(),
 }));
 
 vi.mock('../../services/configurationPolicy', async (importOriginal) => {
@@ -32,6 +34,7 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
     updateConfigPolicy: updateConfigPolicyMock,
     deleteConfigPolicy: deleteConfigPolicyMock,
     assignPolicy: assignPolicyMock,
+    listEligibleParentPolicies: listEligibleParentPoliciesMock,
   };
 });
 
@@ -57,7 +60,15 @@ vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
-vi.mock('../../middleware/auth', () => ({
+// `importOriginal` on purpose: this is the ONE config-policy route suite that
+// exercises the REAL `requireMfa()` (and, through it, the real
+// `hasSatisfiedMfa` + `ENABLE_2FA` resolution) rather than a hand-written
+// stand-in. A stand-in can only prove middleware ORDERING; it cannot catch a
+// change to what the gate actually accepts — e.g. an API-key context whose
+// `token: {}` carries no `mfa` claim. Only `authMiddleware` / `requireScope` /
+// `requirePermission` are stubbed, so the suite can inject its own auth.
+vi.mock('../../middleware/auth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../middleware/auth')>()),
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
@@ -67,7 +78,11 @@ import { crudRoutes } from './crud';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { requireScope } from '../../middleware/auth';
 // Real class via the importOriginal spread in the service mock above.
-import { PartnerWideWriteDeniedError } from '../../services/configurationPolicy';
+import {
+  PartnerWideWriteDeniedError,
+  InvalidParentPolicyError,
+  PolicyHasChildrenError,
+} from '../../services/configurationPolicy';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const POLICY_ID = '22222222-2222-2222-2222-222222222222';
@@ -79,7 +94,10 @@ function makeAuth(overrides: Record<string, unknown> = {}): any {
     orgId: ORG_ID,
     partnerId: null,
     user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
-    token: { scope: 'organization' },
+    // The real `requireMfa()` runs in this suite (see the auth mock above), so
+    // the default session must carry a satisfied claim or every mutation case
+    // would 403. Individual tests override `token` to assert the denial.
+    token: { scope: 'organization', mfa: true },
     accessibleOrgIds: [ORG_ID],
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: () => undefined,
@@ -101,6 +119,9 @@ function makePermissions(overrides: Record<string, unknown> = {}): any {
 
 describe('configurationPolicies CRUD routes', () => {
   let app: Hono;
+  // Swapped in per test so a case can drive the shared `app` with a different
+  // principal without rebuilding it (the beforeEach app is mounted once).
+  let authOverride: any = null;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -109,14 +130,73 @@ describe('configurationPolicies CRUD routes', () => {
     // auto-assign error-path test leaks into later cases.
     assignPolicyMock.mockResolvedValue({ id: 'assignment-1' });
     deleteConfigPolicyMock.mockResolvedValue({ id: POLICY_ID });
+    listEligibleParentPoliciesMock.mockResolvedValue([]);
+    authOverride = null;
     mockOrgExists(true); // default: system-scope org-existence check passes
     app = new Hono();
     // Set auth context before mounting routes
     app.use('*', async (c, next) => {
-      c.set('auth', makeAuth());
+      c.set('auth', authOverride ?? makeAuth());
       await next();
     });
     app.route('/', crudRoutes);
+  });
+
+  describe('MFA boundary for effective policy mutations', () => {
+    beforeEach(() => {
+      // A human session that never satisfied MFA: same shape as the default,
+      // minus the `mfa` claim. Denial here comes from the REAL requireMfa().
+      authOverride = makeAuth({ token: { scope: 'organization' } });
+    });
+
+    it.each([
+      ['create', '/', 'POST', { name: 'Must not persist' }, createConfigPolicyMock],
+      ['update', `/${POLICY_ID}`, 'PATCH', { status: 'inactive' }, updateConfigPolicyMock],
+      ['delete', `/${POLICY_ID}`, 'DELETE', undefined, deleteConfigPolicyMock],
+    ] as const)('denies %s before any policy service or success audit', async (_name, path, method, body, sink) => {
+      const res = await app.request(path, {
+        method,
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(sink).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('denies an API-key principal whose token carries no mfa claim', async () => {
+      // Machine MCP/API-key contexts are minted with `token: {}` (mcpServer.ts),
+      // so with ENABLE_2FA on they never satisfy the real gate. This is the
+      // assertion a hand-written requireMfa stand-in cannot make: it proves
+      // what the gate ACCEPTS, not merely that some middleware ran first.
+      authOverride = makeAuth({ principal: { kind: 'api_key', apiKeyId: 'key-1' }, token: {} });
+
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Must not persist' }),
+      });
+
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    });
+
+    it('admits the default session, proving the gate is not denying unconditionally', async () => {
+      createConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'Root', orgId: ORG_ID });
+      authOverride = null; // makeAuth() default: token.mfa === true
+
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Root' }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(createConfigPolicyMock).toHaveBeenCalled();
+    });
   });
 
   // ============================================
@@ -686,6 +766,161 @@ describe('configurationPolicies CRUD routes', () => {
       deleteConfigPolicyMock.mockRejectedValue(new Error('DB error'));
       const res = await app.request(`/${POLICY_ID}`, { method: 'DELETE' });
       expect(res.status).toBe(500);
+    });
+  });
+
+  // ============================================
+  // One-level inheritance (#5080 W01)
+  // ============================================
+
+  describe('inheritance', () => {
+    const PARENT_ID = '44444444-4444-4444-4444-444444444444';
+
+    it('POST forwards parentPolicyId to createConfigPolicy', async () => {
+      createConfigPolicyMock.mockResolvedValue({
+        id: POLICY_ID, name: 'Child', orgId: ORG_ID, parentPolicyId: PARENT_ID,
+      });
+
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Child', parentPolicyId: PARENT_ID }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(createConfigPolicyMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ parentPolicyId: PARENT_ID }),
+        expect.anything(),
+      );
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ details: expect.objectContaining({ parentPolicyId: PARENT_ID }) }),
+      );
+    });
+
+    it('POST maps InvalidParentPolicyError to 400 INVALID_PARENT_POLICY', async () => {
+      createConfigPolicyMock.mockRejectedValue(new InvalidParentPolicyError());
+
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Child', parentPolicyId: PARENT_ID }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'INVALID_PARENT_POLICY' });
+    });
+
+    it('POST with a parent requires MFA before resolving or creating the policy', async () => {
+      authOverride = makeAuth({ token: { scope: 'organization' } });
+
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Child', parentPolicyId: PARENT_ID }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'MFA required' });
+      expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    });
+
+    it('POST without a parent also requires MFA before policy creation', async () => {
+      authOverride = makeAuth({ token: { scope: 'organization' } });
+      createConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'Root', orgId: ORG_ID });
+
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Root' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    });
+
+    it('DELETE maps PolicyHasChildrenError to 409 with the children', async () => {
+      const children = [{ id: 'c1', name: 'Child One' }];
+      deleteConfigPolicyMock.mockRejectedValue(new PolicyHasChildrenError(children));
+
+      const res = await app.request(`/${POLICY_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'POLICY_HAS_CHILDREN', children });
+    });
+
+    it('GET /eligible-parents (organization) returns names only', async () => {
+      listEligibleParentPoliciesMock.mockResolvedValue([
+        { id: PARENT_ID, name: 'MSP baseline', ownerScope: 'partner' },
+      ]);
+
+      const res = await app.request(`/eligible-parents?ownerScope=organization&orgId=${ORG_ID}`);
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        data: [{ id: PARENT_ID, name: 'MSP baseline', ownerScope: 'partner' }],
+      });
+    });
+
+    // Route ordering regression: `GET /:id` is declared after this route, and
+    // if it were declared first Hono would capture "eligible-parents" as an id.
+    it('GET /eligible-parents is not captured by GET /:id', async () => {
+      getConfigPolicyMock.mockResolvedValue({ id: 'should-not-be-used' });
+
+      const res = await app.request(`/eligible-parents?ownerScope=organization&orgId=${ORG_ID}`);
+
+      expect(res.status).toBe(200);
+      expect(getConfigPolicyMock).not.toHaveBeenCalled();
+      expect(listEligibleParentPoliciesMock).toHaveBeenCalled();
+    });
+
+    it('GET /eligible-parents (organization) 403s for an org the caller cannot access', async () => {
+      const res = await app.request(
+        '/eligible-parents?ownerScope=organization&orgId=55555555-5555-5555-5555-555555555555',
+      );
+
+      expect(res.status).toBe(403);
+      expect(listEligibleParentPoliciesMock).not.toHaveBeenCalled();
+    });
+
+    it('GET /eligible-parents (partner) 403s for an org-scoped caller even with a partnerId', async () => {
+      const partnerApp = new Hono();
+      partnerApp.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ scope: 'organization', partnerId: PARTNER_ID }));
+        await next();
+      });
+      partnerApp.route('/', crudRoutes);
+
+      const res = await partnerApp.request('/eligible-parents?ownerScope=partner');
+
+      expect(res.status).toBe(403);
+      expect(listEligibleParentPoliciesMock).not.toHaveBeenCalled();
+    });
+
+    it('GET /eligible-parents (partner) serves a partner-scoped caller', async () => {
+      const partnerApp = new Hono();
+      partnerApp.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID }));
+        await next();
+      });
+      partnerApp.route('/', crudRoutes);
+      listEligibleParentPoliciesMock.mockResolvedValue([
+        { id: PARENT_ID, name: 'MSP baseline', ownerScope: 'partner' },
+      ]);
+
+      const res = await partnerApp.request('/eligible-parents?ownerScope=partner');
+
+      expect(res.status).toBe(200);
+      expect(listEligibleParentPoliciesMock).toHaveBeenCalledWith(
+        expect.anything(),
+        { ownerScope: 'partner' },
+      );
+    });
+
+    it('GET /eligible-parents rejects an organization query with no orgId', async () => {
+      const res = await app.request('/eligible-parents?ownerScope=organization');
+      expect(res.status).toBe(400);
     });
   });
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // #3162: automation `run_script` actions must queue the command against a REAL
 // script_executions row so handleScriptResult can persist the agent's stdout.
@@ -71,7 +71,7 @@ vi.mock('./notificationSenders', () => ({
 }));
 
 import { db } from '../db';
-import { createAutomationRunRecord, executeRunScriptAction } from './automationRuntime';
+import { createAutomationRunRecord, executeRunScriptAction, normalizeAutomationActions } from './automationRuntime';
 
 const EXECUTION_ID = '11111111-2222-4333-8444-555555555555';
 const RUN_ID = '99999999-8888-4777-8666-555555555555';
@@ -112,6 +112,13 @@ function buildContext() {
 beforeEach(() => {
   updatedValues = [];
 
+  // #5128 W4: this suite predates the offline queue and asserts the legacy
+  // reject semantics, which are now only reachable with the flag off. Pin it
+  // explicitly rather than leaning on a default that flipped in W4 — the
+  // queue-arm behaviour has its own suite
+  // (automationRuntime.whenOffline.test.ts).
+  vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'false');
+
   updateMock.mockReset().mockImplementation(() => ({
     set: (vals: Record<string, unknown>) => {
       updatedValues.push(vals);
@@ -134,6 +141,10 @@ beforeEach(() => {
     notificationChannelsById: new Map(),
   });
   vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(db as any));
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('createAutomationRunRecord — ownership admission', () => {
@@ -212,7 +223,7 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
     expect(input.triggeredBy).toBe('user-1');
     expect(input.createdBy).toBe('user-1');
     expect(input.runAs).toBe('system');
-    expect(input.requireOnline).toBe(true);
+    expect(input.offlinePolicy).toEqual({ kind: 'reject' });
   });
 
   it('logs success with the core-assigned commandId and executionId once delivered', async () => {
@@ -254,6 +265,8 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
       status: 'queued',
       commandId: 'cmd-1',
       scriptExecutionId: EXECUTION_ID,
+      // #5128 W4 — the operator-facing reason the step has not started.
+      message: 'Queued — device offline',
     });
     expect(updatedValues).toEqual([{ status: 'queued' }]);
   });
@@ -312,7 +325,7 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
     expect(updatedValues).toEqual([]);
   });
 
-  it('logs failure with the core error when the device is offline (requireOnline gate)', async () => {
+  it('logs failure with the core error when the device is offline (reject policy)', async () => {
     dispatchMock.mockResolvedValue({
       ok: false,
       code: 'device_offline',
@@ -331,7 +344,7 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
       scriptId: 'script-1',
     });
     // No status write to make — the core never inserted an execution row for
-    // an offline device (requireOnline is checked before any insert).
+    // an offline device (the reject policy is checked before any insert).
     expect(updatedValues).toEqual([]);
   });
 
@@ -378,5 +391,110 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
 
     expect(result.outcome.status).toBe('failed');
     expect(dispatchMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #4888 — the automation form now EXPOSES the run-as override, so the value
+ * stops being a field only an API caller could set. Two properties matter:
+ * the override actually reaches dispatch (the form's whole point), and
+ * "Script default" — an absent `runAs` — still resolves to the script row.
+ */
+describe('run_script run-context override (#4888)', () => {
+  it('forwards an action-level runAs to dispatch instead of the script default', async () => {
+    // SCRIPT.runAs is 'system'; the action asks for 'user'.
+    await executeRunScriptAction(
+      { type: 'run_script', scriptId: 'script-1', runAs: 'user' },
+      0,
+      buildContext(),
+    );
+
+    const input = dispatchMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(input.runAs).toBe('user');
+  });
+
+  /**
+   * `normalizeAutomationActions` is the READ path as well as the write
+   * validator (routes/automations.ts and services/configurationPolicy.ts both
+   * run it over rows loaded from the DB), so an unrecognised stored value must
+   * degrade to "script default" rather than throw and take a live automation
+   * offline.
+   */
+  it('narrows a stored runAs to the enum, dropping anything else to the script default', () => {
+    const [kept] = normalizeAutomationActions([
+      { type: 'run_script', scriptId: 'script-1', runAs: 'elevated' },
+    ]);
+    expect(kept).toMatchObject({ runAs: 'elevated' });
+
+    const [dropped] = normalizeAutomationActions([
+      { type: 'run_script', scriptId: 'script-1', runAs: 'root' },
+    ]);
+    expect((dropped as Record<string, unknown>).runAs).toBeUndefined();
+  });
+});
+
+/**
+ * #4919 — the dispatch seam now refuses a device inside a maintenance window
+ * that suppresses scripts. The automation runtime must record that as a SKIP,
+ * not a failure: a failure would mark the run red, fire on-failure
+ * notifications, and skip every trailing action for that device — all on the
+ * strength of the operator's own maintenance schedule.
+ */
+describe('run_script honours a device maintenance window (#4919)', () => {
+  it('records a skip (not a failure) when dispatch reports maintenance_suppressed', async () => {
+    dispatchMock.mockResolvedValueOnce({
+      ok: false,
+      code: 'maintenance_suppressed',
+      error: 'Device is in a maintenance window that suppresses script execution',
+    });
+
+    const result = await executeRunScriptAction(
+      { type: 'run_script', scriptId: 'script-1' },
+      0,
+      buildContext(),
+    );
+
+    expect(result.outcome.status).toBe('skipped');
+    expect((result.outcome as { message?: string }).message).toContain('maintenance window');
+    expect(result.log.message).toContain('maintenance window');
+  });
+
+  /**
+   * The whole reason `maintenance_check_failed` is a separate code: a fault in
+   * the safety check is NOT the operator's schedule. It must keep the failure
+   * treatment (run reddened, on-failure notifications, `onFailure: 'stop'`
+   * honoured), or a fleet-wide maintenance-config outage renders as green runs.
+   */
+  it('treats an UNEVALUATABLE maintenance check as a failure, not a skip', async () => {
+    dispatchMock.mockResolvedValueOnce({
+      ok: false,
+      code: 'maintenance_check_failed',
+      error: 'Maintenance window could not be evaluated for this device; refusing to run the script (fail-closed)',
+    });
+
+    const result = await executeRunScriptAction(
+      { type: 'run_script', scriptId: 'script-1' },
+      0,
+      buildContext(),
+    );
+
+    expect(result.outcome.status).toBe('failed');
+    expect(result.outcome.status).not.toBe('skipped');
+  });
+
+  it('still reports an ordinary dispatch refusal as a failure', async () => {
+    dispatchMock.mockResolvedValueOnce({
+      ok: false,
+      code: 'device_offline',
+      error: 'Device is offline, cannot execute command',
+    });
+
+    const result = await executeRunScriptAction(
+      { type: 'run_script', scriptId: 'script-1' },
+      0,
+      buildContext(),
+    );
+
+    expect(result.outcome.status).toBe('failed');
   });
 });

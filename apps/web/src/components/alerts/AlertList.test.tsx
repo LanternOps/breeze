@@ -24,6 +24,7 @@ const baseVerdict: AlertAiVerdictSummaryDto = {
   rationale: 'Disk usage climbing steadily with no self-heal.',
   patternKind: null,
   feedback: null,
+  feedbackBy: null,
   suggestedIntentId: null,
   createdAt: '2026-08-28T00:00:00Z',
 };
@@ -100,5 +101,19 @@ describe('AlertList — hide AI-flagged noise toggle', () => {
     fireEvent.click(screen.getByRole('button', { name: /filters/i }));
     fireEvent.click(screen.getByText('Clear all'));
     expect(onHideAiNoiseChange).toHaveBeenCalledWith(false);
+  });
+});
+
+
+describe('AlertList blocked scope (RMM-QA-153)', () => {
+  it.each(['acknowledge', 'resolve', 'suppress', 'dismiss'])('drops selection before %s can dispatch from a blocked scope', action => {
+    const onBulkAction = vi.fn();
+    const { rerender } = render(<AlertList alerts={[baseAlert]} onBulkAction={onBulkAction} />);
+    fireEvent.click(screen.getAllByRole('checkbox')[0]!);
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    rerender(<AlertList alerts={[baseAlert]} onBulkAction={onBulkAction} actionsBlocked />);
+    expect(screen.getAllByRole('checkbox').every(input => (input as HTMLInputElement).disabled)).toBe(true);
+    expect(screen.queryByRole('menuitem', { name: new RegExp(action, 'i') })).toBeNull();
+    expect(onBulkAction).not.toHaveBeenCalled();
   });
 });

@@ -120,7 +120,7 @@ describe('enqueueSensitiveDataScan', () => {
 
     expect(addMock).toHaveBeenCalledWith(
       'dispatch-scan',
-      { type: 'dispatch-scan', scanId: 'scan-123' },
+      { type: 'dispatch-scan', scanId: 'scan-123', origin: 'manual' },
       expect.objectContaining({ jobId: 'sensitive-scan-scan-123' }),
     );
   });

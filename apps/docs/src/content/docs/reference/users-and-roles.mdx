@@ -58,6 +58,10 @@ Administrators invite users by providing an email address, display name, and rol
     ```
 
     Omit `siteIds` and `deviceGroupIds` to grant access to all sites and device groups within the organisation.
+
+    <Aside type="note" title="Site-restricted users and org-wide settings">
+      A site-restricted technician can still **assign** an existing policy to their own site — that stays governed by the resource's normal write permission (e.g. `devices:write`). But a defined site restriction (including a restriction to zero sites) blocks **creating or editing** the org-wide governance objects themselves: webhooks, alert notification channels, software policies, peripheral (USB/Bluetooth) policies, configuration policies and their feature links, PAM configuration and signer groups, and backup destinations/profiles. These objects have no per-site ownership model — they always apply organisation- or partner-wide — so a technician who can only see one site is never allowed to create or change one, even if their role otherwise grants the write permission. An unrestricted administrator (no `siteIds` set) is unaffected. Attempting a blocked action returns an error asking to contact an unrestricted administrator.
+    </Aside>
   </TabItem>
   <TabItem label="Partner Scope">
     When inviting into a partner (MSP), you specify the **organisation access level**:
@@ -88,7 +92,7 @@ If an email service is configured, the invitee receives an invitation email with
 
 ### Updating Users
 
-Administrators with `users:write` permission can update a user's **name** or **status**. For example, disabling a user:
+`PATCH /users/:id` updates a user's **name**, **status**, or `disabledReason`. These fields live on the shared global identity row, which can be linked to memberships in multiple partners or organisations, so no tenant-scoped authorization proof can cover every tenant a change might affect (including revoking sessions). The endpoint is therefore restricted to **system-scoped callers** (`auth.scope === 'system'`) regardless of `users:write` -- a partner or organisation admin cannot call it directly. For example, disabling a user:
 
 ```json
 {
@@ -102,7 +106,7 @@ Removing a user from a scope (`DELETE /users/:id`) deletes the association recor
 
 ### Self-Service Profile
 
-Authenticated users can view and update their own profile at `GET /users/me` and `PATCH /users/me` without any special permissions. Updatable fields are `name` and `avatarUrl`.
+Authenticated users can view and update their own profile at `GET /users/me` and `PATCH /users/me` without any special permissions. Updatable fields are `name`, `email`, and `preferences`. Avatars are managed separately via `POST /users/me/avatar` (upload) and `DELETE /users/me/avatar` (remove) -- `PATCH /users/me` rejects an `avatarUrl` field with `400` rather than silently dropping it.
 
 ---
 
@@ -136,14 +140,15 @@ Old refresh tokens are revoked on each rotation to prevent replay.
 
 ### Registration
 
-When enabled (`ENABLE_REGISTRATION=true`), two registration endpoints are available:
+When enabled (`ENABLE_REGISTRATION=true`), self-service MSP signup is a **two-step, email-verified** flow, not a single call:
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /auth/register` | Create a standalone user account. |
-| `POST /auth/register-partner` | Self-service MSP signup: creates a partner, admin role, and user in a single transaction. |
+| `POST /auth/register-partner` | Step 1: validates the request and queues a verification email. Creates no user, partner, or token, and performs no email-existence lookup -- the response body is identical whether or not the address already has an account. |
+| `POST /auth/verify-email` | Step 2: the emailed link's token. Creates the partner, admin role, user, and association inside one database transaction, then issues tokens. |
+| `POST /auth/register` | Legacy path, kept only so old clients don't see a broken response shape. It is a **no-op**: it runs the same rate-limit and password checks but never creates an account. |
 
-Registration is rate-limited to 5 attempts per IP per hour (3 for partner registration). Password strength requirements are enforced.
+Registration is rate-limited to 5 attempts per IP per hour for `/auth/register` and 3 for `/auth/register-partner` (`/auth/verify-email` has its own separate limit). Password strength requirements are enforced on step 1. See [Partner Management: Self-Registration](/reference/partner-management/#self-registration) for the full request/response shapes.
 
 ---
 
@@ -214,13 +219,27 @@ If the primary method is `totp` or `sms` but `passkeyAvailable` is `true`, the u
 
 MFA verification is rate-limited separately from login.
 
-<Aside type="caution" title="Integrators: a wrong code and an expired session share a status code">
-  A wrong six-digit code and an expired or invalid `tempToken` both return **`401`**. Do not branch on the status code alone — a client that treats every `401` here as "session expired" will silently restart the login flow when the user simply mistyped a digit. Distinguish them by the response body: a bad code returns `{ "error": "Invalid MFA code" }`, while a dead session returns `{ "error": "Invalid or expired MFA session" }`.
+<Aside type="note" title="Integrators: a wrong code and an expired session have different status codes">
+  A **rejected proof** — a wrong six-digit code, a wrong recovery code, or a wrong step-up password — returns **`400`** with a stable machine-readable `code`:
+
+  ```json
+  { "error": "Invalid MFA code", "message": "Invalid MFA code", "code": "mfa_code_invalid" }
+  ```
+
+  A **dead credential** — an expired or invalid `tempToken`, or an expired bearer token — returns **`401`**:
+
+  ```json
+  { "error": "Invalid or expired MFA session" }
+  ```
+
+  Branch on the status code, and on `code` when you need the specific reason. `401` from these endpoints means "re-authenticate"; it never means "you mistyped a digit". The codes in use are `mfa_code_invalid` (wrong TOTP/SMS/recovery code), `mfa_proof_invalid` (a rejected `POST /auth/mfa/step-up` factor proof), and `invalid_credentials` (a rejected step-up password or enrollment grant). Never branch on the human-readable `error`/`message` text — it is not part of the contract.
+
+  This applies to `/auth/mfa/*` and `/auth/phone/*`, and to the two other endpoints that verify a password supplied in the request body: `POST /auth/change-password` and `POST /auth/account-deletion-request`. Both answer a rejected password with `400` and `code: "invalid_credentials"`. Earlier releases answered `401` for both cases, which is why a client that auto-refreshes on `401` could sign the user out mid-enrollment for a mistyped digit — or, on those two endpoints, mid-flow for a mistyped password.
 </Aside>
 
 ### Disabling MFA
 
-Call `POST /auth/mfa/disable` with the current 6-digit code (TOTP or SMS depending on active method). This clears the MFA secret, phone number, and recovery codes. If the organisation enforces MFA, the endpoint returns `403`.
+Call `POST /auth/mfa/disable` with `currentPassword` and the current 6-digit code (TOTP or SMS depending on active method). This clears the MFA secret, phone number, and recovery codes. Every **other** session and refresh token for the user is revoked; the calling session is replaced in the same response (new access and refresh tokens, or refreshed cookies in the browser flow), so the user is not signed out by their own request. If the organisation enforces MFA, the endpoint returns `403`. A caller that cannot receive the replacement session (a bearer-only client with no device binding) receives `428`.
 
 ### Recovery Codes
 
@@ -265,6 +284,8 @@ Authenticated users can change their password via `POST /auth/change-password` b
   SSO-provisioned users do not have a password. The change password endpoint returns `400` for these accounts.
 </Aside>
 
+A **wrong `currentPassword`** also returns `400`, with the stable body `{ "error": "Current password is incorrect", "message": "Current password is incorrect", "code": "invalid_credentials" }`. It previously returned `401`; branch on the status and on `code`, never on the message text. `401` from this endpoint now means only that the bearer token is dead.
+
 ---
 
 ## Single Sign-On (SSO)
@@ -302,7 +323,7 @@ Provider status can be `active`, `inactive`, or `testing`. Only `active` provide
 
 ### SSO Check
 
-The frontend can check whether an organisation has SSO enabled by calling the public endpoint `GET /sso/check/:orgId`. This returns the provider name, type, and whether SSO is enforced.
+The frontend can check whether an organisation has SSO enabled by calling the public endpoint `GET /sso/check/:orgId`. This returns the provider name, type, and whether SSO is enforced. The dashboard login page does not have an `orgId` to pass this endpoint until after a user has chosen an organisation, so it instead discovers SSO from the typed email address via `POST /auth/sso-discovery` — see [Login Page Discovery](/reference/sso/#login-page-discovery) in the SSO reference.
 
 ---
 
@@ -319,6 +340,10 @@ Roles can be **system** (built-in, immutable) or **custom** (created by administ
 
 Roles also carry a **Force MFA** flag. When the flag is on, any user assigned to that role gets a `428 Precondition Required` response on protected endpoints until they enrol an MFA method. The enrolment screen offers whichever methods the organisation allows -- an authenticator app, SMS, or a passkey. The dashboard intercepts the 428 and walks the user through a forced enrollment screen before letting them reach any other workflow. Partner Admin is seeded with Force MFA on. Switch it on for any role whose privilege level warrants mandatory MFA — admin-equivalent roles, billing operators, and similar.
 
+Enforcement of the Force MFA flag is itself gated by the `MFA_FORCE_FOR_PARTNER_ADMIN` environment variable, which **defaults to `false`** for this release: the Partner Admin role is seeded/reconciled with Force MFA on regardless, but the 428 wall above only fires once an operator sets `MFA_FORCE_FOR_PARTNER_ADMIN=true`. See `.env.example` for details. This default returns to `true` once a notification-period rollout ships.
+
+**The variable gates the *role* flag only.** MFA required by an organisation's or partner's own security settings (**Require MFA** under Settings → Security) is enforced regardless of what `MFA_FORCE_FOR_PARTNER_ADMIN` is set to — it is not a global switch for turning MFA requirements off. Related: a settings change that *would* lock out users who have already enrolled is now refused outright with `409 mfa_policy_would_lock_out_users` and a count of the users affected, rather than applied and discovered at the next sign-in.
+
 ### Permission Model
 
 Permissions are stored as `resource:action` pairs in the `permissions` table. Roles are linked to permissions through the `role_permissions` join table.
@@ -327,19 +352,33 @@ Permissions are stored as `resource:action` pairs in the `permissions` table. Ro
 
 | Resource | Description |
 |---|---|
-| `devices` | Manage and view endpoints |
-| `scripts` | Script library and execution |
-| `alerts` | Alert rules and acknowledgement |
-| `automations` | Automation workflows |
-| `reports` | Reporting and analytics |
 | `backup` | Backup jobs, vaults, and restore operations |
-| `billing` | Subscriptions, invoicing, and payment methods |
+| `devices` | Manage and view endpoints |
+| `agent_rollback` | Signed rollback of an agent component on a device |
+| `topology` | Network discovery topology view and saved layout |
+| `scripts` | Script library and execution |
+| `variables` | Tenant script variable definitions |
+| `alerts` | Alert rules and acknowledgement |
+| `tickets` | Ticketing |
+| `ticket_mailbox` | Microsoft 365 partner-wide ticket mailbox administration |
+| `catalog` | Billing product catalog |
+| `invoices` | Invoices |
+| `contracts` | Recurring contracts |
+| `quotes` | Quotes / proposals |
+| `time_entries` | Ticket time entries |
 | `users` | User and role management |
-| `settings` | Organisation and system settings |
 | `organizations` | Organisation CRUD |
+| `sso` | SSO provider configuration and verified domains |
 | `sites` | Site management |
+| `automations` | Automation workflows |
 | `remote` | Remote access sessions |
+| `audit` | Audit log read, export, and retention management |
+| `reports` | Reporting and analytics |
+| `billing` | Subscriptions, invoicing, and payment methods |
+| `vulnerabilities` | Vulnerability risk-acceptance governance |
+| `ai_sessions` | Cross-user AI session audit (admin dashboard) |
 | `ai_agents` | AI agent configuration and runs |
+| `approvals` | Deciding pending action-intent approvals |
 
 The authoritative list of assignable permissions is also available at runtime via `GET /permissions/catalog`. The dashboard's role builder consumes this endpoint so the matrix of resources and actions stays in sync with the server whenever new permissions are added.
 
@@ -347,13 +386,25 @@ The authoritative list of assignable permissions is also available at runtime vi
 
 | Action | Description |
 |---|---|
-| `view` | Read-only access |
-| `create` | Create new resources |
-| `update` | Modify existing resources |
+| `read` | Read-only access |
+| `write` | Create or modify resources |
 | `delete` | Remove resources |
 | `execute` | Run scripts, commands, remote sessions |
+| `cross_site_restore` | Restore a backup to a site other than its origin |
+| `create` | Create a resource (e.g. an agent rollback) |
+| `manage` | Broader management rights (e.g. audit retention policy, contracts, variables) |
+| `acknowledge` | Acknowledge an alert |
+| `invite` | Invite a new user |
+| `access` | Start a remote access session |
+| `export` | Export data (audit logs, reports, invoices) |
+| `send` | Send an invoice or quote to a customer |
+| `fulfill` | Mark a quote fulfilled |
+| `admin` | Full administration of a resource (SSO, ticket mailbox) |
+| `accept_risk` | Accept a vulnerability finding's risk |
+| `read_all` | Read another user's data (AI session audit) |
+| `decide` | Approve or deny a pending action-intent approval |
 
-Additionally, the wildcard permission `*:*` grants full administrative access.
+There is no `view` or `update` action -- read access is `read`, and a write/create/update is `write` (or `create` for the one resource, `agent_rollback`, that uses it). Additionally, the wildcard permission `*:*` grants full administrative access.
 
 <Aside type="note">
   `ai_agents:read` and `ai_agents:write` are deliberately separate from `organizations:write`. Authoring an agent policy is what will eventually authorize autonomous action on customer machines, so it is not bundled into a permission every organisation admin already holds. See [AI Agents](/features/ai-agents/).
@@ -365,21 +416,52 @@ Additionally, the wildcard permission `*:*` grants full administrative access.
 
 ### Built-in Permissions
 
-The following named permissions are referenced by route middleware:
+The following named permission constants (`packages/shared/src/constants/permissions.ts`) are referenced by route middleware:
 
 | Constant | Resource | Action |
 |---|---|---|
+| `BACKUP_READ` | `backup` | `read` |
+| `BACKUP_WRITE` | `backup` | `write` |
+| `BACKUP_CROSS_SITE_RESTORE` | `backup` | `cross_site_restore` |
 | `DEVICES_READ` | `devices` | `read` |
 | `DEVICES_WRITE` | `devices` | `write` |
 | `DEVICES_DELETE` | `devices` | `delete` |
 | `DEVICES_EXECUTE` | `devices` | `execute` |
+| `AGENT_ROLLBACK_CREATE` | `agent_rollback` | `create` |
+| `TOPOLOGY_READ` | `topology` | `read` |
+| `TOPOLOGY_WRITE` | `topology` | `write` |
 | `SCRIPTS_READ` | `scripts` | `read` |
 | `SCRIPTS_WRITE` | `scripts` | `write` |
 | `SCRIPTS_DELETE` | `scripts` | `delete` |
 | `SCRIPTS_EXECUTE` | `scripts` | `execute` |
+| `VARIABLES_READ` | `variables` | `read` |
+| `VARIABLES_MANAGE` | `variables` | `manage` |
 | `ALERTS_READ` | `alerts` | `read` |
 | `ALERTS_WRITE` | `alerts` | `write` |
 | `ALERTS_ACKNOWLEDGE` | `alerts` | `acknowledge` |
+| `TICKETS_READ` | `tickets` | `read` |
+| `TICKETS_WRITE` | `tickets` | `write` |
+| `TICKETS_MANAGE` | `tickets` | `manage` |
+| `TICKET_MAILBOX_READ` | `ticket_mailbox` | `read` |
+| `TICKET_MAILBOX_ADMIN` | `ticket_mailbox` | `admin` |
+| `CATALOG_READ` | `catalog` | `read` |
+| `CATALOG_WRITE` | `catalog` | `write` |
+| `CATALOG_DELETE` | `catalog` | `delete` |
+| `INVOICES_READ` | `invoices` | `read` |
+| `INVOICES_WRITE` | `invoices` | `write` |
+| `INVOICES_SEND` | `invoices` | `send` |
+| `INVOICES_EXPORT` | `invoices` | `export` |
+| `ACCOUNTING_READ` | `accounting` | `read` |
+| `ACCOUNTING_MANAGE` | `accounting` | `manage` |
+| `CONTRACTS_READ` | `contracts` | `read` |
+| `CONTRACTS_WRITE` | `contracts` | `write` |
+| `CONTRACTS_MANAGE` | `contracts` | `manage` |
+| `QUOTES_READ` | `quotes` | `read` |
+| `QUOTES_WRITE` | `quotes` | `write` |
+| `QUOTES_SEND` | `quotes` | `send` |
+| `QUOTES_FULFILL` | `quotes` | `fulfill` |
+| `TIME_ENTRIES_READ` | `time_entries` | `read` |
+| `TIME_ENTRIES_WRITE` | `time_entries` | `write` |
 | `USERS_READ` | `users` | `read` |
 | `USERS_WRITE` | `users` | `write` |
 | `USERS_DELETE` | `users` | `delete` |
@@ -387,19 +469,40 @@ The following named permissions are referenced by route middleware:
 | `ORGS_READ` | `organizations` | `read` |
 | `ORGS_WRITE` | `organizations` | `write` |
 | `ORGS_DELETE` | `organizations` | `delete` |
+| `SSO_ADMIN` | `sso` | `admin` |
 | `SITES_READ` | `sites` | `read` |
 | `SITES_WRITE` | `sites` | `write` |
 | `SITES_DELETE` | `sites` | `delete` |
 | `AUTOMATIONS_READ` | `automations` | `read` |
 | `AUTOMATIONS_WRITE` | `automations` | `write` |
 | `AUTOMATIONS_DELETE` | `automations` | `delete` |
-| `TOPOLOGY_READ` | `topology` | `read` |
-| `TOPOLOGY_WRITE` | `topology` | `write` |
-| `VULN_RISK_ACCEPT` | `vulnerabilities` | `accept_risk` |
 | `REMOTE_ACCESS` | `remote` | `access` |
 | `AUDIT_READ` | `audit` | `read` |
 | `AUDIT_EXPORT` | `audit` | `export` |
+| `AUDIT_MANAGE` | `audit` | `manage` |
+| `REPORTS_READ` | `reports` | `read` |
+| `REPORTS_WRITE` | `reports` | `write` |
+| `REPORTS_DELETE` | `reports` | `delete` |
+| `REPORTS_EXPORT` | `reports` | `export` |
+| `BILLING_MANAGE` | `billing` | `manage` |
+| `VULN_RISK_ACCEPT` | `vulnerabilities` | `accept_risk` |
+| `AI_SESSIONS_READ_ALL` | `ai_sessions` | `read_all` |
+| `AI_AGENTS_READ` | `ai_agents` | `read` |
+| `AI_AGENTS_WRITE` | `ai_agents` | `write` |
+| `APPROVALS_DECIDE` | `approvals` | `decide` |
+| `PAM_APPROVE` | `pam` | `approve` |
+| `PAM_MANAGE_POLICY` | `pam` | `manage_policy` |
+| `WORKSPACE_READ` | `workspace` | `read` |
+| `WORKSPACE_WRITE` | `workspace` | `write` |
+| `WORKSPACE_CREDENTIALS` | `workspace` | `credentials` |
+| `WORKSPACE_EXECUTE` | `workspace` | `execute` |
+| `CONNECTED_APPS_READ` | `connected_apps` | `read` |
+| `CONNECTED_APPS_MANAGE` | `connected_apps` | `manage` |
 | `ADMIN_ALL` | `*` | `*` |
+
+<Aside type="caution" title="Permissions added in v0.112.0 replace implicit access">
+  `pam:approve`, `pam:manage_policy`, `accounting:read`, `accounting:manage`, the four `workspace:*` keys and the two `connected_apps:*` keys were introduced in v0.112.0. The upgrade grants them to the built-in **Org Admin** role only; **Partner Admin** already holds them through `*:*`. Every other built-in role (Partner Technician, Partner Billing, Org Technician, …) and every custom role **loses** the access those areas previously inferred from device or billing permissions until you grant the new keys in **Settings → Roles**. In practice: QuickBooks pages and sync now need `accounting:*`; approving, denying or revoking a privileged-access elevation needs `pam:approve` and authoring PAM rules needs `pam:manage_policy` (see [Privileged Access Management](/features/pam/#who-can-approve-and-manage-pam)); Workspace sources need `workspace:*`; and the partner's connected apps (OAuth / MCP clients) need `connected_apps:*`. The keys appear in the role editor automatically.
+</Aside>
 
 ### Role Inheritance
 
@@ -416,8 +519,8 @@ Custom roles are created with `POST /roles` and must include a name. Permissions
   "name": "Helpdesk Tier 1",
   "description": "View devices and acknowledge alerts",
   "permissions": [
-    { "resource": "devices", "action": "view" },
-    { "resource": "alerts", "action": "view" },
+    { "resource": "devices", "action": "read" },
+    { "resource": "alerts", "action": "read" },
     { "resource": "alerts", "action": "acknowledge" }
   ],
   "parentRoleId": null
@@ -458,12 +561,12 @@ All user endpoints are mounted under `/api/v1/users` and require JWT authenticat
 | Method | Path | Permission | Description |
 |---|---|---|---|
 | `GET` | `/users/me` | _(authenticated)_ | Get the current user's profile. |
-| `PATCH` | `/users/me` | _(authenticated)_ | Update the current user's name or avatar. |
+| `PATCH` | `/users/me` | _(authenticated)_ | Update the current user's name, email, or preferences. |
 | `GET` | `/users` | `users:read` | List all users in the current scope. |
 | `GET` | `/users/:id` | `users:read` | Get a specific user's details. |
 | `POST` | `/users/invite` | `users:invite` | Invite a new user to the current scope. |
 | `POST` | `/users/resend-invite` | `users:invite` | Resend an invitation email. |
-| `PATCH` | `/users/:id` | `users:write` | Update a user's name or status. |
+| `PATCH` | `/users/:id` | `users:write` + **system scope** | Update a user's name or status. Rejects tenant-scoped (partner/organisation) callers with `403` regardless of `users:write`. |
 | `DELETE` | `/users/:id` | `users:delete` | Remove a user from the current scope. |
 | `POST` | `/users/:id/role` | `users:write` | Assign a different role to a user. |
 | `POST` | `/users/:id/mfa/reset` | `users:write` + MFA-satisfied session | Clear another user's MFA so they re-enroll at next login (lost-authenticator recovery). Refused for your own account. |
@@ -491,8 +594,9 @@ Auth endpoints are mounted under `/api/v1/auth`. Public endpoints do not require
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/auth/register` | Public | Register a new user account. |
-| `POST` | `/auth/register-partner` | Public | Self-service MSP/partner signup. |
+| `POST` | `/auth/register` | Public | Legacy no-op signup path; runs the rate-limit/password checks but never creates an account. |
+| `POST` | `/auth/register-partner` | Public | Step 1 of self-service MSP/partner signup: queues a verification email, creates nothing. |
+| `POST` | `/auth/verify-email` | Public | Step 2 of self-service signup: creates the partner/role/user from the emailed token and issues tokens. Also used for email-change confirmation. |
 | `POST` | `/auth/login` | Public | Log in with email and password. |
 | `POST` | `/auth/logout` | Authenticated | Log out and revoke all tokens. |
 | `POST` | `/auth/refresh` | Cookie | Rotate the access/refresh token pair. |
@@ -503,7 +607,7 @@ Auth endpoints are mounted under `/api/v1/auth`. Public endpoints do not require
 | `POST` | `/auth/mfa/setup` | Authenticated | Begin TOTP MFA setup; returns QR code and recovery codes. |
 | `POST` | `/auth/mfa/verify` | Public/Auth | Verify an MFA code during login (with `tempToken`) or setup confirmation. |
 | `POST` | `/auth/mfa/enable` | Authenticated | Confirm MFA setup (frontend settings flow). |
-| `POST` | `/auth/mfa/disable` | Authenticated | Disable MFA (requires current code). |
+| `POST` | `/auth/mfa/disable` | Authenticated | Disable MFA (requires current password and code; revokes all other sessions, re-issues the caller's). |
 | `POST` | `/auth/mfa/recovery-codes` | Authenticated | Regenerate MFA recovery codes. |
 | `POST` | `/auth/phone/verify` | Authenticated | Send a phone verification SMS. |
 | `POST` | `/auth/phone/confirm` | Authenticated | Confirm phone verification code. |

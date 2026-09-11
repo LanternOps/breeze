@@ -3,7 +3,11 @@ import { describe, it, expect, vi } from 'vitest';
 // `timeEntries` pulls in `../../services/api`, which imports @sentry/react-native.
 vi.mock('../../services/api', () => ({ coreRequest: vi.fn() }));
 
-import { startOutcomeEffects, stopOutcomeEffects } from './timerOutcomeEffects';
+import {
+  startOutcomeEffects,
+  stopComposerTicketId,
+  stopOutcomeEffects,
+} from './timerOutcomeEffects';
 import type { TimeEntry } from '../../services/timeEntries';
 import type { LocalTimer } from '../../services/localTimer';
 
@@ -95,10 +99,28 @@ describe('startOutcomeEffects', () => {
       id: 'e1',
       localId: null,
       ticketId: 'k1',
+      ticketNumber: null,
+      ticketSubject: null,
       startedAt: '2026-08-23T10:00:00Z',
       description: null,
     });
     expect(effects.toast).toEqual({ kind: 'success', text: 'Timer started' });
+  });
+
+  it('carries the joined ticket label fields so the bar never shows a placeholder first', () => {
+    // TimerBar's label falls back to the literal "Ticket" until `running`
+    // carries a resolved ticketNumber/ticketSubject. Dropping these here (as
+    // the entry the server returned already has them) meant the bar rendered
+    // "Ticket" for one tick, then flipped to "#T-2026-0006" once a later
+    // reconciliation pass filled them in.
+    const effects = startOutcomeEffects({
+      ok: true,
+      entry: { ...entry, ticketNumber: 'T-2026-0006', ticketSubject: 'Printer offline' },
+    });
+    expect(effects.startRunning).toMatchObject({
+      ticketNumber: 'T-2026-0006',
+      ticketSubject: 'Printer offline',
+    });
   });
 
   it('DOES adopt a local timer, so both surfaces offer Stop offline', () => {
@@ -147,5 +169,46 @@ describe('startOutcomeEffects', () => {
       denial: { reason: 'permission', message: 'ask an admin' },
     });
     expect(effects.accountDenial).toEqual({ reason: 'permission', message: 'ask an admin' });
+  });
+});
+
+describe('stopComposerTicketId (#5366)', () => {
+  const running = {
+    id: 'e1',
+    localId: null,
+    ticketId: 'k1',
+    startedAt: '2026-08-23T10:00:00Z',
+    description: null,
+  };
+
+  it('names the stopped ticket on a completed stop', () => {
+    expect(stopComposerTicketId({ ok: true, entry }, running)).toBe('k1');
+  });
+
+  it('falls back to the running timer on a queued stop, which carries no entry', () => {
+    // The offline path returns `{ ok: 'queued' }` and nothing else, so the only
+    // record of WHICH ticket was being timed is the pre-stop running timer.
+    expect(stopComposerTicketId({ ok: 'queued' }, running)).toBe('k1');
+  });
+
+  it('prefers the entry ticket over the running timer when they disagree', () => {
+    // The server is authoritative about what it just closed.
+    expect(stopComposerTicketId({ ok: true, entry: { ...entry, ticketId: 'k2' } }, running)).toBe(
+      'k2'
+    );
+  });
+
+  it('opens nothing when the stop recorded no span', () => {
+    // A denied, unknown, not-running or unusable-clock stop has nothing to
+    // annotate, and yanking the technician to a composer would bury the error
+    // notice they need to read.
+    for (const reason of ['denied', 'unknown', 'not-running', 'unusable-clock'] as const) {
+      expect(stopComposerTicketId({ ok: false, reason, message: 'nope' }, running)).toBeNull();
+    }
+  });
+
+  it('opens nothing for general time, which has no ticket', () => {
+    expect(stopComposerTicketId({ ok: 'queued' }, { ...running, ticketId: null })).toBeNull();
+    expect(stopComposerTicketId({ ok: true, entry: { ...entry, ticketId: null } }, null)).toBeNull();
   });
 });

@@ -6,7 +6,9 @@ import {
   updateQuoteLineSchema, catalogQuoteLineSchema, moveQuoteLineSchema,
   quoteBlockTypeSchema, coverPageSchema,
   createQuoteOrderSchema, updateQuoteOrderSchema, updateQuoteOrderLineSchema,
+  quoteLineDeviceSetIssues, mergeQuoteLinePatch, quoteLinePatchHasKey, QUOTE_DEVICE_SET_TYPES,
 } from './quotes';
+import { ALLOWANCE_LINE_TYPES, contractLineInvariantIssues } from './contracts';
 
 describe('quote validators', () => {
   it('accepts a minimal create payload and leaves currencyCode unset', () => {
@@ -450,5 +452,215 @@ describe('updateQuoteOrderLineSchema', () => {
 
   it('rejects a negative receivedQty', () => {
     expect(updateQuoteOrderLineSchema.safeParse({ receivedQty: -1 }).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3205 W05 — the device-set descriptor on a quote line.
+//
+// quoteLineDeviceSetIssues does NOT restate the contract rules: it PROJECTS onto
+// W03's ContractLineShape and calls contractLineInvariantIssues, so roles /
+// group / site / allowance can never diverge between a quote line and the
+// contract line it becomes — and #4547's future additions arrive here for free.
+// ---------------------------------------------------------------------------
+describe('quoteLineDeviceSetIssues (#3205 W05)', () => {
+  const GROUP = '33333333-3333-4333-8333-333333333333';
+  const SITE = '22222222-2222-4222-8222-222222222222';
+  const rec = { recurrence: 'monthly' } as const;
+  const paths = (l: Parameters<typeof quoteLineDeviceSetIssues>[0], mode: 'create' | 'persisted') =>
+    quoteLineDeviceSetIssues(l, { mode }).map((i) => i.path);
+
+  it('accepts each of the four types with its required fields, in both modes', () => {
+    for (const mode of ['create', 'persisted'] as const) {
+      expect(paths({ ...rec, contractLineType: 'per_device' }, mode)).toEqual([]);
+      expect(paths({ ...rec, contractLineType: 'per_device_role', deviceRoles: ['server'] }, mode)).toEqual([]);
+      expect(paths({ ...rec, contractLineType: 'per_seat' }, mode)).toEqual([]);
+    }
+    expect(paths({ ...rec, contractLineType: 'per_device_group', deviceGroupId: GROUP }, 'create')).toEqual([]);
+    expect(paths({ ...rec, contractLineType: 'per_device_group', deviceGroupId: GROUP, deviceGroupName: 'VIP' }, 'persisted')).toEqual([]);
+  });
+
+  it('accepts a line with no descriptor at all', () => {
+    expect(paths({ recurrence: 'one_time' }, 'create')).toEqual([]);
+    expect(paths({ recurrence: 'one_time' }, 'persisted')).toEqual([]);
+  });
+
+  it('requires contractLineType when any descriptor column is present', () => {
+    expect(paths({ ...rec, deviceRoles: ['server'] }, 'create')).toContain('contractLineType');
+    expect(paths({ ...rec, siteName: 'Dallas' }, 'create')).toContain('contractLineType');
+    expect(paths({ ...rec, includedQuantity: 25, overageMode: 'flag' }, 'create')).toContain('contractLineType');
+  });
+
+  it('rejects a type outside the device-set four', () => {
+    for (const t of ['flat', 'manual'] as const) {
+      expect(paths({ ...rec, contractLineType: t as never }, 'create')).toContain('contractLineType');
+    }
+  });
+
+  // A one-time charge has no "each period" for a live count to mean anything;
+  // a bundle child's quantity belongs to its parent.
+  it('rejects a descriptor on a one_time line and on a bundle component', () => {
+    expect(paths({ recurrence: 'one_time', contractLineType: 'per_device' }, 'create')).toContain('recurrence');
+    expect(paths({ recurrence: 'one_time', contractLineType: 'per_device' }, 'persisted')).toContain('recurrence');
+    expect(paths({ ...rec, contractLineType: 'per_device', parentLineId: 'abc' }, 'create')).toContain('parentLineId');
+  });
+
+  // The mode asymmetry, inherited from W03 for the same reason: the orphan state
+  // is legal on a stored row and illegal on a new one.
+  it('requires deviceGroupId in create and allows the orphan in persisted', () => {
+    expect(paths({ ...rec, contractLineType: 'per_device_group' }, 'create')).toContain('deviceGroupId');
+    expect(paths({ ...rec, contractLineType: 'per_device_group', deviceGroupName: 'VIP' }, 'persisted')).toEqual([]);
+    expect(paths({ ...rec, contractLineType: 'per_device_group', deviceGroupId: GROUP }, 'persisted')).toContain('deviceGroupName');
+  });
+
+  it('restricts the site columns to per_device / per_device_role and pairs id with stamp', () => {
+    expect(paths({ ...rec, contractLineType: 'per_seat', siteId: SITE, siteName: 'Dallas' }, 'create')).toContain('siteId');
+    expect(paths({ ...rec, contractLineType: 'per_device', siteId: SITE }, 'create')).toEqual([]);
+    expect(paths({ ...rec, contractLineType: 'per_device', siteId: SITE, siteName: 'Dallas' }, 'create')).toEqual([]);
+    // deleted-site state: stamp with no id, legal on a stored row
+    expect(paths({ ...rec, contractLineType: 'per_device', siteName: 'Dallas' }, 'persisted')).toEqual([]);
+  });
+
+  it('two-way, non-empty, duplicate-free deviceRoles (the DB only checks containment)', () => {
+    expect(paths({ ...rec, contractLineType: 'per_device_role' }, 'create')).toContain('deviceRoles');
+    expect(paths({ ...rec, contractLineType: 'per_device', deviceRoles: ['server'] }, 'create')).toContain('deviceRoles');
+    expect(paths({ ...rec, contractLineType: 'per_device_role', deviceRoles: [] }, 'create')).toContain('deviceRoles');
+    expect(paths({ ...rec, contractLineType: 'per_device_role', deviceRoles: ['server', 'server'] }, 'create')).toContain('deviceRoles');
+  });
+
+  // THE DELEGATION PROOF. A fixture that fails contractLineInvariantIssues must
+  // fail here with the SAME message, so a future contract-side rule is inherited
+  // automatically rather than silently skipped on the quote side.
+  it('inherits every W04 allowance rule verbatim, by message', () => {
+    const cases: Array<[Partial<Parameters<typeof quoteLineDeviceSetIssues>[0]>, Record<string, unknown>]> = [
+      [{ includedQuantity: 25 }, { includedQuantity: '25.00' }],
+      [{ overageMode: 'flag' }, { overageMode: 'flag' }],
+      [{ includedQuantity: 0, overageMode: 'flag' }, { includedQuantity: '0.00', overageMode: 'flag' }],
+      [{ includedQuantity: 25.5, overageMode: 'flag' }, { includedQuantity: '25.50', overageMode: 'flag' }],
+      [{ includedQuantity: 25, overageMode: 'bill' }, { includedQuantity: '25.00', overageMode: 'bill' }],
+      [{ includedQuantity: 25, overageMode: 'flag', overageUnitPrice: 12 }, { includedQuantity: '25.00', overageMode: 'flag', overageUnitPrice: '12.00' }],
+    ];
+    for (const [quoteFields, contractFields] of cases) {
+      const mine = quoteLineDeviceSetIssues({ ...rec, contractLineType: 'per_device', ...quoteFields } as never, { mode: 'create' });
+      const theirs = contractLineInvariantIssues({ lineType: 'per_device', ...contractFields } as never, { mode: 'create' });
+      expect(theirs.length).toBeGreaterThan(0);
+      expect(mine.map((i) => i.message)).toEqual(expect.arrayContaining(theirs.map((i) => i.message)));
+    }
+  });
+
+  // The divergence tripwire. These are equal TODAY; a future wave that widens
+  // one without the other must fail here rather than silently accept a quote
+  // line acceptance cannot map.
+  it('QUOTE_DEVICE_SET_TYPES equals ALLOWANCE_LINE_TYPES', () => {
+    expect([...QUOTE_DEVICE_SET_TYPES]).toEqual([...ALLOWANCE_LINE_TYPES]);
+  });
+});
+
+describe('quoteLineInputSchema — device set and the server-derived quantity (#3205 W05)', () => {
+  const GROUP = '33333333-3333-4333-8333-333333333333';
+  const base = { sourceType: 'manual' as const, name: 'Servers', unitPrice: 40, taxable: true, recurrence: 'monthly' as const };
+  const parse = (v: unknown) => quoteLineInputSchema.safeParse(v);
+
+  // Decision 5, the whole reason the rule is stateful rather than a row invariant.
+  it('requires quantity WITHOUT a descriptor and rejects it WITH one', () => {
+    expect(parse({ ...base, quantity: 3 }).success).toBe(true);
+    expect(parse({ ...base }).success).toBe(false);
+    expect(parse({ ...base, contractLineType: 'per_device' }).success).toBe(true);
+    const withBoth = parse({ ...base, contractLineType: 'per_device', quantity: 3 });
+    expect(withBoth.success).toBe(false);
+    expect(withBoth.error!.issues.map((i) => i.path.join('.'))).toContain('quantity');
+  });
+
+  it('accepts each type with its fields and an allowance', () => {
+    expect(parse({ ...base, contractLineType: 'per_device_role', deviceRoles: ['server'] }).success).toBe(true);
+    expect(parse({ ...base, contractLineType: 'per_device_group', deviceGroupId: GROUP }).success).toBe(true);
+    expect(parse({ ...base, contractLineType: 'per_seat', includedQuantity: 25, overageMode: 'bill', overageUnitPrice: 12 }).success).toBe(true);
+  });
+
+  it('rejects a one_time descriptor, an unknown role, and a bad group id', () => {
+    expect(parse({ ...base, recurrence: 'one_time', contractLineType: 'per_device' }).success).toBe(false);
+    expect(parse({ ...base, contractLineType: 'per_device_role', deviceRoles: ['unknown'] }).success).toBe(false);
+    expect(parse({ ...base, contractLineType: 'per_device_group', deviceGroupId: 'nope' }).success).toBe(false);
+  });
+
+  // The server stamps the names; a client that sends one is confused about who
+  // owns the value, and silently ignoring it would let a forged document name
+  // a group the line does not reference.
+  it('does not accept deviceGroupName or siteName as input', () => {
+    const r = parse({ ...base, contractLineType: 'per_device_group', deviceGroupId: GROUP, deviceGroupName: 'Forged' });
+    expect(r.success && (r.data as Record<string, unknown>).deviceGroupName).toBeUndefined();
+  });
+});
+
+describe('updateQuoteLineSchema is .strict() (#3205 W05)', () => {
+  const parse = (v: unknown) => updateQuoteLineSchema.safeParse(v);
+
+  // Decision 20's anchor. A NON-strict schema ACCEPTS this and silently drops
+  // it: 200 OK, nothing changed, and the operator believes the line is now
+  // per_seat. contractLineType is not patchable at all — remove and re-add.
+  it('rejects contractLineType with the exact unrecognized-key message', () => {
+    const r = parse({ contractLineType: 'per_seat' });
+    expect(r.success).toBe(false);
+    expect(r.error!.issues.map((i) => i.message)).toContain('Unrecognized key: "contractLineType"');
+  });
+
+  it('rejects a mis-keyed field', () => {
+    expect(parse({ deviceGroupID: '33333333-3333-4333-8333-333333333333' }).success).toBe(false);
+  });
+
+  // W03's nullability rule, applied unchanged: clearing deviceRoles or
+  // deviceGroupId leaves a row the CHECK rejects; clearing the others does not.
+  it('accepts null for siteId and the three allowance fields, not for roles or group', () => {
+    expect(parse({ siteId: null }).success).toBe(true);
+    expect(parse({ includedQuantity: null, overageMode: null, overageUnitPrice: null }).success).toBe(true);
+    expect(parse({ deviceRoles: null }).success).toBe(false);
+    expect(parse({ deviceGroupId: null }).success).toBe(false);
+    expect(parse({ deviceRoles: ['server'] }).success).toBe(true);
+  });
+
+  it('preserves key ABSENCE so an omitted field is unchanged', () => {
+    const out = parse({ siteId: null });
+    expect(Object.prototype.hasOwnProperty.call(out.data!, 'includedQuantity')).toBe(false);
+    expect(quoteLinePatchHasKey(out.data!, 'siteId')).toBe(true);
+  });
+
+  // THE STANDING GUARD. Every key of the web editor's LineUpdate type must still
+  // parse, or the editor 400s on a field it has always sent. Adding a field to
+  // LineUpdate without declaring it here now fails HERE instead of in production.
+  it.each([
+    ['name', { name: 'x' }], ['description', { description: 'x' }], ['quantity', { quantity: 2 }],
+    ['unitPrice', { unitPrice: 10 }], ['taxable', { taxable: true }], ['recurrence', { recurrence: 'monthly' }],
+    ['unitCost', { unitCost: 5 }], ['sku', { sku: 'S' }], ['partNumber', { partNumber: 'P' }],
+    ['imageId', { imageId: '11111111-1111-4111-8111-111111111111' }], ['depositEligible', { depositEligible: true }],
+  ])('still accepts LineUpdate key %s', (_k, body) => {
+    expect(parse(body).success).toBe(true);
+  });
+});
+
+describe('mergeQuoteLinePatch (#3205 W05)', () => {
+  const current = {
+    contractLineType: 'per_device_group', recurrence: 'monthly', parentLineId: null,
+    deviceRoles: null, deviceGroupId: '33333333-3333-4333-8333-333333333333', deviceGroupName: 'VIP',
+    siteId: null, siteName: null, includedQuantity: 25, overageMode: 'bill', overageUnitPrice: 12,
+  } as never;
+
+  it('leaves an omitted key unchanged', () => {
+    expect(mergeQuoteLinePatch(current, {} as never)).toMatchObject({ includedQuantity: 25, overageMode: 'bill', deviceGroupName: 'VIP' });
+  });
+
+  it('clears a nullable key and keeps the merged row valid', () => {
+    const merged = mergeQuoteLinePatch(current, { includedQuantity: null, overageMode: null, overageUnitPrice: null } as never);
+    expect(merged).toMatchObject({ includedQuantity: null, overageMode: null, overageUnitPrice: null });
+    expect(quoteLineDeviceSetIssues(merged, { mode: 'persisted' })).toEqual([]);
+  });
+
+  it('clearing only includedQuantity leaves a row the persisted rules reject', () => {
+    const merged = mergeQuoteLinePatch(current, { includedQuantity: null } as never);
+    expect(quoteLineDeviceSetIssues(merged, { mode: 'persisted' }).map((i) => i.path)).toContain('overageMode');
+  });
+
+  it('patching recurrence to one_time on a descriptor line is caught by the merged row, not the DB', () => {
+    const merged = mergeQuoteLinePatch(current, { recurrence: 'one_time' } as never);
+    expect(quoteLineDeviceSetIssues(merged, { mode: 'persisted' }).map((i) => i.path)).toContain('recurrence');
   });
 });

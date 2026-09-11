@@ -8,19 +8,23 @@
  */
 
 /**
- * The replay-result toast is a child of the bar, not a portal, so the bar must
- * outlive the queue to report on it. A drain that empties the queue by
- * DROPPING writes returns `remaining: 0`; with no timer running, a rule of
- * "running || pending" unmounts the bar in the very render that would have
- * said "N offline time entries could not be saved" — discarded billable work
- * vanishing with no signal anywhere in the UI.
+ * The bar used to also stay mounted while its own toast was on screen: the
+ * replay-result toast was a CHILD of the bar, so a drain that emptied the queue
+ * by DROPPING writes (`remaining: 0`, no timer running) unmounted the bar in
+ * the very render that would have said "N offline time entries could not be
+ * saved" — discarded billable work vanishing with no signal anywhere in the UI.
+ *
+ * Since #5368 that toast goes to the app-wide host instead, which outlives the
+ * bar by construction, so the rule is back to the two conditions that describe
+ * the BAR: a running timer, or a queue with something in it. The
+ * needs-attention count is folded into `pendingCount` by the caller, which is
+ * what keeps the dropped-writes case reported after the toast has gone.
  */
 export function isTimerBarVisible(input: {
   hasRunningTimer: boolean;
   pendingCount: number;
-  hasToast: boolean;
 }): boolean {
-  return input.hasRunningTimer || input.pendingCount > 0 || input.hasToast;
+  return input.hasRunningTimer || input.pendingCount > 0;
 }
 
 /**
@@ -47,6 +51,27 @@ export function shouldReplayNow(input: {
 }
 
 /**
+ * Grace period before the bar reports a queued write as "waiting to sync".
+ *
+ * The ordinary case — Stop enqueues one write, replay drains it — completes
+ * in well under a second. Reporting the queue depth the instant it goes
+ * positive made "Time entries waiting to sync" flash after every stop, which
+ * reads like an error for work that is about to sync fine.
+ */
+export const WAITING_TO_SYNC_GRACE_MS = 3000;
+
+/**
+ * Whether the bar should show "Time entries waiting to sync" for a queue that
+ * has had `elapsedMs` to drain. False for an empty queue regardless of how
+ * long it has been empty, and false for a non-empty queue still inside the
+ * grace period — only a queue that is BOTH non-empty AND past the grace
+ * period has earned the label.
+ */
+export function shouldShowWaitingToSync(input: { pendingCount: number; elapsedMs: number }): boolean {
+  return input.pendingCount > 0 && input.elapsedMs >= WAITING_TO_SYNC_GRACE_MS;
+}
+
+/**
  * Attempts on the head write beyond which the queue is wedged, not merely
  * behind a bad connection. Low deliberately: the retained statuses (401, 403,
  * 408, 429) are exactly the ones that do not clear themselves, and three failed
@@ -67,4 +92,21 @@ export const WEDGED_ATTEMPTS = 3;
  */
 export function isQueueWedged(input: { remaining: number; headAttempts: number }): boolean {
   return input.remaining > 0 && input.headAttempts >= WEDGED_ATTEMPTS;
+}
+
+/**
+ * Elapsed seconds past which a running timer is flagged as runaway.
+ *
+ * Issue #5115: a timesheet showed a 12h31m entry from a timer nobody
+ * stopped. 4h is deliberately conservative — long enough that an ordinary
+ * uninterrupted work session never trips it, short enough to catch a
+ * forgotten timer well before it becomes a full-day billing error. This
+ * warns; it never auto-stops, since only the technician knows when the
+ * work actually ended.
+ */
+export const LONG_RUNNING_TIMER_WARNING_SECONDS = 4 * 60 * 60;
+
+/** Whether a running timer has been going long enough to warn about. */
+export function isRunningTimerLong(elapsedSeconds: number): boolean {
+  return elapsedSeconds >= LONG_RUNNING_TIMER_WARNING_SECONDS;
 }

@@ -57,6 +57,30 @@ describe('automation action-result state machine', () => {
     },
   );
 
+  /**
+   * #5128 W4. `message` answers "why is this not finished yet"; once the action
+   * IS finished, `output`/`error` own the story. `aggregateActionDetails` falls
+   * back to `message` for both (`output ?? message`, `failed.error ??
+   * failed.message`), so a message left over from dispatch leaks into the
+   * device row — a run_script that queued while its device was offline, then
+   * reconnected and succeeded printing nothing, would report its OUTPUT as
+   * "Queued — device offline", and one that later failed with no stderr would
+   * show that same string as the red failure reason for a run that
+   * demonstrably executed.
+   */
+  it('clears the dispatch-time message on every terminal transition', () => {
+    const queued = { ...pending, status: 'queued' as const, message: 'Queued — device offline' };
+    for (const terminalStatus of ['succeeded', 'failed', 'timed_out', 'cancelled'] as const) {
+      expect(__testOnly.decideTerminalTransition(queued, {
+        source: 'command',
+        terminalStatus,
+        output: null,
+        error: null,
+        completedAt: new Date('2026-08-24T12:00:00Z'),
+      })).toMatchObject({ status: terminalStatus, message: null });
+    }
+  });
+
   it('keeps terminal rows immutable except for real evidence replacing a provisional reaper timeout', () => {
     const provisional = { ...pending, status: 'timed_out' as const, terminalSource: 'reaper' as const };
     const real = {
@@ -107,21 +131,25 @@ describe('automation action-result state machine', () => {
       status: 'running',
       devicesSucceeded: 1,
       devicesFailed: 1,
+      devicesCancelled: 0,
     });
     expect(__testOnly.aggregateDeviceStatuses(['skipped', 'skipped'])).toEqual({
       status: 'completed',
       devicesSucceeded: 0,
       devicesFailed: 0,
+      devicesCancelled: 0,
     });
     expect(__testOnly.aggregateDeviceStatuses(['success', 'failed', 'skipped'])).toEqual({
       status: 'partial',
       devicesSucceeded: 1,
       devicesFailed: 1,
+      devicesCancelled: 0,
     });
     expect(__testOnly.aggregateDeviceStatuses(['failed', 'skipped'])).toEqual({
       status: 'failed',
       devicesSucceeded: 0,
       devicesFailed: 1,
+      devicesCancelled: 0,
     });
   });
 

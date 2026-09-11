@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 import JSZip from 'jszip';
 import { getTestDb } from './setup';
+import { replayMigration } from './replayMigration';
+import { db as appDb, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { pgErrorCode } from '../../utils/pgErrors';
 import { buildOrgExportZip } from '../../services/tenantExport';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
 
@@ -33,7 +36,52 @@ interface SeededOrgs {
   partnerId: string;
   orgA: string;
   orgB: string;
+  groupId: string;
+  groupName: string;
+  quoteId: string;
+  siteId: string;
+  siteName: string;
   prohibitedSentinels: string[];
+  /** #3257 W05 — the custom-field value that must REACH the archive, readable. */
+  customFieldValueSentinel: string;
+  ticketA: string;
+  ticketB: string;
+}
+
+// Seed the real backup dependency chain, including the command FK that used
+// to abort org erasure before restore_jobs reached its cascade step (#4871).
+async function seedRestore(orgId: string) {
+  const db = getTestDb();
+  const [site] = await db.execute(sql`SELECT id FROM sites WHERE org_id = ${orgId} LIMIT 1`);
+  let [device] = await db.execute(sql`SELECT id FROM devices WHERE org_id = ${orgId} LIMIT 1`);
+  if (!device) {
+    [device] = await db.execute(sql`
+      INSERT INTO devices (org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version)
+      VALUES (${orgId}, ${site!.id as string}, ${crypto.randomUUID()}, 'restore-fixture', 'windows', '11', 'amd64', '1.0.0')
+      RETURNING id
+    `);
+  }
+  const deviceId = device!.id as string;
+  const [config] = await db.execute(sql`
+    INSERT INTO backup_configs (org_id, name, type, provider, provider_config)
+    VALUES (${orgId}, 'Restore fixture', 'file', 'local', '{}') RETURNING id
+  `);
+  const [job] = await db.execute(sql`
+    INSERT INTO backup_jobs (org_id, config_id, device_id)
+    VALUES (${orgId}, ${config!.id as string}, ${deviceId}) RETURNING id
+  `);
+  const [snapshot] = await db.execute(sql`
+    INSERT INTO backup_snapshots (org_id, job_id, device_id, snapshot_id)
+    VALUES (${orgId}, ${job!.id as string}, ${deviceId}, ${crypto.randomUUID()}) RETURNING id
+  `);
+  const [command] = await db.execute(sql`
+    INSERT INTO device_commands (device_id, type) VALUES (${deviceId}, 'restore_backup') RETURNING id
+  `);
+  const [restore] = await db.execute(sql`
+    INSERT INTO restore_jobs (org_id, snapshot_id, device_id, restore_type, command_id)
+    VALUES (${orgId}, ${snapshot!.id as string}, ${deviceId}, 'full', ${command!.id as string}) RETURNING id
+  `);
+  return { restoreId: restore!.id as string, commandId: command!.id as string };
 }
 
 async function seedTwoOrgs(): Promise<SeededOrgs> {
@@ -89,11 +137,42 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
     )
   `);
 
-  // Org A: 2 sites + 2 device_groups. Org B: 1 site + 1 device_group.
+  // #4872: both live and terminal intents must tombstone on ticket deletion
+  // without changing their tenant. Org B is the untouched control.
+  const ticketA = crypto.randomUUID();
+  const ticketB = crypto.randomUUID();
+  const userB = crypto.randomUUID();
+  await db.execute(sql`
+    INSERT INTO users (id, partner_id, org_id, email, name, password_hash)
+    VALUES (${userB}, ${partnerId}, ${orgB}, ${'control-' + suffix + '@breeze.test'}, 'Control User', 'test-hash')
+  `);
+  for (const [orgId, ticketId, actorId] of [[orgA, ticketA, userId], [orgB, ticketB, userB]]) {
+    await db.execute(sql`
+      INSERT INTO tickets (id, org_id, partner_id, ticket_number, subject, source)
+      VALUES (${ticketId}, ${orgId}, ${partnerId}, ${'RT-' + ticketId}, 'Scoped ticket', 'manual')
+    `);
+    for (const status of ['pending_approval', 'completed']) {
+      await db.execute(sql`
+        INSERT INTO action_intents (
+          org_id, partner_id, requested_by_user_id, source, origin_principal_kind,
+          action_name, argument_digest, target_summary, impact_summary, risk_tier,
+          idempotency_key, correlation_id, expires_at, status, scope_kind, scope_ticket_id
+        ) VALUES (
+          ${orgId}, ${partnerId}, ${actorId}, 'chat', 'user_session',
+          'ticket.comment.add', ${'a'.repeat(64)}, 'Scoped ticket', 'Adds a comment', 1,
+          ${crypto.randomUUID()}, ${crypto.randomUUID()}, now() + interval '1 hour',
+          ${status}, 'ticket', ${ticketId}
+        )
+      `);
+    }
+  }
+
+  // Base rows: Org A has 2 sites + 2 device_groups; Org B has 1 of each.
   const siteA1 = crypto.randomUUID();
+  const siteA1Name = 'A-Site-1';
   await db.execute(sql`
     INSERT INTO sites (id, org_id, name) VALUES
-      (${siteA1}, ${orgA}, 'A-Site-1'),
+      (${siteA1}, ${orgA}, ${siteA1Name}),
       (${crypto.randomUUID()}, ${orgA}, 'A-Site-2'),
       (${crypto.randomUUID()}, ${orgB}, 'B-Site-1')
   `);
@@ -109,6 +188,8 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
   // and a sanitized revoke error — proves the export excludes them and
   // cascadeDeleteOrg removes the row.
   const deviceId = crypto.randomUUID();
+  const customFieldDefinitionId = crypto.randomUUID();
+  const customFieldValueSentinel = `ASSET-TAG-${suffix}`;
   await db.execute(sql`
     INSERT INTO devices (id, org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version)
     VALUES (${deviceId}, ${orgA}, ${siteA1}, ${'roundtrip-agent-' + suffix}, 'roundtrip-host', 'windows', '11', 'amd64', '1.0.0')
@@ -125,13 +206,195 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
     )
   `);
 
-  return { partnerId, orgA, orgB, prohibitedSentinels };
+  // device_custom_field_values (#3257 W05): one value on that device. Before
+  // W05, custom-field values lived in `devices.custom_fields`, a jsonb column —
+  // and every json/jsonb column is `excludedOpen` in the tenant-export policy,
+  // so every custom-field value a tenant ever stored was SILENTLY DROPPED from
+  // their GDPR export. The registry completeness check catches a deleted policy
+  // entry, but only THIS assertion proves the data itself reaches the archive,
+  // readable — which is why `field_key` is denormalized onto the row at all
+  // (readOrgRows is a bare column projection with no joins, so a
+  // definition_id-only row would export as an opaque uuid).
+  await db.execute(sql`
+    INSERT INTO custom_field_definitions (id, org_id, name, field_key, type)
+    VALUES (${customFieldDefinitionId}, ${orgA}, 'Asset Tag', 'asset_tag', 'text')
+  `);
+  await db.execute(sql`
+    INSERT INTO device_custom_field_values (device_id, org_id, definition_id, field_key, value_text, source)
+    VALUES (${deviceId}, ${orgA}, ${customFieldDefinitionId}, 'asset_tag', ${customFieldValueSentinel}, 'manual')
+  `);
+
+  // #4622 W03 — a manual asset AND a MANUAL-SUBJECT device_warranty row
+  // (device_id NULL, manual_asset_id set). W01 seeded neither, which left the
+  // roundtrip blind in two ways: `manual_asset_id` is a NEW COLUMN on a
+  // long-registered org-cascade table (the export-policy check that fires on a
+  // column, not just a table), and a warranty row whose subject is a manual
+  // asset is the only thing that proves the composite
+  // (manual_asset_id, org_id) -> manual_assets(id, org_id) FK is deleted in the
+  // right order during erasure rather than raising 23503.
+  const manualAssetId = crypto.randomUUID();
+  const manualAssetSerial = `MANUAL-ASSET-SN-${suffix}`;
+  await db.execute(sql`
+    INSERT INTO manual_assets (id, org_id, site_id, name, manufacturer, model, serial_number, asset_tag)
+    VALUES (
+      ${manualAssetId}, ${orgA}, ${siteA1}, ${'Roundtrip spare laptop ' + suffix},
+      'Dell', 'Latitude 7420', ${manualAssetSerial}, ${'ASSET-TAG-MANUAL-' + suffix}
+    )
+  `);
+  await db.execute(sql`
+    INSERT INTO device_warranty (org_id, manual_asset_id, manufacturer, serial_number, status)
+    VALUES (${orgA}, ${manualAssetId}, 'dell', ${manualAssetSerial}, 'unknown')
+  `);
+
+  await db.execute(sql`
+    INSERT INTO portal_branding (
+      org_id,
+      enable_dashboard,
+      enable_security,
+      enable_backups,
+      enable_reports,
+      enable_support_usage
+    ) VALUES
+      (${orgA}, true, true, false, true, false),
+      (${orgB}, false, false, true, false, true)
+  `);
+
+  // #3205: a per_device_role allowance line, so contract_lines.json is
+  // exercised with the text[] and all three allowance columns populated.
+  const contractId = crypto.randomUUID();
+  await db.execute(sql`
+    INSERT INTO contracts (id, partner_id, org_id, name, interval_months, start_date, currency_code)
+    VALUES (${contractId}, ${partnerId}, ${orgA}, ${'Roundtrip contract ' + suffix}, 1, '2026-07-01', 'USD')
+  `);
+  await db.execute(sql`
+    INSERT INTO contract_lines (
+      contract_id, org_id, line_type, description, unit_price, taxable, device_roles,
+      included_quantity, overage_mode, overage_unit_price
+    ) VALUES (
+      ${contractId}, ${orgA}, 'per_device_role', 'Network gear', 25.00, false,
+      ARRAY['switch','router','firewall']::text[], 25.00, 'bill', 12.00
+    )
+  `);
+
+  // #3205 W02: a per_device_group line, so contract_lines.json carries
+  // device_group_id + device_group_name and erasure has to remove the line,
+  // the group and the contract in FK order.
+  const groupId = crypto.randomUUID();
+  await db.execute(sql`
+    INSERT INTO device_groups (id, org_id, name, type) VALUES (${groupId}, ${orgA}, ${'Roundtrip group ' + suffix}, 'static')
+  `);
+  await db.execute(sql`
+    INSERT INTO contract_lines (contract_id, org_id, line_type, description, unit_price, taxable, device_group_id, device_group_name)
+    VALUES (${contractId}, ${orgA}, 'per_device_group', 'VIP', 40.00, false, ${groupId}, ${'Roundtrip group ' + suffix})
+  `);
+
+  // #3205 W05: quote_lines exports the complete device-set descriptor. Group
+  // and site/role selectors are mutually exclusive under the CHECK, so the
+  // group line carries the bill allowance and a companion line exercises the
+  // site + device_roles stamps.
+  const quoteId = crypto.randomUUID();
+  const quoteBlockId = crypto.randomUUID();
+  await db.execute(sql`
+    INSERT INTO quotes (id, partner_id, org_id, currency_code)
+    VALUES (${quoteId}, ${partnerId}, ${orgA}, 'USD')
+  `);
+  await db.execute(sql`
+    INSERT INTO quote_blocks (id, quote_id, org_id, block_type, content)
+    VALUES (${quoteBlockId}, ${quoteId}, ${orgA}, 'line_items', '{}'::jsonb)
+  `);
+  await db.execute(sql`
+    INSERT INTO quote_lines (
+      quote_id, block_id, org_id, source_type, name, quantity, unit_price,
+      taxable, recurrence, contract_line_type, device_group_id,
+      device_group_name, included_quantity, overage_mode, overage_unit_price
+    ) VALUES (
+      ${quoteId}, ${quoteBlockId}, ${orgA}, 'manual', 'Quoted VIP endpoints',
+      3.00, 40.00, false, 'monthly', 'per_device_group', ${groupId},
+      ${'Roundtrip group ' + suffix}, 25.00, 'bill', 12.00
+    )
+  `);
+  await db.execute(sql`
+    INSERT INTO quote_lines (
+      quote_id, block_id, org_id, source_type, name, quantity, unit_price,
+      taxable, recurrence, contract_line_type, device_roles, site_id, site_name
+    ) VALUES (
+      ${quoteId}, ${quoteBlockId}, ${orgA}, 'manual', 'Quoted site network gear',
+      3.00, 25.00, false, 'monthly', 'per_device_role',
+      ARRAY['switch','router','firewall']::text[], ${siteA1}, ${siteA1Name}
+    )
+  `);
+  // #3205 W07: one billed-device evidence row plus its claimed-period outcome.
+  // The export must retain the scalar evidence while deliberately omitting the
+  // outcome's two open jsonb containers; erasure must remove both rows.
+  const invoiceId = crypto.randomUUID();
+  const invoiceLineId = crypto.randomUUID();
+  const billingPeriodId = crypto.randomUUID();
+  await db.execute(sql`
+    INSERT INTO invoices (id, partner_id, org_id, status, currency_code, device_appendix, evidence_version)
+    VALUES (${invoiceId}, ${partnerId}, ${orgA}, 'draft', 'USD', true, 1)
+  `);
+  await db.execute(sql`
+    INSERT INTO invoice_lines (
+      id, invoice_id, org_id, source_type, source_contract_id, description,
+      quantity, unit_price, line_total
+    ) VALUES (
+      ${invoiceLineId}, ${invoiceId}, ${orgA}, 'contract', ${contractId},
+      'Endpoints', 1.00, 10.00, 10.00
+    )
+  `);
+  await db.execute(sql`
+    INSERT INTO invoice_line_devices (
+      invoice_line_id, invoice_id, org_id, device_id, hostname, device_role,
+      site_id, counted_as
+    ) VALUES (
+      ${invoiceLineId}, ${invoiceId}, ${orgA}, ${deviceId}, 'roundtrip-01',
+      'server', ${siteA1}, 'included'
+    )
+  `);
+  await db.execute(sql`
+    INSERT INTO contract_billing_periods (
+      id, contract_id, org_id, period_start, period_end, invoice_id
+    ) VALUES (
+      ${billingPeriodId}, ${contractId}, ${orgA}, '2026-07-01', '2026-07-31', ${invoiceId}
+    )
+  `);
+  await db.execute(sql`
+    INSERT INTO contract_billing_period_outcomes (
+      contract_billing_period_id, org_id, contract_id, invoice_id,
+      snapshot_device_total, uncovered_total, flagged_total, billed_overage_total,
+      uncovered_by_role, overages
+    ) VALUES (
+      ${billingPeriodId}, ${orgA}, ${contractId}, ${invoiceId},
+      3, 2, 0, 0, '{"server":2}'::jsonb, '[]'::jsonb
+    )
+  `);
+
+  return {
+    partnerId,
+    orgA,
+    orgB,
+    groupId,
+    groupName: 'Roundtrip group ' + suffix,
+    quoteId,
+    siteId: siteA1,
+    siteName: siteA1Name,
+    prohibitedSentinels,
+    customFieldValueSentinel,
+    ticketA,
+    ticketB,
+  };
 }
 
 function rowCount(db: ReturnType<typeof getTestDb>, table: string, orgId: string) {
   return db
     .execute(sql`SELECT count(*)::int AS n FROM ${sql.raw(`"${table}"`)} WHERE org_id = ${orgId}`)
     .then((r) => (r as unknown as Array<{ n: number }>)[0]?.n ?? 0);
+}
+
+async function archiveTable(archive: JSZip, table: string): Promise<Array<Record<string, unknown>>> {
+  const entry = archive.file(`${table}.json`);
+  expect(entry, `${table}.json must be present in the tenant archive`).toBeTruthy();
+  return JSON.parse(await entry!.async('string')) as Array<Record<string, unknown>>;
 }
 
 describe('tenant export + erasure round-trip (live DB)', () => {
@@ -141,7 +404,35 @@ describe('tenant export + erasure round-trip (live DB)', () => {
   });
 
   it('export manifest reflects only the target org rows', async () => {
-    const { orgA, prohibitedSentinels } = await seedTwoOrgs();
+    const {
+      orgA, orgB, groupId, groupName, quoteId, siteId, siteName, prohibitedSentinels,
+      customFieldValueSentinel,
+    } = await seedTwoOrgs();
+
+    // Integer epochs are portable lifecycle metadata. Neither they nor a
+    // parent identifier replace the excluded credentials required to redeem.
+    const enrollmentId = crypto.randomUUID();
+    const bootstrapId = crypto.randomUUID();
+    for (const [orgId, keyId, tokenId, epoch] of [
+      [orgA, enrollmentId, bootstrapId, 7],
+      [orgB, crypto.randomUUID(), crypto.randomUUID(), 11],
+    ] as const) {
+      const key = `export-key-${keyId}`;
+      const keyHash = keyId.replaceAll('-', '').repeat(2);
+      const shortCode = `EX${crypto.randomUUID().slice(0, 8)}`;
+      const token = `export-token-${tokenId}`;
+      prohibitedSentinels.push(key, keyHash, shortCode, token);
+      await getTestDb().execute(sql`
+        INSERT INTO enrollment_keys
+          (id, org_id, name, key, key_secret_hash, short_code, credential_generation)
+        VALUES (${keyId}, ${orgId}, 'Export epoch fixture', ${key}, ${keyHash}, ${shortCode}, ${epoch})
+      `);
+      await getTestDb().execute(sql`
+        INSERT INTO installer_bootstrap_tokens
+          (id, org_id, token, parent_enrollment_key_id, parent_credential_generation, expires_at)
+        VALUES (${tokenId}, ${orgId}, ${token}, ${keyId}, ${epoch}, now() + interval '1 hour')
+      `);
+    }
 
     const { manifest, zipBuffer } = await buildOrgExportZip(orgA, PERFORMED_BY, PERFORMED_EMAIL);
 
@@ -150,22 +441,149 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(zipBuffer.subarray(0, 2).toString('latin1')).toBe('PK');
 
     const byName = new Map(manifest.files.map((f) => [f.name, f]));
-    // Org A has exactly 2 sites + 2 device_groups; Org B's rows must not leak.
+    // Org A has exactly 2 sites + 3 device_groups; Org B's rows must not leak.
     expect(byName.get('sites.json')?.rowCount).toBe(2);
-    expect(byName.get('device_groups.json')?.rowCount).toBe(2);
+    expect(byName.get('contracts.json')?.rowCount).toBe(1);
+    expect(byName.get('contract_lines.json')?.rowCount).toBe(2);
+    expect(byName.get('device_groups.json')?.rowCount).toBe(3);
+    expect(byName.get('quotes.json')?.rowCount).toBe(1);
+    expect(byName.get('quote_lines.json')?.rowCount).toBe(2);
     // organizations.json is the org's own id-keyed row.
     expect(byName.get('organizations.json')?.rowCount).toBe(1);
     // device_mtls_certificates.json carries the one certificate history row.
     expect(byName.get('device_mtls_certificates.json')?.rowCount).toBe(1);
+    // device_custom_field_values.json carries the one custom-field value
+    // (#3257 W05). Before W05 these lived in the `devices.custom_fields` jsonb,
+    // which is `excludedOpen` like every json column — so a tenant's whole
+    // custom-field dataset was silently absent from their GDPR export.
+    expect(byName.get('device_custom_field_values.json')?.rowCount).toBe(1);
+    // portal_branding.json carries the one portal-visibility-flags row.
+    expect(byName.get('portal_branding.json')?.rowCount).toBe(1);
     // Every manifest entry carries a sha256.
     for (const f of manifest.files) {
       expect(f.sha256).toMatch(/^[0-9a-f]{64}$/);
     }
     expect(manifest.orgId).toBe(orgA);
 
-    const zip = await JSZip.loadAsync(zipBuffer);
+    const archive = await JSZip.loadAsync(zipBuffer);
+    expect(byName.get('enrollment_keys.json')?.rowCount).toBe(1);
+    expect(byName.get('installer_bootstrap_tokens.json')?.rowCount).toBe(1);
+    const enrollmentRows = await archiveTable(archive, 'enrollment_keys');
+    expect(enrollmentRows).toEqual([
+      expect.objectContaining({ id: enrollmentId, org_id: orgA, credential_generation: 7 }),
+    ]);
+    const bootstrapRows = await archiveTable(archive, 'installer_bootstrap_tokens');
+    expect(bootstrapRows).toEqual([
+      expect.objectContaining({
+        id: bootstrapId, org_id: orgA,
+        parent_enrollment_key_id: enrollmentId, parent_credential_generation: 7,
+      }),
+    ]);
+    for (const secret of ['key', 'key_secret_hash', 'short_code']) {
+      expect(enrollmentRows[0]).not.toHaveProperty(secret);
+    }
+    expect(bootstrapRows[0]).not.toHaveProperty('token');
+
+    // The value must be READABLE in the archive, not just counted: `field_key`
+    // is denormalized onto the row precisely because `readOrgRows` is a bare
+    // column projection with no joins, so a definition_id-only row would export
+    // as an opaque uuid the data subject cannot interpret. Assert both the human
+    // -readable key and the value itself.
+    const customFieldValueRows = JSON.parse(
+      await archive.file('device_custom_field_values.json')!.async('string'),
+    ) as Array<Record<string, unknown>>;
+    expect(customFieldValueRows).toEqual([
+      expect.objectContaining({
+        org_id: orgA,
+        field_key: 'asset_tag',
+        value_text: customFieldValueSentinel,
+      }),
+    ]);
+
+    const portalBrandingRows = JSON.parse(
+      await archive.file('portal_branding.json')!.async('string'),
+    ) as Array<Record<string, unknown>>;
+    expect(portalBrandingRows).toEqual([
+      expect.objectContaining({
+        org_id: orgA,
+        enable_dashboard: true,
+        enable_security: true,
+        enable_backups: false,
+        enable_reports: true,
+        enable_support_usage: false,
+      }),
+    ]);
+
+    const contractLines = JSON.parse(
+      await archive.file('contract_lines.json')!.async('string'),
+    ) as Array<Record<string, unknown>>;
+    const allowanceLine = contractLines.find((line) => line.description === 'Network gear');
+    expect(allowanceLine).toMatchObject({
+      included_quantity: '25.00',
+      overage_mode: 'bill',
+      overage_unit_price: '12.00',
+    });
+    const groupLine = contractLines.find((line) => line.device_group_id === groupId);
+    expect(groupLine?.device_group_id).toBe(groupId);
+    expect(groupLine?.device_group_name).toBe(groupName);
+
+    const quoteLines = JSON.parse(
+      await archive.file('quote_lines.json')!.async('string'),
+    ) as Array<Record<string, unknown>>;
+    const quotedGroupLine = quoteLines.find((line) => line.name === 'Quoted VIP endpoints');
+    expect(quotedGroupLine).toMatchObject({
+      quote_id: quoteId,
+      contract_line_type: 'per_device_group',
+      device_roles: null,
+      device_group_id: groupId,
+      device_group_name: groupName,
+      site_id: null,
+      site_name: null,
+      included_quantity: '25.00',
+      overage_mode: 'bill',
+      overage_unit_price: '12.00',
+    });
+    const quotedSiteLine = quoteLines.find((line) => line.name === 'Quoted site network gear');
+    expect(quotedSiteLine).toMatchObject({
+      contract_line_type: 'per_device_role',
+      device_roles: ['switch', 'router', 'firewall'],
+      device_group_id: null,
+      device_group_name: null,
+      site_id: siteId,
+      site_name: siteName,
+      included_quantity: null,
+      overage_mode: null,
+      overage_unit_price: null,
+    });
+    // #3205 W07: evidence is ordinary exported customer data...
+    const evidence = await archiveTable(archive, 'invoice_line_devices');
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]).toMatchObject({ hostname: 'roundtrip-01', device_role: 'server', counted_as: 'included' });
+    // ...but the outcome row's jsonb digests are DELIBERATELY absent (decision 3).
+    const outcome = await archiveTable(archive, 'contract_billing_period_outcomes');
+    expect(outcome).toHaveLength(1);
+    expect(outcome[0]).toMatchObject({ uncovered_total: 2, flagged_total: 0, billed_overage_total: 0, snapshot_device_total: 3 });
+    expect(outcome[0]).not.toHaveProperty('uncovered_by_role');
+    expect(outcome[0]).not.toHaveProperty('overages');
+
+    // #4622 W03 — the manual asset itself, and the manual-subject warranty row
+    // that points at it, both reach the archive readably.
+    const manualAssetRows = await archiveTable(archive, 'manual_assets');
+    expect(manualAssetRows).toHaveLength(1);
+    expect(manualAssetRows[0]).toMatchObject({ org_id: orgA, manufacturer: 'Dell' });
+
+    const warrantyRows = await archiveTable(archive, 'device_warranty');
+    const manualWarranty = warrantyRows.find((row) => row.device_id === null);
+    expect(
+      manualWarranty,
+      'the manual-subject warranty row must survive to the export — a missing '
+        + '`manual_asset_id` classification drops it from the tenant archive',
+    ).toBeDefined();
+    expect(manualWarranty).toMatchObject({ org_id: orgA });
+    expect(manualWarranty!.manual_asset_id).not.toBeNull();
+
     const serializedZip = await Promise.all(
-      Object.values(zip.files).map((entry) => entry.async('string')),
+      Object.values(archive.files).map((entry) => entry.async('string')),
     ).then((entries) => entries.join('\n'));
     for (const prohibitedKey of [
       'password_hash',
@@ -193,21 +611,129 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     }
   });
 
+  it('detaches a deleted command without deleting its restore job, including after migration replay', async () => {
+    const db = getTestDb();
+    const { orgA } = await seedTwoOrgs();
+    const { restoreId, commandId } = await seedRestore(orgA);
+    await replayMigration('2026-10-09-000200-restore-job-command-set-null.sql');
+    await replayMigration('2026-10-09-000200-restore-job-command-set-null.sql');
+    await db.execute(sql`DELETE FROM device_commands WHERE id = ${commandId}`);
+    const rows = await db.execute(sql`SELECT command_id FROM restore_jobs WHERE id = ${restoreId}`);
+    expect([...rows]).toEqual([{ command_id: null }]);
+  });
+
+  it('ticket deletion tombstones live and completed intents while preserving org ownership (#4872)', async () => {
+    const { orgA, orgB, ticketA, ticketB } = await seedTwoOrgs();
+    await withSystemDbAccessContext(async () => {
+      const role = await appDb.execute(sql`SELECT current_user AS role`);
+      expect(role[0]?.role).toBe('breeze_app');
+      await appDb.execute(sql`DELETE FROM tickets WHERE id = ${ticketA}`);
+    });
+    const rows = await getTestDb().execute(sql`
+      SELECT org_id, scope_kind, scope_ticket_id, status
+      FROM action_intents WHERE org_id IN (${orgA}, ${orgB}) ORDER BY org_id, status
+    `);
+    expect(rows.filter(row => row.org_id === orgA)).toEqual([
+      { org_id: orgA, scope_kind: 'ticket', scope_ticket_id: null, status: 'completed' },
+      { org_id: orgA, scope_kind: 'ticket', scope_ticket_id: null, status: 'pending_approval' },
+    ]);
+    expect(rows.filter(row => row.org_id === orgB)).toEqual([
+      { org_id: orgB, scope_kind: 'ticket', scope_ticket_id: ticketB, status: 'completed' },
+      { org_id: orgB, scope_kind: 'ticket', scope_ticket_id: ticketB, status: 'pending_approval' },
+    ]);
+  });
+
+  it('the composite FK still rejects cross-org ticket scope even under system context (#4872)', async () => {
+    const { orgA, ticketB } = await seedTwoOrgs();
+    // Clone a valid intent at INSERT: retargeting an existing intent would hit
+    // its immutability trigger before exercising the tenant FK.
+    let failure: unknown;
+    try {
+      await withSystemDbAccessContext(() => appDb.execute(sql`
+        INSERT INTO action_intents (
+          org_id, partner_id, requested_by_user_id, source, origin_principal_kind,
+          action_name, argument_digest, target_summary, impact_summary, risk_tier,
+          idempotency_key, correlation_id, expires_at, scope_kind, scope_ticket_id
+        ) SELECT org_id, partner_id, requested_by_user_id, source, origin_principal_kind,
+          action_name, argument_digest, target_summary, impact_summary, risk_tier,
+          ${crypto.randomUUID()}, ${crypto.randomUUID()}, expires_at, 'ticket', ${ticketB}
+        FROM action_intents WHERE org_id = ${orgA} LIMIT 1
+      `));
+    } catch (error) {
+      failure = error;
+    }
+    expect(pgErrorCode(failure)).toBe('23503');
+  });
+
+  it('org-scoped RLS rejects an intent forged into another org (#4872)', async () => {
+    const { orgA, orgB, ticketB } = await seedTwoOrgs();
+    let failure: unknown;
+    try {
+      await withDbAccessContext({ scope: 'organization', orgId: orgA, accessibleOrgIds: [orgA] },
+        () => appDb.execute(sql`
+          INSERT INTO action_intents (
+            org_id, partner_id, requested_by_user_id, source, origin_principal_kind,
+            action_name, argument_digest, target_summary, impact_summary, risk_tier,
+            idempotency_key, correlation_id, expires_at, scope_kind, scope_ticket_id
+          ) SELECT ${orgB}, partner_id, requested_by_user_id, source, origin_principal_kind,
+            action_name, argument_digest, target_summary, impact_summary, risk_tier,
+            ${crypto.randomUUID()}, ${crypto.randomUUID()}, expires_at, 'ticket', ${ticketB}
+          FROM action_intents WHERE org_id = ${orgA} LIMIT 1
+        `));
+    } catch (error) {
+      failure = error;
+    }
+    expect(pgErrorCode(failure)).toBe('42501');
+  });
+
   it('cascade erases the target org and leaves the other org intact', async () => {
     const db = getTestDb();
     const { orgA, orgB } = await seedTwoOrgs();
+    const restoreA = await seedRestore(orgA);
+    const restoreB = await seedRestore(orgB);
 
     // Sanity: both orgs populated before erasure.
     expect(await rowCount(db, 'sites', orgA)).toBe(2);
     expect(await rowCount(db, 'sites', orgB)).toBe(1);
     expect(await rowCount(db, 'device_mtls_certificates', orgA)).toBe(1);
+    expect(await rowCount(db, 'portal_branding', orgA)).toBe(1);
+    expect(await rowCount(db, 'portal_branding', orgB)).toBe(1);
+    expect(await rowCount(db, 'tickets', orgA)).toBe(1);
+    expect(await rowCount(db, 'action_intents', orgA)).toBe(2);
+    expect(await rowCount(db, 'quotes', orgA)).toBe(1);
+    expect(await rowCount(db, 'quote_lines', orgA)).toBe(2);
+    expect(await rowCount(db, 'invoice_line_devices', orgA)).toBe(1);
+    expect(await rowCount(db, 'contract_billing_period_outcomes', orgA)).toBe(1);
 
+    expect(await rowCount(db, 'restore_jobs', orgA)).toBe(1);
+    expect(await rowCount(db, 'restore_jobs', orgB)).toBe(1);
     const stats = await cascadeDeleteOrg(orgA, PERFORMED_BY, PERFORMED_EMAIL);
+    expect(await rowCount(db, 'restore_jobs', orgA)).toBe(0);
+    expect(stats.tablesDeleted.restore_jobs).toBe(1);
+    expect([...(await db.execute(sql`SELECT id FROM device_commands WHERE id = ${restoreA.commandId}`))]).toEqual([]);
+    expect([...(await db.execute(sql`SELECT command_id FROM restore_jobs WHERE id = ${restoreB.restoreId}`))])
+      .toEqual([{ command_id: restoreB.commandId }]);
+    expect([...(await db.execute(sql`SELECT id FROM device_commands WHERE id = ${restoreB.commandId}`))])
+      .toEqual([{ id: restoreB.commandId }]);
+
 
     // Target org fully wiped.
+    expect(await rowCount(db, 'tickets', orgA)).toBe(0);
+    expect(await rowCount(db, 'action_intents', orgA)).toBe(0);
+    expect(await rowCount(db, 'tickets', orgB)).toBe(1);
+    expect(await rowCount(db, 'action_intents', orgB)).toBe(2);
     expect(await rowCount(db, 'sites', orgA)).toBe(0);
     expect(await rowCount(db, 'device_groups', orgA)).toBe(0);
+    expect(await rowCount(db, 'contracts', orgA)).toBe(0);
+    expect(await rowCount(db, 'contract_lines', orgA)).toBe(0);
+    expect(await rowCount(db, 'quotes', orgA)).toBe(0);
+    expect(await rowCount(db, 'quote_lines', orgA)).toBe(0);
     expect(await rowCount(db, 'device_mtls_certificates', orgA)).toBe(0);
+    expect(await rowCount(db, 'portal_branding', orgA)).toBe(0);
+    expect(await rowCount(db, 'invoice_line_devices', orgA)).toBe(0);
+    expect(await rowCount(db, 'contract_billing_period_outcomes', orgA)).toBe(0);
+    expect(await rowCount(db, 'portal_branding', orgB)).toBe(1);
+    expect(stats.tablesDeleted.portal_branding).toBe(1);
     const orgARows = (await db.execute(
       sql`SELECT count(*)::int AS n FROM organizations WHERE id = ${orgA}`,
     )) as unknown as Array<{ n: number }>;
@@ -221,12 +747,19 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     )) as unknown as Array<{ n: number }>;
     expect(orgBRows[0]?.n).toBe(1);
 
-    // Stats account for at least the 7 rows we seeded into org A (the
+    // Stats account for at least the 10 rows we seeded into org A (the
     // original 5 plus the device + device_mtls_certificates row added for
-    // Wave 5 Task 2).
-    expect(stats.totalRowsDeleted).toBeGreaterThanOrEqual(7);
+    // Wave 5 Task 2, the device group + contract line added for #3205 W02,
+    // and the portal_branding row added for the portal visibility flags).
+    expect(stats.totalRowsDeleted).toBeGreaterThanOrEqual(10);
     expect(stats.tablesDeleted['sites']).toBe(2);
-    expect(stats.tablesDeleted['device_groups']).toBe(2);
+    expect(stats.tablesDeleted['device_groups']).toBe(3);
+    expect(stats.tablesDeleted['contracts']).toBeGreaterThanOrEqual(1);
+    expect(stats.tablesDeleted['contract_lines']).toBeGreaterThanOrEqual(2);
+    expect(stats.tablesDeleted['quotes']).toBe(1);
+    expect(stats.tablesDeleted['quote_lines']).toBe(2);
+    expect(stats.tablesDeleted['invoice_line_devices']).toBe(1);
+    expect(stats.tablesDeleted['contract_billing_period_outcomes']).toBe(1);
     expect(stats.tablesDeleted['organizations']).toBe(1);
     // device_mtls_certificates is deleted explicitly (via its cascade-list
     // registration), not merely as a side effect of the devices row's

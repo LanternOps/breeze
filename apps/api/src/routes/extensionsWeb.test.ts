@@ -12,12 +12,17 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { Hono } from 'hono';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
-import { createExtensionsWebRoutes, type ExtensionsWebDeps } from './extensionsWeb';
+import {
+  createExtensionsWebRoutes,
+  __resetExtensionAssetServeThrottleForTests,
+  type ExtensionsWebDeps,
+} from './extensionsWeb';
+import { mintExtensionAssetToken, verifyExtensionAssetToken } from '../services/extensionAssetToken';
 import type { StagedExtensionContributions } from '../extensions/contributionRegistry';
 import type { ExtensionWebAsset } from '../extensions/webAssets';
 
@@ -56,7 +61,16 @@ function snapshot(over: Partial<StagedExtensionContributions> = {}): StagedExten
   } as StagedExtensionContributions;
 }
 
-const AUTHED = { user: { id: 'u1', email: 'u@breeze.test', name: 'U' } };
+const AUTHED = {
+  user: { id: 'u1', email: 'u@breeze.test', name: 'U' },
+  partnerId: '11111111-1111-4111-8111-111111111111',
+  orgId: '22222222-2222-4222-8222-222222222222',
+};
+
+/** The tenant scope the registry would sign into a minted token. */
+const SCOPE = { partnerId: AUTHED.partnerId, orgId: AUTHED.orgId };
+
+const DIGEST_A = `sha256:${'a'.repeat(64)}`;
 
 interface Harness {
   app: Hono;
@@ -84,6 +98,9 @@ function buildHarness(opts: {
       listActive: () => opts.snapshots ?? [snapshot()],
     },
     getWebAsset: (name: string) => webAssets[name],
+    // The REAL minter, so the suite exercises the genuine HMAC round-trip end
+    // to end rather than a stub that could never reject anything.
+    mintAssetToken: mintExtensionAssetToken,
   };
 
   const app = new Hono();
@@ -124,6 +141,79 @@ describe('GET /api/v1/extensions/registry', () => {
     expect(isEnabledCalls.sort()).toEqual(['disabled-demo', 'enabled-demo']);
   });
 
+  it('advertises a SIGNED moduleUrl the browser can import without a header (#4164)', async () => {
+    const { app } = buildHarness({
+      webAssets: { demo: { root: '/root/a', digest: DIGEST_A, files: new Map() } },
+    });
+    const res = await app.request('/api/v1/extensions/registry');
+    const body = await res.json();
+    const moduleUrl: string = body.extensions[0].moduleUrl;
+
+    expect(moduleUrl).toMatch(
+      new RegExp(`^/api/v1/extensions/assets/t/[^/]+/demo/${DIGEST_A}/web/index\\.js$`),
+    );
+    // The token in that URL must actually verify for this extension + digest —
+    // an unverifiable one would leave the loader 404ing instead of 401ing, which
+    // is not a fix.
+    const token = moduleUrl.split('/')[6]!;
+    const verified = verifyExtensionAssetToken(token, { name: 'demo', digest: DIGEST_A });
+    expect(verified).not.toBeNull();
+    expect(verified!.claims.partnerId).toBe(SCOPE.partnerId);
+    expect(verified!.claims.orgId).toBe(SCOPE.orgId);
+  });
+
+  it('holds the revision stable across a mint bucket and rotates it at the boundary', async () => {
+    // Both halves of this property are unit-tested with the other half stubbed
+    // (bucket quantization in extensionAssetToken.test.ts, revision sensitivity
+    // in webRegistry.test.ts). Only this test wires the REAL minter into the
+    // REAL route, which is what a refactor swapping the bucketed `iat` for a
+    // bare `now` would break: the revision would then churn on every poll, and
+    // a client behind a load balancer would see the document flap forever.
+    const { app } = buildHarness({
+      webAssets: { demo: { root: '/root/a', digest: DIGEST_A, files: new Map() } },
+    });
+    const revisionAt = async () => (await (await app.request('/api/v1/extensions/registry')).json()).revision;
+
+    vi.useFakeTimers();
+    try {
+      // A whole 15-minute bucket boundary.
+      vi.setSystemTime(new Date(1_798_761_600_000));
+      const first = await revisionAt();
+
+      vi.setSystemTime(new Date(1_798_761_600_000 + 14 * 60 * 1000 + 59_000));
+      expect(await revisionAt()).toBe(first);
+
+      vi.setSystemTime(new Date(1_798_761_600_000 + 15 * 60 * 1000));
+      expect(await revisionAt()).not.toBe(first);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still serves a usable registry when the principal carries no tenant scope', async () => {
+    // A system-scoped or otherwise unusual session must not 500 the registry:
+    // that would blank every extension page, which is the outage #4164 was.
+    // `normalizeTenantClaim` degrades the binding to null instead of throwing.
+    const { app } = buildHarness({
+      auth: { user: { id: 'u1', email: 'u@breeze.test', name: 'U' }, partnerId: undefined, orgId: undefined },
+      webAssets: { demo: { root: '/root/a', digest: DIGEST_A, files: new Map() } },
+    });
+    const res = await app.request('/api/v1/extensions/registry');
+    expect(res.status).toBe(200);
+    const moduleUrl: string = (await res.json()).extensions[0].moduleUrl;
+    const verified = verifyExtensionAssetToken(moduleUrl.split('/')[6]!, { name: 'demo', digest: DIGEST_A });
+    expect(verified).not.toBeNull();
+    expect(verified!.claims.partnerId).toBeNull();
+  });
+
+  it('is never stored by a cache — the response carries live credentials', async () => {
+    const { app } = buildHarness({
+      webAssets: { demo: { root: '/root/a', digest: DIGEST_A, files: new Map() } },
+    });
+    const res = await app.request('/api/v1/extensions/registry');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+  });
+
   it('never leaks the extraction root or a filesystem path', async () => {
     const { app } = buildHarness({
       webAssets: { demo: { root: '/var/lib/breeze/extracted/sha256-abc', digest: `sha256:${'a'.repeat(64)}`, files: new Map() } },
@@ -135,13 +225,29 @@ describe('GET /api/v1/extensions/registry', () => {
   });
 });
 
-describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
+describe('GET /api/v1/extensions/assets/t/:token/:name/:digest/*', () => {
   let root: string;
   const DIGEST = `sha256:${'a'.repeat(64)}`;
+
+  /** Build the digest-addressed URL the registry would advertise, carrying a
+   *  real signed token for the `(name, digest)` the URL asks for. Overriding
+   *  `digest`/`name` mints for the OVERRIDDEN value on purpose, so a test that
+   *  means to exercise a later check (retained-digest mismatch, inventory
+   *  allowlist, containment) is not silently short-circuited by step 0. */
+  function assetUrl(
+    member: string,
+    opts: { name?: string; digest?: string; token?: string } = {},
+  ): string {
+    const name = opts.name ?? 'demo';
+    const digest = opts.digest ?? DIGEST;
+    const token = opts.token ?? mintExtensionAssetToken({ name, digest }, SCOPE);
+    return `/api/v1/extensions/assets/t/${token}/${name}/${digest}/${member}`;
+  }
 
   function harnessWithAsset(files: Record<string, { path: string; content: Buffer | string }>, opts: {
     enabled?: boolean;
     digest?: string;
+    auth?: unknown;
   } = {}) {
     const inventory = new Map<string, { sha256: string; uncompressedSize: number }>();
     for (const [member, { path, content }] of Object.entries(files)) {
@@ -152,6 +258,7 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
       inventory.set(member, { sha256: sha256(buf), uncompressedSize: buf.length });
     }
     return buildHarness({
+      ...('auth' in opts ? { auth: opts.auth } : {}),
       enabled: { demo: opts.enabled ?? true },
       webAssets: {
         demo: { root, digest: opts.digest ?? DIGEST, files: inventory },
@@ -161,71 +268,223 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'breeze-ext-web-asset-'));
+    __resetExtensionAssetServeThrottleForTests();
   });
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('requires authentication', async () => {
-    const { app } = buildHarness({
-      auth: null,
-      webAssets: { demo: { root, digest: DIGEST, files: new Map() } },
-    });
+  // ---- the signed-token gate (issue #4164) --------------------------------
+  //
+  // This route is deliberately NOT behind `authMiddleware`: a browser loads an
+  // extension's entry module with a bare dynamic `import()`, which cannot send
+  // an Authorization header, so a bearer gate here 401'd every extension UI.
+  // The capability in the URL is what stands in its place, and every rejection
+  // below must be the SAME bare 404 as every other rejection on this route.
+
+  it('serves a signed asset with NO auth context at all (the #4164 regression)', async () => {
+    const content = 'console.log("hello")';
+    const { app } = harnessWithAsset(
+      { 'web/index.js': { path: 'web/index.js', content } },
+      { auth: null },
+    );
+    const res = await app.request(assetUrl('web/index.js'));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(content);
+  });
+
+  it('404s (never 401) when no token segment is present at all — the old URL shape', async () => {
+    const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
     const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/web/index.js`);
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(404);
+    // ...and the body must not echo the request path back (the app-level 404
+    // handler does; this router's own bare 404 must win, or a presented token
+    // would be reflected into the response).
+    expect(await res.json()).toEqual({ error: 'not found' });
+  });
+
+  it.each(['POST', 'PUT', 'DELETE'])('%ss to a validly-signed asset URL get this router\'s bare 404', async (method) => {
+    const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
+    const res = await app.request(assetUrl('web/index.js'), { method });
+    expect(res.status).toBe(404);
+    // Not the app-level handler, which echoes `c.req.path` — and the path now
+    // carries a live token.
+    expect(await res.json()).toEqual({ error: 'not found' });
+  });
+
+  it('404s on a garbage token', async () => {
+    const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
+    const res = await app.request(assetUrl('web/index.js', { token: 'not-a-token' }));
+    expect(res.status).toBe(404);
+  });
+
+  it('404s on a tampered token (payload edited, signature kept)', async () => {
+    const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
+    const good = mintExtensionAssetToken({ name: 'demo', digest: DIGEST }, SCOPE);
+    const [, payload, sig] = good.split('.');
+    const claims = JSON.parse(Buffer.from(payload!, 'base64url').toString('utf8'));
+    const edited = Buffer.from(JSON.stringify({ ...claims, exp: claims.exp + 86_400 }), 'utf8').toString('base64url');
+    const res = await app.request(assetUrl('web/index.js', { token: `v1.${edited}.${sig}` }));
+    expect(res.status).toBe(404);
+  });
+
+  it('404s on an EXPIRED token, and 200s on the same token before it expires', async () => {
+    const content = 'console.log("hello")';
+    const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content } });
+    const token = mintExtensionAssetToken({ name: 'demo', digest: DIGEST }, SCOPE);
+    const url = assetUrl('web/index.js', { token });
+
+    expect((await app.request(url)).status).toBe(200);
+
+    vi.useFakeTimers();
+    try {
+      // One hour + one bucket past mint clears any TTL the minter could have used.
+      vi.setSystemTime(new Date(Date.now() + 2 * 60 * 60 * 1000));
+      const res = await app.request(url);
+      expect(res.status).toBe(404);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('caps cache freshness at the token\'s REMAINING life, not a constant', async () => {
+    const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
+    const token = mintExtensionAssetToken({ name: 'demo', digest: DIGEST }, SCOPE);
+    const url = assetUrl('web/index.js', { token });
+
+    const fresh = await app.request(url);
+    const freshMaxAge = Number(/max-age=(\d+)/.exec(fresh.headers.get('cache-control')!)![1]);
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(Date.now() + 30 * 60 * 1000));
+      const later = await app.request(url);
+      const laterMaxAge = Number(/max-age=(\d+)/.exec(later.headers.get('cache-control')!)![1]);
+      // Half the token's life has burned, so the browser must be told to hold
+      // these bytes for half as long — a private cache that outlived the token
+      // would keep serving a disabled extension.
+      expect(laterMaxAge).toBeLessThan(freshMaxAge);
+      expect(laterMaxAge).toBeCloseTo(freshMaxAge - 1800, -1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('404s when the token is bound to a DIFFERENT digest than the URL asks for', async () => {
+    const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
+    const foreign = mintExtensionAssetToken({ name: 'demo', digest: `sha256:${'c'.repeat(64)}` }, SCOPE);
+    const res = await app.request(assetUrl('web/index.js', { token: foreign }));
+    expect(res.status).toBe(404);
+  });
+
+  it('404s when the token is bound to a DIFFERENT extension than the URL asks for', async () => {
+    const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
+    const foreign = mintExtensionAssetToken({ name: 'other-ext', digest: DIGEST }, SCOPE);
+    const res = await app.request(assetUrl('web/index.js', { token: foreign }));
+    expect(res.status).toBe(404);
+  });
+
+  it('warns the operator when a VERIFIED request fails to resolve on disk', async () => {
+    // A 404 from an anonymous prober and a 404 from a deleted extraction root
+    // look identical to the caller by design. They must NOT look identical to
+    // an operator: the second one means the extension's UI is broken for every
+    // user. The token having verified is what separates the two.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
+      unlinkSync(join(root, 'web/index.js'));
+
+      const res = await app.request(assetUrl('web/index.js'));
+      expect(res.status).toBe(404);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain('VERIFIED extension asset');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stays silent when an UNVERIFIED request 404s — anonymous probing is not a fault', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
+      unlinkSync(join(root, 'web/index.js'));
+
+      const res = await app.request(assetUrl('web/index.js', { token: 'not-a-token' }));
+      expect(res.status).toBe(404);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('rejects a bad token BEFORE touching the state store or the filesystem', async () => {
+    const { app, isEnabledCalls } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
+    const res = await app.request(assetUrl('web/index.js', { token: 'not-a-token' }));
+    expect(res.status).toBe(404);
+    // Step 0 runs ahead of the enabled re-check, the realpath calls and the
+    // file read, so an unauthenticated flood of junk costs no I/O.
+    expect(isEnabledCalls).toEqual([]);
   });
 
   it('serves a valid .js asset with the three required headers, verifying bytes at serve time', async () => {
     const content = 'console.log("hello")';
     const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content } });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/web/index.js`);
+    const res = await app.request(assetUrl('web/index.js'));
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toMatch(/javascript/);
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
-    expect(res.headers.get('cache-control')).toBe('private, max-age=31536000, immutable');
+    // Freshness is capped at the presented token's remaining life, NOT the year
+    // an immutable digest-addressed URL would otherwise earn — a private cache
+    // that outlived the token would keep serving these bytes without ever
+    // re-reaching the live enabled re-check.
+    const cacheControl = res.headers.get('cache-control') ?? '';
+    expect(cacheControl).toMatch(/^private, max-age=\d+, immutable$/);
+    const maxAge = Number(/max-age=(\d+)/.exec(cacheControl)![1]);
+    expect(maxAge).toBeGreaterThan(0);
+    expect(maxAge).toBeLessThanOrEqual(3600);
     expect(await res.text()).toBe(content);
   });
 
   it('404s when the extension has no retained web asset at all', async () => {
     const { app } = buildHarness({ webAssets: {} });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/web/index.js`);
+    const res = await app.request(assetUrl('web/index.js'));
     expect(res.status).toBe(404);
   });
 
   it('404s on digest mismatch (stale/other version)', async () => {
     const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
-    const res = await app.request(`/api/v1/extensions/assets/demo/sha256:${'f'.repeat(64)}/web/index.js`);
+    const res = await app.request(assetUrl('web/index.js', { digest: `sha256:${'f'.repeat(64)}` }));
     expect(res.status).toBe(404);
   });
 
   it('404s when the extension has been disabled after the snapshot was taken', async () => {
     const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } }, { enabled: false });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/web/index.js`);
+    const res = await app.request(assetUrl('web/index.js'));
     expect(res.status).toBe(404);
   });
 
   it('404s when the requested member is missing from the verified inventory', async () => {
     const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/web/not-in-inventory.js`);
+    const res = await app.request(assetUrl('web/not-in-inventory.js'));
     expect(res.status).toBe(404);
   });
 
   it('404s a traversal member "../server/index.cjs"', async () => {
     const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/../server/index.cjs`);
+    const res = await app.request(assetUrl('../server/index.cjs'));
     expect(res.status).toBe(404);
   });
 
   it('404s a percent-encoded traversal member "%2e%2e/server/index.cjs"', async () => {
     const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/%2e%2e/server/index.cjs`);
+    const res = await app.request(assetUrl('%2e%2e/server/index.cjs'));
     expect(res.status).toBe(404);
   });
 
   it('404s a "web/module.node" member even when present in the inventory (disallowed content type)', async () => {
     const { app } = harnessWithAsset({ 'web/module.node': { path: 'web/module.node', content: 'native-binary-bytes' } });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/web/module.node`);
+    const res = await app.request(assetUrl('web/module.node'));
     expect(res.status).toBe(404);
   });
 
@@ -236,7 +495,7 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
       'web/lib/native.node': { path: 'web/lib/native.node', content: 'bin' },
     });
     for (const member of ['web/index.html', 'web/index.js.map', 'web/lib/native.node']) {
-      const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/${member}`);
+      const res = await app.request(assetUrl(`${member}`));
       expect(res.status).toBe(404);
     }
   });
@@ -258,7 +517,7 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
       webAssets: { demo: { root, digest: DIGEST, files: inventory } },
     });
 
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/web/evil.js`);
+    const res = await app.request(assetUrl('web/evil.js'));
     expect(res.status).toBe(404);
 
     rmSync(secretDir, { recursive: true, force: true });
@@ -278,7 +537,7 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
     ]);
     const { app } = buildHarness({ webAssets: { demo: { root, digest: DIGEST, files: inventory } } });
 
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/${member}`);
+    const res = await app.request(assetUrl(`${member}`));
     expect(res.status).toBe(404);
 
     rmSync(evilSiblingDir, { recursive: true, force: true });
@@ -291,7 +550,7 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
     // a write to the artifact-store root between verification and serving.
     writeFileSync(join(root, 'web', 'index.js'), 'console.log("tampered")');
 
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/web/index.js`);
+    const res = await app.request(assetUrl('web/index.js'));
     expect(res.status).toBe(404);
   });
 
@@ -305,7 +564,7 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
   // — not just retention — refuses to serve them.
   it('404s the manifest.json member even when present in the verified inventory', async () => {
     const { app } = harnessWithAsset({ 'manifest.json': { path: 'manifest.json', content: '{"tenancy":{}}' } });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/manifest.json`);
+    const res = await app.request(assetUrl('manifest.json'));
     expect(res.status).toBe(404);
   });
 
@@ -313,7 +572,7 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
     const { app } = harnessWithAsset({
       'server/config.json': { path: 'server/config.json', content: '{"secret":"x"}' },
     });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/server/config.json`);
+    const res = await app.request(assetUrl('server/config.json'));
     expect(res.status).toBe(404);
   });
 
@@ -321,7 +580,7 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
     const { app } = harnessWithAsset({
       'migrations/0001_init.sql': { path: 'migrations/0001_init.sql', content: 'select 1;' },
     });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/migrations/0001_init.sql`);
+    const res = await app.request(assetUrl('migrations/0001_init.sql'));
     expect(res.status).toBe(404);
   });
 
@@ -329,14 +588,14 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
     const { app } = harnessWithAsset({
       'integrity.json': { path: 'integrity.json', content: '{}' },
     });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/integrity.json`);
+    const res = await app.request(assetUrl('integrity.json'));
     expect(res.status).toBe(404);
   });
 
   it('still serves a valid web/index.js asset (matches the fixture manifest\'s web.entry convention)', async () => {
     const content = 'export default 1;';
     const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content } });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/web/index.js`);
+    const res = await app.request(assetUrl('web/index.js'));
     expect(res.status).toBe(200);
     expect(await res.text()).toBe(content);
   });
@@ -344,7 +603,7 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
   it('still serves a nested web/nested/x.css asset', async () => {
     const content = '.demo { color: red; }';
     const { app } = harnessWithAsset({ 'web/nested/x.css': { path: 'web/nested/x.css', content } });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/web/nested/x.css`);
+    const res = await app.request(assetUrl('web/nested/x.css'));
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toMatch(/css/);
     expect(await res.text()).toBe(content);
@@ -368,7 +627,7 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
     for (const name of Object.keys(cases)) files[name] = { path: name, content: 'x' };
     const { app } = harnessWithAsset(files);
     for (const [name, expected] of Object.entries(cases)) {
-      const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/${name}`);
+      const res = await app.request(assetUrl(`${name}`));
       expect(res.status, `${name} should be served`).toBe(200);
       expect(res.headers.get('content-type'), name).toMatch(new RegExp(expected));
     }
@@ -385,7 +644,7 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
     const { app } = harnessWithAsset({
       'config.json': { path: 'config.json', content: '{"apiKey":"leak-me"}' },
     });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/config.json`);
+    const res = await app.request(assetUrl('config.json'));
     expect(res.status).toBe(404);
   });
 
@@ -393,7 +652,7 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
     const { app } = harnessWithAsset({
       'secrets.json': { path: 'secrets.json', content: '{"token":"leak-me"}' },
     });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/secrets.json`);
+    const res = await app.request(assetUrl('secrets.json'));
     expect(res.status).toBe(404);
   });
 
@@ -401,7 +660,7 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
     const { app } = harnessWithAsset({
       'data/seed.json': { path: 'data/seed.json', content: '{"rows":[]}' },
     });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/data/seed.json`);
+    const res = await app.request(assetUrl('data/seed.json'));
     expect(res.status).toBe(404);
   });
 
@@ -409,7 +668,7 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
     const { app } = harnessWithAsset({
       'app.js': { path: 'app.js', content: 'console.log("helper")' },
     });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/app.js`);
+    const res = await app.request(assetUrl('app.js'));
     expect(res.status).toBe(404);
   });
 
@@ -417,7 +676,7 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
     const { app } = harnessWithAsset({
       'webhook/x.js': { path: 'webhook/x.js', content: 'console.log("not web/")' },
     });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/webhook/x.js`);
+    const res = await app.request(assetUrl('webhook/x.js'));
     expect(res.status).toBe(404);
   });
 });

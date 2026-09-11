@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { MCP_PROMPTS, MCP_SERVER_INSTRUCTIONS, MCP_TOOL_COUNT_APPROX } from './mcpGuidance';
 import { aiTools } from './aiTools';
 
-// Matches snake_case identifiers (`get_fleet_status`, `resolve_device_context`).
+// Matches snake_case identifiers (`get_invite_funnel`, `resolve_device_context`).
 // Glob patterns like `query_*` / `manage_*` don't match — the trailing `_*` has
 // no alphanumeric segment — and camelCase (`ownerScope`) / hyphenated
 // (`newly-registered-domain`) prose is ignored too, so we only ever catch

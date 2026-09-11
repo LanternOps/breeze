@@ -242,6 +242,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
       const [vault] = await db
         .select({
           id: localVaults.id,
+          orgId: localVaults.orgId,
           deviceId: localVaults.deviceId,
           isActive: localVaults.isActive,
         })
@@ -257,6 +258,9 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Vault not found or access denied' });
       }
 
+      // Repeat the tenant and device axes the checks above authorized: the
+      // vault was read in a separate statement, so `id` alone would leave a
+      // check-then-act window.
       await db
         .update(localVaults)
         .set({
@@ -264,7 +268,11 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
           lastSyncSnapshotId: typeof input.snapshotId === 'string' ? input.snapshotId : null,
           updatedAt: new Date(),
         })
-        .where(eq(localVaults.id, vault.id));
+        .where(and(
+          eq(localVaults.id, vault.id),
+          eq(localVaults.orgId, vault.orgId),
+          eq(localVaults.deviceId, vault.deviceId),
+        ));
 
       const { command, error } = await queueCommandForExecution(
         vault.deviceId,
@@ -273,7 +281,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
           vaultId: vault.id,
           snapshotId: typeof input.snapshotId === 'string' ? input.snapshotId : undefined,
         },
-        { userId: auth.user?.id }
+        { userId: auth.user?.id, expectedOrgId: vault.orgId }
       );
 
       if (error) {
@@ -283,7 +291,11 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
             lastSyncStatus: 'failed',
             updatedAt: new Date(),
           })
-          .where(eq(localVaults.id, vault.id));
+          .where(and(
+            eq(localVaults.id, vault.id),
+            eq(localVaults.orgId, vault.orgId),
+            eq(localVaults.deviceId, vault.deviceId),
+          ));
         return JSON.stringify({ error });
       }
 
@@ -384,7 +396,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         const vc = orgWhere(auth, localVaults.orgId);
         if (vc) vaultConditions.push(vc);
         const [existing] = await db
-          .select({ id: localVaults.id, deviceId: localVaults.deviceId })
+          .select({ id: localVaults.id, orgId: localVaults.orgId, deviceId: localVaults.deviceId })
           .from(localVaults)
           .where(and(...vaultConditions))
           .limit(1);
@@ -404,7 +416,11 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         const [vault] = await db
           .update(localVaults)
           .set(updateData)
-          .where(eq(localVaults.id, vaultId))
+          .where(and(
+            eq(localVaults.id, vaultId),
+            eq(localVaults.orgId, existing.orgId),
+            eq(localVaults.deviceId, existing.deviceId),
+          ))
           .returning();
 
         return JSON.stringify({ success: true, vault });

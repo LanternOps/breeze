@@ -143,7 +143,7 @@
     "monitored": "Monitorato",
     "title": "Asset rilevati",
     "tryAgain": "Riprova",
-    "sameDeviceAs": "Stesso dispositivo di {{name}}"
+    "agentInstalled": "Agente"
   },
   "discoveryJobList": {
     "actions": {
@@ -479,6 +479,7 @@
       "selectSite": "Seleziona sito"
     },
     "paused": "In pausa",
+    "scheduleBlocked": "Scansione ricorrente in pausa: è necessaria una nuova approvazione",
     "permissionManage": "Le azioni di modifica sono disabilitate dopo il mancato superamento del controllo delle autorizzazioni. È richiesta `devices:write`.",
     "placeholders": {
       "subnet": "192.168.1.0/24"
@@ -688,7 +689,12 @@
     "title": "Proxy verso {{target}}",
     "throughAgent": "Tramite agente",
     "connect": "Connetti",
-    "allowSelfSigned": "Consenti certificato autofirmato (comune per stampanti, iLO/IPMI e switch)"
+    "allowSelfSigned": "Consenti certificato autofirmato (comune per stampanti, iLO/IPMI e switch)",
+    "discoveredThisAsset": "ha rilevato questa risorsa",
+    "pickAgentHint": "Scegli un agente sulla stessa rete di {{ip}}.",
+    "scheme": "Protocollo",
+    "allowSelfSignedHint": "Salta la verifica del certificato solo per questa sessione.",
+    "throughAgentHelp": "Il traffico verso questo dispositivo viene inoltrato tramite l'agente Breeze selezionato, che deve trovarsi sulla stessa rete."
   },
   "assetTypes": {
     "workstation": "Workstation",
@@ -702,6 +708,8 @@
     "iot": "IoT",
     "camera": "Telecamera",
     "nas": "NAS",
+    "website": "Sito web",
+    "service": "Servizio",
     "unknown": "Sconosciuto",
     "patchPanel": "Patch panel",
     "other": "Altro"

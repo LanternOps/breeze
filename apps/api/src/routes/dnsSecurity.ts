@@ -18,6 +18,7 @@ import {
   type DnsPolicyDomain
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { requireOrgWideIntegrationAccess } from '../middleware/integrationConnectionScope';
 import { scheduleDnsEventSync, schedulePolicySync } from '../jobs/dnsSyncJob';
 import { writeRouteAudit } from '../services/auditEvents';
 import { encryptSecret } from '../services/secretCrypto';
@@ -189,13 +190,11 @@ const createIntegrationSchema = z.object({
         message: 'apiSecret is required for Cisco Umbrella'
       });
     }
-    if (!data.config?.organizationId) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['config', 'organizationId'],
-        message: 'organizationId is required for Cisco Umbrella'
-      });
-    }
+    // NOTE: no organizationId check. The next-gen Umbrella Reports API
+    // (api.umbrella.com/reports/v2/activity) carries no org path segment — the
+    // OAuth2 token's `sub` claim (`org/<orgId>/client/<apiKey>`) scopes every
+    // call — so requiring one blocks a working credential (#4597). The field
+    // is still accepted, and still stored, for pre-existing integrations.
   }
 
   if (data.provider === 'cloudflare' && !data.config?.accountId) {
@@ -314,6 +313,10 @@ const patchPolicyDomainsSchema = z.object({
 dnsSecurityRoutes.get(
   '/integrations',
   requireScope('organization', 'partner', 'system'),
+  // DNS configuration is part of the device-security surface. Match the
+  // event/stat routes and the web/AI entry points instead of allowing every
+  // authenticated tenant member to enumerate provider and sync metadata.
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
 
@@ -349,6 +352,7 @@ dnsSecurityRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  requireOrgWideIntegrationAccess,
   zValidator('json', createIntegrationSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -420,6 +424,7 @@ dnsSecurityRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  requireOrgWideIntegrationAccess,
   async (c) => {
     const auth = c.get('auth');
     const integrationId = c.req.param('id')!;
@@ -947,6 +952,7 @@ dnsSecurityRoutes.get(
 dnsSecurityRoutes.get(
   '/policies',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const conditions: SQL[] = [];

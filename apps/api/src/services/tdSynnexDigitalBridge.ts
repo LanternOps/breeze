@@ -8,6 +8,7 @@ import { enrichDistributorListing } from './catalogEnrichmentService';
 import type { CreateCatalogItemInput, EnrichmentProvenance } from '@breeze/shared';
 import { checkSsrfSafe } from './ssrfGuard';
 import { safeFetch, SsrfBlockedError } from './urlSafety';
+import { urlOriginChanged } from './credentialOriginBinding';
 
 const TABLE = 'td_synnex_digital_bridge_integrations';
 const CREDENTIALS_COLUMN = 'credentials';
@@ -229,7 +230,26 @@ export async function saveTdSynnexDigitalBridgeConfig(input: TdSynnexDigitalBrid
     .where(eq(tdSynnexDigitalBridgeIntegrations.partnerId, partnerId))
     .limit(1);
   const current = existing[0] ?? null;
-  const credentials = mergeCredentials(current?.credentials, input.credentials);
+  const originChanged = Boolean(current && urlOriginChanged(current.baseUrl, baseUrl));
+  if (originChanged) {
+    const stored = asRecord(current?.credentials);
+    for (const key of ['apiKey', 'apiSecret'] as const) {
+      const storedValue = stored[key];
+      if (
+        typeof storedValue === 'string'
+        && storedValue.length > 0
+        && (input.credentials?.[key] === undefined || input.credentials[key] === TD_SYNNEX_MASKED_SECRET)
+      ) {
+        throw new TdSynnexDigitalBridgeError(
+          'TD SYNNEX credentials must be re-entered or explicitly cleared when changing the endpoint origin',
+          'TD_SYNNEX_CREDENTIALS_INVALID',
+        );
+      }
+    }
+  }
+  // Never seed an origin-changed receiver from the previous origin's secret
+  // object. Explicit null/blank values still clear fields via mergeCredentials.
+  const credentials = mergeCredentials(originChanged ? {} : current?.credentials, input.credentials);
   const settings = {
     ...asRecord(current?.settings),
     ...asRecord(input.settings),

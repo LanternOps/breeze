@@ -3,7 +3,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { accountingConnections, invoices } from '../../db/schema';
 import {
@@ -45,10 +45,25 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { getAccountingProvider } from '../../services/accounting/providerRegistry';
 import { captureException, captureMessage } from '../../services/sentry';
 import type { AccountingProviderId } from '../../services/accounting/types';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../../services/partnerWideAccess';
 
 export const accountingRoutes = new Hono();
 
 const partnerScopes = requireScope('partner', 'system');
+
+// Customer annotation and import both enter the shared org-import seam, which
+// reads the whole partner tenant tree under system DB context. The capability
+// follows that blast radius, not the accounting connection: an org-selected
+// member must not infer matches or create tenants outside their selection.
+const requireFullPartnerOrgImportAccess: MiddlewareHandler = async (c, next) => {
+  if (!canManagePartnerWidePolicies(c.get('auth') as AuthContext)) {
+    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+  }
+  return next();
+};
 
 // The IMPORT route creates organizations and their default sites, so it carries
 // the same permission pair as routes/orgs.ts POST /import. The customer LIST
@@ -67,8 +82,9 @@ const requireSiteWrite = requirePermission(PERMISSIONS.SITES_WRITE.resource, PER
  * from `?partnerId=`. System scope is already the most privileged scope and is
  * gated above, so the per-partner role check does not apply to it.
  *
- * Note routes/orgs.ts POST /import has the same latent gap; it is not fixed
- * here to keep this PR's blast radius on the QuickBooks path.
+ * routes/orgs.ts POST /import advertises the same system scope but still uses
+ * the raw permission guards, so membership-less system callers remain a
+ * separate route-contract/availability residual rather than an authz bypass.
  */
 function partnerScopedPermission(...guards: MiddlewareHandler[]): MiddlewareHandler {
   return async (c, next) => {
@@ -84,7 +100,48 @@ function partnerScopedPermission(...guards: MiddlewareHandler[]): MiddlewareHand
   };
 }
 
-const requireImportPermissions = partnerScopedPermission(requireOrgWrite, requireSiteWrite);
+// NOTE: the accounting:read guard is folded INTO this composition rather than
+// listed separately on the route. The import route's middleware chain is
+// already at Hono's variadic-inference limit — adding a 10th handler collapses
+// the handler's `c.req.valid(...)` types to `never`. Composing keeps the chain
+// length unchanged and the ordering identical (system scope is exempt from all
+// three for the reason documented on partnerScopedPermission).
+const requireImportPermissions = partnerScopedPermission(
+  requirePermission(PERMISSIONS.ACCOUNTING_READ.resource, PERMISSIONS.ACCOUNTING_READ.action),
+  requireOrgWrite,
+  requireSiteWrite,
+);
+
+/**
+ * Dedicated accounting capabilities (SEC-2026-09-05-057). Before these, every
+ * interactive QuickBooks route gated on partner authority alone, so any
+ * full-partner member — however low their role — could read the shared
+ * provider realm and, with MFA, drive realm lifecycle and settings mutations.
+ *
+ * `accounting:read` covers the provider reads (status, customers, entity
+ * mappings, income accounts, remote candidates); `accounting:manage` covers
+ * connect/disconnect, settings update/refresh, mapping writes and provider or
+ * mapping synchronization. Both are wrapped in `partnerScopedPermission` for
+ * the same reason the import/invoice guards are: a system-scope token carries
+ * no partner or org membership, so `requirePermission` can resolve no role for
+ * it (see that helper's comment above).
+ *
+ * `accounting:manage` also covers BOTH invoice-push routes (PR review
+ * finding): a push writes an invoice into the shared provider realm, exactly
+ * like a mapping sync or a reconcile trigger, so it belongs on the same
+ * capability rather than on `invoices:write` alone.
+ *
+ * These are ADDITIVE. Every pre-existing route requirement — MFA,
+ * organizations:write + sites:write on customer import, invoices:write on
+ * invoice push, catalog:write on item mappings, and the full-partner authority
+ * check — stays exactly as it was.
+ */
+const requireAccountingRead = partnerScopedPermission(
+  requirePermission(PERMISSIONS.ACCOUNTING_READ.resource, PERMISSIONS.ACCOUNTING_READ.action),
+);
+const requireAccountingManage = partnerScopedPermission(
+  requirePermission(PERMISSIONS.ACCOUNTING_MANAGE.resource, PERMISSIONS.ACCOUNTING_MANAGE.action),
+);
 const providerParamSchema = z.object({ provider: z.enum(['quickbooks']) });
 const partnerQuerySchema = z.object({ partnerId: z.string().guid().optional() });
 const callbackQuerySchema = z.object({
@@ -101,6 +158,10 @@ const settingsSchema = z.object({
   // not a captured external fact (unlike homeCurrency/multiCurrencyEnabled
   // below, which PATCH must never accept).
   pullPayments: z.boolean().optional(),
+  // Phase D2 — whether Breeze pushes its own payments INTO QuickBooks for this
+  // connection. Same tier as pushMode/pullPayments: a plain connection setting,
+  // not a captured external fact.
+  pushPayments: z.boolean().optional(),
 }).refine((value) => Object.keys(value).length > 0, {
   message: 'At least one setting is required',
 });
@@ -225,21 +286,23 @@ const requireInvoicePush = partnerScopedPermission(
  * Finding D. `PATCH /:provider/settings` was gated on partner scope + MFA only,
  * so any partner admin without `invoices:write` could switch the payment
  * pull-back off — silently stopping every QuickBooks payment from reaching
- * Breeze — or flip `pushMode` to `manual` and stop invoices going out. Both are
- * the same authority the manual/bulk push routes require, so the settings
- * handler now demands it too WHEN THE BODY CARRIES ONE OF THOSE TWO FIELDS.
+ * Breeze — or flip `pushMode` to `manual` and stop invoices going out, or flip
+ * `pushPayments` off and silently stop every Breeze payment from reaching the
+ * books. All three are the same authority the manual/bulk push routes
+ * require, so the settings handler now demands it too WHEN THE BODY CARRIES
+ * ONE OF THOSE FIELDS.
  *
  * The account-ref settings stay ungated: they are plumbing for a push someone
  * else performs, not a switch over whether money syncs at all.
  */
-type SettingsWriteJsonInput = { pushMode?: 'auto' | 'manual'; pullPayments?: boolean };
+type SettingsWriteJsonInput = { pushMode?: 'auto' | 'manual'; pullPayments?: boolean; pushPayments?: boolean };
 const requireInvoicePushForSyncSwitches: MiddlewareHandler<
   Env,
   string,
   { in: { json: SettingsWriteJsonInput }; out: { json: SettingsWriteJsonInput } }
 > = async (c, next) => {
   const body = c.req.valid('json');
-  if (!('pushMode' in body) && !('pullPayments' in body)) return next();
+  if (!('pushMode' in body) && !('pullPayments' in body) && !('pushPayments' in body)) return next();
   return requireInvoicePush(c, next);
 };
 
@@ -343,6 +406,25 @@ function resolvePartnerId(auth: Pick<AuthContext, 'scope' | 'partnerId'>, reques
   return { partnerId: requested };
 }
 
+/**
+ * Every interactive accounting route operates on one partner-global provider
+ * realm. Prove both the exact partner binding and raw all-organization partner
+ * authority before validation, configuration checks, database/provider work,
+ * queueing, or audit. System automation keeps its explicit-partner behavior;
+ * signed provider callbacks and background workers use separate trust paths.
+ */
+const requireAccountingPartnerAuthority: MiddlewareHandler = async (c, next) => {
+  const auth = c.get('auth') as AuthContext | undefined;
+  if (!auth) return c.json({ error: 'Not authenticated' }, 401);
+
+  const partner = resolvePartnerId(auth, c.req.query('partnerId'));
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  if (!canManagePartnerWidePolicies(auth)) {
+    return c.json({ error: 'Full partner organization access is required' }, 403);
+  }
+  return next();
+};
+
 function validateProviderConfig(provider: AccountingProviderId): string | null {
   if (provider !== 'quickbooks') return null;
   if (!QBO_CLIENT_ID || !QBO_CLIENT_SECRET || !QBO_REDIRECT_URI || !QBO_ENVIRONMENT) {
@@ -356,7 +438,7 @@ function validateProviderConfig(provider: AccountingProviderId): string | null {
 
 // Initiate the OAuth flow. Authenticated + MFA-gated: this is the privileged
 // action that decides which partner an external accounting realm links to.
-accountingRoutes.get('/:provider/connect', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+accountingRoutes.get('/:provider/connect', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -475,9 +557,29 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
   const realmChanged = priorRealmKnown && priorRealmId !== null && priorRealmId !== tokens.realmId;
   if (realmChanged) {
     try {
-      const { mappingsDeleted } = await withSystemDbAccessContext(
+      const { mappingsDeleted, owedPaymentDeletes } = await withSystemDbAccessContext(
         () => resetConnectionForRealmChange(db, connection.id, state.partnerId),
       );
+      // Same rule as the disconnect route below: the reset cannot be blocked
+      // (the new grant is already live), and the remote ids of the payment
+      // deletes it discards are all a human has left to reconcile with. They
+      // name Payments in the OLD company file, which is exactly why they cannot
+      // simply be retained.
+      if (owedPaymentDeletes.count > 0) {
+        writeRouteAudit(c, {
+          orgId: null,
+          action: 'accounting.connection.owed_deletes_discarded',
+          resourceType: 'accounting_connection',
+          resourceId: connection.id,
+          result: 'failure',
+          details: {
+            provider,
+            reason: 'realm_changed',
+            count: owedPaymentDeletes.count,
+            remoteEntityIds: owedPaymentDeletes.remoteEntityIds,
+          },
+        });
+      }
       console.warn('[accounting] QuickBooks realm changed on reconnect; mappings and CDC cursor cleared', {
         partnerId: state.partnerId, provider, mappingsDeleted,
       });
@@ -579,16 +681,38 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
   return c.redirect('/integrations?accounting=quickbooks&connected=1#accounting');
 });
 
-accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
-  const removed = await deleteConnection(db, partner.partnerId, provider);
+  const { removed, connectionId, owedPaymentDeletes } = await deleteConnection(db, partner.partnerId, provider);
   if (!removed) return c.json({ error: 'Accounting connection not found' }, 404);
+  // The disconnect is never blocked, but a QuickBooks payment deletion Breeze
+  // still owed dies with the mapping (ON DELETE CASCADE). Record the remote ids
+  // — the only thing that lets a human find those Payments afterwards (review
+  // wave 2, finding 3). The service already warned and raised Sentry.
+  if (owedPaymentDeletes.count > 0) {
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'accounting.connection.owed_deletes_discarded',
+      resourceType: 'accounting_connection',
+      // The CONNECTION id, matching the realm-change twin above: an audit trail
+      // that identifies the same subject two different ways cannot be joined.
+      // Non-null whenever `removed` is true, which the 404 above has established.
+      resourceId: connectionId ?? partner.partnerId,
+      result: 'failure',
+      details: {
+        provider,
+        reason: 'disconnect',
+        count: owedPaymentDeletes.count,
+        remoteEntityIds: owedPaymentDeletes.remoteEntityIds,
+      },
+    });
+  }
   return c.json({ disconnected: true });
 });
 
-accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+accountingRoutes.get('/:provider', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingRead, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
@@ -607,6 +731,9 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
       // the column's own `.default(true)` (accountingConnectionService.ts).
       pullPayments: true,
       lastReconcileAt: null,
+      // Phase D2 — same story as pullPayments: `true` matches the
+      // push_payments column's own `.default(true)`.
+      pushPayments: true,
     });
   }
   return c.json({
@@ -627,14 +754,16 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
     // card can render whether pull is on and when it last ran.
     pullPayments: connection.pullPayments,
     lastReconcileAt: connection.lastReconcileAt,
+    // Phase D2 — whether Breeze pushes its own payments into QuickBooks.
+    pushPayments: connection.pushPayments,
   });
 });
 
 // List remote QuickBooks customers, annotated with whether each is already
-// imported. Read-only — it creates nothing in Breeze — so partner/system scope
-// is the whole gate; see requireImportPermissions for why no write permission
-// is required here.
-accountingRoutes.get('/:provider/customers', authMiddleware, partnerScopes, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+// imported. The route creates nothing in Breeze, so it needs no write-role
+// permission, but annotation still compares against every organization in the
+// partner and therefore requires full-partner org access.
+accountingRoutes.get('/:provider/customers', authMiddleware, partnerScopes, requireFullPartnerOrgImportAccess, requireAccountingPartnerAuthority, requireAccountingRead, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -649,7 +778,11 @@ accountingRoutes.get('/:provider/customers', authMiddleware, partnerScopes, zVal
 });
 
 // Import selected QuickBooks customers as orgs + sites. Write + MFA-gated.
-accountingRoutes.post('/:provider/customers/import', authMiddleware, partnerScopes, requireImportPermissions, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', importCustomersSchema), async (c) => {
+// Carries `accounting:read` cumulatively (PR review finding): the response
+// echoes remote QuickBooks displayNames for the caller-supplied ids, so this
+// route reads the shared provider realm as well as creating tenants. That
+// guard lives inside `requireImportPermissions` — see its comment.
+accountingRoutes.post('/:provider/customers/import', authMiddleware, partnerScopes, requireFullPartnerOrgImportAccess, requireAccountingPartnerAuthority, requireImportPermissions, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', importCustomersSchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -685,7 +818,7 @@ accountingRoutes.post('/:provider/customers/import', authMiddleware, partnerScop
   return c.json({ data: summary });
 });
 
-accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', settingsSchema), requireInvoicePushForSyncSwitches, async (c) => {
+accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', settingsSchema), requireInvoicePushForSyncSwitches, async (c) => {
   const { provider } = c.req.valid('param');
   const body = c.req.valid('json');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
@@ -698,6 +831,18 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
       ...('defaultIncomeAccountRef' in body ? { defaultIncomeAccountRef: body.defaultIncomeAccountRef } : {}),
       ...('defaultTaxCodeRef' in body ? { defaultTaxCodeRef: body.defaultTaxCodeRef } : {}),
       ...('pullPayments' in body ? { pullPayments: body.pullPayments } : {}),
+      ...('pushPayments' in body ? { pushPayments: body.pushPayments } : {}),
+      // Turning the switch back ON restarts the horizon, so a deliberate pause
+      // never later flushes a backlog of payments the operator recorded while it
+      // was off (review wave 2, finding 2). Decided IN the UPDATE: the SET list
+      // sees the row's OLD `push_payments`, so the flip is detected atomically
+      // without a read-modify-write, and turning it ON when it was already on
+      // leaves the horizon exactly where it was.
+      ...(body.pushPayments === true
+        ? {
+          pushPaymentsSince: sql`CASE WHEN ${accountingConnections.pushPayments} = false THEN now() ELSE ${accountingConnections.pushPaymentsSince} END`,
+        }
+        : {}),
       updatedAt: new Date(),
     })
     .where(and(
@@ -712,6 +857,7 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
       defaultTaxCodeRef: accountingConnections.defaultTaxCodeRef,
       lastError: accountingConnections.lastError,
       pullPayments: accountingConnections.pullPayments,
+      pushPayments: accountingConnections.pushPayments,
     });
 
   if (!updated) return c.json({ error: 'Accounting connection not found' }, 404);
@@ -729,7 +875,7 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
 // already open, so no connection is pinned across the QuickBooks round trip
 // and each phase commits on its own (services/accounting/dbContextGuard.ts).
 // The same applies to the four mapping-workbench routes below.
-accountingRoutes.post('/:provider/settings/refresh', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+accountingRoutes.post('/:provider/settings/refresh', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -776,13 +922,30 @@ accountingRoutes.post('/:provider/settings/refresh', authMiddleware, partnerScop
 // Reports `enqueued` HONESTLY (the Phase C lesson: `enqueueAccountingInvoicePush`
 // swallows a Redis outage by design, so the caller must surface its boolean
 // rather than assume the job landed — see the push-bulk route's comment above).
-accountingRoutes.post('/:provider/reconcile', authMiddleware, partnerScopes, requireMfa(), requireInvoicePush, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+accountingRoutes.post('/:provider/reconcile', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), requireInvoicePush, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
 
   const connection = await getConnection(db, partner.partnerId, provider);
   if (!connection) return c.json({ error: 'Accounting connection not found' }, 404);
+
+  // Issue #4543: refuse rather than answer `{ enqueued: true }` honestly-but-
+  // uselessly. Before this check, a switched-off connection still got a
+  // 200/queued response — the reconcile worker then silently no-oped
+  // (accountingReconcileWorker.ts's `both_switches_off` short-circuit) and the
+  // operator had no way to tell "switch is off" apart from "it's syncing".
+  // 409 + a stable `code`, matching the `{ error, code }` shape
+  // AccountingConnectionError/AccountingMappingError already use elsewhere in
+  // this file, rather than adding a new response shape.
+  //
+  // Phase D2 (spec decision 6): the gate is pull OR push, mirroring the
+  // worker. With pull off and push on the CDC pass still has work — it adopts
+  // Breeze-created Payments whose phase 2 never landed and notices
+  // Breeze-origin Payments deleted in QuickBooks — so "Sync now" must run.
+  if (!connection.pullPayments && !connection.pushPayments) {
+    return c.json({ error: 'Payment sync is disabled for this connection', code: 'payment_sync_disabled' }, 409);
+  }
 
   const enqueued = await enqueueAccountingReconcile(connection.id, partner.partnerId, 'manual');
 
@@ -803,7 +966,7 @@ accountingRoutes.post('/:provider/reconcile', authMiddleware, partnerScopes, req
 // SELF_MANAGED_DB_CONTEXT_ROUTES (middleware/selfManagedDbContextRoutes.ts) —
 // no ambient request transaction, so the service's ambient-`db` reads need an
 // explicit context (Task 5 review fix — see the settings/refresh comment above).
-accountingRoutes.get('/:provider/mappings', authMiddleware, partnerScopes, zValidator('param', providerParamSchema), zValidator('query', mappingEntityQuerySchema), async (c) => {
+accountingRoutes.get('/:provider/mappings', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingRead, zValidator('param', providerParamSchema), zValidator('query', mappingEntityQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -826,7 +989,7 @@ accountingRoutes.get('/:provider/mappings', authMiddleware, partnerScopes, zVali
 // Remote income account selector for item mapping — read-only. Also QBO-HTTP
 // backed, so it carries the same SELF_MANAGED_DB_CONTEXT_ROUTES registration
 // (and the same explicit-context requirement — Task 5 review fix).
-accountingRoutes.get('/:provider/income-accounts', authMiddleware, partnerScopes, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+accountingRoutes.get('/:provider/income-accounts', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingRead, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -850,7 +1013,7 @@ accountingRoutes.get('/:provider/income-accounts', authMiddleware, partnerScopes
 // `confirmed` path calls the provider list to verify the remote entity, so
 // this route also carries the SELF_MANAGED_DB_CONTEXT_ROUTES registration
 // (and the same explicit-context requirement — Task 5 review fix).
-accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', mappingDecisionSchema), requireMappingWrite, async (c) => {
+accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', mappingDecisionSchema), requireMappingWrite, async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -895,7 +1058,7 @@ accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requi
 // SELF_MANAGED_DB_CONTEXT_ROUTES registration (the provider upsert call is
 // real QuickBooks HTTP) — and the same explicit-context requirement (Task 5
 // review fix).
-accountingRoutes.post('/:provider/mappings/sync', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', mappingSyncSchema), requireMappingWrite, async (c) => {
+accountingRoutes.post('/:provider/mappings/sync', authMiddleware, partnerScopes, requireAccountingPartnerAuthority, requireAccountingManage, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', mappingSyncSchema), requireMappingWrite, async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -953,6 +1116,8 @@ accountingRoutes.post(
   '/:provider/invoices/:invoiceId/push',
   authMiddleware,
   partnerScopes,
+  requireAccountingPartnerAuthority,
+  requireAccountingManage,
   requireMfa(),
   requireInvoicePush,
   zValidator('param', invoicePushParamSchema),
@@ -1000,6 +1165,8 @@ accountingRoutes.post(
   '/:provider/invoices/push-bulk',
   authMiddleware,
   partnerScopes,
+  requireAccountingPartnerAuthority,
+  requireAccountingManage,
   requireMfa(),
   requireInvoicePush,
   zValidator('param', providerParamSchema),
@@ -1051,8 +1218,10 @@ accountingRoutes.post(
 
 // Remote candidate search (Phase B follow-up, surfaced by Task 5): replaces
 // manual remote-ID entry in the mapping workbench. Read-only — same gate
-// shape as GET /:provider/customers above (no MFA/permission; see that
-// route's comment for why). Makes a real outbound QuickBooks call via
+// shape as GET /:provider/customers above: full-partner authority plus
+// `accounting:read`, and no MFA (reads are not step-up gated) and no write
+// permission (it creates nothing in Breeze). Makes a real outbound QuickBooks
+// call via
 // `resolveConnectionAndToken` + `listRemoteCustomers`/`listRemoteItems`, so it
 // carries the same SELF_MANAGED_DB_CONTEXT_ROUTES + `runInDbContext` runner
 // treatment as the push route above. Wraps its response in `{ data }` —
@@ -1063,6 +1232,8 @@ accountingRoutes.get(
   '/:provider/remote-candidates',
   authMiddleware,
   partnerScopes,
+  requireAccountingPartnerAuthority,
+  requireAccountingRead,
   zValidator('param', providerParamSchema),
   zValidator('query', remoteCandidatesQuerySchema),
   async (c) => {

@@ -1,6 +1,6 @@
 # Go Agent — Security Review Reference
 
-The SKILL.md checklist is API/web-centric (the upstream prompts it derives from are Python/web).
+Use the private canonical methodology and playbook; implementation examples below must be verified at the reviewed SHA.
 The Go agent is our **highest-value attack surface** (RMM compromise → code exec as SYSTEM across
 the fleet), so it gets a dedicated class block. Run this as a Pass-1 specialist agent
 (see [methodology.md](methodology.md)).
@@ -9,7 +9,7 @@ the fleet), so it gets a dedicated class block. Run this as a Pass-1 specialist 
 
 > You are the AGENT/GO specialist. Audit the Go agent (`agent/internal/...`, `agent/main.go`) for
 > the classes below. Use Grep/Glob/Read; trace data flow end-to-end. Report file:line + source →
-> sink → exact path + concrete exploit scenario + confidence (>=7 only).
+> sink → exact path + concrete exploit scenario, confidence, counterevidence and unresolved leads.
 
 ## Class checklist
 
@@ -59,8 +59,7 @@ the fleet), so it gets a dedicated class block. Run this as a Pass-1 specialist 
 - [ ] Goroutine data races on shared connection/session maps (`go test -race` clean).
 - [ ] `slog`/`log` error serialization: `"error", err` serializes interface as `{}` — must use
       `err.Error()`; verify no security-relevant context lost AND no secret leaked via verbose error.
-- [ ] Missing `context` cancellation → leaked goroutines / hung sessions (DoS-adjacent; report only if
-      it crosses into a security boundary, e.g. unbounded session accumulation).
+- [ ] Missing `context` cancellation → leaked goroutines / hung sessions (establish attacker influence, resource bounds and availability impact, e.g. unbounded session accumulation).
 - [ ] Unchecked syscall returns: `void`-returning COM/D3D calls (`CopyResource`) whose RAX garbage was
       misread as HRESULT — pattern that masked real failures; check security-relevant syscalls aren't
       similarly mis-evaluated.

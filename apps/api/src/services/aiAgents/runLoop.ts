@@ -43,19 +43,11 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
   AgentRunVerdict,
   AiAgentKind,
-  AiAgentMode,
   AiAgentPolicy,
-  AiAgentPolicySnapshot,
-  AiAgentRecipients,
   AiAgentRunProfile,
-  AiAgentTriggerKind,
   AiSweepKind,
-  AlertVerdictOutcome,
-  NarrativeOutcome,
-  SweepFindingsOutcome,
-  TicketTriageProposal,
 } from '@breeze/shared';
-import { AI_AGENT_LIMIT_DEFAULTS, AI_SWEEP_KINDS } from '@breeze/shared';
+import { AI_SWEEP_KINDS } from '@breeze/shared';
 import { envFlag } from '../../config/env';
 import {
   db,
@@ -69,10 +61,17 @@ import { alertCorrelationGroups, alerts } from '../../db/schema/alerts';
 import { devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
 import { createActionIntent } from '../actionIntents/intentService';
+import { captureException } from '../sentry';
+import { loadTaskFence, type TaskFence } from '../aiOperator/taskService';
+import { buildTaskOperationKey } from '../aiOperator/operationKey';
 import { BREEZE_MCP_TOOL_NAMES, createBreezeMcpServer } from '../aiAgentSdkTools';
 import type { PostToolUseCallback, PreToolUseCallback } from '../aiAgentSdkTools';
 import { calculateCostCents, recordSessionlessSdkUsage } from '../aiCostTracker';
 import type { AiBillingSource } from '../aiCostTracker';
+import {
+  markAiBudgetReservationIndeterminate,
+  reserveAiBudget,
+} from '../aiBudgetReservations';
 import {
   checkAgentGuardrails,
   TOOL_ACTION_INPUT_KEYS,
@@ -130,19 +129,42 @@ import {
   buildOutcomeSdkTools,
   isOutcomeTool,
   OUTCOME_MCP_TOOL_NAMES,
-  outcomeToolsForProfile,
+  outcomeToolsForRun,
   validateOutcomeToolInput,
 } from './outcomeTools';
 import { isVerdictProfile, verdictLimits, verdictToolAllowlist } from './verdictProfile';
 import { isSweepProfile, sweepLimits, sweepToolAllowlist } from './sweepProfile';
 import { isNarrativeProfile, narrativeLimits, narrativeToolAllowlist } from './narrativeProfile';
 import { isTriageProfile, triageLimits, triageToolAllowlist } from './triageProfile';
-import { loadSweepEvidence, type SweepEvidence } from './sweepEvidence';
-import { loadNarrativeContext, type NarrativeContext } from './narrativeContext';
-import { NarrativePersistConflictError, persistNarrativeReport } from './narrativeReport';
-import { persistAlertVerdict, type AlertVerdictIntentInfo } from './alertVerdicts';
-import { persistSweepFindings, type SweepProposalRecord } from './sweepFindings';
-import { persistTicketTriage } from './ticketTriageFindings';
+import {
+  finalizeNarrative,
+  finalizeSweep,
+  finalizeTicketTriage,
+  finalizeVerdict,
+} from './runFinalizers';
+import type {
+  AgentRow,
+  AgentRunOutcome,
+  LoopResult,
+  OutcomeExecutedAction,
+  OutcomeProposedAction,
+  RunContext,
+  RunRow,
+} from './runLoopTypes';
+
+/**
+ * Re-exported (issue #4451) so every existing importer of the run outcome
+ * shape keeps its current `./runLoop` path after the types moved into
+ * `runLoopTypes.ts`.
+ */
+export type {
+  AgentRunOutcome,
+  OutcomeExecutedAction,
+  OutcomeProposedAction,
+  TicketProposalOutcome,
+} from './runLoopTypes';
+import { loadSweepEvidence } from './sweepEvidence';
+import { loadNarrativeContext } from './narrativeContext';
 
 /** `ai_agent_runs.summary` is `text`, but a reviewer reads the first screen. */
 const RUN_SUMMARY_MAX_CHARS = 2000;
@@ -158,198 +180,6 @@ export const PROPOSAL_RECORDED_TEXT =
   + 'A human will review it. Do not retry this call and do not look for another way to '
   + 'perform it.';
 
-export interface OutcomeProposedAction {
-  tool: string;
-  action?: string;
-  args: Record<string, unknown>;
-  /**
-   * Set for Tier-3 proposals that reached `action_intents`. Presence alone does
-   * NOT mean a human can still approve it — `createActionIntent` commits and
-   * then cancels an intent nobody is eligible to decide. `intentError` is the
-   * authoritative signal, and `run.intent_ids` only ever lists PENDING ones.
-   */
-  intentId?: string;
-  /**
-   * Set instead of a live approval when the intent could not be created, or was
-   * born terminal (`no_eligible_approvers`).
-   */
-  intentError?: string;
-  /**
-   * Set only for an act-mode downgrade-to-propose that carried a concrete
-   * `normalizeTarget` reason (#3826 cheap nonblocking fix) — e.g. a missing
-   * identity field the manifest requires. Absent for an ordinary shadow-mode
-   * proposal and for a drift/cap-exhaustion downgrade, neither of which has
-   * a single call-specific reason to attach.
-   */
-  downgradeReason?: string;
-}
-
-export interface OutcomeExecutedAction {
-  tool: string;
-  action?: string;
-  /**
-   * The real `ai_tool_executions` row id (wave 4a's execution ledger), or
-   * `'(inline)'` when the ledger write itself failed — a ledger failure must
-   * never block the tool call, so the call still executes and is recorded
-   * with the placeholder id (see `executionLedger.ts` and the pre/post hooks
-   * below). Correlation between the pre and post hook is per-tool FIFO order
-   * (same assumption `allowedPending` already made) — genuine per-invocation
-   * ids need SDK hook support the loop doesn't have yet.
-   */
-  executionId: string;
-  result: 'ok' | 'failed';
-  durationMs: number;
-  /**
-   * Act-mode fields (Part B, Task 4) — set ONLY for a call that actually
-   * dispatched through the act branch (an `ActAssetPin` was pinned for it in
-   * the pre-hook; see `actRevalidation.ts`). Absent for every ordinary
-   * Tier-1/2 auto-executed call, exactly like the pre-Part-B behavior.
-   */
-  execution?: 'succeeded' | 'failed' | 'timeout' | 'unknown';
-  verification?: 'passed' | 'failed' | 'inconclusive' | 'skipped';
-  /** Short, human-readable — never a raw tool input/output blob. */
-  verifyDetail?: string;
-  /** The manifest op key (e.g. `manage_services.restart`) — sanitized for the
-   *  finished-run notification; never the raw tool input. */
-  actOpKey?: string;
-  /** Sanitized target identity (service/process name, script/playbook id, or
-   *  a path COUNT) — see `actTargetSummary` (actVerify.ts). Never a full
-   *  path list or tool input/output. */
-  actTargetName?: string;
-}
-
-/**
- * Wave 6 PR 3 (#3828, Task 4) — the model's structured proposal for a
- * ticket-triggered run. Reserved: nothing in this PR populates it (there is no SDK structured-output wiring yet — the
- * model's only output channel is still the free-text summary `driveSdkLoop`
- * already extracts). The field exists now so the outcome shape, the
- * `ai_agent_runs.outcome` jsonb, and `AiAgentRunTicketProposalDto`
- * (`@breeze/shared`) do not change again when a later task wires it up.
- *
- * `notes` are PROPOSED talking points for a human reviewer — see the plan's
- * "no autonomous notes, not even private" design authority. Nothing here is
- * ever the input to a write: shadow mode + the device-less mutation gate
- * together guarantee `manage_tickets` cannot execute for a ticket run
- * regardless of what this field ever holds (`ticketShadowGuardrail.contract.test.ts`).
- *
- * P2-4 (#4191) compile-forward fix: this had zero writers pre-P2-4 (grepped
- * repo-wide), so it is now a type alias onto the shared `TicketTriageProposal`
- * — the real `submit_ticket_proposal` outcome shape — rather than the old
- * ad-hoc `proposedReply`/`proposedStatus`/`proposedPriority` shape, keeping
- * this file and `runTrace.ts`'s projection of it coherent with the DTO.
- *
- * Task A6 (this task) is what actually populates this field: the post-hook
- * (`createAgentRunPostToolUse`'s `submit_ticket_proposal` case) captures the
- * model's validated submission verbatim (no server-owned rebuild, unlike
- * `submit_narrative`) the moment a `triage`-profile run calls its one
- * outcome tool. Turning a populated value into `manage_tickets` intents/
- * `ticket_drafts` rows is still task A8's job (`finishRun`), not this one's.
- */
-export type TicketProposalOutcome = TicketTriageProposal;
-
-export interface AgentRunOutcome {
-  /** The model's `submit_ticket_proposal` submission on a `triage`-profile
-   *  run — see `TicketProposalOutcome`'s docstring. Absent for every
-   *  non-triage run, and for a triage run that never called the tool. */
-  ticketProposal?: TicketProposalOutcome;
-  proposedActions: OutcomeProposedAction[];
-  executedActions: OutcomeExecutedAction[];
-  deniedActions: Array<{ tool: string; reason: string }>;
-  /** Tool calls that actually EXECUTED (denials and proposals excluded). */
-  toolExecutionCount: number;
-  budgetExceeded?: boolean;
-  wallClockExceeded?: boolean;
-  /** The SDK stopped because `maxTurns` was reached (`error_max_turns`). */
-  maxTurnsExceeded?: boolean;
-  /**
-   * Run-level rollup over every act execution's (execution, verification)
-   * pair, computed once at finish by `computeRunVerdict` — see there for the
-   * exact rule. Absent (rather than defaulted) for anything that never
-   * reaches the rollup — kept optional so old rows read back without it
-   * don't need a migration.
-   */
-  runVerdict?: AgentRunVerdict;
-  /**
-   * Phase 2 wave P2-1 (alert verdicts) — the validated `submit_alert_verdict`
-   * input, captured by the post-tool-use hook on a verdict-profile run. Set
-   * at most once (the outcome tool's own description tells the model to call
-   * it exactly once); absent for a `full`-profile run, which never has the
-   * outcome tool exposed at all. Persisted to `ai_alert_verdicts` by
-   * `finalizeVerdict` (below), which also carries this value into
-   * `finishRun`'s persisted `outcome` jsonb.
-   */
-  alertVerdict?: AlertVerdictOutcome;
-  /**
-   * Phase 2 wave P2-1 (alert verdicts), review round 1 (IMPORTANT 2) — the
-   * disposition of `alertVerdict.suggestedAction`'s Tier-2 intent attempt,
-   * set by `finalizeVerdict` alongside `alertVerdict` itself. Absent when
-   * there was no `suggestedAction` to act on in the first place (nothing to
-   * report) OR for a `full`-profile run. Display strings only — NEVER the
-   * raw `Error.message` from `createActionIntent` (that could carry
-   * tool-input detail); see `AlertVerdictIntentInfo`'s own docstring.
-   */
-  alertVerdictIntent?: AlertVerdictIntentInfo;
-  /**
-   * Phase 2 wave P2-2 (scheduled sweeps) — the validated
-   * `submit_sweep_findings` input, captured by the post-tool-use hook on a
-   * sweep-profile run. Set at most once (the outcome tool's own description
-   * and the sweep task turn both tell the model to call it exactly once);
-   * absent for every other profile, which never has the sweep outcome tool
-   * exposed at all. Task A7 persists it and turns each accepted
-   * `proposedAction` into a supervised action intent — NOTHING here executes.
-   */
-  sweepFindings?: SweepFindingsOutcome;
-  /**
-   * Phase 2 wave P2-2 (scheduled sweeps), Task A7 — one bookkeeping record
-   * per finding that carried a `proposedAction`, written by `finalizeSweep`
-   * below. Absent when the run proposed nothing at all (nothing to report on)
-   * and for every non-sweep profile. Display strings only — NEVER the raw
-   * `Error.message` from `createActionIntent`; see `SweepProposalRecord`'s own
-   * docstring (sweepFindings.ts).
-   */
-  sweepProposals?: SweepProposalRecord[];
-  /**
-   * Phase 2 wave P2-2, Task A7 — whether the SYSTEM evidence this sweep run
-   * reported on was capped/byte-trimmed (`SweepEvidence.truncated`, Task 5).
-   * Persisted here because the evidence itself is never stored on the run,
-   * and the run-detail projection has to be able to tell a reader "the model
-   * saw a sample, not the whole fleet". Absent for every non-sweep profile.
-   */
-  sweepEvidenceTruncated?: boolean;
-  /**
-   * Phase 2 wave P2-3 (weekly org narrative) — the weekly narrative, captured
-   * by the post-tool-use hook on a narrative-profile run. Set at most once
-   * (the outcome tool's description and the narrative task turn both tell the
-   * model to call it exactly once); absent for every other profile, which
-   * never has the narrative outcome tool exposed at all.
-   *
-   * NOT the raw tool input, unlike its two siblings above: the model submits
-   * `{ headline, sections: [{ key, bullets }] }` and the SERVER attaches the
-   * section titles, imposes the canonical section order and derives the
-   * markdown (`narrativeOutcomeFromSubmission`, reached through
-   * `validateOutcomeToolInput`). See `orgNarrativeReport.ts`'s file docstring
-   * for why the model never authors any of those three.
-   *
-   * Task A7 persists it as a system-authored report artifact and links
-   * `ai_agent_runs.report_run_id` — NOTHING here executes.
-   */
-  narrative?: NarrativeOutcome;
-  /**
-   * Phase 2 wave P2-3, Task A7 — the system-authored report the narrative was
-   * materialised into, written by `finalizeNarrative` once
-   * `persistNarrativeReport`'s transaction committed. Absent for every other
-   * profile, for a narrative run that produced nothing, and for one whose
-   * persistence lost the CAS (in which case the run's `error_code` says so).
-   *
-   * TWO ids and nothing else. `runFinishedNotify` reads exactly this to build
-   * the notification's `metadata.narrative`, and the run-detail route reads
-   * `ai_agent_runs.report_run_id` (the typed column) rather than this jsonb —
-   * so nothing downstream is tempted to grow a copy of the narrative, let
-   * alone of the weekly context, on the run row.
-   */
-  narrativeReport?: { reportId: string; reportRunId: string };
-}
-
 /** Error carrying the short code that lands in `ai_agent_runs.error_code` (varchar(64)). */
 export class AgentRunError extends Error {
   readonly errorCode: string;
@@ -359,117 +189,6 @@ export class AgentRunError extends Error {
     this.name = 'AgentRunError';
     this.errorCode = errorCode;
   }
-}
-
-interface RunRow {
-  id: string;
-  agentId: string;
-  orgId: string;
-  deviceId: string | null;
-  alertId: string | null;
-  /** Wave 6 PR 3 (#3828, Task 1/4) — the triggering ticket for `triggerKind:
-   *  'ticket'` runs; always `null` for every other trigger kind. */
-  ticketId: string | null;
-  /** Wave 6 PR 4 (#3828, Task 1/4) — the triggering canonical incident for
-   *  `triggerKind: 'anomaly'` runs; always `null` for every other trigger kind. */
-  anomalyIncidentId: string | null;
-  status: string;
-  modeAtStart: Exclude<AiAgentMode, 'off'>;
-  triggerKind: AiAgentTriggerKind;
-  policySnapshot: AiAgentPolicySnapshot;
-  /** Phase 2 wave P2-1 (alert verdicts) — see `verdictProfile.ts`. */
-  profile: AiAgentRunProfile;
-  correlationGroupId: string | null;
-  /** Phase 2 wave P2-2 (scheduled sweeps) — the `ai_agent_schedules` row a
-   *  `sweep`-profile run was fanned out from; `null` for every other trigger. */
-  scheduleId: string | null;
-  /** Free-form trigger provenance (`jsonb`, defaults `{}`). A sweep run's
-   *  carries `{ scheduleId, occurrenceKey, sweepKinds }`, written by the
-   *  fixed-tick sweeper — read DEFENSIVELY below (any field may be missing or
-   *  the wrong shape; the column has no compile-time schema). */
-  triggerRef: Record<string, unknown>;
-}
-
-interface AgentRow {
-  id: string;
-  orgId: string | null;
-  partnerId: string | null;
-  name: string;
-  kind: AiAgentKind;
-  recipients: Partial<AiAgentRecipients>;
-}
-
-interface RunContext {
-  run: RunRow;
-  agent: AgentRow;
-  orgPartnerId: string;
-  device: { id: string; siteId: string; hostname: string; osType: string } | null;
-  alert: { title: string; severity: string; message: string | null } | null;
-  /** Bounded, sanitized ticket context (Task 4) — `null` for every non-ticket
-   *  run, and for a ticket run whose ticket has vanished/moved org (same
-   *  "moved/deleted reads as absent" posture `device`/`alert` already use). */
-  ticket: TicketRunContext | null;
-  /** Bounded anomaly context (wave 6 PR 4, #3828, Task 4) — `null` for every
-   *  non-anomaly run, and for an anomaly run whose incident has vanished/
-   *  moved org (same "moved/deleted reads as absent" posture as `ticket`
-   *  above). */
-  anomaly: AnomalyRunContext | null;
-  /**
-   * Phase 2 wave P2-1 (alert verdicts). Set only when `run.correlationGroupId`
-   * is set AND the group still resolves inside the run's org — same
-   * missing-reads-as-null shape as `device`/`alert` above (a group can be
-   * deleted/re-scoped between admission and delivery). `correlationTypes` is
-   * the `metadata.correlationTypes` array, narrowed to strings only — the
-   * jsonb column carries no compile-time shape.
-   */
-  correlationGroup: {
-    id: string;
-    memberCount: number;
-    noiseReductionPercent: number;
-    rootAlertId: string | null;
-    correlationTypes: string[];
-  } | null;
-  /**
-   * Phase 2 wave P2-2 (scheduled sweeps) — the schedule occurrence and the
-   * bounded, system-collected evidence this run reports on. Set only for a
-   * `sweep`-profile run; `null` for every other profile. An empty
-   * `kinds`/`evidence` is a legitimate value (see the loader below), never a
-   * reason to fail the run.
-   */
-  sweep: {
-    scheduleId: string;
-    occurrenceKey: string;
-    kinds: AiSweepKind[];
-    evidence: SweepEvidence;
-  } | null;
-  /**
-   * Phase 2 wave P2-3 (weekly org narrative) — the schedule occurrence and the
-   * bounded, system-assembled week of activity this run writes about. Set only
-   * for a `narrative`-profile run; `null` for every other profile.
-   *
-   * A narrative run loads NO sweep evidence and NO device context: it is
-   * device-less by construction and its tool floor is empty, so this context
-   * is its entire input. An empty/unavailable block inside it is a legitimate
-   * value the prompt renders as "(not measured)", never a reason to fail the
-   * run.
-   *
-   * `scheduleId` is `''` when the run carries none — Task A7's
-   * `finalizeNarrative` reports `narrative_no_schedule` rather than persisting
-   * an artifact it cannot attribute to a schedule.
-   */
-  narrative: {
-    scheduleId: string;
-    occurrenceKey: string;
-    context: NarrativeContext;
-  } | null;
-  /**
-   * The execution-ledger `ai_sessions` row for this run (Task 1/2). Set once,
-   * inside `driveSdkLoop`, right after the model is resolved — `null` until
-   * then, and stays `null` for the lifetime of the run if session creation
-   * itself failed (a best-effort write: see `driveSdkLoop`). `finishRun` reads
-   * it back to reconcile/close the session.
-   */
-  sessionId: string | null;
 }
 
 /**
@@ -515,6 +234,13 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         correlationGroupId: aiAgentRuns.correlationGroupId,
         scheduleId: aiAgentRuns.scheduleId,
         triggerRef: aiAgentRuns.triggerRef,
+        // #5205 W06 — the run's AI Operator task linkage. Loaded here rather
+        // than looked up on demand: the pre-tool hook consults `taskId` on
+        // EVERY tool call (the task fence), so a per-call lookup would be a
+        // second round trip on the model's critical path.
+        taskId: aiAgentRuns.taskId,
+        taskStepKey: aiAgentRuns.taskStepKey,
+        taskAttemptOrdinal: aiAgentRuns.taskAttemptOrdinal,
       })
       .from(aiAgentRuns)
       .where(eq(aiAgentRuns.id, runId))
@@ -752,7 +478,11 @@ function readToolAction(toolName: string, input: Record<string, unknown>): strin
  * no RBAC helper is ever reached from an agent run.
  */
 export function createAgentRunPreToolUse(args: {
-  run: Pick<RunRow, 'id' | 'orgId' | 'agentId' | 'profile'>;
+  // #5205 W06 adds the three task-linkage columns: `taskId` selects
+  // `submit_task_step` (via `outcomeToolsForRun`) and switches the tool fence
+  // below on; `taskStepKey`/`taskAttemptOrdinal` are the operation identity a
+  // Tier-3 proposal reserves under.
+  run: Pick<RunRow, 'id' | 'orgId' | 'agentId' | 'profile' | 'taskId' | 'taskStepKey' | 'taskAttemptOrdinal'>;
   agentName: string;
   agentAuth: AuthContext;
   agentKind: AiAgentKind;
@@ -796,6 +526,16 @@ export function createAgentRunPreToolUse(args: {
     sessionId, executionIdPending, actPinPending, actReservation, deadlineMs,
   } = args;
 
+  /**
+   * #5205 W06 — the task fence read taken at the top of THIS tool call, kept
+   * so `recordProposal` can build the operation key from the SAME
+   * `plan_revision` the fence observed. Reading it twice would open a window
+   * where the key names a revision the fence never saw, which is precisely
+   * the mismatch `evaluateTaskClaimPredicate` would later refuse to dispatch.
+   * Null on a non-task run.
+   */
+  let taskFence: TaskFence | null = null;
+
   /** Shared by the ordinary 'propose' disposition AND an act-mode downgrade
    *  (drift/cap-exhaustion) — both record the SAME shape and, for a tier-3
    *  call, submit the SAME action-intent approval. */
@@ -827,6 +567,40 @@ export function createAgentRunPreToolUse(args: {
           source: 'ai_agent',
           orgId: run.orgId,
           reason: `Proposed by ${agentName} for run ${run.id}`,
+          // #5205 W06, spec §6.2: "Every mutating tool call on a task-linked
+          // run must enter the operation reservation path, even if the model
+          // calls an existing tool directly." This IS that path — passing the
+          // task context makes `createActionIntent` (W04) reserve the
+          // `ai_operator_operations` row in the SAME transaction as the intent
+          // insert and derive the intent's `idempotency_key` from task
+          // identity, so a continuation run re-proposing the same restart
+          // converges onto the existing intent (the C6 single-arbiter rule)
+          // instead of minting a second one.
+          //
+          // Note the branch is on `run.taskId`, not on the tool: EVERY tier-3
+          // proposal from a task-linked run is a task operation. There is no
+          // "direct effect" escape hatch on this path.
+          ...(run.taskId && run.taskStepKey && run.taskAttemptOrdinal !== null && taskFence
+            ? {
+              task: {
+                taskId: run.taskId,
+                taskStepKey: run.taskStepKey,
+                operationKey: buildTaskOperationKey({
+                  taskStepKey: run.taskStepKey,
+                  planRevision: taskFence.revision,
+                  toolName,
+                  // The tool's own device argument, resolved server-side by
+                  // `createActionIntent`'s scope resolution — used here only
+                  // to make the key target-specific.
+                  targetId: typeof (input as { deviceId?: unknown }).deviceId === 'string'
+                    ? (input as { deviceId: string }).deviceId
+                    : null,
+                  ordinal: 0,
+                }),
+                attemptOrdinal: run.taskAttemptOrdinal,
+              },
+            }
+            : {}),
         });
         entry.intentId = intent.id;
         // createActionIntent does NOT throw when nobody can approve: it
@@ -907,6 +681,37 @@ export function createAgentRunPreToolUse(args: {
   }
 
   return async (toolName, input) => {
+    // #5205 W06, spec §7.3 — THE TASK FENCE. There is no run-level cancel in
+    // this codebase (baseline C17: `cancelled`/`expired` are valid
+    // `ai_agent_runs` statuses with zero production writers and no route), so
+    // a task that is paused, stopping, expired or terminal cannot stop its
+    // in-flight reasoning run by cancelling it. It fences it at the next tool
+    // call and lets it finish, which is exactly this check.
+    //
+    // Ahead of the outcome-tool branch on purpose: `submit_task_step` is the
+    // one call whose result would otherwise be persisted into a checkpoint the
+    // task must no longer accept. A fenced task's run may still READ nothing
+    // and end; it may not propose, execute, or record.
+    if (run.taskId) {
+      const fence: TaskFence | null = await loadTaskFence(run.orgId, run.taskId).catch((error: unknown) => {
+        // A failed fence read is NOT permission. Refusing on a transient DB
+        // error costs one denied tool call in a run that is about to end
+        // anyway; allowing on it would let a cancelled task keep acting.
+        console.error('[aiAgentRunLoop] task fence read failed; denying', {
+          runId: run.id, taskId: run.taskId, error,
+        });
+        return null;
+      });
+      if (!fence || fence.fenced) {
+        const reason = fence
+          ? `AI Operator task ${run.taskId} is fenced (state '${fence.state}')`
+          : `AI Operator task ${run.taskId} could not be read`;
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: `${reason}. Stop and do not retry.` };
+      }
+      taskFence = fence;
+    }
+
     // Outcome tools (Phase 2 wave P2-1, spec §9): checked FIRST, before
     // `checkAgentGuardrails` below, because that guardrail has no allowlist
     // entry for an outcome tool — it isn't in `aiTools`/`TOOL_TIERS` at all —
@@ -938,10 +743,16 @@ export function createAgentRunPreToolUse(args: {
       // sweep run can never record a verdict (or vice versa) even if a stale
       // tool cache offers the wrong name. The deny reason names the profile
       // because that is the mismatch a reviewer needs to see.
-      if (!outcomeToolsForProfile(run.profile).includes(toolName)) {
+      // #5205 W06: `outcomeToolsForRun`, not `outcomeToolsForProfile` — a
+      // task-linked run is a `full`-profile run (whose profile set is empty)
+      // that additionally owns `submit_task_step`. Same single-source-of-truth
+      // property, widened by one input.
+      if (!outcomeToolsForRun(run).includes(toolName)) {
         outcome.deniedActions.push({
           tool: toolName,
-          reason: `outcome tool ${toolName} is not available to ${run.profile}-profile runs`,
+          reason: run.taskId
+            ? `outcome tool ${toolName} is not available to this task-linked run`
+            : `outcome tool ${toolName} is not available to ${run.profile}-profile runs`,
         });
         return { allowed: false, error: 'not available on this run' };
       }
@@ -1159,7 +970,11 @@ export function createAgentRunPostToolUse(args: {
   allowedPending: Map<string, number>;
   executionIdPending: Map<string, Array<string | null>>;
   actPinPending: Map<string, Array<ActAssetPin | null>>;
-  run: { id: string; orgId: string; agentId: string; deviceId: string | null; profile: AiAgentRunProfile };
+  run: {
+    id: string; orgId: string; agentId: string; deviceId: string | null; profile: AiAgentRunProfile;
+    /** #5205 W06 — selects `submit_task_step` for capture (`outcomeToolsForRun`). */
+    taskId?: string | null;
+  };
   /** For `verifyActExecution`'s `executeCommand` calls — attribution only. */
   agentUserId: string;
 }): PostToolUseCallback {
@@ -1174,7 +989,7 @@ export function createAgentRunPostToolUse(args: {
       // Stored BY TOOL NAME (wave P2-2, task 6), gated on the same
       // `outcomeToolsForProfile` the pre-hook denies against — so a name the
       // pre-hook refused can never still land in the outcome via this path.
-      if (!isError && outcomeToolsForProfile(run.profile).includes(toolName)) {
+      if (!isError && outcomeToolsForRun(run).includes(toolName)) {
         switch (toolName) {
           case 'submit_alert_verdict':
             outcome.alertVerdict = validateOutcomeToolInput(toolName, input);
@@ -1198,6 +1013,14 @@ export function createAgentRunPostToolUse(args: {
           // in `finishRun` (task A8), never here.
           case 'submit_ticket_proposal':
             outcome.ticketProposal = validateOutcomeToolInput(toolName, input);
+            break;
+          // #5205 W06 — the proposal is STORED, not acted on. The coordinator
+          // reads it off the persisted run row and `validateNextStep` decides
+          // whether the named step is reachable. Capturing it here is what
+          // makes the checkpoint durable: the run row is committed by
+          // `finishRun` before the task's wake ever fires.
+          case 'submit_task_step':
+            outcome.taskStep = validateOutcomeToolInput(toolName, input);
             break;
           default: {
             const exhaustive: never = toolName;
@@ -1505,46 +1328,6 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
   };
 }
 
-interface LoopResult {
-  summary: string;
-  costCents: number;
-  turnCount: number;
-  outcome: AgentRunOutcome;
-  intentIds: string[];
-  /**
-   * The run's `ai_agent` principal context (built once, near the top of
-   * `driveSdkLoop`, via `buildAgentAuthContext`) — carried out on `result`
-   * rather than recomputed, since `finishRun` (Task 8, P2-1) needs it to call
-   * `persistAlertVerdict`/`createActionIntent` for a verdict run and has no
-   * other way to reach it: `driveSdkLoop` has exactly one return statement,
-   * reached only after `buildAgentAuthContext` has already succeeded (a
-   * throw there returns straight to `executeAgentRun`'s catch block, never
-   * through here — see that call site's own comment), so this is always
-   * populated whenever `finishRun` reads it. Smaller diff than widening
-   * `RunContext` with a second mutated-after-construction field alongside
-   * `sessionId`.
-   */
-  agentAuth: AuthContext;
-  /**
-   * Set when the SDK loop itself threw. Carried back rather than rethrown so
-   * the tokens already burned still land on the run row — a crashed run that
-   * recorded `cost_cents: 0` would make the agent's daily budget cap
-   * under-count real spend. Setup failures BEFORE any spend still throw.
-   */
-  failure?: { errorCode: string; message: string };
-  /**
-   * Phase 2 wave P2-4 (#4191), Task A8 — the SUBSET of `intentIds` that a
-   * creation-time `ticket_autonomy` grant already decided (status
-   * `approved`, no human fan-out ever happened — see `ticketAutonomy.ts`).
-   * Populated only by `finalizeTicketTriage`; every other profile's
-   * finalizer only ever links a `pending_approval` intent, so this stays
-   * empty (and every existing `intentIds.length > 0` reader is unaffected)
-   * for `verdict`/`sweep`/`narrative`/`full` runs. See
-   * `classifyIntentAwaitingApproval`'s own docstring for how this is used.
-   */
-  decidedIntentIds?: string[];
-}
-
 async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<LoopResult> {
   const { run } = ctx;
   const limits = effective.limits;
@@ -1621,6 +1404,30 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   const billingSource: AiBillingSource = llm.source === 'partner' ? 'partner_key' : 'platform';
   const model = effective.model ?? llm.model;
 
+  // #5205 W06, spec §6.2: "Record the prompt template version and the resolved
+  // model on every task-linked run." Admission stamped the CONFIGURED model
+  // (`policySnapshot.effective.model`), which is null whenever the agent
+  // inherits the org's LLM default — the fallback on the line above. This is
+  // the first and only moment the value actually used is known, so it is
+  // stamped here rather than guessed at admission.
+  //
+  // Best-effort and non-fatal: a failed metadata write must never turn a
+  // healthy run into a failed one. `resolved_model` is not in
+  // `ai_agent_runs_immutable_guard()`'s deny-list, so this UPDATE is
+  // permitted where a `policy_snapshot` rewrite would raise.
+  if (run.taskId) {
+    try {
+      await inSystemDbContext(() => db
+        .update(aiAgentRuns)
+        .set({ resolvedModel: model })
+        .where(eq(aiAgentRuns.id, run.id)));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] failed to stamp resolved model (non-fatal)', {
+        runId: run.id, taskId: run.taskId, error,
+      });
+    }
+  }
+
   // THE run's policy, not the agent's current one: `mode_at_start` and the
   // release-time revalidation in 3b both reason about this snapshot, and an
   // operator narrowing the allowlist mid-run must not change what a proposal
@@ -1696,7 +1503,10 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   });
   const postToolUse = createAgentRunPostToolUse({
     outcome, allowedPending, executionIdPending, actPinPending,
-    run: { id: run.id, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId, profile: run.profile },
+    run: {
+      id: run.id, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId,
+      profile: run.profile, taskId: run.taskId,
+    },
     agentUserId: agentAuth.user.id,
   });
 
@@ -1738,10 +1548,25 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // registers one on the MCP server, let alone exposes it via
   // `allowedTools`.
   const mcpServer = createBreezeMcpServer(() => agentAuth, preToolUse, postToolUse, undefined,
-    buildOutcomeSdkTools(outcomeToolsForProfile(run.profile)),
+    buildOutcomeSdkTools(outcomeToolsForRun(run)),
     onlyTools ? { onlyTools } : undefined);
 
   const prompt = promptContext(ctx, effective);
+  // S8: the ONE surface with a genuinely stable request identity — the agent
+  // run's own id. Re-driving a run therefore rejoins its existing reservation
+  // instead of taking a second hold on the org's cap.
+  const reservation = await reserveAiBudget({
+    orgId: run.orgId,
+    idempotencyKey: `ai-agent-run:${run.id}`,
+    billingSource,
+  });
+  if (reservation.kind === 'denied') {
+    throw new AgentRunError('org_budget_exceeded', reservation.message);
+  }
+  const reservationId = reservation.reservationId;
+  const maxBudgetCents = reservation.kind === 'reserved'
+    ? Math.min(runLimits.maxBudgetCentsPerRun, reservation.reservedCostCents)
+    : runLimits.maxBudgetCentsPerRun;
   const abortController = new AbortController();
   let wallClockExceeded = false;
   let budgetExceeded = false;
@@ -1757,6 +1582,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   let maxTurnsExceeded = false;
   let costCents = 0;
   let turnCount = 0;
+  let receivedResult = false;
   const usage: SdkUsage = {
     input_tokens: 0,
     output_tokens: 0,
@@ -1774,7 +1600,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
           maxTurns: Math.max(1, runLimits.maxTurnsPerRun),
           // Belt to the mid-stream braces below: the SDK stops itself, and the
           // loop stops the SDK if a result lands over budget anyway.
-          maxBudgetUsd: runLimits.maxBudgetCentsPerRun / 100,
+          maxBudgetUsd: maxBudgetCents / 100,
           tools: [],
           allowedTools: [...new Set(exposedNames)],
           mcpServers: { breeze: mcpServer },
@@ -1796,6 +1622,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
             continue;
           }
           if (message.type !== 'result') continue;
+          receivedResult = true;
 
           turnCount += message.num_turns;
           const messageUsage = message.usage as unknown as SdkUsage;
@@ -1837,7 +1664,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
             break;
           }
 
-          if (costCents > runLimits.maxBudgetCentsPerRun) {
+          if (costCents > maxBudgetCents) {
             budgetExceeded = true;
             abortController.abort();
             break;
@@ -1886,19 +1713,29 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // kept admitting runs after the credits were gone. Best-effort: an accounting
   // failure never redefines the run's outcome.
   try {
-    await recordSessionlessSdkUsage(
-      run.orgId,
-      {
-        costCents,
-        usage,
-        numTurns: turnCount,
-        toolExecutionCount: outcome.toolExecutionCount,
-        model,
-      },
-      billingSource,
-    );
+    if (receivedResult) {
+      await recordSessionlessSdkUsage(
+        run.orgId,
+        {
+          costCents,
+          usage,
+          numTurns: turnCount,
+          toolExecutionCount: outcome.toolExecutionCount,
+          model,
+        },
+        billingSource,
+        reservationId,
+      );
+    } else {
+      await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId });
+    }
   } catch (error) {
     console.error('[aiAgentRunLoop] failed to record org AI usage', { runId: run.id, error });
+    await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId })
+      .catch((markError) => console.error('[aiAgentRunLoop] failed to retain indeterminate AI reservation', {
+        runId: run.id,
+        error: markError,
+      }));
   }
 
   return {
@@ -2093,10 +1930,28 @@ export async function executeAgentRun(runId: string): Promise<void> {
         ? 'ownership_mismatch'
         : 'run_failed';
     console.error('[aiAgentRunLoop] agent run failed', { runId, errorCode, error });
-    const moved = await transitionRunStatus(runId, 'running', 'failed', {
-      errorCode,
-      finishedAt: new Date(),
-    });
+    // This is the LAST-RESORT terminalization: the runner queue is
+    // `attempts: 1` (replaying a crashed run could re-invoke tools that
+    // already had real-world effects), so if this throws, the row stays
+    // `running` forever and any AI Operator task waiting on it re-arms its
+    // poll until its own deadline fires — with nothing anywhere explaining
+    // why. `transitionRunStatus` gained a task-outbox insert inside its
+    // transaction in #5205 W06 and can now throw where it previously could
+    // only return false, so the fallback needs a fallback.
+    let moved = false;
+    try {
+      moved = await transitionRunStatus(runId, 'running', 'failed', {
+        errorCode,
+        finishedAt: new Date(),
+      });
+    } catch (terminalError) {
+      console.error('[aiAgentRunLoop] could not terminalize a failed run', {
+        runId, orgId: run.orgId, errorCode, terminalError,
+      });
+      captureException(
+        terminalError instanceof Error ? terminalError : new Error(String(terminalError)),
+      );
+    }
     if (moved) {
       await safePublish('ai.agent.run.failed', run.orgId, {
         runId, agentId: run.agentId, errorCode,
@@ -2117,358 +1972,6 @@ const TERMINAL_EVENT = {
   awaiting_approval: 'ai.agent.run.awaiting_approval',
   failed: 'ai.agent.run.failed',
 } as const;
-
-/**
- * Phase 2 wave P2-1 (alert verdicts), Task 8 — review round 1 fixes
- * (IMPORTANT 3 + 4). Runs from `executeAgentRun`, BEFORE the
- * awaiting_approval/completed decision and before any of the three
- * `finishRun` call sites — not inside `finishRun` itself (moved there in
- * the original Task 8 pass; the ordering was the bug IMPORTANT 3 found: the
- * status ternary read `intentIds.length` before this ran, so a verdict run
- * that created a pending intent still finished `completed`).
- *
- * Returns an errorCode override. The caller applies it ONLY to the
- * normal-finish `finishRun` call — the `result.failure`/ceiling branches
- * already carry a real, more specific code (`llm_unavailable`,
- * `max_turns_exceeded`, …) that must not be clobbered with the generic
- * `verdict_missing`/`verdict_persist_failed`, and `classifyTerminal`
- * (agentCircuit.ts) still needs that real code to classify a genuine
- * runner failure correctly for the circuit breaker regardless of profile.
- * Returning `null` and letting those two branches ignore it entirely keeps
- * that scoping intact without this function needing to know which branch
- * the caller is about to take.
- */
-async function finalizeVerdict(ctx: RunContext, result: LoopResult): Promise<string | null> {
-  if (!isVerdictProfile(ctx.run)) return null;
-  const { outcome } = result;
-
-  if (!outcome.alertVerdict) {
-    // A verdict run that reached a normal finish without ever calling
-    // `submit_alert_verdict` is a runner failure a human needs to see —
-    // never a silent `completed` with nothing to show for it. (On the
-    // failure/ceiling branches this return value is discarded by the
-    // caller, so this only actually takes effect on the normal-finish path
-    // — see this function's own docstring.)
-    outcome.runVerdict = 'needs_attention';
-    return 'verdict_missing';
-  }
-
-  // IMPORTANT 4: re-read the run's live status right before writing — the
-  // stall reaper (`reapStalledAgentRuns`, runService.ts) or a second
-  // executor may have already moved this run out of `running` while the
-  // SDK loop was in flight. Skip persistence rather than orphan a live
-  // verdict row + a live approval request under a run nobody owns anymore.
-  // A tiny window remains between this read and the writes inside
-  // `persistAlertVerdict` below — accepted per review ruling.
-  const stillRunning = await isRunStillRunning(ctx.run.id, ctx.run.orgId);
-  if (!stillRunning) {
-    console.warn('[aiAgentRunLoop] skipped verdict persistence — run left `running` before it could be persisted', {
-      runId: ctx.run.id,
-    });
-    return null;
-  }
-
-  try {
-    const { intentId, suggestionDisposition, suggestionReason } = await persistAlertVerdict(
-      {
-        id: ctx.run.id,
-        orgId: ctx.run.orgId,
-        alertId: ctx.run.alertId,
-        correlationGroupId: ctx.run.correlationGroupId,
-        deviceId: ctx.run.deviceId,
-        // Review round 2 (IMPORTANT 1) — the run's OWN effective
-        // toolAllowlist, off the already-loaded run row's policySnapshot
-        // (never re-queried): `persistAlertVerdict` gates a suggested
-        // mutation's intent creation on this SAME authority the release
-        // path re-checks (agentReleaseAuthority.ts).
-        toolAllowlist: ctx.run.policySnapshot.effective.toolAllowlist,
-      },
-      outcome.alertVerdict,
-      result.agentAuth,
-    );
-    if (intentId) result.intentIds.push(intentId);
-    // Review round 1 (IMPORTANT 2): only recorded when there was a
-    // `suggestedAction` to report on at all — see `AlertVerdictIntentInfo`'s
-    // own docstring for why this is absent rather than a vacuous
-    // `not_created` on every verdict.
-    if (outcome.alertVerdict.suggestedAction) {
-      const intentInfo: AlertVerdictIntentInfo = { disposition: suggestionDisposition };
-      if (suggestionReason) intentInfo.reason = suggestionReason;
-      outcome.alertVerdictIntent = intentInfo;
-    }
-    return null;
-  } catch (error) {
-    console.error('[aiAgentRunLoop] failed to persist alert verdict', { runId: ctx.run.id, error });
-    return 'verdict_persist_failed';
-  }
-}
-
-/**
- * Phase 2 wave P2-2 (scheduled sweeps), Task A7 — the sweep sibling of
- * `finalizeVerdict` above, called from the SAME place in `executeAgentRun`
- * (before the awaiting_approval/completed decision, outside any ambient DB
- * context — `persistSweepFindings` inherits `createActionIntent`'s
- * no-ambient-context precondition; see `alertVerdicts.ts:208-226`).
- *
- * Returns an errorCode override the caller applies ONLY on the normal-finish
- * path, exactly as it does for `finalizeVerdict`'s. Unlike a verdict run, a
- * sweep run that produced no findings is NOT an error: task 6 already treats
- * `outcome.sweepFindings` as this profile's "produced something" signal, and a
- * sweep that legitimately found nothing to report still completes cleanly.
- *
- * `evidenceDeviceIds` is built from `ctx.sweep.evidence` — the rows the
- * SYSTEM loaded, not anything the model said — and is the control that keeps
- * a crafted proposal from reaching a device this run never looked at. A run
- * whose context carries no sweep block at all (defensive: `ctx.sweep` is
- * populated for every sweep-profile run today) therefore has an EMPTY
- * evidence set, which refuses every proposal — fail closed, never open.
- */
-async function finalizeSweep(ctx: RunContext, result: LoopResult): Promise<string | null> {
-  if (!isSweepProfile(ctx.run)) return null;
-  const { outcome } = result;
-
-  // Recorded even when there are no findings: "the model only saw a sample"
-  // is true of the run regardless of what it chose to report.
-  if (ctx.sweep) outcome.sweepEvidenceTruncated = ctx.sweep.evidence.truncated;
-
-  if (!outcome.sweepFindings) return null;
-
-  // Same IMPORTANT-4 re-read as `finalizeVerdict`: the stall reaper
-  // (`reapStalledAgentRuns`) or a second executor may have moved this run out
-  // of `running` while the SDK loop was in flight. Skip persistence rather
-  // than mint live, human-approvable intents under a run nobody owns anymore.
-  const stillRunning = await isRunStillRunning(ctx.run.id, ctx.run.orgId);
-  if (!stillRunning) {
-    console.warn('[aiAgentRunLoop] skipped sweep persistence — run left `running` before it could be persisted', {
-      runId: ctx.run.id,
-    });
-    return null;
-  }
-
-  const evidenceDeviceIds = new Set<string>();
-  for (const kind of Object.values(ctx.sweep?.evidence.kinds ?? {})) {
-    for (const row of kind?.rows ?? []) {
-      if (row.deviceId) evidenceDeviceIds.add(row.deviceId);
-    }
-  }
-
-  try {
-    const { proposals, intentIds } = await persistSweepFindings(
-      {
-        id: ctx.run.id,
-        orgId: ctx.run.orgId,
-        agentId: ctx.run.agentId,
-        // A sweep run is device-less by construction — that is exactly why
-        // every intent it mints carries its own explicit device scope.
-        deviceId: null,
-        scheduleId: ctx.run.scheduleId,
-        // The AGENT's effective allowlist off the already-loaded run row —
-        // the same authority `agentReleaseAuthority.ts` re-checks at release.
-        toolAllowlist: ctx.run.policySnapshot.effective.toolAllowlist,
-        // The AGENT's action cap, NOT `sweepLimits`' hard `0` (which governs
-        // what the run LOOP may execute, and a sweep executes nothing). `??`
-        // tolerates a v1 policy snapshot, which predates the field entirely.
-        maxActionsPerRun:
-          ctx.run.policySnapshot.effective.limits.maxActionsPerRun
-          ?? AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun,
-        evidenceDeviceIds,
-      },
-      outcome.sweepFindings,
-      result.agentAuth,
-    );
-    if (proposals.length > 0) outcome.sweepProposals = proposals;
-    for (const intentId of intentIds) result.intentIds.push(intentId);
-    return null;
-  } catch (error) {
-    console.error('[aiAgentRunLoop] failed to persist sweep findings', { runId: ctx.run.id, error });
-    return 'sweep_persist_failed';
-  }
-}
-
-/**
- * Phase 2 wave P2-3 (weekly org narrative), Task A7 — the narrative sibling of
- * `finalizeVerdict`/`finalizeSweep` above, called from the SAME place in
- * `executeAgentRun` and outside any ambient DB context (`persistNarrativeReport`
- * opens its own system transaction and would take a second pooled connection
- * from inside one).
- *
- * Returns an errorCode override the caller applies ONLY on the normal-finish
- * path, exactly as it does for the two siblings'.
- *
- * A narrative run that produced NOTHING is an error, unlike a sweep that found
- * nothing: a sweep legitimately reports "all clear", but the narrative IS the
- * deliverable — an occurrence that yields no document is a silent hole in a
- * weekly series an MSP forwards to their customer, and `narrative_missing` is
- * what makes that visible on the run row instead of a clean `completed` with
- * nothing behind it.
- *
- * `narrative_no_schedule` is deliberately separate from a persistence failure:
- * the definition's identity IS `(org_id, source_ai_agent_schedule_id)`, so
- * without a schedule there is no row to find-or-create and no idempotency at
- * all — a manually triggered narrative run would mint a fresh definition every
- * time. Refusing is the conservative answer; the narrative still lives on the
- * run's own outcome and renders on the run-detail page.
- */
-async function finalizeNarrative(ctx: RunContext, result: LoopResult): Promise<string | null> {
-  if (!isNarrativeProfile(ctx.run)) return null;
-  const { outcome } = result;
-
-  if (!outcome.narrative) return 'narrative_missing';
-  if (!ctx.narrative?.scheduleId) {
-    console.warn('[aiAgentRunLoop] narrative run carries no schedule — not persisting a report definition', {
-      runId: ctx.run.id, orgId: ctx.run.orgId,
-    });
-    return 'narrative_no_schedule';
-  }
-
-  // Same IMPORTANT-4 re-read both siblings carry: the stall reaper
-  // (`reapStalledAgentRuns`) or a second executor may have moved this run out
-  // of `running` while the SDK loop was in flight. Skip rather than publish a
-  // customer-facing artifact under a run nobody owns any more. (A tiny window
-  // remains between this read and the transaction below — closed properly
-  // there, by the `FOR UPDATE` lock plus the `report_run_id IS NULL` CAS.)
-  const stillRunning = await isRunStillRunning(ctx.run.id, ctx.run.orgId);
-  if (!stillRunning) {
-    console.warn('[aiAgentRunLoop] skipped narrative persistence — run left `running` before it could be persisted', {
-      runId: ctx.run.id,
-    });
-    return null;
-  }
-
-  try {
-    const { reportId, reportRunId } = await persistNarrativeReport({
-      run: {
-        id: ctx.run.id,
-        orgId: ctx.run.orgId,
-        agentId: ctx.run.agentId,
-        scheduleId: ctx.narrative.scheduleId,
-      },
-      agent: { id: ctx.agent.id, name: ctx.agent.name },
-      occurrenceKey: ctx.narrative.occurrenceKey || null,
-      context: ctx.narrative.context,
-      outcome: outcome.narrative,
-    });
-    // TWO ids, never the narrative or the context — see the field's docstring.
-    outcome.narrativeReport = { reportId, reportRunId };
-    return null;
-  } catch (error) {
-    if (error instanceof NarrativePersistConflictError) {
-      // A race that resolved correctly (another executor linked an artifact,
-      // or the run moved) — logged at warn, not error, and given its own code
-      // so it is distinguishable from a genuine write failure on the run row.
-      console.warn('[aiAgentRunLoop] narrative artifact was not linked to this run', {
-        runId: ctx.run.id, reason: (error as Error).message,
-      });
-      return 'narrative_persist_conflict';
-    }
-    console.error('[aiAgentRunLoop] failed to persist the narrative report', { runId: ctx.run.id, error });
-    return 'narrative_persist_failed';
-  }
-}
-
-/**
- * Phase 2 wave P2-4 (ticket triage, #4191), Task A8 — the triage sibling of
- * `finalizeVerdict`/`finalizeSweep`/`finalizeNarrative` above, called from
- * the SAME place in `executeAgentRun` and outside any ambient DB context
- * (`persistTicketTriage` inherits `createActionIntent`'s no-ambient-context
- * precondition; see `sweepFindings.ts`/`alertVerdicts.ts` headers).
- *
- * Returns an errorCode override the caller applies ONLY on the
- * normal-finish path, exactly as its three siblings do.
- *
- * A triage run that reached a normal finish without ever calling
- * `submit_ticket_proposal` is treated like a verdict run's missing verdict,
- * not like a sweep's legitimate "found nothing": the prompt tells the model
- * to call its one outcome tool exactly once (`runnerPrompt.ts`), so a run
- * that never did is a runner failure a human needs to see, not a silent
- * `completed`.
- */
-async function finalizeTicketTriage(ctx: RunContext, result: LoopResult): Promise<string | null> {
-  if (!isTriageProfile(ctx.run)) return null;
-  const { outcome } = result;
-
-  if (!outcome.ticketProposal) return 'ticket_proposal_missing';
-
-  // Defensive, mirroring `finalizeNarrative`'s `ctx.narrative?.scheduleId`
-  // check: a `triage`-profile run is admitted with `triggerKind: 'ticket'`
-  // and a `ticketId` by construction (wave 6 PR 3), but this is the one
-  // place a violated invariant would otherwise NPE deep inside
-  // `persistTicketTriage` instead of surfacing a clear error code.
-  if (ctx.run.triggerKind !== 'ticket' || !ctx.run.ticketId) {
-    console.warn('[aiAgentRunLoop] triage run carries no ticket scope — not persisting its proposal', {
-      runId: ctx.run.id, orgId: ctx.run.orgId, triggerKind: ctx.run.triggerKind,
-    });
-    return 'ticket_triage_scope_missing';
-  }
-
-  // Same IMPORTANT-4 re-read every sibling carries: the stall reaper
-  // (`reapStalledAgentRuns`) or a second executor may have moved this run
-  // out of `running` while the SDK loop was in flight. Skip persistence
-  // rather than mint live, human-or-autonomy-decided intents under a run
-  // nobody owns anymore.
-  const stillRunning = await isRunStillRunning(ctx.run.id, ctx.run.orgId);
-  if (!stillRunning) {
-    console.warn('[aiAgentRunLoop] skipped ticket-triage persistence — run left `running` before it could be persisted', {
-      runId: ctx.run.id,
-    });
-    return null;
-  }
-
-  try {
-    const { intentIds, approvedIntentIds, skipped } = await persistTicketTriage(
-      {
-        id: ctx.run.id,
-        orgId: ctx.run.orgId,
-        agentId: ctx.run.agentId,
-        ticketId: ctx.run.ticketId,
-        // The run's IMMUTABLE start-of-run snapshot — gate 2 of the
-        // advisory autonomy check (see `ticketTriageFindings.ts`'s header).
-        policySnapshot: ctx.run.policySnapshot,
-        // The AGENT's action cap — a triage run's ONE deliberate divergence
-        // from its siblings' hard-zeroed `maxActionsPerRun` (see
-        // `triageLimits`'s docstring): this is a POST-run minting cap, not
-        // an in-run tool-call budget. `??` tolerates a pre-v8 snapshot.
-        maxActionsPerRun:
-          ctx.run.policySnapshot.effective.limits.maxActionsPerRun
-          ?? AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun,
-      },
-      outcome.ticketProposal,
-      result.agentAuth,
-    );
-    for (const intentId of intentIds) result.intentIds.push(intentId);
-    // GROUND TRUTH, not the call-level `autonomous` advisory flag (review
-    // fix, round 2): `approvedIntentIds` is built per-intent from each
-    // intent's OWN returned status inside `persistTicketTriage` — the live
-    // gates can flip between two sequential `createActionIntent` calls in
-    // that same invocation, so a uniform "autonomous ⇒ every id is decided"
-    // read would wrongly classify a run where one intent lands `approved`
-    // and the next lands `pending_approval`. See
-    // `classifyIntentAwaitingApproval`'s docstring for how this is used.
-    if (approvedIntentIds.length > 0) {
-      result.decidedIntentIds = [...(result.decidedIntentIds ?? []), ...approvedIntentIds];
-    }
-    if (skipped.length > 0) {
-      console.info('[aiAgentRunLoop] ticket-triage proposal partially skipped', {
-        runId: ctx.run.id, skipped,
-      });
-    }
-    return null;
-  } catch (error) {
-    console.error('[aiAgentRunLoop] failed to persist the ticket-triage proposal', { runId: ctx.run.id, error });
-    return 'ticket_triage_persist_failed';
-  }
-}
-
-/** IMPORTANT 4 helper — see `finalizeVerdict`. System-scoped: this runs from
- *  the background run loop, with no ambient request context. */
-async function isRunStillRunning(runId: string, orgId: string): Promise<boolean> {
-  return inSystemDbContext(async () => {
-    const [row] = await db.select({ status: aiAgentRuns.status }).from(aiAgentRuns)
-      .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, orgId)))
-      .limit(1);
-    return row?.status === 'running';
-  });
-}
 
 /**
  * Act-execution op evidence (Task 6, P2-5, #4192) — one `executed`/`failed`

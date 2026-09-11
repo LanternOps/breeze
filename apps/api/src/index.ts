@@ -51,6 +51,9 @@ import { tenantVariableRoutes } from './routes/tenantVariables';
 import { orgRoutes } from './routes/orgs';
 import { orgMergeRoutes } from './routes/orgMerge';
 import { orgArchiveRoutes } from './routes/orgArchive';
+import { orgSummaryRoutes } from './routes/orgSummary';
+import { serviceDeliverableRoutes } from './routes/serviceDeliverables';
+import { orgKeyDateRoutes } from './routes/orgKeyDates';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
 import { oauthInteractionRoutes } from './routes/oauthInteraction';
@@ -118,9 +121,11 @@ import { metricsRoutes, metricsMiddleware } from './routes/metrics';
 import { groupRoutes } from './routes/groups';
 import { integrationRoutes } from './routes/integrations';
 import { partnerRoutes } from './routes/partner';
+import { partnerTrustRoutes } from './routes/partnerTrust';
 import { networkKnownGuestsRoutes } from './routes/networkKnownGuests';
 import { tagRoutes } from './routes/tags';
 import { customFieldRoutes } from './routes/customFields';
+import { customFieldImportRoutes } from './routes/customFieldImport';
 import { filterRoutes } from './routes/filters';
 import { deploymentRoutes } from './routes/deployments';
 import { createAgentWsRoutes } from './routes/agentWs';
@@ -136,6 +141,7 @@ import { aiRoutes } from './routes/ai';
 import { aiProviderRoutes } from './routes/aiProvider';
 import { aiAgentsRoutes } from './routes/aiAgents';
 import { aiAgentSchedulesRoutes } from './routes/aiAgentSchedules';
+import { aiOperatorTasksRoutes } from './routes/aiOperatorTasks';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
 import { mountInviteLandingRoutes } from './modules/mcpInvites';
@@ -171,6 +177,7 @@ import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { extensionsWebRoutes } from './routes/extensionsWeb';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
+import { reportStalePamRuleTiers } from './services/pamRuleTierDriftCheck';
 import {
   captureException,
   captureMessage,
@@ -197,6 +204,14 @@ import {
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
+import {
+  setWorkerReadinessTransitionHandler,
+  workerReadinessRegistry,
+} from './services/workerReadinessRegistry';
+import {
+  consumersForInitializer,
+  declareExpectedConsumers,
+} from './jobs/workerReadinessManifest';
 
 // Workers
 //
@@ -215,6 +230,7 @@ import { startRegisteredWorkers, buildWorkerShutdownTasks } from './services/wor
 import { registerAiAgentEnqueuer } from './jobs/aiAgentEnqueuer';
 import { backfillC2cConnectionSecrets } from './services/c2cSecrets';
 import { registerAllEventSubscribers } from './services/eventSubscribers';
+import { initializeDeviceEventHandlers } from './events/deviceEvents';
 import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
@@ -224,7 +240,9 @@ import {
   initializeAgentCommandRelayWorker,
   shutdownAgentCommandRelayWorker,
 } from './jobs/agentCommandRelayWorker';
-import { breezeRole } from './config/env';
+import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
+import { partnerTrustMode } from './config/partnerTrustMode';
+import { auditChainVerifyEnabled } from './config/auditChainVerify';
 import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
 import { drainAuditRetryQueue } from './services/auditService';
@@ -248,11 +266,11 @@ import { deviceGroups, devices, securityThreats, webhookDeliveries } from './db/
 import { eq, ne, sql } from 'drizzle-orm';
 import { envInt } from './utils/envInt';
 import {
-  computeWorkersHealthy,
   createReadinessEvaluator,
   type WorkerInitPhase
 } from './services/readiness';
 import { createReadinessHandler } from './routes/readiness';
+import { resolveReadinessTiming } from './config/readinessConfig';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -306,23 +324,12 @@ let workerInitPhase: WorkerInitPhase = 'pending';
  * amplification defence, and an over-large one would re-create #2974 in slow
  * motion by latching the answer for minutes.
  */
-const READINESS_CACHE_TTL_MAX_MS = 30_000;
-const readinessTtlRaw = envInt('READINESS_CACHE_TTL_MS', 5_000);
-const READINESS_CACHE_TTL_MS = Math.min(Math.max(readinessTtlRaw, 0), READINESS_CACHE_TTL_MAX_MS);
-if (READINESS_CACHE_TTL_MS !== readinessTtlRaw) {
-  console.warn(
-    `[ready] READINESS_CACHE_TTL_MS=${readinessTtlRaw} out of range, clamped to ${READINESS_CACHE_TTL_MS}ms`
-  );
-}
-
-/**
- * Per-probe deadline. postgres.js has a connect timeout but no pool-acquire
- * timeout, so a saturated pool can leave `select 1` queued indefinitely.
- * Without a deadline that evaluation would never settle and the evaluator's
- * single-flight slot would never clear, silencing `/ready` for the rest of the
- * process. Kept well under a typical load-balancer probe timeout.
- */
-const READINESS_PROBE_TIMEOUT_MS = Math.max(envInt('READINESS_PROBE_TIMEOUT_MS', 3_000), 100);
+const readinessTiming = resolveReadinessTiming(
+  process.env,
+  (name, requested, effective) => {
+    console.warn(`[ready] ${name}=${requested} clamped to ${effective}ms`);
+  },
+);
 
 /**
  * One-shot guard for the "Redis came back but boot never started the workers"
@@ -335,8 +342,9 @@ let warnedWorkersNeverStarted = false;
 const readiness = createReadinessEvaluator({
   checkDb: () => checkDatabaseConnectivity(),
   checkRedis: () => checkRedisConnectivity(),
-  workersHealthy: (redisOk) => {
-    if (redisOk && workerInitPhase === 'skipped-no-redis' && !warnedWorkersNeverStarted) {
+  workerRegistry: workerReadinessRegistry,
+  workersInitialized: () => {
+    if (workerInitPhase === 'skipped-no-redis' && !warnedWorkersNeverStarted) {
       warnedWorkersNeverStarted = true;
       const message =
         'Redis is reachable again, but this process skipped worker startup because Redis was down at boot. ' +
@@ -345,22 +353,18 @@ const readiness = createReadinessEvaluator({
       captureException(new Error(`[ready] ${message}`));
     }
 
-    return computeWorkersHealthy({
-      phase: workerInitPhase,
-      workerStatus,
-      redisOk,
-      shuttingDown: shutdownInProgress
-    });
+    return workerInitPhase === 'started';
   },
   isShuttingDown: () => shutdownInProgress,
   requireRedis: REQUIRE_REDIS_ON_STARTUP,
-  ttlMs: READINESS_CACHE_TTL_MS,
-  probeTimeoutMs: READINESS_PROBE_TIMEOUT_MS,
+  ttlMs: readinessTiming.ttlMs,
+  probeTimeoutMs: readinessTiming.probeTimeoutMs,
   onProbeFailure: (probeName, error) => {
     console.error(`[ready] ${probeName} probe failed:`, error);
     captureException(error instanceof Error ? error : new Error(String(error)));
   }
 });
+setWorkerReadinessTransitionHandler(() => readiness.invalidate());
 
 // Create WebSocket helpers (must be done before routes are registered)
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
@@ -433,75 +437,17 @@ app.get('/health/live', (c) => {
   return c.json({ status: 'ok' });
 });
 
-// Full readiness check — live DB + Redis connectivity
-app.get('/health/ready', async (c) => {
-  const checks: Record<string, string> = {};
-  const isProd = process.env.NODE_ENV === 'production';
-
-  // Check database connectivity
-  try {
-    await runWithSystemDbAccess(async () => {
-      await db.execute(sql`select 1`);
-    });
-    checks.database = 'ok';
-  } catch (error) {
-    checks.database = isProd
-      ? 'error: unavailable'
-      : `error: ${error instanceof Error ? error.message : 'unknown'}`;
-  }
-
-  // Check Redis connectivity
-  try {
-    const redis = getRedis();
-    if (!redis) {
-      checks.redis = isProd ? 'error: unavailable' : 'error: not configured';
-    } else {
-      await redis.ping();
-      checks.redis = 'ok';
-    }
-  } catch (error) {
-    checks.redis = isProd
-      ? 'error: unavailable'
-      : `error: ${error instanceof Error ? error.message : 'unknown'}`;
-  }
-
-  const allOk = Object.values(checks).every((v) => v === 'ok');
-
-  // #3022 — event-loop lag is deliberately NOT reported here. This endpoint is
-  // unauthenticated (see HEALTH_CHECK_PATHS in middleware/security.ts), and the
-  // lag stats are a live load gradient plus the starvation threshold itself,
-  // which would let an unauthenticated prober measure whether its own load is
-  // starving the instance. What this endpoint already exposes is binary
-  // availability; a tunable pressure readout is a different thing.
-  //
-  // Nothing is lost by the omission: the same numbers are on the auth-gated
-  // /metrics as Prometheus gauges, and the starvation reporter logs to the
-  // console unconditionally. Load balancers — the actual consumers here — read
-  // the status code, not the body.
-  return c.json(
-    {
-      status: allOk ? 'ready' : 'not_ready',
-      checks
-    },
-    allOk ? 200 : 503
-  );
+// Both readiness paths are aliases of the same bounded, cached evaluator.
+// `/health` and `/health/live` above remain process-liveness probes.
+const readinessHandler = createReadinessHandler({
+  evaluator: readiness,
+  onEvaluationError: (error, c) => {
+    console.error('[ready] Readiness evaluation failed:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)), c);
+  },
 });
-
-// Legacy /ready alias (backward compatibility).
-//
-// Evaluated live on each request, TTL-cached and single-flighted — see
-// `services/readiness.ts`. Response shape is unchanged, except `checkedAt` now
-// actually moves; before #2974 it was frozen at the boot-time snapshot.
-app.get(
-  '/ready',
-  createReadinessHandler({
-    evaluator: readiness,
-    onEvaluationError: (error, c) => {
-      console.error('[ready] Readiness evaluation failed:', error);
-      captureException(error instanceof Error ? error : new Error(String(error)), c);
-    }
-  })
-);
+app.get('/ready', readinessHandler);
+app.get('/health/ready', readinessHandler);
 
 // Metrics endpoint (for Prometheus scraping at /metrics)
 app.route('/metrics', metricsRoutes);
@@ -890,6 +836,9 @@ api.route('/', tenantVariableRoutes);
 api.route('/orgs', orgRoutes);
 api.route('/orgs', orgMergeRoutes);
 api.route('/orgs', orgArchiveRoutes);
+api.route('/orgs', orgSummaryRoutes);
+api.route('/orgs', serviceDeliverableRoutes); // /orgs/:orgId/deliverables/* (#5573 W01)
+api.route('/orgs', orgKeyDateRoutes);         // /orgs/:orgId/key-dates/* (#5573 W01)
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);
 api.route('/permissions', permissionsCatalogRoutes);
@@ -1012,10 +961,16 @@ api.route('/notifications', notificationRoutes);
 api.route('/groups', groupRoutes);
 api.route('/device-groups', groupRoutes);
 api.route('/integrations', integrationRoutes);
+api.route('/partner/trust', partnerTrustRoutes);
 api.route('/partner', partnerRoutes);
 api.route('/internal/synthetic', internalSyntheticRoutes);
 api.route('/partner/known-guests', networkKnownGuestsRoutes);
 api.route('/tags', tagRoutes);
+// Mounted BEFORE customFieldRoutes so `/custom-fields/import*` is matched by
+// the importer rather than falling through to the CRUD app's `/:id` handlers
+// (#3257 W07). The two apps carry disjoint methods+paths today, so the order is
+// belt-and-braces rather than load-bearing.
+api.route('/custom-fields', customFieldImportRoutes);
 api.route('/custom-fields', customFieldRoutes);
 api.route('/filters', filterRoutes);
 api.route('/deployments', deploymentRoutes);
@@ -1029,6 +984,9 @@ api.route('/ai/provider', aiProviderRoutes);
 // '/schedules' as an agent id (#4189).
 api.route('/ai/agents/schedules', aiAgentSchedulesRoutes);
 api.route('/ai/agents', aiAgentsRoutes);
+// Read-only Operator task surface (W07 of #5205, P3-1e) — a separate route
+// module from the already-large aiAgentsRoutes per spec §12.
+api.route('/ai/operator', aiOperatorTasksRoutes);
 api.route('/ai', aiRoutes);
 api.route('/ai/script-builder', scriptAiRoutes);
 api.route('/mcp', mcpServerRoutes);
@@ -1092,10 +1050,16 @@ app.notFound((c) => {
 app.onError((err, c) => {
   // Handle HTTPException properly (e.g., 401, 403, etc.)
   if (err instanceof HTTPException) {
+    // A typed HTTPException may carry a machine-readable `code` (e.g.
+    // `lease_unavailable`) that callers switch on. This handler builds the body
+    // itself instead of delegating to `err.getResponse()`, so the code has to
+    // be copied across explicitly or it is silently dropped.
+    const typedCode = (err as { code?: unknown }).code;
     return c.json(
       {
         error: err.message || 'Request failed',
-        message: err.message
+        message: err.message,
+        ...(typeof typedCode === 'string' && typedCode ? { code: typedCode } : {})
       },
       err.status
     );
@@ -1135,17 +1099,24 @@ const port = parseInt(process.env.API_PORT || '3001', 10);
 
 // Initialize background workers (only if Redis is available)
 const workerStatus: Record<string, boolean> = {};
-// `areWorkersHealthy()` used to be exported here. It had no callers repo-wide
-// and, now that readiness is evaluated live, a second copy of the worker-health
-// rule could only drift from what `/ready` reports. Use `readiness.get()`.
-export function getWorkerStatus(): Record<string, boolean> { return { ...workerStatus }; }
-
 let server: ReturnType<typeof serve> | null = null;
 let shutdownInProgress = false;
 let auditRetryInterval: NodeJS.Timeout | null = null;
 
 async function initializeWorkers(): Promise<void> {
-  if (!startupChecks.redisOk || !isRedisAvailable()) {
+  const redisAvailable = startupChecks.redisOk && isRedisAvailable();
+  declareExpectedConsumers({
+    role: breezeRole(),
+    redisAvailable,
+    abuseSignalsEnabled: abuseSignalsEnabled(),
+    partnerTrustEnabled: partnerTrustMode() !== 'off',
+    auditChainVerifyEnabled: auditChainVerifyEnabled(),
+    eventDispatchEnabled: eventDispatchMode() !== 'off',
+    aiAgentsEnabled: AI_AGENTS_ENABLED,
+    registry: workerReadinessRegistry,
+  });
+
+  if (!redisAvailable) {
     console.warn('[WARN] Redis not available - background workers disabled');
     workerInitPhase = 'skipped-no-redis';
     readiness.invalidate();
@@ -1169,6 +1140,13 @@ async function initializeWorkers(): Promise<void> {
         captureException(
           error instanceof Error ? error : new Error(String(error))
         );
+        // Track C: every queue consumer this entry owns is now permanently
+        // failed for readiness (what the deleted declared-worker-group helper did before
+        // the registry became the initializer seam). AFTER captureException:
+        // this loop throws on an undeclared name and allSettled would swallow it.
+        for (const consumer of consumersForInitializer(name)) {
+          workerReadinessRegistry.recordInitializationFailure(consumer, error);
+        }
       }
     },
   });
@@ -1200,6 +1178,9 @@ async function initializeWorkers(): Promise<void> {
       workerStatus['eventDispatch'] = false;
       console.error('[CRITICAL] Failed to initialize eventDispatch:', error);
       captureException(error instanceof Error ? error : new Error(String(error)));
+      for (const consumer of consumersForInitializer('eventDispatch')) {
+        workerReadinessRegistry.recordInitializationFailure(consumer, error);
+      }
     }
   }
 
@@ -1216,6 +1197,9 @@ async function initializeWorkers(): Promise<void> {
       workerStatus['agentCommandRelay'] = false;
       console.error('[CRITICAL] Failed to initialize agentCommandRelay:', error);
       captureException(error instanceof Error ? error : new Error(String(error)));
+      for (const consumer of consumersForInitializer('agentCommandRelay')) {
+        workerReadinessRegistry.recordInitializationFailure(consumer, error);
+      }
     }
   }
   readiness.invalidate();
@@ -1620,6 +1604,12 @@ async function bootstrap(): Promise<void> {
 
   await runStartupChecks();
 
+  // #3128: advisory scan for PAM rules pinned to a risk tier no tool resolves
+  // to any more. Tool tiers are static code, so a deploy is the only moment a
+  // stored rule can go stale — boot is exactly when to look. Never throws;
+  // runs after loadBuiltinExtensions so extension tool tiers are resolvable.
+  await reportStalePamRuleTiers();
+
   // Initialize MCP bootstrap module. Loads auth tools (send_deployment_invites,
   // configure_defaults) so they are ready before the first request. The unauth
   // tools (create_tenant, verify_tenant, attach_payment_method) were deleted in
@@ -1739,6 +1729,11 @@ async function bootstrap(): Promise<void> {
   // installed before the queue-mode dispatch worker — or any event published
   // during worker boot — can reach it (codex Q3 hole #2, #4085).
   registerAllEventSubscribers(buildWebhookFanoutDeps());
+
+  // #4630 — dynamic device group membership re-evaluation. Purely in-process
+  // handler registration (no Redis/queue), so it runs unconditionally in
+  // every role, same as registerAllEventSubscribers above.
+  initializeDeviceEventHandlers();
 
   await initializeWorkers();
 

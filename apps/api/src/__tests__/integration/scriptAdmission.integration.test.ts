@@ -122,6 +122,8 @@ describe('POST /scripts/:id/execute — real PostgreSQL admission isolation', ()
         admission: 'admitted',
         executionId: expect.any(String),
         commandId: expect.any(String),
+        // Device fixtures have no live socket, so admission-time delivery is always queued_offline here (W02, #5133).
+        delivery: 'queued_offline',
       }, {
         requestedDeviceId: siteDeniedDevice.id,
         admission: 'denied',
@@ -140,8 +142,17 @@ describe('POST /scripts/:id/execute — real PostgreSQL admission isolation', ()
 
     expect(await getTestDb().select({ id: deviceCommands.id }).from(deviceCommands)
       .where(eq(deviceCommands.deviceId, allowedDevice.id))).toHaveLength(1);
-    expect(await getTestDb().select({ id: scriptExecutions.id }).from(scriptExecutions)
-      .where(eq(scriptExecutions.deviceId, allowedDevice.id))).toHaveLength(1);
+    // #5128 — and it rests in `queued`, not `pending`: the spec's
+    // "Manual runs whose command was `queued_offline` sit in `queued`" is what
+    // makes the web's "Queued — device offline" chip and its Queued history
+    // filter describe a reachable state. Asserted against real Postgres
+    // because two things can only fail here: `queued` must be a legal
+    // `execution_status` enum value (it is, since 0001-baseline), and the
+    // follow-up UPDATE has to pass the row's RLS policy under the request's own
+    // org-scoped context — a unit test with a mocked db proves neither.
+    expect(await getTestDb().select({ id: scriptExecutions.id, status: scriptExecutions.status })
+      .from(scriptExecutions).where(eq(scriptExecutions.deviceId, allowedDevice.id)))
+      .toEqual([{ id: expect.any(String), status: 'queued' }]);
     expect(await getTestDb().select({ id: deviceCommands.id }).from(deviceCommands)
       .where(eq(deviceCommands.deviceId, siteDeniedDevice.id))).toHaveLength(0);
     expect(await getTestDb().select({ id: scriptExecutions.id }).from(scriptExecutions)

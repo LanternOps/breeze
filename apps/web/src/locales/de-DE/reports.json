@@ -319,6 +319,7 @@
       },
       "loading": "Berichte werden geladen...",
       "never": "Niemals",
+      "visibleInPortal": "Im Kundenportal sichtbar",
       "newReport": "Neuer Bericht",
       "nextOccurrence": "Weiter: {{next}}",
       "reportTypes": {
@@ -700,6 +701,7 @@
         "templateName": "Vierteljährliches Compliance-Paket",
         "value": "Wert"
       },
+      "recipients": { "contacts": "Organisationskontakte", "legacy": "Ältere E-Mail-Adressen", "convert": "In Kontakt umwandeln", "added": "Berichtsempfänger hinzugefügt", "removed": "Berichtsempfänger entfernt", "converted": "E-Mail-Adresse in einen Kontakt umgewandelt", "updateFailed": "Die Berichtsempfänger konnten nicht aktualisiert werden", "convertFailed": "Diese E-Mail-Adresse konnte nicht umgewandelt werden", "mfaRequired": "Das Umwandeln eines Empfängers erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihrem Profil und versuchen Sie es erneut.", "loadFailed": "Die Berichtsempfänger konnten nicht geladen werden" },
       "previewTable": {
         "selectFields": "Wählen Sie Felder aus, um die Vorschautabelle zu füllen."
       },
@@ -849,10 +851,6 @@
           "description": "Top-Warnungen, Schweregradtrends und Reaktionsaufwand.",
           "name": "Alarmzusammenfassungsbericht"
         },
-        "billing_usage": {
-          "description": "Lizenznutzung, Nutzungsstufen und Zusammenfassungen der Rückbuchungen.",
-          "name": "Abrechnungs-/Nutzungsbericht"
-        },
         "device_health": {
           "description": "CPU-, Arbeitsspeicher- und Betriebszeittrends mit Gerätezustandsbewertung.",
           "name": "Gerätezustandsbericht"
@@ -861,21 +859,9 @@
           "description": "KPIs auf hoher Ebene, Risikolage und strategische Trends für Führungskräfte.",
           "name": "Zusammenfassung"
         },
-        "patch_compliance": {
-          "description": "Patch-Abdeckung, überfällige Updates und Behebungsstatus.",
-          "name": "Patch-Compliance-Bericht"
-        },
         "security_compliance_posture": {
           "description": "Versicherungs-/prüfbereite Beweise: EDR-Abdeckung, Verschlüsselung, Firewall, Patching, Schwachstellen, privilegierter Zugriff und Sicherheitsintegrationen mit prozentual implementierten Rollups.",
           "name": "Sicherheits- und Compliance-Status (Versicherung)"
-        },
-        "sla_compliance": {
-          "description": "SLA Einhaltung, Verstoßrisiko und Reaktionsfristen.",
-          "name": "SLA Compliance-Bericht"
-        },
-        "technician_activity": {
-          "description": "Ticketvolumen, Geräteberührungen und Auflösungsgeschwindigkeit.",
-          "name": "Tätigkeitsbericht des Technikers"
         }
       },
       "title": "Berichtsvorlagen",

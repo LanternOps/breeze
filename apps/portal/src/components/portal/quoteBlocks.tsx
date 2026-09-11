@@ -6,6 +6,7 @@
 // lines (no blockId) fall into a trailing default pricing table — same as the
 // PDF, which appends un-blocked lines after the block walk.
 import { Fragment } from 'react';
+import { DEVICE_ROLE_NOUNS, type BillableDeviceRole } from '@breeze/shared';
 import type { QuoteBlock, QuoteCalloutContent, QuoteContractBlockContent, QuoteLine, QuoteTableContent } from '@/lib/api';
 
 import { money } from '@/lib/format';
@@ -39,6 +40,27 @@ function lineTitle(l: QuoteLine): string {
 function lineBlurb(l: QuoteLine): string | null {
   const b = l.name ? (l.description ?? '').trim() : '';
   return b || null;
+}
+
+function deviceSetCustomerText(raw: QuoteLine, currency: string): string[] {
+  const line = raw;
+  if (!line.contractLineType) return [];
+  let set = 'devices';
+  if (line.contractLineType === 'per_device_role') {
+    set = (line.deviceRoles ?? []).map((r) => DEVICE_ROLE_NOUNS[r as BillableDeviceRole] ?? r).join(', ') || 'devices';
+  } else if (line.contractLineType === 'per_device_group') {
+    set = `devices in “${line.deviceGroupName ?? ''}”`;
+  } else if (line.contractLineType === 'per_seat') {
+    set = 'seats';
+  }
+  if (line.siteName) set = `${set} at ${line.siteName}`;
+  const result = [`Estimated quantity — billed at the actual number of ${set} each billing period.`];
+  if (line.includedQuantity != null && line.overageMode === 'bill' && line.overageUnitPrice != null) {
+    result.push(`Includes ${Number(line.includedQuantity)}; additional units billed at ${money(line.overageUnitPrice, currency)} each.`);
+  } else if (line.includedQuantity != null && line.overageMode === 'flag') {
+    result.push(`Includes ${Number(line.includedQuantity)}; additional units are reported for review, not billed automatically.`);
+  }
+  return result;
 }
 
 function PricingTable({
@@ -97,6 +119,7 @@ function PricingTable({
                 )}
                 {g.rows.map((l) => {
                   const tax = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
+                  const descriptor = deviceSetCustomerText(l, currency);
                   return (
                   <tr key={l.id} data-testid={`quote-line-${l.id}`} className="border-b align-top last:border-0">
                     <td className="w-full px-4 py-3 text-foreground sm:px-5">
@@ -118,6 +141,11 @@ function PricingTable({
                           <span className="font-medium">{lineTitle(l)}</span>
                           {lineBlurb(l) && (
                             <p className="mt-0.5 whitespace-pre-line text-xs text-muted-foreground">{lineBlurb(l)}</p>
+                          )}
+                          {descriptor.length > 0 && (
+                            <div className="mt-0.5 space-y-0.5 text-xs text-muted-foreground" data-testid={`quote-line-device-set-${l.id}`}>
+                              {descriptor.map((text, i) => <p key={i}>{text}</p>)}
+                            </div>
                           )}
                         </div>
                       </div>

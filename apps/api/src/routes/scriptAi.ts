@@ -26,13 +26,22 @@ import {
   approveToolSchema,
   scriptBuilderContextSchema,
 } from '@breeze/shared/validators/ai';
-import { createScriptBuilderMcpServer, SCRIPT_BUILDER_MCP_TOOL_NAMES } from '../services/scriptBuilderTools';
+import {
+  createScriptBuilderMcpServer,
+  SCRIPT_BUILDER_MCP_SERVER_NAME,
+  SCRIPT_BUILDER_MCP_TOOL_NAMES,
+} from '../services/scriptBuilderTools';
 import { captureException } from '../services/sentry';
 import { db } from '../db';
 import { aiSessions, aiMessages } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { PERMISSIONS } from '../services/permissions';
 import { LlmUnavailableError, resolveLlmConfigForOrg } from '../services/llm/llmConfigResolver';
+import {
+  isAiBudgetLockTimeout,
+  releaseUnusedAiBudgetReservation,
+  reserveAiBudget,
+} from '../services/aiBudgetReservations';
 
 export const scriptAiRoutes = new Hono();
 const requireScriptAiRead = requirePermission(
@@ -194,7 +203,7 @@ scriptAiRoutes.post(
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd, resolved } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, resolved } = preflight;
 
     // Now safe to update editor context
     let updatedSystemPrompt: string | undefined;
@@ -207,6 +216,44 @@ scriptAiRoutes.post(
       }
     }
     const effectiveSystemPrompt = updatedSystemPrompt ?? systemPrompt;
+
+    const priorSession = streamingSessionManager.get(sessionId);
+    if (priorSession?.state === 'processing') {
+      const settle = await settleBlockedTurnForNewMessage(priorSession);
+      if (settle !== 'concluded') {
+        return c.json({
+          error: settle === 'not_blocked_on_approvals'
+            ? 'A message is already being processed for this session'
+            : 'The assistant is wrapping up the previous turn — please try again in a moment',
+        }, 409);
+      }
+    }
+    if (streamingSessionManager.get(sessionId)) streamingSessionManager.remove(sessionId);
+
+    // S8: no stable request identity reaches this surface — the client sends
+    // no message/draft id — so the key is random per dispatch. The unique
+    // (org_id, idempotency_key) index is therefore a structural guarantee
+    // that two dispatches never share a reservation row, NOT a replay guard.
+    // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
+    // in services/aiAgents/runLoop.ts. Give this one a stable key only when
+    // the request schema starts carrying a client-generated id.
+    let reservation;
+    try {
+      reservation = await reserveAiBudget({
+        orgId: dbSession.orgId,
+        billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
+        sessionId,
+        idempotencyKey: `script-chat:${sessionId}:${crypto.randomUUID()}`,
+      });
+    } catch (err) {
+      if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
+      throw err;
+    }
+    if (reservation.kind === 'denied') return c.json({ error: reservation.message }, 402);
+    const budgetReservationId = reservation.reservationId;
+    const reservedMaxBudgetUsd = reservation.kind === 'reserved'
+      ? reservation.reservedCostCents / 100
+      : undefined;
 
     // Get or create streaming session with script builder MCP tools.
     //
@@ -231,16 +278,18 @@ scriptAiRoutes.post(
         auth,
         c,
         effectiveSystemPrompt,
-        maxBudgetUsd,
+        reservedMaxBudgetUsd,
         resolved,
         SCRIPT_BUILDER_MCP_TOOL_NAMES,
         // Custom MCP server factory for script builder tools
         (getAuth, onPreToolUse, onPostToolUse) => ({
           server: createScriptBuilderMcpServer(getAuth, onPreToolUse, onPostToolUse),
-          name: 'script_builder',
+          name: SCRIPT_BUILDER_MCP_SERVER_NAME,
         }),
+        { budgetReservationId },
       );
     } catch (err) {
+      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
       if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
       throw err;
     }
@@ -249,14 +298,8 @@ scriptAiRoutes.post(
     // only on pending approval waits, settle them so the assistant can
     // conclude and answer this message (#3089 — shared helper, see ai.ts).
     if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
-      const settle = await settleBlockedTurnForNewMessage(activeSession);
-      if (settle !== 'concluded' || !streamingSessionManager.tryTransitionToProcessing(activeSession)) {
-        return c.json({
-          error: settle === 'not_blocked_on_approvals'
-            ? 'A message is already being processed for this session'
-            : 'The assistant is wrapping up the previous turn — please try again in a moment',
-        }, 409);
-      }
+      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
+      return c.json({ error: 'A message is already being processed for this session' }, 409);
     }
 
     writeRouteAudit(c, {
@@ -278,6 +321,7 @@ scriptAiRoutes.post(
       captureException(err, c);
       console.error('[ScriptAI] Failed to save user message to DB:', err);
       activeSession.state = 'idle';
+      await releaseUnusedAiBudgetReservation({ orgId: dbSession.orgId, reservationId: budgetReservationId });
       return c.json({ error: 'Failed to save message' }, 500);
     }
 

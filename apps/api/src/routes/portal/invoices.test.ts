@@ -40,7 +40,7 @@ const { dbResults, insertValuesMock } = vi.hoisted(() => ({
 vi.mock('../../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    for (const m of ['select', 'from', 'where', 'orderBy', 'limit', 'offset']) chain[m] = vi.fn(() => chain);
+    for (const m of ['select', 'from', 'where', 'orderBy', 'limit', 'offset', 'for']) chain[m] = vi.fn(() => chain);
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = dbResults.shift() ?? [];
       return Promise.resolve(rows).then(resolve);
@@ -102,6 +102,7 @@ function app(orgId = ORG_ID, authMethod: 'bearer' | 'cookie' = 'bearer') {
       // do not read it, so the null (contact-less login) case is stated.
       user: { id: 'pu1', orgId, email: 'c@example.test', name: 'Cust', contactId: null, receiveNotifications: true, status: 'active' },
       token: 't', authMethod,
+      timezone: 'UTC',
     });
     await next();
   });
@@ -198,8 +199,10 @@ describe('portal invoices routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(Object.keys(body.lines[0]).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'unitPrice',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice',
     ]);
+    expect(body.lines[0]).not.toHaveProperty('sourceType');
+    expect(body.lines[0]).not.toHaveProperty('sourceId');
     // The customer-facing title survives the route boundary (#3319) — this is
     // the assertion the stubbed serializer used to make vacuous.
     expect(body.lines[0].name).toBe('Support retainer');
@@ -275,6 +278,7 @@ describe('portal invoices routes', () => {
     }]);
     getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));
     sessionsCreateMock.mockResolvedValue({ id: 'cs_1', url: 'https://checkout.stripe.com/c/cs_1', payment_intent: 'pi_1' });
+    dbResults.push([{ id: 'connection' }]);
 
     const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
     expect(res.status).toBe(200);
@@ -311,6 +315,7 @@ describe('portal invoices routes', () => {
     }]);
     getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));
     sessionsCreateMock.mockResolvedValue({ id: 'cs_jpy', url: 'https://checkout.stripe.com/c/cs_jpy', payment_intent: 'pi_jpy' });
+    dbResults.push([{ id: 'connection' }]);
 
     const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
     expect(res.status).toBe(200);
@@ -336,6 +341,7 @@ describe('portal invoices routes', () => {
     }]);
     getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));
     sessionsCreateMock.mockResolvedValue({ id: 'cs_dep', url: 'https://checkout.stripe.com/c/cs_dep', payment_intent: 'pi_dep' });
+    dbResults.push([{ id: 'connection' }]);
 
     const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
     expect(res.status).toBe(200);
@@ -362,6 +368,7 @@ describe('portal invoices routes', () => {
     }]);
     getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));
     sessionsCreateMock.mockResolvedValue({ id: 'cs_dep2', url: 'https://checkout.stripe.com/c/cs_dep2', payment_intent: 'pi_dep2' });
+    dbResults.push([{ id: 'connection' }]);
 
     const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
     expect(res.status).toBe(200);
@@ -391,6 +398,7 @@ describe('portal invoices routes', () => {
     }]);
     getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));
     sessionsCreateMock.mockResolvedValue({ id: 'cs_dep_eq', url: 'https://checkout.stripe.com/c/cs_dep_eq', payment_intent: 'pi_dep_eq' });
+    dbResults.push([{ id: 'connection' }]);
     await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
     const depositKey = (sessionsCreateMock.mock.calls[0]?.[1] as { idempotencyKey: string }).idempotencyKey;
     expect(depositKey).toBe(`inv_${INV_ID}_500000_dep`);
@@ -403,6 +411,7 @@ describe('portal invoices routes', () => {
     }]);
     getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));
     sessionsCreateMock.mockResolvedValue({ id: 'cs_bal_eq', url: 'https://checkout.stripe.com/c/cs_bal_eq', payment_intent: 'pi_bal_eq' });
+    dbResults.push([{ id: 'connection' }]);
     await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
     const balanceKey = (sessionsCreateMock.mock.calls[0]?.[1] as { idempotencyKey: string }).idempotencyKey;
     expect(balanceKey).toBe(`inv_${INV_ID}_500000_bal`);
@@ -483,10 +492,27 @@ describe('portal invoices routes', () => {
     }]);
     getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: 'USD' });
     sessionsCreateMock.mockResolvedValue({ id: 'cs_eur', url: 'https://checkout.stripe.com/c/cs_eur', payment_intent: 'pi_eur' });
+    dbResults.push([{ id: 'connection' }]);
 
     const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ url: 'https://checkout.stripe.com/c/cs_eur' });
+  });
+
+  it('does not return a Checkout URL when the connected account changes during session creation', async () => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '100.00', currencyCode: 'USD', invoiceNumber: 'INV-RACE',
+    }]);
+    dbResults.push([]); // final FOR SHARE revalidation sees replacement/disconnect
+    getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_old'));
+    sessionsCreateMock.mockResolvedValue({
+      id: 'cs_orphan_candidate', url: 'https://checkout.stripe.com/c/cs_orphan_candidate', payment_intent: 'pi_race',
+    });
+
+    const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(insertValuesMock).not.toHaveBeenCalled();
   });
 
   // ---- verify-on-return settle ----

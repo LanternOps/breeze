@@ -341,3 +341,110 @@ describe('ConnectDesktopButton — viewer-not-installed fallback card', () => {
     expect(screen.queryByText(/^Title$/)).toBeNull();
   });
 });
+
+describe('ConnectDesktopButton — session creation (#4090)', () => {
+  beforeEach(() => {
+    _resetToastQueueForTests();
+    fetchMock.mockReset();
+    toastMock.mockReset();
+  });
+
+  it('never fires the unscoped stale-session sweep; the POST does its own device+type cleanup', async () => {
+    // Regression for #4090: DELETE /remote/sessions/stale with no deviceId revoked
+    // every live session the caller could see (the reporter's Terminal socket got
+    // close 4003 "Session revoked"), and racing it against the POST could revoke
+    // the brand-new desktop session too. The server already terminates stale
+    // rows scoped to device+type inside POST /remote/sessions, so the client
+    // sweep is both redundant and destructive.
+    fetchMock.mockResolvedValueOnce(jsonRes({
+      desktopAccess: null,
+      hasRemoteAccessLauncher: false,
+      remoteAccessLaunchSkipReason: 'no_provider_configured',
+    }));
+    fetchMock.mockResolvedValue(jsonRes({ id: 'sess-1', code: 'code-1', status: 'pending' }));
+
+    render(<ConnectDesktopButton deviceId="dev-4090" />);
+    fireEvent.click(screen.getByRole('button', { name: /connect desktop/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/remote/sessions',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    const staleCalls = fetchMock.mock.calls.filter(([url]) =>
+      typeof url === 'string' && url.includes('/remote/sessions/stale'),
+    );
+    expect(staleCalls).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Revocation-lease capability gate (503 agent_upgrade_required)
+// ---------------------------------------------------------------------------
+
+describe('ConnectDesktopButton — agent upgrade required', () => {
+  beforeEach(() => {
+    _resetToastQueueForTests();
+    fetchMock.mockReset();
+    toastMock.mockReset();
+  });
+
+  function rigUpgradeRequired() {
+    // GET /devices/:id — no third-party launcher, so the flow proceeds to
+    // POST /remote/sessions.
+    fetchMock.mockResolvedValueOnce(jsonRes({
+      desktopAccess: null,
+      hasRemoteAccessLauncher: false,
+      remoteAccessLaunchSkipReason: null,
+    }));
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      json: vi.fn().mockResolvedValue({
+        error: 'Remote desktop needs an agent update on this device',
+        code: 'agent_upgrade_required',
+      }),
+    } as unknown as Response);
+  }
+
+  it('renders the pending-agent-update reason, distinct from a generic failure', async () => {
+    rigUpgradeRequired();
+
+    render(<ConnectDesktopButton deviceId="dev-1" />);
+    fireEvent.click(screen.getByRole('button', { name: /connect desktop/i }));
+
+    await waitFor(() => {
+      expect(toastMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'error',
+          message: expect.stringContaining('agent update'),
+        }),
+      );
+    });
+    // Distinct from "device is offline" and from the generic
+    // "Failed to create desktop session": the operator must know this clears
+    // on its own within a heartbeat interval.
+    const message = toastMock.mock.calls
+      .map((call) => (call[0] as { message?: string }).message ?? '')
+      .join(' ');
+    expect(message).not.toMatch(/offline/i);
+    expect(message).not.toMatch(/Failed to create desktop session/i);
+    expect(message).toMatch(/Terminal and file transfer are unaffected/i);
+  });
+
+  it('does not go on to mint a connect code after the gate refuses', async () => {
+    rigUpgradeRequired();
+
+    render(<ConnectDesktopButton deviceId="dev-1" />);
+    fireEvent.click(screen.getByRole('button', { name: /connect desktop/i }));
+
+    await waitFor(() => {
+      expect(toastMock).toHaveBeenCalled();
+    });
+    const calledPaths = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(calledPaths.some((path) => path.includes('desktop-connect-code'))).toBe(false);
+  });
+});

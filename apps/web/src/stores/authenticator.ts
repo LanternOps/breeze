@@ -5,6 +5,7 @@ import {
   type PublicKeyCredentialRequestOptionsJSON,
 } from '@simplewebauthn/browser';
 import { fetchWithAuth } from './auth';
+import { mintStepUpGrant, StepUpMintError } from '../lib/mfaStepUp';
 import type { AssertionProof } from '@breeze/shared';
 
 /**
@@ -25,6 +26,25 @@ export interface ApproverDevice {
   label: string | null;
   kind: string;
   isPlatformBound: boolean;
+  /**
+   * WHY this key counts as platform-bound (#1374). The boolean above is NOT the
+   * L4 gate on its own — `L4_TRUSTED_PLATFORM_BOUND_BASES` on the server is —
+   * so any UI that describes a device's assurance must read this, not
+   * `isPlatformBound`. `webauthn_backup_flags` in particular means
+   * `singleDevice && !backedUp`, i.e. backup-eligibility flags rather than a
+   * hardware attestation.
+   *
+   * Optional so a client running against an API from before #1374 W02 still
+   * type-checks. The honest attested/unattested badge that consumes it is W07.
+   */
+  platformBoundBasis?:
+    | 'unattested'
+    | 'legacy_unattested'
+    | 'webauthn_backup_flags'
+    | 'ios_keychain_rsa_app_attest'
+    | 'ios_se_p256_app_attest'
+    | 'android_tee_key_attestation'
+    | 'android_strongbox_key_attestation';
   createdAt: string;
   lastUsedAt: string | null;
   // The list endpoint already filters to active devices server-side, so the DTO
@@ -39,16 +59,28 @@ export type RegisterReauth =
 
 class RegisterStepError extends Error {
   status?: number;
-  constructor(message: string, status?: number) {
+  /**
+   * #4470: the API's stable machine code for a rejected proof
+   * (`mfa_proof_invalid`, `invalid_credentials`, ...). Carried through so the
+   * UI can branch on it instead of string-matching the human message, which
+   * was the only discriminator available while every rejection was a 401.
+   */
+  code?: string;
+  constructor(message: string, status?: number, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
 async function jsonOrThrow(response: Response, fallback: string): Promise<any> {
   if (!response.ok) {
     const data = await response.json().catch(() => null);
-    throw new RegisterStepError(data?.error ?? fallback, response.status);
+    throw new RegisterStepError(
+      data?.error ?? fallback,
+      response.status,
+      typeof data?.code === 'string' ? data.code : undefined,
+    );
   }
   // A 2xx with an unparseable body (empty body, truncated proxy response) must
   // not silently resolve to `null` — every caller immediately reads a field
@@ -85,37 +117,22 @@ async function mintRegisterGrant(reauth: RegisterReauth): Promise<string> {
     return data.registerGrantId;
   }
 
-  let stepUpBody: Record<string, unknown>;
-  if (reauth.method === 'totp') {
-    stepUpBody = { method: 'totp', code: reauth.code, operation: 'register_approver_device' };
-  } else {
-    // Passkey: fetch an authenticated step-up challenge, run the assertion
-    // ceremony, then prove it to /auth/mfa/step-up.
-    const challengeData = await jsonOrThrow(
-      await fetchWithAuth('/auth/mfa/step-up/options', { method: 'POST' }),
-      'Could not start passkey verification.'
+  // TOTP/passkey both mint through /auth/mfa/step-up, which is now shared with
+  // the device-maintenance dialog (RMM-QA-176 D10) — one ceremony preserving
+  // #4470 proof-error codes and token-refresh behavior. The endpoint names it
+  // stepUpGrantId; the register routes take it as registerGrantId — same
+  // value, different field name.
+  try {
+    return await mintStepUpGrant({ operation: 'register_approver_device', reauth });
+  } catch (err) {
+    // The store's callers branch on RegisterStepError (and read `.status` to
+    // map 401/403/429), so keep that contract across the delegation.
+    throw new RegisterStepError(
+      err instanceof Error ? err.message : 'Verification failed.',
+      err instanceof StepUpMintError ? err.status : undefined,
+      err instanceof StepUpMintError ? err.responseCode : undefined,
     );
-    const optionsJSON: PublicKeyCredentialRequestOptionsJSON =
-      challengeData.options ?? challengeData.optionsJSON ?? challengeData;
-    const credential = await startAuthentication({ optionsJSON });
-    stepUpBody = { method: 'passkey', credential, operation: 'register_approver_device' };
   }
-
-  const data = await jsonOrThrow(
-    await fetchWithAuth('/auth/mfa/step-up', {
-      method: 'POST',
-      body: JSON.stringify(stepUpBody),
-      // Same reasoning: a 401 means the TOTP code / passkey assertion was
-      // rejected (wrong code, or the assertion is already burned), not that
-      // the access token is stale — never replay it.
-      skipUnauthorizedRetry: true,
-    }),
-    'Verification failed.'
-  );
-  if (!data?.stepUpGrantId) throw new RegisterStepError('Verification failed.');
-  // The step-up endpoint names it stepUpGrantId; the register routes take it
-  // as registerGrantId — same value, different field name.
-  return data.stepUpGrantId;
 }
 
 /**
@@ -186,11 +203,21 @@ export async function renameApproverDevice(id: string, label: string): Promise<R
 export class AssertionChallengeError extends Error {
   status: number;
   token?: string;
-  constructor(message: string, status: number, token?: string) {
+  /** Issue #4459 — the `offending` approval-request ids the server's
+   *  `batch_not_homogeneous` 422 carries (`loadHomogeneousBatch`,
+   *  `services/approvals/batchDecide.ts`). The challenge route re-validates
+   *  the whole set BEFORE minting anything, so on an APPROVE this is where a
+   *  drifted set is usually refused — the later `/batch/decide` 422 is only
+   *  reached on a DENY (which skips the challenge/proof round-trip
+   *  entirely). Without carrying this through, only the deny path could ever
+   *  tell the inbox which cards to deselect. */
+  offending?: string[];
+  constructor(message: string, status: number, token?: string, offending?: string[]) {
     super(message);
     this.name = 'AssertionChallengeError';
     this.status = status;
     this.token = token;
+    this.offending = offending;
   }
 }
 
@@ -214,10 +241,14 @@ async function completeAssertionCeremony(
   // benign "no registered device" fallback. (fetchWithAuth doesn't throw on non-2xx.)
   if (!challengeResponse.ok) {
     const token = typeof challengeData?.error === 'string' ? challengeData.error : undefined;
+    const offending = Array.isArray(challengeData?.offending)
+      ? challengeData.offending.filter((id: unknown): id is string => typeof id === 'string')
+      : undefined;
     throw new AssertionChallengeError(
       token ?? `Could not start verification (${challengeResponse.status}).`,
       challengeResponse.status,
       token,
+      offending,
     );
   }
   // A 2xx whose body isn't a usable challenge (empty body, truncated proxy

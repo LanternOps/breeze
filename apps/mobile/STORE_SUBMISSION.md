@@ -23,10 +23,39 @@ as permanently dead and **deletes the token from the database**. To test push
 from a local Debug build, switch the droplets to `APNS_ENVIRONMENT=sandbox`
 first.
 
-Android push is **not wired**: the server skips raw FCM tokens, and `app.json`
-no longer carries an Expo `projectId`, so `registerForPushNotifications()`
-returns `unsupported`. Android launch needs either the projectId restored or a
-real FCM sender added server-side.
+Android push uses **native FCM**, the same pattern as iOS's native APNs — no
+Expo relay, no EAS/Expo account. `registerForPushNotifications()` calls
+`Notifications.getDevicePushTokenAsync()` unconditionally on both platforms;
+on Android that returns a raw FCM registration token once
+`google-services.json` is present in the native build, and the server sends to
+it via `apps/api/src/services/fcm.ts` (mirrors `apns.ts`'s contract, #3639).
+
+`google-services.json` is Android's analogue of iOS's `.p8` APNs key and is
+**never committed** — `app.json`'s `android.googleServicesFile` points at
+`./google-services.json`, which Expo's config plugin only resolves during
+`expo prebuild --platform android` (or an Android EAS/Gradle build), so it
+needs to exist on disk at build time, not in git. Generate it with:
+
+```bash
+GOOGLE_SERVICES_JSON=<content of the file downloaded from the Firebase Console> \
+  pnpm --filter breeze-mobile write-google-services
+```
+
+Accepts either the raw JSON or base64-encoded JSON (same tolerance as the
+server's `FIREBASE_SERVICE_ACCOUNT`). Download the source file from the
+Firebase Console: Project Settings → your Android app (package
+`com.breeze.rmm`) → "Download google-services.json" — this must be the same
+Firebase project backing the droplets' `FIREBASE_SERVICE_ACCOUNT`, or every
+Android token will fail with a credential-mismatch error even though the
+sender reports itself configured. See `scripts/write-google-services.mjs` and
+`.gitignore` for the injection contract, and `google-services.json.example`
+for the file's shape. Registering the Firebase Android app itself (if one
+doesn't already exist) and confirming `FIREBASE_SERVICE_ACCOUNT` on both
+droplets is tracked separately (#4717 Wave 3) — this repo's build tooling is
+ready before that operational step lands.
+
+FCM has no sandbox/production split the way APNs does — there is no equivalent
+to the `APNS_ENVIRONMENT` gotcha above to watch for.
 
 ## App Store Connect record
 
@@ -38,11 +67,14 @@ Create an iOS app record with:
 - SKU: `breeze-rmm-ios`
 - User access: Full Access
 
-The app supports iPhone and iPad. Capture screenshots for every required iPhone and iPad display-size family after the first release candidate is installed.
+The app is **iPhone-only** (`supportsTablet` is `false` in `app.json`). Do not tick iPad in the App Store Connect availability, and do not upload iPad screenshots. Capture iPhone screenshots for every required display-size family after the first release candidate is installed.
 
 ## Metadata ready to enter
 
-- Subtitle: `Manage and secure your IT fleet`
+Field limits are App Store Connect's (subtitle 30, promotional text 170, description 4000, keywords 100). Copy verified against the shipped feature set on 2026-09-09; every capability named below exists in `apps/mobile/src` at that date. Do not add a feature here without a matching screen.
+
+- Name: `Breeze RMM`
+- Subtitle (23/30): `Your fleet, in one chat` (alternate, 29/30: `Manage your IT fleet anywhere`)
 - Primary category: Business
 - Secondary category: Productivity
 - Support URL: `https://breezermm.com/`
@@ -55,11 +87,47 @@ The app supports iPhone and iPad. Capture screenshots for every required iPhone 
     API, and in-app the URL is built from the user's selected server via
     `serverConfig.buildAccountDeletionUrl`.
 
-Suggested description:
+Promotional text (169/170; editable without a new build):
 
-> Breeze RMM gives IT teams and managed service providers a secure mobile command center for their fleet. Review alerts, investigate managed systems, approve sensitive actions with biometric protection, and stay informed with push notifications. Sign in with your Breeze organization account to manage the systems you are authorized to access.
+> Ask Breeze about your fleet, approve privileged actions with Face ID, work tickets with photos, and log time in the field. Sign in with your Breeze organization account.
 
-Suggested keywords: `IT management, RMM, remote monitoring, MSP, device management, IT operations, alerts`
+Description (2472/4000):
+
+> Breeze RMM puts your fleet in your pocket. It's the mobile console for Breeze, the remote monitoring and management platform for MSPs and internal IT teams. Sign in with your Breeze organization account and work the same devices, alerts, tickets and time you manage on the web.
+>
+> ASK BREEZE
+> You land in a chat, not a dashboard. Ask what broke last night, which devices are offline, or whether a service is running, and get answers built from your live fleet data. Ask Breeze to restart a service or run a script and it prepares the action for your approval. Type it or say it.
+>
+> APPROVE SAFELY
+> When automation or the assistant needs to do something privileged, Breeze takes over the screen with an approval card: what the action is, which device it touches, how much impact it carries, and the exact tool arguments. Approve with Face ID or Touch ID, deny with a reason, or report it as suspicious. AI prepares. A person decides anything that can't be undone.
+>
+> SYSTEMS
+> See online, offline and issue counts for every organization at a glance. Drill into a customer, filter devices by status, and open a device for CPU, memory, disk, IP addresses, the logged-in user, last seen, and open alerts and tickets. Reboot, shut down, or wake a machine from wherever you are. Acknowledge alerts with a swipe.
+>
+> TICKETS
+> Work your queue from the field. Filter by open or closed, mine or all. Create a ticket with organization, priority and assignee. Reply to the requester or add an internal note. Internal is the default, so a mis-tap never emails a customer. Attach photos of hardware, screens and cabling straight from the camera, your library, or a file.
+>
+> TIME
+> Start a timer on any ticket and it follows you across the app. Stop it and the entry lands on your weekly timesheet, marked billable or not. Time entries save offline and sync when you're back on a network, so a basement job still gets billed.
+>
+> BUILT FOR THE JOB
+> • Push notifications for approvals, tickets assigned to you, and SLA breaches
+> • Face ID or Touch ID lock, with fleet data hidden from the app switcher
+> • Two-factor sign-in, a list of your signed-in phones, and one-tap revoke
+> • Works with Breeze Cloud in the United States or Europe, or your own Breeze server
+> • The assistant runs through your Breeze server. No model credentials live on the phone.
+>
+> Breeze RMM is for existing Breeze customers. Accounts are created by your organization admin, and there's nothing to buy in the app. Learn more at breezermm.com.
+
+Keywords (98/100, comma-separated, no spaces after commas):
+
+> rmm,msp,it management,remote monitoring,help desk,ticketing,psa,time tracking,it support,alerts,ai
+
+What's New (first release; App Store Connect requires the field on updates only):
+
+> First release. Chat with your fleet, approve privileged actions with Face ID, work tickets with photo attachments, and log time with a timer that follows you across the app.
+
+Things the listing must NOT claim (verified absent on 2026-09-09): iPad support, location-aware time suggestions, resolving or muting alerts from the phone (acknowledge only), acting on findings from the phone (display-only until #5365), any purchase or sign-up flow.
 
 ## Privacy declaration
 
@@ -268,7 +336,7 @@ Four constraints worth recording:
 2. Put `EXPO_PUBLIC_SENTRY_DSN`, `EXPO_PUBLIC_API_URL`, and (when approved) `EXPO_PUBLIC_POSTHOG_KEY` / `EXPO_PUBLIC_POSTHOG_HOST` in **`apps/mobile/.env`** — the file, not your shell, because Xcode build phases do not inherit it. See `.env.example` for what each one does when left unset. Neither `EXPO_PUBLIC_SENTRY_DSN` nor `EXPO_PUBLIC_API_URL` is optional for a release build: the Archive fails without either (see "Sentry — telemetry" above and `src/config/apiUrl.js`). The API URL check also rejects `localhost`, a private-network address, and plaintext `http` to a public host. A genuinely LAN-hosted self-hosted build sets `BREEZE_MOBILE_ALLOW_PRIVATE_API_URL=1`, which accepts a private host (plaintext included) and warns on every build that it did; loopback, placeholders, and plaintext to a *public* host still fail.
 3. Run `npx pnpm@10.33.4 --filter=breeze-mobile preflight`. **This is an optional convenience, not a gate** — nothing in the repo invokes it, and Xcode will never run it for you. It is worth running anyway for the one thing it still catches that the build-time guards do not: a missing `SENTRY_AUTH_TOKEN` (not silent, but it fails ten minutes into an archive instead of instantly here). Its DSN and API-URL checks are now echoes of the `app.config.js` guards, which cannot be skipped — the API-URL one literally calls the same rule function, so the two can never disagree.
 4. Run `npx pnpm@10.33.4 --filter=breeze-mobile typecheck` and `npx pnpm@10.33.4 --filter=breeze-mobile test`.
-5. In Xcode, run the `BreezeRMM` scheme on a current iPhone and iPad simulator. Capture the reviewed production UI in the simulator, not the development error or debug overlay.
-6. Save iPhone screenshots at the App Store Connect-required 6.5-inch size (1242 × 2688 or 1284 × 2778) and the iPad screenshots for the supported iPad display-size family. In Simulator, use **File → Save Screen** for each approved screen.
+5. In Xcode, run the `BreezeRMM` scheme on a current iPhone simulator. Capture the reviewed production UI in the simulator, not the development error or debug overlay.
+6. Save iPhone screenshots at the App Store Connect-required 6.5-inch size (1242 × 2688 or 1284 × 2778); no iPad screenshots (iPhone-only). In Simulator, use **File → Save Screen** for each approved screen.
 7. In Xcode, select a physical device or **Any iOS Device**, use **Product → Archive**, then upload the archive to App Store Connect. Attach the processed build to version 1.0.
 8. Enter review notes and working reviewer credentials or an approved demo path, then submit the version to Apple for review.

@@ -11,7 +11,7 @@ import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { db } from '../../db';
 import { invoices, invoiceDocuments } from '../../db/schema';
 import { enqueueInvoicePdfRender } from '../../jobs/invoiceWorker';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { sendInvoiceEmail, resendInvoiceEmail, type SendInvoiceEmailOptions } from '../../services/invoicePdf'; // added in Phase 5
 import { writeRouteAudit } from '../../services/auditEvents';
 import { invoiceActorFrom, handleServiceError } from './invoices';
@@ -39,14 +39,39 @@ invoiceLifecycleRoutes.post('/:id/issue', scopes, sendPerm, zValidator('param', 
   catch (err) { return handleServiceError(c, err); }
 });
 
+/**
+ * #3205 W07 decision 14a: a DRAFT-GUARDED ATOMIC update, never a read-then-write.
+ * A check-then-write would race a concurrent issue and mutate an issued invoice.
+ * 0 affected rows means the invoice was not (or no longer) a draft -> 409, and
+ * the send is REFUSED rather than proceeding while silently ignoring the flag.
+ */
+async function applyDeviceAppendixOverride(invoiceId: string, value: boolean): Promise<void> {
+  const updated = await db.update(invoices)
+    .set({ deviceAppendix: value, updatedAt: new Date() })
+    .where(and(eq(invoices.id, invoiceId), eq(invoices.status, 'draft')))
+    .returning({ id: invoices.id });
+  if (updated.length === 0) {
+    throw new InvoiceServiceError(
+      'This invoice has already been issued — the billed-devices appendix can only be chosen while it is a draft',
+      409, 'INVOICE_ALREADY_ISSUED',
+    );
+  }
+}
+
 // POST /:id/send — issue (if still a draft) + email. The composer body is
 // optional and shared with /resend: bulk-send, the MCP tools and the contract
 // worker POST nothing and get the classic billing-contact send unchanged.
 invoiceLifecycleRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idParam), async (c) => {
   const parsed = await parseComposerBody(c, sendComposerSchema);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
-  try { return c.json({ data: await sendInvoiceEmail(c.req.valid('param').id, invoiceActorFrom(c), composerOptions(parsed.data)) }); }
-  catch (err) { return handleServiceError(c, err); }
+  const id = c.req.valid('param').id;
+  try {
+    // BEFORE sendInvoiceEmail (which issues, which enqueues the async render).
+    if (parsed.data.includeDeviceAppendix !== undefined) {
+      await applyDeviceAppendixOverride(id, parsed.data.includeDeviceAppendix);
+    }
+    return c.json({ data: await sendInvoiceEmail(id, invoiceActorFrom(c), composerOptions(parsed.data)) });
+  } catch (err) { return handleServiceError(c, err); }
 });
 
 // POST /:id/resend — re-email an already-issued invoice. Not a second send:

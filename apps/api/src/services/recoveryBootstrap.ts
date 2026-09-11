@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { and, desc, eq, inArray, lt } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import {
   backupConfigs,
   backupJobs,
@@ -109,15 +109,26 @@ export function buildRecoveryDownloadDescriptor(args: {
 }
 
 export async function expireUnusedRecoveryTokens(): Promise<void> {
-  await db
-    .update(recoveryTokens)
-    .set({ status: 'expired' })
-    .where(
-      and(
-        inArray(recoveryTokens.status, ['active', 'authenticated']),
-        lt(recoveryTokens.expiresAt, new Date())
+  // System-scoped on purpose (D9): this is a housekeeping sweep of expired
+  // tokens across ALL orgs, and its most important callers are the public,
+  // token-authenticated BMR recovery routes (bmr.ts `bmrPublicRoutes`),
+  // which run before ANY org is known — there is no org to scope to yet.
+  // The write is safe to run system-wide: it's a blind UPDATE gated only by
+  // status + expiry, reads and returns nothing caller-supplied, and cannot
+  // leak cross-org data. When this already runs inside an existing DB access
+  // context (e.g. an authenticated `bmrRoutes` request), withDbAccessContext
+  // joins that context instead of widening it — see db/index.ts.
+  await withSystemDbAccessContext(() =>
+    db
+      .update(recoveryTokens)
+      .set({ status: 'expired' })
+      .where(
+        and(
+          inArray(recoveryTokens.status, ['active', 'authenticated']),
+          lt(recoveryTokens.expiresAt, new Date())
+        )
       )
-    );
+  );
 }
 
 export async function syncExpiredRecoveryMediaArtifacts(orgId?: string): Promise<void> {
@@ -147,7 +158,15 @@ export async function syncExpiredRecoveryMediaArtifacts(orgId?: string): Promise
     );
 }
 
-export async function resolveSnapshotProviderConfig(snapshotDbId: string) {
+// snapshotDbId accepts null/undefined so callers reading a nullable FK
+// (recovery_tokens.snapshot_id since 2026-10-15-140004 / D17 — ON DELETE SET
+// NULL so a token outlives its snapshot's retention deletion) can pass the
+// value straight through instead of each re-deriving "no snapshot" as a
+// separate branch. Resolves the same way an unknown id already did: null,
+// which every existing caller already treats as "snapshot not found".
+export async function resolveSnapshotProviderConfig(snapshotDbId: string | null | undefined) {
+  if (!snapshotDbId) return null;
+
   const [snapshot] = await db
     .select({
       id: backupSnapshots.id,
@@ -373,6 +392,19 @@ export async function resolveRecoveryTokenPresentation(orgId: string, tokenId: s
   };
 }
 
+// Bare-metal recovery W04a: the binding echoed on `bootstrap.recovery` (both
+// the exchange and authenticate responses share this shape). `nonce` is only
+// ever populated by the exchange handler, which holds the plaintext nonce
+// in memory for the single response that generated it — it is never
+// persisted (only its hash is), so no later authenticate call can leak it.
+export interface AuthenticatedBootstrapRecovery {
+  id: string;
+  identity: 'original' | 'new';
+  deviceId: string;
+  snapshotId: string | null;
+  nonce?: string;
+}
+
 export function buildAuthenticatedBootstrapPayload(args: {
   tokenId: string;
   deviceId: string;
@@ -386,6 +418,7 @@ export function buildAuthenticatedBootstrapPayload(args: {
   config: Record<string, unknown> | null | undefined;
   requestUrl?: string;
   tokenExpiresAt?: Date | string | null;
+  recovery?: AuthenticatedBootstrapRecovery | null;
 }) {
   const providerSnapshotId =
     getStringValue(asNullableRecord(args.snapshot), 'snapshotId') ?? args.snapshotId;
@@ -415,6 +448,7 @@ export function buildAuthenticatedBootstrapPayload(args: {
           tokenExpiresAt: args.tokenExpiresAt,
         })
       : null,
+    ...(args.recovery ? { recovery: args.recovery } : {}),
   };
 
   return {

@@ -25,7 +25,7 @@ import {
   db, withDbAccessContext, withSystemDbAccessContext, hasDbAccessContext, getCurrentDbAccessContext,
   type DbAccessContext,
 } from '../../db';
-import { invoiceStripePayments } from '../../db/schema/stripePayments';
+import { invoiceStripePayments, stripeConnectAccounts } from '../../db/schema/stripePayments';
 import { quotes } from '../../db/schema/quotes';
 import { createPartner, createOrganization } from './db-utils';
 import { isSelfManagedDbContextRoute } from '../../middleware/selfManagedDbContextRoutes';
@@ -45,6 +45,9 @@ vi.mock('../../services/partnerStripe', () => ({
   getPartnerStripeClient: getPartnerStripeClientMock,
   PartnerStripeError,
 }));
+
+/** The account id the mocked client reports; seeded per partner (see seedConvertedQuote). */
+let currentAccountId = 'acct_test';
 
 import { createQuote, addManualLine } from '../../services/quoteService';
 import { sendQuote } from '../../services/quoteLifecycle';
@@ -87,6 +90,7 @@ function app(orgId: string) {
       // do not read it, so the null (contact-less login) case is stated.
       user: { id: 'pu1', orgId, email: 'c@example.test', name: 'Cust', contactId: null, receiveNotifications: true, status: 'active' },
       token: 't', authMethod: 'bearer',
+      timezone: 'UTC',
     });
     if (isSelfManagedDbContextRoute(c.req.method, c.req.path)) return next();
     return withDbAccessContext(portalCtx(orgId), () => next());
@@ -99,6 +103,15 @@ async function seedConvertedQuote() {
   const { partner, org } = await withSystemDbAccessContext(async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
+    // createInvoicePayLink / the quote checkout producer re-check the durable
+    // stripe_connect_accounts row inside the mapping transaction (SEC-151):
+    // the account the mock reports must exist for this partner, and
+    // stripe_account_id is globally unique, so each seeded partner gets its own.
+    currentAccountId = `acct_pquote_${Math.random().toString(36).slice(2, 10)}`;
+    await db.insert(stripeConnectAccounts).values({
+      partnerId: partner.id, stripeAccountId: currentAccountId,
+      apiKey: 'enc:synthetic', keyLast4: 'test', livemode: false,
+    });
     return { partner, org };
   });
   const actor: QuoteActor = { userId: null, partnerId: partner.id, accessibleOrgIds: [org.id] };
@@ -112,7 +125,7 @@ async function seedConvertedQuote() {
 describe('POST /portal/quotes/:id/pay — no DB context across Stripe (#1448)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getPartnerStripeClientMock.mockResolvedValue({ stripe: { checkout: { sessions: { create: sessionsCreateMock } } }, stripeAccountId: 'acct_test', defaultCurrency: 'USD' });
+    getPartnerStripeClientMock.mockImplementation(async () => ({ stripe: { checkout: { sessions: { create: sessionsCreateMock } } }, stripeAccountId: currentAccountId, defaultCurrency: 'USD' }));
     sessionsCreateMock.mockResolvedValue({ id: 'cs_portal_quote_1', url: 'https://checkout.stripe.com/c/pay/portal-quote', payment_intent: null });
   });
 

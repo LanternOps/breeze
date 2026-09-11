@@ -9,6 +9,8 @@
       "thisPolicyHasNoOrganizationSoAssignment": "Bu politikanın organizasyonu yoktur, dolayısıyla atama hedefleri listelenemez.",
       "failedToAddAssignment": "Ödev eklenemedi",
       "failedToRemoveAssignment": "Ödev kaldırılamadı",
+      "assignmentAdded": "Ödev eklendi",
+      "assignmentRemoved": "Ödev kaldırıldı",
       "roleFilter": "Rol Filtresi",
       "optional": "(isteğe bağlı)",
       "noRestrictionAppliesToAllDeviceRoles": "Kısıtlama yok - tüm cihaz rolleri için geçerlidir",
@@ -131,7 +133,10 @@
       "removing": "Kaldırılıyor...",
       "removeConfiguration": "Yapılandırmayı kaldır",
       "complianceStatus2": "compliance_status",
-      "assignments2": "ödevler"
+      "assignments2": "ödevler",
+      "managedByYourMsp": "MSP'niz tarafından yönetiliyor",
+      "inheritedByPolicies_one": "{{count}} politika bundan devralıyor",
+      "inheritedByPolicies_other": "{{count}} politika bundan devralıyor"
     },
     "configPolicyList": {
       "archived": "Arşivlendi",
@@ -150,7 +155,8 @@
       "of2": "arasında",
       "itsOwningOrganization": "kendi sahibi kuruluş",
       "organizationPolicyTitle": "Organizasyon politikası — yalnızca {{organization}} için geçerlidir",
-      "summary": "{{filtered}} / {{total}} politikaları"
+      "summary": "{{filtered}} / {{total}} politikaları",
+      "inheritsBadge": "Devralıyor"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Yapılandırma politikaları getirilemedi",
@@ -166,7 +172,8 @@
       "areYouSureYouWantToDelete": "Silmek istediğinizden emin misiniz?",
       "thisWillAlsoRemoveAllFeatureLinks": "? Bu aynı zamanda tüm özellik bağlantılarını ve atamalarını da kaldıracaktır. Bu eylem geri alınamaz.",
       "delete": "sil",
-      "deleting": "Siliniyor..."
+      "deleting": "Siliniyor...",
+      "deleteBlockedByChildren": "Önce bundan devralan politikaları silin:"
     },
     "organizationScopePanel": {
       "failedToLoadAssignments": "Ödevler yüklenemedi",
@@ -664,6 +671,16 @@
         "configCheck": "config_check",
         "none": "yok"
       },
+      "deviceLifecycleTab": {
+        "permanentlyDeleteRemovedDevices": "Kaldırılan cihazları kalıcı olarak sil",
+        "offKeepRemovedDevicesUntilDeletedManually": "Kapalı — kaldırılan cihazlar biri onları elle silene kadar saklanır.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "Çıkarılan cihazlar, çıkarılmalarından {{days}} gün sonra kalıcı olarak silinir.",
+        "permanentlyDeleteRemovedDevicesAfter": "Kaldırılan cihazları şu süreden sonra kalıcı olarak sil:",
+        "days": "gün",
+        "enterAWholeNumberOfDaysBetween": "1 ile 3650 arasında tam sayı olarak gün girin.",
+        "purgeIsIrreversibleAndDestroysHistory": "Silme geri alınamaz ve geçmişi yok eder",
+        "aDailyJobPermanentlyDeletesTheDevice": "Günlük çalışan bir görev, cihaz kaydını ve ona bağlı her şeyi — uyarılar, betikler, yamalar, günlükler ve envanter — kalıcı olarak siler. Aracı kaldırma işlemi hâlâ kuyrukta olan cihazlar, bu işlem tamamlanana kadar atlanır. En yakın ilke kazanır; böylece bir kuruluş, tüm kuruluşlar için tanımlanmış bir pencereden çıkmak üzere bunu kapatabilir."
+      },
       "eventLogTab": {
         "security": "Güvenlik",
         "hardware": "Donanım",
@@ -694,7 +711,11 @@
       "featureTabShell": {
         "override": "Geçersiz kıl",
         "revertToParent": "Ebeveyne Geri Dön",
-        "saving": "Kaydediliyor..."
+        "saving": "Kaydediliyor...",
+        "revertConfirmTitle": "Üst ilkeye geri dönülsün mü?",
+        "revertConfirmMessage": "Bu işlem bu ilkedeki {{feature}} geçersiz kılmasını siler. Ayarları kaybolur ve bu ilkeyi kullanan tüm cihazlarda üst ilkenin ayarları geçerli olur. Bu işlem geri alınamaz.",
+        "removeConfirmTitle": "Bu yapılandırma kaldırılsın mı?",
+        "removeConfirmMessage": "Bu işlem {{feature}} yapılandırmasını bu ilkeden siler. Ayarları kaybolur ve özellik bu ilkeyi kullanan tüm cihazlara uygulanmayı bırakır. Bu işlem geri alınamaz."
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Cihazlara Breeze Assist'i dağıtın",
@@ -883,9 +904,20 @@
         "time": "Zaman",
         "dayOfWeek": "Haftanın günü",
         "dayOfMonth": "Ayın günü",
+        "offlineDevices": "Çevrimdışı cihazlar",
+        "offlineBehaviorQueue": "Çevrimdışı cihazlar için kuyruğa al",
+        "offlineBehaviorQueueDescription": "Bir sonraki bağlantıda, planlanan sonraki çalıştırmadan önce çalışır.",
+        "offlineBehaviorSkip": "Çevrimdışı cihazları atla",
+        "offlineBehaviorSkipDescription": "İş çalıştığında çevrimdışı olan cihazlar atlandı olarak kaydedilir.",
         "rebootPolicy": "Yeniden Başlatma Politikası",
         "rebootDelayMinutes": "Yeniden başlatma gecikmesi (dakika)",
         "rebootDelayMinutesDescription": "Oturum açmış kullanıcının yama sonrası yeniden başlatmadan önce ne kadar süreyle uyarılacağı.",
+        "rebootAllowDeferral": "Kullanıcıların yeniden başlatmayı ertelemesine izin ver",
+        "rebootAllowDeferralDescription": "Oturum açmış kullanıcıya Ertele düğmesi bulunan bir istem gösterin. Kullanıcının oturumunda Breeze yardımcısının çalışıyor olması gerekir; Linux cihazlar terminal uyarısına geri döner. Erteleme hakkı bittiğinde yeniden başlatma yine de son tarihte gerçekleşir.",
+        "rebootMaxDeferrals": "En fazla erteleme sayısı",
+        "rebootMaxDeferralsDescription": "Bir kullanıcının tek bir yeniden başlatmayı, işlem devam etmeden önce kaç kez erteleyebileceği.",
+        "rebootDeferralMinutes": "Erteleme süresi (dakika)",
+        "rebootDeferralMinutesDescription": "Her ertelemenin yeniden başlatmayı ne kadar ileri ötelediği.",
         "windowsUpdateSource": "Windows Update Kaynak",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Windows Update'yi yalnızca Breeze aracılığıyla yönetin",
         "suppressesTheEndpointSNativeWindowsUpdate": "Uç noktanın yerel Windows Update otomatik yükleme kanalını bastırır, böylece güncellemelerin yalnızca Breeze onay halkaları üzerinden akmasını sağlayarak beklenmeyen yeniden başlatmaları ve programınızın dışında yamaları önler. Windows-yalnızca; Breeze'in kendi tarama/onaylama/yükleme yolu etkilenmez. Devre dışı bırakıldığında temiz bir şekilde geri döner (önceden var olan yönetici Grup İlkesi'ne dokunulmaz).",
@@ -920,7 +952,8 @@
         "loadingPolicies": "Politikalar yükleniyor...",
         "noExistingPoliciesFound": "Mevcut politika bulunamadı.",
         "selectAPolicy": "Bir politika seçin...",
-        "clearSelection": "Seçimi temizle"
+        "clearSelection": "Seçimi temizle",
+        "allOrgs": "Tüm kuruluşlar"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",
@@ -1628,20 +1661,6 @@
       "catalogTab": "Katalog",
       "summaryCompleted7d": "Tamamlandı (7 gün)",
       "summaryFailed7d": "Başarısız (7 gün)"
-    },
-    "softwareComplianceReport": {
-      "softwareComplianceReport": "Yazılım Uyumluluk Raporu",
-      "analyzeSoftwareVersionDriftAcrossManagedDevices": "Yönetilen cihazlar arasında yazılım sürümü değişimini analiz edin.",
-      "bulkUpdate": "Toplu güncelleme",
-      "versionDriftAnalysis": "Sürüm kayması analizi",
-      "clickARowToSeeOutdatedDevices": "Eski cihazları görmek için bir satıra tıklayın.",
-      "software": "Yazılım",
-      "expectedVersion": "Beklenen sürüm",
-      "devicesOnVersion": "Sürümdeki cihazlar",
-      "devicesOutdated": "Cihazların güncelliği geçmiş",
-      "details": "Ayrıntılar",
-      "outdatedDevices": "Güncel olmayan cihazlar",
-      "hide": "Gizle"
     },
     "softwareInventory": {
       "allowed": "İzin veriliyor",

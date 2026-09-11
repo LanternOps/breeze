@@ -35,9 +35,16 @@
 #   scripts/smoke-guided-setup.sh teardown   disable the unit, remove the stack + volumes
 #
 # Inputs (env):
-#   GUIDED_SMOKE_VERSION             image tag the installer will use (default ci-smoke).
+#   GUIDED_SMOKE_VERSION             image tag the installer will use (default 0.112.0-ci-smoke).
 #                                    ghcr.io/lanternops/breeze/{api,web,portal}:<tag> must
 #                                    exist locally (CI builds them from this checkout).
+#                                    The numeric core MUST stay at or above
+#                                    guided-setup.sh's SIGNED_IMAGE_INVENTORY_MIN_VERSION —
+#                                    this smoke signs and verifies a real image
+#                                    inventory manifest below, which only runs
+#                                    at/above that floor. The below-floor skip
+#                                    path is covered without Docker by
+#                                    scripts/check-guided-setup-signed-image-floor.sh.
 #   GUIDED_SMOKE_BINARIES_IMAGE_REF  agent binaries image (default ghcr.io/lanternops/breeze/binaries:latest)
 #   GUIDED_SMOKE_WORK_DIR            installer work dir (default $HOME/breeze-guided-smoke)
 #   GUIDED_SMOKE_TUNNEL_PORT         local port for the tunnel simulation (default 8443)
@@ -48,9 +55,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 WORK_DIR="${GUIDED_SMOKE_WORK_DIR:-${HOME}/breeze-guided-smoke}"
-VERSION="${GUIDED_SMOKE_VERSION:-ci-smoke}"
+VERSION="${GUIDED_SMOKE_VERSION:-0.112.0-ci-smoke}"
 BINARIES_IMAGE_REF="${GUIDED_SMOKE_BINARIES_IMAGE_REF:-ghcr.io/lanternops/breeze/binaries:latest}"
 TUNNEL_PORT="${GUIDED_SMOKE_TUNNEL_PORT:-8443}"
+# api/web/portal are built locally under a synthetic tag (no registry pull
+# available for them). A `repo@sha256:<local-image-ID>` reference cannot be
+# resolved by `docker compose pull`/`up` (only a registry *manifest* digest
+# resolves — see the RepoDigests comment below), so this smoke stands up a
+# throwaway local registry, pushes the three built images to it, and hands
+# the installer the registry's own manifest digest for each — the same shape
+# of reference a real GHCR-published image would get.
+# Not "breeze-*": step [11] asserts no breeze-* container survives `systemctl stop`, and this
+# registry is smoke scaffolding, not part of the installed stack.
+SMOKE_REGISTRY_NAME="guided-smoke-registry"
+SMOKE_REGISTRY_HOST="127.0.0.1:5000"
+SMOKE_REGISTRY_REPO_PREFIX="${SMOKE_REGISTRY_HOST}/lanternops/breeze"
 ADMIN_EMAIL="ci-admin@breeze.local"
 # Fixed so CI can mask it before the installer prints it. Must satisfy the
 # production bootstrap rules in apps/api/src/db/seed.ts (>= 16 chars, not a
@@ -83,6 +102,7 @@ cleanup() {
   if [[ -n "${SOCAT_PID}" ]]; then
     kill "${SOCAT_PID}" 2>/dev/null || true
   fi
+  docker rm -f "${SMOKE_REGISTRY_NAME}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -115,6 +135,7 @@ do_teardown() {
   if [[ -f "${WORK_DIR}/docker-compose.yml" && -f "${WORK_DIR}/.env" ]]; then
     compose down -v --remove-orphans 2>/dev/null || true
   fi
+  docker rm -f "${SMOKE_REGISTRY_NAME}" >/dev/null 2>&1 || true
 }
 
 case "${1:-run}" in
@@ -151,13 +172,29 @@ csrf_from_jar() {
   awk -v name="${CSRF_COOKIE}" '$6 == name { print $7 }' "$1" | tail -1
 }
 
+# bootstrap_binding <jar> <origin> -- seeds a durable breeze_auth_binding
+# cookie in <jar> the way a real browser client does before any
+# session-issuance call. Every such route (login, refresh, mfa/passkey
+# verify, ...) now requires a valid binding cookie and 428s
+# auth_binding_rotation_required without one — see
+# apps/api/src/routes/auth/binding.ts and services/authBrowserTransition.ts.
+bootstrap_binding() {
+  local jar="$1" origin="$2" status
+  status="$(http -c "${jar}" -o /dev/null -w '%{http_code}' -X POST "${origin}/api/v1/auth/browser-binding/bootstrap" \
+    -H "Origin: ${origin}")"
+  [[ "${status}" == "204" ]] || fail "auth binding bootstrap at ${origin} returned ${status} (expected 204)"
+}
+
 # login <jar> <origin> -> prints access token
 login() {
   local jar="$1" origin="$2" body
-  body="$(http -c "${jar}" -X POST "${origin}/api/v1/auth/login" \
+  bootstrap_binding "${jar}" "${origin}"
+  body="$(http -b "${jar}" -c "${jar}" -X POST "${origin}/api/v1/auth/login" \
     -H 'Content-Type: application/json' -H "Origin: ${origin}" \
     --data "{\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\"}")" \
     || fail "login request to ${origin} failed"
+  jq -e '.mfaEnrollmentRequired == false' <<<"${body}" >/dev/null \
+    || fail "installer smoke role-MFA relief valve was not honoured at ${origin}"
   jq -er '.tokens.accessToken' <<<"${body}" 2>/dev/null \
     || fail "login at ${origin} returned no access token: $(jq -c 'del(.tokens)' <<<"${body}" 2>/dev/null || echo "${body}")"
 }
@@ -194,13 +231,44 @@ for image in api web portal; do
   docker image inspect "ghcr.io/lanternops/breeze/${image}:${VERSION}" >/dev/null 2>&1 \
     || fail "ghcr.io/lanternops/breeze/${image}:${VERSION} is not present locally — build it first"
 done
+# Unlike api/web/portal (built from this checkout under the synthetic
+# ci-smoke tag above), the binaries image is a real, published, digest-pinned
+# artifact — this smoke runs the unmodified guided-setup.sh against the
+# unmodified docker-compose.yml, so there is no CI override to stub
+# binaries-init the way the Smoke Test / dev-stack jobs do. Pull it here
+# (idempotent — a no-op if a prior run already cached it) so the signed
+# release-manifest fixture below can inspect a real local digest.
+docker image inspect "${BINARIES_IMAGE_REF}" >/dev/null 2>&1 \
+  || docker pull "${BINARIES_IMAGE_REF}" \
+  || fail "${BINARIES_IMAGE_REF} is not present locally and could not be pulled"
 if systemctl list-unit-files "${SERVICE}" 2>/dev/null | grep -q "^${SERVICE}"; then
   fail "${SERVICE} is already installed on this host; run '$0 teardown' first"
 fi
 if docker ps -a --format '{{.Names}}' | grep -qE '^breeze-(api|web|portal|caddy|postgres|redis|binaries-init)$'; then
   fail "breeze-* containers already exist on this host; run '$0 teardown' first"
 fi
+if docker ps -a --format '{{.Names}}' | grep -qx "${SMOKE_REGISTRY_NAME}"; then
+  fail "${SMOKE_REGISTRY_NAME} already exists on this host; run '$0 teardown' first"
+fi
 echo "  OK  host has docker, systemd, sudo, socat, and the ${VERSION} images"
+
+step "Start a throwaway local registry and push the locally built images to it"
+# api/web/portal were built by this job, not pulled — they have no registry
+# manifest digest until something pushes them somewhere. Give them one here
+# so the signed release-manifest fixture below can hand the installer a real
+# `repo@sha256:<manifest-digest>` ref instead of a local image ID.
+docker run -d --name "${SMOKE_REGISTRY_NAME}" -p "${SMOKE_REGISTRY_HOST}:5000" registry:2 >/dev/null
+for i in $(seq 1 30); do
+  curl -fsS "http://${SMOKE_REGISTRY_HOST}/v2/" >/dev/null 2>&1 && break
+  [[ "$i" -lt 30 ]] || fail "local registry at ${SMOKE_REGISTRY_HOST} never became ready"
+  sleep 1
+done
+for image in api web portal; do
+  docker tag "ghcr.io/lanternops/breeze/${image}:${VERSION}" "${SMOKE_REGISTRY_REPO_PREFIX}/${image}:${VERSION}"
+  docker push "${SMOKE_REGISTRY_REPO_PREFIX}/${image}:${VERSION}" >/dev/null \
+    || fail "could not push ${SMOKE_REGISTRY_REPO_PREFIX}/${image}:${VERSION} to the local registry"
+done
+echo "  OK  api, web, portal pushed to ${SMOKE_REGISTRY_HOST}"
 
 step "Stage the installer inputs in ${WORK_DIR} (this checkout's templates)"
 rm -rf "${WORK_DIR}"
@@ -208,18 +276,94 @@ mkdir -p "${WORK_DIR}/docker"
 cp "${REPO_ROOT}/docker-compose.yml" "${REPO_ROOT}/.env.example" "${WORK_DIR}/"
 cp "${REPO_ROOT}/docker/Caddyfile.prod" "${WORK_DIR}/docker/"
 cp "${REPO_ROOT}/scripts/guided-setup.sh" "${WORK_DIR}/guided-setup.sh"
+mkdir -p "${WORK_DIR}/scripts/release"
+cp "${REPO_ROOT}/scripts/release/verify-release-images.sh" "${WORK_DIR}/scripts/release/"
 chmod +x "${WORK_DIR}/guided-setup.sh"
 # Seed exactly what a self-hoster would have to type: the version (pinned to the
 # locally built images) and the bootstrap admin. Everything else is the
 # installer's own defaults and generated secrets.
 cp "${WORK_DIR}/.env.example" "${WORK_DIR}/.env"
 chmod 600 "${WORK_DIR}/.env"
+
+# Sign a synthetic release manifest that binds the exact image digests the
+# installer will actually be able to pull. The installer must exercise its
+# real Ed25519 verification path even though this smoke deliberately does not
+# publish or contact GHCR.
+RELEASE_FIXTURE_DIR="${WORK_DIR}/release-fixture"
+mkdir -p "${RELEASE_FIXTURE_DIR}"
+export RELEASE_FIXTURE_DIR VERSION
+# api/web/portal were just pushed to the local registry above — resolving
+# `docker compose pull`/`up` needs their registry *manifest* digest
+# (RepoDigests), not the local image ID: a `repo@sha256:<config-id>`
+# reference is not something any Docker (containerd image store included)
+# can resolve, since it was never published anywhere under that digest.
+API_DIGEST="$(docker image inspect "${SMOKE_REGISTRY_REPO_PREFIX}/api:${VERSION}" --format '{{index .RepoDigests 0}}' | sed 's/.*@//')"
+WEB_DIGEST="$(docker image inspect "${SMOKE_REGISTRY_REPO_PREFIX}/web:${VERSION}" --format '{{index .RepoDigests 0}}' | sed 's/.*@//')"
+PORTAL_DIGEST="$(docker image inspect "${SMOKE_REGISTRY_REPO_PREFIX}/portal:${VERSION}" --format '{{index .RepoDigests 0}}' | sed 's/.*@//')"
+# The binaries image is pulled from GHCR (not built here) and already has a
+# real registry manifest digest — same reasoning, no local registry needed.
+BINARIES_DIGEST="$(docker image inspect "${BINARIES_IMAGE_REF}" --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}' | sed 's/.*@//')"
+export API_DIGEST WEB_DIGEST PORTAL_DIGEST BINARIES_DIGEST SMOKE_REGISTRY_REPO_PREFIX
+RELEASE_PUBLIC_KEY="$({ node <<'NODE'
+const { generateKeyPairSync, sign } = require('node:crypto');
+const { writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+const core = {
+  api: process.env.API_DIGEST,
+  web: process.env.WEB_DIGEST,
+  portal: process.env.PORTAL_DIGEST,
+  binaries: process.env.BINARIES_DIGEST,
+};
+// api/web/portal resolve against the smoke's throwaway local registry
+// (they were only ever built here, never published to GHCR); binaries and
+// the (unused-by-this-smoke) M365 executor entries keep their real/synthetic
+// ghcr.io repository. --expected-repository still checks the manifest's
+// top-level `repository` (the GitHub owner/repo), which is unrelated to
+// per-image registry host and stays 'LanternOps/breeze' below.
+const registryHost = {
+  api: process.env.SMOKE_REGISTRY_REPO_PREFIX,
+  web: process.env.SMOKE_REGISTRY_REPO_PREFIX,
+  portal: process.env.SMOKE_REGISTRY_REPO_PREFIX,
+};
+const names = [
+  'api', 'web', 'portal', 'binaries',
+  'm365-graph-read-executor',
+  'm365-graph-actions-executor',
+  'm365-communications-executor',
+];
+const images = names.map((name, index) => ({
+  digest: core[name] ?? `sha256:${String(index + 1).repeat(64)}`,
+  name,
+  repository: `${registryHost[name] ?? 'ghcr.io/lanternops/breeze'}/${name}`,
+})).sort((left, right) => left.name.localeCompare(right.name));
+const manifest = `${JSON.stringify({
+  assets: [],
+  images,
+  release: `v${process.env.VERSION}`,
+  repository: 'LanternOps/breeze',
+  schemaVersion: 1,
+  sourceCommit: '0'.repeat(40),
+}, null, 2)}\n`;
+writeFileSync(join(process.env.RELEASE_FIXTURE_DIR, 'release-artifact-manifest.json'), manifest);
+writeFileSync(
+  join(process.env.RELEASE_FIXTURE_DIR, 'release-artifact-manifest.json.ed25519'),
+  `${sign(null, Buffer.from(manifest), privateKey).toString('base64')}\n`,
+);
+process.stdout.write(publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64'));
+NODE
+} )"
 sed -i \
   -e "s|^BREEZE_VERSION=.*|BREEZE_VERSION=${VERSION}|" \
+  -e "s|^RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=.*|RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=${RELEASE_PUBLIC_KEY}|" \
   -e "s|^BREEZE_BOOTSTRAP_ADMIN_EMAIL=.*|BREEZE_BOOTSTRAP_ADMIN_EMAIL=${ADMIN_EMAIL}|" \
   -e "s|^BREEZE_BOOTSTRAP_ADMIN_PASSWORD=.*|BREEZE_BOOTSTRAP_ADMIN_PASSWORD=${ADMIN_PASSWORD}|" \
   -e "s|^BREEZE_BINARIES_IMAGE_REF=.*|BREEZE_BINARIES_IMAGE_REF=${BINARIES_IMAGE_REF}|" \
   "${WORK_DIR}/.env"
+# This smoke covers installer/reboot, session cookies and partner trust, not
+# enrollment. Persist the documented role-only valve through the systemd reboot;
+# the stored role flag and default forced-MFA behavior are tested separately.
+printf '\nMFA_FORCE_FOR_PARTNER_ADMIN=false\n' >> "${WORK_DIR}/.env"
 echo "  OK  staged"
 
 step "Run scripts/guided-setup.sh --yes end to end (generate, pull, up, health wait, systemd install)"
@@ -237,6 +381,7 @@ set +e
      BREEZE_SETUP_INSTALL_SYSTEMD=true \
      BREEZE_SETUP_DRY_RUN=false \
      BREEZE_SETUP_GITHUB_API=http://127.0.0.1:9 \
+     BREEZE_SETUP_RELEASE_DOWNLOAD_BASE="file://${RELEASE_FIXTURE_DIR}" \
      ./guided-setup.sh --no-download --yes < /dev/null
 ) 2>&1 | tee "${WORK_DIR}/guided-setup.log"
 installer_status=${PIPESTATUS[0]}
@@ -244,8 +389,35 @@ set -e
 [[ "${installer_status}" -eq 0 ]] || fail "guided-setup.sh exited ${installer_status} (see log above)"
 echo "  OK  installer exited 0"
 
+step "Assert the M365 JWK secret placeholder exists (#2991 — bare install dir, not a full checkout)"
+# This WORK_DIR only ever gets docker-compose.yml + .env.example + (in
+# packaged-Caddy mode) docker/Caddyfile.prod staged into it above — it is
+# never a full repo clone. docker-compose.yml's M365 executor signing-key
+# secrets default their file: source to ./docker/secrets/.empty-jwk when
+# unset, so the installer itself must create that file (it is not part of
+# what gets staged/downloaded); otherwise `docker compose up` fails with
+# "bind source path does not exist" instead of starting. If this regresses,
+# the installer run above would already have failed on the api container
+# never starting — this step exists to name the exact cause instead of
+# leaving it to a bisect through installer output.
+placeholder="${WORK_DIR}/docker/secrets/.empty-jwk"
+[[ -f "${placeholder}" ]] || fail "installer did not create ${placeholder}"
+[[ ! -s "${placeholder}" ]] || fail "${placeholder} is not empty"
+echo "  OK  ${placeholder} exists and is empty"
+
 step "Assert the generated .env"
 grep -q "^BREEZE_VERSION=${VERSION}\$" "${WORK_DIR}/.env" || fail "BREEZE_VERSION was not pinned to ${VERSION}"
+# api/web/portal resolve against the smoke's throwaway local registry (they
+# were only ever built here, never published to GHCR); binaries is real and
+# stays on ghcr.io. Either way the digest itself must still be a real
+# sha256 — that part of the assertion never weakens.
+smoke_registry_host_escaped="$(printf '%s' "${SMOKE_REGISTRY_HOST}" | sed 's/[.[\*^$]/\\&/g')"
+for image in API WEB PORTAL; do
+  grep -Eq "^BREEZE_${image}_IMAGE_REF=${smoke_registry_host_escaped}/lanternops/breeze/[^@]+@sha256:[0-9a-f]{64}$" "${WORK_DIR}/.env" \
+    || fail "BREEZE_${image}_IMAGE_REF was not resolved from the signed manifest"
+done
+grep -Eq "^BREEZE_BINARIES_IMAGE_REF=ghcr.io/lanternops/breeze/[^@]+@sha256:[0-9a-f]{64}$" "${WORK_DIR}/.env" \
+  || fail "BREEZE_BINARIES_IMAGE_REF was not resolved from the signed manifest"
 grep -q '^BREEZE_DOMAIN=localhost$' "${WORK_DIR}/.env" || fail "BREEZE_DOMAIN default is not localhost"
 grep -q '^CORS_ALLOWED_ORIGINS=https://localhost$' "${WORK_DIR}/.env" \
   || fail "CORS_ALLOWED_ORIGINS is not the documented default (https://localhost); the tunnel assertion below would not prove anything"

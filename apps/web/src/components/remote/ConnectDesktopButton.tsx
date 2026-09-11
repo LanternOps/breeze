@@ -8,6 +8,7 @@ import { getViewerDownloadInfo, getAllViewerDownloads } from '@/lib/viewerDownlo
 import { buildRemoteVncPageUrl } from '@/lib/remoteTunnelUrls';
 import { extractApiError } from '@/lib/apiError';
 import { showToast } from '@/components/shared/Toast';
+import { runAction, ActionError } from '@/lib/runAction';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import SessionPickerModal from './SessionPickerModal';
@@ -368,24 +369,30 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         return;
       }
 
-      // Clean up stale sessions in parallel with creating new one
-      const [, response] = await Promise.all([
-        fetchWithAuth('/remote/sessions/stale', { method: 'DELETE' }).catch(() => {}),
-        fetchWithAuth('/remote/sessions', {
-          method: 'POST',
-          body: JSON.stringify({
-            deviceId,
-            type: 'desktop',
+      // Do NOT sweep /remote/sessions/stale here. The unscoped sweep (no
+      // deviceId, no type) revoked every live session the caller could see,
+      // including a Terminal on the same device (close 4003 "Session revoked"),
+      // and racing it against the POST could catch the brand-new desktop row
+      // too (#4090). POST /remote/sessions already terminates stale rows
+      // scoped to this device+type server-side.
+      // runAction so the outcome always reaches the operator — and so the
+      // fail-closed revocation-lease gate has somewhere to speak: an agent that
+      // has not yet declared lease support answers 503 `agent_upgrade_required`,
+      // which is a temporary "the agent is updating", NOT "the device is
+      // offline" and NOT a generic connection failure.
+      const session = await runAction<{ id: string }>({
+        request: () =>
+          fetchWithAuth('/remote/sessions', {
+            method: 'POST',
+            body: JSON.stringify({ deviceId, type: 'desktop' }),
           }),
-        }),
-      ]);
-
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || t('connectDesktopButton.errors.createDesktopSession'));
-      }
-
-      const session = await response.json();
+        errorFallback: t('connectDesktopButton.errors.createDesktopSession'),
+        friendly: (code) =>
+          code === 'agent_upgrade_required'
+            ? t('connectDesktopButton.errors.agentUpgradeRequired')
+            : undefined,
+        parseSuccess: (data) => data as { id: string },
+      });
       sessionIdRef.current = session.id;
 
       // Create one-time desktop connect code for deep-link handoff
@@ -458,7 +465,16 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
 
       pollTimerRef.current = setTimeout(poll, 1500);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('connectDesktopButton.errors.connectionFailed'));
+      // A 401 is the auth redirect's business; a non-401 ActionError was
+      // already toasted by runAction, so only the inline label is set here.
+      if (err instanceof ActionError && err.status === 401) return;
+      setError(
+        err instanceof ActionError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : t('connectDesktopButton.errors.connectionFailed'),
+      );
       setStatus('idle');
     }
   }, [deviceId, desktopAccess, remoteAccessPolicy, endSession, t]);

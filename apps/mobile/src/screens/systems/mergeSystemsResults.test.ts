@@ -5,12 +5,13 @@ import {
   ORG_NAME_UNAVAILABLE,
   ORG_NAME_UNKNOWN,
   PARTIAL_FAILED_MESSAGE,
+  isUnsupportedSlice,
   mergeSystemsResults,
   rejectionReasons,
   resolveOrgName,
   type SystemsSlices,
 } from './mergeSystemsResults';
-import type { Alert, Device } from '../../services/api';
+import type { Alert, ApiError, Device, FleetFindingCounts } from '../../services/api';
 
 const device = (id: string) => ({ id, name: id } as unknown as Device);
 const alert = (id: string) => ({ id } as unknown as Alert);
@@ -18,12 +19,20 @@ const alert = (id: string) => ({ id } as unknown as Alert);
 const ok = <T,>(value: T): PromiseSettledResult<T> => ({ status: 'fulfilled', value });
 const bad = (reason: unknown): PromiseSettledResult<never> => ({ status: 'rejected', reason });
 
+// Simulated without importing the real ApiError class — this file must not
+// force a runtime import of services/api.ts, which pulls in
+// expo-secure-store / @sentry/react-native and cannot load under the node
+// vitest runtime (same pattern as lib/errorReporting.test.ts).
+const apiError = (statusCode: number, message: string): Partial<ApiError> =>
+  Object.assign(new Error(message), { name: 'ApiError', statusCode }) as Partial<ApiError>;
+
 const previous: SystemsSlices = {
   summary: { online: 1 } as never,
   alerts: [alert('a-old')],
   activeAlerts: [alert('act-old')],
   devices: [device('d-old')],
   orgs: [{ id: 'o1', name: 'Org One' }],
+  findings: { total: 1, byOrg: { o1: 1 } } as FleetFindingCounts,
 };
 
 const allOk = {
@@ -32,15 +41,17 @@ const allOk = {
   activeAlerts: ok([alert('act-new')]),
   devices: ok([device('d1'), device('d2')]),
   orgs: ok([{ id: 'o2', name: 'Org Two' }]),
+  findings: ok({ total: 2, byOrg: { o2: 2 } } as FleetFindingCounts),
 };
 
 describe('mergeSystemsResults', () => {
-  it('takes every fresh value when all four succeed, and reports no error', () => {
+  it('takes every fresh value when all six succeed, and reports no error', () => {
     const { slices, error, failed } = mergeSystemsResults(previous, allOk);
     expect(slices.devices).toHaveLength(2);
     expect(slices.alerts[0].id).toBe('a-new');
     expect(slices.activeAlerts[0].id).toBe('act-new');
     expect(slices.orgs[0].id).toBe('o2');
+    expect(slices.findings).toEqual({ total: 2, byOrg: { o2: 2 } });
     expect(error).toBeNull();
     expect(failed).toEqual([]);
   });
@@ -77,11 +88,38 @@ describe('mergeSystemsResults', () => {
       activeAlerts: bad(new Error('x')),
       devices: bad(new Error('x')),
       orgs: bad(new Error('x')),
+      findings: bad(new Error('x')),
     });
     expect(error).toBe(ALL_FAILED_MESSAGE);
-    expect(failed).toHaveLength(5);
+    expect(failed).toHaveLength(6);
     // Nothing is blanked even in the total-failure case — stale beats empty.
     expect(slices).toEqual(previous);
+  });
+
+  it('does NOT report all-failed when only five of the six reject (regression: stale slice-count threshold)', () => {
+    // If the "everything failed" total were still hardcoded at 5, a findings
+    // rejection landing alongside four others would have wrongly tripped
+    // ALL_FAILED_MESSAGE even though `orgs` came back fine.
+    const { error, failed } = mergeSystemsResults(previous, {
+      summary: bad(new Error('x')),
+      alerts: bad(new Error('x')),
+      activeAlerts: bad(new Error('x')),
+      devices: bad(new Error('x')),
+      orgs: ok([{ id: 'o2', name: 'Org Two' }]),
+      findings: bad(new Error('x')),
+    });
+    expect(failed).toHaveLength(5);
+    expect(error).toBe(PARTIAL_FAILED_MESSAGE);
+  });
+
+  it('degrades findings to the last-known value (alerts-only view) when the findings fetch fails', () => {
+    const { slices, error } = mergeSystemsResults(previous, {
+      ...allOk,
+      findings: bad(new Error('getFleetFindingCounts failed: 500')),
+    });
+    expect(slices.findings).toEqual(previous.findings);
+    expect(slices.alerts[0].id).toBe('a-new'); // unaffected
+    expect(error).toBe(PARTIAL_FAILED_MESSAGE);
   });
 
   it('treats an empty successful result as real data, not a failure', () => {
@@ -96,6 +134,73 @@ describe('mergeSystemsResults', () => {
   });
 });
 
+describe('isUnsupportedSlice (#5172 — findings 404 degrades silently)', () => {
+  it('is true for findings rejected with a 404 ApiError', () => {
+    const result = bad(apiError(404, 'not found'));
+    expect(isUnsupportedSlice('findings', result)).toBe(true);
+  });
+
+  it('is false for findings rejected with a 500 ApiError', () => {
+    const result = bad(apiError(500, 'server error'));
+    expect(isUnsupportedSlice('findings', result)).toBe(false);
+  });
+
+  it('is false for findings rejected with a plain network error (no statusCode)', () => {
+    const result = bad(new TypeError('Network request failed'));
+    expect(isUnsupportedSlice('findings', result)).toBe(false);
+  });
+
+  it('is false for devices rejected with a 404 — only optional slices get the exemption', () => {
+    const result = bad(apiError(404, 'not found'));
+    expect(isUnsupportedSlice('devices', result)).toBe(false);
+  });
+
+  it('is false when the result is fulfilled', () => {
+    expect(isUnsupportedSlice('findings', ok({ total: 0, byOrg: {} }))).toBe(false);
+  });
+});
+
+describe('mergeSystemsResults — findings 404 degrade (#5172)', () => {
+  it('a 404 on findings: null result, no banner, not in failed', () => {
+    const { slices, error, failed } = mergeSystemsResults(previous, {
+      ...allOk,
+      findings: bad(apiError(404, 'not found')),
+    });
+    expect(slices.findings).toBeNull();
+    expect(error).toBeNull();
+    expect(failed).toEqual([]);
+  });
+
+  it('a 500 on findings: keeps last-known value and still shows the banner', () => {
+    const { slices, error, failed } = mergeSystemsResults(previous, {
+      ...allOk,
+      findings: bad(apiError(500, 'server error')),
+    });
+    expect(slices.findings).toEqual(previous.findings);
+    expect(error).toBe(PARTIAL_FAILED_MESSAGE);
+    expect(failed).toEqual(['findings']);
+  });
+
+  it('a network error on findings: still shows the banner', () => {
+    const { error, failed } = mergeSystemsResults(previous, {
+      ...allOk,
+      findings: bad(new TypeError('Network request failed')),
+    });
+    expect(error).toBe(PARTIAL_FAILED_MESSAGE);
+    expect(failed).toEqual(['findings']);
+  });
+
+  it('a 404 on devices is STILL a banner — devices is not an optional slice', () => {
+    const { slices, error, failed } = mergeSystemsResults(previous, {
+      ...allOk,
+      devices: bad(apiError(404, 'not found')),
+    });
+    expect(slices.devices).toEqual(previous.devices); // stale, not nulled
+    expect(error).toBe(PARTIAL_FAILED_MESSAGE);
+    expect(failed).toEqual(['devices']);
+  });
+});
+
 describe('rejectionReasons', () => {
   it('returns only the rejected reasons, in slice order', () => {
     const e1 = new Error('one');
@@ -107,6 +212,21 @@ describe('rejectionReasons', () => {
 
   it('is empty when nothing failed', () => {
     expect(rejectionReasons(allOk)).toEqual([]);
+  });
+
+  it('excludes a 404 on findings (#5172) — expected + permanent on an older server, not a Sentry-worthy error', () => {
+    // Reported via useSystemsData's `for (const reason of rejectionReasons(...))
+    // reportInternalError(...)` loop. Without this exclusion, every self-hoster
+    // a release behind spams Sentry with the exact condition mergeSystemsResults
+    // already treats as "feature unavailable", forever, on every fetch.
+    expect(
+      rejectionReasons({ ...allOk, findings: bad(apiError(404, 'not found')) })
+    ).toEqual([]);
+  });
+
+  it('still reports a 500 on findings — that IS a real failure', () => {
+    const reason = apiError(500, 'server error');
+    expect(rejectionReasons({ ...allOk, findings: bad(reason) })).toEqual([reason]);
   });
 });
 

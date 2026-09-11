@@ -32,6 +32,8 @@ export interface PartnerApiPrincipalContext {
   scopes: PartnerServicePrincipalScope[];
   accessibleOrgIds: string[];
   rateLimit: number;
+  principalExpiresAt?: Date | string | null;
+  sourceCidrs?: string[];
 }
 
 declare module 'hono' {
@@ -145,6 +147,8 @@ async function bootstrapCredential(
       name: credential.name,
       scopes: validatedScopes.scopes,
       rateLimit: credential.rateLimit,
+      principalExpiresAt: credential.principalExpiresAt,
+      sourceCidrs,
     };
   });
 }

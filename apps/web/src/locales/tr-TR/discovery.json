@@ -143,7 +143,7 @@
     "monitored": "İzlendi",
     "title": "Keşfedilen Varlıklar",
     "tryAgain": "Tekrar deneyin",
-    "sameDeviceAs": "{{name}} ile aynı cihaz"
+    "agentInstalled": "Ajan"
   },
   "discoveryJobList": {
     "actions": {
@@ -479,6 +479,7 @@
       "selectSite": "Siteyi seçin"
     },
     "paused": "Duraklatıldı",
+    "scheduleBlocked": "Yinelenen tarama duraklatıldı: yeniden onay gerekiyor",
     "permissionManage": "İzin kontrolü başarısızlığından sonra mutasyona uğratma eylemleri devre dışı bırakılır. `devices:write` gerektirir.",
     "placeholders": {
       "subnet": "192.168.1.0/24"
@@ -688,7 +689,12 @@
     "title": "{{target}} için vekil",
     "throughAgent": "Temsilci aracılığıyla",
     "connect": "Bağlan",
-    "allowSelfSigned": "Kendinden imzalı sertifikaya izin ver (yazıcılar, iLO/IPMI, anahtarlar için ortaktır)"
+    "allowSelfSigned": "Kendinden imzalı sertifikaya izin ver (yazıcılar, iLO/IPMI, anahtarlar için ortaktır)",
+    "discoveredThisAsset": "bu varlığı keşfetti",
+    "pickAgentHint": "{{ip}} ile aynı ağda bir temsilci seçin.",
+    "scheme": "Protokol",
+    "allowSelfSignedHint": "Sertifika doğrulamasını yalnızca bu oturum için atlar.",
+    "throughAgentHelp": "Bu cihaza giden trafik, aynı ağda olması gereken seçili Breeze temsilcisi üzerinden aktarılır."
   },
   "assetTypes": {
     "workstation": "İş İstasyonu",
@@ -702,6 +708,8 @@
     "iot": "Nesnelerin İnterneti",
     "camera": "Kamera",
     "nas": "NAS",
+    "website": "Web Sitesi",
+    "service": "Hizmet",
     "unknown": "Bilinmiyor",
     "patchPanel": "Bağlantı Paneli",
     "other": "Diğer"

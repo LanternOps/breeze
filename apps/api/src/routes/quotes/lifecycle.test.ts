@@ -24,10 +24,31 @@ vi.mock('../../services/permissions', async (importActual) => {
   };
 });
 
+// #3905 — /send and /resend are registered in SELF_MANAGED_DB_CONTEXT_ROUTES, so
+// they open their OWN short transaction via withAuthDbAccessContext and run the
+// returned deferred after it commits. The real helper opens a Postgres
+// transaction; run the callback inline instead. Everything else in the auth
+// module (requireScope, requirePermission, hasPermission) stays REAL — this
+// file's whole point is driving the actual RBAC middleware.
+const { withAuthDbAccessContextMock } = vi.hoisted(() => ({
+  withAuthDbAccessContextMock: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => fn()),
+}));
+vi.mock('../../middleware/auth', async (importActual) => {
+  const actual = await importActual<typeof import('../../middleware/auth')>();
+  return { ...actual, withAuthDbAccessContext: withAuthDbAccessContextMock };
+});
+
 // Stub the services the route file imports so mounting it never touches the DB.
 vi.mock('../../services/quoteLifecycle', () => ({
-  sendQuote: vi.fn(async () => ({ quote: { id: 'q1', status: 'sent' }, emailed: false, acceptUrl: 'http://x/quote/t' })),
-  resendQuote: vi.fn(async () => ({ quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true, acceptUrl: 'http://x/quote/t', origin: 'reproduced', reissued: false })),
+  sendQuote: vi.fn(async () => ({
+    quote: { id: 'q1', status: 'sent' }, acceptUrl: 'http://x/quote/t',
+    deliverEmail: vi.fn(async () => ({ quote: { id: 'q1', status: 'sent' }, emailed: false })),
+  })),
+  resendQuote: vi.fn(async () => ({
+    quote: { id: 'q1', orgId: 'org1', status: 'sent' }, acceptUrl: 'http://x/quote/t',
+    origin: 'reproduced', reissued: false,
+    deliverEmail: vi.fn(async () => ({ quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true })),
+  })),
   getQuoteShareLink: vi.fn(async () => ({ acceptUrl: 'http://x/quote/t', origin: 'reproduced', reissued: false, recipients: ['ap@customer.example'], orgId: 'org1' })),
   getQuoteRecipients: vi.fn(async () => []),
 }));
@@ -127,6 +148,101 @@ describe('POST /:id/send — composer body', () => {
   it('400s an unknown field (strict body)', async () => {
     const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/send`, jsonReq({ bcc: ['x@y.z'] }));
     expect(res.status).toBe(400);
+  });
+});
+
+/**
+ * #3905 — the ordering contract, at the seam where it is actually decided.
+ *
+ * `sendQuote` writes the draft→sent claim and, on a revision, holds a
+ * `FOR UPDATE` lock on the PARENT quote. Those locks are released by the COMMIT
+ * of the transaction `withAuthDbAccessContext` opens — so the email must be
+ * delivered strictly after that call resolves, never inside it. Held the old
+ * way, a stalled mail server blocked the customer's own accept on the original
+ * quote and pinned a pooled connection for the whole round-trip.
+ *
+ * These assert the ORDER, not just that both happened: an implementation that
+ * awaited `deliverEmail()` inside the transaction callback would satisfy every
+ * other test in this file and reintroduce the exact bug.
+ */
+describe('POST /:id/send + /:id/resend — delivery happens after commit (#3905)', () => {
+  const PERMS = ['quotes:read', 'quotes:write', 'quotes:send'];
+
+  /** Records the real interleaving of transaction commit vs. email delivery. */
+  function trace() {
+    const events: string[] = [];
+    withAuthDbAccessContextMock.mockImplementation(async (_auth: unknown, fn: () => Promise<unknown>) => {
+      events.push('tx:begin');
+      const value = await fn();
+      events.push('tx:commit');
+      return value;
+    });
+    return events;
+  }
+
+  it('runs the send transaction to completion BEFORE the deferred email', async () => {
+    const { sendQuote } = await import('../../services/quoteLifecycle');
+    const events = trace();
+    vi.mocked(sendQuote).mockImplementationOnce(async () => {
+      events.push('sendQuote');
+      return {
+        quote: { id: 'q1', orgId: 'org1', status: 'sent' }, acceptUrl: 'http://x/quote/t',
+        deliverEmail: async () => {
+          events.push('deliverEmail');
+          return { quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true };
+        },
+      } as never;
+    });
+
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/send`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(events).toEqual(['tx:begin', 'sendQuote', 'tx:commit', 'deliverEmail']);
+  });
+
+  it('runs the re-send transaction to completion BEFORE the deferred email', async () => {
+    const { resendQuote } = await import('../../services/quoteLifecycle');
+    const events = trace();
+    vi.mocked(resendQuote).mockImplementationOnce(async () => {
+      events.push('resendQuote');
+      return {
+        quote: { id: 'q1', orgId: 'org1', status: 'sent' }, acceptUrl: 'http://x/quote/t',
+        origin: 'reproduced', reissued: false,
+        deliverEmail: async () => {
+          events.push('deliverEmail');
+          return { quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true };
+        },
+      } as never;
+    });
+
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/resend`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(events).toEqual(['tx:begin', 'resendQuote', 'tx:commit', 'deliverEmail']);
+  });
+
+  it('reports the delivery outcome on the response, so the #3502 banner still fires', async () => {
+    const { sendQuote } = await import('../../services/quoteLifecycle');
+    trace();
+    vi.mocked(sendQuote).mockResolvedValueOnce({
+      quote: { id: 'q1', orgId: 'org1', status: 'sent', sendEmailReason: null },
+      acceptUrl: 'http://x/quote/t',
+      deliverEmail: async () => ({
+        // The row the deferred persisted the reason onto — NOT the pre-delivery row.
+        quote: { id: 'q1', orgId: 'org1', status: 'sent', sendEmailReason: 'send_failed' },
+        emailed: false, emailReason: 'send_failed',
+      }),
+    } as never);
+
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/send`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({
+      emailed: false,
+      emailReason: 'send_failed',
+      acceptUrl: 'http://x/quote/t',
+      quote: { id: 'q1', sendEmailReason: 'send_failed' },
+    });
   });
 });
 
@@ -475,9 +591,12 @@ describe('POST /:id/resend', () => {
     const { resendQuote } = await import('../../services/quoteLifecycle');
     const { writeRouteAudit } = await import('../../services/auditEvents');
     vi.mocked(resendQuote).mockResolvedValueOnce({
-      quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: false,
-      emailReason: 'no_billing_contact', acceptUrl: 'http://x/quote/t',
-      origin: 'reproduced', reissued: false,
+      quote: { id: 'q1', orgId: 'org1', status: 'sent' },
+      acceptUrl: 'http://x/quote/t', origin: 'reproduced', reissued: false,
+      deliverEmail: vi.fn(async () => ({
+        quote: { id: 'q1', orgId: 'org1', status: 'sent', sendEmailReason: 'no_billing_contact' },
+        emailed: false, emailReason: 'no_billing_contact',
+      })),
     } as never);
     await appWith('partner', PERMS).request(`/${QUOTE_ID}/resend`, { method: 'POST' });
     expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -492,8 +611,9 @@ describe('POST /:id/resend', () => {
     const { resendQuote } = await import('../../services/quoteLifecycle');
     const { writeRouteAudit } = await import('../../services/auditEvents');
     vi.mocked(resendQuote).mockResolvedValueOnce({
-      quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true,
+      quote: { id: 'q1', orgId: 'org1', status: 'sent' },
       acceptUrl: 'http://x/quote/t', origin: 'minted_key_unavailable', reissued: true,
+      deliverEmail: vi.fn(async () => ({ quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true })),
     } as never);
     await appWith('partner', PERMS).request(`/${QUOTE_ID}/resend`, { method: 'POST' });
     expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({

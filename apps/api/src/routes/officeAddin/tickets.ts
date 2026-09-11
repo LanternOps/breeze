@@ -1,16 +1,31 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import { Hono, type Context } from 'hono';
-import { db } from '../../db';
+import { db, runOutsideDbContext } from '../../db';
 import { partners, tickets } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
 import { officeAddinTechAuthMiddleware, requireAddinCapability } from '../../middleware/officeAddinTechAuth';
-import { recordUsage } from '../../services/aiCostTracker';
+import {
+  calculateCatalogCostCents,
+  calculateCostCents,
+  checkBudgetDetailed,
+  deductBillingCredits,
+  recordUsage,
+  type AiBillingSource,
+  type CatalogPricingSnapshot,
+} from '../../services/aiCostTracker';
+import {
+  isAiBudgetLockTimeout,
+  markAiBudgetReservationIndeterminate,
+  releaseUnusedAiBudgetReservation,
+  reserveAiBudget,
+} from '../../services/aiBudgetReservations';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { applyDlp } from '../../services/clientAiDlp';
 import { getOrgPolicy } from '../../services/clientAiPolicy';
+import { captureException } from '../../services/sentry';
 import { ticketThreadAnchor } from '../../services/inboundEmail/outboundThreading';
 import { insertEmailAuthoredComment } from '../../services/inboundEmail/emailComments';
-import { createConfirmedContact, findPortalUserByEmail } from '../../services/officeAddin/addinContacts';
+import { resolveConfirmedContact, findPortalUserByEmail } from '../../services/officeAddin/addinContacts';
 import { draftTicketFromEmail, EmailDraftFailedError } from '../../services/officeAddin/aiEmailDraft';
 import {
   getAnthropicClientForPartner,
@@ -87,11 +102,11 @@ import { draftSchema, fromEmailSchema, linkEmailSchema } from './schemas';
  *       ticketService.ts), so the job retries and expires instead of
  *       corrupting anything.
  *     - `createAuditLogAsync` leaves an orphan `ticket.create` audit row.
- *     - `createConfirmedContact` (the `create_contact` requester branch) runs
- *       before the nested transaction opens, so the requester's portal-user
+ *     - `resolveConfirmedContact` (the `create_contact` requester branch) runs
+ *       before the nested transaction opens, so the requester's `contacts`
  *       row survives a claim-race loser. Intentional: the technician
- *       explicitly confirmed that contact, and it stays valid for the winning
- *       ticket / future ones.
+ *       explicitly confirmed that person, and they stay valid for the winning
+ *       ticket / future ones. (#3258 — this used to be a `portal_users` row.)
  *   The first three are pre-existing consequences of the shapes those helpers
  *   chose; the route adds no new escape. The route's OWN audit event
  *   (`office_addin.ticket.created_from_email`) is written only after the nested
@@ -250,14 +265,75 @@ async function respondToLinkConflict(
 
 const DRAFT_TIMEOUT_MS = 20_000;
 
+class DraftTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`ai email draft timed out after ${ms}ms`);
+    this.name = 'DraftTimeoutError';
+  }
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`ai email draft timed out after ${ms}ms`)), ms);
+    const timer = setTimeout(() => reject(new DraftTimeoutError(ms)), ms);
     promise.then(
       (val) => { clearTimeout(timer); resolve(val); },
       (err) => { clearTimeout(timer); reject(err); },
     );
   });
+}
+
+/**
+ * Settle one draft's spend: organization usage aggregates plus, for platform
+ * billing, the prepaid credit draw-down (SEC-111). When a budget reservation is
+ * supplied, `recordUsage` closes it and writes both aggregates in ONE
+ * transaction (SEC-142/143) — so a failure there leaves a known provider
+ * outcome unaccounted, and the reservation must go indeterminate (keep
+ * consuming capacity) rather than silently free the cap it was holding.
+ *
+ * Best effort throughout: the pane already has its draft, and a metering
+ * failure must never turn a good draft into a 503.
+ */
+async function recordDraftUsage(input: {
+  orgId: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  billingSource: AiBillingSource;
+  catalogPricing?: CatalogPricingSnapshot;
+  reservationId?: string;
+}): Promise<void> {
+  try {
+    await recordUsage(
+      null,
+      input.orgId,
+      input.model,
+      input.inputTokens,
+      input.outputTokens,
+      false,
+      input.billingSource,
+      input.catalogPricing,
+      input.reservationId,
+    );
+  } catch (err) {
+    console.error('[office-addin] draft usage accounting failed', err);
+    if (input.reservationId) {
+      await markAiBudgetReservationIndeterminate({
+        orgId: input.orgId,
+        reservationId: input.reservationId,
+      }).catch((markError) => captureException(markError));
+    }
+  }
+
+  if (input.billingSource === 'platform' && (input.inputTokens > 0 || input.outputTokens > 0)) {
+    const costCents = input.catalogPricing
+      ? calculateCatalogCostCents(input.catalogPricing, input.inputTokens, input.outputTokens)
+      : calculateCostCents(input.model, input.inputTokens, input.outputTokens);
+    if (costCents > 0) {
+      await deductBillingCredits(input.orgId, costCents).catch((err) => {
+        console.error('[office-addin] draft usage accounting failed', err);
+      });
+    }
+  }
 }
 
 /**
@@ -321,12 +397,6 @@ officeAddinTicketRoutes.post(
     }
     const { client, resolved: llmConfig } = llm;
 
-    const policy = await getOrgPolicy(input.orgId);
-    const dlpResult = await applyDlp({ text: input.bodyText, dlpConfig: policy?.dlpConfig, orgId: input.orgId });
-    if (dlpResult.action === 'block') {
-      return c.json({ error: 'dlp_blocked' }, 422);
-    }
-
     // `model` stays the platform-logical id for metering/budgets; `wire.model`
     // is what the resolved endpoint speaks (a catalog endpoint 404s on the
     // platform id), and `wire.catalogPricing` is what meters catalog traffic.
@@ -340,62 +410,146 @@ officeAddinTicketRoutes.post(
       }
       throw err;
     }
+    const billingSource: AiBillingSource = llmConfig.source === 'partner' ? 'partner_key' : 'platform';
+    // Admission first (SEC-111): the configured budget AND the prepaid platform
+    // credit balance, answered as the established 402 before any DLP evaluation
+    // or provider contact. The reservation below is the separate atomic
+    // organization-cap fence (SEC-142/143) — this check does not replace it.
+    const budgetDenial = await checkBudgetDetailed(input.orgId, billingSource);
+    if (budgetDenial) {
+      return c.json({ error: budgetDenial.message }, 402);
+    }
+
+    const policy = await getOrgPolicy(input.orgId);
+    const dlpResult = await applyDlp({ text: input.bodyText, dlpConfig: policy?.dlpConfig, orgId: input.orgId });
+    if (dlpResult.action === 'block') {
+      return c.json({ error: 'dlp_blocked' }, 422);
+    }
+
+    // Reserve AFTER DLP (a blocked draft then never has to hand capacity back)
+    // and immediately BEFORE dispatch, so no sibling call can be admitted
+    // against the same remaining cap. The provider gets a token ceiling derived
+    // from what was actually reserved.
+    // S8: no stable request identity reaches this surface — the client sends
+    // no message/draft id — so the key is random per dispatch. The unique
+    // (org_id, idempotency_key) index is therefore a structural guarantee
+    // that two dispatches never share a reservation row, NOT a replay guard.
+    // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
+    // in services/aiAgents/runLoop.ts. Give this one a stable key only when
+    // the request schema starts carrying a client-generated id.
+    let reservation;
     try {
-      const draft = await withTimeout(
-        draftTicketFromEmail({
-          subject: input.subject,
-          bodyText: dlpResult.text ?? input.bodyText,
-          model: wire.model,
-          partnerId: auth.partnerId,
-          orgId: input.orgId,
-          client,
-        }),
-        DRAFT_TIMEOUT_MS
-      );
-      // Usage accounting (spec §6). `recordUsage` takes a NULLABLE session id
-      // (see its doc in aiCostTracker.ts) — this one-shot draft has no
-      // `ai_sessions` row, so the per-session totals update is skipped while
-      // the per-org budget aggregates (`ai_cost_usage`) still see the spend.
-      // Token counts are accumulated across retry attempts, so a
-      // failed-then-recovered attempt 1 is metered too. Best-effort: a
-      // metering failure must never turn a good draft into a 503 for the pane.
-      try {
-        await recordUsage(
-          null,
-          input.orgId,
-          model,
-          draft.inputTokens,
-          draft.outputTokens,
-          false,
-          llmConfig.source === 'partner' ? 'partner_key' : 'platform',
-          wire.catalogPricing,
-        );
-      } catch (err) {
-        console.error('[office-addin] draft usage accounting failed', err);
-      }
+      reservation = await reserveAiBudget({
+        orgId: input.orgId,
+        idempotencyKey: `office-email-draft:${crypto.randomUUID()}`,
+        billingSource,
+      });
+    } catch (err) {
+      if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
+      throw err;
+    }
+    if (reservation.kind === 'denied') {
+      return c.json({ error: 'ai_budget_exceeded' }, 429);
+    }
+    const reservationId = reservation.reservationId;
+
+    const draftPromise = draftTicketFromEmail({
+      subject: input.subject,
+      bodyText: dlpResult.text ?? input.bodyText,
+      model: wire.model,
+      partnerId: auth.partnerId,
+      orgId: input.orgId,
+      client,
+      ...(reservation.kind === 'reserved'
+        ? {
+          budgetCents: reservation.reservedCostCents,
+          calculateCostCents: wire.catalogPricing
+            ? (inputTokens: number, outputTokens: number) =>
+              calculateCatalogCostCents(wire.catalogPricing!, inputTokens, outputTokens)
+            : (inputTokens: number, outputTokens: number) =>
+              calculateCostCents(model, inputTokens, outputTokens),
+        }
+        : {}),
+    });
+    try {
+      const draft = await withTimeout(draftPromise, DRAFT_TIMEOUT_MS);
+      // Usage accounting (spec §6). This one-shot draft has no `ai_sessions`
+      // row, so settlement closes the reservation and writes the per-org
+      // aggregates in one transaction and, for platform billing, draws down the
+      // same prepaid balance checked above. Token counts are accumulated across
+      // retry attempts, so a failed-then-recovered attempt 1 is metered too.
+      await recordDraftUsage({
+        orgId: input.orgId,
+        model,
+        inputTokens: draft.inputTokens,
+        outputTokens: draft.outputTokens,
+        billingSource,
+        catalogPricing: wire.catalogPricing,
+        reservationId,
+      });
       return c.json({ draft }, 200);
     } catch (err) {
       // Blanket 503 for the pane's deterministic fallback, but never silent —
       // a model/timeout/parse failure here is otherwise invisible in prod.
       console.error('[office-addin] draft failed', err);
-      // Failed attempts still burned tokens — meter them (same best-effort
-      // posture as the success path). A timeout escapes this: withTimeout
-      // rejects with a plain Error before token counts exist.
-      if (err instanceof EmailDraftFailedError && (err.inputTokens > 0 || err.outputTokens > 0)) {
-        try {
-          await recordUsage(
-            null,
-            input.orgId,
+      if (err instanceof DraftTimeoutError) {
+        // Outcome unknown NOW, so the reservation goes indeterminate and keeps
+        // consuming capacity — it is never released on a timeout. The provider
+        // promise can still outlive the response timeout, so observe it and
+        // settle the eventual usage without delaying the deterministic
+        // fallback (settlement accepts an indeterminate reservation). The
+        // callback must not inherit the request's transaction: it runs after
+        // that transaction has closed, so accounting opens a fresh context.
+        await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
+          .catch((markError) => captureException(markError));
+        void runOutsideDbContext(() => draftPromise.then(
+          (lateDraft) => recordDraftUsage({
+            orgId: input.orgId,
             model,
-            err.inputTokens,
-            err.outputTokens,
-            false,
-            llmConfig.source === 'partner' ? 'partner_key' : 'platform',
-            wire.catalogPricing,
-          );
-        } catch (meterErr) {
+            inputTokens: lateDraft.inputTokens,
+            outputTokens: lateDraft.outputTokens,
+            billingSource,
+            catalogPricing: wire.catalogPricing,
+            reservationId,
+          }),
+          (lateErr) => lateErr instanceof EmailDraftFailedError
+            && (lateErr.inputTokens > 0 || lateErr.outputTokens > 0)
+            ? recordDraftUsage({
+                orgId: input.orgId,
+                model,
+                inputTokens: lateErr.inputTokens,
+                outputTokens: lateErr.outputTokens,
+                billingSource,
+                catalogPricing: wire.catalogPricing,
+                reservationId,
+              })
+            : undefined,
+        )).catch((meterErr) => {
           console.error('[office-addin] draft usage accounting failed', meterErr);
-        }
+        });
+      } else if (err instanceof EmailDraftFailedError
+        && !err.providerOutcomeUnknown
+        && (err.inputTokens > 0 || err.outputTokens > 0)) {
+        // Failed attempts still burned tokens — meter them (same best-effort
+        // posture as the success path), which also settles the reservation.
+        await recordDraftUsage({
+          orgId: input.orgId,
+          model,
+          inputTokens: err.inputTokens,
+          outputTokens: err.outputTokens,
+          billingSource,
+          catalogPricing: wire.catalogPricing,
+          reservationId,
+        });
+      } else if (err instanceof EmailDraftFailedError && !err.providerOutcomeUnknown) {
+        // The provider answered and nothing was spent: the ONLY case where
+        // reserved capacity may be handed back.
+        await releaseUnusedAiBudgetReservation({ orgId: input.orgId, reservationId })
+          .catch((releaseError) => captureException(releaseError));
+      } else {
+        // Provider transport ambiguity — treat as possibly-spent.
+        await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
+          .catch((markError) => captureException(markError));
       }
       return c.json({ error: 'ai_unavailable' }, 503);
     }
@@ -429,7 +583,19 @@ officeAddinTicketRoutes.post(
 
     // 3. Requester. `create_contact` is a technician-confirmed action, never an
     //    inferred one — the pane only sends it after an explicit choice.
+    //
+    //    The two branches produce DIFFERENT columns, and deliberately so
+    //    (#3258): naming an existing LOGIN sets `submitted_by` (from which
+    //    `createTicket` derives that login's own contact), while confirming a
+    //    sender resolves the PERSON and sets `requester_contact_id`. The add-in
+    //    grants nobody portal access, so it mints no login — see
+    //    `services/officeAddin/addinContacts.ts` for what that used to cost.
     let submittedBy: string | undefined;
+    let requesterContactId: string | undefined;
+    // Recorded in the audit event: without it the log says only which KIND of
+    // requester was sent, so "did this ticket get a person, and if not why"
+    // cannot be answered afterwards.
+    let contactLink: string | null = null;
     if (input.requester.kind === 'portal_user') {
       const portalUser = await getPortalUserForValidation(input.requester.id);
       if (!portalUser || portalUser.orgId !== input.orgId) {
@@ -437,11 +603,30 @@ officeAddinTicketRoutes.post(
       }
       submittedBy = portalUser.id;
     } else if (input.requester.kind === 'create_contact') {
-      const contact = await createConfirmedContact(input.orgId, {
-        email: input.requester.email,
-        name: input.requester.name ?? null,
-      });
-      submittedBy = contact.portalUserId;
+      try {
+        const contact = await resolveConfirmedContact(
+          input.orgId,
+          { email: input.requester.email, name: input.requester.name ?? null },
+          { userId: auth.userId }
+        );
+        // A shared mailbox resolves to no single person. The ticket still gets
+        // made — it keeps the submitter name/email snapshot below — it is simply
+        // not attributed to a contact, which is the same refusal inbound email
+        // makes rather than guessing whose history to hand over.
+        requesterContactId = contact.contactId ?? undefined;
+        contactLink = contact.outcome;
+      } catch (err) {
+        // A contacts failure is OURS, not the technician's. Dropping the email
+        // they are filing would be a far worse outcome than an unattributed
+        // ticket, and the submitter snapshot below still records who it came
+        // from — so the ticket proceeds and the failure is reported.
+        console.error('[office-addin] confirmed-contact resolution failed:', {
+          orgId: input.orgId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        captureException(err, { eventCode: 'office_addin_contact_link_failed' } as never);
+        contactLink = 'link-failed';
+      }
     }
 
     // 4. Closed-ticket continuation: carry the original thread key so replies to
@@ -488,6 +673,7 @@ officeAddinTicketRoutes.post(
             submitterEmail: input.from.email,
             submitterName: input.from.name ?? undefined,
             submittedBy,
+            requesterContactId,
           },
           actor
         );
@@ -547,6 +733,8 @@ officeAddinTicketRoutes.post(
         bindingId: auth.bindingId,
         hasMessageId: Boolean(messageId),
         requesterKind: input.requester.kind,
+        contactLink,
+        requesterContactId: requesterContactId ?? null,
         followUpOf: input.followUpOf?.ticketId ?? null,
       },
     });

@@ -14,6 +14,7 @@ import {
   validateApiKeyScopeDelegation,
 } from '../services/apiKeyScopes';
 import { authorizeHumanApiKeyCreator } from '../services/apiKeyAuthorization';
+import { getActiveOrgTenant } from '../services/tenantStatus';
 import {
   DELEGATION_CEILING_DENIED_MESSAGE,
   checkDelegationCeiling,
@@ -88,7 +89,7 @@ function writeApiKeyAudit(
 }
 
 /**
- * Delegation ceiling for ROTATION (security review 2026-08-16 §1.4).
+ * Delegation ceiling for mutations of a live API key.
  *
  * Rotation regenerates the secret but changes nothing about what the key can
  * do: its `scopes`, and the `created_by` user whose live permissions the key
@@ -97,17 +98,21 @@ function writeApiKeyAudit(
  * key's whole authority. `ensureOrgAccess` only proves they may act in the
  * key's ORG — that is not the same as being allowed to wield the key.
  *
- * So before returning plaintext, assert the rotator's own authority is a
- * superset of the key's on all three axes (scope / permission / site). Creation
- * already does the permission axis via `validateRequestedScopes`; rotation had
- * no equivalent at all.
+ * So before returning plaintext or mutating a key another actor can use, assert
+ * the caller's own authority is a superset of the key's on all three axes
+ * (scope / permission / site). Creation already does the permission axis via
+ * `validateRequestedScopes`; update/revoke/rotation need the live credential
+ * authority because org membership alone is not key-management authority.
  *
- * Fails CLOSED: if the key's delegating creator can no longer be authorized
- * (off-boarded, role reduced, DB error), the key's true authority is unknown
- * and rotation is denied. Such a key is already dead on the request path — it
- * should be revoked, not rotated.
+ * Fails CLOSED for update/rotation if the key's delegating creator can no
+ * longer be authorized (off-boarded, role reduced, DB error). Such a key is
+ * already dead on the request path, so DELETE may still make that dead state
+ * durable; it cannot transfer or expand credential authority. That DELETE
+ * carve-out is only sound while "cannot be authorized" is accurate, which is
+ * why the creator lookup below resolves the key org's OWNING partner rather
+ * than the caller's — see the comment there.
  */
-async function enforceRotationDelegationCeiling(
+async function enforceApiKeyDelegationCeiling(
   c: any,
   auth: Pick<AuthContext, 'scope' | 'partnerId' | 'allowedSiteIds'>,
   existingKey: {
@@ -117,6 +122,7 @@ async function enforceRotationDelegationCeiling(
     principalType?: string | null;
     principalId?: string | null;
   },
+  options: { allowUnauthorizedCreatorRevocation?: boolean } = {},
 ): Promise<{ response: Response } | null> {
   const callerPermissions = c.get('permissions') as UserPermissions | undefined;
   if (!callerPermissions) {
@@ -135,17 +141,57 @@ async function enforceRotationDelegationCeiling(
   let credentialSiteIds: string[] | undefined;
 
   if (!isServicePrincipalKey) {
+    // Resolve the KEY ORG's owning partner, never the caller's. Org-session
+    // JWTs deliberately carry partnerId = null (middleware/auth.ts), and a
+    // Partner Admin creator has no `organization_users` row — so passing
+    // `auth.partnerId` leaves the partner axis unresolved for every org-scoped
+    // caller, and `getUserPermissions` reports a perfectly healthy
+    // partner-admin key as `no_membership`. That misclassification is what
+    // hands the revocation carve-out below a LIVE org-wide credential. The
+    // request path resolves the same way (middleware/apiKeyAuth.ts →
+    // getActiveOrgTenant().partnerId), so this is the axis the key actually
+    // authenticates on.
+    let ownerPartnerId: string | null = null;
+    let ownerTenantResolved = false;
+    try {
+      const ownerTenant = await getActiveOrgTenant(existingKey.orgId);
+      if (ownerTenant) {
+        ownerPartnerId = ownerTenant.partnerId;
+        ownerTenantResolved = true;
+      }
+    } catch {
+      // Leave `ownerTenantResolved` false: an errored tenant read must not be
+      // read as "no owning partner", which would resurrect the bug above.
+    }
+
     const creator = await authorizeHumanApiKeyCreator({
       createdBy: existingKey.createdBy,
       orgId: existingKey.orgId,
-      partnerId: auth.partnerId ?? null,
+      partnerId: ownerPartnerId ?? auth.partnerId ?? null,
       scopes: keyScopes,
     });
     if (!creator.ok) {
+      // Recovery carve-out, deliberately narrow. It applies ONLY when the
+      // owning partner was actually resolved (so `no_membership` is a real
+      // finding, not an artefact of an unresolved partner axis) AND the
+      // creator has no live membership on either axis. Such a key is already
+      // rejected on the request path, so revoking it merely makes a dead state
+      // durable — it cannot remove or transfer authority the caller lacks.
+      // Every other case falls through to the 403: `lookup_error` (the read
+      // failed, so nothing was established about the creator — a transient
+      // DB/Redis blip must not authorize revoking a LIVE key),
+      // `scope_exceeds_current_permissions`, and an unresolvable owning tenant.
+      if (
+        options.allowUnauthorizedCreatorRevocation &&
+        ownerTenantResolved &&
+        creator.reason === 'no_membership'
+      ) {
+        return null;
+      }
       return {
         response: c.json(
           {
-            error: 'This key\'s owner can no longer be authorized; revoke it instead of rotating it',
+            error: 'This key\'s owner can no longer be authorized; revoke it instead',
             details: { reason: creator.reason },
           },
           403,
@@ -494,6 +540,12 @@ apiKeyRoutes.patch(
       return c.json({ error: `Cannot update ${existingKey.status} API key` }, 400);
     }
 
+    // Name/rate/scope changes all alter a credential held by somebody else.
+    // Org access is insufficient when that live credential reaches sites or
+    // permissions outside the caller's own authority.
+    const ceilingDenial = await enforceApiKeyDelegationCeiling(c, auth, existingKey);
+    if (ceilingDenial) return ceilingDenial.response;
+
     // Build updates object
     const updates: Record<string, unknown> = { updatedAt: new Date() };
 
@@ -578,6 +630,11 @@ apiKeyRoutes.delete(
       return c.json({ error: 'API key is already revoked' }, 400);
     }
 
+    const ceilingDenial = await enforceApiKeyDelegationCeiling(c, auth, existingKey, {
+      allowUnauthorizedCreatorRevocation: true,
+    });
+    if (ceilingDenial) return ceilingDenial.response;
+
     // Soft delete by setting status to revoked
     const [revoked] = await db
       .update(apiKeys)
@@ -650,7 +707,7 @@ apiKeyRoutes.post(
 
     // §1.4 delegation ceiling: org access is not key access. Runs BEFORE any
     // secret is generated or written.
-    const ceilingDenial = await enforceRotationDelegationCeiling(c, auth, existingKey);
+    const ceilingDenial = await enforceApiKeyDelegationCeiling(c, auth, existingKey);
     if (ceilingDenial) return ceilingDenial.response;
 
     // Generate new key

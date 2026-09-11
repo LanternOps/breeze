@@ -6,6 +6,7 @@ import {
   isBreached,
   isVisibleActivityEntry,
   priorityLabel,
+  requesterLabel,
   statusLabel,
   ticketRef,
   visibleActivityCount,
@@ -142,5 +143,20 @@ describe('visibleActivityCount', () => {
       { commentType: 'comment' as const, content: 'Looking into it' },
     ];
     expect(visibleActivityCount(comments)).toBe(2);
+  });
+});
+
+// #5367: who the ticket is FOR, on the detail header.
+describe('requesterLabel', () => {
+  it('prefers the requester name, falls back to the address', () => {
+    expect(requesterLabel({ submitterName: 'Jane Doe', submitterEmail: 'jane@acme.test' })).toBe('Jane Doe');
+    expect(requesterLabel({ submitterName: null, submitterEmail: 'jane@acme.test' })).toBe('jane@acme.test');
+    expect(requesterLabel({ submitterName: '   ', submitterEmail: 'jane@acme.test' })).toBe('jane@acme.test');
+  });
+
+  it('is null when the ticket names nobody, so the row is hidden rather than blank', () => {
+    expect(requesterLabel({ submitterName: null, submitterEmail: null })).toBeNull();
+    expect(requesterLabel({})).toBeNull();
+    expect(requesterLabel({ submitterName: '  ', submitterEmail: '  ' })).toBeNull();
   });
 });

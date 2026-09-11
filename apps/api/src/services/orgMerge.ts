@@ -53,6 +53,7 @@ import {
   type MergeTableOutcome,
 } from './orgMergeCustomExecutors';
 import { getOrgMergePolicies, type OrgMergePolicy } from './orgMergeRegistry';
+import { applyTicketChildLockOrder } from './ticketOrgMoveLockOrder';
 import { topologicalCascadeOrder } from './tenantCascade';
 import { envInt } from '../utils/envInt';
 import { disconnectLiveAgentSocketsForOrgIds } from './tenantLifecycle';
@@ -871,11 +872,36 @@ export async function runPostPassFixups(
      WHERE m.partner_id = ${uuid(partnerId)}
        AND m.breeze_entity_type = 'invoice'
        AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.id = m.breeze_entity_id)`);
+  //
+  // The payment sweep EXCLUDES a row that still owes QuickBooks a delete
+  // (`pending_op = 'delete'`, Phase D2). Such a row is orphaned by
+  // construction — the void or full refund that flipped it deleted the
+  // `invoice_payments` row in the same transaction — so an unqualified sweep
+  // hit every in-flight owed delete for the WHOLE partner, not just this
+  // merge's, and discarded a QuickBooks removal Breeze had promised. Nothing
+  // could recreate them either: the `entity_partner_guard` trigger refuses an
+  // INSERT whose payment row is gone. `deletePaymentInAccounting` removes them
+  // itself once QuickBooks confirms, or drops them loudly after
+  // PAYMENT_DELETE_UNRESOLVED_GRACE_MS, so they are bounded in time; the count
+  // left behind is logged.
   const orphanPaymentMappingsDropped = await exec(sql`
     DELETE FROM accounting_entity_mappings m
      WHERE m.partner_id = ${uuid(partnerId)}
        AND m.breeze_entity_type = 'payment'
+       AND m.pending_op IS DISTINCT FROM 'delete'
        AND NOT EXISTS (SELECT 1 FROM invoice_payments p WHERE p.id = m.breeze_entity_id)`);
+  const owedPaymentDeletesKept = await scalarCount(sql`
+    SELECT count(*)::int AS n FROM accounting_entity_mappings m
+     WHERE m.partner_id = ${uuid(partnerId)}
+       AND m.breeze_entity_type = 'payment'
+       AND m.pending_op = 'delete'
+       AND NOT EXISTS (SELECT 1 FROM invoice_payments p WHERE p.id = m.breeze_entity_id)`);
+  if (owedPaymentDeletesKept > 0) {
+    console.warn(
+      `[orgMerge] partner=${partnerId}: kept ${owedPaymentDeletesKept} accounting_entity_mappings row(s) `
+      + 'that still owe QuickBooks a payment delete; the delete worker removes them once QuickBooks confirms',
+    );
+  }
 
   return {
     moved: partnerUsersFixed + assignmentsMoved,
@@ -946,6 +972,18 @@ export function buildMergeWarnings(input: MergeWarningInput): string[] {
   }
   warnings.push(...input.notes);
   return warnings;
+}
+
+/**
+ * The parents-first table walk both the merge transaction and the preview
+ * use: `topologicalCascadeOrder()` (children-before-parents, i.e. erasure
+ * order) reversed, then corrected so the ticket child tables land in the
+ * SAME relative order the ticket/device org-move axes lock them in
+ * (#4748) — see `applyTicketChildLockOrder` for why the correction is
+ * necessary and why it's always FK-safe to apply here.
+ */
+async function getOrgMergeWalkOrder(): Promise<string[]> {
+  return applyTicketChildLockOrder([...(await topologicalCascadeOrder())].reverse());
 }
 
 // ---------------------------------------------------------------------------
@@ -1031,8 +1069,10 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         const policies = getOrgMergePolicies();
         // topologicalCascadeOrder is children-before-parents (erasure order);
         // reversed it is parents-first, with `organizations` (loser-shell,
-        // a no-op) leading.
-        const order = [...(await topologicalCascadeOrder())].reverse();
+        // a no-op) leading. getOrgMergeWalkOrder() then corrects the ticket
+        // child tables' relative order to match the movers' lock order
+        // (#4748) — see its doc comment.
+        const order = await getOrgMergeWalkOrder();
 
         const summary: Record<string, OrgMergeCounts> = {};
         const notes: string[] = [];
@@ -1274,7 +1314,10 @@ export async function previewOrgMerge(
   return dbModule.runOutsideDbContext(() =>
     dbModule.withSystemDbAccessContext(async () => {
       const policies = getOrgMergePolicies();
-      const order = [...(await topologicalCascadeOrder())].reverse();
+      // Same walk order the merge transaction actually applies (#4748) — a
+      // preview computed from a different order could show tables in an
+      // order the real merge would never use.
+      const order = await getOrgMergeWalkOrder();
 
       const tables: OrgMergePreviewTable[] = [];
       const connectionDrops: Array<{ table: string; dropped: number }> = [];
@@ -1352,6 +1395,12 @@ export async function previewOrgMerge(
       if (expiredKeys > 0) {
         notes.push(
           `this merge will EXPIRE ${expiredKeys} still-valid enrollment key belonging to the merged-away organization — pending installers using one will stop enrolling; mint a replacement under the surviving organization`,
+        );
+      }
+      const fencedTasks = await scalarCount(CUSTOM_WOULD_REVOKE_COUNTS.ai_operator_tasks!(loserOrgId));
+      if (fencedTasks > 0) {
+        notes.push(
+          `this merge will STOP ${fencedTasks} live AI Operator task belonging to the merged-away organization — its agents repoint to the surviving organization while the task record stays behind as source-org history, so the Operator fences the task (state -> stopping) rather than let it keep acting under a dead tenant; re-delegate anything still needed under the surviving organization`,
         );
       }
 

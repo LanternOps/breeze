@@ -47,11 +47,15 @@
  * late enough that the nightly retention prune (which re-anchors chain heads)
  * has already settled.
  *
- * Kill switch: `AUDIT_CHAIN_VERIFY_ENABLED=false` skips schedule registration
- * (the worker still drains manual `add()` calls for incident response).
+ * Kill switch: `AUDIT_CHAIN_VERIFY_ENABLED=false` removes the repeatable,
+ * does not start the worker, and makes any delivered job a no-op (see
+ * initializeAuditChainVerifyWorker and the processor guard). While disabled,
+ * manual `add()` calls for incident response park in Redis until re-enabled;
+ * call verifyAuditChains() directly instead.
  */
 
 import { Queue, Worker, Job } from 'bullmq';
+import { auditChainVerifyEnabled as isEnabled } from '../config/auditChainVerify';
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { incidents, type IncidentTimelineEntry } from '../db/schema/incidentResponse';
@@ -59,6 +63,7 @@ import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import { getBullMQConnection } from '../services/redis';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'audit-chain-verify';
 const JOB_NAME = 'audit-chain-verify';
@@ -72,13 +77,6 @@ const INTER_ORG_DELAY_MS = 50;
 const INCIDENT_CLASSIFICATION = 'audit_integrity';
 const INCIDENT_SEVERITY = 'p1' as const;
 const EVENT_SOURCE = 'audit-chain-verify';
-
-function isEnabled(): boolean {
-  const raw = process.env.AUDIT_CHAIN_VERIFY_ENABLED;
-  if (raw === undefined || raw === '') return true; // default ON
-  const v = raw.trim().toLowerCase();
-  return !(v === '0' || v === 'false' || v === 'no' || v === 'off');
-}
 
 export type ChainVerifyMode = 'incremental' | 'full';
 
@@ -349,6 +347,15 @@ export function createAuditChainVerifyWorker(): Worker {
         console.warn(`[AuditChainVerify] Ignoring unknown job name: ${job.name}`);
         return { skipped: true, orgsChecked: 0 };
       }
+      // Belt and braces for the kill switch: a job can still reach a running
+      // worker (queued before the flag flipped, or re-delivered by BullMQ's
+      // stalled-job recovery). Never start the sweep while disabled.
+      if (!isEnabled()) {
+        console.log(
+          `[AuditChainVerify] AUDIT_CHAIN_VERIFY_ENABLED=false — skipping delivered job ${job.id ?? ''}`.trimEnd(),
+        );
+        return { skipped: true, orgsChecked: 0 };
+      }
       return verifyAuditChains();
     },
     {
@@ -356,6 +363,7 @@ export function createAuditChainVerifyWorker(): Worker {
       concurrency: 1,
     },
   );
+  attachWorkerObservability(verifyWorker, 'auditChainVerify');
   return verifyWorker;
 }
 
@@ -397,6 +405,20 @@ export async function scheduleAuditChainVerify(
 
 export async function initializeAuditChainVerifyWorker(): Promise<void> {
   try {
+    if (!isEnabled()) {
+      // Kill switch: no consumer at all. Registering only the schedule-skip
+      // was not enough — when the US api container was recreated with the
+      // flag set (2026-09-03), BullMQ handed the in-flight sweep back to the
+      // freshly created worker as a stalled job and it re-ran every org from
+      // the start (13 h of DB IO). Still call scheduleAuditChainVerify() so a
+      // previously registered repeatable is removed.
+      await scheduleAuditChainVerify();
+      console.log(
+        '[AuditChainVerify] AUDIT_CHAIN_VERIFY_ENABLED=false — worker not started; queued jobs stay parked until re-enabled',
+      );
+      return;
+    }
+
     createAuditChainVerifyWorker();
 
     verifyWorker?.on('error', (error) => {

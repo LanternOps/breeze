@@ -236,12 +236,19 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
   // Estimated monthly recurring across active contracts (normalized by cadence).
   const mrr = useMemo(() => {
     const active = contracts.filter((c) => c.status === 'active');
-    const total = active.reduce((sum, c) => sum + monthlyValue(c.estimatedPeriodValue, c.intervalMonths), 0);
+    const estimated = active.filter((c) => c.estimatedPeriodValue != null && !c.estimateError);
+    const total = estimated.reduce((sum, c) => sum + monthlyValue(c.estimatedPeriodValue, c.intervalMonths), 0);
     // Per-currency so a mixed-currency book isn't summed under one wrong code.
     const byCurrency = sumByCurrency(
-      active.map((c) => ({ amount: monthlyValue(c.estimatedPeriodValue, c.intervalMonths), currencyCode: c.currencyCode })),
+      estimated.map((c) => ({ amount: monthlyValue(c.estimatedPeriodValue, c.intervalMonths), currencyCode: c.currencyCode })),
     );
-    return { total, count: active.length, byCurrency, ccy: contracts[0]?.currencyCode || 'USD' };
+    return {
+      total,
+      count: active.length,
+      excludedCount: active.length - estimated.length,
+      byCurrency,
+      ccy: estimated[0]?.currencyCode || active[0]?.currencyCode || contracts[0]?.currencyCode || 'USD',
+    };
   }, [contracts]);
 
   // '$12,300 + €4,100' across currencies. With one currency, label with the
@@ -353,7 +360,16 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
       {!loading && !error && rows.length > 0 && (
         <StatCard
           label={t('contracts.contractsList.stats.estimatedMonthlyRecurring')}
-          value={mrrDisplay}
+          value={(
+            <span className="flex flex-wrap items-baseline gap-x-2">
+              <span>{mrrDisplay}</span>
+              {mrr.excludedCount > 0 && (
+                <span className="text-xs font-normal text-muted-foreground" data-testid="contracts-summary-excluded">
+                  {t('contracts.list.estimateExcluded', { count: mrr.excludedCount })}
+                </span>
+              )}
+            </span>
+          )}
           hint={t('contracts.contractsList.stats.activeContractCount', { count: mrr.count })}
           detail={<ApproximateMoneyLine byCurrency={mrr.byCurrency} testId="contracts-mrr-approx" />}
           className="inline-flex flex-col"
@@ -484,8 +500,15 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                               : t('contracts.shared.cadence.custom', { count: ctr.intervalMonths })}
                       </td>
                       <td className="px-3 py-3">{formatDate(ctr.nextBillingAt)}</td>
-                      <td className="px-3 py-3 text-right tabular-nums" data-testid={`contract-estimate-${ctr.id}`}>
+                      <td
+                        className="px-3 py-3 text-right tabular-nums"
+                        data-testid={`contract-estimate-${ctr.id}`}
+                        title={ctr.estimateError ? t('contracts.list.estimateUnavailable') : undefined}
+                      >
                         {ctr.estimatedPeriodValue != null ? formatMoney(ctr.estimatedPeriodValue, ctr.currencyCode) : '—'}
+                        {ctr.estimateError && (
+                          <span className="sr-only">{t('contracts.list.estimateUnavailable')}</span>
+                        )}
                       </td>
                     </tr>
                   ))}

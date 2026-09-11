@@ -1,7 +1,8 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Play, Loader2, Clock, AlertCircle, Filter } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { showToast } from '../shared/Toast';
 import { Dialog } from '../shared/Dialog';
 import ProgressBar from '../shared/ProgressBar';
 import type { Script } from './ScriptList';
@@ -39,6 +40,12 @@ type ScriptExecutionModalProps = {
     parameters: Record<string, string | number | boolean>,
     runAs: 'system' | 'user'
   ) => Promise<ScriptAdmissionResult>;
+  // #4885 "Run again" — pre-fill the picker/form from a past execution instead
+  // of opening blank. Both are read once at mount (the modal is remounted
+  // fresh on every open by every caller today), so a parent re-render with a
+  // new object identity does not fight the operator's in-progress edits.
+  initialDeviceIds?: string[];
+  initialParameters?: Record<string, string | number | boolean>;
 };
 
 type ExecutionState = 'idle' | 'submitting' | 'admitted' | 'partially_admitted' | 'rejected' | 'transport_error';
@@ -49,13 +56,17 @@ export default function ScriptExecutionModal({
   sites = [],
   isOpen,
   onClose,
-  onExecute
+  onExecute,
+  initialDeviceIds,
+  initialParameters
 }: ScriptExecutionModalProps) {
   const { t } = useTranslation('scripts');
   const [query, setQuery] = useState('');
   const [siteFilter, setSiteFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('online');
-  const [selectedDeviceIds, setSelectedDeviceIds] = useState<Set<string>>(new Set());
+  const [selectedDeviceIds, setSelectedDeviceIds] = useState<Set<string>>(
+    () => new Set(initialDeviceIds ?? [])
+  );
   const [parameters, setParameters] = useState<Record<string, string | number | boolean>>({});
   const [runAs, setRunAs] = useState<'system' | 'user'>('system');
   const [executionState, setExecutionState] = useState<ExecutionState>('idle');
@@ -201,11 +212,20 @@ export default function ScriptExecutionModal({
   // a bound parameter is resolved per target device by the server, so it is
   // neither prompted for nor seeded — a value supplied for one is ignored and
   // reported in `ignoredParameters`.
+  //
+  // #4885 "Run again": `initialParameters` (the previous execution's runtime
+  // values) wins over the definition's own default when both are present for
+  // the same name. A key in `initialParameters` that no longer matches a
+  // runtime parameter (the script was edited since that run) is silently
+  // dropped rather than smuggled into the submitted payload.
   useEffect(() => {
     if (script.parameters) {
       const defaults: Record<string, string | number | boolean> = {};
       runtimeParameters(script.parameters).forEach(param => {
-        if (param.defaultValue !== undefined) {
+        const carriedOver = initialParameters?.[param.name];
+        if (carriedOver !== undefined) {
+          defaults[param.name] = carriedOver;
+        } else if (param.defaultValue !== undefined) {
           if (param.type === 'number') {
             defaults[param.name] = Number(param.defaultValue) || 0;
           } else if (param.type === 'boolean') {
@@ -219,11 +239,31 @@ export default function ScriptExecutionModal({
       });
       setParameters(defaults);
     }
+    // `initialParameters` is deliberately NOT a dep — it is read once at mount
+    // (see the prop doc comment) so a parent re-render never resets an
+    // in-progress edit. Only a script.parameters change re-derives defaults.
   }, [script.parameters]);
 
   useEffect(() => {
     setRunAs(script.runAs === 'user' ? 'user' : 'system');
   }, [script.id, script.runAs, isOpen]);
+
+  // #5270 — the success path schedules a 1.5s auto-close. Left untracked it
+  // outlived the component: in Test Web it fired after that file's jsdom had
+  // been torn down and threw `ReferenceError: window is not defined` as an
+  // unhandled error, failing the job with every test passing. In the app it
+  // would call `onClose` on a modal the operator had already closed and
+  // re-opened. Track it and cancel it on unmount and on every close.
+  const autoCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelAutoClose = useCallback(() => {
+    if (autoCloseTimer.current !== null) {
+      clearTimeout(autoCloseTimer.current);
+      autoCloseTimer.current = null;
+    }
+  }, []);
+
+  useEffect(() => cancelAutoClose, [cancelAutoClose]);
 
   const handleClearSelection = () => {
     setSelectedDeviceIds(new Set());
@@ -269,8 +309,18 @@ export default function ScriptExecutionModal({
           : 'rejected';
       setExecutionState(presentationState);
       setShowConfirm(false);
+      // #5128 W2 — an admitted target isn't necessarily running yet: a
+      // target dispatched while its device was offline is `queued_offline`,
+      // and the inline admission panel alone doesn't say so. `deliverBy` isn't
+      // on the admission contract yet, so this is always the no-expiry copy
+      // for now.
+      if (result.targets.some(target => target.delivery === 'queued_offline')) {
+        showToast({ type: 'success', message: t('scriptExecutionModal.toasts.runsWhenOnline') });
+      }
       if (presentationState === 'admitted') {
-        setTimeout(() => {
+        cancelAutoClose();
+        autoCloseTimer.current = setTimeout(() => {
+          autoCloseTimer.current = null;
           onClose();
           setExecutionState('idle');
           setAdmissionResult(null);
@@ -286,6 +336,7 @@ export default function ScriptExecutionModal({
 
   const handleClose = () => {
     if (executionState === 'submitting') return;
+    cancelAutoClose();
     onClose();
     setExecutionState('idle');
     setShowConfirm(false);

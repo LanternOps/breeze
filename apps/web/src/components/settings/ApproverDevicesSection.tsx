@@ -95,24 +95,32 @@ export default function ApproverDevicesSection({
       return t('approverDevicesSection.registrationCancelled');
     }
     const status = (err as { status?: number })?.status;
-    if (status === 401) {
-      // Because the mint calls use `skipUnauthorizedRetry`, a 401 here is
-      // EITHER a rejected re-auth proof (wrong password/code, burned/replayed
-      // WebAuthn assertion — the handler returns the literal string
-      // "Invalid credentials", see routes/auth/helpers.ts and routes/auth/mfa.ts)
-      // OR a rejected bearer token (auth middleware — various messages, e.g.
-      // "Invalid or expired token"; see middleware/auth.ts). Only the former
-      // is fixed by retyping the same field; the latter needs a page reload.
-      const isCredentialFailure = err instanceof Error && err.message === 'Invalid credentials';
-      if (!isCredentialFailure) return t('approverDevicesSection.sessionExpiredReloadAndTryAgain');
+    const code = (err as { code?: string })?.code;
+
+    // A rejected re-auth PROOF: retyping the same field is what fixes it.
+    //
+    // Two shapes reach here, because the two mint roads sit on different
+    // endpoints:
+    //   - #4470 road: POST /auth/mfa/step-up (TOTP + passkey tiers) now answers
+    //     400 with a stable `code`. Branch on the code — never the message.
+    //   - legacy road: POST /authenticator/register-grant (password tier) still
+    //     answers 401 with the literal string "Invalid credentials", the only
+    //     discriminator it has, since that route has not migrated. A 401 whose
+    //     message is anything else is a rejected BEARER (middleware/auth.ts,
+    //     e.g. "Invalid or expired token") and needs a page reload, not a retype.
+    const isProofRejection =
+      (status === 400 && (code === 'mfa_proof_invalid' || code === 'invalid_credentials'))
+      || (status === 401 && err instanceof Error && err.message === 'Invalid credentials');
+
+    if (isProofRejection) {
       if (tier === 'totp') return t('approverDevicesSection.incorrectCode');
-      // The passkey tier never shows a password field — a credential-failure
-      // 401 here means the WebAuthn assertion itself was rejected
-      // (burned/replayed challenge), not a wrong password, so "Incorrect
-      // password." would be nonsensical.
+      // The passkey tier never shows a password field — a rejection here means
+      // the WebAuthn assertion itself was refused (burned/replayed challenge),
+      // not a wrong password, so "Incorrect password." would be nonsensical.
       if (tier === 'passkey') return t('approverDevicesSection.passkeyVerificationFailed');
       return t('approverDevicesSection.incorrectPassword');
     }
+    if (status === 401) return t('approverDevicesSection.sessionExpiredReloadAndTryAgain');
     if (status === 429) return t('approverDevicesSection.tooManyAttemptsTryAgainInAFewMinutes');
     if (status === 403) {
       // POST /authenticator/register-grant (and the step-up mint) 403 for two

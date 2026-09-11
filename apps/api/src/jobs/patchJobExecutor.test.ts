@@ -26,14 +26,17 @@ vi.mock('bullmq', () => ({
   Job: class {},
 }));
 
-vi.mock('../db', () => ({
-  db: {
+vi.mock('../db', () => {
+  const db: Record<string, unknown> = {
     select: vi.fn(),
     update: vi.fn(),
     insert: vi.fn(),
-  },
-  withSystemDbAccessContext: undefined,
-}));
+  };
+  // Both `recordDeviceQueued` and the shared finalizer wrap their writes in a
+  // transaction; run the callback against the same doubles.
+  db.transaction = vi.fn((fn: (tx: unknown) => unknown) => fn(db));
+  return { db, withSystemDbAccessContext: undefined };
+});
 
 vi.mock('../db/schema', () => ({
   patchJobs: {
@@ -85,6 +88,18 @@ vi.mock('../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn(),
 }));
 
+// #5128 W3: the executor now enqueues through the single dispatch seam. Mocked
+// at the module boundary so the test does not drag in the agent websocket
+// transport (and, through it, the entire schema surface).
+vi.mock('../services/dispatchDeviceCommand', () => ({
+  dispatchDeviceCommand: vi.fn(),
+}));
+
+vi.mock('../services/commandOfflinePolicy', () => ({
+  deliveryTtlMs: vi.fn(() => 7 * 24 * 60 * 60 * 1000),
+  isOfflineQueueEnabled: vi.fn(() => false),
+}));
+
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
@@ -105,6 +120,8 @@ import {
 } from './patchJobExecutor';
 import { resolveApprovedPatchesForDevice } from '../services/patchApprovalEvaluator';
 import { queueCommandForExecution } from '../services/commandQueue';
+import { dispatchDeviceCommand } from '../services/dispatchDeviceCommand';
+import { isOfflineQueueEnabled } from '../services/commandOfflinePolicy';
 import { evaluateRebootPolicy, executeReboot } from '../services/patchRebootHandler';
 
 function createSelectChain(rows: any[] = []) {
@@ -288,6 +305,7 @@ describe('patch job executor queueing', () => {
     });
 
     expect(result).toEqual({
+      kind: 'skipped',
       skipped: true,
       reason: 'Queued org does not match patch job org',
     });
@@ -316,6 +334,7 @@ describe('patch job executor queueing', () => {
     });
 
     expect(result).toEqual({
+      kind: 'skipped',
       skipped: true,
       reason: 'Device is not targeted by patch job',
     });
@@ -345,6 +364,7 @@ describe('patch job executor queueing', () => {
     });
 
     expect(result).toEqual({
+      kind: 'skipped',
       skipped: true,
       reason: 'Device not found in patch job org',
     });
@@ -396,7 +416,7 @@ describe('patch job executor queueing', () => {
       'org-1',
       expect.objectContaining({ sources: ['third_party'] }),
     );
-    expect(result).toEqual({ skipped: true, reason: 'No approved patches' });
+    expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'No approved patches' });
   });
 
   it('threads well-formed policyAutoApprove and apps to the evaluator', async () => {
@@ -784,7 +804,7 @@ describe('patch job executor queueing', () => {
       },
     });
 
-    expect(result).toEqual({ skipped: true, reason: 'Invalid patch source filter' });
+    expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'Invalid patch source filter' });
     expect(resolveApprovedPatchesForDevice).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('malformed patches.sources'),
@@ -1298,7 +1318,11 @@ async function runDeviceExecution(opts: {
     ) as any)
     // 4. completion poll on device_commands
     .mockImplementationOnce(() => createSelectChain(command ? [command] : []) as any)
-    // 5. checkAndFinalizeJob — no row, so it returns early
+    // 5. finalizer idempotency read — the device's existing patch_job_results
+    //    rows. Empty on the synchronous path (nothing is written until now), so
+    //    the finalizer applies and INSERTS one row per approved patch.
+    .mockImplementationOnce(() => createWhereSelectChain([]) as any)
+    // 6. checkAndFinalizeJob — no row, so it returns early
     .mockImplementationOnce(() => createSelectChain([]) as any);
 
   vi.mocked(db.insert).mockImplementation(() => ({
@@ -1308,11 +1332,22 @@ async function runDeviceExecution(opts: {
     }),
   }) as any);
   vi.mocked(db.update).mockImplementation(() => ({
-    set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
+    set: vi.fn(() => ({
+      where: vi.fn(() =>
+        Object.assign(Promise.resolve([{ id: 'w0' }]), {
+          returning: vi.fn(() => Promise.resolve([{ id: 'w0' }])),
+        }),
+      ),
+    })),
   }) as any);
 
   vi.mocked(resolveApprovedPatchesForDevice).mockResolvedValueOnce(approvedPatches as any);
-  vi.mocked(queueCommandForExecution).mockResolvedValueOnce({ command: { id: 'cmd-1' } } as any);
+  vi.mocked(dispatchDeviceCommand).mockResolvedValueOnce({
+    ok: true,
+    command: { id: 'cmd-1' },
+    delivery: 'delivered',
+    deliverBy: null,
+  } as any);
 
   createPatchJobDeviceWorker();
   const running = shared.processorRefs['patch-job-devices']({
@@ -1356,6 +1391,7 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
       shouldReboot: true,
       reason: 'Installed patch requires reboot',
       deferred: false,
+      windowEndsAt: null,
     });
 
     await runDeviceExecution({
@@ -1379,7 +1415,43 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
     expect(executeReboot).toHaveBeenCalledWith(
       'device-1',
       'Installed patch requires reboot',
-      { expectedOrgId: 'org-1' },
+      { expectedOrgId: 'org-1', windowEndsAt: null },
+    );
+  });
+
+  // #3207: a maintenance_window reboot may not be postponed past the close of
+  // the window it fired inside. evaluateRebootPolicy is the only thing on this
+  // path that knows when that is, so if the executor drops it the deferral cap
+  // silently never applies here — while still applying on the maintenance
+  // sweep, which is exactly the kind of asymmetry nobody notices.
+  it('forwards the maintenance-window close so the deferral deadline stays capped', async () => {
+    const windowEndsAt = new Date('2026-02-17T02:00:00.000Z');
+    vi.mocked(evaluateRebootPolicy).mockResolvedValue({
+      shouldReboot: true,
+      reason: 'In active maintenance window',
+      deferred: false,
+      windowEndsAt,
+    });
+
+    await runDeviceExecution({
+      approvedPatches: TWO_PATCHES,
+      rebootPolicy: 'maintenance_window',
+      command: agentCommandRow({
+        success: true,
+        installedCount: 2,
+        failedCount: 0,
+        rebootRequired: true,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'installed', rebootRequired: true },
+          { id: 'patch-2', externalId: 'KB5000002', status: 'installed' },
+        ],
+      }),
+    });
+
+    expect(executeReboot).toHaveBeenCalledWith(
+      'device-1',
+      'In active maintenance window',
+      { expectedOrgId: 'org-1', windowEndsAt },
     );
   });
 
@@ -1388,6 +1460,7 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
       shouldReboot: true,
       reason: 'Installed patch requires reboot',
       deferred: false,
+      windowEndsAt: null,
     });
 
     await runDeviceExecution({
@@ -1415,6 +1488,7 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
       shouldReboot: false,
       reason: 'Reboot policy is never',
       deferred: false,
+      windowEndsAt: null,
     });
 
     await runDeviceExecution({
@@ -1496,6 +1570,7 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
       shouldReboot: false,
       reason: 'Outside maintenance window — reboot deferred',
       deferred: true,
+      windowEndsAt: null,
     });
 
     await runDeviceExecution({
@@ -1539,6 +1614,7 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
       shouldReboot: true,
       reason: 'Installed patch requires reboot',
       deferred: false,
+      windowEndsAt: null,
     });
 
     await runDeviceExecution({
@@ -1563,6 +1639,7 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
       shouldReboot: false,
       reason: 'No installed patch requires reboot',
       deferred: false,
+      windowEndsAt: null,
     });
 
     await runDeviceExecution({
@@ -1593,6 +1670,7 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
       shouldReboot: true,
       reason: 'Installed patch requires reboot',
       deferred: false,
+      windowEndsAt: null,
     });
 
     await runDeviceExecution({
@@ -1624,6 +1702,7 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
       shouldReboot: true,
       reason: 'Installed patch requires reboot',
       deferred: false,
+      windowEndsAt: null,
     });
 
     await runDeviceExecution({
@@ -1670,6 +1749,7 @@ describe('per-patch patch_job_results status is not collapsed to the batch statu
       shouldReboot: false,
       reason: 'no reboot needed for this test',
       deferred: false,
+      windowEndsAt: null,
     });
   });
 
@@ -1875,5 +1955,333 @@ describe('per-patch patch_job_results status is not collapsed to the batch statu
     expect(byPatchId['patch-2'].errorMessage).toBe('error-2');
     expect(byPatchId['patch-3'].status).toBe('failed');
     expect(byPatchId['patch-3'].errorMessage).toBe('error-3');
+  });
+});
+
+// ============================================================================
+// #5128 W3 — offline devices are queued, not skipped
+// ============================================================================
+
+describe('offline devices are queued instead of skipped (#5128 W3)', () => {
+  const APPROVED = [
+    { patchId: 'patch-1', externalId: 'KB5000001', requiresReboot: true },
+    { patchId: 'patch-2', externalId: 'KB5000002', requiresReboot: false },
+  ];
+
+  let insertedRows: any[];
+  let updateSets: any[];
+
+  function primeDeviceExecution(opts: {
+    offlineBehavior?: string;
+    scheduleNextOccurrenceAt?: string | null;
+  }) {
+    vi.mocked(db.select)
+      // 1. patch job row
+      .mockImplementationOnce(() => createSelectChain([{
+        id: 'job-1',
+        orgId: 'org-1',
+        status: 'running',
+        patches: { ringId: null, autoApprove: {} },
+        targets: {
+          deviceIds: ['device-1'],
+          deployment: {
+            rebootPolicy: 'if_required',
+            ...(opts.offlineBehavior ? { offlineBehavior: opts.offlineBehavior } : {}),
+          },
+          ...(opts.scheduleNextOccurrenceAt !== undefined
+            ? { scheduleNextOccurrenceAt: opts.scheduleNextOccurrenceAt }
+            : {}),
+        },
+      }]) as any)
+      // 2. device-in-org check
+      .mockImplementationOnce(() => createSelectChain([{ id: 'device-1' }]) as any)
+      // 3. patch records for the install command
+      .mockImplementationOnce(() => createWhereSelectChain(
+        APPROVED.map((p) => ({
+          id: p.patchId,
+          source: 'windows_update',
+          externalId: p.externalId,
+          title: p.externalId,
+        })),
+      ) as any);
+
+    // Anything past the three setup reads is checkAndFinalizeJob (only reached
+    // on the skip path) — returning no job row makes it a no-op.
+    vi.mocked(db.select).mockImplementation(() => createSelectChain([]) as any);
+
+    vi.mocked(resolveApprovedPatchesForDevice).mockResolvedValueOnce(APPROVED as any);
+  }
+
+  async function runPrepared() {
+    createPatchJobDeviceWorker();
+    return shared.processorRefs['patch-job-devices']({
+      data: {
+        type: 'execute-patch-job-device',
+        patchJobId: 'job-1',
+        deviceId: 'device-1',
+        orgId: 'org-1',
+      },
+    });
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    shared.processorRef = undefined;
+    shared.processorRefs = {};
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    insertedRows = [];
+    updateSets = [];
+    vi.mocked(db.insert).mockImplementation(() => ({
+      values: vi.fn((v: any) => {
+        insertedRows.push(v);
+        return Promise.resolve();
+      }),
+    }) as any);
+    vi.mocked(db.update).mockImplementation(() => ({
+      set: vi.fn((v: any) => {
+        updateSets.push(v);
+        return {
+          where: vi.fn(() =>
+            Object.assign(Promise.resolve([{ id: 'w0' }]), {
+              returning: vi.fn(() => Promise.resolve([{ id: 'w0' }])),
+            }),
+          ),
+        };
+      }),
+    }) as any);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('records a queued row per approved patch and moves the device from pending to queued', async () => {
+    vi.mocked(isOfflineQueueEnabled).mockReturnValue(true);
+    primeDeviceExecution({ offlineBehavior: 'queue', scheduleNextOccurrenceAt: null });
+    vi.mocked(dispatchDeviceCommand).mockResolvedValueOnce({
+      ok: true,
+      command: { id: 'cmd-queued' },
+      delivery: 'queued_offline',
+      deliverBy: new Date('2026-10-20T02:00:00.000Z'),
+    } as any);
+
+    const result: any = await runPrepared();
+
+    expect(result).toMatchObject({ kind: 'queued', commandId: 'cmd-queued', patchCount: 2 });
+    expect(insertedRows).toHaveLength(2);
+    expect(insertedRows.every((r) => r.status === 'queued')).toBe(true);
+    expect(insertedRows.map((r) => r.patchId).sort()).toEqual(['patch-1', 'patch-2']);
+    // The rows carry the approved set's static reboot flags so the finalizer can
+    // rebuild it without re-resolving approvals days later.
+    expect(insertedRows.find((r) => r.patchId === 'patch-1').rebootRequired).toBe(true);
+    // One counter write: pending -1 / queued +1. Nothing else moved.
+    expect(updateSets).toHaveLength(1);
+    expect(Object.keys(updateSets[0]).sort()).toEqual(['devicesPending', 'devicesQueued']);
+  });
+
+  it('does not poll for a result — the BullMQ task ends immediately', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(isOfflineQueueEnabled).mockReturnValue(true);
+      primeDeviceExecution({ offlineBehavior: 'queue', scheduleNextOccurrenceAt: null });
+      vi.mocked(dispatchDeviceCommand).mockResolvedValueOnce({
+        ok: true,
+        command: { id: 'cmd-queued' },
+        delivery: 'queued_offline',
+        deliverBy: null,
+      } as any);
+
+      // No timer is advanced: a task that still polled would never settle here.
+      const result: any = await runPrepared();
+
+      expect(result.kind).toBe('queued');
+      // The only db.select calls are the three setup reads — no device_commands poll.
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds the delivery deadline by the next scheduled occurrence', async () => {
+    vi.mocked(isOfflineQueueEnabled).mockReturnValue(true);
+    const nextOccurrence = new Date(Date.now() + 60 * 60 * 1000); // 1h out
+    primeDeviceExecution({
+      offlineBehavior: 'queue',
+      scheduleNextOccurrenceAt: nextOccurrence.toISOString(),
+    });
+    vi.mocked(dispatchDeviceCommand).mockResolvedValueOnce({
+      ok: true,
+      command: { id: 'cmd-queued' },
+      delivery: 'queued_offline',
+      deliverBy: nextOccurrence,
+    } as any);
+
+    await runPrepared();
+
+    const call = vi.mocked(dispatchDeviceCommand).mock.calls[0]![0];
+    expect(call.type).toBe('install_patches');
+    expect(call.previouslyRejected).toBe(true);
+    expect((call.payload as any).patchJobId).toBe('job-1');
+    expect(call.offlinePolicy?.kind).toBe('queue');
+    // min(7d standard TTL, ~1h to the next occurrence) — the occurrence wins.
+    const within = (call.offlinePolicy as { deliverWithinMs: number }).deliverWithinMs;
+    expect(within).toBeGreaterThan(0);
+    expect(within).toBeLessThanOrEqual(60 * 60 * 1000);
+  });
+
+  it("passes an explicit reject policy for offlineBehavior 'skip', keeping today's skip", async () => {
+    vi.mocked(isOfflineQueueEnabled).mockReturnValue(true);
+    primeDeviceExecution({ offlineBehavior: 'skip' });
+    vi.mocked(dispatchDeviceCommand).mockResolvedValueOnce({
+      ok: false,
+      code: 'device_offline',
+      error: 'Device is offline, cannot execute command',
+    } as any);
+
+    const result: any = await runPrepared();
+
+    expect(vi.mocked(dispatchDeviceCommand).mock.calls[0]![0].offlinePolicy).toEqual({
+      kind: 'reject',
+    });
+    expect(result.error).toContain('cannot execute command');
+    // markDeviceSkipped's whole-device summary row. `patchId` is NULL, not the
+    // old nil UUID, which had no `patches` row and raised 23503 on a real DB.
+    expect(insertedRows).toHaveLength(1);
+    expect(insertedRows[0]).toMatchObject({
+      status: 'skipped',
+      errorMessage: 'device_offline',
+      patchId: null,
+    });
+  });
+
+  it('records a distinct reason when the stamped next occurrence is already past', async () => {
+    vi.mocked(isOfflineQueueEnabled).mockReturnValue(true);
+    primeDeviceExecution({
+      offlineBehavior: 'queue',
+      // Stale stamp — a policy schedule edited under a running job.
+      scheduleNextOccurrenceAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    vi.mocked(dispatchDeviceCommand).mockResolvedValueOnce({
+      ok: false,
+      code: 'device_offline',
+      error: 'Device is offline, cannot execute command',
+    } as any);
+
+    await runPrepared();
+
+    // Reject rather than queue a row the reaper expires on its next pass...
+    expect(vi.mocked(dispatchDeviceCommand).mock.calls[0]![0].offlinePolicy).toEqual({
+      kind: 'reject',
+    });
+    // ...but NOT recorded as a plain 'device_offline', which is what a
+    // deliberately configured `skip` writes. Support cannot tell a silent
+    // degradation from a configured one if both rows read the same.
+    expect(insertedRows).toHaveLength(1);
+    expect(insertedRows[0].errorMessage).toBe('device_offline_deadline_stale');
+  });
+
+  it('leaves the policy to the seam while the offline-queue flag is off', async () => {
+    vi.mocked(isOfflineQueueEnabled).mockReturnValue(false);
+    primeDeviceExecution({ offlineBehavior: 'queue', scheduleNextOccurrenceAt: null });
+    vi.mocked(dispatchDeviceCommand).mockResolvedValueOnce({
+      ok: false,
+      code: 'device_offline',
+      error: 'Device is offline, cannot execute command',
+    } as any);
+
+    await runPrepared();
+
+    // Undefined, NOT an explicit queue: resolveOfflinePolicy lets an explicit
+    // policy override the DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED gate, so passing
+    // one here would ship the behaviour change ahead of the flag.
+    expect(vi.mocked(dispatchDeviceCommand).mock.calls[0]![0].offlinePolicy).toBeUndefined();
+    expect(vi.mocked(dispatchDeviceCommand).mock.calls[0]![0].previouslyRejected).toBe(true);
+  });
+});
+
+describe('completion checker keeps a job open while devices are queued (#5128 W3)', () => {
+  let updateSets: any[];
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    shared.processorRef = undefined;
+    shared.processorRefs = {};
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    updateSets = [];
+    vi.mocked(db.update).mockImplementation(() => ({
+      set: vi.fn((v: any) => {
+        updateSets.push(v);
+        return {
+          where: vi.fn(() =>
+            Object.assign(Promise.resolve([{ id: 'w0' }]), {
+              returning: vi.fn(() => Promise.resolve([{ id: 'w0' }])),
+            }),
+          ),
+        };
+      }),
+    }) as any);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function runCompletionCheck(job: Record<string, unknown>) {
+    vi.mocked(db.select).mockImplementationOnce(() => createSelectChain([job]) as any);
+    createPatchJobWorker();
+    return shared.processorRefs['patch-jobs']({
+      data: { type: 'check-completion', patchJobId: 'job-1' },
+    });
+  }
+
+  it('leaves the job running and writes nothing when only queued devices remain', async () => {
+    const result: any = await runCompletionCheck({
+      id: 'job-1',
+      status: 'running',
+      devicesPending: 0,
+      devicesQueued: 2,
+      devicesFailed: 0,
+    });
+
+    expect(result).toEqual({ waitingForQueuedDevices: 2 });
+    expect(updateSets).toHaveLength(0);
+  });
+
+  it('force-fails the pending devices but does not terminalise a job with queued devices', async () => {
+    const result: any = await runCompletionCheck({
+      id: 'job-1',
+      status: 'running',
+      devicesPending: 3,
+      devicesQueued: 1,
+      devicesFailed: 0,
+    });
+
+    expect(result).toMatchObject({
+      timedOut: true,
+      pendingAtTimeout: 3,
+      waitingForQueuedDevices: 1,
+    });
+    expect(updateSets).toHaveLength(1);
+    expect(updateSets[0]).not.toHaveProperty('status');
+    expect(updateSets[0]).not.toHaveProperty('completedAt');
+    expect(updateSets[0].devicesPending).toBe(0);
+    // The pending devices are still force-FAILED — only the job's terminal flip
+    // is withheld. Dropping this write would silently lose three devices.
+    expect(updateSets[0]).toHaveProperty('devicesFailed');
+  });
+
+  it('still terminalises a job with no queued devices (unchanged behaviour)', async () => {
+    const result: any = await runCompletionCheck({
+      id: 'job-1',
+      status: 'running',
+      devicesPending: 0,
+      devicesQueued: 0,
+      devicesFailed: 1,
+    });
+
+    expect(result).toEqual({ finalStatus: 'failed' });
+    expect(updateSets).toHaveLength(1);
+    expect(updateSets[0].status).toBe('failed');
   });
 });

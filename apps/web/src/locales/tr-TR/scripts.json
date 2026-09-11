@@ -149,12 +149,23 @@
       "webhookSecret": "Webhook Sırrı (isteğe bağlı)",
       "mode": "Modu",
       "script": "Komut Dosyası",
+      "runAs": "Farklı Çalıştır",
       "notificationChannel": "Bildirim Kanalı",
       "severity": "Önem",
       "message": "Mesaj",
       "command": "Komut",
+      "whenOffline": "Cihaz çevrimdışıysa",
       "software": "Yazılım",
       "failureNotificationChannel": "Arıza Bildirim Kanalı"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "Kuyruğa al (varsayılan)",
+        "skip": "Atla"
+      }
+    },
+    "hints": {
+      "whenOffline": "Kuyruğa alınan iş cihazı bekler ve bir sonraki bağlantısında çalışır ya da 7 gün sonra sona erer. Atla adımı hemen başarısız kılar."
     },
     "placeholders": {
       "name": "Günlük bakım kontrolü",
@@ -250,7 +261,8 @@
     "resultCount": {
       "passed": "{{count}} geçti",
       "failed": "{{count}} başarısız oldu",
-      "skipped": "{{count}} atlandı"
+      "skipped": "{{count}} atlandı",
+      "cancelled": "{{count}} iptal edildi"
     },
     "duration": "Süre: {{duration}}\n__BREEZE_TOKEN_1__ cihazdan ",
     "progress": {
@@ -264,7 +276,15 @@
     },
     "actions": {
       "hideLogs": "Günlükleri Gizle",
-      "viewLogs": "Günlükleri Görüntüle"
+      "viewLogs": "Günlükleri Görüntüle",
+      "cancelRun": "Çalıştırmayı iptal et",
+      "partnerScopeTooltip": "Bu çalıştırma, iş ortağı hesabınızdaki tüm kuruluşlar için geçerlidir. İptal etmesi için tam yetkili bir iş ortağı yöneticisinden isteyin veya bunun yerine kendi cihazlarınızdaki tek tek yürütmeleri durdurun.",
+      "confirmCancelRunTitle": "Bu çalıştırma iptal edilsin mi?",
+      "confirmCancelRunMessage": "Breeze, bu çalıştırmanın hâlâ beklediği her komut dosyası yürütmesini durduracak. Zaten devam etmekte olan işlemler durdurulmadan önce tamamlanabilir.",
+      "uncancellableActions_one": "{{count}} eylem durdurulamadı ve kendi başına çalışmaya devam ediyor olabilir.",
+      "uncancellableActions_other": "{{count}} eylem durdurulamadı ve kendi başına çalışmaya devam ediyor olabilir.",
+      "cancelRunSuccess_one": "İptal edildi — {{count}} yürütme durduruldu.",
+      "cancelRunSuccess_other": "İptal edildi — {{count}} yürütme durduruldu."
     },
     "timestamps": {
       "started": "Başlangıç: {{date}}",
@@ -281,7 +301,8 @@
       "partial": "Kısmi",
       "running": "Koşuyor",
       "pending": "Beklemede",
-      "skipped": "Atlandı"
+      "skipped": "Atlandı",
+      "cancelled": "İptal Edildi"
     },
     "empty": "Çalıştırma geçmişi yok.",
     "triggeredBy": {
@@ -302,6 +323,9 @@
       "untitled": "Komut Dosyası",
       "awaiting": "Temsilcinin rapor vermesi bekleniyor…",
       "truncated": "Çıktı kesildi — tam metin için cihazın komut dosyası geçmişine bakın."
+    },
+    "errors": {
+      "cancelRun": "Çalıştırma iptal edilemedi."
     }
   },
   "automationsPage": {
@@ -618,8 +642,33 @@
       "stdout": "Standart Çıkış (stdout)",
       "stderr": "Standart Hata (stderr)"
     },
+    "customFields": {
+      "title": "Özel alan yazmaları",
+      "applied": "Uygulanan",
+      "rejected": "Reddedilen",
+      "none": "Yok",
+      "reasons": {
+        "unknown_field": "Eşleşen alan tanımı yok",
+        "not_script_writable": "Alan betikle yazılabilir değil",
+        "not_applicable_to_device": "Alan bu cihaz türü için geçerli değil",
+        "device_not_found": "Cihaz bulunamadı",
+        "invalid_type": "Değer yanlış türde",
+        "out_of_range": "Değer izin verilen aralığın dışında",
+        "not_a_choice": "Değer, alanın izin verilen seçeneklerinden biri değil",
+        "too_long": "Değer çok uzun",
+        "invalid_date": "Değer geçerli bir tarih değil",
+        "marker_unparseable": "İşaretleyici JSON olarak ayrıştırılamadı",
+        "too_many_lines": "Bu çalıştırmada çok fazla işaretleyici satırı var",
+        "too_many_keys": "İşaretleyicide çok fazla anahtar var",
+        "marker_too_large": "İşaretleyici boyut sınırını aştı",
+        "forbidden_key": "Anahtara izin verilmiyor",
+        "envelope_unparseable": "Yapılandırılmış sonuç ayrıştırılamadı",
+        "envelope_unsupported_version": "Yapılandırılmış sonuç desteklenmeyen bir sürüm kullandı"
+      }
+    },
     "actions": {
-      "copyToClipboard": "Panoya kopyala"
+      "copyToClipboard": "Panoya kopyala",
+      "runAgain": "Tekrar çalıştır"
     },
     "title": "Yürütme Ayrıntıları",
     "statusDescription": {
@@ -627,20 +676,32 @@
       "completed": "Komut dosyası başarıyla tamamlandı",
       "failed": "Komut dosyası yürütme başarısız oldu",
       "timeout": "Komut dosyası yürütme zaman aşımına uğradı",
-      "pending": "Komut dosyası çalıştırılmayı bekliyor"
+      "pending": "Komut dosyası çalıştırılmayı bekliyor",
+      "queued": "Komut dosyası cihaza gönderilmek üzere sırada",
+      "cancelling": "Durdurma istendi — cihazdan onay bekleniyor.",
+      "cancelled": "Komut dosyası cihazda durduruldu"
     },
     "fields": {
       "startedAt": "Başlangıç Tarihi",
       "duration": "Süre",
       "exitCode": "Çıkış Kodu",
-      "completedAt": "Tamamlanma Tarihi"
+      "completedAt": "Tamamlanma Tarihi",
+      "runAs": "Çalıştırma Bağlamı"
     },
     "status": {
       "running": "Koşuyor...",
       "pending": "Beklemede",
       "completed": "Tamamlandı",
       "failed": "Başarısız",
-      "timeout": "Zaman Aşımı"
+      "timeout": "Zaman Aşımı",
+      "queued": "Sırada",
+      "cancelling": "Durduruluyor…",
+      "cancelled": "İptal Edildi",
+      "completedCancelTooLate": "Tamamlandı — durdurma isteğiniz çok geç geldi",
+      "failedCancelTooLate": "Başarısız — durdurma isteğiniz çok geç geldi",
+      "timeoutCancelTooLate": "Zaman aşımına uğradı — durdurma isteğiniz çok geç geldi",
+      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı",
+      "queuedOffline": "Sırada — cihaz çevrimdışı"
     }
   },
   "executionHistory": {
@@ -661,7 +722,15 @@
       "running": "Koşuyor...",
       "completed": "Tamamlandı",
       "failed": "Başarısız",
-      "timeout": "Zaman Aşımı"
+      "timeout": "Zaman Aşımı",
+      "queued": "Sırada",
+      "cancelling": "Durduruluyor…",
+      "cancelled": "İptal Edildi",
+      "completedCancelTooLate": "Tamamlandı — durdurma isteğiniz çok geç geldi",
+      "failedCancelTooLate": "Başarısız — durdurma isteğiniz çok geç geldi",
+      "timeoutCancelTooLate": "Zaman aşımına uğradı — durdurma isteğiniz çok geç geldi",
+      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı",
+      "queuedOffline": "Sırada — cihaz çevrimdışı"
     },
     "summary": "{{shown}} / {{total}}",
     "headers": {
@@ -672,11 +741,19 @@
     },
     "empty": "Hiçbir yürütme bulunamadı. Filtrelerinizi ayarlamayı deneyin.",
     "actions": {
-      "viewDetails": "Ayrıntıları görüntüle"
+      "viewDetails": "Ayrıntıları görüntüle",
+      "stop": "Durdur",
+      "forceStop": "Hemen durdur",
+      "confirmStopTitle": "Bu yürütme durdurulsun mu?",
+      "confirmStopMessage": "Breeze, cihazdan {{script}} işlemini durdurmasını isteyecek. Bu birkaç saniye sürebilir — “Hemen durdur” bekleme süresini atlar ve işlemi anında sonlandırır."
     },
     "pagination": {
       "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",
       "page": "Sayfa {{page}} / {{total}}"
+    },
+    "errors": {
+      "noLongerCancellable": "Bu yürütme zaten tamamlandı ve artık durdurulamaz.",
+      "cancelFailed": "Yürütme durdurulamadı."
     }
   },
   "scriptAiInput": {
@@ -762,7 +839,8 @@
     "errors": {
       "fetch": "Komut dosyası getirilemedi",
       "generic": "Bir hata oluştu",
-      "save": "Komut dosyası kaydedilemedi"
+      "save": "Komut dosyası kaydedilemedi",
+      "duplicate": "Komut dosyası çoğaltılamadı"
     },
     "toast": {
       "created": "Komut dosyası oluşturuldu",
@@ -772,6 +850,7 @@
     "actions": {
       "backToScripts": "Komut Dosyalarına Geri Dön",
       "executionHistory": "Yürütme Geçmişi",
+      "duplicate": "Çoğalt",
       "create": "Komut Dosyası Oluştur",
       "saveChanges": "Değişiklikleri Kaydet"
     },
@@ -860,6 +939,9 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "toasts": {
+      "runsWhenOnline": "Cihaz çevrimiçi olduğunda çalışır"
     }
   },
   "secretParameters": {
@@ -971,6 +1053,8 @@
       "variablePlaceholder": "ör. vendor_token",
       "fieldLabel": "Özel alan anahtarı",
       "fieldPlaceholder": "ör. asset_tag",
+      "fieldHelp": "Ayarlar → Özel Alanlar bölümünde gösterilen Alan Anahtarını girin (büyük/küçük harfe duyarlıdır). Okuma: çözümlenen değer betiğe BREEZE_PARAM_<KEY> ortam değişkeni (parametre adı büyük harf ve alt çizgiyle) ve {{paramName}} yer tutucusu olarak iletilir — herhangi bir istem gösterilmez. Yazma: \"Betiklerin bu alanı yazmasına izin ver\" etkin olan bir alan için stdout’a ::breeze:custom-fields:: {\"key\": \"value\"} yazdırın. Örnek için düzenleyicinin altındaki \"Özel alanları okuma ve yazma\" bölümüne bakın.",
+      "fieldHelpAriaLabel": "Cihaz özel alan bağlaması hakkında",
       "builtinLabel": "Özellik",
       "chooseTitle": "Bir değişken seçin",
       "secretRejected": "\"{{key}}\" bir gizli bilgidir — kaydetme reddedilir. Gizli olmayan bir değişken seçin.",
@@ -978,6 +1062,14 @@
       "notSecretRow": "Gizli değil — \"Bir değişkenden\" kullanın",
       "secretHint": "Yalnızca {{env}} ortam değişkeni olarak iletilir; komut dosyasına asla yazılmaz. Sistem bağlamında çalıştırma ve güvenli gizli bilgi iletimini destekleyen bir aracı gerektirir.",
       "hint": "Komut dosyası çalıştığında her hedef cihaz için çözülür; kimseden istenmez."
+    },
+    "securityReview": {
+      "title": "Güvenlik incelemesi",
+      "blockedHint_one": "Bu komut dosyası, aracının onay olmadan çalıştırmayı reddettiği 1 desenle eşleşiyor.",
+      "blockedHint_other": "Bu komut dosyası, aracının onay olmadan çalıştırmayı reddettiği {{count}} desenle eşleşiyor. Kabul etmek istediğiniz her birini onaylayın.",
+      "clearedHint": "Algılanan tüm desenler onaylandı.",
+      "willBlock": "Onaylanmadı — aracı bu komut dosyasını çalıştırmayı reddedecek.",
+      "footnote": "Bir onay yalnızca bu komut dosyası için geçerlidir ve yalnızca burada listelenen desenleri kapsar. Daha sonra farklı riskli bir işlem eklerseniz, onu da onaylayana kadar engellenir."
     },
     "parameterSources": {
       "runtime": "Çalışma anında sorulur",
@@ -1042,6 +1134,18 @@
       "empty": "Henüz değişken yok.",
       "secretUnavailable": "Gizli — kaynağı \"Gizli bir değişkenden\" olan bir parametre üzerinden bağlayın.",
       "unknown": "{{keys}} için değişken yok — hedeflenen cihazlar siz onu oluşturana kadar başarısız olacaktır."
+    },
+    "customFieldHelp": {
+      "title": "Özel alanları okuma ve yazma",
+      "readLabel": "Okuma:",
+      "read": "bir parametreyi özel bir alana bağlayın (kaynak \"Cihaz özel alanından\"). Değer şu ortam değişkeni olarak gelir:",
+      "readPlaceholders": "ve şu yer tutucu olarak:",
+      "writeLabel": "Yazma:",
+      "write": "stdout’a şu biçimde bir satır yazdırın:",
+      "writeGate": "Alanın Ayarlar → Özel Alanlar bölümünde \"Betiklerin bu alanı yazmasına izin ver\" seçeneği etkin olmalıdır. Değerler alan türüne göre doğrulanır; reddedilen anahtarlar çalıştırma ayrıntılarında listelenir.",
+      "secretCaveat": "Yazılan değer betiğin kaydedilen çıktısında da görünür — bu yolla asla bir gizli değer yazmayın. Bunun yerine gizli bir değişken kullanın.",
+      "insertExample": "Örnek ekle",
+      "docsLink": "Özel alanlar belgeleri"
     }
   },
   "scriptList": {
@@ -1080,6 +1184,7 @@
     "actions": {
       "runTitle": "Komut dosyasını çalıştır",
       "editTitle": "Komut dosyasını düzenle",
+      "duplicateTitle": "Komut dosyasını çoğalt",
       "deleteTitle": "Komut dosyasını sil"
     },
     "pagination": {
@@ -1200,7 +1305,8 @@
       "delete": "Komut dosyası silinemedi",
       "deleteTryAgain": "Komut dosyası silinemedi. Lütfen tekrar deneyin.",
       "alreadyInLibrary": "\"{{name}}\" zaten kitaplığınızda",
-      "import": "Komut dosyası içe aktarılamadı"
+      "import": "Komut dosyası içe aktarılamadı",
+      "duplicate": "Komut dosyası çoğaltılamadı"
     },
     "toast": {
       "deleting": "\"{{name}}\" siliniyor...",
@@ -1286,6 +1392,8 @@
     "offlineWarning": "Seçilen cihaz çevrimdışı — çalıştırma, cihaz yeniden bağlanana kadar bekleyecek.",
     "exitCode": "çıkış {{code}}",
     "viewHistory": "Geçmişi görüntüle",
+    "runAgain": "Tekrar çalıştır",
+    "viewOnDevice": "Cihazda görüntüle",
     "status": {
       "pending": "Kuyrukta",
       "running": "Çalışıyor",
@@ -1293,7 +1401,8 @@
       "failed": "Başarısız",
       "timeout": "Zaman aşımına uğradı",
       "queued": "Kuyrukta",
-      "cancelled": "İptal edildi"
+      "cancelled": "İptal edildi",
+      "cancelling": "Durduruluyor…"
     },
     "errors": {
       "execute": "Test çalıştırması başlatılamadı",

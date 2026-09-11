@@ -88,9 +88,19 @@ type HeartbeatPayload struct {
 	RollbackObservation *rollbackstate.Observation `json:"rollbackObservation,omitempty"`
 	IPHistoryUpdate     *IPHistoryUpdate           `json:"ipHistoryUpdate,omitempty"`
 	PendingReboot       bool                       `json:"pendingReboot"`
-	LastUser            string                     `json:"lastUser,omitempty"`
-	UptimeSeconds       int64                      `json:"uptime,omitempty"`
-	DeviceRole          string                     `json:"deviceRole,omitempty"`
+	// RebootStatus is the scheduled-restart snapshot from RebootManager
+	// (#3207 W5). Sent unconditionally — NO omitempty — for the same reason
+	// SecurityCapabilities below is: the server has to tell an old agent (the
+	// key absent from the JSON body entirely) apart from a capable agent
+	// reporting that nothing is scheduled (an explicit null). Absent means "no
+	// news, keep what you have"; null means "the restart was cancelled or has
+	// already fired, clear it". Collapsing those two would strand a cancelled
+	// restart on the device page forever, or let every pre-#3207 agent in the
+	// fleet wipe the console's view on its next beat.
+	RebootStatus  *RebootStatusReport `json:"rebootStatus"`
+	LastUser      string              `json:"lastUser,omitempty"`
+	UptimeSeconds int64               `json:"uptime,omitempty"`
+	DeviceRole    string              `json:"deviceRole,omitempty"`
 	// Orthogonal virtualization attribute (issue #1387). IsVirtual is a
 	// pointer so an old-agent omission (nil) is distinguishable from a
 	// genuine "physical" report (false) — the server only overwrites the
@@ -148,6 +158,11 @@ type HeartbeatPayload struct {
 	// is never empty from this build.
 	AgentEdition      string `json:"agentEdition,omitempty"`
 	MigrationRequired bool   `json:"migrationRequired,omitempty"`
+	// RecoveryMarker (W04a) mirrors <dataDir>/recovery-marker.json: the
+	// bare-metal rebuild engine leaves it on the restored disk, and the agent
+	// sends it every heartbeat until the server acks the check-in. Nil
+	// (omitted) once acked or when no marker was ever found.
+	RecoveryMarker *RecoveryMarker `json:"recoveryMarker,omitempty"`
 }
 
 // migrationSignal reports the agent's build edition and whether it is a
@@ -199,10 +214,14 @@ type SecurityCapabilities struct {
 	// Device-control protocols are independently versioned and intentionally
 	// omitted when unsupported. The API treats omission, zero, malformed, and
 	// unknown values as capability 0 on every heartbeat.
-	PeripheralPolicyProtocolVersion int                      `json:"peripheralPolicyProtocolVersion,omitempty"`
-	RollbackProtocolVersion         int                      `json:"rollbackProtocolVersion,omitempty"`
-	PamLifetimeProtocolVersion      int                      `json:"pamLifetimeProtocolVersion,omitempty"`
-	PamReconciliation               *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
+	PeripheralPolicyProtocolVersion int `json:"peripheralPolicyProtocolVersion,omitempty"`
+	RollbackProtocolVersion         int `json:"rollbackProtocolVersion,omitempty"`
+	PamLifetimeProtocolVersion      int `json:"pamLifetimeProtocolVersion,omitempty"`
+	// RevocationLeaseProtocolVersion declares that this build keeps a desktop
+	// session's revocation lease alive and stops streaming when it lapses. The
+	// API refuses to start a desktop session against an agent reporting 0.
+	RevocationLeaseProtocolVersion int                      `json:"revocationLeaseProtocolVersion,omitempty"`
+	PamReconciliation              *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -243,6 +262,9 @@ type HeartbeatResponse struct {
 	// against the currently-pinned key it names.
 	ManifestKeyDelegations            []api.ManifestKeyDelegation `json:"manifestKeyDelegations,omitempty"`
 	AcknowledgedRollbackObservationID string                      `json:"acknowledgedRollbackObservationId,omitempty"`
+	// RecoveryMarkerAck (W04a) is true only when this beat's recoveryMarker
+	// matched — its absence means no ack yet (or no marker was sent).
+	RecoveryMarkerAck bool `json:"recoveryMarkerAck,omitempty"`
 }
 
 type HelperSettings struct {
@@ -316,25 +338,35 @@ type Heartbeat struct {
 	inventoryCol          *collectors.InventoryCollector
 	vpnCol                *collectors.VPNCollector
 	changeTrackerCol      *collectors.ChangeTrackerCollector
-	sessionCol            *collectors.SessionCollector
-	policyStateCol        *collectors.PolicyStateCollector
-	patchCol              *collectors.PatchCollector
-	patchMgr              *patching.PatchManager
-	connectionsCol        *collectors.ConnectionsCollector
-	eventLogCol           *collectors.EventLogCollector
-	bootCol               *collectors.BootPerformanceCollector
-	reliabilityCol        *collectors.ReliabilityCollector
-	agentVersion          string
-	desktopMgr            *desktop.SessionManager
-	wsDesktopMgr          *desktop.WsSessionManager
-	terminalMgr           *terminal.Manager
-	tunnelMgr             *tunnel.Manager
-	executor              *executor.Executor
-	backupBinaryPath      string
-	rollbackController    rollbackController
-	rebootMgr             *patching.RebootManager
-	securityScanner       *security.SecurityScanner
-	wsClient              *websocket.Client
+	// changeTrackerMu serializes the change tracker's collect → send → commit
+	// cycle. sendInventory is dispatched both on the 15-minute tick and by the
+	// "Refresh Inventory" command (handlers.go), so two cycles can genuinely
+	// overlap; without this they would diff the same baseline, upload the same
+	// records twice, and race to commit (#3529).
+	changeTrackerMu    sync.Mutex
+	sessionCol         *collectors.SessionCollector
+	policyStateCol     *collectors.PolicyStateCollector
+	patchCol           *collectors.PatchCollector
+	patchMgr           *patching.PatchManager
+	connectionsCol     *collectors.ConnectionsCollector
+	eventLogCol        *collectors.EventLogCollector
+	bootCol            *collectors.BootPerformanceCollector
+	reliabilityCol     *collectors.ReliabilityCollector
+	agentVersion       string
+	desktopMgr         *desktop.SessionManager
+	wsDesktopMgr       *desktop.WsSessionManager
+	terminalMgr        *terminal.Manager
+	tunnelMgr          *tunnel.Manager
+	executor           *executor.Executor
+	backupBinaryPath   string
+	rollbackController rollbackController
+	rebootMgr          *patching.RebootManager
+	// recoveryMarkerVal (W04a) is guarded by mu like the other single-value
+	// fields above (see lifecycleMode()); read every beat by
+	// recoveryMarker() and cleared once the server acks it.
+	recoveryMarkerVal *RecoveryMarker
+	securityScanner    *security.SecurityScanner
+	wsClient           *websocket.Client
 	// backupOutbox persists terminal backup results that failed to send over
 	// the WS connection, so a transient blip doesn't orphan the job
 	// server-side. Flushed on WS reconnect (see SetWebSocketClient). Never
@@ -418,6 +450,11 @@ type Heartbeat struct {
 	pamGateStuckReassertInterval time.Duration
 	wsDesktopStart               func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
 	desktopOwners                sync.Map // desktop session ID -> helper session ID
+	// leaseRenewRequester asks the control plane to renew a desktop session's
+	// revocation lease. Indirected through a field (rather than calling the
+	// method directly) so the helper-hosted bridge is observable in tests.
+	// Defaults to requestRevocationLeaseRenew; nil is a no-op.
+	leaseRenewRequester func(sessionID string)
 
 	// desktopTargets maps remote desktop session id -> explicitly targeted
 	// Windows session ("" for untargeted/legacy connects) so the stop path can
@@ -573,6 +610,14 @@ type Heartbeat struct {
 	untrustedReleaseMu  sync.Mutex
 	untrustedReleaseVer string
 	untrustedReleaseAt  time.Time
+
+	// Cooldown state for an upgrade target whose staged binary failed macOS
+	// code-signature verification (updater.ErrCodeSignatureInvalid). Same
+	// shape and rationale as the untrustedRelease trio above — terminal for
+	// that version, recoverable once a good artifact is published. Issue #3458.
+	badSignatureMu  sync.Mutex
+	badSignatureVer string
+	badSignatureAt  time.Time
 
 	// Path to the agent state file, set by main after startup.
 	statePath                   string
@@ -1003,12 +1048,34 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// Register winget provider (SYSTEM/machine-scope; see winget_register_windows.go)
 	h.registerSystemWinget()
 
-	// Initialize reboot manager (uses session broker for user notifications)
-	h.rebootMgr = patching.NewRebootManager(func(title, body, urgency string) {
-		if h.sessionBroker != nil {
-			h.sessionBroker.BroadcastNotification(title, body, urgency)
-		}
-	}, cfg.PatchRebootMaxPerDay)
+	// Initialize reboot manager. Warnings and the interactive postponement
+	// prompt go to the desktop helper through the session broker first, and to
+	// the daemon-drawn Linux dialog when no helper session took them — see
+	// chainedRebootPrompt in reboot_prompt.go for why the order is that way and
+	// why patching.Desktop* is a no-op off Linux.
+	h.rebootMgr = patching.NewRebootManagerWithPrompt(
+		chainedRebootNotify(
+			func(title, body, urgency string) {
+				if h.sessionBroker != nil {
+					h.sessionBroker.BroadcastNotification(title, body, urgency)
+				}
+			},
+			patching.DesktopNotify,
+			func() bool {
+				return h.sessionBroker != nil && len(h.sessionBroker.SessionsWithScope("notify")) > 0
+			},
+		),
+		chainedRebootPrompt(
+			rebootPromptFunc(func(req ipc.NotifyRequest, timeout time.Duration) (ipc.NotifyResult, error) {
+				if h.sessionBroker == nil {
+					return ipc.NotifyResult{}, nil
+				}
+				return h.sessionBroker.RequestNotificationDecision(req, timeout)
+			}),
+			patching.DesktopPrompt,
+		),
+		cfg.PatchRebootMaxPerDay,
+	)
 
 	// Set backup binary path for IPC forwarding to breeze-backup helper
 	h.backupBinaryPath = cfg.BackupBinaryPath
@@ -1021,10 +1088,20 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// here. The callback is nil-checked at every fire site and inert in helper
 	// mode, so registering it unconditionally on Linux is safe.
 	if (!cfg.IsService && !cfg.IsHeadless) || runtime.GOOS == "linux" {
-		h.desktopMgr.OnSessionStopped = func(sessionID string) {
-			h.sendDesktopDisconnectNotification(sessionID)
+		h.desktopMgr.OnSessionStopped = func(sessionID, reason string) {
+			h.sendDesktopDisconnectNotification(sessionID, reason)
 		}
 	}
+
+	// The desktop watchdog has no transport of its own — this process owns the
+	// command socket, so it drives every lease renewal. Registered
+	// unconditionally (not only in direct mode): the service process runs the
+	// renewals for helper-hosted sessions too.
+	h.desktopMgr.RequestRevocationLeaseRenew = h.requestRevocationLeaseRenew
+	// Same outbound renew, reached from the IPC side: a helper-hosted session's
+	// watchdog lives in the helper process, so its renewals arrive here as
+	// ipc.TypeDesktopLeaseRenew and are forwarded onto the command socket.
+	h.leaseRenewRequester = h.requestRevocationLeaseRenew
 
 	// Clean up any orphaned Screen Sharing left running from a previous crash.
 	h.tunnelMgr.CleanupOrphanedVNC()
@@ -1054,6 +1131,113 @@ func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 		// isn't silently lost after SendResult already reported success. The
 		// next reconnect's OnConnected flush redelivers it. (FIX 3)
 		ws.OnResultWriteFailed = h.preserveUndeliveredResult
+		// Revocation-lease answers from the control plane. This process owns the
+		// command socket, so it performs every renewal — including for sessions
+		// whose capture actually runs in a user helper, which is told to stop
+		// over IPC (handleStopDesktop) rather than talking to the API itself.
+		ws.OnRevocationLease = h.applyRevocationLeaseAnswer
+	}
+}
+
+// applyRevocationLeaseAnswer routes the server's answer to a lease renewal.
+//
+// A revocation stops the session through the SAME path an operator stop takes
+// (handleStopDesktop), so the IPC-helper case is covered without a second
+// teardown implementation: state-based routing sends TypeDesktopStop to the
+// helper that owns the session, and falls back to the direct manager otherwise.
+func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMessage) {
+	if msg.SessionID == "" {
+		return
+	}
+	// The answer must reach whichever process actually hosts the session. On a
+	// service / daemon install that is a user helper, whose SessionManager is a
+	// different object entirely — applying it only to h.desktopMgr is what left
+	// every helper-hosted session unrenewed until its watchdog killed it.
+	//
+	// Unsolicited (SendNotify, not SendCommand) and off this goroutine: an IPC
+	// write is bounded by a 30s deadline, and websocket/client.go documents
+	// that this callback must not block. Reordering two in-flight answers is
+	// harmless — a renewal only ever EXTENDS the expiry and a revocation is
+	// sticky and outranks it, so a late renewal cannot resurrect a revoked
+	// session.
+	go h.forwardRevocationLeaseToHelper(msg)
+
+	if !msg.Revoked {
+		// Deadlines are converted to the monotonic clock at receipt so an NTP
+		// step cannot extend a live lease (desktop.MonotonicDeadline).
+		h.desktopMgr.ApplyRevocationLease(msg.SessionID,
+			desktop.MonotonicDeadline(msg.ExpiresAtUnixMs),
+			desktop.MonotonicDeadline(msg.HardDeadlineUnixMs))
+		return
+	}
+
+	log.Warn("remote desktop session revoked by the control plane",
+		"sessionId", msg.SessionID, "reason", msg.Reason)
+	// Mark it revoked first — synchronously, so the local watchdog is already
+	// authoritative before anything below can fail or stall.
+	h.desktopMgr.RevokeSession(msg.SessionID, msg.Reason)
+	// The stop itself runs OFF the read pump: handleStopDesktop does a 10s
+	// synchronous IPC SendCommand and StopSession -> wg.Wait(), and
+	// websocket/client.go documents that this callback must not block. With the
+	// revocation already recorded (and forwarded to the helper above), nothing
+	// here is load-bearing for correctness — it just ends the session sooner
+	// than the next watchdog tick would.
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("panic stopping revoked desktop session", "error", fmt.Sprint(r))
+			}
+		}()
+		result := handleStopDesktop(h, Command{
+			ID:      "desk-stop-" + msg.SessionID,
+			Type:    "stop_desktop",
+			Payload: map[string]any{"sessionId": msg.SessionID},
+		})
+		if result.Status != "completed" {
+			log.Warn("failed to stop revoked desktop session",
+				"sessionId", msg.SessionID, "error", result.Error)
+		}
+	}()
+}
+
+// forwardRevocationLeaseToHelper relays a lease answer over IPC to the helper
+// that owns the session, if any. A failure is logged, not escalated: the
+// helper's own watchdog is authoritative and stops the session at
+// expiresAt+grace once answers stop arriving.
+func (h *Heartbeat) forwardRevocationLeaseToHelper(msg websocket.RevocationLeaseMessage) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("panic forwarding revocation lease update", "error", fmt.Sprint(r))
+		}
+	}()
+	owner := h.desktopOwnerSession(msg.SessionID)
+	if owner == nil {
+		return
+	}
+	update := ipc.DesktopLeaseUpdate{
+		SessionID:          msg.SessionID,
+		ExpiresAtUnixMs:    msg.ExpiresAtUnixMs,
+		HardDeadlineUnixMs: msg.HardDeadlineUnixMs,
+		Revoked:            msg.Revoked,
+		Reason:             msg.Reason,
+	}
+	if err := owner.SendNotify("desk-lease-"+msg.SessionID, ipc.TypeDesktopLeaseUpdate, update); err != nil {
+		log.Warn("failed to forward revocation lease update to the owning helper",
+			"sessionId", msg.SessionID, "error", err.Error())
+	}
+}
+
+// requestRevocationLeaseRenew is the desktop manager's outbound half: it asks
+// the control plane to revalidate and extend a session's lease. Fire-and-forget
+// — the answer lands asynchronously in applyRevocationLeaseAnswer, and a
+// control plane that never answers is exactly what the grace window covers.
+func (h *Heartbeat) requestRevocationLeaseRenew(sessionID string) {
+	if h.wsClient == nil {
+		return
+	}
+	if err := h.wsClient.SendRevocationLeaseRenew(sessionID); err != nil {
+		log.Debug("revocation lease renew request not sent",
+			"sessionId", sessionID, "error", err.Error())
 	}
 }
 
@@ -1084,6 +1268,22 @@ func (h *Heartbeat) flushBackupResultOutbox() {
 // SetAuthMonitor sets the shared auth-failure monitor.
 func (h *Heartbeat) SetAuthMonitor(m *authstate.Monitor) {
 	h.authMon = m
+}
+
+// SetRecoveryMarker sets (or, passed nil, clears) the bare-metal recovery
+// marker sent on every heartbeat until the server acks it. See
+// recovery_marker.go for LoadRecoveryMarker/AcknowledgeRecoveryMarker.
+func (h *Heartbeat) SetRecoveryMarker(m *RecoveryMarker) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.recoveryMarkerVal = m
+}
+
+// recoveryMarker returns the currently-set recovery marker, or nil.
+func (h *Heartbeat) recoveryMarker() *RecoveryMarker {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.recoveryMarkerVal
 }
 
 // SetStatePath sets the path to the agent state file for heartbeat updates.
@@ -1183,6 +1383,32 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			}()
 			h.handleSASFromHelper(session, env)
 		}()
+	case ipc.TypeDesktopLeaseRenew:
+		// A helper-hosted session's lease watchdog lives in the helper, which
+		// holds no command socket. This is the inbound half of the IPC lease
+		// bridge: turn the helper's ask into a renew on the agent's command
+		// WebSocket. The answer comes back asynchronously and is forwarded in
+		// applyRevocationLeaseAnswer.
+		var renew ipc.DesktopLeaseRenewRequest
+		if err := json.Unmarshal(env.Payload, &renew); err != nil {
+			log.Warn("invalid desktop lease renew payload", "error", err.Error())
+			return
+		}
+		if !desktopSessionIDPattern.MatchString(renew.SessionID) {
+			log.Warn("dropping desktop lease renew with invalid session ID",
+				"sessionId", renew.SessionID, "helperSession", session.SessionID)
+			return
+		}
+		// A helper may only renew the sessions it actually owns — otherwise one
+		// helper could keep another's session alive.
+		if owner := h.desktopOwnerSession(renew.SessionID); owner == nil || owner.SessionID != session.SessionID {
+			log.Warn("dropping desktop lease renew for non-owned session",
+				"sessionId", renew.SessionID, "helperSession", session.SessionID)
+			return
+		}
+		if h.leaseRenewRequester != nil {
+			h.leaseRenewRequester(renew.SessionID)
+		}
 	case ipc.TypeDesktopPeerDisconnected:
 		var notice ipc.DesktopPeerDisconnectedNotice
 		if err := json.Unmarshal(env.Payload, &notice); err != nil {
@@ -1200,7 +1426,7 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			return
 		}
 		h.forgetDesktopOwner(notice.SessionID)
-		go h.sendDesktopDisconnectNotification(notice.SessionID)
+		go h.sendDesktopDisconnectNotification(notice.SessionID, notice.Reason)
 	case backupipc.TypeBackupResult:
 		// NOTE: do NOT early-return when wsClient is nil. The outbox needs no
 		// live WS client, and a terminal backup result that arrives during
@@ -1329,10 +1555,45 @@ func (h *Heartbeat) takeDesktopTarget(sessionID string) string {
 	return t
 }
 
+// desktopStopReasonMaxBytes bounds the reason text sent to the API in the
+// disconnect notification (#5300). Session.StopWithReason already caps at
+// this same size, but the value crosses a process boundary here (helper ->
+// service -> API over IPC/WS) — including a future notice.Reason from an
+// older or third-party helper build — so it's capped again defensively
+// rather than trusting the sender.
+const desktopStopReasonMaxBytes = 300
+
+// desktopDisconnectResultPayload builds the `result` object of the
+// desk-disconnect command_result sent to the API. Split out from
+// sendDesktopDisconnectNotification (which requires a live *websocket.Client)
+// so the shape of the outbound message — in particular, that a non-empty
+// reason lands in `stopReason` and is bounded — is unit-testable on its own.
+func desktopDisconnectResultPayload(sessionID, reason string) map[string]any {
+	if len(reason) > desktopStopReasonMaxBytes {
+		reason = reason[:desktopStopReasonMaxBytes]
+	}
+	payload := map[string]any{
+		"sessionId": sessionID,
+		"event":     "peer_disconnected",
+	}
+	if reason != "" {
+		payload["stopReason"] = reason
+	}
+	return payload
+}
+
 // sendDesktopDisconnectNotification tells the API that a WebRTC peer
 // connection dropped so it can mark the session as disconnected and allow
 // the viewer to reconnect.
-func (h *Heartbeat) sendDesktopDisconnectNotification(sessionID string) {
+//
+// reason (#5300) is the session's LastStopReason() — e.g. the Win32 error
+// the no-video watchdog's capturer swallowed — or "" for every other
+// disconnect path (peer-connection grace timeout, lifetime policy, operator
+// stop, darwin handoff). The API stores a non-empty reason in
+// remote_sessions.errorMessage only when that column is still empty, so it
+// never overwrites a startup-probe failure text (#5284/#5295) that got there
+// first.
+func (h *Heartbeat) sendDesktopDisconnectNotification(sessionID, reason string) {
 	// Fire the end-of-session UX (banner hide + ended notice) for any session
 	// that carried a consent/notify prompt. Runs on every disconnect path
 	// (direct OnSessionStopped, IPC peer-disconnect, darwin handoff) and is a
@@ -1360,10 +1621,7 @@ func (h *Heartbeat) sendDesktopDisconnectNotification(sessionID string) {
 		Type:      "command_result",
 		CommandID: "desk-disconnect-" + sessionID,
 		Status:    "completed",
-		Result: map[string]any{
-			"sessionId": sessionID,
-			"event":     "peer_disconnected",
-		},
+		Result:    desktopDisconnectResultPayload(sessionID, reason),
 	}
 	if err := h.wsClient.SendResult(result); err != nil {
 		log.Warn("failed to send desktop disconnect notification", "session", sessionID, "error", err.Error())
@@ -1568,6 +1826,11 @@ func (h *Heartbeat) Start() {
 	}
 	h.lastHardwareUpdate = startupNow
 	h.lastPatchUpdate = startupNow
+	// The startup fan-out above already sent inventory; without stamping this
+	// gate its zero value makes the very first tick fire a second, duplicate
+	// full inventory ~30s later — which is also the guaranteed overlap window
+	// for the change tracker's collect → send → commit cycle (#3529).
+	h.lastInventoryUpdate = startupNow
 	h.mu.Unlock()
 	if postReliability {
 		go h.sendReliabilityMetrics(startupNow)
@@ -2257,22 +2520,52 @@ func (h *Heartbeat) sendNetworkInventory() {
 	)
 }
 
+// sendConfigurationChanges uploads the config-change delta on the collect →
+// send → commit ordering: the tracker's diff baseline advances only once the
+// API has accepted the records.
+//
+// Committing first (the old order) rebased the diff on a world where the change
+// had already happened, so anything the server rejected could never be
+// re-derived — the delta was gone for good (#3529). Leaving the baseline in
+// place instead means the next cycle simply re-reports the same changes, at the
+// cost of a possible duplicate if a response was lost after the server had
+// already stored them. At-least-once is the correct trade for an audit trail.
 func (h *Heartbeat) sendConfigurationChanges() {
 	if h.changeTrackerCol == nil {
 		return
 	}
 
-	changes, err := h.changeTrackerCol.CollectChanges()
+	h.changeTrackerMu.Lock()
+	defer h.changeTrackerMu.Unlock()
+
+	pending, err := h.changeTrackerCol.CollectPendingChanges()
 	if err != nil {
 		log.Error("failed to collect configuration changes", "error", err.Error())
 		return
 	}
-
-	if len(changes) == 0 {
+	if pending == nil {
 		return
 	}
 
-	h.sendInventoryData("changes", map[string]any{"changes": changes}, fmt.Sprintf("changes (%d)", len(changes)))
+	if len(pending.Records) > 0 {
+		if err := h.sendInventoryData(
+			"changes",
+			map[string]any{"changes": pending.Records},
+			fmt.Sprintf("changes (%d)", len(pending.Records)),
+		); err != nil {
+			log.Warn("configuration changes upload failed, baseline retained for retry",
+				"changes", len(pending.Records),
+				"error", err.Error())
+			return
+		}
+	}
+
+	// Committing with zero records is deliberate: the snapshot may have moved
+	// in ways the diff filtered as noise, and holding the old baseline would
+	// re-run that same filtered diff every cycle.
+	if err := h.changeTrackerCol.Commit(pending); err != nil {
+		log.Warn("failed to persist change tracker baseline after upload", "error", err.Error())
+	}
 }
 
 func (h *Heartbeat) policyRegistryProbes() []collectors.RegistryProbe {
@@ -2807,14 +3100,7 @@ func (h *Heartbeat) sendPolicyRegistryState() {
 		log.Warn("failed to collect policy registry state", "error", err.Error())
 	}
 
-	h.sendInventoryData(
-		"registry-state",
-		map[string]any{
-			"entries": entries,
-			"replace": true,
-		},
-		fmt.Sprintf("registry state (%d entries)", len(entries)),
-	)
+	sendPolicyState(h, "registry-state", "registry state", entries, err)
 }
 
 func (h *Heartbeat) sendPolicyConfigState() {
@@ -2823,13 +3109,41 @@ func (h *Heartbeat) sendPolicyConfigState() {
 		log.Warn("failed to collect policy config state", "error", err.Error())
 	}
 
-	h.sendInventoryData(
-		"config-state",
+	sendPolicyState(h, "config-state", "config state", entries, err)
+}
+
+// sendPolicyState uploads a policy-state observation, choosing the write mode
+// from whether the collection was complete.
+//
+// `replace: true` makes the API delete every prior row for the device before
+// inserting, so it is only safe when the batch is authoritative. A collection
+// that hit a read error is NOT authoritative: uploading it with replace:true
+// erases the server's last good observation of every probe that failed, and the
+// dashboard reads the result as a fresh, successful inventory (#3529). A
+// partial batch is therefore merged (replace:false), and a batch that failed
+// and produced nothing is skipped entirely — there is nothing to merge.
+func sendPolicyState[T any](h *Heartbeat, endpoint string, label string, entries []T, collectErr error) {
+	complete := collectErr == nil
+	if !complete && len(entries) == 0 {
+		log.Warn("skipping policy state upload, collection failed and produced no entries", "label", label)
+		return
+	}
+
+	mode := "replace"
+	if !complete {
+		mode = "partial merge"
+	}
+
+	// Nothing to roll back on failure: policy state is a full re-read of local
+	// state every cycle, so the next cycle re-derives it. sendInventoryData
+	// already logs the failure, and its label carries the mode.
+	_ = h.sendInventoryData(
+		endpoint,
 		map[string]any{
 			"entries": entries,
-			"replace": true,
+			"replace": complete,
 		},
-		fmt.Sprintf("config state (%d entries)", len(entries)),
+		fmt.Sprintf("%s (%d entries, %s)", label, len(entries), mode),
 	)
 }
 
@@ -3456,6 +3770,9 @@ func (h *Heartbeat) sendSessionInventory() {
 		log.Warn("failed to collect sessions", "error", err.Error())
 		return
 	}
+	// Draining removes the events from the collector, so from here until the
+	// server confirms receipt this goroutine is their only copy — a discarded
+	// send error would lose them permanently (#3529).
 	events := h.sessionCol.DrainEvents(256)
 	if events == nil {
 		events = []collectors.UserSessionEvent{}
@@ -3466,7 +3783,13 @@ func (h *Heartbeat) sendSessionInventory() {
 		"events":      events,
 		"collectedAt": time.Now().UTC(),
 	}
-	h.sendInventoryData("sessions", payload, fmt.Sprintf("sessions (%d active, %d events)", len(sessions), len(events)))
+	sendErr := h.sendInventoryData("sessions", payload, fmt.Sprintf("sessions (%d active, %d events)", len(sessions), len(events)))
+	if sendErr != nil && len(events) > 0 {
+		h.sessionCol.RequeueEvents(events)
+		log.Warn("session events requeued after failed upload",
+			"events", len(events),
+			"error", sendErr.Error())
+	}
 }
 
 func (h *Heartbeat) sendBootPerformance(metrics *collectors.BootPerformanceMetrics) {
@@ -4022,12 +4345,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		// so it always declares version 1. Unconditional (not gated on any
 		// runtime check): the enforcement is compiled in, not a runtime
 		// toggle.
-		SecurityCapabilities: SecurityCapabilities{
-			OutboundNetworkPolicyVersion:    1,
-			ScriptSecretEnvVersion:          1,
-			PeripheralPolicyProtocolVersion: 2,
-			RollbackProtocolVersion:         1,
-		},
+		SecurityCapabilities: compiledSecurityCapabilities(),
 	}
 	payload.SecurityCapabilities.PamLifetimeProtocolVersion = h.pamLifetimeProtocolVersion()
 	pamReconciliation := h.pamReconciliationStatus()
@@ -4094,6 +4412,10 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Check for pending reboot
 	pendingReboot, _ := patching.DetectPendingReboot()
 	payload.PendingReboot = pendingReboot
+	// Scheduled-restart snapshot (#3207 W5). nil here is not "skip it" — it
+	// marshals to an explicit null, which is how the server learns a restart it
+	// was told about is no longer happening.
+	payload.RebootStatus = h.rebootStatusForHeartbeat()
 	if h.sessionCol != nil {
 		payload.LastUser = h.sessionCol.LastUser()
 	}
@@ -4137,6 +4459,10 @@ func (h *Heartbeat) sendHeartbeat() {
 	} else if runtime.GOOS == "linux" {
 		payload.DesktopAccess = h.computeDesktopAccess(sysInfo)
 	}
+
+	// Bare-metal recovery W04a: send until the server acks (see
+	// processHeartbeatResponse, which clears it on RecoveryMarkerAck).
+	payload.RecoveryMarker = h.recoveryMarker()
 
 	if h.postHeartbeat(h.serverURL(), &payload) {
 		h.resetHeartbeatFailures()
@@ -4405,6 +4731,14 @@ func (h *Heartbeat) acknowledgeRollbackObservation(id string) {
 }
 
 func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
+	// Bare-metal recovery W04a: only clear the marker once the server has
+	// actually acked it — a failed/lost beat must resend it next time.
+	if response.RecoveryMarkerAck && h.recoveryMarker() != nil {
+		if err := AcknowledgeRecoveryMarker(recoveryMarkerDataDir()); err != nil {
+			log.Warn("failed to acknowledge bare-metal recovery marker on disk; will keep resending it", "error", err.Error())
+		}
+		h.SetRecoveryMarker(nil)
+	}
 	h.acknowledgeRollbackObservation(response.AcknowledgedRollbackObservationID)
 	if len(response.ConfigUpdate) > 0 {
 		h.applyConfigUpdate(response.ConfigUpdate)
@@ -4494,6 +4828,13 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 			break
 		}
 		c := cmd // capture
+		// #3525: the same bypass executeCommandViaPool applies on the WebSocket
+		// side. Without it a cancel delivered by the heartbeat poll would queue
+		// behind the script it is meant to stop.
+		if isLifecycleCommand(c.Type) {
+			go h.processCommand(c)
+			continue
+		}
 		if !h.pool.Submit(func() { h.processCommand(c) }) {
 			log.Warn("command rejected, worker pool full", logging.KeyCommandID, cmd.ID)
 		}
@@ -5560,6 +5901,10 @@ func (h *Heartbeat) sendWatchdogStateSync(lastHeartbeat time.Time) {
 		ConfigHash:    "", // TODO: populate when config hashing is implemented
 		Connected:     true,
 		LastHeartbeat: lastHeartbeat.Format(time.RFC3339),
+		// ActiveBackupRuns lets the watchdog's CheckIPC veto an IPC-failure
+		// escalation while a backup is genuinely in flight (D3) instead of
+		// killing the backup helper on a transient probe hiccup.
+		ActiveBackupRuns: h.sessionBroker.ActiveBackupRunCount(),
 	})
 }
 
@@ -5726,11 +6071,24 @@ func toWSCommandResult(commandID string, result tools.CommandResult) websocket.C
 		ExitCode:  result.ExitCode,
 		Stdout:    result.Stdout,
 		Stderr:    result.Stderr,
+		Error:     result.Error,
+		// #3525: the cancellation marker must survive this conversion — the
+		// WebSocket leg is the primary result channel, and the marker is the
+		// only proof that closes a `cancelling` execution as `cancelled`.
+		Cancelled:            result.Cancelled,
+		CancelledByCommandID: result.CancelledByCommandID,
 	}
 
-	if result.Error != "" {
-		wsResult.Error = result.Error
-	} else if result.Stdout != "" {
+	// An explicitly-set Result wins. The stdout reparse below stays for the
+	// handlers that depend on it (discovery, backup, snmp, monitor read
+	// `result`, not stdout) but must never clobber a handler that built a
+	// structured payload on purpose — #2698's customFieldWrites envelope is the
+	// first such payload on the script path. The Error-suppresses-reparse
+	// behavior is unchanged: an errored command's raw stdout must not be
+	// mistaken for a successful structured result.
+	if result.Result != nil {
+		wsResult.Result = result.Result
+	} else if result.Error == "" && result.Stdout != "" {
 		var jsonResult any
 		if err := json.Unmarshal([]byte(result.Stdout), &jsonResult); err == nil {
 			wsResult.Result = jsonResult
@@ -5775,6 +6133,20 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 }
 
 func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
+	// #3525: lifecycle commands BYPASS the worker pool. MaxConcurrentCommands
+	// clamps to a floor of 1 (config/validate.go), so a cancel submitted to the
+	// pool queues behind the very script it must stop — and once the queue is
+	// full Submit rejects it outright with "command rejected, worker pool full".
+	// These handlers never spawn long work of their own (a cancel waits at most
+	// grace + backstop), so running them off-pool cannot exhaust the host.
+	//
+	// The caller is already a per-command goroutine: script_cancel is not an
+	// ordered command, so websocket dispatchCommand gives it its own goroutine,
+	// and the heartbeat poll path spawns one explicitly.
+	if isLifecycleCommand(cmd.Type) {
+		return h.runTrackedCommand(cmd)
+	}
+
 	if h.pool == nil {
 		return h.executeCommand(cmd)
 	}
@@ -5929,6 +6301,18 @@ func (h *Heartbeat) inFlightCommandStats(now time.Time) (inFlight, overdue int) 
 		}
 	}
 	return inFlight, overdue
+}
+
+// isLifecycleCommand reports whether a command manages OTHER in-flight
+// commands and therefore must never be scheduled behind them (#3525). A cancel
+// queued behind the script it is meant to stop can only ever fire after that
+// script has already finished on its own.
+func isLifecycleCommand(cmdType string) bool {
+	switch cmdType {
+	case tools.CmdScriptCancel, tools.CmdScriptListRunning:
+		return true
+	}
+	return false
 }
 
 func isEphemeralCommand(cmdType string) bool {
@@ -6233,6 +6617,21 @@ func (h *Heartbeat) resolvePatchInstallID(ref patchCommandRef) (string, error) {
 	if provider, local, ok := splitPatchID(ref.ID); ok && h.patchMgr.HasProvider(provider) {
 		return provider + ":" + local, nil
 	}
+	// Windows Update identities are device-observed: externalID is what THIS
+	// endpoint's own scan reported — the KB article when Windows exposes one,
+	// and the raw WUA UpdateID when it does not (driver and feature updates
+	// carry no KBArticleIDs). packageID is global catalog metadata that the API
+	// fills once and never rewrites, so it can carry a selector written by a
+	// different device, in a different tenant, for a different revision. Resolve
+	// the observed identity and fall back to packageID only when this device
+	// reported no external identity at all. WUA findUpdate matches both an exact
+	// UpdateID and a KB article against this device's currently applicable
+	// updates, so either form resolves against what is installable here.
+	if strings.EqualFold(strings.TrimSpace(ref.Source), "microsoft") && h.patchMgr.HasProvider("windows-update") {
+		if local := windowsUpdateLocalID(ref.ExternalID); local != "" {
+			return "windows-update:" + local, nil
+		}
+	}
 	if provider, local, ok := splitPatchID(ref.ExternalID); ok {
 		switch provider {
 		case "microsoft", "apple", "linux", "third_party", "custom":
@@ -6264,6 +6663,50 @@ func (h *Heartbeat) resolvePatchInstallID(ref patchCommandRef) (string, error) {
 	}
 
 	return providerID + ":" + localID, nil
+}
+
+// windowsUpdateLocalID normalizes the device-observed Windows Update selector
+// carried in a patch ref's externalID. It returns "" when externalID is empty
+// or is qualified for some other provider (e.g. "chocolatey:googlechrome") so
+// that those refs keep their existing provider routing below.
+func windowsUpdateLocalID(externalID string) string {
+	value := strings.TrimSpace(externalID)
+	if value == "" {
+		return ""
+	}
+	if provider, local, ok := splitPatchID(value); ok {
+		switch strings.ToLower(strings.TrimSpace(provider)) {
+		case "microsoft", "windows-update":
+			// A three-part "source:local:extra" externalID keeps only the local
+			// identity, matching patchLocalID's existing handling of that shape.
+			value = strings.TrimSpace(local)
+			if head, _, found := strings.Cut(value, ":"); found {
+				value = strings.TrimSpace(head)
+			}
+		default:
+			return ""
+		}
+	}
+	if value == "" {
+		return ""
+	}
+	if isWindowsKBID(value) {
+		return strings.ToUpper(value)
+	}
+	return value
+}
+
+func isWindowsKBID(value string) bool {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if !strings.HasPrefix(value, "KB") || len(value) == 2 {
+		return false
+	}
+	for _, r := range value[2:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Heartbeat) providerForPatchRef(ref patchCommandRef) string {
@@ -6782,6 +7225,35 @@ func (h *Heartbeat) noteUntrustedRelease(targetVersion string) {
 	h.untrustedReleaseAt = time.Now()
 }
 
+// codeSignatureRetryCooldown bounds how often an upgrade target whose staged
+// binary failed macOS code-signature verification is retried. Like
+// untrustedReleaseRetryCooldown this is terminal-per-version but not permanent:
+// the artifact is already checksum-verified against the signed manifest, so
+// re-downloading it on the device can only reproduce the same failure, yet a
+// re-published (correctly signed) build must recover automatically. Without the
+// cooldown every macOS device in a fleet would re-download the same doomed
+// binary every ~60s — the exact storm #3544 fixed for untrusted releases.
+// Issue #3458.
+const codeSignatureRetryCooldown = 30 * time.Minute
+
+// codeSignatureBackoffActive reports whether targetVersion already failed
+// signature verification within the cooldown window. Tracked per version so a
+// NEW upgrade target is always attempted immediately.
+func (h *Heartbeat) codeSignatureBackoffActive(targetVersion string) bool {
+	h.badSignatureMu.Lock()
+	defer h.badSignatureMu.Unlock()
+	return h.badSignatureVer == targetVersion &&
+		time.Since(h.badSignatureAt) < codeSignatureRetryCooldown
+}
+
+// noteCodeSignatureFailure starts (or restarts) the cooldown for targetVersion.
+func (h *Heartbeat) noteCodeSignatureFailure(targetVersion string) {
+	h.badSignatureMu.Lock()
+	defer h.badSignatureMu.Unlock()
+	h.badSignatureVer = targetVersion
+	h.badSignatureAt = time.Now()
+}
+
 // doUpgrade contains the actual upgrade logic, called by handleUpgrade.
 func (h *Heartbeat) doUpgrade(targetVersion string) {
 	// Checked before sendUpdateStatus and before any download work: the server
@@ -6791,6 +7263,14 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	// refuse again.
 	if h.untrustedReleaseBackoffActive(targetVersion) {
 		log.Debug("upgrade skipped: server recently refused this version as untrusted; backing off",
+			"targetVersion", targetVersion)
+		return
+	}
+	// Same reason as above: the server re-sends the same upgradeTo every
+	// heartbeat, so without this gate a version whose binary cannot pass
+	// macOS code-signature verification is re-downloaded in full every cycle.
+	if h.codeSignatureBackoffActive(targetVersion) {
+		log.Debug("upgrade skipped: this version's binary recently failed macOS code signature verification; backing off",
 			"targetVersion", targetVersion)
 		return
 	}
@@ -6911,6 +7391,20 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 				"retryAfter", untrustedReleaseRetryCooldown.String())
 			return
 		}
+		// macOS refused to install the staged binary because it fails
+		// `codesign --verify`. The installed binary was never touched (the
+		// gate runs before any write), so the device keeps running the build
+		// its TCC grants are keyed to. Terminal for this target until a
+		// correctly signed artifact is published, so back off rather than
+		// re-download it every heartbeat. Issue #3458.
+		if errors.Is(err, updater.ErrCodeSignatureInvalid) {
+			h.noteCodeSignatureFailure(targetVersion)
+			log.Error("auto-update blocked: the binary published for this version fails macOS code signature verification — republish a Developer ID signed, notarized build; the agent is still running its previous, correctly signed binary",
+				"targetVersion", targetVersion,
+				"error", err.Error(),
+				"retryAfter", codeSignatureRetryCooldown.String())
+			return
+		}
 		// A download failure here may carry a *netpolicy.PolicyError, or be a
 		// *url.Error — net/http wraps EVERY transport-level failure that way
 		// (TLS handshake, connection refused/reset, timeout, EOF — not just
@@ -6930,4 +7424,23 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	// overwriting the new version in the database. Block forever so the
 	// service manager kills us.
 	select {}
+}
+
+// compiledSecurityCapabilities is the capability set THIS build implements.
+//
+// Every value here is compiled in, not a runtime toggle, and the server writes
+// them non-sticky on every beat — so a downgrade correctly reports back down
+// and each dispatch gate stops trusting a stale claim. Extracted from
+// sendHeartbeat so the declared set is directly testable: the API refuses to
+// start a remote desktop session against an agent reporting
+// revocationLeaseProtocolVersion 0, which makes a silently dropped declaration
+// a fleet-wide outage rather than a degraded feature.
+func compiledSecurityCapabilities() SecurityCapabilities {
+	return SecurityCapabilities{
+		OutboundNetworkPolicyVersion:    1,
+		ScriptSecretEnvVersion:          1,
+		PeripheralPolicyProtocolVersion: 2,
+		RollbackProtocolVersion:         1,
+		RevocationLeaseProtocolVersion:  1,
+	}
 }

@@ -115,7 +115,26 @@ export async function isUserTokenRevoked(userId: string, tokenIssuedAt?: number)
   }
 }
 
-export async function revokeAllUserTokens(userId: string): Promise<void> {
+export interface RevokeAllUserTokensOptions {
+  /**
+   * Unix seconds of the moment a REPLACEMENT session was minted for this user
+   * by the same operation that is revoking everything else (MFA enrollment,
+   * recovery-code rotation). The cutoff is clamped strictly below it so the
+   * caller cannot revoke the very token it just handed back.
+   *
+   * The default one-second grace below is not enough on its own: the
+   * replacement JWT's `iat` is stamped inside the transaction, and any stall
+   * over a second between that mint and this post-commit cleanup makes
+   * `iat <= now - 1` true — at which point `/auth/refresh` rejects the fresh
+   * refresh token as revoked and the user is signed out anyway (#4480).
+   */
+  preserveTokensIssuedAtOrAfter?: number;
+}
+
+export async function revokeAllUserTokens(
+  userId: string,
+  options?: RevokeAllUserTokensOptions,
+): Promise<void> {
   const redis = getRedis();
   if (!redis) {
     throw new Error('[token-revocation] Redis unavailable — cannot revoke user tokens');
@@ -124,7 +143,14 @@ export async function revokeAllUserTokens(userId: string): Promise<void> {
   // Subtract 1 so tokens minted in the same second as the revocation (e.g.
   // an immediate re-login after password change) are treated as valid.
   // Specific token JTI revocation still covers the exact old token.
-  const cutoff = Math.floor(Date.now() / 1000) - 1;
+  const defaultCutoff = Math.floor(Date.now() / 1000) - 1;
+  const preserveFrom = options?.preserveTokensIssuedAtOrAfter;
+  // Only ever NARROWS the cutoff — a caller can protect its own replacement
+  // token but can never extend revocation forward over sessions the default
+  // would have spared.
+  const cutoff = Number.isFinite(preserveFrom)
+    ? Math.min(defaultCutoff, (preserveFrom as number) - 1)
+    : defaultCutoff;
   try {
     await redis
       .multi()
@@ -160,6 +186,20 @@ export async function revokeAllRefreshTokenFamiliesForUser(
   });
 }
 
+// `users.passwordChangedAt` is a `timestamp` (no tz) column
+// (apps/api/src/db/schema/users.ts). postgres.js parses that offsetless wire
+// value with a bare `new Date(...)`, so the Date object Drizzle hands back
+// carries the UTC wall clock re-read as THIS PROCESS's local time — wrong by
+// exactly the host's UTC offset on any non-UTC host. A caller-supplied string
+// (e.g. an already-serialized `toISOString()` value) is not affected: it
+// carries an explicit 'Z' offset, so `new Date(string).getTime()` is already
+// correct and must NOT be re-corrected here. Same defect class as #4018; see
+// services/sso.ts's `utcMsFromOffsetlessTimestamp` for the canonical writeup
+// and testUtils/pgOffsetlessTimestamp.ts for the test-side simulation.
+function utcMsFromOffsetlessDbTimestamp(value: Date): number {
+  return value.getTime() - value.getTimezoneOffset() * 60_000;
+}
+
 export function isTokenIssuedBeforePasswordChange(
   tokenIssuedAt: number | undefined,
   passwordChangedAt: Date | string | null | undefined
@@ -167,7 +207,7 @@ export function isTokenIssuedBeforePasswordChange(
   if (!passwordChangedAt) return false;
 
   const changedAtMs = passwordChangedAt instanceof Date
-    ? passwordChangedAt.getTime()
+    ? utcMsFromOffsetlessDbTimestamp(passwordChangedAt)
     : new Date(passwordChangedAt).getTime();
   if (!Number.isFinite(changedAtMs)) return false;
 
@@ -332,57 +372,93 @@ export async function getFamilyForJti(jti: string): Promise<string | null> {
   }
 }
 
+export interface FamilyRevocationResult {
+  /** Acknowledges the expiring Redis sentinel, not durable containment. */
+  redis: 'confirmed' | 'unavailable' | 'failed';
+  /** Confirmed only after a matching row update and transaction completion. */
+  database: 'confirmed' | 'not_found' | 'failed';
+}
+
 /**
- * Atomically marks the family as revoked in both Redis (hot-path sentinel)
- * and Postgres (durable audit row). Idempotent: a second call against an
- * already-revoked family is a no-op for the PG row's first revocation
- * timestamp (uses `WHERE revoked_at IS NULL`).
- *
- * Uses `withSystemDbAccessContext` for the DB write because reuse-detection
- * runs before the user-scope is established in /refresh — and even if it
- * did run user-scoped, the system-scope path is the conservative choice
- * (it never fails RLS).
+ * Writes the hot-path sentinel and reports which of the three terminal states
+ * actually happened. `unavailable` (no client) and `failed` (the client
+ * rejected the write) are deliberately distinct: only `confirmed` means a
+ * reader will see the sentinel, and a caller that reports containment must be
+ * able to tell "we never tried" from "we tried and it did not land".
  */
-export async function revokeFamily(familyId: string, reason: string): Promise<void> {
+async function writeFamilyRevocationSentinel(
+  familyId: string,
+): Promise<FamilyRevocationResult['redis']> {
+  const redis = getRedis();
+  if (!redis) {
+    console.error('[token-revocation] Redis unavailable while revoking family — sentinel not published');
+    return 'unavailable';
+  }
+  try {
+    await redis.setex(
+      getRevokedFamilyKey(familyId),
+      REFRESH_FAMILY_REVOCATION_TTL_SECONDS,
+      '1'
+    );
+    return 'confirmed';
+  } catch (error) {
+    console.error('[token-revocation] Failed to write family-revoked sentinel to Redis:', error);
+    return 'failed';
+  }
+}
+
+/**
+ * Publish only the hot-path family sentinel after a caller's durable transaction
+ * commits. Returns true only when the sentinel was actually accepted by Redis.
+ */
+export async function publishFamilyRevocationSentinel(familyId: string): Promise<boolean> {
+  return await writeFamilyRevocationSentinel(familyId) === 'confirmed';
+}
+
+/**
+ * Independently attempts the Redis sentinel and durable Postgres revocation.
+ * These writes are not atomic across stores, and failures are not retried here.
+ * Callers must report the returned acknowledgements, not assume containment.
+ * COALESCE preserves the first revocation timestamp/reason on repeated calls.
+ *
+ * The family must come from verified authority (the signed refresh JWT at the
+ * current caller). A fresh system transaction supports pre-auth revocation and
+ * ensures confirmation does not depend on a later ambient transaction commit —
+ * without `runOutsideDbContext` a caller inside a request transaction that
+ * later rolls back would be told the revocation was durable when it was not.
+ */
+export async function revokeFamily(familyId: string, reason: string): Promise<FamilyRevocationResult> {
   const truncatedReason = reason.length > 64 ? reason.slice(0, 64) : reason;
+  const result: FamilyRevocationResult = { redis: 'unavailable', database: 'failed' };
 
   // Best-effort Redis flip first. Failure here is logged but the DB update
-  // still goes through — fail-closed semantics live in isFamilyRevoked,
+  // is still attempted — fail-closed lookup semantics live in isFamilyRevoked,
   // which prefers Redis but falls back to PG on Redis miss.
-  const redis = getRedis();
-  if (redis) {
-    try {
-      await redis.setex(
-        getRevokedFamilyKey(familyId),
-        REFRESH_FAMILY_REVOCATION_TTL_SECONDS,
-        '1'
-      );
-    } catch (error) {
-      console.error('[token-revocation] Failed to write family-revoked sentinel to Redis:', error);
-    }
-  } else {
-    console.error('[token-revocation] Redis unavailable while revoking family — DB row will still be updated');
-  }
+  result.redis = await writeFamilyRevocationSentinel(familyId);
 
-  // Durable audit: stamp revoked_at on the PG row (idempotent — only the
-  // first revocation wins). Bypass RLS via system scope so the call works
-  // regardless of which DB context (if any) is on the stack.
+  // The durable row is also an enforcement source on Redis miss/eviction.
+  // A missing row is fail-closed at lookup, but is not a confirmed write.
   try {
-    await dbModule.withSystemDbAccessContext(async () => {
-      await dbModule.db
+    const rows = await dbModule.runOutsideDbContext(() => dbModule.withSystemDbAccessContext(async () =>
+      dbModule.db
         .update(refreshTokenFamilies)
         .set({
           revokedAt: sql`COALESCE(revoked_at, now())`,
           revokedReason: sql`COALESCE(revoked_reason, ${truncatedReason})`,
         })
-        .where(eq(refreshTokenFamilies.familyId, familyId));
-    });
+        .where(eq(refreshTokenFamilies.familyId, familyId))
+        .returning({ familyId: refreshTokenFamilies.familyId }),
+    ));
+    result.database = rows.length > 0 ? 'confirmed' : 'not_found';
+    if (result.database === 'not_found') {
+      console.error('[token-revocation] No matching family row; durable revocation unconfirmed');
+    }
   } catch (error) {
-    // The Redis sentinel above is what gates /refresh; the DB row is a
-    // durable audit. If Redis flipped but PG didn't, we still block the
-    // attacker — we just lose the audit trail.
+    // Redis-only acknowledgement blocks while the sentinel survives. It is
+    // not durable confirmation, and neither-store failure leaves no retry.
     console.error('[token-revocation] Failed to persist family revocation to DB:', error);
   }
+  return result;
 }
 
 /**

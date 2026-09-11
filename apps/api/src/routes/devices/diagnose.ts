@@ -53,8 +53,14 @@ diagnoseRoutes.post(
         return c.json({ error: 'Failed to parse screenshot data' }, 500);
       }
 
-      // Gather device context in parallel
-      const [hardware, recentMetrics, activeAlerts] = await Promise.all([
+      // Gather device context in parallel.
+      // device_metrics' throughput columns are bigint, so Drizzle hands back
+      // native BigInt values that JSON.stringify cannot serialise — c.json()
+      // would throw and collapse the whole diagnosis into a 500. Project the
+      // snapshot columns explicitly and widen the bigint rates to number.
+      // Cumulative byte/ops counters and per-interface stats remain available
+      // on GET /devices/:id, which already converts them (see core.ts).
+      const [hardware, recentMetricsRaw, activeAlerts] = await Promise.all([
         db.select({
           cpuModel: deviceHardware.cpuModel,
           cpuCores: deviceHardware.cpuCores,
@@ -62,7 +68,20 @@ diagnoseRoutes.post(
           diskTotalGb: deviceHardware.diskTotalGb,
           gpuModel: deviceHardware.gpuModel,
         }).from(deviceHardware).where(eq(deviceHardware.deviceId, deviceId)).limit(1),
-        db.select().from(deviceMetrics)
+        db.select({
+          timestamp: deviceMetrics.timestamp,
+          cpuPercent: deviceMetrics.cpuPercent,
+          ramPercent: deviceMetrics.ramPercent,
+          ramUsedMb: deviceMetrics.ramUsedMb,
+          diskPercent: deviceMetrics.diskPercent,
+          diskUsedGb: deviceMetrics.diskUsedGb,
+          diskActivityAvailable: deviceMetrics.diskActivityAvailable,
+          processCount: deviceMetrics.processCount,
+          diskReadBps: deviceMetrics.diskReadBps,
+          diskWriteBps: deviceMetrics.diskWriteBps,
+          bandwidthInBps: deviceMetrics.bandwidthInBps,
+          bandwidthOutBps: deviceMetrics.bandwidthOutBps,
+        }).from(deviceMetrics)
           .where(eq(deviceMetrics.deviceId, deviceId))
           .orderBy(desc(deviceMetrics.timestamp))
           .limit(3),
@@ -81,6 +100,15 @@ diagnoseRoutes.post(
           .orderBy(desc(alerts.triggeredAt))
           .limit(5),
       ]);
+
+      // Convert BigInt fields to numbers for JSON serialization
+      const recentMetrics = recentMetricsRaw.map(m => ({
+        ...m,
+        diskReadBps: m.diskReadBps != null ? Number(m.diskReadBps) : null,
+        diskWriteBps: m.diskWriteBps != null ? Number(m.diskWriteBps) : null,
+        bandwidthInBps: m.bandwidthInBps != null ? Number(m.bandwidthInBps) : null,
+        bandwidthOutBps: m.bandwidthOutBps != null ? Number(m.bandwidthOutBps) : null,
+      }));
 
       return c.json({
         screenshot: {

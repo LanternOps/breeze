@@ -1,13 +1,14 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { optionalJsonValidator, zValidator } from '../../lib/validation';
-import { and, eq, gte, like, sql, desc, inArray, type SQL } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { and, eq, gte, like, ne, sql, desc, inArray, type SQL } from 'drizzle-orm';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
 import { getRedis } from '../../services/redis';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
 import {
   devices,
+  deviceCommands,
   deviceHardware,
   deviceReliability,
   deviceNetwork,
@@ -17,9 +18,10 @@ import {
   sites,
   enrollmentKeys,
   organizations,
-  partners,
   users,
 } from '../../db/schema';
+import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
+import { propagateCancelledDeviceCommands } from '../../services/commandCancelPropagation';
 import {
   authMiddleware,
   isInteractiveUserSession,
@@ -33,7 +35,7 @@ import {
   getPagination,
   getDeviceWithOrgAndSiteCheck,
   SITE_ACCESS_DENIED,
-  stripSensitiveDeviceFields,
+  projectPublicDevice,
 } from './helpers';
 import { listDevicesSchema, updateDeviceSchema, decommissionDeviceSchema } from './schemas';
 import {
@@ -50,8 +52,11 @@ import {
   type DevicesSortKey,
 } from './cursor';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
-import { deleteDeviceCascade } from '../../services/deviceDeletion';
+import {
+  purgeRemovedDevice,
+  restoreRemovedDevice,
+  DeviceLifecycleError,
+} from '../../services/deviceLifecycle';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 import {
   resolveRemoteAccessLaunch,
@@ -60,13 +65,18 @@ import {
   type RemoteAccessLaunchAvailability,
   type RemoteAccessLaunchSkipReason,
 } from '../../services/remoteAccessLauncher';
+import { readPartnerRemoteAccessSettings } from '../../services/remoteAccessProviders';
 import { captureException } from '../../services/sentry';
-import type { InheritableRemoteAccessSettings, PartnerSettings } from '@breeze/shared';
+import type { InheritableRemoteAccessSettings } from '@breeze/shared';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
-import { sendCommandToAgent, isAgentConnected, disconnectAgent } from '../agentWs';
+import {
+  disconnectAgent,
+  disconnectAgentCredentialGeneration,
+  publishAgentCredentialRevocation,
+} from '../agentWs';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { queueDeviceUninstall, releaseDeviceRemoveReason } from '../../services/deviceUninstallDrain';
-import { CommandTypes } from '../../services/commandQueue';
+import { queueDeviceUninstall } from '../../services/deviceUninstallDrain';
+import { getDeviceUninstallStatus } from '../../services/deviceUninstallState';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
 import { assertTtlWithinCap } from '../../services/enrollmentDefaults';
 import {
@@ -75,7 +85,10 @@ import {
   withExtensionDeviceOrgMoveDelete,
 } from '../../extensions/tenancyRegistry';
 import { pgErrorCode, pgErrorNode } from '../../utils/pgErrors';
+import { validateCustomFieldMap, INVALID_CUSTOM_FIELD_VALUE_MESSAGE } from '../../services/customFields/validateValueMap';
+import { persistDeviceCustomFieldValues, type CustomFieldValueWrite } from '../../services/customFields/queries';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
+import { requireCapability } from '../../services/partnerTrust';
 
 
 /**
@@ -85,6 +98,16 @@ import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 export const DEVICE_LINKED_DEVICE_ID_TABLES = [
   'network_change_events',
   'discovered_assets',
+  // #4622 — a manual asset points at the device an agent was later installed
+  // on. DETACHED, never deleted: the row is hand-entered inventory (serial,
+  // asset tag, assigned contact, notes) that must outlive the device row.
+  // No DEVICE_LINK_DEPENDENT_COLUMNS entry: manual_assets declares no
+  // link-conditional CHECK constraint, so nothing else needs clearing.
+  // Deliberately absent from CORE_DEVICE_ORG_DENORMALIZED_TABLES too — it has
+  // no device_id column, so it is link-only rather than device-managed, and
+  // moveOrg.coverage.test.ts reports a listed non-device-managed table as an
+  // orphan. Its cross-org detach is hand-written in moveOrg.ts instead.
+  'manual_assets',
 ] as const;
 
 /**
@@ -150,8 +173,20 @@ export const DEVICE_LINK_DEPENDENT_COLUMNS: Readonly<Record<string, readonly str
 // detaches: it's an operator corpus that must survive device hard-delete so
 // cross-partner endpoint correlation still works after the originating
 // device is gone. Its device_id FK is declared ON DELETE SET NULL to match.
+// invoice_line_devices (#3205 W07) also detaches: the row is billing evidence
+// that must outlive the device it names — a past invoice still says which
+// devices it charged for, by hostname, after a hard delete. Its device_id FK is
+// declared ON DELETE SET NULL to match, and the table is deliberately NOT
+// append-only so this generic UPDATE loop can run as breeze_app.
+// ai_operator_tasks (#5205 W03, #5208) also detaches: an AI Operator task is
+// durable remediation history — what was attempted, on what, with what result —
+// and must outlive the device it targeted, exactly like an agent run. Its
+// device_id FK is ON DELETE SET NULL to match. Two callers stamp the reason
+// beyond the generic device_id = NULL this list drives: deviceDeletion.ts
+// ('device_deleted') and moveOrg.ts ('device_moved'); both also fence any live
+// task, because a task whose target has vanished must not keep executing.
 export const DEVICE_DETACH_DEVICE_ID_TABLES = [
-  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'support_sessions', 'tickets',
+  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'ai_operator_tasks', 'invoice_line_devices', 'support_sessions', 'tickets',
 ] as const;
 
 /**
@@ -178,6 +213,14 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * moveOrg.coverage.test.ts. Its org_id is trigger-immutable
  * (2026-09-06-a-agent-runs-org-immutable.sql).
  *
+ * ai_operator_tasks is deliberately ABSENT for the same reason (#5205 W03,
+ * #5208): AI Operator task history stays in the org that delegated the work.
+ * `org_id` is the task's immutable tenant and anchors four composite
+ * (x, org_id) FKs, so a restamp here would 23503 the moment the task has an
+ * operation, an outbox wake, a linked run or a linked intent. moveOrg detaches instead —
+ * device_id = NULL plus target_detached_at/reason and a fence of any live
+ * task. It is listed in INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
+ *
  * ai_unattended_exposure is deliberately ABSENT too (wave 5a, #3827): it has
  * an org_id column but is cascade-deleted, not moved. (a) Exposure history
  * stays with the org the unattended action ran in — the same
@@ -200,19 +243,34 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * story across two orgs; (b) the same (org_id, partner_id) composite FK
  * fragility applies the moment the two orgs sit under different partners.
  * It is listed in INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
+ *
+ * invoice_line_devices is deliberately ABSENT too (#3205 W07): it has both
+ * org_id and device_id, but its org_id belongs to the INVOICE, which does not
+ * move. Re-stamping it would break the (invoice_line_id, org_id) and
+ * (invoice_id, org_id) composite FKs. It is additionally excluded from
+ * breeze_device_child_orgid_tables() by migration
+ * 2026-10-08-101300-device-move-exclude-billing-evidence.sql, because that
+ * trigger would otherwise restamp it mid-UPDATE and raise 23503 before any
+ * route code runs. moveOrg detaches device_id instead — an explicit,
+ * LOAD-BEARING statement, not a mirror of the generic loop. It is listed in
+ * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
  */
+// offline_transition_effects is intentionally absent: immutable historical source
+// ownership remains with the original org; pending alert admission rejects a moved
+// device. The DB discovery function has the same exclusion in migration000800.
 const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
-  'backup_chains', 'backup_jobs', 'backup_sla_events',
-  'backup_snapshots', 'backup_verifications',
+  'backup_chains', 'backup_jobs', 'backup_sla_events', 'backup_snapshot_retirements',
+  'backup_snapshots', 'backup_verifications', 'bare_metal_recoveries',
   'brain_device_context', 'browser_extensions', 'browser_policy_violations',
   'capacity_predictions',
   'cis_baseline_results', 'cis_remediation_actions',
   'deployment_invites',
   'device_agent_health_latest', 'device_boot_metrics', 'device_change_log', 'device_config_state',
-  'device_connections', 'device_disks', 'device_event_logs',
+  'device_connections', 'device_custom_field_values', 'device_disks', 'device_event_logs',
+  'device_external_links',
   'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
   'device_filesystem_snapshots',
   'device_group_memberships', 'device_hardware', 'device_ip_history',
@@ -244,15 +302,53 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
 ] as const;
 
 /**
- * Registered device/org tables whose org stamp is propagated by a composite
- * foreign key on `devices(id, org_id)`. They remain in the complete registry
- * above, but move-org must not issue its ordinary app-role UPDATE against
- * them. In particular, health observations revoke UPDATE from `breeze_app` so
- * immutable evidence can only be restamped by PostgreSQL's referential action.
+ * Registered device/org tables whose org stamp is propagated by some OTHER
+ * privileged mechanism, so move-org must NOT also issue its ordinary
+ * app-role UPDATE against them (breeze_app lacks UPDATE on some of these,
+ * and for the rest it would just be redundant with what already ran).
+ *
+ * Two different mechanisms populate this list:
+ *  - `agent_health_observations` / `software_inventory_observations`: a
+ *    composite FK on `devices(id, org_id)` declared `ON UPDATE CASCADE`, so
+ *    PostgreSQL's own referential action restamps them the instant the
+ *    `devices` row's org_id changes (line ~234's `.update(devices)` above)
+ *    — immutable evidence can only be restamped this way, never by a
+ *    direct app-role UPDATE.
+ *  - `agent_rollback_events` (#4371 fixup): breeze_app has UPDATE revoked
+ *    entirely (see ensureAppRole.ts's writer-path matrix), so restamping it
+ *    the ordinary way here would 42501. It does NOT have its own `ON
+ *    UPDATE CASCADE` FK (only `ON DELETE CASCADE` — ON UPDATE defaults to
+ *    NO ACTION, so it must actually be re-tenanted, not just left alone).
+ *    That happens via `breeze_cascade_device_org_id()` (migrations/
+ *    2026-05-18-device-child-orgid-cascade.sql) instead: a SECURITY
+ *    DEFINER trigger on `devices` (AFTER UPDATE OF org_id) that discovers
+ *    every ordinary table with both a uuid `device_id` and `org_id` column
+ *    and restamps it under the function owner's privileges, bypassing
+ *    breeze_app's revoke the same way FK actions do. It fires as a row
+ *    trigger on the SAME `.update(devices)` statement above, so by the
+ *    time this loop runs, agent_rollback_events.org_id is already correct
+ *    — verified against real Postgres:
+ *    `SELECT * FROM breeze_device_child_orgid_tables()` includes it.
+ *    (`pam_actuation_results` is deliberately EXCLUDED from that same
+ *    discovery function — migrations/2026-09-17-pam-device-move-guard.sql
+ *    — because a device with PAM history cannot move orgs at all; see
+ *    devices_pam_history_move_guard / PamDeviceMoveBlockedError below.)
+ *  - `peripheral_policy_delivery_events` (#4806 fixup): same shape as
+ *    `agent_rollback_events` above — breeze_app now has UPDATE revoked
+ *    entirely (see ensureAppRole.ts's writer-path matrix), and the table
+ *    has a uuid `device_id` + `org_id` pair but no `ON UPDATE CASCADE` FK,
+ *    so `breeze_cascade_device_org_id()`'s auto-discovery restamps it
+ *    instead — verified the same way, via `breeze_device_child_orgid_
+ *    tables()`. Before #4806, breeze_app kept a real UPDATE grant on this
+ *    table specifically so this loop's statement could restamp it; that
+ *    grant is what the fixup revoked, since the cascade trigger already
+ *    made the app-level UPDATE redundant.
  */
 export const DEVICE_ORG_FK_CASCADE_TABLES: readonly string[] = [
   'agent_health_observations',
   'software_inventory_observations',
+  'agent_rollback_events',
+  'peripheral_policy_delivery_events',
 ];
 
 export function getDeviceOrgDenormalizedTables(): readonly string[] {
@@ -281,8 +377,78 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = CORE_DEVICE_ORG_DENORMALIZED_TABLE
  * every entry exists with org_id but without device_id, so a future table
  * can't silently skip both paths. The dedicated statements themselves are
  * covered by behavior tests in moveOrg.test.ts.
+ *
+ * ORDER IS LOAD-BEARING, not cosmetic (#4657). `moveTicketOrg`
+ * (services/ticketService.ts) re-stamps these same tables `WHERE ticket_id`,
+ * and its rows overlap this path's — so both movers must take the locks in
+ * one order or a concurrent ticket-move and device-move deadlock with 40P01.
+ * That order is stated once, with its rationale, in
+ * services/ticketOrgMoveLockOrder.ts; this list must match it, and
+ * ticketOrgMoveLockOrder.test.ts fails if it drifts. moveOrg.test.ts pins the
+ * hand-written UPDATEs in moveOrg.ts to this array's order in turn, so the
+ * statements cannot drift from the list either.
  */
-export const CUSTOM_ORG_REWRITE_TABLES = ['ticket_alert_links', 'time_entries', 'ticket_parts', 'ticket_attachments'] as const;
+export const CUSTOM_ORG_REWRITE_TABLES = [
+  'time_entries',
+  'ticket_parts',
+  'ticket_alert_links',
+  'ticket_outbox',
+  'ticket_attachments',
+  'ticket_email_links',
+] as const;
+
+/**
+ * Alert-axis sibling of {@link CUSTOM_ORG_REWRITE_TABLES} (#4867): tables that
+ * denormalize `org_id` and hang off `alerts`, but have NO `device_id` column —
+ * so the generic {@link getDeviceOrgDenormalizedTables} loop in moveOrg.ts
+ * (which keys on `WHERE device_id = ...`) cannot reach them, and neither can
+ * the DB-side `breeze_cascade_device_org_id()` trigger, whose
+ * `breeze_device_child_orgid_tables()` discovery finds tables BY that same
+ * device_id column. Each gets a dedicated hand-written UPDATE inside the
+ * move-org transaction, keyed on the alert (or, for a group-level verdict, on
+ * the correlation group).
+ *
+ * Leaving them behind is not a neutral no-op: every alert-facing reader pins
+ * these rows to the ALERT's own org — `hideAiNoiseCondition` and
+ * `correlationMetadataCondition` (routes/alerts/alerts.ts), plus
+ * `latestVerdictsForAlerts` / `latestVerdictForGroup`
+ * (services/aiAgents/alertVerdicts.ts) — so a row still stamped with the
+ * source org is invisible to the org that now owns the alert, and that alert
+ * permanently loses its AI-noise suppression and correlation badge. Nothing
+ * regenerates them: the verdict scheduler is event-driven off `alert.triggered`
+ * (jobs/alertVerdictScheduler.ts) and never re-scans existing alerts.
+ *
+ * ORDER IS LOAD-BEARING — group -> member -> verdict — and, unlike the ticket
+ * list's, the primary reason is a LOCK ORDER (#5005 review). The correlation
+ * job (services/alertCorrelationGroups.ts) upserts the GROUP and then its
+ * MEMBERS on every pass; a mover that took them the other way round would form
+ * an AB-BA with a concurrent correlation pass and lose one side to 40P01.
+ * Aligning with the existing writer is the same discipline
+ * services/ticketOrgMoveLockOrder.ts encodes for the ticket axis (#4657).
+ *
+ * The data dependency runs the same way and is downstream only: the member
+ * statement reads `alert_correlation_groups.org_id` as re-stamped by the group
+ * statement, and the verdict's group leg reads that same column. Nothing reads
+ * `alert_correlation_members.org_id` — the group's "does this group still span
+ * two orgs?" guard reads `alerts.org_id` from the generic loop, never the
+ * member row's own org. (Before #5005's follow-up this comment claimed the
+ * reverse order was load-bearing for that reason; it was not.)
+ *
+ * None of the three carries a composite tenant FK, so there is no 23503
+ * ordering hazard of the kind the ticket chain above is ordered for. These
+ * statements run AFTER that chain, extending — never reordering —
+ * services/ticketOrgMoveLockOrder.ts's documented order.
+ *
+ * moveOrg.coverage.test.ts DERIVES the expected membership from the schema
+ * (org_id + no device_id + an FK path to `alerts`), so the next alert child
+ * cannot skip both paths the way these three did; moveOrg.test.ts pins the real
+ * statement sequence to this array's order.
+ */
+export const ALERT_CHILD_ORG_REWRITE_TABLES = [
+  'alert_correlation_groups',
+  'alert_correlation_members',
+  'ai_alert_verdicts',
+] as const;
 
 /**
  * Tables that are both device-id scoped AND denormalize site_id for query-perf.
@@ -309,10 +475,12 @@ export const DEVICE_SITE_DENORMALIZED_TABLES = [
  * The test in cascadeDelete.test.ts will fail CI if you forget.
  */
 const CORE_DEVICE_CASCADE_DELETE_TABLES = [
+  'bare_metal_recoveries',
+  'offline_transition_effects',
   // recovery_tokens & backup_chains FK to backup_snapshots (no cascade),
   // so delete them first, then restore_jobs → backup_snapshots → backup_jobs
   'recovery_tokens', 'backup_chains',
-  'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs',
+  'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs', 'backup_snapshot_retirements',
   // Application backup & DR
   'sql_instances', 'local_vaults', 'hyperv_vms',
   // Deployment invites (FK device_id → devices.id; no cascade)
@@ -327,10 +495,16 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
   'device_commands', 'device_connections', 'device_boot_metrics',
   'device_sessions', 'device_change_log', 'device_warranty', 'device_vulnerabilities',
+  // Durable external-system identity (#3257 W06) — FK (device_id, org_id) ->
+  // devices(id, org_id) ON DELETE CASCADE; leaf table, no children.
+  'device_external_links',
   // mTLS certificate history (Wave 5 Task 2, security remediation) — FK
   // device_id -> devices.id ON DELETE CASCADE (composite with org_id);
   // leaf table, no children.
   'device_mtls_certificates',
+  // custom-field values (#3257 W05) — FK (device_id, org_id) ->
+  // devices(id, org_id) ON DELETE CASCADE; leaf table, no children.
+  'device_custom_field_values',
   // Patches
   'device_patches', 'patch_job_results', 'patch_rollbacks',
   // Deployments & software
@@ -449,10 +623,18 @@ coreRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  requireCapability('installer_distribute'),
   optionalJsonValidator(onboardingTokenSchema),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const requestedOrgId = c.req.query('orgId');
+
+    // `requirePermission` is the sole producer of the live site ceiling. Do
+    // not silently interpret a missing middleware result as unrestricted.
+    if (!permissions) {
+      return c.json({ error: 'Permission context unavailable' }, 500);
+    }
 
     let orgId = auth.orgId ?? null;
 
@@ -472,6 +654,13 @@ coreRoutes.post(
 
     if (!orgId) {
       return c.json({ error: 'Organization ID required. Provide orgId query parameter.' }, 400);
+    }
+
+    // This convenience route chooses a site on the caller's behalf. An empty
+    // allowlist is therefore an explicit denial, not permission to fall back
+    // to an arbitrary site in the organization.
+    if (permissions.allowedSiteIds?.length === 0) {
+      return c.json({ error: 'No accessible site is available for onboarding.' }, 403);
     }
 
     // Optional caller-supplied multi-use / TTL controls (#1108). A copied CLI
@@ -500,14 +689,24 @@ coreRoutes.post(
     const capError = await assertTtlWithinCap(orgId, explicitTtlMinutes);
     if (capError) return c.json({ error: capError }, 400);
 
-    // Pick the first site in the org for the enrollment key
+    // Pick a site in the org for the enrollment key, intersecting the
+    // automatic choice with the caller's site ceiling. Partner/system callers
+    // and unrestricted organization callers have `allowedSiteIds` undefined.
     const [site] = await db
       .select({ id: sites.id })
       .from(sites)
-      .where(eq(sites.orgId, orgId))
+      .where(and(
+        eq(sites.orgId, orgId),
+        permissions.allowedSiteIds
+          ? inArray(sites.id, permissions.allowedSiteIds)
+          : undefined,
+      ))
       .limit(1);
 
     if (!site) {
+      if (permissions.allowedSiteIds) {
+        return c.json({ error: 'No accessible site is available for onboarding.' }, 403);
+      }
       return c.json({ error: 'No site found for this organization. Create a site first.' }, 400);
     }
 
@@ -762,6 +961,15 @@ coreRoutes.get(
         uptimeSeconds: devices.uptimeSeconds,
         isHeadless: devices.isHeadless,
         pendingReboot: devices.pendingReboot,
+        // Scheduled end-user restart (#3207 W5). Projected into the LIST as
+        // well as the detail response because DeviceDetails is handed the
+        // list-shaped row while its own detail fetch is still in flight — the
+        // badge would otherwise pop in a beat late on every navigation.
+        rebootScheduledAt: devices.rebootScheduledAt,
+        rebootDeadline: devices.rebootDeadline,
+        rebootSource: devices.rebootSource,
+        rebootDeferralsUsed: devices.rebootDeferralsUsed,
+        rebootMaxDeferrals: devices.rebootMaxDeferrals,
         // Collision enrollment (#2764): non-null when this row was created
         // because an agent presented a hostname that already existed in the
         // org. The list renders a "Possible duplicate" badge from it so the
@@ -940,6 +1148,13 @@ coreRoutes.get(
         watchdogStatus: d.watchdogStatus,
         mainAgentSilentSince: d.mainAgentSilentSince,
         pendingReboot: d.pendingReboot,
+        // Scheduled end-user restart (#3207 W5). All five are null until an
+        // agent that reports reboot status has actually scheduled one.
+        rebootScheduledAt: d.rebootScheduledAt ?? null,
+        rebootDeadline: d.rebootDeadline ?? null,
+        rebootSource: d.rebootSource ?? null,
+        rebootDeferralsUsed: d.rebootDeferralsUsed ?? null,
+        rebootMaxDeferrals: d.rebootMaxDeferrals ?? null,
         lastSeenAt: d.lastSeenAt,
         // Opt-in WAN/LAN IP columns (#2503). Both null-able: wanIp is null
         // until the device has made one authenticated request, lanIp until an
@@ -1127,6 +1342,19 @@ coreRoutes.get(
     // substitution) -- though `scheme_not_allowed` can only ever be
     // observed by the issuance path (POST), since detecting it requires the
     // substitution this availability check deliberately skips.
+    // What happened to the agent-uninstall this device's Remove queued
+    // (#3987 item 7). Only meaningful for a removed device, and deliberately
+    // skipped otherwise so the hot detail path is unchanged for the 99% case.
+    //
+    // Ordering is load-bearing, not incidental: `device_commands` carries no
+    // RLS (intentionally system-scoped for the agent WS path), so this read
+    // MUST sit downstream of `getDeviceWithOrgAndSiteCheck` above — which has
+    // already 403/404'd an id outside the caller's tenant or allowed sites.
+    // Pinned by core.uninstallState.test.ts.
+    const uninstall = device.status === 'decommissioned'
+      ? await getDeviceUninstallStatus(deviceId)
+      : null;
+
     let hasRemoteAccessLauncher = false;
     let remoteAccessLaunchSkipReason: RemoteAccessLaunchSkipReason | 'config_error' | null = null;
     try {
@@ -1147,7 +1375,7 @@ coreRoutes.get(
     }
 
     return c.json({
-      ...stripSensitiveDeviceFields(device),
+      ...projectPublicDevice(device),
       hardware: hardware || null,
       networkInterfaces,
       recentMetrics,
@@ -1158,6 +1386,7 @@ coreRoutes.get(
       remoteAccessPolicy,
       hasRemoteAccessLauncher,
       remoteAccessLaunchSkipReason,
+      uninstall,
     });
   }
 );
@@ -1198,35 +1427,45 @@ async function readPreferredProviderId(auth: AuthContext): Promise<string | null
  * path (POST) so they evaluate the exact same provider selection; see the
  * skew case called out in issue #3402.
  *
- * The partners table has partner-axis RLS, and the request scope is the
- * user's (organization or partner), not the partner whose settings we need.
- * We wrap the lookup in a system-scope DB context so the policy engine
- * doesn't filter the row out. This mirrors how remoteAccessPolicy.ts uses
- * systemAuth for the same reason.
+ * The partner read is DELEGATED to `readPartnerRemoteAccessSettings`
+ * (services/remoteAccessProviders.ts), which is the one place that owns the
+ * privilege escalation `partners`' partner-axis RLS requires. It is not
+ * merely deduplication: this function used to run its own copy of that join
+ * wrapped in a BARE `withSystemDbAccessContext`, which does not escalate
+ * inside a request. `withDbAccessContext` early-returns when a context store
+ * already exists (db/index.ts) and authMiddleware has already opened one, so
+ * the wrapper silently retained the CALLER's scope. For an
+ * organization-scoped caller `computeAccessiblePartnerIds` returns `[]`
+ * (middleware/auth.ts), so `breeze_has_partner_access(id)` denied every
+ * `partners` row, the join returned zero rows without raising, and both the
+ * `hasRemoteAccessLauncher` flag on GET /devices/:id and
+ * POST /:id/remote-access-launch degraded to 'no_provider_configured' for a
+ * tenant that had a provider configured (#3419).
+ *
+ * Do NOT reintroduce a local copy of this read, and do not "simplify" the
+ * delegate's `runOutsideDbContext` away — see partnerAxisRead.ts.
  */
 async function loadRemoteAccessLauncherContext(
   orgId: string,
   auth?: AuthContext,
 ): Promise<{ providers: InheritableRemoteAccessSettings | undefined; preferredProviderId: string | null }> {
-  const partnerSettings = await withSystemDbAccessContext(async () => {
-    const [partnerRow] = await db
-      .select({ settings: partners.settings })
-      .from(partners)
-      .innerJoin(organizations, eq(organizations.partnerId, partners.id))
-      .where(eq(organizations.id, orgId))
-      .limit(1);
-    return (partnerRow?.settings ?? {}) as PartnerSettings;
-  });
+  const providers = await readPartnerRemoteAccessSettings(orgId);
   const preferredProviderId = auth ? await readPreferredProviderId(auth) : null;
-  return { providers: partnerSettings.remoteAccessProviders, preferredProviderId };
+  return { providers, preferredProviderId };
 }
 
 /**
  * Availability-only check: would a launch URL resolve for this device? Never
  * decrypts the provider password or substitutes the template. This is the
  * ONLY launcher entry point GET /devices/:id should call.
+ *
+ * Exported for `remoteAccessLauncherPartnerVisibility.integration.test.ts`,
+ * which drives it against real Postgres from inside an org-scoped RLS
+ * context. That is the only kind of test that can catch #3419: every mocked
+ * suite hands the resolver whatever partner row it staged, with no RLS
+ * evaluation at all, so the pre-fix code passed all of them.
  */
-async function checkRemoteAccessLauncherAvailabilityForDevice(
+export async function checkRemoteAccessLauncherAvailabilityForDevice(
   orgId: string,
   customFields: Record<string, unknown> | null,
   auth?: AuthContext,
@@ -1264,6 +1503,7 @@ coreRoutes.post(
   // needs to match (not loosen) the existing remote-desktop session gate.
   requirePermission(PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action),
   requireMfa(),
+  requireCapability('remote_control'),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
@@ -1427,6 +1667,40 @@ coreRoutes.patch(
       }
     }
 
+    // Validate any custom-field values against their definition BEFORE
+    // building the update set — see customFieldValues.ts (PATCH
+    // /devices/:id/custom-fields) for why this must hold on both write paths.
+    // All-or-nothing per request; nothing else in this PATCH is written when
+    // a custom field fails (#3257 W04).
+    let customFieldWrites: CustomFieldValueWrite[] = [];
+    if (data.customFields !== undefined) {
+      const validation = await validateCustomFieldMap(device.orgId, device.osType, data.customFields);
+      if (!validation.ok) {
+        return c.json(
+          {
+            error: INVALID_CUSTOM_FIELD_VALUE_MESSAGE,
+            code: 'invalid-custom-field-value',
+            fields: validation.rejected,
+          },
+          400,
+        );
+      }
+      data.customFields = validation.values;
+      customFieldWrites = validation.writes;
+    }
+
+    // Values go to `device_custom_field_values`; `devices.custom_fields` is a
+    // trigger-maintained projection of that table now (#3257 W05), so this
+    // PATCH must NOT put `customFields` in its own `updates` set — the write
+    // would be reverted by the projection on the next value write and would
+    // bypass the composite device/org FK and the coherence trigger. Written
+    // BEFORE the devices UPDATE below so that statement's RETURNING already
+    // carries the rebuilt projection; the whole handler runs inside the
+    // request transaction, so a later failure rolls both back together.
+    if (customFieldWrites.length > 0) {
+      await persistDeviceCustomFieldValues(deviceId, device.orgId, customFieldWrites, 'manual');
+    }
+
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (data.displayName !== undefined) updates.displayName = data.displayName;
     if (data.siteId !== undefined) updates.siteId = data.siteId;
@@ -1435,15 +1709,10 @@ coreRoutes.patch(
       updates.deviceRole = data.deviceRole;
       updates.deviceRoleSource = 'manual';
     }
-    if (data.customFields !== undefined) {
-      // Merge with existing custom fields rather than replacing
-      const raw = device.customFields;
-      const existing: Record<string, unknown> =
-        raw !== null && typeof raw === 'object' && !Array.isArray(raw)
-          ? (raw as Record<string, unknown>)
-          : {};
-      updates.customFields = { ...existing, ...data.customFields };
-    }
+    // NOTE: no `updates.customFields` branch. Custom-field values were written
+    // to `device_custom_field_values` above; the merge-with-existing semantics
+    // this used to implement are now the upsert's, keyed on
+    // (device_id, definition_id) so only the requested keys are touched.
 
     // When the PATCH changes the device's site, the denormalized `site_id`
     // on every table in DEVICE_SITE_DENORMALIZED_TABLES must be rewritten in
@@ -1497,7 +1766,7 @@ coreRoutes.patch(
     // SR-008: never return agent/helper/watchdog token hashes or mTLS cert
     // material to the client (these are credential verifiers / lifecycle
     // metadata that belong only inside the API).
-    return c.json(updated ? stripSensitiveDeviceFields(updated) : updated);
+    return c.json(updated ? projectPublicDevice(updated) : updated);
   }
 );
 
@@ -1525,6 +1794,11 @@ coreRoutes.post(
 
     const newToken = `brz_${randomBytes(32).toString('hex')}`;
     const tokenHash = createHash('sha256').update(newToken).digest('hex');
+    const revokedTokenHashes = [
+      device.agentTokenHash,
+      device.previousTokenHash,
+      device.pendingTokenHash,
+    ].filter((hash): hash is string => typeof hash === 'string');
 
     const [updated] = await db
       .update(devices)
@@ -1546,12 +1820,29 @@ coreRoutes.post(
       .where(eq(devices.id, deviceId))
       .returning();
 
+    // The DB generation check in agentWs is cluster-authoritative; this local
+    // close is the low-latency path for a socket owned by this API instance.
+    const agentWsDisconnect = device.agentId
+      ? disconnectAgentCredentialGeneration(
+          device.agentId,
+          revokedTokenHashes,
+          'Agent credentials rotated',
+        )
+      : 'not-connected';
+    if (device.agentId && revokedTokenHashes.length > 0) {
+      void publishAgentCredentialRevocation({
+        agentId: device.agentId,
+        revokedTokenHashes,
+      });
+    }
+
     writeRouteAudit(c, {
       orgId: device.orgId,
       action: 'device.agent_token.rotate',
       resourceType: 'device',
       resourceId: updated?.id ?? deviceId,
-      resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname
+      resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname,
+      details: { agentWsDisconnect },
     });
 
     return c.json({
@@ -1603,11 +1894,76 @@ coreRoutes.delete(
         .update(devices)
         .set({
           status: 'decommissioned',
+          // #2787 item 4 — the window the `device_lifecycle` retention policy
+          // measures ("purge removed devices after N days") starts HERE.
+          // `updatedAt` cannot serve: every unrelated write to the row
+          // afterwards would push the purge date out. Cleared again on Restore.
+          decommissionedAt: new Date(),
           updatedAt: new Date()
         })
         .where(eq(devices.id, deviceId))
         .returning();
       updated = row;
+
+      // #5128 — cancel this device's ordinary queued work in the SAME
+      // transaction as the status write. `self_uninstall` is explicitly
+      // EXCLUDED: the uninstall drain's whole purpose is to survive
+      // decommission and deliver when the machine next checks in, and
+      // `queueDeviceUninstall` below may be about to write exactly such a row.
+      // Claim-time eligibility refuses to deliver ordinary work to a
+      // decommissioned device anyway; this is what stops those rows sitting
+      // `pending` until their deadline.
+      // Read id/type/payload BEFORE the erasing UPDATE: the propagation below
+      // keys on `payload.executionId`, which `terminalPayloadErasureSet()` strips.
+      const cancelledOnDecommission = await tx
+        .select({
+          id: deviceCommands.id,
+          type: deviceCommands.type,
+          payload: deviceCommands.payload,
+        })
+        .from(deviceCommands)
+        .where(
+          and(
+            eq(deviceCommands.deviceId, deviceId),
+            eq(deviceCommands.status, 'pending'),
+            ne(deviceCommands.type, 'self_uninstall'),
+          ),
+        );
+
+      const decommissionCancelledAt = new Date();
+      await tx
+        .update(deviceCommands)
+        .set({
+          status: 'cancelled',
+          completedAt: decommissionCancelledAt,
+          result: {
+            status: 'cancelled',
+            reason: 'device_decommissioned',
+            cancelledBy: 'device_decommission',
+          },
+          ...terminalPayloadErasureSet(),
+        })
+        .where(
+          and(
+            eq(deviceCommands.deviceId, deviceId),
+            eq(deviceCommands.status, 'pending'),
+            ne(deviceCommands.type, 'self_uninstall'),
+          ),
+        );
+
+      // Terminalise the OWNING records in the same transaction — otherwise a
+      // cancelled command strands its script_executions / deployment_results
+      // row `pending` forever (the command reaper only scans pending/sent
+      // COMMANDS, and this one is already terminal).
+      await propagateCancelledDeviceCommands(
+        cancelledOnDecommission.map((row) => ({
+          id: row.id,
+          type: row.type,
+          payload: row.payload as Record<string, unknown> | null,
+        })),
+        decommissionCancelledAt,
+        tx,
+      );
 
       if (uninstallAgent) {
         const queueResult = await queueDeviceUninstall(tx, deviceId, auth.user.id);
@@ -1669,7 +2025,7 @@ coreRoutes.delete(
 
     return c.json({
       success: true,
-      device: updated ? stripSensitiveDeviceFields(updated) : updated,
+      device: updated ? projectPublicDevice(updated) : updated,
       uninstallQueued,
     });
   }
@@ -1697,80 +2053,53 @@ coreRoutes.post(
       return c.json({ error: 'Only decommissioned devices can be restored' }, 400);
     }
 
-    // Release-THEN-flip, atomically, inside ONE `db.transaction` (#3986
-    // task 8 fix round 1; mirrors `queueDeviceUninstall`'s composition in
-    // DELETE /devices/:id). THE SAFETY PROPERTY IS THE TRANSACTION, not the
-    // statement order: under READ COMMITTED (the default here, and what
-    // `db.transaction` gives you — a real BEGIN/COMMIT on one connection),
-    // no other session can observe either write until both commit together.
-    // So no concurrent heartbeat can ever see "status flipped, uninstall
-    // still pending" — that combined state never exists as a committed fact
-    // regardless of which statement runs first inside the transaction.
+    // Delegated to `restoreRemovedDevice` (services/deviceLifecycle.ts) since
+    // #2787 so this route and POST /devices/bulk/restore cannot drift. The
+    // service locks the devices row FIRST (fixing the lock-order inversion
+    // this route used to have — it released the uninstall reason, which locks
+    // device_commands rows, before touching devices, opposite to the cascade's
+    // devices-first order: a textbook AB-BA 40P01) and re-checks the status
+    // under that lock, so a Remove/Restore/purge racing this one loses cleanly
+    // with a 409 instead of acting on a stale read.
     //
-    // The race this guards against: `isDeviceUninstallDraining` requires
-    // `devices.status = 'decommissioned'`; once status is anything else the
-    // device is an ordinary agent again, and a heartbeat landing in that
-    // window would claim a still-`pending` self_uninstall as an ordinary
-    // command — no type allowlist gates that path — and uninstall the
-    // machine the user just restored. The transaction is what prevents any
-    // session from ever observing that window.
+    // The 400 pre-check above stays: it is the friendly answer for the common
+    // "this device isn't removed" case. The service's NOT_REMOVED is the RACE,
+    // which is a different thing and deserves a different status.
     //
-    // Release-before-flip is kept anyway as DELIBERATE SECONDARY DEFENSE:
-    // if a future refactor splits these two writes back into separate
-    // transactions (exactly how this bug was introduced), this order still
-    // leaves the safe failure mode — a failure after the release leaves the
-    // device `decommissioned` with the uninstall already cancelled, so a
-    // retry is harmless — instead of the device-wiping one that flip-first
-    // would leave behind.
-    //
-    // `releaseDeviceRemoveReason` strips only the `device_remove` reason —
-    // a row a tenant-offboarding drain also owns stays alive for that owner
-    // — and cancels the underlying command only while it is still `pending`.
-    //
-    // A row already `sent` CANNOT be recalled here regardless of ordering:
-    // `claimPendingCommandsForDevice` (commandDispatch.ts) commits `pending
-    // → sent` before the HTTP response reaches the agent, and the agent's
-    // self-uninstall handler hands teardown to a detached helper and acks
-    // immediately (handlers_uninstall.go). Once a row is `sent` there is no
-    // safe claimed-state transition today — the real fix is an agent-side
-    // pre-teardown fence (a `begin` endpoint that CASes `sent → executing`,
-    // serialized against restore), which needs a Go agent change out of
-    // scope for this plan. Tracked as a follow-up:
+    // A row already `sent` CANNOT be recalled regardless of ordering:
+    // `claimPendingCommandsForDevice` (commandDispatch.ts) commits
+    // `pending -> sent` before the HTTP response reaches the agent, and the
+    // agent's self-uninstall handler hands teardown to a detached helper and
+    // acks immediately (handlers_uninstall.go). The real fix is an agent-side
+    // pre-teardown fence, tracked as
     // https://github.com/LanternOps/breeze/issues/3995. Restore deliberately
     // still SUCCEEDS in that case — it is a user-facing recovery action and
     // must not be wedged by a race that lasts seconds — but reports
     // `uninstallAlreadyDispatched: true` so the caller can tell the user
     // plainly the machine may already be gone and will need a reinstall.
-    let updated: typeof devices.$inferSelect | undefined;
-    let uninstallAlreadyDispatched = false;
-    await db.transaction(async (tx) => {
-      const releaseResult = await releaseDeviceRemoveReason(tx, deviceId, 'device_restored');
-      uninstallAlreadyDispatched = releaseResult.alreadyDispatched > 0;
-
-      const [row] = await tx
-        .update(devices)
-        .set({
-          status: 'offline',
-          updatedAt: new Date()
-        })
-        .where(eq(devices.id, deviceId))
-        .returning();
-      updated = row;
-    });
+    let result: Awaited<ReturnType<typeof restoreRemovedDevice>>;
+    try {
+      result = await db.transaction((tx) => restoreRemovedDevice(tx, deviceId));
+    } catch (err) {
+      if (err instanceof DeviceLifecycleError) {
+        return c.json({ error: err.message, code: err.code }, err.status);
+      }
+      throw err;
+    }
 
     writeRouteAudit(c, {
       orgId: device.orgId,
       action: 'device.restore',
       resourceType: 'device',
-      resourceId: updated?.id ?? deviceId,
-      resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname,
-      details: { uninstallAlreadyDispatched },
+      resourceId: result.device?.id ?? deviceId,
+      resourceName: result.device?.hostname ?? device.hostname,
+      details: { uninstallAlreadyDispatched: result.uninstallAlreadyDispatched },
     });
 
     return c.json({
       success: true,
-      device: updated ? stripSensitiveDeviceFields(updated) : updated,
-      uninstallAlreadyDispatched,
+      device: result.device ? projectPublicDevice(result.device) : result.device,
+      uninstallAlreadyDispatched: result.uninstallAlreadyDispatched,
     });
   }
 );
@@ -1797,38 +2126,82 @@ coreRoutes.delete(
       return c.json({ error: 'Device must be decommissioned before permanent deletion' }, 400);
     }
 
-    // #3817 — SELF_UNINSTALL is dispatched AFTER the cascade commits, further
-    // down. It used to fire here, before the transaction opened, so every
-    // rollback path below left the agent removing itself while its device row
-    // survived: an endpoint that is gone from the operator's fleet in practice
-    // but still present, still billed, and no longer reachable to fix. Declared
-    // here only because the catch branches and the audit entry all report it.
-    let uninstallSent = false;
-
     // #2138/#2308 — whether deleting this device dissolved its link group
     // (lone multiboot survivor unlinked, or a vm_host group left headless and
     // its guests unlinked). Recorded in the audit details: an unexplained
     // "why did this whole VM group un-group?" must be traceable to this event.
+    //
+    // Both facts come off the LOCKED row (`PurgeResult`), never the pre-flight
+    // `device.linkGroupId`: that copy predates the lock, and when the two
+    // disagree the audit either names the wrong group or — as it did before
+    // #2787 review — omits the whole spread while the dissolve ran anyway.
+    let linkGroupId: string | null = null;
     let linkGroupDissolved = false;
 
-    // Cascade: remove all FK-referencing records in a transaction.
-    // Uses raw SQL to cover all child tables without importing each schema.
-    // When adding new tables with device_id FK, add them here too.
+    // Delegated to `purgeRemovedDevice` (services/deviceLifecycle.ts) since
+    // #2787 — one implementation shared with POST /devices/bulk/permanent-delete
+    // and the bulk-purge worker. Two things changed here and both are load-bearing:
+    //
+    //  1. TOCTOU closed. The `status !== 'decommissioned'` check above runs
+    //     OUTSIDE this transaction and used never to be re-checked, so a
+    //     Restore committing in between was silently purged. The service takes
+    //     `devices FOR UPDATE` first and re-reads status under it; the loser
+    //     of that race now gets 409 NOT_REMOVED.
+    //  2. The best-effort WS `self_uninstall` this route used to fire after the
+    //     commit is GONE, and the route now REFUSES (409 UNINSTALL_PENDING)
+    //     while a `device_remove` uninstall is still collectable. The old
+    //     dispatch only ever reached a CONNECTED agent — and decommissioning,
+    //     a precondition of getting here, force-closes that socket — while the
+    //     cascade it followed had just deleted the device's own
+    //     `device_commands` rows, i.e. the durable uninstall (#3986) that
+    //     would have cleaned the endpoint on the agent's next check-in.
+    //     Destroying that and firing a command nobody can receive is strictly
+    //     worse than telling the operator to wait. The response therefore
+    //     drops `agentUninstallSent`/`warning`: there is nothing best-effort
+    //     left to report.
+    // #5023 wave 05 — the cascade runs in a SYSTEM db context, matching
+    // `jobs/deviceBulkPurge.ts`'s `purgeOne`. Before this wave, the cascade ran
+    // under the CALLER's tenant-scoped context (the one `withDbAccessContext`
+    // opened for this request), and `services/deviceDeletion.ts` documents that
+    // at least one cascade table (`abuse_endpoint_fingerprints`) is
+    // deliberately invisible under tenant RLS policy — so this single-device
+    // path could strand rows that bulk purge (which has always run in a system
+    // context) removes cleanly.
+    //
+    // Authorisation is unaffected and stays exactly where it is: both the
+    // `getDeviceWithOrgAndSiteCheck` chokepoint above and the decommissioned
+    // pre-check just above run BEFORE this escalation, entirely inside the
+    // ordinary tenant-scoped request context. A caller who fails either check
+    // never reaches a system-scoped connection.
+    //
+    // `runOutsideDbContext` MUST wrap `withSystemDbAccessContext`, not the
+    // other way around: this route is already inside the request's
+    // `withDbAccessContext` transaction (the auth middleware opens one for
+    // every request — #1105), and opening a second nested context without
+    // first exiting the first would pin two pooled connections for the
+    // duration of this call instead of one (CLAUDE.md's DB context helpers
+    // contract).
+    //
+    // `purgeRemovedDevice`'s own `SELECT ... devices FOR UPDATE` + status
+    // re-check still runs, now strictly BETTER than before: under system
+    // context the devices row is fully visible, so that lock actually holds. In
+    // the old tenant-scoped path, an RLS-filtered row would have silently
+    // locked nothing (see the `deviceDeletion.ts` comment on
+    // `deleteDeviceCascade`'s parent lock) — a hazard this escalation closes as
+    // a side effect, not just for the invisible child table it targets.
     try {
-      await db.transaction(async (tx) => {
-        // Shared with the Quick Support reaper's ephemeral-device purge — see
-        // services/deviceDeletion.ts for why this lives in one place.
-        await deleteDeviceCascade(tx, deviceId);
-
-        // #2138 — the deleted device's link_group_id went with its row. If it
-        // was a boot profile and the group now has a single lone survivor —
-        // or it was a vm_host group's HOST (#2308), leaving the group
-        // headless — dissolve the group.
-        if (device.linkGroupId) {
-          linkGroupDissolved = await dissolveLinkGroupIfBelowMinimum(tx, device.linkGroupId);
-        }
-      });
+      const purge = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(
+          () => db.transaction((tx) => purgeRemovedDevice(tx, deviceId, auth.allowedSiteIds)),
+          'devices.permanentDelete',
+        ),
+      );
+      linkGroupId = purge.linkGroupId;
+      linkGroupDissolved = purge.linkGroupDissolved;
     } catch (err: unknown) {
+      if (err instanceof DeviceLifecycleError) {
+        return c.json({ error: err.message, code: err.code }, err.status);
+      }
       // MUST unwrap. Drizzle wraps the postgres-js PostgresError in a
       // DrizzleQueryError whose own `.code` is undefined — the SQLSTATE lives on
       // `.cause`. Verified against live Postgres with real two-connection lock
@@ -1847,41 +2220,26 @@ coreRoutes.delete(
         const node = pgErrorNode(err);
         const detail = typeof node?.detail === 'string' ? node.detail : '';
         const constraintTable = typeof node?.table_name === 'string' ? node.table_name : undefined;
-        console.error(`[devices] FK violation during cascade delete of ${deviceId}: ${detail} (uninstallSent=${uninstallSent})`, err);
+        console.error(`[devices] FK violation during cascade delete of ${deviceId}: ${detail}`, err);
         // This catch also covers dissolveLinkGroupIfBelowMinimum, so the
         // violation is not necessarily a missing cascade-list table — say
         // "may" rather than asserting a cause we have not established.
-        //
-        // uninstallSent is necessarily false here (#3817): the dispatch sits
-        // below this try/catch, so reaching it at all means the cascade
-        // committed. Kept in the body for response-shape stability — no
-        // current consumer reads it (the web caller surfaces only
-        // `err.message`), so this is about not silently dropping a documented
-        // field, not about a distinction someone is making today.
         return c.json({
           error: `Cannot delete: device still has related records${constraintTable ? ` in ${constraintTable}` : ''}. A related table may be missing from the cascade delete list.`,
-          uninstallSent,
         }, 409);
       }
-      // 55P03 lock_not_available — the cascade bounds its wait for the devices
-      // row (services/deviceDeletion.ts) so a delete racing a long-running site
-      // move or moveOrg fails fast instead of pinning a pooled connection.
-      // Without this branch that bound would surface as a generic 500, which
-      // reads as a bug rather than the transient, retryable conflict it is.
-      //
-      // This was one of the three rollback paths (with 23503 above and the
-      // generic rethrow below) that could leave an agent uninstalling itself
-      // while its device row survived, because the dispatch ran before the
-      // transaction. Since #3817 none of them can. What is specific to THIS
-      // branch: the lock is the cascade's first statement, so a bounded lock
-      // failure rolls back having mutated nothing at all. A retry is therefore
-      // an ordinary retry, and saying more would describe damage that did not
-      // occur.
+      // 55P03 lock_not_available — the lifecycle service bounds its wait for
+      // the devices row (deviceLifecycle.ts, same 3s bound deviceDeletion.ts
+      // uses) so a delete racing a long-running site move or moveOrg fails
+      // fast instead of pinning a pooled connection. Without this branch that
+      // bound would surface as a generic 500, which reads as a bug rather than
+      // the transient, retryable conflict it is. The lock is the FIRST
+      // statement of the purge, so a bounded lock failure rolls back having
+      // mutated nothing at all and a retry is an ordinary retry.
       if (pgCode === '55P03') {
-        console.warn(`[devices] lock timeout acquiring devices row for ${deviceId}; another writer holds it (uninstallSent=${uninstallSent})`, err);
+        console.warn(`[devices] lock timeout acquiring devices row for ${deviceId}; another writer holds it`, err);
         return c.json({
           error: 'Device is busy: another operation is currently modifying it. Try again in a moment.',
-          uninstallSent,
         }, 409);
       }
       // Anything else is a server-side cascade defect, and it STAYS a 500 —
@@ -1890,55 +2248,11 @@ coreRoutes.delete(
       // identically forever. But the status code is not the reason to lose the
       // context: the global onError logs a bare `Error:` with no deviceId and,
       // in production, returns a sanitized body, so without this line there is
-      // no server-side record of WHICH device failed to delete. `uninstallSent`
-      // stays in the message even though #3817 pins it to false on this path —
-      // it is the standing assertion that the irreversible command did not
-      // escape a failed delete, and an assertion is worth something only if it
-      // is actually recorded. Rethrow unchanged so the response contract and
-      // Sentry reporting stay owned by onError.
-      console.error(`[devices] unhandled ${pgCode ?? 'non-postgres'} error during cascade delete of ${deviceId} (uninstallSent=${uninstallSent})`, err);
+      // no server-side record of WHICH device failed to delete. Rethrow
+      // unchanged so the response contract and Sentry reporting stay owned by
+      // onError.
+      console.error(`[devices] unhandled ${pgCode ?? 'non-postgres'} error during cascade delete of ${deviceId}`, err);
       throw err;
-    }
-
-    // Best-effort: send self_uninstall command if the agent is online.
-    // We don't block on this succeeding — fire and forget.
-    //
-    // #3817 — deliberately AFTER the cascade commits. SELF_UNINSTALL is
-    // irreversible, so dispatching it speculatively (as this route used to)
-    // meant any rollback above stranded a self-removing agent against a
-    // surviving device row. The cost of this ordering is the inverse race —
-    // the agent disconnecting between the commit and this send — which leaves
-    // `uninstallSent` false and puts the `warning` below in the 200 body, i.e.
-    // a manual uninstall. That is recoverable; the other direction is not.
-    // (The web caller currently discards that warning — #4368.)
-    //
-    // The delete is ALREADY COMMITTED here, so nothing in this block may throw
-    // out of the handler: a 500 now would lose the audit entry and the
-    // device-count invalidation below while the row is permanently gone, and
-    // would tell the caller nothing happened when everything did. The guard is
-    // therefore INSIDE the try — `isAgentConnected` is not a bare Map read, it
-    // asserts the process role first (agentWs.ts) and throws in the worker
-    // role. Same reasoning as the getRedis() call further down.
-    try {
-      if (device.agentId && isAgentConnected(device.agentId)) {
-        uninstallSent = sendCommandToAgent(device.agentId, {
-          id: `uninstall-${deviceId}`,
-          type: CommandTypes.SELF_UNINSTALL,
-          payload: { removeConfig: true },
-        });
-      }
-    } catch (err) {
-      // Durable, not just console: this is a post-commit failure on an
-      // irreversible operation, and a console line on a droplet is not a record
-      // anyone will find later.
-      //
-      // `err` goes in RAW. captureException takes `unknown` deliberately — it
-      // runs connectTimeoutClassifier and pgErrorCode over the value to derive
-      // its tags, so pre-wrapping a non-Error in `new Error(String(err))` would
-      // throw those away (and String() on a hostile object can itself throw,
-      // out of the very catch that exists to keep this block from escaping).
-      console.error(`[devices] best-effort self_uninstall failed for ${deviceId}:`, err);
-      captureException(err, c);
     }
 
     writeRouteAudit(c, {
@@ -1948,14 +2262,11 @@ coreRoutes.delete(
       resourceId: deviceId,
       resourceName: device.hostname ?? device.displayName ?? deviceId,
       details: {
-        uninstallCommandSent: uninstallSent,
         // #2138/#2308 — deleting a linked device can dissolve its link group
         // (and unlink every remaining member). Without this flag the audit
         // trail would show only "device deleted" while sibling devices
         // silently lost their grouping.
-        ...(device.linkGroupId
-          ? { linkGroupId: device.linkGroupId, linkGroupDissolved }
-          : {}),
+        ...(linkGroupId ? { linkGroupId, linkGroupDissolved } : {}),
       }
     });
 
@@ -1971,12 +2282,6 @@ coreRoutes.delete(
       console.error('[devices] device-count cache invalidation failed after delete', err);
     }
 
-    return c.json({
-      success: true,
-      agentUninstallSent: uninstallSent,
-      ...(!uninstallSent && device.agentId && {
-        warning: 'The agent could not be reached for remote uninstall. You may need to manually remove it from the endpoint.',
-      }),
-    });
+    return c.json({ success: true });
   }
 );

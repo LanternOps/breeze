@@ -1,456 +1,49 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// Network device detail page (route `/devices/network/:id`): owns page-level
+// state (tab, type-editor, unlink) and composes the presentational/data
+// modules in `./networkDevice/` — kept thin so each concern stays reviewable
+// on its own.
+
+import { useCallback, useEffect, useState } from 'react';
 import { useHashState } from '@/lib/useHashState';
-import { ArrowLeft, Globe, ExternalLink, Wifi, WifiOff } from 'lucide-react';
+import { Activity, LayoutGrid } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
-import { runAction, ActionError } from '../../lib/runAction';
+import { runAction } from '../../lib/runAction';
 import { isManualLink } from '../discovery/networkTypes';
-import { extractApiError } from '../../lib/apiError';
 import { navigateTo } from '@/lib/navigation';
-import { formatDateTime } from '@/lib/dateTimeFormat';
 import Breadcrumbs from '../layout/Breadcrumbs';
-import { formatNumber } from '@/lib/i18n/format';
-import { asList } from '@/lib/asList';
-import { useClickOutside } from '../../hooks/useClickOutside';
-import { useEscapeClose } from '../../hooks/useEscapeClose';
-import { buildRemoteProxyPageUrl } from '@/lib/remoteTunnelUrls';
-import {
-  mapAsset,
-  typeConfig,
-  approvalStatusConfig,
-  type ApiDiscoveryAsset,
-  type DiscoveredAsset,
-  type DiscoveredAssetType,
-} from '../discovery/DiscoveredAssetList';
-
-type NetworkDeviceDetailPageProps = {
-  assetId: string;
-};
-
-// Extra fields the single-asset endpoint (`GET /discovery/assets/:id`) returns
-// on top of what `mapAsset` normalizes for the list. Kept local so we read the
-// monitoring/identity extras without forking the shared mapper.
-type AssetDetailExtras = {
-  model?: string | null;
-  netbiosName?: string | null;
-  siteId?: string | null;
-  firstSeenAt?: string | null;
-  snmpMonitoringEnabled?: boolean;
-  networkMonitoringEnabled?: boolean;
-  // The agent device that ran this asset's last discovery scan (or null).
-  // This is the proxy bridge default — deliberately separate from
-  // `linkedDeviceId`, which is an identity link and would be a loopback if
-  // used to bridge a proxy connection to the asset it IS.
-  suggestedBridgeDeviceId?: string | null;
-  // Set by a manual unlink (#3261 Task 2); cleared by any manual link. Only
-  // meaningful while unlinked — explains why auto-linking hasn't re-found
-  // this asset instead of leaving "Not linked" unexplained.
-  autoLinkSuppressedAt?: string | null;
-};
-
-type DeviceOption = { id: string; name: string; online: boolean };
-
-// Ports/services that plausibly serve a browsable web UI. Mirrors the design
-// spec's list (Architecture D.1): common HTTP(S) ports plus anything whose
-// discovered service name looks like http/https.
-const WEB_PORTS = new Set([80, 443, 8080, 8443, 8006, 9443]);
-
-function isWebPort(port: number, service?: string): boolean {
-  if (WEB_PORTS.has(port)) return true;
-  return !!service && /https?/i.test(service);
-}
-
-function defaultSchemeForPort(port: number, service?: string): 'http' | 'https' {
-  if (port === 443 || port === 8443 || port === 9443) return 'https';
-  if (service && /https/i.test(service)) return 'https';
-  return 'http';
-}
-
-// Friendly labels for the scalar SNMP system OIDs the discovery scan collects.
-const SNMP_FIELD_LABELS: Record<string, string> = {
-  sysName: 'System Name',
-  sysDescr: 'Description',
-  sysObjectId: 'Object ID',
-};
-
-function snmpFieldLabel(key: string): string {
-  return SNMP_FIELD_LABELS[key] ?? key;
-}
-
-function formatPing(ms?: number | null): string {
-  if (ms == null) return '—';
-  if (ms < 1) return '<1 ms';
-  return `${formatNumber(ms, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ms`;
-}
-
-function formatTimestamp(value?: string | null): string {
-  if (!value) return '—';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return formatDateTime(date);
-}
-
-const VALID_TABS = ['overview', 'monitoring'] as const;
-type Tab = (typeof VALID_TABS)[number];
-
-function Section({
-  title,
-  children,
-  testId,
-}: {
-  title: string;
-  children: React.ReactNode;
-  testId?: string;
-}) {
-  return (
-    <div className="rounded-md border bg-muted/30 p-4" data-testid={testId}>
-      <h3 className="text-sm font-semibold">{title}</h3>
-      <div className="mt-3">{children}</div>
-    </div>
-  );
-}
-
-function Field({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div>
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="font-medium break-words">{value ?? '—'}</dd>
-    </div>
-  );
-}
-
-// Per-port "Open Web UI" popover: pick a bridge agent, scheme, and optional
-// self-signed allowance, then POST /tunnels/proxy-connect and open the result
-// in a new tab. Bridge default is `suggestedBridgeDeviceId` (the discovering
-// agent) — NEVER `linkedDeviceId` (identity link), which would be a loopback.
-function ProxyConnectPopover({
-  assetId,
-  assetIp,
-  port,
-  service,
-  suggestedBridgeDeviceId,
-  devices,
-}: {
-  assetId: string;
-  assetIp: string;
-  port: number;
-  service?: string;
-  suggestedBridgeDeviceId: string | null;
-  devices: DeviceOption[];
-}) {
-  const { t } = useTranslation('devices');
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  useClickOutside(open, containerRef, () => setOpen(false));
-  useEscapeClose(open, () => setOpen(false));
-
-  const onlineDevices = useMemo(() => devices.filter((d) => d.online), [devices]);
-
-  // Prefer the discovering agent when it's online; else the first online
-  // device (same fallback the old AssetDetailModal proxy section used).
-  const defaultDeviceId = useMemo(() => {
-    if (suggestedBridgeDeviceId && onlineDevices.some((d) => d.id === suggestedBridgeDeviceId)) {
-      return suggestedBridgeDeviceId;
-    }
-    return onlineDevices[0]?.id ?? '';
-  }, [suggestedBridgeDeviceId, onlineDevices]);
-
-  const [deviceId, setDeviceId] = useState(defaultDeviceId);
-  // The device list loads async after mount, so the real default often
-  // arrives after this component's initial render — sync once it does.
-  useEffect(() => {
-    setDeviceId(defaultDeviceId);
-  }, [defaultDeviceId]);
-
-  const [scheme, setScheme] = useState<'http' | 'https'>(() => defaultSchemeForPort(port, service));
-  const [skipTlsVerify, setSkipTlsVerify] = useState(false);
-  const [connecting, setConnecting] = useState(false);
-  const [inlineError, setInlineError] = useState<string>();
-
-  const handleConnect = useCallback(async () => {
-    if (!deviceId) return;
-    setConnecting(true);
-    setInlineError(undefined);
-    try {
-      const data = await runAction<{ tunnel: { id: string } }>({
-        request: () =>
-          fetchWithAuth('/tunnels/proxy-connect', {
-            method: 'POST',
-            body: JSON.stringify({
-              deviceId,
-              discoveredAssetId: assetId,
-              port,
-              scheme,
-              skipTlsVerify: scheme === 'https' ? skipTlsVerify : false,
-            }),
-          }),
-        errorFallback: t('networkDeviceDetailPage.toasts.proxyConnectFailed'),
-        friendly: (code) => {
-          if (code === 'PROXY_TARGET_DISABLED') return t('networkDeviceDetailPage.proxyErrors.disabled');
-          if (code === 'MFA_REQUIRED') return t('networkDeviceDetailPage.proxyErrors.mfaRequired');
-          return undefined;
-        },
-      });
-      setOpen(false);
-      window.open(buildRemoteProxyPageUrl(data.tunnel.id, `${assetIp}:${port}`, assetId), '_blank');
-    } catch (err) {
-      // runAction already toasted a generic/friendly message; surface an
-      // inline message too for the two codes that need a clear, sticky
-      // explanation right next to the control that caused them.
-      if (err instanceof ActionError && err.code === 'PROXY_TARGET_DISABLED') {
-        setInlineError(t('networkDeviceDetailPage.proxyErrors.disabled'));
-      } else if (err instanceof ActionError && err.code === 'MFA_REQUIRED') {
-        setInlineError(t('networkDeviceDetailPage.proxyErrors.mfaRequired'));
-      }
-    } finally {
-      setConnecting(false);
-    }
-  }, [deviceId, assetId, assetIp, port, scheme, skipTlsVerify, t]);
-
-  return (
-    <div className="relative inline-block" ref={containerRef}>
-      <button
-        type="button"
-        data-testid={`network-detail-port-proxy-${port}`}
-        aria-label={t('networkDeviceDetailPage.openWebUi')}
-        title={t('networkDeviceDetailPage.openWebUi')}
-        onClick={() => setOpen((o) => !o)}
-        className="inline-flex items-center text-muted-foreground hover:text-foreground"
-      >
-        <ExternalLink className="h-3 w-3" />
-      </button>
-
-      {open && (
-        <div
-          className="absolute left-0 top-6 z-30 w-72 rounded-md border bg-popover p-3 text-left shadow-lg"
-          role="dialog"
-          data-testid={`network-detail-proxy-popover-${port}`}
-        >
-          <div className="mb-2 text-sm font-semibold">
-            {t('discovery:proxyConnect.title', { target: `${assetIp}:${port}` })}
-          </div>
-
-          {onlineDevices.length === 0 ? (
-            <p className="text-xs text-amber-600 dark:text-amber-400">
-              {t('networkDeviceDetailPage.proxyErrors.noOnlineAgent', { ip: assetIp })}
-            </p>
-          ) : (
-            <div className="space-y-2">
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">
-                  {t('discovery:proxyConnect.throughAgent')}
-                </label>
-                <select
-                  data-testid="proxy-popover-bridge-select"
-                  value={deviceId}
-                  onChange={(e) => setDeviceId(e.target.value)}
-                  className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-                >
-                  {onlineDevices.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <select
-                data-testid="proxy-popover-scheme-select"
-                value={scheme}
-                onChange={(e) => {
-                  const next = e.target.value as 'http' | 'https';
-                  setScheme(next);
-                  if (next !== 'https') setSkipTlsVerify(false);
-                }}
-                className="h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-              >
-                <option value="http">HTTP</option>
-                <option value="https">HTTPS</option>
-              </select>
-
-              {scheme === 'https' && (
-                <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={skipTlsVerify}
-                    onChange={(e) => setSkipTlsVerify(e.target.checked)}
-                    data-testid="proxy-popover-allow-self-signed"
-                  />
-                  {t('discovery:proxyConnect.allowSelfSigned')}
-                </label>
-              )}
-
-              <button
-                type="button"
-                data-testid="proxy-popover-connect"
-                onClick={() => void handleConnect()}
-                disabled={connecting || !deviceId}
-                className="mt-1 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-70"
-              >
-                {connecting ? t('networkDeviceDetailPage.connecting') : t('discovery:proxyConnect.connect')}
-              </button>
-            </div>
-          )}
-
-          {inlineError && (
-            <div className="mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
-              {inlineError}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// The one manual-override control this surface adds beyond Unlink: for the
-// case auto-link can't handle (cross-subnet discovery — no MAC visible, IPs
-// don't match), let a human assert the identity link directly. Site-scoped
-// on purpose: the link route requires same-org AND same-site
-// (discovery.ts:1458-1464), so an unscoped device list would offer choices
-// guaranteed to 403.
-function LinkManuallyControl({
-  assetId,
-  siteId,
-  onLinked,
-}: {
-  assetId: string;
-  siteId: string | null;
-  onLinked: () => void | Promise<void>;
-}) {
-  const { t } = useTranslation('devices');
-  const [open, setOpen] = useState(false);
-  const [devices, setDevices] = useState<DeviceOption[]>([]);
-  const [loadingDevices, setLoadingDevices] = useState(false);
-  const [deviceId, setDeviceId] = useState('');
-  const [linking, setLinking] = useState(false);
-  const [error, setError] = useState<string>();
-
-  const openPicker = useCallback(async () => {
-    setOpen(true);
-    setError(undefined);
-    if (!siteId) {
-      setError(t('networkDeviceDetailPage.linkManuallyErrors.noSite'));
-      return;
-    }
-    setLoadingDevices(true);
-    try {
-      const response = await fetchWithAuth(`/devices?siteId=${encodeURIComponent(siteId)}`);
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        setError(extractApiError(body, t('networkDeviceDetailPage.linkManuallyErrors.loadDevices')));
-        return;
-      }
-      const data = await response.json();
-      const raw: any[] = asList(data, 'devices');
-      setDevices(
-        raw.map((d: any) => ({
-          id: d.id,
-          name: d.displayName || d.hostname || d.id,
-          online: d.status === 'online',
-        })),
-      );
-    } catch {
-      setError(t('networkDeviceDetailPage.linkManuallyErrors.loadDevices'));
-    } finally {
-      setLoadingDevices(false);
-    }
-  }, [siteId, t]);
-
-  const handleLink = useCallback(async () => {
-    if (!deviceId) return;
-    setLinking(true);
-    setError(undefined);
-    try {
-      await runAction({
-        request: () =>
-          fetchWithAuth(`/discovery/assets/${assetId}/link`, {
-            method: 'POST',
-            body: JSON.stringify({ deviceId }),
-          }),
-        successMessage: t('networkDeviceDetailPage.toasts.linked'),
-        errorFallback: t('networkDeviceDetailPage.toasts.linkFailed'),
-      });
-      setOpen(false);
-      setDeviceId('');
-      await onLinked();
-    } catch (err) {
-      // runAction's message is already extractApiError's output — reuse it
-      // for the inline error instead of a second, possibly different string.
-      setError(err instanceof ActionError ? err.message : t('networkDeviceDetailPage.toasts.linkFailed'));
-    } finally {
-      setLinking(false);
-    }
-  }, [deviceId, assetId, onLinked, t]);
-
-  if (!open) {
-    return (
-      <button
-        type="button"
-        data-testid="network-detail-link-manually"
-        onClick={() => void openPicker()}
-        className="text-xs text-primary hover:underline"
-      >
-        {t('networkDeviceDetailPage.linkManually')}
-      </button>
-    );
-  }
-
-  return (
-    <div className="mt-1 space-y-2 rounded-md border bg-background p-3" data-testid="network-detail-link-manually-picker">
-      {loadingDevices ? (
-        <p className="text-xs text-muted-foreground">{t('common:states.loading')}</p>
-      ) : devices.length === 0 && !error ? (
-        <p className="text-xs text-muted-foreground">{t('networkDeviceDetailPage.linkManuallyErrors.noDevices')}</p>
-      ) : (
-        <select
-          data-testid="network-detail-link-manually-select"
-          value={deviceId}
-          onChange={(e) => setDeviceId(e.target.value)}
-          className="h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-        >
-          <option value="">{t('networkDeviceDetailPage.linkManuallySelectDevice')}</option>
-          {devices.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.name}
-            </option>
-          ))}
-        </select>
-      )}
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          data-testid="network-detail-link-manually-submit"
-          onClick={() => void handleLink()}
-          disabled={linking || !deviceId}
-          className="h-7 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
-        >
-          {linking ? t('networkDeviceDetailPage.linkManuallyLinking') : t('common:actions.save')}
-        </button>
-        <button
-          type="button"
-          onClick={() => { setOpen(false); setError(undefined); }}
-          disabled={linking}
-          className="text-xs text-muted-foreground hover:text-foreground"
-        >
-          {t('common:actions.cancel')}
-        </button>
-      </div>
-      {error && (
-        <p className="text-xs text-destructive" data-testid="network-detail-link-manually-error">
-          {error}
-        </p>
-      )}
-    </div>
-  );
-}
+import { OverflowTabs, overflowPanelId, type OverflowTab } from '../shared/OverflowTabs';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { assetTypeIcons } from '../discovery/assetTypeIcon';
+import { isWebPort, sortPorts } from '../discovery/portCatalog';
+import { typeConfig, approvalStatusConfig, type DiscoveredAssetType } from '../discovery/DiscoveredAssetList';
+import type { NetworkDeviceDetailPageProps, Tab } from './networkDevice/types';
+import { VALID_TABS } from './networkDevice/types';
+import { formatTimestamp } from './networkDevice/format';
+import { Section, Field } from './networkDevice/primitives';
+import { useNetworkAsset } from './networkDevice/useNetworkAsset';
+import { NetworkDeviceHeader } from './networkDevice/NetworkDeviceHeader';
+import { NetworkDeviceStats } from './networkDevice/NetworkDeviceStats';
+import { NetworkDeviceSkeleton } from './networkDevice/NetworkDeviceSkeleton';
+import { OpenPortsSection } from './networkDevice/OpenPortsSection';
+import { SnmpSection } from './networkDevice/SnmpSection';
+import { LinkManuallyControl } from './networkDevice/LinkManuallyControl';
 
 export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetailPageProps) {
   const { t } = useTranslation('devices');
-  const [asset, setAsset] = useState<DiscoveredAsset | null>(null);
-  const [extras, setExtras] = useState<AssetDetailExtras>({});
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string>();
+  const {
+    asset,
+    extras,
+    loading,
+    error,
+    liveMessage,
+    announce,
+    fetchAsset,
+    devices,
+    devicesError,
+    fetchDevices,
+  } = useNetworkAsset(assetId);
+
   // Hash-derived tab adopted post-mount to avoid an SSR hydration mismatch
   // (#2421); the hook also syncs back/forward via hashchange.
   const [activeTab, setActiveTab] = useHashState<Tab>('overview', (h) => {
@@ -463,90 +56,63 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
     setActiveTab(tab);
   };
 
-  const fetchAsset = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(undefined);
-
-      const response = await fetchWithAuth(`/discovery/assets/${assetId}`);
-      if (!response.ok) {
-        if (response.status === 404) {
-          throw new Error(t('networkDeviceDetailPage.errors.notFound'));
-        }
-        throw new Error(t('networkDeviceDetailPage.errors.load'));
-      }
-
-      const body = await response.json();
-      const raw: (ApiDiscoveryAsset & AssetDetailExtras) | undefined =
-        body?.data ?? body?.asset ?? body;
-      // A 200 with an empty/wrong-shaped body would otherwise sail through
-      // `mapAsset` (which never returns null) and render a blank "—" shell with
-      // an `asset=undefined` deep-link. Treat a missing id as a load failure.
-      if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string') {
-        throw new Error(t('networkDeviceDetailPage.errors.malformed'));
-      }
-      setAsset(mapAsset(raw));
-      setExtras({
-        model: raw.model ?? null,
-        netbiosName: raw.netbiosName ?? null,
-        siteId: raw.siteId ?? null,
-        firstSeenAt: raw.firstSeenAt ?? null,
-        snmpMonitoringEnabled: raw.snmpMonitoringEnabled ?? false,
-        networkMonitoringEnabled: raw.networkMonitoringEnabled ?? false,
-        suggestedBridgeDeviceId: (raw as AssetDetailExtras).suggestedBridgeDeviceId ?? null,
-        autoLinkSuppressedAt: (raw as AssetDetailExtras).autoLinkSuppressedAt ?? null,
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('networkDeviceDetailPage.errors.load'));
-    } finally {
-      setLoading(false);
-    }
-  }, [assetId, t]);
-
-  useEffect(() => {
-    void fetchAsset();
-  }, [fetchAsset]);
-
-  // Device list for the proxy "through agent" picker. Same call shape as
-  // DiscoveredAssetList's equivalent fetch for AssetDetailModal's (now
-  // removed) bridge picker: unscoped `/devices`, online filtered client-side.
-  const [devices, setDevices] = useState<DeviceOption[]>([]);
-  const fetchDevices = useCallback(async () => {
-    try {
-      const response = await fetchWithAuth('/devices');
-      if (!response.ok) return;
-      const data = await response.json();
-      const raw: any[] = asList(data, 'devices');
-      setDevices(
-        raw.map((d: any) => ({
-          id: d.id,
-          name: d.displayName || d.hostname || d.id,
-          online: d.status === 'online',
-        })),
-      );
-    } catch {
-      // Best-effort — the popover's bridge picker just shows no online agent.
-    }
-  }, []);
-
-  useEffect(() => {
-    void fetchDevices();
-  }, [fetchDevices]);
-
   const handleBack = () => {
     void navigateTo('/devices');
   };
 
+  // The "Open ports" stat is a shortcut to the ports section, not just a
+  // second place that repeats its count — this flag survives the tab-switch
+  // render so the scroll only fires once the overview panel (and the ports
+  // section inside it) is actually back in the DOM, and never on an
+  // unrelated tab change (URL back/forward, clicking a tab directly).
+  const [pendingPortsScroll, setPendingPortsScroll] = useState(false);
+  const handleViewPorts = useCallback(() => {
+    setPendingPortsScroll(true);
+    switchTab('overview');
+  }, []);
+  useEffect(() => {
+    if (!pendingPortsScroll || activeTab !== 'overview') return;
+    document.querySelector('[data-testid="network-detail-ports"]')?.scrollIntoView?.({ block: 'start' });
+    setPendingPortsScroll(false);
+  }, [pendingPortsScroll, activeTab]);
+
+  // Lifted here (rather than local to OpenPortsSection) because that section
+  // unmounts whenever the Monitoring tab is active — local state would reset
+  // "Show all" on every tab round-trip.
+  const [portsExpanded, setPortsExpanded] = useState(false);
   const [unlinking, setUnlinking] = useState(false);
-  const [typeSaving, setTypeSaving] = useState(false);
+  // Which type-editor action (if any) is in flight — distinct from a plain
+  // boolean so Save and Reset can each show their own loading label without
+  // the other one flashing the wrong text while it's merely disabled.
+  const [typeAction, setTypeAction] = useState<'save' | 'reset' | null>(null);
+  const typeSaving = typeAction !== null;
+  const [confirmUnlinkOpen, setConfirmUnlinkOpen] = useState(false);
+  // Uncommitted type-select edit. Arrowing through a native <select> with a
+  // keyboard fires a change event per option landed on, so committing on
+  // change used to PATCH once per arrow key — this decouples the control's
+  // value from the save action. `null` means "no pending edit, show the
+  // asset's saved type"; the Save/Cancel row only appears once `value` differs
+  // from `asset.type`. `baseType` is the asset's type at the moment the edit
+  // started, kept alongside `value` so a concurrent server-side change (e.g.
+  // the background return-to-tab refresh landing mid-edit) can be detected
+  // and the stale edit discarded below, instead of silently overwriting
+  // whatever the type became underneath it.
+  const [pendingEdit, setPendingEdit] = useState<{ baseType: DiscoveredAssetType; value: DiscoveredAssetType } | null>(null);
+
+  useEffect(() => {
+    if (pendingEdit && asset && asset.type !== pendingEdit.baseType) {
+      setPendingEdit(null);
+    }
+  }, [asset, pendingEdit]);
 
   // Unlink now works for both auto and manual links (#3261 Task 2 reverses the
   // old manual-only rule — the server sets auto_link_suppressed_at so a
   // subsequent rescan doesn't just re-create the link). This handler only
   // guards that a link exists; runAction surfaces success/failure via toast.
+  // Confirmation lives in the ConfirmDialog rendered at the bottom of this
+  // component — this handler runs only after the user has confirmed.
   const handleUnlink = useCallback(async () => {
     if (!asset?.linkedDeviceId) return;
-    if (typeof window !== 'undefined' && !window.confirm(t('networkDeviceDetailPage.confirmUnlink'))) return;
     setUnlinking(true);
     try {
       await runAction({
@@ -554,23 +120,29 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         successMessage: t('networkDeviceDetailPage.toasts.unlinked'),
         errorFallback: t('networkDeviceDetailPage.toasts.unlinkFailed'),
       });
-      await fetchAsset();
+      // `background: true` so the reload doesn't flip `loading` and swap the
+      // whole page for the skeleton mid-action — the operator is already
+      // looking at a fully loaded page.
+      await fetchAsset({ background: true });
+      announce(t('networkDeviceDetailPage.toasts.unlinked'));
     } catch {
       // runAction already toasted the failure; leave the linked state in place.
     } finally {
       setUnlinking(false);
     }
-  }, [asset, fetchAsset, t]);
+  }, [asset, fetchAsset, t, announce]);
 
   // Manual override of the scan-detected device type. `reset` restores the
   // auto-detected classification; any other value pins the type as a manual
   // override (server stamps type_source='manual'). runAction surfaces the
   // outcome via toast; we refetch on success so the badge/select reflect the
-  // server's canonical state.
+  // server's canonical state. Returns whether the change actually committed,
+  // so the Save button (below) knows whether to clear its pending selection.
   const changeType = useCallback(
-    async (next: DiscoveredAssetType | 'reset') => {
-      if (!asset) return;
-      setTypeSaving(true);
+    async (next: DiscoveredAssetType | 'reset'): Promise<boolean> => {
+      if (!asset) return false;
+      setTypeAction(next === 'reset' ? 'reset' : 'save');
+      let succeeded = false;
       try {
         await runAction({
           request: () =>
@@ -588,54 +160,82 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               ? t('networkDeviceDetailPage.toasts.typeResetFailed')
               : t('networkDeviceDetailPage.toasts.typeUpdateFailed'),
         });
-        await fetchAsset();
+        // `background: true` so the reload doesn't flip `loading` and swap
+        // the whole page for the skeleton mid-Save/Reset.
+        await fetchAsset({ background: true });
+        succeeded = true;
+        announce(
+          next === 'reset'
+            ? t('networkDeviceDetailPage.toasts.typeReset')
+            : t('networkDeviceDetailPage.toasts.typeUpdated'),
+        );
       } catch {
         // runAction already toasted the failure; leave the current type in place.
       } finally {
-        setTypeSaving(false);
+        setTypeAction(null);
       }
+      return succeeded;
     },
-    [asset, fetchAsset, t],
+    [asset, fetchAsset, t, announce],
   );
 
+  // Reset also discards any uncommitted select edit — its whole point is to
+  // throw away manual overrides, so a pending one shouldn't survive it either.
+  const handleResetType = useCallback(() => {
+    setPendingEdit(null);
+    void changeType('reset');
+  }, [changeType]);
+
+  const handleSaveType = useCallback(async () => {
+    if (pendingEdit === null) return;
+    const succeeded = await changeType(pendingEdit.value);
+    if (succeeded) setPendingEdit(null);
+  }, [pendingEdit, changeType]);
+
+  const handleCancelType = useCallback(() => setPendingEdit(null), []);
+
   if (loading) {
-    return (
-      <div className="flex items-center justify-center py-12" data-testid="network-device-detail-loading">
-        <div className="text-center">
-          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">{t('networkDeviceDetailPage.loading')}</p>
-        </div>
-      </div>
-    );
+    return <NetworkDeviceSkeleton label={t('networkDeviceDetailPage.loading')} />;
   }
 
   if (error || !asset) {
     return (
       <div className="space-y-6" data-testid="network-device-detail-error">
-        <button
-          type="button"
-          onClick={handleBack}
-          className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          {t('networkDeviceDetailPage.backToDevices')}
-        </button>
+        {/* Same breadcrumb the loaded page renders (below) — an error must
+            not drop the operator into a different navigational frame. */}
+        <Breadcrumbs items={[
+          { label: t('devicesPage.title'), href: '/devices#deviceClass=network' },
+          { label: t('networkDeviceDetailPage.networkDevice') },
+        ]} />
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
           <p className="text-sm text-destructive">{error || t('networkDeviceDetailPage.errors.notFound')}</p>
-          <button
-            type="button"
-            onClick={handleBack}
-            className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-          >
-            {t('networkDeviceDetailPage.goBack')}
-          </button>
+          <div className="mt-4 flex items-center justify-center gap-2">
+            <button
+              type="button"
+              data-testid="network-detail-retry"
+              onClick={() => void fetchAsset()}
+              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {t('networkDeviceDetailPage.tryAgain')}
+            </button>
+            <button
+              type="button"
+              onClick={handleBack}
+              className="rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {t('networkDeviceDetailPage.goBack')}
+            </button>
+          </div>
         </div>
       </div>
     );
   }
 
   const displayName = asset.label || asset.hostname || asset.ip;
-  const openPorts = asset.openPorts ?? [];
+  const openPorts = sortPorts(asset.openPorts ?? []);
+  // Page-level proxy entry point: default to the first scanned web-ish port,
+  // else 443 — so the action exists even when the scan recorded no ports.
+  const defaultWebPort = openPorts.find((p) => isWebPort(p.port, p.service));
   const snmpData = asset.snmpData ?? {};
   const tags = asset.tags ?? [];
   const discoveryMethods = asset.discoveryMethods ?? [];
@@ -646,125 +246,133 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   const approvalMeta = approvalStatusConfig[asset.approvalStatus];
   const typeLabel = typeMeta ? t(/* i18n-dynamic */ typeMeta.labelKey) : asset.type;
   const approvalLabel = approvalMeta ? t(/* i18n-dynamic */ approvalMeta.labelKey) : asset.approvalStatus;
+  const TypeIcon = assetTypeIcons[asset.type] ?? assetTypeIcons.unknown;
+  // The select shows the uncommitted choice while one is pending, else the
+  // asset's saved type; Save only appears once the two actually differ.
+  const selectedType = pendingEdit?.value ?? asset.type;
+  const typeDirty = pendingEdit !== null && pendingEdit.value !== asset.type;
+
+  const tabDefs: OverflowTab[] = [
+    { id: 'overview', label: t('networkDeviceDetailPage.tabs.overview'), icon: <LayoutGrid aria-hidden="true" className="h-4 w-4" /> },
+    { id: 'monitoring', label: t('networkDeviceDetailPage.tabs.monitoring'), icon: <Activity aria-hidden="true" className="h-4 w-4" /> },
+  ];
+  // Must match the `testIdPrefix` passed to OverflowTabs below — it's the
+  // same string OverflowTabs uses internally (via `overflowPanelId`) to build
+  // each tab button's `aria-controls` target, which each `role="tabpanel"`
+  // below supplies as its own `id`.
+  const TAB_ID_PREFIX = 'network-detail-tab-';
 
   return (
     <div className="space-y-6" data-testid="network-device-detail">
+      {/* Screen-reader-only outcome announcements — see the `announce`
+          callback in useNetworkAsset for what posts here and why. */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only" data-testid="network-detail-live">
+        {liveMessage}
+      </div>
       <Breadcrumbs items={[
-        { label: t('devicesPage.title'), href: '/devices' },
+        { label: t('devicesPage.title'), href: '/devices#deviceClass=network' },
         { label: displayName || t('networkDeviceDetailPage.networkDevice') },
       ]} />
 
-      {/* Header */}
-      <div className="flex flex-wrap items-start justify-between gap-4 rounded-lg border bg-card p-5">
-        <div className="flex items-start gap-3">
-          <div className="rounded-md border bg-muted/40 p-2 text-muted-foreground">
-            <Globe className="h-6 w-6" />
-          </div>
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-lg font-semibold" data-testid="network-device-name">{displayName}</h1>
-              <span
-                data-testid="network-asset-type"
-                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${typeMeta?.color ?? typeConfig.unknown.color}`}
-              >
-                {typeLabel}
-              </span>
-              <span
-                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${approvalMeta?.color ?? approvalStatusConfig.dismissed.color}`}
-              >
-                {approvalLabel}
-              </span>
-              <span
-                data-testid="network-device-status"
-                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${
-                  asset.isOnline
-                    ? 'bg-success/15 text-success border-success/30'
-                    : 'bg-muted text-muted-foreground border-muted'
-                }`}
-              >
-                {asset.isOnline ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
-                {asset.isOnline ? t('common:states.online') : t('common:states.offline')}
-              </span>
-            </div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {asset.ip}
-              {asset.mac !== '—' && <> • {asset.mac}</>}
-              {asset.manufacturer !== '—' && <> • {asset.manufacturer}</>}
-              {asset.lastSeen && <> • {t('networkDeviceDetailPage.lastSeen', { time: formatTimestamp(asset.lastSeen) })}</>}
-            </p>
-          </div>
-        </div>
-        {/* Approve / reclassify remain in Discovery until slice 3 of #1424
-            brings them inline; unlink for manual links is available inline on
-            the Monitoring tab. Other actions link out for now. */}
-        <a
-          href={`/discovery?asset=${asset.id}#assets`}
-          data-testid="network-detail-manage-discovery"
-          className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
-        >
-          {t('networkDeviceDetailPage.manageInDiscovery')}
-          <ExternalLink className="h-3.5 w-3.5" />
-        </a>
-      </div>
+      <NetworkDeviceHeader
+        asset={asset}
+        displayName={displayName}
+        siteName={extras.siteName ?? null}
+        typeMeta={typeMeta}
+        typeLabel={typeLabel}
+        approvalMeta={approvalMeta}
+        approvalLabel={approvalLabel}
+        TypeIcon={TypeIcon}
+        defaultWebPort={defaultWebPort}
+        suggestedBridgeDeviceId={extras.suggestedBridgeDeviceId ?? null}
+        devices={devices}
+        devicesError={devicesError}
+        onRetryDevices={fetchDevices}
+        onAnnounce={announce}
+      />
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b">
-        {VALID_TABS.map((tab) => (
-          <button
-            key={tab}
-            type="button"
-            data-testid={`network-detail-tab-${tab}`}
-            onClick={() => switchTab(tab)}
-            className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium capitalize ${
-              activeTab === tab
-                ? 'border-primary text-foreground'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {t(/* i18n-dynamic */ `networkDeviceDetailPage.tabs.${tab}`)}
-          </button>
-        ))}
-      </div>
+      <NetworkDeviceStats asset={asset} onViewPorts={handleViewPorts} />
+
+      <OverflowTabs
+        tabs={tabDefs}
+        activeTab={activeTab}
+        onTabChange={(id) => switchTab(id as Tab)}
+        testIdPrefix={TAB_ID_PREFIX}
+      />
 
       {activeTab === 'overview' && (
-        <div className="grid gap-5 lg:grid-cols-2" data-testid="network-detail-overview">
+        <div
+          className="grid gap-5 lg:grid-cols-2"
+          data-testid="network-detail-overview"
+          role="tabpanel"
+          id={overflowPanelId('overview', TAB_ID_PREFIX)}
+          aria-label={t('networkDeviceDetailPage.tabs.overview')}
+        >
           <div className="space-y-5">
             <Section title={t('networkDeviceDetailPage.sections.identity')}>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
                 <Field label={t('networkDeviceDetailPage.fields.hostname')} value={asset.hostname || '—'} />
                 <Field label={t('networkDeviceDetailPage.fields.displayName')} value={asset.label || '—'} />
-                <Field label={t('networkDeviceDetailPage.fields.ipAddress')} value={<span className="font-mono">{asset.ip}</span>} />
-                <Field label={t('networkDeviceDetailPage.fields.macAddress')} value={<span className="font-mono">{asset.mac}</span>} />
                 <Field label={t('networkDeviceDetailPage.fields.manufacturer')} value={asset.manufacturer} />
                 <Field label={t('networkDeviceDetailPage.fields.model')} value={extras.model || '—'} />
+                <Field label={t('networkDeviceDetailPage.fields.osFingerprint')} value={asset.osFingerprint || '—'} />
+                <Field label={t('networkDeviceDetailPage.fields.firstSeen')} value={formatTimestamp(extras.firstSeenAt)} />
                 <div>
                   <div className="text-xs font-medium text-muted-foreground">{t('networkDeviceDetailPage.fields.assetType')}</div>
                   <div className="mt-1 flex items-center gap-2">
                     <select
                       data-testid="network-asset-type-select"
-                      className="rounded-md border bg-background px-2 py-1 text-sm disabled:opacity-60"
-                      value={asset.type}
+                      className="rounded-md border bg-background px-2 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                      value={selectedType}
                       disabled={typeSaving}
-                      onChange={(e) => void changeType(e.target.value as DiscoveredAssetType)}
+                      onChange={(e) => setPendingEdit({ baseType: asset.type, value: e.target.value as DiscoveredAssetType })}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape' && typeDirty) {
+                          e.preventDefault();
+                          handleCancelType();
+                        }
+                      }}
                     >
                       {(Object.keys(typeConfig) as DiscoveredAssetType[]).map((type) => (
                         <option key={type} value={type}>{t(/* i18n-dynamic */ typeConfig[type].labelKey)}</option>
                       ))}
                     </select>
+                    {typeDirty && (
+                      <>
+                        <button
+                          type="button"
+                          data-testid="network-detail-type-save"
+                          className="h-7 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                          disabled={typeSaving}
+                          onClick={() => void handleSaveType()}
+                        >
+                          {typeAction === 'save' ? t('networkDeviceDetailPage.savingType') : t('common:actions.save')}
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="network-detail-type-cancel"
+                          className="text-xs text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                          disabled={typeSaving}
+                          onClick={handleCancelType}
+                        >
+                          {t('common:actions.cancel')}
+                        </button>
+                      </>
+                    )}
                     {asset.typeSource === 'manual' && (
                       <button
                         type="button"
                         data-testid="network-asset-type-reset"
-                        className="text-xs text-muted-foreground underline hover:text-foreground disabled:opacity-60"
+                        className="text-xs text-muted-foreground underline hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                         disabled={typeSaving}
-                        onClick={() => void changeType('reset')}
+                        onClick={handleResetType}
                       >
-                        {t('networkDeviceDetailPage.resetToAutoDetected')}
+                        {typeAction === 'reset' ? t('networkDeviceDetailPage.resettingType') : t('networkDeviceDetailPage.resetToAutoDetected')}
                       </button>
                     )}
                   </div>
                   {asset.typeSource === 'manual' && (
-                    <p className="mt-1 text-[11px] text-muted-foreground">
+                    <p className="mt-1 text-xs text-muted-foreground">
                       {asset.detectedType
                         ? t('networkDeviceDetailPage.manuallySetWithDetected', { type: t(/* i18n-dynamic */ typeConfig[asset.detectedType].labelKey) })
                         : t('networkDeviceDetailPage.manuallySet')}
@@ -793,70 +401,34 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               )}
             </Section>
 
-            <Section title={t('networkDeviceDetailPage.sections.snmpData')} testId="network-detail-snmp">
-              <dl className="space-y-2 text-sm">
-                {Object.keys(snmpData).length === 0 ? (
-                  <div className="text-xs text-muted-foreground">
-                    {t('networkDeviceDetailPage.emptySnmp')}
-                  </div>
-                ) : (
-                  Object.entries(snmpData).map(([key, value]) => (
-                    <div key={key} className="flex items-center justify-between gap-4">
-                      <dt className="text-muted-foreground">{snmpFieldLabel(key)}</dt>
-                      <dd className="font-medium text-right break-all">{value}</dd>
-                    </div>
-                  ))
-                )}
-              </dl>
-            </Section>
+            <SnmpSection snmpData={snmpData} />
           </div>
 
           <div className="space-y-5">
-            <Section title={t('networkDeviceDetailPage.sections.networkReachability')}>
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                <Field label={t('networkDeviceDetailPage.fields.status')} value={asset.isOnline ? t('common:states.online') : t('common:states.offline')} />
-                <Field
-                  label={t('networkDeviceDetailPage.fields.ping')}
-                  value={<span className="font-mono" data-testid="network-detail-ping">{formatPing(asset.responseTimeMs)}</span>}
-                />
-                <Field label={t('networkDeviceDetailPage.fields.osFingerprint')} value={asset.osFingerprint || '—'} />
-                <Field label={t('networkDeviceDetailPage.fields.lastSeen')} value={formatTimestamp(asset.lastSeen)} />
-                <Field label={t('networkDeviceDetailPage.fields.firstSeen')} value={formatTimestamp(extras.firstSeenAt)} />
-              </dl>
-            </Section>
-
-            <Section title={t('networkDeviceDetailPage.sections.openPorts')} testId="network-detail-ports">
-              {openPorts.length === 0 ? (
-                <p className="text-xs text-muted-foreground">{t('networkDeviceDetailPage.emptyPorts')}</p>
-              ) : (
-                <div className="flex flex-wrap gap-1.5">
-                  {openPorts.map((p) => (
-                    <span
-                      key={p.port}
-                      className="inline-flex items-center gap-1 rounded-full border border-muted bg-background px-2 py-0.5 text-xs"
-                    >
-                      {p.port}{p.service ? ` (${p.service})` : ''}
-                      {isWebPort(p.port, p.service) && (
-                        <ProxyConnectPopover
-                          assetId={asset.id}
-                          assetIp={asset.ip}
-                          port={p.port}
-                          service={p.service}
-                          suggestedBridgeDeviceId={extras.suggestedBridgeDeviceId ?? null}
-                          devices={devices}
-                        />
-                      )}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </Section>
+            <OpenPortsSection
+              openPorts={openPorts}
+              assetId={asset.id}
+              assetIp={asset.ip}
+              suggestedBridgeDeviceId={extras.suggestedBridgeDeviceId ?? null}
+              devices={devices}
+              devicesError={devicesError}
+              onRetryDevices={fetchDevices}
+              onAnnounce={announce}
+              expanded={portsExpanded}
+              onToggle={() => setPortsExpanded((expanded) => !expanded)}
+            />
           </div>
         </div>
       )}
 
       {activeTab === 'monitoring' && (
-        <div className="grid gap-5 lg:grid-cols-2" data-testid="network-detail-monitoring">
+        <div
+          className="grid gap-5 lg:grid-cols-2"
+          data-testid="network-detail-monitoring"
+          role="tabpanel"
+          id={overflowPanelId('monitoring', TAB_ID_PREFIX)}
+          aria-label={t('networkDeviceDetailPage.tabs.monitoring')}
+        >
           <Section title={t('networkDeviceDetailPage.sections.monitoringStatus')}>
             <dl className="space-y-3 text-sm">
               <div className="flex items-center justify-between gap-4">
@@ -870,10 +442,9 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
             </dl>
             <p className="mt-3 border-t pt-3 text-xs text-muted-foreground">
               {t('networkDeviceDetailPage.configurePrefix')}{' '}
-              <a href={`/discovery?asset=${asset.id}#assets`} className="text-primary hover:underline">
+              <a href={`/discovery?asset=${asset.id}#assets`} className="text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring">
                 {t('networkDeviceDetailPage.discoveryAssetView')}
               </a>
-              .
             </p>
           </Section>
 
@@ -887,7 +458,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                       <a
                         href={`/devices/${asset.linkedDeviceId}`}
                         data-testid="network-detail-linked-device"
-                        className="text-primary hover:underline"
+                        className="text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         {t('networkDeviceDetailPage.sameDeviceAs', {
                           name: asset.linkedDeviceName || t('common:states.unknown'),
@@ -901,9 +472,9 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                       <button
                         type="button"
                         data-testid="network-detail-unlink"
-                        onClick={handleUnlink}
+                        onClick={() => setConfirmUnlinkOpen(true)}
                         disabled={unlinking}
-                        className="text-xs text-destructive hover:underline disabled:opacity-50"
+                        className="text-xs text-destructive hover:underline disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         {unlinking ? t('networkDeviceDetailPage.unlinking') : t('networkDeviceDetailPage.unlink')}
                       </button>
@@ -934,6 +505,21 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           </Section>
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmUnlinkOpen}
+        onClose={() => setConfirmUnlinkOpen(false)}
+        onConfirm={() => {
+          setConfirmUnlinkOpen(false);
+          void handleUnlink();
+        }}
+        title={t('networkDeviceDetailPage.confirmUnlink')}
+        message={t('networkDeviceDetailPage.confirmUnlinkMessage')}
+        confirmLabel={t('networkDeviceDetailPage.unlink')}
+        variant="destructive"
+        isLoading={unlinking}
+        confirmTestId="network-detail-unlink-confirm"
+      />
     </div>
   );
 }

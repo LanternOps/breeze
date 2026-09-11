@@ -130,10 +130,26 @@ vi.mock('../services/permissions', () => ({
   getUserPermissions: vi.fn(async () => ({
     scope: 'organization',
     orgId: 'org-1',
-    permissions: [{ resource: 'approvals', action: 'decide' }],
+    // §6C: includes pam:approve alongside approvals:decide so the default
+    // "still-authorized approver" also satisfies the elevation branch's live
+    // pam:approve re-check — tests that want a decider WITHOUT pam:approve
+    // override this per-case.
+    permissions: [
+      { resource: 'approvals', action: 'decide' },
+      { resource: 'pam', action: 'approve' },
+    ],
   })),
   userCanDecideApprovals: vi.fn(() => true),
   canAccessOrg: vi.fn(() => true),
+  // Real matching semantics (exact resource/action or a wildcard) so a test
+  // that swaps in a narrower permissions array actually drives a denial,
+  // rather than a stub that always returns true regardless of what's granted.
+  hasPermission: vi.fn(
+    (userPerms: { permissions: Array<{ resource: string; action: string }> } | null | undefined, resource: string, action: string) =>
+      !!userPerms?.permissions?.some(
+        (p) => (p.resource === resource || p.resource === '*') && (p.action === action || p.action === '*'),
+      ),
+  ),
 }));
 
 vi.mock('../db/schema/elevations', () => ({
@@ -488,16 +504,29 @@ beforeEach(() => {
 // GET /pending now joins action_intents (Task 8) — db.select() for this
 // route returns `{approval, intent}` pairs via a `.from().leftJoin().where()
 // .orderBy()` chain, rather than raw approval_requests rows directly.
+//
+// The handler also runs up to THREE more batched lookups over the resulting
+// page (customer tenant, target device, org name) — each its own db.select()
+// call, in a DIFFERENT chain shape (`.from().innerJoin()...` /
+// `.from().where()`), that only fires when the page actually has something
+// to look up. Rather than hand-code every possible extra shape, this stub is
+// a single self-chaining node: every chain method returns the SAME node, so
+// it satisfies `.from().leftJoin().where().orderBy()` (resolving `rows`, via
+// the real mocked `.orderBy()` promise) AND any shorter chain that stops at
+// `.where()` (which returns the node itself, and the node is `then`-able,
+// resolving empty) — regardless of how many extra times db.select() is
+// called, or in what shape. A test that needs to assert on one of THOSE
+// batched lookups' own output queues an explicit `mockReturnValueOnce` ahead
+// of this persistent fallback instead (see the orgName tests below).
 function mockPendingJoinResolves(rows: Array<{ approval: unknown; intent: unknown | null }>) {
-  vi.mocked(db.select).mockReturnValue({
-    from: vi.fn().mockReturnValue({
-      leftJoin: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          orderBy: vi.fn().mockResolvedValue(rows),
-        }),
-      }),
-    }),
-  } as any);
+  const node: any = {};
+  node.from = vi.fn().mockReturnValue(node);
+  node.leftJoin = vi.fn().mockReturnValue(node);
+  node.innerJoin = vi.fn().mockReturnValue(node);
+  node.where = vi.fn().mockReturnValue(node);
+  node.orderBy = vi.fn().mockResolvedValue(rows);
+  node.then = (resolve: (v: unknown[]) => void) => resolve([]);
+  vi.mocked(db.select).mockReturnValue(node);
 }
 
 function buildPendingApproval(overrides: Record<string, unknown> = {}) {
@@ -534,7 +563,76 @@ describe('GET /approvals/pending', () => {
     const body = await res.json();
     expect(body.approvals).toHaveLength(1);
     expect(body.approvals[0].id).toBe('a1');
+    // No linked intent → no orgId to resolve a name for, and no org-name
+    // lookup select at all (see the batched-lookup tests below).
+    expect(body.approvals[0].orgName).toBeNull();
     expect(body.nextCursor).toBeNull();
+  });
+
+  it("projects orgName from the linked intent's org (single batched lookup)", async () => {
+    const approval = buildPendingApproval({ id: 'a-org', intentId: 'intent-org' });
+    const intent = {
+      id: 'intent-org',
+      orgId: 'org-9',
+      status: 'pending_approval',
+      approvalScope: 'four_eyes',
+      requestedByUserId: 'requester-9',
+    };
+    // 1) the pending join; 2) the batched org-name lookup.
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue([{ approval, intent }]),
+            }),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: 'org-9', name: 'Acme Dental' }]),
+        }),
+      } as any);
+
+    const res = await buildApp().request('/approvals/pending');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approvals[0].orgId).toBe('org-9');
+    expect(body.approvals[0].orgName).toBe('Acme Dental');
+  });
+
+  it('serializes orgName: null when the linked org no longer exists', async () => {
+    const approval = buildPendingApproval({ id: 'a-org-missing', intentId: 'intent-org-missing' });
+    const intent = {
+      id: 'intent-org-missing',
+      orgId: 'org-deleted',
+      status: 'pending_approval',
+      approvalScope: 'four_eyes',
+      requestedByUserId: 'requester-9',
+    };
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue([{ approval, intent }]),
+            }),
+          }),
+        }),
+      } as any)
+      // The org row is gone — the lookup returns zero rows, not an error.
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([]),
+        }),
+      } as any);
+
+    const res = await buildApp().request('/approvals/pending');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approvals[0].orgId).toBe('org-deleted');
+    expect(body.approvals[0].orgName).toBeNull();
   });
 
   it('excludes a four_eyes intent-linked row once the approver no longer holds approvals:decide (demoted approver)', async () => {
@@ -1600,6 +1698,16 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
         where: vi.fn().mockResolvedValue([{ ...updatedRow, status: 'pending' }]),
       }),
     } as any);
+    // §6C: the elevation-branch live pam:approve re-check resolves the
+    // elevation's orgId BEFORE the assurance ladder / CAS write. Only queued
+    // when this row actually carries an elevationRequestId — matches the
+    // production `if (existing.elevationRequestId && !existing.intentId)`
+    // branch, which is skipped entirely for the null case.
+    if (opts.elevationRequestId) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ orgId: 'org-9' }]) }),
+      } as any);
+    }
     // One transaction owns approval CAS, elevation CAS, PAM lifecycle/outbox,
     // audit, and sibling expiry.
     const casReturning = vi.fn().mockResolvedValue([updatedRow]);
@@ -1695,6 +1803,140 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ error: 'decide_failed', retryable: true });
+  });
+
+  // §6C (fix/pam-dedicated-permissions): before this change, an
+  // elevation-linked approval row (elevationRequestId set, no intentId — the
+  // mobile PAM decide path) skipped the WHOLE intentId-gated permission block
+  // above and went straight to the assurance ladder / CAS write, with NO live
+  // permission check at all. Any technician who was fanned out a row (or one
+  // who somehow retained a stale row after being demoted) could decide it.
+  describe('elevation branch: live pam:approve re-check (§6C)', () => {
+    const pendingRow = {
+      id: 'appr-1',
+      userId: TEST_USER.id,
+      requestingClientLabel: 'Breeze Agent',
+      requestingMachineLabel: 'WS-01',
+      actionLabel: 'Elevate setup.exe',
+      actionToolName: 'uac_intercept',
+      actionArguments: {},
+      riskTier: 'medium',
+      riskSummary: 'admin requested',
+      status: 'pending',
+      expiresAt: new Date(Date.now() + 60_000),
+      decidedAt: null,
+      decisionReason: null,
+      executionId: null,
+      intentId: null,
+      elevationRequestId: 'elev-1',
+      isRecursive: false,
+      createdAt: new Date(),
+    };
+
+    function mockPreFetchAndElevationOrgLookup() {
+      // Call 1: decideApprovalRequest's pre-fetch of the approval_requests row.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([pendingRow]) }),
+      } as any);
+      // Call 2 (NEW, §6C): resolve the elevation's orgId to authorize against,
+      // BEFORE any assurance ladder / CAS write.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ orgId: 'org-9' }]) }),
+      } as any);
+    }
+
+    it('a decider without pam:approve is denied 403 and the row is never touched', async () => {
+      mockPreFetchAndElevationOrgLookup();
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        scope: 'organization',
+        orgId: 'org-9',
+        // Holds devices:execute (ordinary technician grant) but NOT pam:approve.
+        permissions: [{ resource: 'devices', action: 'execute' }],
+      } as any);
+
+      const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'pam_approve_required' });
+      // No CAS write attempted — the row stays pending.
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('a deny decision is ALSO gated on pam:approve, not just approve', async () => {
+      mockPreFetchAndElevationOrgLookup();
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        scope: 'organization',
+        orgId: 'org-9',
+        permissions: [{ resource: 'devices', action: 'execute' }],
+      } as any);
+
+      const res = await buildApp().request('/approvals/appr-1/deny', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason: 'no' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'pam_approve_required' });
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('a decider holding pam:approve for the elevation org proceeds to the CAS write', async () => {
+      mockPreFetchAndElevationOrgLookup();
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        scope: 'organization',
+        orgId: 'org-9',
+        permissions: [{ resource: 'pam', action: 'approve' }],
+      } as any);
+      const tx = mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);
+      const casReturning = vi.fn().mockResolvedValue([{ ...pendingRow, status: 'approved' }]);
+      const casSet = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: casReturning }) });
+      const siblingExpireSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+      let updateCall = 0;
+      const mainTx = {
+        update: vi.fn(() => {
+          updateCall += 1;
+          if (updateCall === 1) return { set: casSet } as any;
+          if (updateCall === 2) return { set: tx.elevationSet } as any;
+          return { set: siblingExpireSet } as any;
+        }),
+        insert: vi.fn(() => ({ values: tx.auditValues } as any)),
+      };
+      vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(mainTx));
+
+      const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(db.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    // Gap: hasPermission(perms, 'pam', 'approve') alone says nothing about
+    // WHICH org the permission reaches. getUserPermissions falls back to the
+    // partner axis when the decider has no organization_users row for the
+    // elevation's org, so a partner-scope decider whose org_access is
+    // 'selected' and does NOT include the elevation's org must still be
+    // refused, exactly like the intentId/four_eyes branch's
+    // `canAccessOrg(deciderPerms, linkedIntent.orgId)` check (see
+    // 'refuses an intent-linked APPROVE ... lost access to the intent org').
+    // `permissions.ts` is mocked wholesale in this file (default
+    // `canAccessOrg: () => true`), so drive the org-reach failure the same
+    // way that test does: override the canAccessOrg mock directly.
+    it('a partner-scope decider with pam:approve who lost access to the elevation org is denied 403 and the row is never touched', async () => {
+      mockPreFetchAndElevationOrgLookup();
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        scope: 'partner',
+        orgAccess: 'selected',
+        allowedOrgIds: ['org-other'],
+        permissions: [{ resource: 'pam', action: 'approve' }],
+      } as any);
+      vi.mocked(canAccessOrg).mockReturnValueOnce(false);
+
+      const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'pam_approve_required' });
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -2791,6 +3033,10 @@ describe('POST /approvals/:id/report-suspicious', () => {
       where: vi.fn().mockReturnValue({ returning: casReturning }),
     });
     const siblingSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    // #5205 W05 (#5210): the report-suspicious rejection now publishes an
+    // intent_outbox row (via `tx`, not the ambient `db`) — the gap baseline
+    // C18 named. `tx.insert` was missing entirely before this wave since
+    // nothing wrote through it.
     const tx = {
       select: txSelectForUpdateStub(),
       update: vi
@@ -2798,6 +3044,7 @@ describe('POST /approvals/:id/report-suspicious', () => {
         .mockReturnValueOnce({ set: flipSet } as any) // 1) approval_requests -> reported
         .mockReturnValueOnce({ set: intentCasSet } as any) // 2) intent CAS
         .mockReturnValueOnce({ set: siblingSet } as any), // 3) sibling expiry
+      insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any),
     };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
     vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);

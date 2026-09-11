@@ -1,6 +1,5 @@
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
-import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import type { EventSubscription } from 'expo-notifications';
 
@@ -50,31 +49,14 @@ export async function registerForPushNotifications(): Promise<PushRegistrationOu
       return { status: 'failed', reason: 'permission_denied' };
     }
 
-    if (Platform.OS === 'ios') {
-      // Native device push token: raw APNs token. Uses getDevicePushTokenAsync
-      // — needs NO Expo projectId/account — so push works with a plain
-      // Xcode/Apple build (not the Expo push relay).
-      const tokenData = await Notifications.getDevicePushTokenAsync();
-      token = String(tokenData.data);
-    } else {
-      // Android stays on the Expo push relay: the API's approval dispatcher
-      // does not send to raw FCM tokens yet (deliberately skipped server-side
-      // in expoPush.ts), so a native device token here would silently drop
-      // approval pushes.
-      //
-      // The iOS-native-APNs switch removed `extra.eas.projectId` from app.json,
-      // so on a stock build there is no relay to register with. That is a
-      // not-built-yet state, NOT a failure: reporting it as 'failed' would show
-      // Android users a red "push failed to register" banner for a feature that
-      // was never wired. Android push needs either an Expo projectId restored
-      // here or a real FCM sender added server-side.
-      const projectId = Constants.expoConfig?.extra?.eas?.projectId;
-      if (!projectId) {
-        return { status: 'unsupported', reason: 'android_push_not_configured' };
-      }
-      const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
-      token = tokenData.data;
-    }
+    // Native device push token for both platforms: raw APNs token on iOS,
+    // raw FCM registration token on Android. Needs NO Expo projectId/account
+    // on either platform — Android instead requires google-services.json
+    // bundled into the native build (see STORE_SUBMISSION.md). The server
+    // routes both natively via services/apns.ts and services/fcm.ts (#3639);
+    // the Expo push relay is no longer used by this app on either platform.
+    const tokenData = await Notifications.getDevicePushTokenAsync();
+    token = String(tokenData.data);
 
     const platform = Platform.OS as 'ios' | 'android';
     await apiRegisterPushToken(token, platform);
@@ -108,10 +90,7 @@ export async function registerForPushNotifications(): Promise<PushRegistrationOu
         sound: 'default',
       });
 
-      // W10 (#4336). Inert on today's builds — Android push is not wired at all
-      // (see the projectId branch above) and the server skips FCM tokens for
-      // ticket pushes. Registered now so the channel exists the moment either
-      // side lands, rather than ticket pushes arriving on 'default'.
+      // W10 (#4336).
       await Notifications.setNotificationChannelAsync('tickets', {
         name: 'Tickets',
         importance: Notifications.AndroidImportance.HIGH,

@@ -1,0 +1,133 @@
+{
+  "orgRecord": {
+    "documentTitle": "Organisation",
+    "header": {
+      "type": {
+        "customer": "Kunde",
+        "internal": "Intern"
+      },
+      "primaryContact": "Hauptansprechpartner",
+      "noPrimaryContact": "Kein Hauptansprechpartner",
+      "sites_one": "{{count}} Standort",
+      "sites_other": "{{count}} Standorte",
+      "scopeChip": "Arbeitsbereich: {{orgName}}",
+      "scopeChipHint": "Ihr Arbeitsbereich ist auf eine andere Organisation eingestellt. Diese Seite zeigt immer {{orgName}}.",
+      "created": "Kunde seit {{date}}"
+    },
+    "actions": {
+      "workHere": "In dieser Organisation arbeiten",
+      "workHereToast": "Zu {{orgName}} gewechselt",
+      "settings": "Einstellungen",
+      "more": "Weitere Aktionen",
+      "archive": "Archivieren",
+      "merge": "Zusammenführen",
+      "restore": "Wiederherstellen",
+      "retry": "Erneut versuchen"
+    },
+    "tabs": {
+      "overview": "Übersicht",
+      "contacts": "Kontakte",
+      "sites": "Standorte",
+      "devices": "Geräte",
+      "tickets": "Tickets",
+      "billing": "Verträge & Abrechnung",
+      "service": "Leistungen",
+      "activity": "Aktivität"
+    },
+    "comingSoon": {
+      "title": "Demnächst verfügbar",
+      "description": "Dieser Tab wird im nächsten Update des Organisationsdatensatzes verfügbar sein."
+    },
+    "devices": {
+      "loadError": "Die Geräte dieser Organisation konnten nicht geladen werden.",
+      "searchPlaceholder": "Geräte suchen",
+      "allStatuses": "Alle Status",
+      "allSites": "Alle Standorte",
+      "status": {
+        "online": "Online",
+        "offline": "Offline",
+        "maintenance": "Wartung",
+        "decommissioned": "Entfernt",
+        "quarantined": "Unter Quarantäne gestellt",
+        "updating": "Aktualisierung",
+        "pending": "Ausstehend"
+      }
+    },
+    "overview": {
+      "tiles": {
+        "devices": "Geräte",
+        "devicesSub": "{{online}} von {{total}} online",
+        "alerts": "Offene Warnungen",
+        "alertsSub": "{{critical}} kritisch · {{high}} hoch",
+        "tickets": "Offene Tickets",
+        "ticketsSub": "{{count}} wartet auf Kunde",
+        "contracts": "Aktive Verträge",
+        "contractsSub": "Nächste Verlängerung {{date}}",
+        "contractsNoRenewal": "Keine bevorstehende Verlängerung",
+        "invoices": "Ausstehend",
+        "invoicesSub": "Nächste Fälligkeit {{date}}",
+        "invoicesOverdue_one": "{{count}} überfällig",
+        "invoicesOverdue_other": "{{count}} überfällig",
+        "invoicesNothingDue": "Nichts fällig",
+        "contacts": "Kontakte",
+        "portalUsers": "Portalnutzer",
+        "sites": "Standorte"
+      },
+      "activity": {
+        "title": "Letzte Aktivität",
+        "empty": "Noch keine Aktivität erfasst.",
+        "failed": "Letzte Aktivität konnte nicht geladen werden.",
+        "viewAll": "Alle Aktivitäten anzeigen"
+      },
+      "criticalAlerts": {
+        "title": "Offene kritische Warnungen",
+        "empty": "Keine offenen kritischen Warnungen.",
+        "failed": "Offene kritische Warnungen konnten nicht abgerufen werden.",
+        "viewAll": "Alle Warnungen anzeigen"
+      },
+      "lastActivity": "Letzte Aktivität {{date}}",
+      "noSummary": "Zusammenfassende Zahlen sind derzeit nicht verfügbar."
+    },
+    "archived": {
+      "banner": "Diese Organisation ist archiviert und schreibgeschützt. Stellen Sie sie wieder her, um Änderungen vorzunehmen.",
+      "restoreError": "Diese Organisation konnte nicht wiederhergestellt werden."
+    },
+    "lifecycle": {
+      "inaccessible": "Diese Organisation ist {{status}}, daher sind ihre Live-Daten nicht verfügbar. Sie können sie weiterhin in der Organisationsliste sehen.",
+      "backToList": "Zurück zu den Organisationen"
+    },
+    "unavailable": {
+      "title": "In diesem Arbeitsbereich nicht verfügbar",
+      "description": "Organisationsdatensätze sind eine Ansicht auf Partnerebene. Ihre Anmeldung ist auf eine einzelne Organisation beschränkt, daher gibt es hier nichts zum Wechseln.",
+      "action": "Zum Dashboard"
+    },
+    "notFound": {
+      "title": "Organisation nicht gefunden",
+      "description": "Diese Organisation existiert nicht mehr, oder Sie haben keinen Zugriff mehr darauf.",
+      "action": "Zurück zu den Organisationen"
+    },
+    "error": {
+      "title": "Diese Organisation konnte nicht geladen werden",
+      "description": "Beim Abrufen des Datensatzes ist ein Fehler aufgetreten. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut."
+    },
+    "loading": "Organisation wird geladen…",
+    "tickets": {
+      "tabs": {
+        "open": "Offen",
+        "all": "Alle",
+        "closed": "Geschlossen"
+      },
+      "newTicket": "Neues Ticket",
+      "loadFailed": "Die Tickets konnten nicht geladen werden.",
+      "forbidden": "Sie sind nicht berechtigt, Tickets anzuzeigen.",
+      "truncated": "{{shown}} von {{total}} Tickets werden angezeigt."
+    },
+    "billing": {
+      "sections": {
+        "contracts": "Verträge",
+        "invoices": "Rechnungen",
+        "quotes": "Angebote"
+      }
+    }
+  }
+}

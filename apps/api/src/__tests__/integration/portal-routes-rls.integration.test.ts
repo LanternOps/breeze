@@ -20,11 +20,12 @@ import { createHash } from 'crypto';
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 import { portalRoutes } from '../../routes/portal';
-import { portalResetTokens } from '../../routes/portal/helpers';
+import { portalResetTokens, portalSessions } from '../../routes/portal/helpers';
 import { portalUsers, devices, portalBranding } from '../../db/schema';
 import { hashPassword } from '../../services/password';
 import { createPartner, createOrganization, createSite } from './db-utils';
 import { getTestDb } from './setup';
+import { eq } from 'drizzle-orm';
 
 const PORTAL_PASSWORD = 'PortalPass123!';
 
@@ -115,6 +116,22 @@ describe('portal routes — scoped DB access context (breeze_app pool)', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.map((d: any) => d.id)).toContain(deviceId);
+  });
+
+  it('authenticated device CSV export materializes the portal user\'s org devices before request scope closes', async () => {
+    const { orgId } = await seedOrgWithDevice('portal-export-host');
+    const portalUser = await seedPortalUser(orgId);
+    const app = buildPortalApp();
+
+    const token = await loginPortal(app, portalUser.email, orgId);
+    const res = await app.request('/portal/devices/export.csv', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/csv');
+    const csv = await res.text();
+    expect(csv).toContain('portal-export-host');
   });
 
   it('a portal user never sees another org\'s devices (org-scope isolation, not system)', async () => {
@@ -259,6 +276,63 @@ describe('portal routes — scoped DB access context (breeze_app pool)', () => {
       body: JSON.stringify({ email: portalUser.email, password: PORTAL_PASSWORD, orgId }),
     });
     expect(loginOld.status).toBe(401);
+  });
+
+  it('keeps an Entra identity out of local login, reset, and existing portal sessions', async () => {
+    const { orgId } = await seedOrgWithDevice('portal-entra-method-host');
+    const admin = getTestDb() as any;
+    const contaminatedHash = await hashPassword(PORTAL_PASSWORD);
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const [entraUser] = await admin.insert(portalUsers).values({
+      orgId,
+      email: `portal-entra-${unique}@example.test`,
+      name: 'Entra Customer',
+      passwordHash: contaminatedHash,
+      authMethod: 'entra',
+      entraOid: `oid-${unique}`,
+      entraTenantId: `tenant-${unique}`,
+      status: 'active',
+    }).returning();
+    const app = buildPortalApp();
+
+    const loginRes = await app.request('/portal/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: entraUser.email, password: PORTAL_PASSWORD, orgId }),
+    });
+    expect(loginRes.status).toBe(401);
+
+    const resetToken = `entra-reset-${unique}`;
+    const tokenHash = createHash('sha256').update(resetToken).digest('hex');
+    portalResetTokens.set(tokenHash, {
+      userId: entraUser.id,
+      expiresAt: new Date(Date.now() + 60_000),
+      createdAt: new Date(),
+    });
+    const resetRes = await app.request('/portal/auth/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: resetToken, password: 'DifferentPortalPass456!' }),
+    });
+    expect(resetRes.status).toBe(400);
+    const [afterReset] = await admin.select({ passwordHash: portalUsers.passwordHash })
+      .from(portalUsers).where(eq(portalUsers.id, entraUser.id)).limit(1);
+    expect(afterReset.passwordHash).toBe(contaminatedHash);
+
+    const sessionToken = `legacy-entra-session-${unique}`;
+    portalSessions.set(sessionToken, {
+      token: sessionToken,
+      portalUserId: entraUser.id,
+      orgId,
+      authEpoch: entraUser.authEpoch,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const profileRes = await app.request('/portal/profile', {
+      headers: { Authorization: `Bearer ${sessionToken}` },
+    });
+    expect(profileRes.status).toBe(401);
+    expect(portalSessions.has(sessionToken)).toBe(false);
   });
 
   it('profile read + update works under org scope', async () => {

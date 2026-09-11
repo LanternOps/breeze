@@ -15,6 +15,15 @@
  * bypass for audit_logs, and the topological FK order against the
  * actual schema. Runs under the integration config which connects to
  * the test docker-compose stack.
+ *
+ * Scope note (#3880): this file is the REGRESSION suite — its fixture is
+ * shaped around specific shipped bugs (#4100, the QuickBooks polymorphic
+ * mapping pre-clear, the #3258 composite portal_users FK) and it asserts
+ * named tables. Breadth (zero residual rows across the WHOLE cascade list,
+ * self-referencing chains, device-scoped denormalized org_id, partner-wide
+ * org_id-NULL rows) and the mid-walk failure semantics live in
+ * `tenantCascadeErasureBreadth.integration.test.ts`. Add a new named
+ * regression fixture here; add a new shape class there.
  */
 import './setup';
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -375,6 +384,38 @@ describe('cascadeDeleteOrg — end-to-end', () => {
   });
 
   // Regression test for #4100.
+  // #5075 W04: partners.service_management_psa_connection_id -> psa_connections
+  // is ON DELETE RESTRICT and psa_connections is in the org cascade list. The
+  // bind endpoint only accepts partner-wide connections, but nothing in the
+  // schema enforces that, so an org-owned (org_id set, partner_id NULL --
+  // psa_connections_one_owner_chk) connection bound to the partner must
+  // be un-wired (mode and id together -- the CHECK is a biconditional) before
+  // the connection is deleted, or the erasure aborts with 23503.
+  it('erases an org whose PSA connection is bound as the partner\'s Service Management desk', async () => {
+    const testDb = getTestDb();
+    const [conn] = (await testDb.execute(sql`
+      INSERT INTO psa_connections (partner_id, org_id, provider, name, credentials, created_at, updated_at)
+      VALUES (NULL, ${handles.orgIdToErase}, 'connectwise', 'Org-owned PSA', '{}'::jsonb, now(), now())
+      RETURNING id
+    `)) as unknown as Array<{ id: string }>;
+    await testDb.execute(sql`
+      UPDATE partners
+      SET service_management_mode = 'external', service_management_psa_connection_id = ${conn!.id}
+      WHERE id = ${handles.partnerId}
+    `);
+
+    const stats = await cascadeDeleteOrg(handles.orgIdToErase, handles.userId);
+
+    expect(stats.tablesDeleted.psa_connections).toBe(1);
+    expect(stats.tablesDeleted.partners).toBe(1); // un-wire count, no partner row removed
+
+    const partnerRows = (await testDb.execute(sql`
+      SELECT service_management_mode AS mode, service_management_psa_connection_id AS conn
+      FROM partners WHERE id = ${handles.partnerId}
+    `)) as unknown as Array<{ mode: string; conn: string | null }>;
+    expect(partnerRows).toEqual([{ mode: 'native', conn: null }]);
+  });
+
   it('erases an org with a populated webhook_deliveries row instead of aborting on FK violation', async () => {
     const testDb = getTestDb();
 
@@ -408,5 +449,46 @@ describe('cascadeDeleteOrg — end-to-end', () => {
       sql`SELECT id FROM webhook_deliveries WHERE webhook_id = ${handles.webhookIdControl}`,
     )) as unknown as unknown[];
     expect(controlDeliveryRows.length).toBe(1);
+  });
+
+  // #3258 follow-up: portal_users.contact_id became a COMPOSITE
+  // (contact_id, org_id) -> contacts (id, org_id) FK, which adds a new edge to
+  // the graph topologicalCascadeOrder() reads. Its pg_constraint query counts
+  // every FK edge regardless of `confdeltype`, so the new edge makes
+  // `portal_users` a CHILD of `contacts` and moves it EARLIER in the erasure.
+  //
+  // Two failure modes this rules out: a 23503 if the order had come out
+  // parents-first, and a 23502 if the referential action had been a BARE
+  // composite `SET NULL` (which would target the NOT NULL org_id) and fired
+  // here. Neither is visible from the cascade-list contract test, which reads
+  // the Drizzle schema and never deletes a row.
+  it('erases an org whose portal login is linked to one of its contacts', async () => {
+    const testDb = getTestDb();
+
+    const [contact] = (await testDb.execute(sql`
+      INSERT INTO contacts (org_id, name, email, created_at, updated_at)
+      VALUES (${handles.orgIdToErase}, 'Erased Person', ${`erase-${Date.now()}@example.test`}, now(), now())
+      RETURNING id
+    `)) as unknown as Array<{ id: string }>;
+    const [login] = (await testDb.execute(sql`
+      INSERT INTO portal_users (org_id, email, name, contact_id, created_at, updated_at)
+      VALUES (${handles.orgIdToErase}, ${`erase-login-${Date.now()}@example.test`}, 'Erased Login', ${contact!.id}, now(), now())
+      RETURNING id
+    `)) as unknown as Array<{ id: string }>;
+
+    // The assertion that matters: this does not throw.
+    const stats = await cascadeDeleteOrg(handles.orgIdToErase, handles.userId);
+    expect(stats.tablesDeleted.contacts).toBe(1);
+    expect(stats.tablesDeleted.portal_users).toBe(1);
+
+    // No orphan on either side.
+    const remainingLogins = (await testDb.execute(
+      sql`SELECT id FROM portal_users WHERE id = ${login!.id}`,
+    )) as unknown as unknown[];
+    expect(remainingLogins.length).toBe(0);
+    const remainingContacts = (await testDb.execute(
+      sql`SELECT id FROM contacts WHERE id = ${contact!.id}`,
+    )) as unknown as unknown[];
+    expect(remainingContacts.length).toBe(0);
   });
 });

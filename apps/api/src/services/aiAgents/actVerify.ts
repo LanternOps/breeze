@@ -31,6 +31,13 @@ import { alerts } from '../../db/schema/alerts';
 import type { ActAssetPin } from './actRevalidation';
 import type { ActTarget } from './actManifest';
 
+/**
+ * Short system context for this module's own DB writes. Deliberately NOT used
+ * around the verification reads: those await a device-command round-trip, and
+ * holding a context across one pins a pooled connection idle-in-transaction
+ * (#1105/#4150). `commandQueue.executeCommandWithSystemPrecheck` owns the
+ * context those reads actually need.
+ */
 function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
   if (getCurrentDbAccessContext()?.scope === 'system') return fn();
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -105,22 +112,77 @@ function commandExecutionVerdict(output: string, isError: boolean): ActExecution
   return isError ? 'failed' : 'succeeded';
 }
 
+/**
+ * The independent service-state read, exposed for the AI Operator task
+ * criterion (#5205 W06).
+ *
+ * `verifyServiceRunning` below needs a full `VerifyActExecutionArgs['run']`
+ * (id/orgId/agentId/deviceId) because that is what an act-lane call site
+ * already has, but the read itself only ever uses `run.deviceId`. A task
+ * criterion has a device and an agent principal but NOT a run — half the
+ * point of a durable task is that the run which proposed the fix may have
+ * ended hours ago (spec §8.1's "fresh evidence"), so it must not have to
+ * fabricate one to ask "is this service running right now".
+ *
+ * This is a NARROWING adapter, not a second implementation: it calls the same
+ * function, so C10's rule (the criterion is always the independent
+ * `list_services` read, never the dispatch result) has exactly one
+ * implementation to audit.
+ */
+export async function verifyServiceRunningForTask(
+  target: { serviceName: string },
+  device: { deviceId: string; orgId: string },
+  agentUserId: string,
+): Promise<{ verification: ActVerificationVerdict; detail?: string }> {
+  return verifyServiceRunning(
+    { kind: 'service', serviceName: target.serviceName } as Extract<ActTarget, { kind: 'service' }>,
+    // `deviceId` and `orgId` are both REAL and both read: the org is the
+    // tenant the task was decided under and now gates the dispatch itself
+    // (#5264 — it used to be `''`, i.e. unread filler). `id`/`agentId` exist
+    // only to satisfy the act-lane shape and are still read by nothing.
+    { id: '', orgId: device.orgId, agentId: '', deviceId: device.deviceId },
+    agentUserId,
+  );
+}
+
 async function verifyServiceRunning(
   target: Extract<ActTarget, { kind: 'service' }>,
   run: VerifyActExecutionArgs['run'],
   agentUserId: string,
 ): Promise<{ verification: ActVerificationVerdict; detail?: string }> {
-  const { executeCommand } = await getCommandQueue();
-  const result = await inSystemDbContext(() =>
-    executeCommand(run.deviceId, 'list_services', { search: target.serviceName }, {
+  const { executeCommandWithSystemPrecheck } = await getCommandQueue();
+  // NO DB context held across this call (#4150): it is a device round-trip
+  // bounded at VERIFY_READ_TIMEOUT_MS, and `executeCommandWithSystemPrecheck`
+  // opens the system context its own RLS-gated precheck needs and closes it
+  // before the wait. Wrapping this in `inSystemDbContext` — as it used to be —
+  // pinned a pooled connection idle-in-transaction for the whole read (#1105).
+  const result = await executeCommandWithSystemPrecheck(
+    run.deviceId, 'list_services', { search: target.serviceName }, {
       userId: agentUserId, timeoutMs: VERIFY_READ_TIMEOUT_MS,
-    }));
+      // #5264: the run's org is the tenant this verification was authorized
+      // under. A device that has since moved must not be read from here.
+      expectedOrgId: run.orgId,
+    });
 
   if (result.status !== 'completed') {
     return { verification: 'inconclusive', detail: `service status read did not complete (${result.status})` };
   }
   const parsed = parseCommandResult(result.stdout ?? '{}');
-  const services = Array.isArray(parsed?.services) ? parsed!.services as unknown[] : [];
+  // An UNPARSEABLE or malformed read-back is not evidence that the service is
+  // stopped — it is evidence that we did not read the service state at all.
+  // Collapsing it to `services: []` (as this did) made a truncated or garbled
+  // agent response indistinguishable from a genuine "service confirmed not
+  // running", which then reads as a real negative: for an AI Operator task
+  // that authorizes another restart attempt, and eventually a handoff telling
+  // a technician the service is still down when nobody ever looked.
+  //
+  // `verifyProcessAbsent` below has always guarded this case, and its comment
+  // claims this function "already treats the analogous case conservatively" —
+  // which was not true until now. Both agree from here.
+  if (!parsed || !Array.isArray(parsed.services)) {
+    return { verification: 'inconclusive', detail: 'service list read-back was not parseable' };
+  }
+  const services = parsed.services as unknown[];
   const match = services.find((s): s is { name: string; status: string } =>
     typeof s === 'object' && s !== null
     && typeof (s as { name?: unknown }).name === 'string'
@@ -137,11 +199,14 @@ async function verifyProcessAbsent(
   run: VerifyActExecutionArgs['run'],
   agentUserId: string,
 ): Promise<{ verification: ActVerificationVerdict; detail?: string }> {
-  const { executeCommand } = await getCommandQueue();
-  const result = await inSystemDbContext(() =>
-    executeCommand(run.deviceId, 'list_processes', { search: target.processName, limit: 200 }, {
+  const { executeCommandWithSystemPrecheck } = await getCommandQueue();
+  // No DB context held across the round-trip — see `verifyServiceRunning`.
+  const result = await executeCommandWithSystemPrecheck(
+    run.deviceId, 'list_processes', { search: target.processName, limit: 200 }, {
       userId: agentUserId, timeoutMs: VERIFY_READ_TIMEOUT_MS,
-    }));
+      // #5264 — see `verifyServiceRunning`.
+      expectedOrgId: run.orgId,
+    });
 
   if (result.status !== 'completed') {
     return { verification: 'inconclusive', detail: `process list read did not complete (${result.status})` };

@@ -26,7 +26,7 @@ import { captureException } from '../../services/sentry';
 import { processCollectedAuditPolicyCommandResult } from '../../services/auditBaselineService';
 import { CommandTypes, queueCommandForExecution } from '../../services/commandQueue';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
-import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
+import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { redactResultAgainstCommandSecrets } from '../../services/commandSecretRedaction';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
 import { applyCommandAutomationTerminal } from '../../services/automationTerminalEvidence';
@@ -38,14 +38,18 @@ import { redactSecretsFromOutput, redactAgentResultErrorFields } from '../../ser
 import { isRawStdoutArtifactCommand } from '../../services/commandAudit';
 import {
   applySoftwareInstallResult,
+  reconcileSoftwareInstallResult,
   SW_INSTALL_COMMAND_ID_REGEX,
 } from '../../services/softwareDeploymentResult';
 
 import {
   ACCEPTED_COMMAND_RESULT_STATUSES,
+  BACKUP_QUEUE_ACK_RESULT_STATUS,
   commandAcceptsAgentResult,
   commandAcceptsAgentResultCondition,
 } from '../../services/commandResultAcceptance';
+import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../../services/commandTypes';
+import { tryParseBackupResultPayload, isBackupQueuedAck, isBackupStartedAck } from '../../services/backupProgress';
 import {
   pamAgentResultV2Schema,
   type PamActuationResultClassification,
@@ -90,6 +94,11 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   'mssql_backup',
   'snmp_poll',
   'script',
+  // #3525: the agent's script_cancel ack is the ONLY evidence that lets an
+  // execution terminalise as `cancelled`. Omitting it here drops that evidence
+  // on the HTTP-polling transport specifically, leaving the row stuck in
+  // `cancelling` until a sweep gives up on it.
+  'script_cancel',
   'peripheral_policy_sync_v2',
   'pam_apply_v2',
   'pam_cleanup_v2',
@@ -202,7 +211,7 @@ commandsRoutes.get('/:id/commands', async (c) => {
   // Both the claim AND the delivery pass run inside the SAME system context.
   // This route is self-managed-context (agentAuth leaves no ambient context
   // behind on the REST paths), and since #3409 PR4c-2 the delivery pass is no
-  // longer pure CPU: `decryptClaimedCommandsForDelivery` first runs the
+  // longer pure CPU: `prepareClaimedCommandsForDelivery` first runs the
   // secret-delivery claim gate, which reads `devices` (RLS-scoped) and drives
   // offending `device_commands` / `script_executions` rows terminal. Called
   // outside the closure those would be contextless bare-pool queries (#1375).
@@ -220,7 +229,7 @@ commandsRoutes.get('/:id/commands', async (c) => {
         // default — so read the context value, never restate the literal.
         agent.claimTypeAllowlist
       );
-      return decryptClaimedCommandsForDelivery(commands);
+      return prepareClaimedCommandsForDelivery(commands);
     })
   );
 
@@ -392,7 +401,7 @@ commandsRoutes.post(
     // 'timeout'`, written by the wait deadline in commandQueue or by the stale
     // reaper) remains acceptable for non-PAM commands. Every other terminal
     // result preserves the historical short circuit.
-    if (!commandAcceptsAgentResult(command.status, command.result)) {
+    if (!commandAcceptsAgentResult(command.status, command.result, command.type)) {
       return c.json({ success: true });
     }
 
@@ -423,6 +432,21 @@ commandsRoutes.post(
       rawStdout,
     );
 
+    // D20-D (REST twin of agentWs.ts processCommandResult): mssql_backup and
+    // hyperv_backup's FIRST reply can be a non-terminal queue-admission/
+    // started ack rather than the real outcome. Detected the same way the
+    // WS twin and the backup_run orphaned-result branch already do
+    // (tryParseBackupResultPayload + isBackupQueuedAck/isBackupStartedAck).
+    const isQueuedBackupWorkload = QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES.includes(
+      command.type as (typeof QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES)[number],
+    );
+    const isBackupAck =
+      isQueuedBackupWorkload &&
+      (() => {
+        const parsed = tryParseBackupResultPayload(normalizedData.result, stdout);
+        return isBackupQueuedAck(parsed) || isBackupStartedAck(parsed);
+      })();
+
     // Terminal compare-and-set, outside the agentAuth transaction for the same
     // visibility reasons as the lookup above, and under an explicit system
     // context so this is not a contextless bare-pool write (#1375). Mirrors the
@@ -440,6 +464,7 @@ commandsRoutes.post(
     // usually short-circuits first — which is itself a useful signal.
     let updated: unknown;
     const terminalCompletedAt = new Date();
+    const storedCommandResult = buildStoredCommandResult(command.type, normalizedData, stdout);
     const updatedRows = await runOutsideDbContext(async () => withSystemDbAccessContext(async () =>
       dbWriteExpectingRows(
         'device_commands.rest_result_terminal_cas',
@@ -449,7 +474,14 @@ commandsRoutes.post(
             .set({
               status: normalizedData.status === 'completed' ? 'completed' : 'failed',
               completedAt: terminalCompletedAt,
-              result: buildStoredCommandResult(command.type, normalizedData, stdout),
+              // D20-D: a queue-ack stays 'completed' at the top level (the
+              // caller — e.g. a HTTP-polling agent's dispatch loop — must
+              // still see it as delivered) but the STORED result.status is
+              // overridden to the marker so commandAcceptsAgentResultCondition
+              // reopens the row for the real terminal result later.
+              result: isBackupAck
+                ? { ...storedCommandResult, status: BACKUP_QUEUE_ACK_RESULT_STATUS }
+                : storedCommandResult,
               // Credentials ride the payload for some command types (FileVault
               // rotation, and the #3409 script secret envelope); strip them
               // once the command is terminal. Shared with the ten other
@@ -478,6 +510,17 @@ commandsRoutes.post(
     }
 
     if (updatedRows.length === 0) {
+      return c.json({ success: true });
+    }
+
+    if (isBackupAck) {
+      // D20-D: non-terminal signal — no applyCommandAutomationTerminal, no
+      // per-type handler dispatch. Without this guard,
+      // handleProviderBackedBackupResult would parse {"queued":true}/
+      // {"started":true} against the all-optional backupCommandResultSchema,
+      // "succeed" vacuously, and mark the backup_jobs row completed with no
+      // snapshot at all — a false-positive this fix would otherwise introduce
+      // now that the command payload carries jobId (D20-E).
       return c.json({ success: true });
     }
 
@@ -545,24 +588,8 @@ commandsRoutes.post(
     // replays AND results from a retry-superseded queued command a no-op.
     if (command.type === 'software_install') {
       try {
-        const payload =
-          command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
-            ? (command.payload as Record<string, unknown>)
-            : {};
-        if (typeof payload.deploymentId === 'string') {
-          await applySoftwareInstallResult({
-            deploymentId: payload.deploymentId,
-            deviceId,
-            status: normalizedData.status,
-            exitCode: normalizedData.exitCode,
-            stdout: normalizedData.stdout,
-            stderr: normalizedData.stderr,
-            error: normalizedData.error,
-            startedAt: normalizedData.startedAt,
-            durationMs: normalizedData.durationMs,
-            attemptNumber: typeof payload.retryCount === 'number' ? payload.retryCount : 0,
-          });
-        }
+        // #5128: shared with the websocket transport so the two cannot drift.
+        await reconcileSoftwareInstallResult(command, deviceId, normalizedData);
       } catch (err) {
         console.error(`[agents] software install deployment-result reconciliation failed for ${commandId}:`, err);
         captureException(err);

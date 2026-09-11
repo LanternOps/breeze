@@ -122,6 +122,18 @@ describe('Action intents migration', () => {
     // the non-null->NULL tombstone transition (the ticket-delete FK's ON
     // DELETE SET NULL, or a moveOrg detach step), never a retarget.
     'scope_ticket_id',
+    // 2026-10-14-100200 (#5205 W04, #5209): AI Operator operation identity.
+    // UNCONDITIONAL, unlike the two scope columns above — there is no
+    // tombstone direction to permit. `action_intents_task_org_fk` is ON DELETE
+    // RESTRICT precisely because SET NULL would strand `task_step_key` /
+    // `operation_key` and instantly violate `action_intents_task_link_chk`, so
+    // all three are set at INSERT and never written again. They are the
+    // identity `ai_operator_operations` is keyed on: an editable `task_id`
+    // would let a live intent be re-pointed at a different task after
+    // approval.
+    'task_id',
+    'task_step_key',
+    'operation_key',
   ] as const;
 
   // Deliberately MUTABLE. release_by is written by the approve fan-in

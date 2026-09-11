@@ -261,10 +261,25 @@ type CommandResult struct {
 	Stderr   string `json:"stderr,omitempty"`
 	Error    string `json:"error,omitempty"`
 	// Result carries structured output for the HTTP command-result transport.
-	// Most handlers leave it nil; WebSocket conversion independently reparses
-	// JSON stdout to avoid duplicating large generic results on that wire.
+	// Most handlers leave it nil, in which case WebSocket conversion
+	// (toWSCommandResult, agent/internal/heartbeat/heartbeat.go) independently
+	// reparses JSON stdout to avoid duplicating large generic results on that
+	// wire. A handler that DOES set Result explicitly (e.g. the script
+	// handler's #2698 customFieldWrites envelope) wins over that reparse on
+	// the WebSocket leg too — set it only for structured output the transport
+	// must carry verbatim, not as a general-purpose duplicate of Stdout.
 	Result     any   `json:"result,omitempty"`
 	DurationMs int64 `json:"durationMs,omitempty"`
+	// #3525 cancellation marker. Set by the script handler when this execution
+	// ended because a script_cancel killed it. Top-level (a sibling of Status
+	// and ExitCode, not nested under Result) because that is where the server's
+	// result handler reads them: they are the ONLY proof that lets a racing
+	// script result close the execution as `cancelled` rather than preserving
+	// its natural outcome as `unconfirmed` (OD9-C). CancelledByCommandID names
+	// the script_cancel command responsible, so a stale or retried cancel is
+	// never credited with a kill it did not do.
+	Cancelled            bool   `json:"cancelled,omitempty"`
+	CancelledByCommandID string `json:"cancelledByCommandId,omitempty"`
 	// RFC3339Nano timestamp captured by the agent at the moment the command's
 	// primary work began. Set by command handlers that care about the server-
 	// side reconstruction (e.g. software_install). Empty when not applicable.

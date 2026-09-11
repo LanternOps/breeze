@@ -75,11 +75,13 @@ vi.mock('./notificationChannelSecrets', () => ({
 }));
 
 const sendInAppNotificationMock = vi.hoisted(() => vi.fn());
+const webhookTotalAttemptsMock = vi.hoisted(() => vi.fn(() => 3));
 
 vi.mock('./notificationSenders', () => ({
   sendEmailNotification: vi.fn(),
   getEmailRecipients: vi.fn(),
   sendWebhookNotification: vi.fn(),
+  webhookTotalAttempts: webhookTotalAttemptsMock,
   sendInAppNotification: sendInAppNotificationMock,
   sendPagerDutyNotification: vi.fn(),
   sendPushoverNotification: vi.fn()
@@ -135,6 +137,7 @@ beforeEach(() => {
   );
   queueAddMock.mockReset().mockImplementation(async () => makeJobStub('job-1'));
   sendInAppNotificationMock.mockReset().mockResolvedValue({ success: true, notificationCount: 1 });
+  webhookTotalAttemptsMock.mockReset().mockReturnValue(3);
 });
 
 describe('processAlertNotifications status guard (a)', () => {
@@ -167,6 +170,40 @@ describe('processAlertNotifications status guard (a)', () => {
   });
 });
 
+describe('processAlertNotifications status guard (#4123, table-driven)', () => {
+  it.each([
+    { status: 'resolved', expectSkip: true },
+    { status: 'suppressed', expectSkip: true },
+    { status: 'dismissed', expectSkip: true },
+    { status: 'active', expectSkip: false }
+  ])('status=$status → skip baseline fan-out: $expectSkip', async ({ status, expectSkip }) => {
+    if (expectSkip) {
+      selectQueue.push([makeAlert({ status })]);
+    } else {
+      selectQueue.push(
+        [makeAlert({ status })], // alert
+        [{ id: 'device-1', displayName: 'Server-1' }], // device
+        [{ partnerId: null }], // org (partnerIdForOrg)
+        [], // routing rules (no match)
+        [{ id: 'channel-1' }], // org channels fallback
+        [{ id: 'channel-1' }] // validChannels
+      );
+    }
+
+    const result = await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+
+    if (expectSkip) {
+      expect(result).toEqual({ queued: 0, inAppSent: false, durationMs: expect.any(Number) });
+      expect(sendInAppNotificationMock).not.toHaveBeenCalled();
+      expect(queueAddBulkMock).not.toHaveBeenCalled();
+    } else {
+      expect(result.queued).toBe(1);
+      expect(sendInAppNotificationMock).toHaveBeenCalledTimes(1);
+      expect(queueAddBulkMock).toHaveBeenCalledTimes(1);
+    }
+  });
+});
+
 describe('processAlertNotifications baseline send jobId (c)', () => {
   it('enqueues baseline sends with a stable jobId so a retried process-alert cannot duplicate the fan-out', async () => {
     selectQueue.push(
@@ -185,23 +222,46 @@ describe('processAlertNotifications baseline send jobId (c)', () => {
     expect(jobs).toHaveLength(1);
     expect(jobs[0]!.opts?.jobId).toBe('alert-send-alert-1-channel-1-0');
   });
+
+  it('uses configured retries to set durable total attempts on the send job', async () => {
+    webhookTotalAttemptsMock.mockReturnValueOnce(1);
+    const config = { url: 'https://example.com/hook', retryCount: 0 };
+    selectQueue.push(
+      [makeAlert({ status: 'active' })],
+      [{ id: 'device-1', displayName: 'Server-1' }],
+      [{ partnerId: null }],
+      [],
+      [{ id: 'channel-1' }],
+      [{ id: 'channel-1', type: 'webhook', config }]
+    );
+
+    await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+
+    expect(webhookTotalAttemptsMock).toHaveBeenCalledWith(config);
+    const jobs = queueAddBulkMock.mock.calls[0]![0] as Array<{ opts: { attempts: number } }>;
+    expect(jobs[0]!.opts.attempts).toBe(1);
+  });
 });
 
 describe('scheduleEscalation job options (carried Task 8 review handoff)', () => {
   it('gives escalation send jobs attempts/backoff/removal options so a transport failure gets retried instead of permanently occupying the jobId', async () => {
+    const webhookConfig = { url: 'https://example.com/hook', retryCount: 2 };
     selectQueue.push(
       [makeAlert({ status: 'active', ruleId: 'rule-1' })], // alert
       [{ id: 'device-1', displayName: 'Server-1' }], // device
       [{ overrideSettings: { notificationChannelIds: ['channel-1'], escalationPolicyId: 'policy-1' } }], // rule
       [{ partnerId: null }], // org (partnerIdForOrg)
-      [{ id: 'channel-1' }], // validChannels (baseline)
+      [{ id: 'channel-1', type: 'webhook', config: webhookConfig }], // validChannels (baseline)
       [{ id: 'policy-1', orgId: 'org-1', partnerId: null, steps: [{ delayMinutes: 5, channelIds: ['channel-1'] }] }], // escalation policy
-      [{ id: 'channel-1' }] // validChannels (escalation)
+      [{ id: 'channel-1', type: 'webhook', config: webhookConfig }] // validChannels (escalation)
     );
 
     await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
 
     expect(queueAddMock).toHaveBeenCalledTimes(1);
+    expect(webhookTotalAttemptsMock).toHaveBeenCalledTimes(2);
+    expect(webhookTotalAttemptsMock).toHaveBeenNthCalledWith(1, webhookConfig);
+    expect(webhookTotalAttemptsMock).toHaveBeenNthCalledWith(2, webhookConfig);
     const [name, data, opts] = queueAddMock.mock.calls[0]!;
     expect(name).toBe('send');
     expect(data).toEqual({ type: 'send', alertId: 'alert-1', channelId: 'channel-1', escalationStep: 1 });

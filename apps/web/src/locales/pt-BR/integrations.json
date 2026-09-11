@@ -722,9 +722,10 @@
     "createNew": "Criar novo",
     "unlink": "Desvincular",
     "syncNow": "Sincronizar agora",
-    "pending": "Pendente",
-    "synced": "Sincronizado",
-    "syncError": "Erro de sincronização",
+    "notSynced": "Não sincronizado",
+    "notSyncedHint": "Confirmado no Breeze, ainda não enviado ao QuickBooks",
+    "inQuickbooks": "No QuickBooks",
+    "syncFailed": "Falha na sincronização",
     "incomeAccount": "Conta de receita",
     "incomeAccountRequired": "Defina uma conta de receita padrão antes de criar ou sincronizar itens no QuickBooks.",
     "saveIncomeAccount": "Salvar conta de receita",
@@ -782,11 +783,17 @@
     "pullPaymentsEnabled": "Os pagamentos serão sincronizados a partir do QuickBooks",
     "pullPaymentsDisabled": "Os pagamentos não serão mais sincronizados a partir do QuickBooks",
     "failedToUpdatePullPayments": "Não foi possível atualizar a configuração de sincronização de pagamentos.",
+    "pushPayments": "Envio de pagamentos",
+    "pushPaymentsDescription": "Enviar ao QuickBooks os pagamentos registrados no Breeze e removê-los quando forem estornados.",
+    "pushPaymentsEnabled": "Os pagamentos serão enviados ao QuickBooks",
+    "pushPaymentsDisabled": "Os pagamentos não serão mais enviados ao QuickBooks",
+    "failedToUpdatePushPayments": "Não foi possível atualizar a configuração de envio de pagamentos.",
     "lastPaymentSync": "Última sincronização de pagamentos",
     "never": "Nunca",
     "syncNow": "Sincronizar agora",
     "syncNowQueued": "Sincronização de pagamentos na fila.",
     "syncNowNotQueued": "Não foi possível colocar a sincronização de pagamentos na fila. Tente novamente em instantes.",
+    "syncNowPullDisabled": "A sincronização de pagamentos está desativada para esta conexão: ative Sincronização de pagamentos ou Envio de pagamentos para sincronizar agora.",
     "failedToSyncNow": "Não foi possível iniciar a sincronização de pagamentos."
   },
   "securityIntegration": {
@@ -867,7 +874,8 @@
     "couldNotRefresh": "Não foi possível atualizar os dados da conta Stripe.",
     "notCached": "Moeda ainda não armazenada em cache — atualize para buscá-la no Stripe.",
     "staleCache": "Não foi possível acessar o Stripe — exibindo os últimos detalhes da conta em cache.",
-    "reconnectRequired": "Sua chave do Stripe salva (•••• {{last4}}) não funciona mais: {{reason}} Cole uma nova chave para reconectar; os pagamentos on-line falharão até lá."
+    "reconnectRequired": "Sua chave do Stripe salva (•••• {{last4}}) não funciona mais: {{reason}} Cole uma nova chave para reconectar; os pagamentos on-line falharão até lá.",
+    "reconciliationError": "A reconciliação de estornos de pagamento não está em execução: {{reason}} Substitua a chave Stripe por uma que possa ler Eventos."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Falha ao salvar mapeamentos de sites.",

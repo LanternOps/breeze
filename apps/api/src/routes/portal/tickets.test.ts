@@ -19,7 +19,7 @@
  * Task 7: portal comment edit/delete within until-staff-reply window.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
@@ -45,6 +45,14 @@ vi.mock('../../services/ticketService', () => ({
       this.status = status;
     }
   }
+}));
+
+const { supportUsageForOrgMock } = vi.hoisted(() => ({
+  supportUsageForOrgMock: vi.fn(),
+}));
+
+vi.mock('../../services/portal/supportUsage', () => ({
+  supportUsageForOrg: supportUsageForOrgMock,
 }));
 
 // ── DB mock ───────────────────────────────────────────────────────────────────
@@ -118,6 +126,7 @@ vi.mock('./helpers', () => ({
 
 import { ticketRoutes, portalTicketsEnabledMiddleware } from './tickets';
 import { validatePortalCookieCsrfRequest, writePortalAudit } from './helpers';
+import { db } from '../../db';
 
 // ── Test app ──────────────────────────────────────────────────────────────────
 
@@ -140,10 +149,10 @@ function compileWhere(args: unknown[]): { sql: string; params: unknown[] } {
   return portalDialect.sqlToQuery(args[0] as never);
 }
 
-function buildApp(user: Record<string, unknown> = PORTAL_USER) {
+function buildApp(user: Record<string, unknown> = PORTAL_USER, timezone = 'UTC') {
   const app = new Hono();
   app.use('*', async (c, next) => {
-    c.set('portalAuth' as never, { user, token: 'tok-1', authMethod: 'bearer' });
+    c.set('portalAuth' as never, { user, token: 'tok-1', authMethod: 'bearer', timezone });
     await next();
   });
   app.route('/', ticketRoutes);
@@ -487,6 +496,68 @@ describe('GET /tickets/forms', () => {
   });
 });
 
+describe('GET /tickets/usage', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  afterEach(() => vi.useRealTimers());
+
+  const noDataUsage = {
+    asOf: '2026-09-02T12:00:00.000Z',
+    month: '2026-09',
+    timezone: 'America/Denver',
+    dataStatus: 'no_data',
+    totals: {
+      billed: { minutes: 0, hours: 0 },
+      toBeBilled: { minutes: 0, hours: 0 },
+      coveredByContract: { minutes: 0, hours: 0 },
+      pendingReview: { minutes: 0, hours: 0 },
+    },
+    tickets: [],
+  };
+
+  it('passes only the session org and portal user to the aggregator', async () => {
+    supportUsageForOrgMock.mockResolvedValue(noDataUsage);
+
+    const response = await buildApp(PORTAL_USER, 'America/Denver').request(
+      '/tickets/usage?month=2026-09',
+    );
+
+    expect(response.status).toBe(200);
+    expect(supportUsageForOrgMock).toHaveBeenCalledWith({
+      orgId: 'o-1',
+      month: '2026-09',
+      timezone: 'America/Denver',
+      portalUserId: 'pu-1',
+    });
+  });
+
+  it('rejects an invalid month before calling the service', async () => {
+    const response = await buildApp(PORTAL_USER, 'America/Denver').request(
+      '/tickets/usage?month=2026-13',
+    );
+
+    expect(response.status).toBe(400);
+    expect(supportUsageForOrgMock).not.toHaveBeenCalled();
+  });
+
+  it('registers the literal route before /tickets/:id and defaults the month in the org timezone', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-01T05:30:00.000Z'));
+    supportUsageForOrgMock.mockResolvedValue(noDataUsage);
+
+    const response = await buildApp(PORTAL_USER, 'America/Denver').request('/tickets/usage');
+
+    expect(response.status).toBe(200);
+    expect(supportUsageForOrgMock).toHaveBeenCalledWith({
+      orgId: 'o-1',
+      month: '2026-09',
+      timezone: 'America/Denver',
+      portalUserId: 'pu-1',
+    });
+    expect(supportUsageForOrgMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ── GET /tickets/forms — mount-wiring regression (auth-prefix coverage) ───────
 //
 // routes/portal/index.ts protects the ticket router with
@@ -508,7 +579,7 @@ describe('GET /tickets/forms — index.ts mount wiring', () => {
       if (!c.req.header('Authorization')) {
         return c.json({ error: 'Authentication required' }, 401);
       }
-      c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer' });
+      c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer', timezone: 'UTC' });
       await next();
     });
     app.route('/', ticketRoutes);
@@ -574,7 +645,7 @@ const CREATED_TICKET = {
 function buildPostApp() {
   const app = new Hono();
   app.use('*', async (c, next) => {
-    c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer' });
+    c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer', timezone: 'UTC' });
     await next();
   });
   app.route('/', ticketRoutes);
@@ -725,6 +796,124 @@ describe('POST /tickets — delegates to createTicket', () => {
 
     expect(res.status).toBe(400);
     expect(createTicketMock).not.toHaveBeenCalled();
+  });
+});
+
+// ── POST /tickets/:id/comments — sweep 2026-09-08 G5-5 ───────────────────────
+
+describe('POST /tickets/:id/comments', () => {
+  let app: ReturnType<typeof buildApp>;
+
+  // What GET /tickets/:id selects per comment (see the comments query above):
+  // id, authorName, authorType, content, createdAt. The immediate POST
+  // response must carry the same shape so the reply's "Your IT team" badge
+  // (apps/portal — c.authorType !== 'portal') is correct without a reload.
+  const COMMENT_FIXTURE = {
+    id: 'cccccccc-1111-2222-3333-444455556666',
+    authorName: PORTAL_USER.name,
+    authorType: 'portal',
+    senderPortalUserId: PORTAL_USER.id,
+    content: 'Still happening',
+    createdAt: new Date('2026-09-08T00:00:00.000Z'),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = buildApp();
+
+    // Ticket ownership lookup: .select({id}).from(tickets).where().limit(1)
+    dbSelectMock.mockImplementation(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(() => Promise.resolve([{ id: TICKET_ID }]))
+        }))
+      }))
+    }));
+
+    // Projects the REAL `.returning({...})` argument against the fixture —
+    // exactly like Postgres would: a projection key the route forgot to ask
+    // for is simply ABSENT from the row, not present-with-undefined. A mock
+    // that instead always returned the full fixture object would stay green
+    // even if the route's `.returning()` selection regressed.
+    vi.mocked(db.insert).mockImplementation(() => ({
+      values: vi.fn(() => ({
+        returning: vi.fn((columns: Record<string, unknown>) => {
+          const row: Record<string, unknown> = {};
+          for (const key of Object.keys(columns)) {
+            row[key] = (COMMENT_FIXTURE as Record<string, unknown>)[key];
+          }
+          return Promise.resolve([row]);
+        })
+      }))
+    }) as never);
+  });
+
+  it('includes authorType in the immediate response', async () => {
+    // Without this, the portal UI defaulted a customer's own just-posted
+    // reply to the "Your IT team" badge until the next full reload re-fetched
+    // it from GET /tickets/:id, whose comments query DOES select authorType.
+    const res = await app.request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'Still happening' }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json() as { comment: Record<string, unknown> };
+    expect(body.comment).toHaveProperty('authorType', 'portal');
+  });
+
+  /**
+   * author_type alone cannot tell a customer's emailed reply from a
+   * technician's own reply linked through the Outlook add-in — both are stored
+   * as 'email' (services/inboundEmail/emailComments.ts hardcodes it). Only the
+   * resolved portal sender separates them, so the portal's "Customer email"
+   * badge keys on this column. Dropping it from the projection would silently
+   * relabel the IT team's reply as the customer's.
+   */
+  it('includes senderPortalUserId in the immediate response', async () => {
+    const res = await app.request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'Still happening' }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json() as { comment: Record<string, unknown> };
+    expect(body.comment).toHaveProperty('senderPortalUserId', PORTAL_USER.id);
+  });
+
+  it('still returns id, authorName, content, createdAt (no regression)', async () => {
+    const res = await app.request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'Still happening' }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json() as { comment: Record<string, unknown> };
+    expect(body.comment).toMatchObject({
+      id: COMMENT_FIXTURE.id,
+      authorName: COMMENT_FIXTURE.authorName,
+      content: COMMENT_FIXTURE.content,
+    });
+    expect(body.comment).toHaveProperty('createdAt');
+  });
+
+  it('404s when the ticket does not belong to the portal user', async () => {
+    dbSelectMock.mockImplementation(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) }))
+      }))
+    }));
+
+    const res = await app.request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'x' }),
+    });
+
+    expect(res.status).toBe(404);
   });
 });
 
@@ -971,7 +1160,7 @@ describe('portalTicketsEnabledMiddleware — enable_tickets gate (#2345)', () =>
   function buildGatedApp() {
     const app = new Hono();
     app.use('/tickets/*', async (c, next) => {
-      c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer' });
+      c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer', timezone: 'UTC' });
       await next();
     });
     app.use('/tickets/*', portalTicketsEnabledMiddleware);

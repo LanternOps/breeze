@@ -1,7 +1,8 @@
 import { and, eq, or, not, gt, gte, lt, lte, like, ilike, inArray, isNull, isNotNull, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { sqlValue } from '../db/sqlValues';
-import { devices, deviceHardware, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships, softwareInventory } from '../db/schema';
+import { pgErrorCode } from '../utils/pgErrors';
+import { devices, deviceCustomFieldValues, deviceHardware, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships, softwareInventory } from '../db/schema';
 import type {
   FilterOperator,
   FilterFieldCategory,
@@ -177,10 +178,46 @@ function getColumnForField(field: string): { table: 'devices' | 'hardware' | 'ne
     if (!customField) {
       throw new Error(`Invalid custom field key: ${field}`);
     }
+    // Reads the normalized table rather than jsonb_extract_path_text on
+    // devices.custom_fields (#3257 W05): the (org_id, field_key, value_text)
+    // index makes this a lookup instead of a per-row jsonb scan. The projection
+    // still exists, so nothing else in this file changes — and the returned
+    // shape is identical text, so every operator in `applyOperator` behaves as
+    // it did.
+    //
+    // LIMIT 1 is belt-and-braces, not load-bearing. (device_id, definition_id)
+    // is unique; W02's two partial unique indexes and W03's anti-shadow trigger
+    // together mean at most ONE definition with a given field_key is visible to
+    // any org; and the coherence trigger enforces visibility on every write. So
+    // (device_id, field_key) is single-valued and the subquery returns one row.
+    //
+    // It is kept because those guards can be disarmed (the test suite does it to
+    // forge legacy shapes). Degrading to an arbitrary pick among duplicates is
+    // strictly better here than a "more than one row returned by a subquery"
+    // error, which would abort every smart-group evaluation, deployment-target
+    // resolution and dynamic-group recompute that touches the affected org —
+    // a fleet-wide outage from one corrupt row. An ORDER BY would make the pick
+    // deterministic but no more correct, at the cost of implying the duplicate
+    // state is expected.
+    //
+    // No org predicate here on purpose: the outer query already pins
+    // devices.org_id, the correlation is on devices.id, and this expression is
+    // evaluated under the caller's RLS context where the table's own
+    // breeze_has_org_access(org_id) policy applies.
     return {
       table: 'devices',
       column: 'customFields',
-      computed: sql`jsonb_extract_path_text(${devices.customFields}, ${customField})`
+      computed: sql`(
+        SELECT COALESCE(
+                 v.value_text,
+                 v.value_number::text,
+                 v.value_bool::text,
+                 v.value_date::text
+               )
+          FROM ${deviceCustomFieldValues} v
+         WHERE v.device_id = ${devices.id}
+           AND v.field_key = ${customField}
+         LIMIT 1)`
     };
   }
 
@@ -553,6 +590,29 @@ const FILTER_QUERY_TIMEOUT_MS = 500;
 type FilterQueryTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
+ * The bounded `statement_timeout` above cancelled the filter query (SQLSTATE
+ * 57014). That is the guard working as designed — the filter is valid, it is
+ * just too expensive — so callers translate this into a 4xx telling the user
+ * to narrow it, never the 500 a raw `PostgresError` used to produce (#5181 /
+ * BREEZE-2C). Any other SQLSTATE propagates untouched and keeps its 500.
+ */
+export class FilterQueryTimeoutError extends Error {
+  /**
+   * NOT named `code`. `pgErrorCode` (utils/pgErrors.ts) duck-types any error
+   * with a string `.code`, checking the OUTER object before walking `.cause` —
+   * so a `code` field here would shadow the real SQLSTATE sitting on the cause
+   * and make `sentry.ts` tag the event `pg_code: 'filter_query_timeout'`
+   * instead of `'57014'`, defeating the SQLSTATE grouping that tag exists for.
+   * Any error class that wraps a Postgres error as its cause has to avoid the
+   * name.
+   */
+  readonly errorCode = 'filter_query_timeout';
+  constructor(options?: { cause?: unknown }) {
+    super('Filter query exceeded its time budget', options);
+  }
+}
+
+/**
  * Run a filter query under a bounded statement_timeout. Uses `db.transaction` so
  * the timeout applies whether the caller is inside the request's RLS transaction
  * (a SAVEPOINT that inherits the tenant GUCs) or on the bare connection pool (the
@@ -565,10 +625,48 @@ async function withFilterStatementTimeout<T>(
   run: (tx: FilterQueryTx) => Promise<T>
 ): Promise<T> {
   return db.transaction(async (tx) => {
+    const previousResult = await tx.execute(
+      sql`select current_setting('statement_timeout', true) as value`
+    );
+    const previousRow = (Array.isArray(previousResult)
+      ? previousResult[0]
+      : (previousResult as unknown as { rows: Array<{ value: string | null }> }).rows[0]
+    ) as { value: string | null } | undefined;
+    // `statement_timeout` is a built-in setting, so PostgreSQL normally returns
+    // `0` when no timeout is configured. Keep the fallback for pool/session
+    // configurations that surface an empty value.
+    const previousTimeout = previousRow?.value || '0';
     await tx.execute(
       sql`select set_config('statement_timeout', ${`${FILTER_QUERY_TIMEOUT_MS}ms`}, true)`
     );
-    return run(tx);
+    try {
+      // Isolate a timed-out filter statement in its own savepoint. PostgreSQL
+      // rejects all commands after a statement error until that savepoint is
+      // rolled back, including the restoration in `finally` below.
+      return await tx.transaction((queryTx) => run(queryTx));
+    } catch (error) {
+      // Anything that is not a cancellation — a bad column, a lock error, a
+      // dropped connection — is a real fault and keeps its existing 500 path.
+      //
+      // 57014 is `query_canceled`, and this function's own 500ms
+      // `statement_timeout` is NOT its only source: `pg_cancel_backend()` and a
+      // hot-standby recovery conflict raise it too. Discriminating further
+      // would mean matching the driver's message text, which is localized by
+      // `lc_messages` and so would silently stop matching on a differently
+      // configured deployment — worse than the imprecision. The imprecision is
+      // bounded and acceptable here: the window is 500ms wide, the caller's
+      // worst case is being told to narrow a filter that was actually
+      // cancelled by an operator, and the event code's registry entry records
+      // this caveat so triage does not read the warning as proof of a slow
+      // filter. What it must never do is silently swallow a genuine fault, and
+      // it does not — every other SQLSTATE still propagates untouched.
+      if (pgErrorCode(error) === '57014') throw new FilterQueryTimeoutError({ cause: error });
+      throw error;
+    } finally {
+      await tx.execute(
+        sql`select set_config('statement_timeout', ${previousTimeout}, true)`
+      );
+    }
   });
 }
 

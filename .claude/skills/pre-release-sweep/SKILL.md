@@ -27,7 +27,7 @@ outlives a context window.
 1. `gh pr list --state open` — non-draft PRs against `main` with CI running are
    the "waiting" set. Draft/stacked PRs are not.
 2. `gh pr checks <n> --watch` in the background (never poll by hand).
-3. Merge only on **head-SHA** green (`gh pr merge --squash --admin`). Ignore
+3. Merge only on **head-SHA** green (bare `gh pr merge <N>` enqueues; never `--admin`). Ignore
    only known-noise checks and say which: Trivy on `CVE-2026-14456`
    (base-image openssl) is the current one — confirm the CVE id in the log
    before dismissing it.
@@ -59,6 +59,8 @@ it for `/admin/*` rows (`update users set is_platform_admin=true where
 email='admin@breeze.local'`) and let a sweep agent create sibling orgs. Then
 **log in yourself once** before dispatching any browser agent; a blocked sweep
 agent is 15 wasted minutes.
+
+**Stack traps seen 2026-09-08 (v0.110→main sweep):** (1) the first `wt-stack up` on a fresh DB fails with "api is unhealthy" because the healthcheck window closes during the ~645-migration replay — wait for `Applied N migration(s)` in `docker logs <api>` then run `up` again, it is idempotent; (2) set `WEBAUTHN_RP_ID=localhost` in the sweep `.env` or every passkey ceremony throws `SecurityError` (`rp.id` comes back as the prod domain) — the CDP virtual authenticator does not help; (3) SMS has no local provider (`POST /auth/phone/verify` → 501), phone-MFA rows are BLOCKED by design, say so; (4) role-forced MFA (`force_mfa` on Partner Admin) can lock the seeded admin into `/auth/mfa/setup?forced=1` — `MFA_FORCE_FOR_PARTNER_ADMIN=false` is the relief valve (default OFF since #5307); (5) the seed's Invite offers partner-scoped roles only, so an org/site-restricted reader must be created via SQL; (6) fixer first-passes regress: run one review round per fix even when the diff is small — two of nine fixes this sweep needed it.
 
 ## Phase 2 — Change inventory (sonnet, no browser)
 
@@ -128,7 +130,10 @@ Both go in the doc: `Fixes applied` (commit SHA) and `Issues filed` (#).
 Summary table (group → PASS/PARTIAL/FAIL/BLOCKED counts), "Top findings"
 (systemic patterns beat single bugs), the oldest PR reached, and what a
 release cut still needs (flags to enable, BLOCKED rows needing a live agent).
-Open one PR: the fixes + the tracking doc. `pnpm wt-stack down` when done.
+Open one PR: the fixes + the tracking doc. Then tear down: `pnpm wt-stack down`
+from this worktree, and `docker compose ls -a` to confirm nothing from the sweep
+is still up — sweep agents' `pnpm test-stack` copies included (`worktree-stack`
+skill → "Tear down when done"). Report anything you left running and why.
 
 ## Model tiering
 

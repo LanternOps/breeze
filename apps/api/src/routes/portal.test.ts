@@ -7,6 +7,14 @@ const { sendPasswordResetMock, createTicketMock } = vi.hoisted(() => ({
   createTicketMock: vi.fn()
 }));
 
+const { supportUsageForOrgMock } = vi.hoisted(() => ({
+  supportUsageForOrgMock: vi.fn(),
+}));
+
+vi.mock('../services/portal/supportUsage', () => ({
+  supportUsageForOrg: supportUsageForOrgMock,
+}));
+
 vi.mock('nanoid', () => ({
   nanoid: vi.fn(() => 'nanoid-token')
 }));
@@ -67,6 +75,17 @@ vi.mock('../services/tenantStatus', () => ({
   getActiveOrgTenant: vi.fn(async (orgId: string) => ({ orgId, partnerId: 'partner-1' })),
 }));
 
+// portalAuthMiddleware resolves the org's timezone once during hydration
+// (services/portal/timezone.ts) via a real DB left-join query this suite's
+// generic `../db` mock cannot satisfy, and `../db/schema` here doesn't export
+// `organizations`/`partners` at all. Mock the resolver BOUNDARY, same pattern
+// as the tenantStatus mock immediately above — the resolver itself is covered
+// directly by `services/portal/timezone.test.ts` and the hydration contract by
+// `routes/portal/authOrgStatusGate.test.ts`.
+vi.mock('../services/portal/timezone', () => ({
+  resolveOrgTimezone: vi.fn(async () => 'UTC'),
+}));
+
 vi.mock('../services/ticketService', () => ({
   createTicket: createTicketMock,
   TicketServiceError: class TicketServiceError extends Error {
@@ -81,13 +100,25 @@ vi.mock('../services/ticketService', () => ({
 
 vi.mock('../db/schema', () => ({
   assetCheckouts: {},
+  backupConfigs: {},
+  backupJobs: {},
+  backupSlaEvents: {},
+  backupVerifications: {},
+  devicePatches: {},
+  deviceWarranty: {},
   devices: {},
   // The portal route graph transitively imports networkBaseline.ts, which reads
   // discoveredAssetTypeEnum.enumValues at module load — the full-module mock must
   // provide it or the whole suite fails to load.
   discoveredAssetTypeEnum: { enumValues: [] },
+  huntressAgents: {},
+  organizations: {},
   portalBranding: {},
   portalUsers: {},
+  recoveryReadiness: {},
+  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'partial'],
+  s1Agents: {},
+  securityStatus: {},
   ticketComments: {},
   tickets: {},
   ticketStatuses: {}
@@ -119,14 +150,13 @@ const makeWhereChain = (result: any) =>
     orderBy: vi.fn().mockReturnValue(makeOrderChain(result))
   });
 
-const mockSelectResult = (result: any) => ({
-  from: vi.fn().mockReturnValue({
+const mockSelectResult = (result: any) => {
+  const fromChain: Record<string, any> = {
     where: vi.fn().mockReturnValue(makeWhereChain(result)),
-    leftJoin: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue(makeWhereChain(result))
-    })
-  })
-});
+  };
+  fromChain.leftJoin = vi.fn().mockReturnValue(fromChain);
+  return { from: vi.fn().mockReturnValue(fromChain) };
+};
 
 const mockSelectLimit = mockSelectResult;
 const mockSelectWhere = mockSelectResult;
@@ -149,8 +179,10 @@ const portalUser = {
   email: 'portal@example.com',
   name: 'Portal User',
   passwordHash: 'hash',
+  authMethod: 'password',
   receiveNotifications: true,
-  status: 'active'
+  status: 'active',
+  authEpoch: 1,
 };
 
 describe('portal routes', () => {
@@ -306,7 +338,8 @@ describe('portal routes', () => {
           {
             id: 'portal-user-1',
             email: 'portal@example.com',
-            orgId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001'
+            orgId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001',
+            authMethod: 'password'
           }
         ]) as any)
         .mockReturnValueOnce(mockSelectLimit([]) as any); // password reset defaults enabled
@@ -334,6 +367,7 @@ describe('portal routes', () => {
           id: 'portal-user-1',
           email: 'portal@example.com',
           orgId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001',
+          authMethod: 'password',
         }]) as any)
         .mockReturnValueOnce(mockSelectLimit([{ enablePasswordReset: false }]) as any);
 
@@ -360,7 +394,8 @@ describe('portal routes', () => {
           {
             id: 'portal-user-1',
             email: 'portal@example.com',
-            orgId: 'org-123'
+            orgId: 'org-123',
+            authMethod: 'password'
           }
         ]) as any)
         .mockReturnValueOnce(mockSelectLimit([]) as any); // issuance feature flag
@@ -374,14 +409,20 @@ describe('portal routes', () => {
         })
       });
 
+      const resetUpdate = vi.fn();
       vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined)
+        set: vi.fn((value) => {
+          resetUpdate(value);
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'portal-user-1' }])
+            })
+          };
         })
       } as any);
 
       vi.mocked(db.select)
-        .mockReturnValueOnce(mockSelectLimit([{ orgId: 'org-123' }]) as any)
+        .mockReturnValueOnce(mockSelectLimit([{ orgId: 'org-123', authMethod: 'password' }]) as any)
         .mockReturnValueOnce(mockSelectLimit([]) as any); // consumption feature flag
 
       const res = await app.request('/portal/auth/reset-password', {
@@ -396,6 +437,7 @@ describe('portal routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      expect(resetUpdate).toHaveBeenCalledWith(expect.objectContaining({ authEpoch: expect.anything() }));
     });
 
     it('should reject invalid token', async () => {
@@ -420,6 +462,7 @@ describe('portal routes', () => {
           id: 'portal-user-reset-disabled',
           email: 'reset-disabled@example.com',
           orgId: 'org-reset-disabled',
+          authMethod: 'password',
         }]) as any)
         .mockReturnValueOnce(mockSelectLimit([{ enablePasswordReset: true }]) as any);
 
@@ -430,7 +473,7 @@ describe('portal routes', () => {
       });
 
       vi.mocked(db.select)
-        .mockReturnValueOnce(mockSelectLimit([{ orgId: 'org-reset-disabled' }]) as any)
+        .mockReturnValueOnce(mockSelectLimit([{ orgId: 'org-reset-disabled', authMethod: 'password' }]) as any)
         .mockReturnValueOnce(mockSelectLimit([{ enablePasswordReset: false }]) as any);
 
       const res = await app.request('/portal/auth/reset-password', {
@@ -1203,8 +1246,7 @@ describe('portal routes', () => {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           name: 'Updated User',
-          receiveNotifications: false,
-          password: 'NewStrongPass123'
+          receiveNotifications: false
         })
       });
 
@@ -1246,6 +1288,88 @@ describe('portal routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+  });
+
+  // Task 3.3 fix round 1 — real-router regression guard. The unit tests in
+  // routes/portal/featureFlags.test.ts build a throwaway Hono app and stub
+  // portalAuth directly, so they cannot detect a deleted/reordered
+  // `portalRoutes.use(prefix, portalAuthMiddleware)` line in
+  // routes/portal/index.ts. These drive the REAL portalRoutes mount (same
+  // pattern as the PORTAL_TICKETS_DISABLED "real mount" test above): one
+  // unauthenticated 401 per new prefix, and one authenticated-but-flag-false
+  // 403 per prefix proving the gate runs AFTER auth. dashboard/security/
+  // backups/reports have no handlers yet (later waves), so a
+  // passing gate would fall through to Hono's 404 — the 403 case alone still
+  // proves auth-then-gate ordering.
+  describe('W03 strict visibility gates (real mount)', () => {
+    const strictGateCases = [
+      { path: '/portal/dashboard', code: 'PORTAL_DASHBOARD_DISABLED', flag: 'enableDashboard' },
+      { path: '/portal/security', code: 'PORTAL_SECURITY_DISABLED', flag: 'enableSecurity' },
+      { path: '/portal/backups', code: 'PORTAL_BACKUPS_DISABLED', flag: 'enableBackups' },
+      { path: '/portal/reports', code: 'PORTAL_REPORTS_DISABLED', flag: 'enableReports' },
+      { path: '/portal/tickets/usage', code: 'PORTAL_SUPPORT_USAGE_DISABLED', flag: 'enableSupportUsage' }
+    ] as const;
+
+    it.each(strictGateCases)(
+      'GET $path returns 401 with no Authorization header',
+      async ({ path }) => {
+        const res = await app.request(path);
+        expect(res.status).toBe(401);
+      }
+    );
+
+    it.each(strictGateCases)(
+      'GET $path returns 403 $code when authenticated but the flag is false/missing',
+      async ({ path, code }) => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectLimit([portalUser]) as any) // loginUser()'s own select
+          .mockReturnValueOnce(mockSelectLimit([portalUser]) as any) // portalAuthMiddleware hydration
+          .mockReturnValueOnce(mockSelectLimit([]) as any); // strict gate: no portal_branding row → fail closed
+
+        const token = await loginUser();
+
+        const res = await app.request(path, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ code });
+      }
+    );
+
+    it('returns 200 through the real mount when enableSupportUsage is true even though enableTickets is false', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectLimit([portalUser]) as any) // loginUser()'s own select
+        .mockReturnValueOnce(mockSelectLimit([portalUser]) as any) // portalAuthMiddleware hydration
+        .mockReturnValueOnce(
+          mockSelectLimit([{ enableSupportUsage: true, enableTickets: false }]) as any
+        ); // strict gate row — enableTickets false proves independence from the ticketing gate
+
+      supportUsageForOrgMock.mockResolvedValue({
+        asOf: '2026-09-02T12:00:00.000Z',
+        month: '2026-09',
+        timezone: 'UTC',
+        dataStatus: 'no_data',
+        totals: {
+          billed: { minutes: 0, hours: 0 },
+          toBeBilled: { minutes: 0, hours: 0 },
+          coveredByContract: { minutes: 0, hours: 0 },
+          pendingReview: { minutes: 0, hours: 0 },
+        },
+        tickets: [],
+      });
+
+      const token = await loginUser();
+
+      const res = await app.request('/portal/tickets/usage?month=2026-09', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      expect(res.status).toBe(200);
+      expect(supportUsageForOrgMock).toHaveBeenCalledWith(
+        expect.objectContaining({ month: '2026-09' })
+      );
     });
   });
 });

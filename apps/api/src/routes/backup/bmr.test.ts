@@ -54,9 +54,42 @@ vi.mock('../../db', () => ({
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  // Passthrough mock, same shape as restore.test.ts: D9's org-scoping fix
+  // wraps everything after the token lookup in withDbAccessContext(...),
+  // and this mocked suite doesn't exercise real RLS — it just needs the
+  // context param ignored and `fn` invoked so the route logic still runs.
+  withDbAccessContext: vi.fn((_context: unknown, fn: () => any) => fn()),
 }));
 
 vi.mock('../../db/schema', () => ({
+  bareMetalRecoveries: {
+    id: 'bare_metal_recoveries.id',
+    orgId: 'bare_metal_recoveries.org_id',
+    deviceId: 'bare_metal_recoveries.device_id',
+    snapshotId: 'bare_metal_recoveries.snapshot_id',
+    recoveryTokenId: 'bare_metal_recoveries.recovery_token_id',
+    identity: 'bare_metal_recoveries.identity',
+    codeHash: 'bare_metal_recoveries.code_hash',
+    codeExpiresAt: 'bare_metal_recoveries.code_expires_at',
+    codeUsedAt: 'bare_metal_recoveries.code_used_at',
+    nonceHash: 'bare_metal_recoveries.nonce_hash',
+    status: 'bare_metal_recoveries.status',
+    target: 'bare_metal_recoveries.target',
+    plan: 'bare_metal_recoveries.plan',
+    result: 'bare_metal_recoveries.result',
+    failureReason: 'bare_metal_recoveries.failure_reason',
+    warnings: 'bare_metal_recoveries.warnings',
+    createdBy: 'bare_metal_recoveries.created_by',
+    createdAt: 'bare_metal_recoveries.created_at',
+    updatedAt: 'bare_metal_recoveries.updated_at',
+    mediaBootedAt: 'bare_metal_recoveries.media_booted_at',
+    plannedAt: 'bare_metal_recoveries.planned_at',
+    restoringAt: 'bare_metal_recoveries.restoring_at',
+    validatedAt: 'bare_metal_recoveries.validated_at',
+    rebootedAt: 'bare_metal_recoveries.rebooted_at',
+    checkedInAt: 'bare_metal_recoveries.checked_in_at',
+    completedAt: 'bare_metal_recoveries.completed_at',
+  },
   backupSnapshots: {
     id: 'backup_snapshots.id',
     jobId: 'backup_snapshots.job_id',
@@ -918,6 +951,66 @@ describe('bmr routes', () => {
     });
   });
 
+  // D14: failedFiles is the per-file failure count for a partially-successful
+  // recovery (mirrors errorCount on the ordinary backup-result path) and must
+  // land in the persisted restore job's targetConfig.result JSON alongside the
+  // other completion fields.
+  it('persists failedFiles from a partial recovery completion', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: TOKEN_ID,
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      snapshotId: SNAPSHOT_ID,
+      restoreType: 'bare_metal',
+      targetConfig: { diskLayout: 'auto' },
+      status: 'authenticated',
+      createdAt: new Date('2026-03-29T00:00:00.000Z'),
+      expiresAt: new Date('2026-04-01T00:00:00.000Z'),
+      authenticatedAt: new Date('2026-03-29T12:00:00.000Z'),
+      completedAt: null,
+      usedAt: null,
+    }]));
+    const restoreJobId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    let insertedValues: Record<string, unknown> | null = null;
+    const insertChain = chainMock([{
+      id: restoreJobId,
+      orgId: ORG_ID,
+      snapshotId: SNAPSHOT_ID,
+      deviceId: DEVICE_ID,
+      restoreType: 'bare_metal',
+      status: 'partial',
+    }]);
+    insertChain.values = vi.fn((value: Record<string, unknown>) => {
+      insertedValues = value;
+      return insertChain;
+    });
+    insertMock.mockReturnValueOnce(insertChain);
+    updateMock.mockReturnValue(chainMock([]));
+
+    const res = await app.request('/backup/bmr/recover/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token: VALID_RECOVERY_TOKEN,
+        result: {
+          status: 'partial',
+          filesRestored: 9_800,
+          failedFiles: 47,
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(insertedValues).toMatchObject({
+      targetConfig: {
+        result: {
+          status: 'partial',
+          failedFiles: 47,
+        },
+      },
+    });
+  });
+
   it('returns the existing restore job for repeated completion calls', async () => {
     selectMock
       .mockReturnValueOnce(chainMock([{
@@ -998,6 +1091,48 @@ describe('bmr routes', () => {
 
     expect(res.status).toBe(429);
     expect(getAuthenticatedRecoveryDownloadTargetMock).not.toHaveBeenCalled();
+    expect(res.headers.get('Retry-After')).toBeTruthy();
+  });
+
+  // D13: a bare-metal recovery fetches one object PER FILE
+  // (getAuthenticatedRecoveryDownloadTarget is called once per download
+  // request), so a legitimate 10,000+ file recovery must not be throttled by
+  // the per-token limit. Pin the raised constants directly rather than only
+  // asserting the 429 shape above, so a regression back toward the old
+  // 100/minute limit fails loudly here instead of silently reappearing in
+  // production telemetry.
+  it('sizes the per-token download rate limit for a large bare-metal recovery, not a 100-object window', async () => {
+    rateLimiterMock.mockResolvedValueOnce({
+      allowed: true,
+      remaining: 9_999,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+    getAuthenticatedRecoveryDownloadTargetMock.mockResolvedValueOnce({
+      unavailable: false,
+      type: 'stream',
+      contentType: 'application/json',
+      contentLength: 2,
+      stream: Readable.from(Buffer.from('{}')),
+    });
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: TOKEN_ID,
+      snapshotId: SNAPSHOT_ID,
+      status: 'authenticated',
+      authenticatedAt: new Date('2026-03-31T13:00:00.000Z'),
+      expiresAt: new Date('2026-04-01T00:00:00.000Z'),
+    }]));
+
+    await app.request(
+      '/backup/bmr/recover/download?path=snapshots/snap-ext-001/manifest.json',
+      { headers: { 'X-Recovery-Token': VALID_RECOVERY_TOKEN } },
+    );
+
+    expect(rateLimiterMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringMatching(/^bmr:download:token:/),
+      10_000,
+      60
+    );
   });
 
   it('rejects recovery download query tokens by default', async () => {

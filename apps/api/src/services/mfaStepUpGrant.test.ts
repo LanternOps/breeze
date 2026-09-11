@@ -22,9 +22,9 @@ const { redisMock, redisStore, ttls, getRedisMock } = vi.hoisted(() => {
 
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, rollbackResourceDigest } from './mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, passkeyRemovalResourceDigest } from './mfaStepUpGrant';
 
-const bind = (operation: 'add_factor' | 'register_approver_device') => ({
+const bind = (operation: 'add_factor' | 'rotate_recovery_codes' | 'register_approver_device') => ({
   userId: 'user-1',
   operation,
   authEpoch: 1,
@@ -37,6 +37,57 @@ describe('rollbackResourceDigest', () => {
   it('hashes canonical rollback identity bytes', () => {
     expect(rollbackResourceDigest({ deviceId: 'device-1', currentVersion: '2.0.0', targetVersion: '1.9.0', reason: 'incident rollback' }))
       .toBe('sha256:2debd6cc76cd6b29a8a60e445bb2241e462a264a2448e2a59b7f9c72e282829f');
+  });
+});
+
+// RMM-QA-176 D11 (T13): the maintenance digest is the ONE canonicalizer both
+// the mint route and the maintenance routes call. Its canonical form is part
+// of the security contract — a grant minted for one device set, reason and
+// window must never validate for another, and two callers describing the SAME
+// operator intent must produce byte-identical input.
+describe('maintenanceResourceDigest', () => {
+  const base = { deviceIds: ['b-2', 'a-1'], reason: '  scheduled patching  ', durationHours: 4 };
+
+  it('is insensitive to deviceIds order', () => {
+    expect(maintenanceResourceDigest({ ...base, deviceIds: ['a-1', 'b-2'] }))
+      .toBe(maintenanceResourceDigest({ ...base, deviceIds: ['b-2', 'a-1'] }));
+  });
+
+  it('is insensitive to duplicate deviceIds', () => {
+    expect(maintenanceResourceDigest({ ...base, deviceIds: ['a-1', 'b-2', 'a-1'] }))
+      .toBe(maintenanceResourceDigest({ ...base, deviceIds: ['a-1', 'b-2'] }));
+  });
+
+  it('trims reason so the mint route and the maintenance route cannot disagree', () => {
+    expect(maintenanceResourceDigest(base))
+      .toBe(maintenanceResourceDigest({ ...base, reason: 'scheduled patching' }));
+  });
+
+  it('binds durationHours \u2014 a longer window is a different grant', () => {
+    expect(maintenanceResourceDigest({ ...base, durationHours: 8 }))
+      .not.toBe(maintenanceResourceDigest(base));
+  });
+
+  it('binds the device set \u2014 adding a device is a different grant', () => {
+    expect(maintenanceResourceDigest({ ...base, deviceIds: ['a-1', 'b-2', 'c-3'] }))
+      .not.toBe(maintenanceResourceDigest(base));
+  });
+
+  it('binds the reason \u2014 a different justification is a different grant', () => {
+    expect(maintenanceResourceDigest({ ...base, reason: 'hardware swap' }))
+      .not.toBe(maintenanceResourceDigest(base));
+  });
+
+  it('emits the sha256: prefixed shape the grant store compares literally', () => {
+    expect(maintenanceResourceDigest(base)).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+});
+
+describe('passkeyRemovalResourceDigest', () => {
+  it('is deterministic and isolates different passkey rows', () => {
+    const first = passkeyRemovalResourceDigest('10000000-0000-4000-8000-000000000009');
+    expect(first).toBe(passkeyRemovalResourceDigest('10000000-0000-4000-8000-000000000009'));
+    expect(first).not.toBe(passkeyRemovalResourceDigest('20000000-0000-4000-8000-000000000009'));
   });
 });
 
@@ -161,6 +212,16 @@ describe('mfaStepUpGrant operation isolation', () => {
     // grant, so even a subsequent same-operation validate below also fails.
     await expect(consumeStepUpGrant(register!, bind('add_factor'))).resolves.toBe(false);
     await expect(validateStepUpGrant(register!, bind('register_approver_device'))).resolves.toBe(false);
+  });
+
+  it('isolates recovery-code rotation from factor-addition grants', async () => {
+    const addFactor = await mintStepUpGrant(bind('add_factor'));
+    const rotate = await mintStepUpGrant(bind('rotate_recovery_codes'));
+
+    await expect(validateStepUpGrant(addFactor!, bind('rotate_recovery_codes'))).resolves.toBe(false);
+    await expect(validateStepUpGrant(rotate!, bind('add_factor'))).resolves.toBe(false);
+    await expect(consumeStepUpGrant(rotate!, bind('rotate_recovery_codes'))).resolves.toBe(true);
+    await expect(consumeStepUpGrant(rotate!, bind('rotate_recovery_codes'))).resolves.toBe(false);
   });
 
   it('validate is non-consuming', async () => {

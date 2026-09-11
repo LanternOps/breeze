@@ -100,13 +100,25 @@ func redeemBootstrapToken(server, token string) (*bootstrapResult, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Breeze-Bootstrap-Token", token)
+	initialURL := *req.URL
+	initialRequest := &http.Request{URL: &initialURL}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{
+		Timeout:       30 * time.Second,
+		CheckRedirect: api.RefuseUntrustedRedirect,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	// CheckRedirect rejects every untrusted hop before the bootstrap capability
+	// can leave the initial host. Re-check the final request against the initial
+	// request as defense in depth so a future transport/client refactor cannot
+	// silently accept a response from a different authority.
+	if err := api.RefuseUntrustedRedirect(resp.Request, []*http.Request{initialRequest}); err != nil {
+		return nil, fmt.Errorf("bootstrap redeem: untrusted final response URL: %w", err)
+	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("bootstrap redeem failed: %d %s", resp.StatusCode, strings.TrimSpace(string(body)))

@@ -141,6 +141,9 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
   const lineHasRecurring = lines.some(
     (l) => l.customerVisible !== false && (l.recurrence === 'monthly' || l.recurrence === 'annual')
   );
+  const lineHasCadence = (cadence: 'monthly' | 'annual') => lines.some(
+    (l) => l.customerVisible !== false && l.recurrence === cadence,
+  );
   const hasRecurring =
     lineHasRecurring ||
     Number(quote.monthlyRecurringTotal ?? 0) > 0 ||
@@ -258,13 +261,13 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
                 </div>
               </>
             )}
-            {hasRecurring && Number(quote.monthlyRecurringTotal ?? 0) > 0 && (
+            {hasRecurring && lineHasCadence('monthly') && (
               <div className="flex justify-between text-sm">
                 <span className="text-muted-foreground">Monthly recurring</span>
                 <span className="tabular-nums text-foreground">{money(quote.monthlyRecurringTotal ?? 0, currency)}<span className="text-xs text-muted-foreground">/mo</span></span>
               </div>
             )}
-            {hasRecurring && Number(quote.annualRecurringTotal ?? 0) > 0 && (
+            {hasRecurring && lineHasCadence('annual') && (
               <div className="flex justify-between text-sm">
                 <span className="text-muted-foreground">Annual recurring</span>
                 <span className="tabular-nums text-foreground">{money(quote.annualRecurringTotal ?? 0, currency)}<span className="text-xs text-muted-foreground">/yr</span></span>

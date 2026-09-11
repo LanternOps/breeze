@@ -59,6 +59,7 @@ const ALLOWED_TAG_NAMES = new Set([
   'scope',
   'org_id',
   'partner_id',
+  'stripe_reconcile_stage',
   // BREEZE-X: a `dbWriteExpectingRows` 0-row warning is only triageable if the
   // call site (`cas_label`) and the state the row was already in
   // (`prior_status`) survive the scrubber. Both are enum-ish and bounded by
@@ -69,6 +70,14 @@ const ALLOWED_TAG_NAMES = new Set([
   // tenant, device, or command identifier.
   'prior_status',
   'cas_label',
+  // #5283: `metric_anomaly_stage_stalled` is only actionable if the operator
+  // can see WHICH detection stage is stuck — a stalled `baseline` (the heavy
+  // metric_rollups scan) and a stalled `incidents` (a small collapse over
+  // metric_anomalies) have completely different causes and fixes. Closed
+  // 5-value set (METRIC_ANOMALY_STAGES), written as string literals; carries no
+  // tenant, device, or host identifier. `org_id` is separately allowlisted
+  // above and is what scopes the alert to a tenant.
+  'metric_anomaly_stage',
   // #3022: a Postgres CONNECT_TIMEOUT is already tagged `pg_code:CONNECT_TIMEOUT`,
   // but that alone says nothing about WHY — the driver reports the identical
   // error whether the handshake failed or this process was simply never
@@ -105,6 +114,16 @@ const ALLOWED_TAG_NAMES = new Set([
   // cluster groupable and actionable.
   'body_limit_rule',
   'body_limit_max_size',
+  // #4514: the AI session cap alarm fires when EVERY in-memory session is
+  // mid-turn, so LRU can evict nothing and MAX_ACTIVE_SESSIONS is exceeded.
+  // `scrubEvent` deletes `message`, so without this the event says only that it
+  // happened — and a single-request blip is then byte-identical to a manager
+  // wedged at several times its cap, which is exactly the distinction that
+  // decides whether to page. Closed four-value set from
+  // `bucketSessionOvershoot` (services/streamingSessionManager.ts); the raw
+  // count would be unbounded cardinality, and the bucket carries no tenant,
+  // device or session identifier.
+  'ai_session_cap_bucket',
   // BREEZE-18: the required `captureMessage` discriminator. `scrubEvent`
   // deletes `message`, `logentry` and `extra` from every event, so before this
   // existed any captureMessage that happened not to carry one of the tags above
@@ -191,6 +210,18 @@ const ALLOWED_TAG_NAMES = new Set([
   // into unbounded tag cardinality. Neither carries a tenant, device or job id.
   'patch_reconcile_stage',
   'patch_reconcile_repeat',
+  // #4137: `dispatch-backup` is a one-shot (`attempts: 1`) because Phase 3 of
+  // processDispatchBackup commits per-target child `backup_jobs` rows, so a
+  // retry duplicates them. Two consequences of that trade are things an
+  // operator must be able to see, and scrubEvent deletes message/logentry/extra
+  // and rewrites the exception value to '[redacted]' — so this tag is the ONLY
+  // part of either capture that reaches Sentry. Closed set of two string
+  // literals written at their call sites in jobs/backupWorker.ts:
+  // 'redelivery-refused' (a whole backup run was deliberately dropped rather
+  // than duplicated) | 'undelivered-settle-failed' (the fast cleanup of
+  // provably-unsent rows failed, so they wait on the stale reaper instead).
+  // Carries no tenant, device or job identifier.
+  'backup_dispatch_issue',
   // These were being passed to captureMessage and silently dropped — the same
   // defect as `worker`, found by auditing every tag key against this list
   // rather than trusting that a passed tag arrives.
@@ -261,6 +292,14 @@ const ALLOWED_TAG_NAMES = new Set([
   // thousand. Cardinality is bounded in practice by the throttle: at most one
   // event per outage.
   'llm_egress_dropped',
+  // SEC-142/143: WHICH reservation TTL the expiry sweep fired on. A closed
+  // two-literal union produced by the sweep's own arithmetic (`active_ttl` /
+  // `indeterminate_ttl`) — no org, reservation or amount can reach it; those go
+  // only to the console lines, which are not scrubbed. Allowlisted because
+  // `scrubEvent` deletes `message`, and the two cases need different responses:
+  // `active_ttl` means dispatches are dying before they settle, while
+  // `indeterminate_ttl` means the provider's outcome never became known.
+  'ai_budget_expiry_reason',
   // #4143: which CONTAINER produced the event. Since the api/worker role split
   // (#4086) a droplet in split mode runs two processes off the same image,
   // same DSN, same release — so an event from the worker was indistinguishable
@@ -271,6 +310,107 @@ const ALLOWED_TAG_NAMES = new Set([
   // in BREEZE_ROLE is folded to `all` by that function, so this tag is a
   // 3-value set by construction and carries no tenant, device or host.
   'breeze_role',
+  // #4828: every `captureException` in the accounting sync path
+  // (accountingInvoicePush.ts, accountingMappingService.ts) tagged `service`,
+  // `invoiceId`/`mappingId`/`partnerId`/`remoteEntityId` — none of which were
+  // allowlisted (the camelCase keys had no allowlisted equivalent at all, not
+  // even a snake_case one, and `service` itself was never added). `scrubEvent`
+  // deletes `message`/`extra`/`logentry`, so every one of these best-effort
+  // failure reports has been arriving as a near-contentless event since the
+  // pattern was introduced — on-call could see a sync failed but not which
+  // invoice, mapping, or partner.
+  //
+  // `service` is the hardcoded module-name literal at each call site
+  // (`'accountingInvoicePush' | 'accountingMappingService'` today) — a closed
+  // set by construction, never interpolated, carrying no identifier.
+  //
+  // `invoice_id` and `accounting_mapping_id` follow the same precedent already
+  // set by `org_id`/`partner_id`/`user_id` above: unbounded UUID primary keys,
+  // allowed specifically for tenant/record-scoped triage, never raw message
+  // text. `remote_entity_id` is the analogous id on the QuickBooks side (the
+  // provider's own record id for the pushed invoice/customer/item) — also an
+  // opaque identifier, not free text, and length-capped like every tag by
+  // `isBoundedTagValue`.
+  //
+  // `breeze_entity_type` is the closed 2-value union `'org' | 'catalog_item'`
+  // from `SyncMappedEntityInput` (accountingMappingService.ts) — which kind of
+  // entity a sync failure was for; bounded by construction, carries no
+  // identifier.
+  //
+  // `remote_sync_token` is QuickBooks' optimistic-concurrency version counter
+  // for the pushed entity — a short numeric string (`'0'`, `'1'`, `'3'`, …),
+  // not free text. It is specifically the value the "QuickBooks accepted the
+  // sync but Breeze failed to record it — do not retry; contact support to
+  // reconcile" failure path in accountingMappingService.ts hands off: manual
+  // reconciliation needs to know which version Breeze last observed, not just
+  // which record. No tenant, device, or host identifier.
+  'service',
+  'invoice_id',
+  'accounting_mapping_id',
+  'remote_entity_id',
+  'breeze_entity_type',
+  'remote_sync_token',
+  // Phase D2 (QuickBooks payment push). The same defect as #4828 above, in the
+  // payment path: every `captureException` in `accountingPaymentPush.ts`,
+  // `accountingSyncWorker.ts` and `accountingReconcileWorker.ts` was tagging
+  // camelCase keys with no allowlisted equivalent, so `buildSafeTags` dropped
+  // all of them and `scrubEvent` had already deleted `message`/`extra`. The
+  // call sites now write these; `sentry.test.ts` pins all three files against
+  // this list so the next one cannot regress silently.
+  //
+  // Record-scoped opaque UUIDs, exactly the `invoice_id`/`accounting_mapping_id`
+  // precedent above — never free text, and length-capped by `isBoundedTagValue`:
+  // `invoice_payment_id` (the `invoice_payments` row a push/delete is for),
+  // `accounting_connection_id` (which QuickBooks connection a reconcile run was
+  // for — a partner can reconnect under a new id, so `partner_id` alone cannot
+  // separate the runs) and `accounting_audit_resource_id` (the audit write's
+  // subject; polymorphic per its `resourceType`, or the literal `'none'` when
+  // the event has no resource, e.g. the unresolved-delete drop; the sentinel is
+  // the literal `none`).
+  'invoice_payment_id',
+  'accounting_connection_id',
+  'accounting_audit_resource_id',
+  // Closed sets by construction, each written as a string literal or read off a
+  // typed union at the call site; none carries a tenant, device or host id:
+  // `accounting_job_type` is the `AccountingSyncJobData['type']` union
+  // (push-invoice | void-invoice | push-payment | delete-payment),
+  // `accounting_error_code` is the AccountingInvoicePushErrorCode /
+  // AccountingPaymentPushErrorCode union (never the error's message, which
+  // interpolates provider text), `accounting_trigger` is the reconcile job's
+  // trigger union (webhook | sweep | manual), `accounting_reconcile_phase` is
+  // two literals in the sweep, and `accounting_audit_action` is the
+  // `accounting.payment.*` audit actions — the push path's (pushed | deleted |
+  // delete_unresolved | orphan_retained) plus the pull path's (pulled |
+  // reversed | adopted | diverged | removed_remotely, #5126).
+  'accounting_job_type',
+  'accounting_error_code',
+  'accounting_trigger',
+  'accounting_reconcile_phase',
+  'accounting_audit_action',
+  // A small integer rendered as a string (or the literal `unknown` when the
+  // stamp that would have produced it failed). It is what separates "a delete
+  // just started failing" from "this one has been stuck for a day" on the
+  // PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS cadence — the whole reason that event
+  // is throttled rather than raised every try. Bounded: a push row retires at
+  // PAYMENT_PUSH_MAX_ATTEMPTS, and a delete row's counter only ever reaches the
+  // low thousands before an operator has to intervene.
+  'sync_attempts',
+  // Intuit's numeric fault code off a failed QuickBooks call (`'5010'`,
+  // `'6000'`, `'610'`, or the literal `none`). `scrubEvent` deletes
+  // `message`/`extra`, so without it every QuickBooks rejection arrives as an
+  // indistinguishable "the sync failed" — and the code is exactly what separates
+  // a stale token (retry) from a business-validation refusal (an operator has to
+  // fix something). A closed set by construction: Intuit's published fault
+  // codes, parsed as `\d{1,6}` and never free text. The fault's `Message` and
+  // `Detail` are deliberately NOT tagged — `Detail` names the offending
+  // customer and amount, and it never leaves the server log.
+  'qbo_fault_code',
+  // #3860: which translation key `tApi` could not resolve. By convention keys
+  // are hardcoded `ns:dotted.path` literals at the call site, which keeps the
+  // set bounded — `tApi` types `key` as `string`, so this is a convention, not
+  // a type-level guarantee: never build a key from tenant or user data. Carries
+  // no tenant, device, or host id.
+  'i18n_key',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;

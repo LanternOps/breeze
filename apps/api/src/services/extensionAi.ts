@@ -13,6 +13,7 @@ import {
   type ExtensionAiInvokeInput,
 } from '@breeze/extension-sdk';
 import {
+  calculateCatalogCostCents,
   calculateCostCents,
   checkAiRateLimit,
   checkBudgetDetailed,
@@ -26,9 +27,16 @@ import {
   LlmOrgResolutionError,
   markPartnerLlmError,
   resolveLlmConfigForOrg,
+  resolveWireModel,
   type UsableLlmConfig,
 } from './llm/llmConfigResolver';
 import { captureException, captureMessage } from './sentry';
+import {
+  markAiBudgetReservationIndeterminate,
+  maxOutputTokensForAiBudget,
+  releaseUnusedAiBudgetReservation,
+  reserveAiBudget,
+} from './aiBudgetReservations';
 
 const EXTENSION_AI_DEFAULT_MODEL = 'claude-haiku-4-5';
 
@@ -169,6 +177,14 @@ export function buildExtensionAiContext(): ExtensionAiContext {
 
       const usable: UsableLlmConfig = resolved;
       const billingSource = usable.source === 'partner' ? 'partner_key' : 'platform';
+      // Catalog-backed endpoints speak a provider-specific model id and carry
+      // a signed revision pricing snapshot. Resolve both before reserving so a
+      // missing verified binding is a proven pre-dispatch failure.
+      const wire = resolveWireModel(usable, model);
+      const calculateWireCostCents = (inputTokens: number, outputTokens: number) =>
+        wire.catalogPricing
+          ? calculateCatalogCostCents(wire.catalogPricing, inputTokens, outputTokens)
+          : calculateCostCents(model, inputTokens, outputTokens);
 
       const rateLimitError = input.principal.type === 'user' && input.principal.id
         ? await checkAiRateLimit(input.principal.id, input.orgId)
@@ -188,16 +204,44 @@ export function buildExtensionAiContext(): ExtensionAiContext {
         });
       }
 
+      // S8: no stable request identity on this surface (no client-supplied
+      // request id), so the key is random per dispatch — the unique index is a
+      // structural guarantee, not a replay guard. Contrast
+      // `ai-agent-run:${run.id}` in services/aiAgents/runLoop.ts, which has one.
+      const reservation = await reserveAiBudget({
+        orgId: input.orgId,
+        idempotencyKey: `extension-ai:${crypto.randomUUID()}`,
+        billingSource,
+      });
+      if (reservation.kind === 'denied') {
+        throw new ExtensionAiError('budget_exceeded', reservation.message, {
+          permanent: reservation.reason === 'ai_disabled',
+        });
+      }
+      const reservationId = reservation.reservationId;
+      const maxTokens = maxOutputTokensForAiBudget({
+        prompt: JSON.stringify({ system: input.system, messages: input.messages }),
+        requestedMaxOutputTokens: input.maxTokens,
+        budgetCents: reservation.kind === 'reserved' ? reservation.reservedCostCents : undefined,
+        calculateCostCents: calculateWireCostCents,
+      });
+      if (maxTokens === null) {
+        await releaseUnusedAiBudgetReservation({ orgId: input.orgId, reservationId });
+        throw new ExtensionAiError('budget_exceeded', 'The AI request exceeds the remaining budget.');
+      }
+
       const client = buildAnthropicClient(usable);
       let response: Awaited<ReturnType<typeof client.messages.create>>;
       try {
         response = await client.messages.create({
-          model,
-          max_tokens: input.maxTokens,
+          model: wire.model,
+          max_tokens: maxTokens,
           system: input.system,
           messages: input.messages,
         });
       } catch (error) {
+        await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
+          .catch((markError) => captureException(markError));
         throw await classifyProviderFailure(error, usable);
       }
 
@@ -208,21 +252,29 @@ export function buildExtensionAiContext(): ExtensionAiContext {
       const inputTokens = response.usage?.input_tokens ?? 0;
       const outputTokens = response.usage?.output_tokens ?? 0;
 
-      await recordUsage(
-        null,
-        input.orgId,
-        model,
-        inputTokens,
-        outputTokens,
-        true,
-        billingSource,
-      );
+      try {
+        await recordUsage(
+          null,
+          input.orgId,
+          model,
+          inputTokens,
+          outputTokens,
+          true,
+          billingSource,
+          wire.catalogPricing,
+          reservationId,
+        );
+      } catch (error) {
+        await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
+          .catch((markError) => captureException(markError));
+        throw error;
+      }
       if (billingSource === 'platform') {
         // recordUsage only moves counters; the prepaid credit balance that
         // checkBillingCredits gates on is drawn down here (mirrors what
         // recordUsageFromSdkResult does for the chat path). Partner-key spend is
         // billed by Anthropic to the partner, so it is deliberately excluded.
-        await deductBillingCredits(input.orgId, calculateCostCents(model, inputTokens, outputTokens));
+        await deductBillingCredits(input.orgId, calculateWireCostCents(inputTokens, outputTokens));
       }
 
       return {

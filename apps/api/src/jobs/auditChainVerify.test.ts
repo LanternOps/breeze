@@ -385,6 +385,27 @@ describe('auditChainVerify worker', () => {
       expect((result as { orgsChecked: number }).orgsChecked).toBe(1);
     });
 
+    // The kill switch must stop the SWEEP, not just the schedule. A job that
+    // is already in Redis (queued, or active at the moment the container is
+    // recreated — BullMQ hands a stalled job straight back to the next worker)
+    // was re-run in full on US on 2026-09-03 with the flag set, 13 h of DB IO.
+    it('does not consume the queue at all when disabled by env flag', async () => {
+      process.env.AUDIT_CHAIN_VERIFY_ENABLED = 'false';
+      const { initializeAuditChainVerifyWorker } = await import('./auditChainVerify');
+      await initializeAuditChainVerifyWorker();
+      expect(capturedWorkerProcessor.current).toBeNull();
+      expect(workerCloseMock).not.toHaveBeenCalled();
+    });
+
+    it('skips a delivered job without touching the DB when disabled by env flag', async () => {
+      const { createAuditChainVerifyWorker } = await import('./auditChainVerify');
+      createAuditChainVerifyWorker();
+      process.env.AUDIT_CHAIN_VERIFY_ENABLED = 'false';
+      const result = await capturedWorkerProcessor.current!({ name: 'audit-chain-verify' });
+      expect(result).toMatchObject({ skipped: true, orgsChecked: 0 });
+      expect(dbExecuteMock).not.toHaveBeenCalled();
+    });
+
     it('ignores unknown job names', async () => {
       const { createAuditChainVerifyWorker } = await import('./auditChainVerify');
       createAuditChainVerifyWorker();

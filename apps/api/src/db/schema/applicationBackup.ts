@@ -65,8 +65,12 @@ export const backupChains = pgTable(
     targetName: varchar('target_name', { length: 256 }).notNull(),
     targetId: varchar('target_id', { length: 256 }),
     isActive: boolean('is_active').notNull().default(true),
+    // ON DELETE SET NULL (2026-10-15-140004): a chain-continuity pointer is
+    // history and must survive its full snapshot's retention deletion — see
+    // D17 / deleteSnapshotRow's comment on backup_snapshots.
     fullSnapshotId: uuid('full_snapshot_id').references(
-      () => backupSnapshots.id
+      () => backupSnapshots.id,
+      { onDelete: 'set null' }
     ),
     chainMetadata: jsonb('chain_metadata').notNull().default({}),
     createdAt: timestamp('created_at').defaultNow().notNull(),

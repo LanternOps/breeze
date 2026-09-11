@@ -146,7 +146,16 @@ partnerRoutes.get(
       lastSeenAt: devices.lastSeenAt
     })
     .from(devices)
-    .where(and(inArray(devices.orgId, orgIdList), eq(devices.isEphemeral, false)));
+    // Removed devices are dropped alongside the ephemeral Quick Support ones
+    // (#5315). This feeds BOTH `deviceCount` and the per-org `devices` rollup
+    // on each dashboard card, and `GET /devices` — every other list a tech
+    // reads — already hides decommissioned rows by default, so leaving them in
+    // made this card disagree with the org record it links to.
+    .where(and(
+      inArray(devices.orgId, orgIdList),
+      eq(devices.isEphemeral, false),
+      ne(devices.status, 'decommissioned'),
+    ));
 
   const devicesByOrg = new Map<string, Array<{
     id: string;

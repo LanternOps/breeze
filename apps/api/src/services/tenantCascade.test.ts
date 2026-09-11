@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // Mock the DB so we can drive cascade behavior deterministically. The
 // integration test exercises the real Postgres flow.
@@ -12,6 +13,7 @@ const mockState = vi.hoisted(() => ({
   fkEdges: [] as Array<{ child_table: string; parent_table: string }>,
   /** rows the W08 attachment object pre-clear SELECT returns (default: none). */
   attachmentKeyRows: [] as Array<{ storage_key: string }>,
+  softwareKeyRows: [] as Array<{ storageKey: string | null }>,
 }));
 
 function sqlToText(q: unknown): string {
@@ -59,6 +61,21 @@ vi.mock('../db', () => ({
       if (text.includes('SELECT storage_key')) {
         return Promise.resolve(mockState.attachmentKeyRows);
       }
+      if (text.includes('SELECT v.s3_key')) {
+        return Promise.resolve(mockState.softwareKeyRows);
+      }
+      if (text.includes('FROM software_deployments d')) {
+        return Promise.resolve([{ count: 0 }]);
+      }
+      if (text.includes('FROM software_inventory i')) {
+        return Promise.resolve([{ count: 0 }]);
+      }
+      if (text.includes('SELECT m.id FROM software_install_methods')) {
+        return Promise.resolve([]);
+      }
+      if (/^\s*SELECT id FROM software_catalog/i.test(text)) {
+        return Promise.resolve([]);
+      }
       const next = mockState.executeResponses.shift();
       if (next === undefined) {
         return Promise.resolve({ rowCount: 0 });
@@ -74,6 +91,11 @@ vi.mock('../db', () => ({
 const { deleteObjectKeysMock } = vi.hoisted(() => ({ deleteObjectKeysMock: vi.fn() }));
 vi.mock('./ticketAttachmentStorage', () => ({
   deleteObjectKeys: deleteObjectKeysMock,
+}));
+
+const { deleteSoftwareObjectsMock } = vi.hoisted(() => ({ deleteSoftwareObjectsMock: vi.fn() }));
+vi.mock('./s3Storage', () => ({
+  deleteObjects: deleteSoftwareObjectsMock,
 }));
 
 // W08 #3902: the erasure-failed forensic audit is asserted directly, so the
@@ -116,6 +138,22 @@ describe('getOrgCascadeDeleteOrder()', () => {
     const withoutOrgs = cascadeOrder.filter((t) => t !== 'organizations');
     const sortedWithoutOrgs = sorted.filter((t) => t !== 'organizations');
     expect(withoutOrgs).toEqual(sortedWithoutOrgs);
+  });
+
+  it('registers report_schedule_recipients in localeCompare order', () => {
+    const order = getOrgCascadeDeleteOrder();
+    const recipients = order.indexOf('report_schedule_recipients');
+    const reports = order.indexOf('reports');
+
+    expect(recipients).toBeGreaterThan(-1);
+    expect(reports).toBeGreaterThan(recipients);
+    expect(
+      order.filter((name) => name !== 'organizations'),
+    ).toEqual(
+      order
+        .filter((name) => name !== 'organizations')
+        .sort((a, b) => a.localeCompare(b)),
+    );
   });
 
   it('routes append-only ML feedback labels through the audit-admin delete path', () => {
@@ -234,7 +272,11 @@ describe('cascadeDeleteOrg', () => {
     // device_commands is cleared first then the cascade walk begins.
     mockState.executeResponses = [
       { rowCount: 5 }, // device_commands
-      ...Array(cascadeOrder.length).fill({ rowCount: 3 }),
+      // One extra: the accounting_entity_mappings entry also runs a
+      // retained-count SELECT (the payment mappings that still owe QuickBooks a
+      // delete), which consumes a queued response but is deliberately NOT summed
+      // into totalRowsDeleted — it deletes nothing.
+      ...Array(cascadeOrder.length + 1).fill({ rowCount: 3 }),
     ];
     const stats = await cascadeDeleteOrg(
       '00000000-0000-0000-0000-000000000001',
@@ -385,9 +427,12 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
     mockState.executedSql = [];
     mockState.fkEdges = [];
     mockState.attachmentKeyRows = [];
+    mockState.softwareKeyRows = [];
     vi.mocked(db.execute).mockClear();
     deleteObjectKeysMock.mockReset();
     deleteObjectKeysMock.mockResolvedValue(undefined);
+    deleteSoftwareObjectsMock.mockReset();
+    deleteSoftwareObjectsMock.mockResolvedValue(undefined);
     createAuditLogMock.mockClear();
   });
 
@@ -468,5 +513,105 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
         details: expect.objectContaining({ failedTable: 'ticket_attachments_objects' }),
       }),
     );
+  });
+});
+
+describe('software package object lifecycle pre-clear', () => {
+  const ORG = '00000000-0000-0000-0000-000000000011';
+  const BY = '00000000-0000-0000-0000-000000000012';
+
+  beforeEach(() => {
+    mockState.executeResponses = [];
+    mockState.executedSql = [];
+    mockState.fkEdges = [];
+    mockState.attachmentKeyRows = [];
+    mockState.softwareKeyRows = [];
+    deleteObjectKeysMock.mockReset();
+    deleteObjectKeysMock.mockResolvedValue(undefined);
+    deleteSoftwareObjectsMock.mockReset();
+    deleteSoftwareObjectsMock.mockResolvedValue(undefined);
+    createAuditLogMock.mockClear();
+  });
+
+  it('locks the owned catalog/version rows and deletes objects before locator rows', async () => {
+    mockState.softwareKeyRows = [
+      { storageKey: 'software/org/a.msi' },
+      { storageKey: null },
+    ];
+    const order: string[] = [];
+    deleteSoftwareObjectsMock.mockImplementation(async () => { order.push('objects'); });
+    vi.mocked(db.execute).mockImplementation(((q: unknown) => {
+      const text = sqlToText(q);
+      mockState.executedSql.push(text);
+      if (text.includes('pg_constraint') || text.includes('contype')) return Promise.resolve([]);
+      if (text.includes('SELECT storage_key')) return Promise.resolve([]);
+      if (text.includes('SELECT v.s3_key')) {
+        order.push('lock-keys');
+        return Promise.resolve(mockState.softwareKeyRows);
+      }
+      if (text.includes('FROM software_deployments d')) return Promise.resolve([{ count: 0 }]);
+      if (text.includes('FROM software_inventory i')) return Promise.resolve([{ count: 0 }]);
+      if (text.includes('SELECT m.id FROM software_install_methods')) {
+        order.push('lock-methods');
+        return Promise.resolve([]);
+      }
+      if (/DELETE FROM software_versions/i.test(text)) order.push('delete-rows');
+      if (/DELETE FROM software_catalog/i.test(text)) order.push('delete-catalogs');
+      if (/^\s*SELECT id FROM software_catalog/i.test(text)) {
+        order.push('lock-catalogs');
+        return Promise.resolve([{ id: 'catalog-1' }]);
+      }
+      return Promise.resolve({ rowCount: 0 });
+    }) as any);
+
+    await cascadeDeleteOrg(ORG, BY);
+
+    expect(order).toEqual([
+      'lock-catalogs', 'lock-keys', 'lock-methods', 'objects', 'delete-rows', 'delete-catalogs',
+    ]);
+    expect(deleteSoftwareObjectsMock).toHaveBeenCalledWith(['software/org/a.msi']);
+    const lockSql = mockState.executedSql.find((text) => text.includes('SELECT v.s3_key'))!;
+    expect(lockSql).toMatch(/software_catalog WHERE org_id/i);
+    expect(lockSql).toMatch(/FOR UPDATE/i);
+  });
+
+  it('keeps locator rows and records the object step when storage deletion fails', async () => {
+    mockState.softwareKeyRows = [{ storageKey: 'software/org/a.msi' }];
+    deleteSoftwareObjectsMock.mockRejectedValueOnce(new Error('synthetic bucket outage'));
+
+    await expect(cascadeDeleteOrg(ORG, BY)).rejects.toThrow(/software package object\/catalog delete/i);
+    const softwareDeletes = mockState.executedSql.filter((text) => /DELETE FROM software_versions/i.test(text));
+    expect(softwareDeletes).toHaveLength(0);
+    expect(createAuditLogMock).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'tenant.erasure.failed',
+      details: expect.objectContaining({ failedTable: 'software_version_objects' }),
+    }));
+  });
+});
+
+describe('accounting_entity_mappings payment arm (QuickBooks Phase D2 outbox)', () => {
+  const paymentArm = (): string => {
+    const entry = __testOnly.ASSOCIATED_SYSTEM_SCOPED_TABLES
+      .find((e) => e.table === 'accounting_entity_mappings');
+    expect(entry).toBeDefined();
+    return new PgDialect().sqlToQuery(entry!.clearSql('11111111-2222-3333-4444-555555555555')).sql;
+  };
+
+  it('never deletes a payment mapping that still owes QuickBooks a DELETE', () => {
+    // Phase D2 turned the `payment` mapping row into an OUTBOX: `pending_op =
+    // 'delete'` with a `remote_entity_id` means Breeze created a Payment in
+    // QuickBooks and still owes its removal. Deleting the row here discards
+    // that owed delete silently and strands real money in someone's books.
+    // The row holds no org-scoped personal data — a remote id, a token and a
+    // status — and the delete worker removes it itself once QuickBooks
+    // confirms, so retaining it is safe for erasure.
+    expect(paymentArm()).toMatch(/pending_op is distinct from 'delete'/i);
+  });
+
+  it('still deletes org, invoice and settled payment mappings', () => {
+    const arm = paymentArm();
+    expect(arm).toContain("breeze_entity_type = 'org'");
+    expect(arm).toContain("breeze_entity_type = 'invoice'");
+    expect(arm).toContain("breeze_entity_type = 'payment'");
   });
 });

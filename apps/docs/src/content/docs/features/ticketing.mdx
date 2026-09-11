@@ -146,6 +146,17 @@ Tickets enter the queue from four directions:
 - **By email.** Customers email your inbound address and their message becomes a ticket -- see [Email-to-Ticket](#email-to-ticket) below.
 - **Through the API**, for integrations and automation.
 
+<Aside type="note" title="Service Management has to be on">
+  Ticketing is part of the **Service Management** module, which is a partner-level
+  switch (**Settings → Partner → Company → Modules**). With it turned **off**,
+  Breeze runs as monitoring and management only: the Service Desk and Billing
+  sections leave the sidebar and *every* path above refuses to create a new
+  ticket — technician, portal, alert, inbound email, the AI assistant's ticket
+  tool, and the API. Existing tickets stay readable, and turning the module back
+  on restores everything with its history intact. See
+  [Service Management mode](/reference/partner-management/#service-management-mode).
+</Aside>
+
 ## Email-to-Ticket
 
 Breeze can turn customer emails into tickets automatically, so your help desk works entirely over email like a full PSA. Configure it under **Settings → Ticketing → Inbound email**.
@@ -208,6 +219,20 @@ Pick the **Default triage organization** from the dropdown above the Unknown sen
 #### Dropping mail that fails sender authentication
 
 A separate checkbox on the same card, **Drop mail that fails sender authentication (SPF/DKIM/DMARC)**, controls mail that fails those checks -- independently of the Unknown senders setting above. When it's off (the default), unverified mail is quarantined for review. When it's on, unverified mail is dropped silently instead -- no ticket, no review-queue entry, no autoresponse. This applies to **all** unverified senders, including a message from an otherwise-recognized customer that individually fails the check, and takes priority over whatever you've chosen for unknown senders.
+
+### Who the requester is
+
+A ticket records **who asked** separately from **who signed in**. The requester is an organization [contact](/reference/organizations-and-sites/#contacts) — a person in the customer's business, whether or not they have ever logged into anything. The submitter is a portal login, and only exists when the ticket came in through the portal.
+
+This matters when a ticket arrives by email. Breeze matches the sender to a contact on the customer's organization rather than inventing a login for them, so a customer who only ever emails you still has a clean history under their name.
+
+It also decides what a customer sees in the portal. A portal user sees the tickets they submitted **and** the tickets raised by the contact their login is linked to — so someone who emails a request and later signs in to the portal finds it waiting for them, rather than an empty list.
+
+Logins created through single sign-on or the Outlook add-in are linked to a matching contact automatically, provided the address is one the identity provider vouches for.
+
+<Aside type="caution" title="Ambiguous invites are flagged, not guessed">
+  If several contacts on an organization share the email address you are inviting, Breeze creates the login without linking it to any of them and warns you at the time. That user will not see tickets raised by email under that address until you link them to the right contact. Merge or correct the duplicate contacts, then re-link.
+</Aside>
 
 ### Connecting a Microsoft 365 support mailbox
 

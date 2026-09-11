@@ -48,7 +48,7 @@ async function replayGraphReadConsentMigration(): Promise<void> {
   // carries no DEFERRABLE clause, so replaying it undoes the org-lifecycle branch's
   // deferrable-FK contract (migrations/2026-09-12-100001-org-lifecycle-foundations.sql
   // Section 2). Restore it here rather than editing the shipped migration.
-  await reapplyOrgIdFkDeferrability(getTestDb());
+  await reapplyOrgIdFkDeferrability(getTestDb(), ['m365_consent_sessions_connection_identity_fkey']);
 }
 
 async function seedFixture() {

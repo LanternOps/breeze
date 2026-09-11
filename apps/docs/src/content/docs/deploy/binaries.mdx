@@ -59,11 +59,23 @@ RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTs
 
 This is a public key (also embedded in the agent and CI), so it is safe to commit. Only override it if you build and sign your own binaries. The API refuses to start in production without it. During a signing-key rotation you can trust multiple keys at once by comma-separating them (`RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=old,new`).
 
+<Aside type="caution" title="Rotation on the server doesn't retire trust on agents">
+  Comma-separating keys makes the *server* trust both. Each agent still only
+  trusts the key(s) it pinned at enrollment and keeps trusting a retired key
+  indefinitely — there's no remote revocation yet. Treat rotation as a fleet
+  re-enrollment: see [Key
+  rotation](/deploy/sign-your-own-packages/#key-rotation).
+</Aside>
+
 #### Unsigned signing inputs
 
 Official releases also publish `*-unsigned` build outputs with manifest entries marked `intendedUse: "signing-input"` and `platformTrust: "none"`. These exist solely as inputs for self-signing and are never registrable or downloadable through the API.
 
 Manifest entries for the Windows assets that *are* Authenticode-signed (the Viewer and Helper installers) additionally record which certificate authority signed them, so the provider behind a given build is auditable from the signed manifest itself.
+
+macOS package entries record `signingIdentity` and `signingTeamId`. The release
+workflow adds these fields only after `pkgutil` reports the exact expected
+Developer ID Installer leaf identity and Apple Team ID for those package bytes.
 
 ### Local Mode
 
@@ -73,7 +85,15 @@ Binaries are served from disk. The API reads from these directories:
 |---|---|---|
 | `AGENT_BINARY_DIR` | `./agent/bin` | Agent binaries (e.g. `breeze-agent-linux-amd64`) |
 | `VIEWER_BINARY_DIR` | `./viewer/bin` | Viewer installers (e.g. `breeze-viewer-macos.dmg`) |
-| `HELPER_BINARY_DIR` | `/data/binaries/helper` | Helper binaries (e.g. `breeze-helper-windows.msi`) |
+| `HELPER_BINARY_DIR` | `./agent/bin` | Helper binaries (e.g. `breeze-helper-windows.msi`). The bundled `docker-compose.yml` overrides this to `/data/binaries/helper`, alongside the other two directories under the shared `binaries` volume. |
+
+macOS agent packages and `Breeze Installer.app.zip` are privileged installers.
+Local mode serves them only when the release's original
+`release-artifact-manifest.json` and `.ed25519` signature are staged at the
+parent of `AGENT_BINARY_DIR` and verify with
+`RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`. A deployment-generated manifest that
+merely signs whatever bytes happen to be on the volume is not a source-authenticity
+substitute.
 
 On startup, the API:
 1. Scans `AGENT_BINARY_DIR` for agent binaries
@@ -92,7 +112,7 @@ The `docker-compose.yml` includes a **binaries init container** that bundles age
 ```yaml
 services:
   binaries-init:
-    image: ghcr.io/lanternops/breeze/binaries:${BREEZE_VERSION:-latest}
+    image: ${BREEZE_BINARIES_IMAGE_REF:?Set BREEZE_BINARIES_IMAGE_REF to a digest-pinned image ref}
     pull_policy: always
     volumes:
       - binaries:/target
@@ -112,7 +132,7 @@ depends_on:
 ```
 
 The init container:
-1. Runs on every `docker compose up` (`pull_policy: always` ensures the latest image is pulled)
+1. Runs on every `docker compose up` (`pull_policy: always` ensures the registry is re-checked for the image ref you've pinned in `BREEZE_BINARIES_IMAGE_REF`, which must be set — there is no `latest` fallback)
 2. Copies bundled binaries to the shared `binaries` volume
 3. Exits (restart: "no")
 4. The API mounts the volume read-only
@@ -124,7 +144,11 @@ When `BINARY_SOURCE=github` (default), the API ignores the local volume and sync
 When `BINARY_SOURCE=local` and S3 credentials are configured, Breeze:
 
 1. **On startup**: syncs local binaries to your S3 bucket
-2. **On download**: returns a 302 redirect to a presigned S3 URL (falls back to disk if presigning fails)
+2. **On download**: returns a 302 redirect to a presigned S3 URL for ordinary
+   artifacts (falls back to disk if the object is absent). Privileged macOS
+   packages are the exception: the API reads them with a signed-size bound,
+   verifies the signed release-manifest digest, and proxies the exact verified
+   bytes instead of redirecting the client.
 
 This offloads download bandwidth from your API server to S3/R2/MinIO.
 
@@ -141,6 +165,8 @@ S3 is activated when `S3_BUCKET`, `S3_ACCESS_KEY`, and `S3_SECRET_KEY` are all s
 - `s3://{bucket}/agent/` — agent binaries
 - `s3://{bucket}/viewer/` — viewer installers
 
+Helper and user-helper binaries are **not** synced to S3 — downloads for those fall through to disk even when S3 is configured.
+
 ## Download Endpoints
 
 ### Agent Binaries
@@ -153,6 +179,22 @@ GET /api/v1/agents/download/:os/:arch
 |---|---|
 | `os` | `linux`, `darwin`, `windows` |
 | `arch` | `amd64`, `arm64` |
+
+### Raw Agent MSI (Windows)
+
+```
+GET /api/v1/agents/download/windows/amd64/msi
+```
+
+Serves the staged `breeze-agent.msi` verbatim, with no per-download bootstrap token embedded — unlike the enrollment-installer routes, so the file has a stable checksum. The automatic edition-migration flow pins its own download to a sha256 computed from this same file and verifies before touching an installed agent. Disk-only: unlike the routes above, it does **not** redirect to GitHub or S3, so a `BINARY_SOURCE=github` deployment gets a `404` here.
+
+### macOS Installer Package
+
+```
+GET /api/v1/agents/download/:os/:arch/pkg
+```
+
+`os` must be `darwin`. Serves the notarized `.pkg` used by `install.sh`'s macOS path, which verifies the download via Apple notarization (`spctl --assess`) rather than a checksum comparison against `/agent-versions/latest`.
 
 ### Viewer Installers
 
@@ -179,6 +221,32 @@ GET /api/v1/agents/download/helper/:os/:arch
 
 Helper binaries are companion processes used for remote desktop in headless/service contexts (Session 0 on Windows, LaunchDaemon on macOS, systemd on Linux).
 
+### Watchdog Binary
+
+```
+GET /api/v1/agents/download/watchdog/:os/:arch
+```
+
+| Parameter | Values |
+|---|---|
+| `os` | `linux`, `darwin`, `windows` |
+| `arch` | `amd64`, `arm64` |
+
+`breeze-watchdog` runs as its own service (`BreezeWatchdog` on Windows) alongside the agent and restarts it if it stops responding. The agent's own self-update and failover logic fetch replacement watchdog builds through this same route.
+
+### User-Helper Binary
+
+```
+GET /api/v1/agents/download/user-helper/:os/:arch
+```
+
+| Parameter | Values |
+|---|---|
+| `os` | `linux`, `darwin`, `windows` |
+| `arch` | `amd64`, `arm64` |
+
+`breeze-user-helper` is a distinct binary from the Helper installers above (`/viewers/download` and the **Helper Binaries** section) — it's the GUI-subsystem sibling of the agent that the agent's session broker spawns into the interactive user session (prompts and remote-desktop UI in headless/service contexts), not the standalone Helper app.
+
 ### Backup Binary
 
 The `breeze-backup` binary handles enterprise backup operations (Hyper-V, MSSQL, system image, cloud-to-cloud). It is bundled in installers **and** served through the download API:
@@ -200,6 +268,14 @@ GET /api/v1/agents/install.sh
 ```
 
 One-line agent installer that auto-detects OS/arch, downloads the binary, enrolls, and installs as a system service.
+
+### Uninstall Script
+
+```
+GET /api/v1/agents/uninstall.sh
+```
+
+Companion to the install script, for Linux and macOS. Stops and removes the agent, watchdog, and backup services and binaries. Windows agents are removed through the MSI's own uninstall (Apps & Features / `msiexec /x`), not this endpoint.
 
 ## Decision Guide
 

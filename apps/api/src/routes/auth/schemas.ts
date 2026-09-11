@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { envFlag } from '../../utils/envFlag';
 import type { StepUpOperation } from '../../services/mfaStepUpGrant';
+import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/maintenanceStepUpLimits';
 
 // ============================================
 // Feature flags
@@ -146,36 +147,57 @@ const stepUpAssertion = z.object({ id: z.string().min(1) }).passthrough();
 // The test stays as the readable statement of intent.
 const STEP_UP_OPERATIONS = [
   'add_factor',
+  'rotate_recovery_codes',
+  'delete_passkey',
   'register_approver_device',
   'agent_rollback',
+  'device_maintenance',
 ] as const satisfies readonly Exclude<StepUpOperation, 'enroll_first_factor'>[];
 const stepUpOperation = z
   .enum(STEP_UP_OPERATIONS)
   .default('add_factor');
-const rollbackStepUpResource = z.object({
+export const rollbackStepUpResource = z.object({
   deviceId: z.string().uuid(),
   currentVersion: z.string().min(1).max(100),
   targetVersion: z.string().min(1).max(100),
   reason: z.string().trim().min(1).max(1000),
 });
+// RMM-QA-176 D11: the maintenance binding. Mirrors maintenanceModeSchema /
+// bulkMaintenanceSchema (routes/devices/schemas.ts) exactly — a value the
+// device route would accept but this schema would not (or vice versa) is a
+// grant a technician can mint and never spend, or spend for more than they
+// proved. Both sides import the maxima from services/maintenanceStepUpLimits.ts.
+export const maintenanceStepUpResource = z.object({
+  deviceIds: z.array(z.string().uuid()).min(1).max(MAINTENANCE_MAX_BULK_DEVICES),
+  reason: z.string().trim().min(3).max(500),
+  durationHours: z.number().int().min(1).max(MAINTENANCE_MAX_DURATION_HOURS),
+});
+// Coarse pre-filter only. The AUTHORITY on "does this resource match this
+// operation" is RESOURCE_BOUND_OPERATIONS in routes/auth/mfa.ts, which
+// re-parses under the operation's own schema — a union member alone would
+// happily accept a rollback-shaped body under operation:'device_maintenance'.
+const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource]);
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
   z.object({
     method: z.literal('totp'),
     code: stepUpSixDigit,
     operation: stepUpOperation,
-    resource: rollbackStepUpResource.optional(),
+    resource: stepUpResource.optional(),
+    passkeyId: z.string().uuid().optional(),
   }),
   z.object({
     method: z.literal('sms'),
     code: stepUpSixDigit,
     operation: stepUpOperation,
-    resource: rollbackStepUpResource.optional(),
+    resource: stepUpResource.optional(),
+    passkeyId: z.string().uuid().optional(),
   }),
   z.object({
     method: z.literal('passkey'),
     credential: stepUpAssertion,
     operation: stepUpOperation,
-    resource: rollbackStepUpResource.optional(),
+    resource: stepUpResource.optional(),
+    passkeyId: z.string().uuid().optional(),
   }),
 ]);
 

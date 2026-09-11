@@ -86,6 +86,16 @@ export interface TicketComment {
 export interface TicketDetail extends TicketSummary {
   description: string | null;
   comments: TicketComment[];
+  /**
+   * #5367: the requester SNAPSHOT the detail route already returns (it selects
+   * the whole `tickets` row). Optional here because a server predating the
+   * field — or a cached payload — simply has no requester to show; the detail
+   * header hides the row rather than rendering an empty one.
+   */
+  submitterName?: string | null;
+  submitterEmail?: string | null;
+  /** The canonical requester CONTACT link behind that snapshot (#3258 W03). */
+  requesterContactId?: string | null;
 }
 
 export interface TicketPage {
@@ -144,6 +154,8 @@ export interface CreateTicketInput {
   subject: string;
   description?: string;
   priority: TicketPriority;
+  /** Omitted (not `null`) for Unassigned — see `buildCreateTicketBody`. */
+  assigneeId?: string;
 }
 
 /**

@@ -20,6 +20,8 @@ import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 type ScheduleFrequency = "daily" | "weekly" | "monthly";
 type RebootPolicy = "never" | "if_required" | "always" | "maintenance_window";
+/** #5128 W3 — what a scheduled install does when the device is offline. */
+type OfflineBehavior = "skip" | "queue";
 type PatchSourceOption = "os" | "third_party";
 type PatchSeverity = "critical" | "important" | "moderate" | "low";
 type PatchDeploymentSettings = {
@@ -32,8 +34,13 @@ type PatchDeploymentSettings = {
   scheduleTime: string;
   scheduleDayOfWeek: string;
   scheduleDayOfMonth: number;
+  offlineBehavior: OfflineBehavior;
   rebootPolicy: RebootPolicy;
   rebootDelayMinutes: number;
+  // #3207: end-user reboot deferral budget. Off by default.
+  rebootAllowDeferral: boolean;
+  rebootMaxDeferrals: number;
+  rebootDeferralMinutes: number;
   exclusiveWindowsUpdate: boolean;
 };
 const defaults: PatchDeploymentSettings = {
@@ -46,8 +53,12 @@ const defaults: PatchDeploymentSettings = {
   scheduleTime: "02:00",
   scheduleDayOfWeek: "sun",
   scheduleDayOfMonth: 1,
+  offlineBehavior: "queue",
   rebootPolicy: "if_required",
   rebootDelayMinutes: 15,
+  rebootAllowDeferral: false,
+  rebootMaxDeferrals: 3,
+  rebootDeferralMinutes: 60,
   exclusiveWindowsUpdate: false,
 };
 const OS_VALUE_ALIASES = new Set(["os", "microsoft", "apple", "linux"]);
@@ -124,6 +135,30 @@ const createRebootOptions = (): {
     ),
   },
 ];
+const createOfflineBehaviorOptions = (): {
+  value: OfflineBehavior;
+  label: string;
+  description: string;
+}[] => [
+  {
+    value: "queue",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.patchTab.offlineBehaviorQueue",
+    ),
+    description: i18n.t(
+      "policies:configurationPolicies.featureTabs.patchTab.offlineBehaviorQueueDescription",
+    ),
+  },
+  {
+    value: "skip",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.patchTab.offlineBehaviorSkip",
+    ),
+    description: i18n.t(
+      "policies:configurationPolicies.featureTabs.patchTab.offlineBehaviorSkipDescription",
+    ),
+  },
+];
 const createDayOfWeekOptions = () => [
   {
     value: "mon",
@@ -172,6 +207,7 @@ export default function PatchTab({
   useTranslation("policies");
   const scheduleOptions = createScheduleOptions();
   const rebootOptions = createRebootOptions();
+  const offlineBehaviorOptions = createOfflineBehaviorOptions();
   const dayOfWeekOptions = createDayOfWeekOptions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
@@ -675,6 +711,53 @@ export default function PatchTab({
             </div>
           )}
         </div>
+
+        {/* #5128 W3 — offline behaviour for this schedule. Sits with the
+            schedule fields because it is a scheduling decision: it says what
+            happens to a device that is not there when the occurrence fires. */}
+        <div className="mt-4">
+          <span className="text-xs text-muted-foreground">
+            {i18n.t(
+              "policies:configurationPolicies.featureTabs.patchTab.offlineDevices",
+            )}
+          </span>
+          <div
+            role="radiogroup"
+            aria-label={i18n.t(
+              "policies:configurationPolicies.featureTabs.patchTab.offlineDevices",
+            )}
+            data-testid="patch-offline-behavior"
+            className="mt-2 grid gap-3 sm:grid-cols-2"
+          >
+            {offlineBehaviorOptions.map((option) => (
+              <label
+                key={option.value}
+                className={cn(
+                  "flex cursor-pointer flex-col gap-1 rounded-md border p-3 text-sm transition",
+                  settings.offlineBehavior === option.value
+                    ? "border-primary/40 bg-primary/10 text-primary"
+                    : "border-muted text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <input
+                  type="radio"
+                  name="offlineBehavior"
+                  value={option.value}
+                  data-testid={`patch-offline-behavior-${option.value}`}
+                  checked={settings.offlineBehavior === option.value}
+                  onChange={() => update("offlineBehavior", option.value)}
+                  className="hidden"
+                />
+                <span className="font-medium text-foreground">
+                  {option.label}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  {option.description}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Reboot Policy */}
@@ -739,6 +822,114 @@ export default function PatchTab({
                 "policies:configurationPolicies.featureTabs.patchTab.rebootDelayMinutesDescription",
               )}
             </p>
+          </div>
+        )}
+        {/* End-user reboot deferral (#3207). Deliberately no "don't warn"
+            switch: #3197 made at least one warning an invariant. */}
+        {settings.rebootPolicy !== "never" && (
+          <div className="mt-4">
+            <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
+              <div className="pr-4">
+                <p className="text-sm font-medium">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.patchTab.rebootAllowDeferral",
+                  )}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.patchTab.rebootAllowDeferralDescription",
+                  )}
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={settings.rebootAllowDeferral}
+                data-testid="patch-reboot-allow-deferral-toggle"
+                onClick={() =>
+                  update("rebootAllowDeferral", !settings.rebootAllowDeferral)
+                }
+                className={cn(
+                  "relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition",
+                  settings.rebootAllowDeferral
+                    ? "bg-emerald-500/80"
+                    : "bg-muted",
+                )}
+              >
+                <span
+                  className={cn(
+                    "inline-block h-5 w-5 rounded-full bg-white transition",
+                    settings.rebootAllowDeferral
+                      ? "translate-x-5"
+                      : "translate-x-1",
+                  )}
+                />
+              </button>
+            </div>
+            {settings.rebootAllowDeferral && (
+              <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label
+                    htmlFor="patch-reboot-max-deferrals"
+                    className="text-xs text-muted-foreground"
+                  >
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.patchTab.rebootMaxDeferrals",
+                    )}
+                  </label>
+                  <input
+                    id="patch-reboot-max-deferrals"
+                    data-testid="patch-reboot-max-deferrals"
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={settings.rebootMaxDeferrals}
+                    onChange={(e) =>
+                      update(
+                        "rebootMaxDeferrals",
+                        Number(e.target.value) || 3,
+                      )
+                    }
+                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.patchTab.rebootMaxDeferralsDescription",
+                    )}
+                  </p>
+                </div>
+                <div>
+                  <label
+                    htmlFor="patch-reboot-deferral-minutes"
+                    className="text-xs text-muted-foreground"
+                  >
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.patchTab.rebootDeferralMinutes",
+                    )}
+                  </label>
+                  <input
+                    id="patch-reboot-deferral-minutes"
+                    data-testid="patch-reboot-deferral-minutes"
+                    type="number"
+                    min={5}
+                    max={1440}
+                    value={settings.rebootDeferralMinutes}
+                    onChange={(e) =>
+                      update(
+                        "rebootDeferralMinutes",
+                        Number(e.target.value) || 60,
+                      )
+                    }
+                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.patchTab.rebootDeferralMinutesDescription",
+                    )}
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

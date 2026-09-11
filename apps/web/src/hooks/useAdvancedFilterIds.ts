@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { fetchWithAuth } from '../stores/auth';
 import { NO_VALUE_OPERATORS } from '../components/devices/filterMigration';
@@ -18,56 +18,76 @@ function hasValidConditions(filter: FilterConditionGroup): boolean {
   });
 }
 
-export interface UseAdvancedFilterIdsReturn {
-  /**
-   * Set of device ids matching the advanced filter, or null when no filter is
-   * active (callers should treat null as "show everything").
-   */
-  ids: Set<string> | null;
-  loading: boolean;
-}
+type FilterResolution =
+  | { state: 'inactive'; ids: null; loading: false; error: false }
+  | { state: 'loading'; ids: Set<string>; loading: true; error: false }
+  | { state: 'ready'; ids: Set<string>; loading: false; error: false }
+  | { state: 'error'; ids: Set<string>; loading: false; error: boolean };
 
-/**
- * Resolve an advanced filter (FilterConditionGroup) to the COMPLETE set of
- * matching device ids via POST /filters/preview with `idsOnly: true`. Unlike
- * the preview path this is uncapped — filters matching >100 devices return
- * every id, so the device table/grid never silently hides matches.
+export type UseAdvancedFilterIdsReturn = FilterResolution & { refetch: () => void };
+const EMPTY_IDS = new Set<string>();
+
+/** Resolve the complete device scope. Only an inactive filter returns null.
+ * A changed filter, scope or retry closes synchronously, before effects run.
  */
-export function useAdvancedFilterIds(filter: FilterConditionGroup | null): UseAdvancedFilterIdsReturn {
-  const [ids, setIds] = useState<Set<string> | null>(null);
-  const [loading, setLoading] = useState(false);
+export function useAdvancedFilterIds(
+  filter: FilterConditionGroup | null,
+  scopeKey = '',
+): UseAdvancedFilterIdsReturn {
+  const [reloadToken, setReloadToken] = useState(0);
+  const refetch = useCallback(() => setReloadToken(n => n + 1), []);
+  const active = filter !== null && hasValidConditions(filter);
+  const key = JSON.stringify([filter, scopeKey, reloadToken]);
+  const requestFilter = useMemo(() => JSON.parse(key)[0] as FilterConditionGroup, [key]);
+  const [previousKey, setPreviousKey] = useState(key);
+  const [resolved, setResolved] = useState<{
+    key: string; result: FilterResolution;
+  } | null>(null);
+
+  // Do not revive an older ready snapshot on A -> B -> A while B is pending.
+  if (previousKey !== key) {
+    setPreviousKey(key);
+    setResolved(null);
+  }
 
   useEffect(() => {
-    if (!filter || !hasValidConditions(filter)) {
-      setIds(null);
-      return;
-    }
-
-    setLoading(true);
+    if (!active) return;
     const controller = new AbortController();
-
-    fetchWithAuth('/filters/preview', {
-      method: 'POST',
-      body: JSON.stringify({ conditions: filter, idsOnly: true }),
-      signal: controller.signal
-    })
-      .then(async (res) => {
-        if (res.ok) {
-          const data = await res.json();
-          const result = data.data ?? data;
-          setIds(new Set<string>(result.deviceIds ?? []));
+    // runaction-exempt: read-only preview; failures close the scope with retry UI.
+    void (async () => {
+      try {
+        const response = await fetchWithAuth('/filters/preview', {
+          method: 'POST',
+          body: JSON.stringify({ conditions: requestFilter, idsOnly: true }),
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        if (!response.ok) {
+          if (response.status !== 401) console.error('Filter preview failed:', response.status);
+          setResolved({ key, result: { state: 'error', ids: EMPTY_IDS, loading: false, error: response.status !== 401 } });
+          return;
         }
-      })
-      .catch((err) => {
+        const body = await response.json();
+        if (controller.signal.aborted) return;
+        const result = body?.data ?? body;
+        if (!Array.isArray(result?.deviceIds)
+          || !result.deviceIds.every((id: unknown) => typeof id === 'string' && id.length > 0)
+          || !Number.isSafeInteger(result.totalCount)
+          || result.totalCount !== new Set(result.deviceIds).size) {
+          throw new Error('Invalid complete filter response');
+        }
+        setResolved({ key, result: { state: 'ready', ids: new Set(result.deviceIds), loading: false, error: false } });
+      } catch (err) {
         if (!controller.signal.aborted) {
           console.error('Filter preview failed:', err);
-          setIds(null);
+          setResolved({ key, result: { state: 'error', ids: EMPTY_IDS, loading: false, error: true } });
         }
-      })
-      .finally(() => setLoading(false));
-
+      }
+    })();
     return () => controller.abort();
-  }, [filter]);
+  }, [key, active, requestFilter]);
 
-  return { ids, loading };
+  if (!active) return { state: 'inactive', ids: null, loading: false, error: false, refetch };
+  if (previousKey !== key || resolved?.key !== key) return { state: 'loading', ids: EMPTY_IDS, loading: true, error: false, refetch };
+  return { ...resolved.result, refetch };
 }

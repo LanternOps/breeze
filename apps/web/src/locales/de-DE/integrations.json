@@ -722,9 +722,10 @@
     "createNew": "Neu erstellen",
     "unlink": "Verknüpfung aufheben",
     "syncNow": "Jetzt synchronisieren",
-    "pending": "Ausstehend",
-    "synced": "Synchronisiert",
-    "syncError": "Synchronisierungsfehler",
+    "notSynced": "Nicht synchronisiert",
+    "notSyncedHint": "In Breeze bestätigt, noch nicht an QuickBooks gesendet",
+    "inQuickbooks": "In QuickBooks vorhanden",
+    "syncFailed": "Synchronisierung fehlgeschlagen",
     "incomeAccount": "Ertragskonto",
     "incomeAccountRequired": "Legen Sie ein Standard-Ertragskonto fest, bevor Sie Artikel in QuickBooks erstellen oder synchronisieren.",
     "saveIncomeAccount": "Ertragskonto speichern",
@@ -782,11 +783,17 @@
     "pullPaymentsEnabled": "Zahlungen werden aus QuickBooks übernommen",
     "pullPaymentsDisabled": "Zahlungen werden nicht mehr aus QuickBooks übernommen",
     "failedToUpdatePullPayments": "Die Einstellung für den Zahlungsabgleich konnte nicht geändert werden.",
+    "pushPayments": "Zahlungsübertragung",
+    "pushPaymentsDescription": "In Breeze erfasste Zahlungen an QuickBooks senden und dort entfernen, wenn sie storniert werden.",
+    "pushPaymentsEnabled": "Zahlungen werden an QuickBooks gesendet",
+    "pushPaymentsDisabled": "Zahlungen werden nicht mehr an QuickBooks gesendet",
+    "failedToUpdatePushPayments": "Die Einstellung für die Zahlungsübertragung konnte nicht aktualisiert werden.",
     "lastPaymentSync": "Letzter Zahlungsabgleich",
     "never": "Nie",
     "syncNow": "Jetzt abgleichen",
     "syncNowQueued": "Zahlungsabgleich eingereiht.",
     "syncNowNotQueued": "Der Zahlungsabgleich konnte nicht eingereiht werden. Bitte in Kürze erneut versuchen.",
+    "syncNowPullDisabled": "Der Zahlungsabgleich ist für diese Verbindung deaktiviert – aktivieren Sie Zahlungsabgleich oder Zahlungsübertragung, um jetzt zu synchronisieren.",
     "failedToSyncNow": "Der Zahlungsabgleich konnte nicht gestartet werden."
   },
   "securityIntegration": {
@@ -867,7 +874,8 @@
     "couldNotRefresh": "Stripe-Kontodaten konnten nicht aktualisiert werden.",
     "notCached": "Währung noch nicht zwischengespeichert – aktualisieren, um sie von Stripe abzurufen.",
     "staleCache": "Stripe war nicht erreichbar – es werden die zuletzt zwischengespeicherten Kontodaten angezeigt.",
-    "reconnectRequired": "Ihr gespeicherter Stripe-Schlüssel (•••• {{last4}}) funktioniert nicht mehr: {{reason}} Fügen Sie einen neuen Schlüssel ein, um die Verbindung wiederherzustellen; Online-Zahlungen schlagen bis dahin fehl."
+    "reconnectRequired": "Ihr gespeicherter Stripe-Schlüssel (•••• {{last4}}) funktioniert nicht mehr: {{reason}} Fügen Sie einen neuen Schlüssel ein, um die Verbindung wiederherzustellen; Online-Zahlungen schlagen bis dahin fehl.",
+    "reconciliationError": "Die Abstimmung von Zahlungsstornierungen läuft nicht: {{reason}} Ersetzen Sie den Stripe-Schlüssel durch einen Schlüssel, der Ereignisse lesen kann."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Standort-Zuordnungen konnten nicht gespeichert werden.",

@@ -1218,6 +1218,7 @@ discoveryRoutes.get(
         // link and semantically the wrong default (relaying to the asset
         // through the device IT WAS LINKED TO is a loopback).
         suggestedBridgeDeviceId: bridgeDevices.id,
+        siteName: sites.name,
       })
       .from(discoveredAssets)
       .leftJoin(devices, and(
@@ -1231,6 +1232,7 @@ discoveryRoutes.get(
         eq(discoveryJobs.agentId, bridgeDevices.agentId),
         eq(bridgeDevices.orgId, discoveredAssets.orgId),
       ))
+      .leftJoin(sites, eq(discoveredAssets.siteId, sites.id))
       .where(and(...conditions))
       .limit(1);
 
@@ -1247,6 +1249,7 @@ discoveryRoutes.get(
         id: a.id,
         orgId: a.orgId,
         siteId: a.siteId,
+        siteName: row.siteName ?? null,
         assetType: a.assetType,
         approvalStatus: a.approvalStatus,
         isOnline: a.isOnline,

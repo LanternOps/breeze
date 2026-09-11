@@ -130,18 +130,22 @@ func serviceInstallCmd() *cobra.Command {
 			}
 			fmt.Printf("Systemd unit installed to %s\n", watchdogUnitDst)
 
-			// Reload systemd.
-			if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
-				return fmt.Errorf("failed to reload systemd: %s", strings.TrimSpace(string(out)))
+			// Reload, enable, and RESTART — the install stopped the unit above
+			// and the new binary is only live once the process is replaced
+			// (#5252). The darwin install has always bootstrapped here; linux
+			// merely printed "Start with: ..." and left the old process (or
+			// nothing) running.
+			if err := installWatchdogUnit(execCommandRunner, watchdogServiceName); err != nil {
+				fmt.Fprintf(os.Stderr,
+					"ERROR: the Breeze Watchdog was stopped for this install and could NOT be started again: %v\n"+
+						"       This host has no agent supervisor until it starts. Recover with:\n"+
+						"         sudo systemctl start breeze-watchdog\n"+
+						"         sudo journalctl -u breeze-watchdog -n 100 --no-pager\n", err)
+				return err
 			}
 
-			// Enable the service.
-			if out, err := exec.Command("systemctl", "enable", watchdogServiceName).CombinedOutput(); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to enable service: %s\n", strings.TrimSpace(string(out)))
-			}
-
-			fmt.Println("Breeze Watchdog service installed and enabled.")
-			fmt.Println("Start with: sudo breeze-watchdog service start")
+			fmt.Println("Breeze Watchdog service installed, enabled and started.")
+			fmt.Println("Logs: journalctl -u breeze-watchdog -f")
 			return nil
 		},
 	}

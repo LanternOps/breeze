@@ -3,6 +3,7 @@ import type { Tokens, User } from './auth';
 import { applyResolvedLocalePreferences } from '@/lib/appearance';
 import {
   apiAcceptInvite,
+  apiConfirmPhone,
   apiEnableSmsMfa,
   apiEnableTotpMfa,
   apiEnrollPasskey,
@@ -70,6 +71,21 @@ const makeResponseWithHeaders = (
 
 const refreshCallsOf = (fetchMock: { mock: { calls: unknown[][] } }) =>
   fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/refresh'));
+
+// Like makeResponse, but with a working `.clone()` — fetchWithAuth's 428
+// handling clones the response to peek at the body without consuming the
+// one handed back to the caller, and the plain makeResponse double has no
+// clone() at all (every test exercising it never reached that branch).
+const makeCloneableResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response => {
+  const res = {
+    ok,
+    status,
+    json: vi.fn().mockResolvedValue(payload),
+    clone: vi.fn()
+  } as unknown as Response;
+  (res.clone as ReturnType<typeof vi.fn>).mockReturnValue(res);
+  return res;
+};
 
 const baseUser: User = {
   id: 'user-1',
@@ -276,6 +292,48 @@ describe('auth store fetchWithAuth', () => {
     const retryHeaders = retryCall[1].headers as Headers;
     expect(retryHeaders.get('Authorization')).toBe(`Bearer ${refreshedTokens.accessToken}`);
     expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
+  });
+
+  // The server installs the replacement `breeze_auth_binding` cookie on the
+  // 428 response itself (Set-Cookie); the browser's cookie jar picks it up
+  // automatically on the next `fetch` with `credentials: 'include'`. So the
+  // fix is a bare replay of the exact same request, no token dance needed.
+  it('replays the request once on a binding-rotation 428, returning the retry result', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const rotationRequired = makeCloneableResponse(
+      { error: 'binding rotated', reason: 'auth_binding_rotation_required' },
+      false,
+      428
+    );
+    const retrySuccess = makeResponse({ data: { id: 'dev-1' } }, true, 200);
+
+    const fetchMock = vi.fn().mockResolvedValueOnce(rotationRequired).mockResolvedValueOnce(retrySuccess);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await fetchWithAuth('/devices/dev-1');
+
+    expect(response).toBe(retrySuccess);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [firstUrl] = fetchMock.mock.calls[0] as [string];
+    const [secondUrl] = fetchMock.mock.calls[1] as [string];
+    expect(secondUrl).toBe(firstUrl);
+  });
+
+  it('surfaces a second binding-rotation 428 as-is instead of looping', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const rotationRequired = () =>
+      makeCloneableResponse({ error: 'binding rotated', reason: 'auth_binding_rotation_required' }, false, 428);
+    const first = rotationRequired();
+    const second = rotationRequired();
+
+    const fetchMock = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await fetchWithAuth('/devices/dev-1');
+
+    expect(response).toBe(second);
+    expect(response.status).toBe(428);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('restores token before request when authenticated but token is missing', async () => {
@@ -2325,14 +2383,18 @@ describe('MFA enrollment API bindings', () => {
     });
   });
 
-  // #4413: /auth/mfa/enable answers 401 for "that TOTP is wrong", which is not
-  // an expired bearer. Letting fetchWithAuth's generic 401 path have it either
-  // replays the code or — on the forced-enrollment page, where the user has
-  // nowhere else to go — signs them out for a typo.
-  it('treats a wrong-code 401 as a rejection, not an expired session', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(makeResponse({ error: 'Invalid MFA code' }, false, 401));
+  // #4470 (was #4413): /auth/mfa/enable now answers 400 + `code:
+  // 'mfa_code_invalid'` for "that TOTP is wrong", so a typo can no longer
+  // reach fetchWithAuth's 401 refresh-and-evict path at all. This replaces the
+  // client-side `skipUnauthorizedRetry` stopgap: the status itself carries the
+  // distinction now, so a NEW caller cannot re-inherit the logout bug by
+  // forgetting a flag.
+  it('treats a wrong-code 400 as a rejection: no refresh, no replay, still signed in', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(
+      { error: 'Invalid MFA code', message: 'Invalid MFA code', code: 'mfa_code_invalid' },
+      false,
+      400,
+    ));
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(apiEnableTotpMfa('123456', 'password')).resolves.toEqual({
@@ -2341,6 +2403,34 @@ describe('MFA enrollment API bindings', () => {
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1); // no refresh, no replay
+    expect(refreshCallsOf(fetchMock)).toHaveLength(0);
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+    // The stopgap flag is gone WITH the overloaded status, not instead of it.
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { skipUnauthorizedRetry?: boolean }];
+    expect(init.skipUnauthorizedRetry).toBeUndefined();
+  });
+
+  // The other half of #4470: dropping the opt-out flag is only safe because a
+  // 401 from this endpoint now means ONLY "your bearer is dead" — and that
+  // still has to refresh and replay, or the forced-enrollment page (which
+  // always loads with an empty in-memory token) can never complete.
+  it('a genuine bearer 401 from /auth/mfa/enable still refreshes and replays', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'Unauthorized' }, false, 401))
+      .mockResolvedValueOnce(makeResponse({ tokens: { accessToken: 'fresh', expiresInSeconds: 900 } }, true, 200))
+      .mockResolvedValueOnce(makeResponse({
+        success: true,
+        recoveryCodes: ['RC-ONE'],
+        tokens: { accessToken: 'replacement', expiresInSeconds: 900 },
+      }, true, 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(apiEnableTotpMfa('123456', 'password')).resolves.toMatchObject({ success: true });
+
+    expect(refreshCallsOf(fetchMock)).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(useAuthStore.getState().isAuthenticated).toBe(true);
   });
 
@@ -2409,5 +2499,207 @@ describe('MFA enrollment session adoption', () => {
     })).toBe(false);
     expect(useAuthStore.getState().tokens).toEqual(newerTokens);
     expect(useAuthStore.getState().user?.mfaEnabled).toBe(false);
+  });
+});
+
+// #5198: confirming a number that REPLACES the one behind a live SMS factor
+// revokes every refresh family. The caller used to be revoked along with them
+// and got no replacement back, so changing your own phone number bounced you to
+// /login?reason=session-expired. The store must now adopt the replacement the
+// response carries — and say so honestly when there is none to adopt.
+describe('apiConfirmPhone — SMS-factor replacement keeps the caller signed in (#5198)', () => {
+  it('adopts the replacement session on a factor replacement', async () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const tokens = { accessToken: 'replacement-phone', expiresInSeconds: 900 };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      success: true, message: 'Phone number verified', sessionReplaced: true, tokens,
+    })));
+
+    await expect(apiConfirmPhone('+15555550100', '123456', 'password'))
+      .resolves.toEqual({ success: true, reauthRequired: false });
+    expect(useAuthStore.getState().tokens).toEqual(tokens);
+    // Adopting a replacement is not a new session.
+    expect(useAuthStore.getState().sessionGeneration).toBe(generation);
+  });
+
+  it('reports reauthRequired when the server revoked everything but withheld the tokens', async () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true }, baseTokens);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      success: true, message: 'Phone number verified', sessionReplaced: true,
+    })));
+
+    await expect(apiConfirmPhone('+15555550100', '123456', 'password'))
+      .resolves.toEqual({ success: true, reauthRequired: true });
+    // The stale token is left in place rather than silently swapped for nothing;
+    // the caller is told to re-authenticate instead.
+    expect(useAuthStore.getState().tokens).toEqual(baseTokens);
+  });
+
+  it('leaves the session alone on an initial verification, which replaces nothing', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      success: true, message: 'Phone number verified',
+    })));
+
+    await expect(apiConfirmPhone('+15555550100', '123456', 'password'))
+      .resolves.toEqual({ success: true });
+    expect(useAuthStore.getState().tokens).toEqual(baseTokens);
+  });
+});
+
+describe('replacement-session adoption (#4480)', () => {
+  it('installs the replacement tokens on the live session without touching the user record', () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const rotated = { accessToken: 'rotated', expiresInSeconds: 900 };
+
+    expect(useAuthStore.getState().commitReissuedSessionIfCurrent(generation, rotated)).toBe(true);
+    expect(useAuthStore.getState().tokens).toEqual(rotated);
+    expect(useAuthStore.getState().user).toEqual({ ...baseUser, mfaEnabled: true });
+    // Adopting a replacement is not a new session — nothing else may re-run.
+    expect(useAuthStore.getState().sessionGeneration).toBe(generation);
+  });
+
+  it('refuses a replacement after logout rather than resurrecting the session', () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    useAuthStore.getState().logout();
+
+    expect(useAuthStore.getState().commitReissuedSessionIfCurrent(generation, {
+      accessToken: 'rotated',
+      expiresInSeconds: 900,
+    })).toBe(false);
+    expect(useAuthStore.getState()).toMatchObject({ tokens: null, isAuthenticated: false });
+  });
+
+  it('refuses a replacement that lost a race with a newer login', () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const newerTokens = { accessToken: 'newer', expiresInSeconds: 900 };
+    useAuthStore.getState().login(baseUser, newerTokens);
+
+    expect(useAuthStore.getState().commitReissuedSessionIfCurrent(generation, {
+      accessToken: 'rotated',
+      expiresInSeconds: 900,
+    })).toBe(false);
+    expect(useAuthStore.getState().tokens).toEqual(newerTokens);
+  });
+});
+
+// #4660: `POST /auth/change-password` and `POST /auth/account-deletion-request`
+// verify a password the user typed into the request BODY. Until this fix both
+// answered a rejection with 401 — the same status the bearer guard uses — and
+// neither caller passes `skipUnauthorizedRetry`, so `fetchWithAuth` handed the
+// rejection to refresh-and-replay and then `handleSessionExpired`: a single
+// typo signed the user out mid-flow instead of showing "that password is
+// wrong". The server now answers 400 + `code: 'invalid_credentials'`.
+//
+// These tests pin the mechanism at the transport layer, where the bug actually
+// lived, rather than at the component's copy. The 401 halves are the negative
+// controls: they prove the tests would still catch a regression that moved the
+// status back, and that a genuinely dead bearer on these paths must STILL
+// refresh (both pages load with an empty in-memory access token after a
+// reload, so removing that would break them a different way).
+describe('fetchWithAuth — a rejected body password never looks like session death (#4660)', () => {
+  const REJECTED = {
+    error: 'Current password is incorrect',
+    message: 'Current password is incorrect',
+    code: 'invalid_credentials',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.removeItem('breeze-auth');
+    document.cookie = 'breeze_csrf_token=csrf-test-token; path=/';
+    useAuthStore.getState().login(baseUser, baseTokens);
+  });
+
+  it.each([
+    ['/auth/change-password', REJECTED],
+    ['/auth/account-deletion-request', {
+      error: 'Invalid password',
+      message: 'Invalid password',
+      code: 'invalid_credentials',
+    }],
+  ] as const)('a 400 from %s is returned to the caller: no refresh, no logout', async (path, body) => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(body, false, 400));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await fetchWithAuth(path, {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword: 'wrong', newPassword: 'new-strong-pw-1234' }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual(body);
+    // The single most important assertion: one call out, no refresh attempt.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(refreshCallsOf(fetchMock)).toHaveLength(0);
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+  });
+
+  it.each([
+    '/auth/change-password',
+    '/auth/account-deletion-request',
+  ])('a genuine bearer 401 from %s still refreshes and replays', async (path) => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'Unauthorized' }, false, 401))
+      .mockResolvedValueOnce(makeResponse({ tokens: { accessToken: 'fresh', expiresInSeconds: 900 } }, true, 200))
+      .mockResolvedValueOnce(makeResponse({ success: true }, true, 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await fetchWithAuth(path, { method: 'POST', body: JSON.stringify({}) });
+
+    expect(response.status).toBe(200);
+    expect(refreshCallsOf(fetchMock)).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+  });
+
+  // The fix is the STATUS, not a client-side opt-out. #4470 showed that
+  // `skipUnauthorizedRetry` is a trap — any new caller that forgets it
+  // re-inherits the logout — so neither of these call sites should acquire it.
+  it('neither call site opts out of the 401 retry path', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(REJECTED, false, 400));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchWithAuth('/auth/change-password', { method: 'POST', body: '{}' });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { skipUnauthorizedRetry?: boolean }];
+    expect(init.skipUnauthorizedRetry).toBeUndefined();
+  });
+
+  // The harm, demonstrated rather than asserted. This is the shape #4660
+  // describes: with the OLD 401 the rejection entered the refresh path, and
+  // whenever that refresh could not restore the session — a refresh cookie
+  // that has aged out on a long-open profile page is the common case — the
+  // user was logged out and bounced to /login. They mistyped a password; they
+  // got signed out. Nothing about the wrong password made the session dead.
+  //
+  // Kept as a live test (not a comment) because it is the reason the server
+  // change is worth a wire-contract break: if a future change routes 400s
+  // through the refresh path too, the first test above goes red and this one
+  // explains why that matters.
+  it('demonstrates the pre-fix harm: a 401 rejection whose refresh fails evicts the session', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'Current password is incorrect' }, false, 401))
+      .mockResolvedValueOnce(makeResponse({ error: 'refresh denied' }, false, 401));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { replace, restore } = mockLocation('/settings/profile');
+    try {
+      await fetchWithAuth('/auth/change-password', { method: 'POST', body: '{}' });
+    } finally {
+      restore();
+    }
+
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().sessionExpiredReason).toBe('session-expired');
+    expect(replace).toHaveBeenCalledWith(
+      `/login?next=${encodeURIComponent('/settings/profile')}&reason=session-expired`,
+    );
   });
 });

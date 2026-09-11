@@ -2,7 +2,12 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { type ConnectionParams } from '../lib/protocol';
 import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '../lib/api';
-import { scaleVideoCoords, isWebRTCSupported, AgentSessionError, SessionEndedError, type AuthenticatedConnectionParams } from '../lib/webrtc';
+import { scaleVideoCoords, isWebRTCSupported, AgentSessionError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '../lib/webrtc';
+import {
+  startRevocationLeaseRenewal,
+  LEASE_REVOKED_MESSAGE,
+  LEASE_LOST_MESSAGE,
+} from '../lib/revocationLease';
 import { connectWebRTC as connectWebRTCTransport, type WebRTCSessionWrapper } from '../lib/transports/webrtc';
 import { connectWebSocket as connectWebSocketTransport, type WebSocketSessionWrapper } from '../lib/transports/websocket';
 import { capabilitiesFor, type TransportCapabilities } from '../lib/transports/types';
@@ -12,12 +17,13 @@ import { capabilitiesFor, type TransportCapabilities } from '../lib/transports/t
 import type { VncSessionWrapper } from '../lib/transports/vnc';
 import { createVncTunnel, closeTunnel, retryVncTunnel, type VncTunnelInfo } from '../lib/tunnel';
 import { pollDesktopAccess } from '../lib/desktopAccess';
-import { mapKey, getModifiers, isModifierOnly } from '../lib/keymap';
+import { mapKey, getModifiers, isModifierOnly, isCapsLock, getCapsLockState } from '../lib/keymap';
 import { sendPasteText, pasteFailureMessage } from '../lib/pasteText';
 import { createInputCapabilitiesGate } from '../lib/inputCapabilities';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
 import { handleCtrlVPaste } from '../lib/clipboardPaste';
 import { shouldAutoHandoffToVnc, shouldAutoHandoffToWebRTC } from '../lib/autoHandoff';
+import { startFrameCounter } from '../lib/frameCounter';
 import { createStatsReporter } from '../lib/statsReporter';
 import ViewerToolbar from './ViewerToolbar';
 import CredentialsPromptModal from './CredentialsPromptModal';
@@ -49,6 +55,18 @@ const PASTE_NOTICE_TTL_MS = 8_000;
 // operator must relaunch from the dashboard.
 const SESSION_ENDED_MESSAGE =
   'This remote session has ended. Relaunch it from the Breeze dashboard.';
+
+// #5300: a SessionEndedError carries a real server-provided reason (e.g. the
+// no-video watchdog's swallowed capture error) exactly when the caller found
+// one via fetchSessionEndedReason — SessionEndedError otherwise defaults to
+// SESSION_ENDED_DEFAULT_MESSAGE. Keep the relaunch call-to-action either way;
+// only the diagnostic clause changes.
+function sessionEndedDisplayMessage(err: SessionEndedError): string {
+  if (err.message && err.message !== SESSION_ENDED_DEFAULT_MESSAGE) {
+    return `${err.message} Relaunch it from the Breeze dashboard.`;
+  }
+  return SESSION_ENDED_MESSAGE;
+}
 
 // Shown when the WebSocket upgrade was refused before it completed. The
 // browser never exposes the HTTP status behind a failed handshake, so this
@@ -835,8 +853,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         stopReconnect();
         setStatus('error');
         setConnectedAt(null);
-        setErrorMessage(SESSION_ENDED_MESSAGE);
-        onError(SESSION_ENDED_MESSAGE);
+        const msg = sessionEndedDisplayMessage(err);
+        setErrorMessage(msg);
+        onError(msg);
         reconnectInFlightRef.current = false;
         return;
       }
@@ -1019,9 +1038,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           userDisconnectRef.current = true;
           stopReconnect();
           setStatus('error');
-          setErrorMessage(SESSION_ENDED_MESSAGE);
+          const msg = sessionEndedDisplayMessage(err);
+          setErrorMessage(msg);
           setConnectedAt(null);
-          onError(SESSION_ENDED_MESSAGE);
+          onError(msg);
           return;
         }
         const msg = err instanceof Error ? err.message : 'Connection failed';
@@ -1128,40 +1148,65 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	    params.deviceId,
 	  ]);
 
-  // Count WebRTC video frames via requestVideoFrameCallback
+  // Revocation-lease renewal. A live session is peer-to-peer, so once the
+  // answer arrives the server has no other way to reach this viewer: every 25s
+  // we ask it to re-verify that this operator is still authorized for this
+  // session. A definitive "no" (403/410) closes the connection here as well as
+  // agent-side; an inconclusive answer rides the 90s grace window, so an API or
+  // network blip cannot end a session.
+  //
+  // Runs for every desktop transport (WebRTC and the WebSocket fallback) —
+  // both stream the screen and inject input, so both must be revokable.
+  useEffect(() => {
+    if (params.mode !== 'desktop') return;
+    if (status !== 'connected') return;
+    const auth = authRef.current;
+    if (!auth?.sessionId || !auth.accessToken) return;
+
+    const endSession = (message: string) => {
+      userDisconnectRef.current = true; // no auto-reconnect onto a dead session
+      stopReconnect();
+      const prevRtc = webrtcRef.current;
+      webrtcRef.current = null;
+      prevRtc?.close();
+      wsCleanupRef.current?.();
+      wsCleanupRef.current = null;
+      setStatus('error');
+      setConnectedAt(null);
+      setErrorMessage(message);
+      onError(message);
+    };
+
+    return startRevocationLeaseRenewal(
+      {
+        apiUrl: auth.apiUrl,
+        sessionId: auth.sessionId,
+        accessToken: auth.accessToken,
+      },
+      {
+        onRevoked: () => endSession(LEASE_REVOKED_MESSAGE),
+        onLost: () => endSession(LEASE_LOST_MESSAGE),
+      },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, params.mode, stopReconnect, onError]);
+
+  // Count WebRTC video frames for the FPS readout. See lib/frameCounter.ts
+  // for the rVFC-with-watchdog-fallback strategy: some WebViews (notably
+  // WKWebView on macOS) expose requestVideoFrameCallback but never invoke it
+  // for a WebRTC MediaStream, which otherwise left this reading a permanent
+  // 0 FPS while the picture was visibly updating (issue #5292).
   useEffect(() => {
     if (transport !== 'webrtc') return;
     const videoEl = videoRef.current;
     if (!videoEl) return;
 
-    let active = true;
-
-    const rvfc = (videoEl as unknown as { requestVideoFrameCallback?: (cb: () => void) => number })
-      .requestVideoFrameCallback;
-
-    if (typeof rvfc === 'function') {
-      const onFrame = () => {
-        if (!active) return;
-        frameCountRef.current++;
-        rvfc.call(videoEl, onFrame);
-      };
-      rvfc.call(videoEl, onFrame);
-      return () => { active = false; };
-    }
-
-    // Fallback: approximate frames by watching currentTime advance.
-    let lastTime = videoEl.currentTime;
-    const tick = () => {
-      if (!active) return;
-      const t = videoEl.currentTime;
-      if (t !== lastTime) {
-        lastTime = t;
-        frameCountRef.current++;
-      }
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-    return () => { active = false; };
+    const counter = startFrameCounter({
+      video: videoEl,
+      onFrame: () => { frameCountRef.current++; },
+      log: (message) => console.debug('[DesktopViewer]', message),
+    });
+    return () => counter.stop();
   }, [transport]);
 
   // Request a keyframe when the viewer window/tab regains focus so the
@@ -1659,12 +1704,18 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
 
+    const ne = e.nativeEvent;
+    // Every forwarded keyboard event states the Caps Lock state it was typed
+    // under, so the agent sets the remote modifier flags explicitly instead of
+    // inheriting whatever the remote machine had latched (issue #3595).
+    const capsLock = getCapsLockState(ne);
+
     // Modifier keys pressed alone: forward as key_down so Shift+Click,
     // Ctrl+Click, etc. hold the modifier on the remote machine for
     // multi-select. Skip the rest of the handler (no modifiers bundle,
     // no paste shortcut — those are handled when a non-modifier follows).
-    if (isModifierOnly(e.nativeEvent)) {
-      let modKey = mapKey(e.nativeEvent);
+    if (isModifierOnly(ne)) {
+      let modKey = mapKey(ne);
       if (!modKey) return;
       if (remapCmdCtrl) {
         if (modKey === 'ctrl') modKey = 'meta';
@@ -1673,12 +1724,24 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       if (e.repeat) return;
       if (pressedKeysRef.current.has(modKey)) return;
       pressedKeysRef.current.add(modKey);
-      sendInputFn({ type: 'key_down', key: modKey });
+      sendInputFn({ type: 'key_down', key: modKey, capsLock });
+      return;
+    }
+
+    // Caps Lock is a toggle, so it is deliberately kept OUT of pressedKeysRef:
+    // it is never "held", and macOS reports it as keydown-on-engage /
+    // keyup-on-disengage rather than a matched pair, so pairing bookkeeping
+    // would strand it in the set and later emit a bogus release. The event is
+    // still forwarded — an agent that predates #3595 keeps doing what it does
+    // today with it, while a current agent reads the capsLock field and skips
+    // injecting the key entirely.
+    if (isCapsLock(ne)) {
+      if (e.repeat) return;
+      sendInputFn({ type: 'key_down', key: 'capslock', capsLock });
       return;
     }
 
     // Ctrl+Shift+V / Cmd+Shift+V → paste as keystrokes
-    const ne = e.nativeEvent;
     if (ne.code === 'KeyV' && ne.shiftKey && (ne.ctrlKey || ne.metaKey)) {
       handlePasteAsKeystrokes();
       return;
@@ -1712,7 +1775,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         );
       }
       const dispatchPaste = () => {
-        if (pasteKey) sendInputFn({ type: 'key_press', key: pasteKey, modifiers: pasteModifiers });
+        // capsLock is captured from the original event: this dispatches after
+        // an await, by which point the live modifier state may have moved on.
+        if (pasteKey) sendInputFn({ type: 'key_press', key: pasteKey, modifiers: pasteModifiers, capsLock });
       };
       const waitForAck = (hash: string, timeoutMs: number): Promise<void> => {
         if (!hash) return Promise.resolve();
@@ -1751,32 +1816,43 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // If any modifier is held, fall back to the agent's key_press (which applies modifiers).
     // Otherwise, use key_down/key_up for proper "held key" semantics.
     if (modifiers.length > 0) {
-      sendInputFn({ type: 'key_press', key, modifiers });
+      sendInputFn({ type: 'key_press', key, modifiers, capsLock });
       return;
     }
 
     if (e.repeat) return;
     if (pressedKeysRef.current.has(key)) return;
     pressedKeysRef.current.add(key);
-    sendInputFn({ type: 'key_down', key });
+    sendInputFn({ type: 'key_down', key, capsLock });
   }, [sendInputFn, handlePasteAsKeystrokes, remapCmdCtrl]);
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
 
-    let key = mapKey(e.nativeEvent);
+    const ne = e.nativeEvent;
+    const capsLock = getCapsLockState(ne);
+
+    // Caps Lock never enters pressedKeysRef (see handleKeyDown), so its release
+    // is forwarded unconditionally rather than gated on membership. On macOS
+    // this is the ONLY event fired when Caps Lock is disengaged.
+    if (isCapsLock(ne)) {
+      sendInputFn({ type: 'key_up', key: 'capslock', capsLock });
+      return;
+    }
+
+    let key = mapKey(ne);
     if (!key) return;
 
     // Apply the same ctrl↔meta remap used on key_down so the agent sees
     // the matching release for the key that was pressed.
-    if (isModifierOnly(e.nativeEvent) && remapCmdCtrl) {
+    if (isModifierOnly(ne) && remapCmdCtrl) {
       if (key === 'ctrl') key = 'meta';
       else if (key === 'meta') key = 'ctrl';
     }
 
     if (!pressedKeysRef.current.has(key)) return;
     pressedKeysRef.current.delete(key);
-    sendInputFn({ type: 'key_up', key });
+    sendInputFn({ type: 'key_up', key, capsLock });
   }, [sendInputFn, remapCmdCtrl]);
 
   // ── Toolbar: config changes ────────────────────────────────────────

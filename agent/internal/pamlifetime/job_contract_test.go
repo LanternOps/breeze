@@ -270,8 +270,11 @@ func (f *fakeWindowsPrimitives) CloseJob(job jobOwnership) {
 type fakeAccountLifecycle struct {
 	order            *[]string
 	deprovision      elevaccount.AccountEvidence
+	deprovisionErr   error
 	verified         elevaccount.AccountEvidence
+	verifiedErr      error
 	deprovisionCount int
+	verifiedCount    int
 }
 
 func (f *fakeAccountLifecycle) Promote(context.Context) (elevaccount.Credential, error) {
@@ -282,11 +285,18 @@ func (f *fakeAccountLifecycle) Promote(context.Context) (elevaccount.Credential,
 func (f *fakeAccountLifecycle) Deprovision(context.Context) (elevaccount.AccountEvidence, error) {
 	f.deprovisionCount++
 	*f.order = append(*f.order, "rotate password, remove Administrators, disable account")
+	if f.deprovisionErr != nil {
+		return elevaccount.AccountEvidence{}, f.deprovisionErr
+	}
 	return f.deprovision, nil
 }
 
 func (f *fakeAccountLifecycle) VerifyClean(context.Context) (elevaccount.AccountEvidence, error) {
+	f.verifiedCount++
 	*f.order = append(*f.order, "verify account disabled and non-admin")
+	if f.verifiedErr != nil {
+		return elevaccount.AccountEvidence{}, f.verifiedErr
+	}
 	return f.verified, nil
 }
 

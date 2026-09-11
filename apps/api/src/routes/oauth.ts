@@ -6,6 +6,7 @@ import { getProvider } from '../oauth/provider';
 import { MCP_OAUTH_ENABLED, OAUTH_DCR_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
 import { loadPublicJwks } from '../oauth/keys';
 import { db, withDbAccessContext } from '../db';
+import { GRANT_REVOCATION_TTL_SECONDS } from '../oauth/adapter';
 import { writeOAuthRevocationMarkerDurably } from '../oauth/revocationRetry';
 import { normalizeFormEncodedResource, normalizeResourceParams } from '../oauth/resourceIndicators';
 import { ERROR_IDS, logOauthDebug, logOauthError } from '../oauth/log';
@@ -623,6 +624,13 @@ if (MCP_OAUTH_ENABLED) {
     }
     const ttl = Math.max(exp - Math.floor(Date.now() / 1000), 1);
     const expiresAt = new Date((Math.floor(Date.now() / 1000) + ttl) * 1000);
+    // The jti marker only has to outlive the ONE token being revoked, so its
+    // own `exp` is the right TTL. The grant marker has to outlive every access
+    // token minted under that Grant — including ones issued after this
+    // request — so it takes the grant-wide TTL instead. Using the presented
+    // token's remaining lifetime here left a sibling JWT usable after the
+    // marker lapsed and before the durable sweep was consulted.
+    const grantMarkerExpiresAt = new Date(Date.now() + GRANT_REVOCATION_TTL_SECONDS * 1000);
     let retryQueued = false;
     try {
       await withDbAccessContext({
@@ -648,7 +656,7 @@ if (MCP_OAUTH_ENABLED) {
             userId,
             markerType: 'grant',
             markerId: grantId,
-            expiresAt,
+            expiresAt: grantMarkerExpiresAt,
           });
           retryQueued ||= grantResult.status === 'retry_queued';
         }

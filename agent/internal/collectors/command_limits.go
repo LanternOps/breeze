@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os/exec"
 	"strings"
 	"time"
@@ -41,14 +43,50 @@ func runCollectorOutputWithContext(parent context.Context, timeout time.Duration
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, name, args...)
-	output, err := cmd.Output()
+	output := &cappedBuffer{max: collectorCommandOutputLimit}
+	stderr := &cappedBuffer{max: collectorStderrCaptureLimit}
+	cmd.Stdout = output
+	cmd.Stderr = stderr
+	cmd.WaitDelay = collectorWaitDelay
+	err := runCollectorCommand(cmd, name)
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		// Mirror exec.Cmd.Output so callers inspecting ExitError see stderr.
+		exitErr.Stderr = stderr.buf.Bytes()
+	}
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("%s timed out: %w", name, ctx.Err())
 	}
-	if len(output) > collectorCommandOutputLimit {
+	if output.exceeded {
 		return nil, fmt.Errorf("%s output too large", name)
 	}
-	return output, err
+	return output.buf.Bytes(), err
+}
+
+// collectorWaitDelay bounds how long Wait blocks on stdout/stderr pipes after
+// the command itself has exited (a descendant may have inherited them).
+const collectorWaitDelay = 10 * time.Second
+
+// collectorStderrCaptureLimit caps the diagnostic stderr retained for
+// ExitError.Stderr; stdout carries the payload, stderr only needs to be
+// enough to explain a failure.
+const collectorStderrCaptureLimit = 64 * 1024
+
+// runCollectorCommand runs cmd and normalises exec.ErrWaitDelay. os/exec only
+// returns that sentinel when the process exited successfully but a descendant
+// still held an inherited pipe past WaitDelay. By then the copy goroutines have
+// finished, so the captured output is complete and the command did not fail.
+// Callers treat any error as command failure, so surfacing the sentinel would
+// silently turn a benign orphaned handle into a permanent data gap (see
+// change_tracker.go, which clones the previous snapshot on error).
+func runCollectorCommand(cmd *exec.Cmd, name string) error {
+	err := cmd.Run()
+	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		slog.Warn("collector command exited but a descendant kept its output pipe open; output captured, pipe force-closed",
+			"command", name, "waitDelay", collectorWaitDelay)
+		return nil
+	}
+	return err
 }
 
 func runCollectorCombinedOutput(timeout time.Duration, name string, args ...string) ([]byte, error) {
@@ -63,14 +101,19 @@ func runCollectorCombinedOutputWithContext(parent context.Context, timeout time.
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, name, args...)
-	output, err := cmd.CombinedOutput()
+	output := &cappedBuffer{max: collectorCommandOutputLimit}
+	// os/exec serializes writes when Stdout and Stderr are the same writer.
+	cmd.Stdout = output
+	cmd.Stderr = output
+	cmd.WaitDelay = collectorWaitDelay
+	err := runCollectorCommand(cmd, name)
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("%s timed out: %w", name, ctx.Err())
 	}
-	if len(output) > collectorCommandOutputLimit {
+	if output.exceeded {
 		return nil, fmt.Errorf("%s output too large", name)
 	}
-	return output, err
+	return output.buf.Bytes(), err
 }
 
 // runCollectorLimitedOutput runs a command and reads up to collectorCommandOutputLimit
@@ -98,14 +141,20 @@ func runCollectorLimitedOutput(timeout time.Duration, name string, args ...strin
 	return output, nil
 }
 
-// cappedBuffer captures up to max bytes and silently discards the rest,
-// always reporting a full write so the child process never sees a write error.
+// cappedBuffer captures up to max bytes and discards the rest without ever
+// failing the Write call, so the child process never sees a write error.
+// exceeded records that the limit was hit so callers can still reject
+// oversized output instead of consuming a silently truncated payload.
 type cappedBuffer struct {
-	buf bytes.Buffer
-	max int
+	buf      bytes.Buffer
+	max      int
+	exceeded bool
 }
 
 func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if len(p) > c.max-c.buf.Len() {
+		c.exceeded = true
+	}
 	if remaining := c.max - c.buf.Len(); remaining > 0 {
 		if len(p) > remaining {
 			c.buf.Write(p[:remaining])
@@ -119,8 +168,8 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 // runCollectorBoundedOutput runs a command, streaming stdout through an
 // io.LimitReader so at most collectorCommandOutputLimit+1 bytes are ever
 // buffered. Unlike runCollectorLimitedOutput it does not silently truncate:
-// output exceeding the limit is an error (matching runCollectorOutput's
-// semantics but enforced BEFORE buffering, not post-hoc), and a non-zero exit
+// output exceeding the limit is an error (runCollectorOutput now bounds memory
+// during capture too, but still runs the command to completion), and a non-zero exit
 // or read failure is surfaced — with the command's (capped) stderr included so
 // failures are diagnosable from agent logs. Use for structured output (e.g.
 // JSON) where a truncated payload would be garbage anyway.

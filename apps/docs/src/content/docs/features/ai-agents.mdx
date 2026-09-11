@@ -10,7 +10,7 @@ An AI agent is a named, permission-scoped worker you configure once. It wakes on
 Agents are off by default and must be enabled by your operator before they appear. See [Enabling agents](#enabling-agents).
 
 <Aside type="caution" title="Act mode runs unattended — read this before enabling it">
-  An agent has three modes: **Off**, **Shadow**, and **Act**. Shadow observes, reasons, and proposes — it never executes an action by itself. Act mode is different: for a small, fixed set of low-risk, narrowly-scoped operations it verifies and executes **without waiting for a person to approve, and without an automatic rollback if verification fails**. Everything outside that set still proposes and waits, exactly as in Shadow. See [Act mode](#act-mode) before turning it on.
+  An agent has three modes: **Off**, **Shadow**, and **Act** — a new agent is always created disabled, in Shadow. Shadow observes, reasons, and proposes — it never executes an action by itself. Act mode is different: for a small, fixed set of low-risk, narrowly-scoped operations it verifies and executes **without waiting for a person to approve, and without an automatic rollback if verification fails**. Everything outside that set — in every mode — still proposes and waits for a person. A separate path lets one specific operation skip that wait too, but only by earning it: once it has a long enough clean record, a **second, different person** has to pre-authorize it (see [Graduation](#graduation-feedback-loop)) — no operation is pre-authorized just because an operator typed it in. See [Act mode](#act-mode) before turning it on.
 </Aside>
 
 ## What an agent does
@@ -165,6 +165,31 @@ Agents are gated on their own capabilities rather than on general organization p
 These are deliberately separate from `organizations:write`. Authoring an agent policy is what authorizes autonomous action on customer machines once an agent is switched to Act mode, so it is not bundled into a permission every organization admin already holds. Partner Admin retains access through its full-access role.
 
 Creating, editing, disabling, or manually triggering an agent additionally requires you to complete MFA.
+
+### Choosing what an agent can do
+
+The agent form's own **Permissions** section groups tools into **capabilities** — fixed groups like alerts and monitoring, files and disk, or scripts and commands — that the catalog assigns to every tool an agent can reach. Only capabilities and operations an agent can actually reach are offered; a tool the agent runtime doesn't expose is never shown, no matter how you search for it. Read-only tools (device lookups, reports, and the like) are always available to every agent and need no decision — they're listed separately, collapsed behind a count of how many.
+
+**Use recommended** adds the operations the agent's kind typically needs on top of whatever is already selected; it never clears anything.
+
+Every mutating operation carries one outcome badge, for the agent's current mode:
+
+| Badge | Meaning |
+|---|---|
+| **Approval request** | Tier 3. Recorded as a proposal; a technician decides in Approvals. |
+| **Logged proposal** | Tier 2. Recorded in the run's outcome and never executed. |
+| **Executes unattended** | Act mode only, and only for the fixed, act-eligible operations described in [Act mode](#act-mode). **Run a script** is the one exception: it stays an approval request until at least one script is authorized for the agent (the **Scripts allowed to run unattended** list on the Safety step / edit drawer — a partner row's list is the ceiling, an organization's agent picks a subset of it), and the picker and review card say so rather than promising an unattended run. |
+
+A green dot marks an operation that **can be pre-authorized** — eligible, on a clean enough record, to graduate out of the approval queue (see [Graduation](#graduation-feedback-loop)). The dot means eligible, not authorized: nothing is pre-authorized until a second person promotes it. On an organization's agent, an operation its partner-wide baseline hasn't granted is marked **Not in partner baseline** and its checkbox is disabled — unless it's already selected, in which case it stays enabled just long enough to be unchecked, so a grant made before the baseline narrowed can still be removed. The partner row is a ceiling on what the organization may be granted, not a starting grant of its own. Pre-authorized operations can no longer be added to an organization's agent directly in this form: its own supervised-keys section is a read-only list of what it already holds, not a checkbox — a key becomes eligible only by promoting an Eligible row in Graduation or the four-eyes request it raises, never by an operator's checkbox.
+
+Turn on **Show tool names** to see the literal key behind each operation. Selections are stored on the agent as `tool:action` entries — one per operation, even when every current operation of a tool is selected, so an operation added to that tool later is never silently granted; a bare `tool` entry appears only for a tool with just one operation to begin with. An entry the picker can't represent — an unknown or unreachable tool, or a hand-typed bare entry on a multi-operation tool — is listed under **Unrecognised or unreachable entries** with a reason and a remove action; it is never dropped or rewritten silently.
+
+The same catalog and ceiling behind the picker are available directly:
+
+```
+GET /api/v1/ai/agents/tool-catalog
+GET /api/v1/ai/agents/ceiling?kind={kind}
+```
 
 ## Alert triage wiring
 
@@ -326,3 +351,61 @@ See [Environment Variables](/deploy/environment/) for validation rules and the c
 Agents are off unless your operator sets `BREEZE_AI_AGENTS_ENABLED=true`. Upgrading does not turn them on, and no existing role gains access to them by default — the `ai_agents` permissions must be granted to a role explicitly.
 
 Self-hosted operators: see [Environment Variables](/deploy/environment/) for the flag, and remember it must also be mapped in the `api` service's `environment:` block of your compose file — a value in `.env` alone has no effect.
+
+## AI Operator (preview)
+
+An agent run is a single pass: it fires on a trigger, does what it can, and
+finishes. **AI Operator** is the other shape — a long-running *task* you hand off
+and walk away from. Delegate a service-recovery incident to the Operator and it
+keeps working through investigation, action and verification after you close the
+browser, waiting for your approval at the step that needs it.
+
+<Aside type="caution" title="Off by default, and a thin first slice">
+  AI Operator ships **disabled**, behind two flags of its own *and* the main
+  `BREEZE_AI_AGENTS_ENABLED` kill switch. Exactly one recipe — **service
+  recovery** — is shipped in this release. Nothing appears in the UI and no task
+  can be created until an operator turns it on. See
+  [Environment Variables](/deploy/environment/#ai).
+</Aside>
+
+### Delegating a task
+
+With the feature on, a **Delegate to Operator** button appears on the device page
+and on alert detail. Choose it, name the service that needs recovering, confirm,
+and Breeze opens the task's own page and starts work. Delegation needs
+**`ai_agents:write`** and a multi-factor confirmation, the same bar as moving an
+agent to Act mode.
+
+### What the task page shows
+
+The task page is the record of the whole hand-off: the task's current state and
+phase, what it is waiting on if it is waiting, each operation it has performed,
+its final outcome, and links to the underlying agent runs so you can read the
+detail of any single step. The device page also carries an Operator feed so you
+can see task activity in the device's own timeline.
+
+Reading tasks needs **`ai_agents:read`**. A task belonging to an organization or
+site you cannot see is reported as not found rather than as forbidden, so the
+route never confirms that someone else's task exists.
+
+### The service-recovery recipe
+
+The one shipped recipe walks five ordered steps — **investigate, execute,
+observe, verify, document**. Only the `execute` step changes anything, and it is
+**always supervised**: the Operator raises a service-restart request into your
+existing [Approvals](#approving-what-an-agent-proposes) inbox and waits there.
+There is no path in this recipe where the Operator restarts a service without a
+human approving it.
+
+A service you have listed as a protected resource is refused **at delegation
+time**, before any request reaches the approvals inbox — so a domain controller's
+critical services can never become a pending approval someone might wave through.
+
+### What runs in the background
+
+Two background workers ship with the feature: a task coordinator that ticks every
+15 seconds, and a publisher that drains task events every 5 seconds. Both are
+registered whether or not the flags are on — deliberately, so that a task already
+in flight when you turn the feature off still finishes cleanly rather than
+stranding an approval — but with the flags off no new task is ever admitted, so
+neither worker has anything to do. No new queue is added.

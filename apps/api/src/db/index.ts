@@ -754,6 +754,27 @@ export function hasDbAccessContext(): boolean {
 }
 
 /**
+ * Throw unless the caller is inside an active withDbAccessContext /
+ * withSystemDbAccessContext. Use at the top of a function that performs a
+ * multi-statement all-or-nothing write and does NOT open its own transaction,
+ * where a missing context means each write lands on the bare pool with no GUC —
+ * and forced RLS on breeze_app silently matches 0 rows (#1375), leaving a
+ * half-written document with no error.
+ *
+ * Note: __runInDbContextForTests satisfies this without a real transaction. That
+ * is deliberate and TEST ONLY (see its doc); production callers must use the
+ * context helpers, both of which open baseDb.transaction.
+ */
+export function assertInTransaction(label: string): void {
+  if (!hasDbAccessContext()) {
+    throw new Error(
+      `${label} must run inside withDbAccessContext / withSystemDbAccessContext — `
+      + 'without one every write lands on the bare pool with no RLS GUC and silently affects 0 rows',
+    );
+  }
+}
+
+/**
  * The DbAccessContext metadata (scope + org/partner allowlists) of the active
  * request transaction, or undefined when no context is established. Use this to
  * decide whether the ambient context already grants RLS visibility to a specific

@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Keyboard, Modal, Pressable, Text, View } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { logoutAsync } from '../store/authSlice';
 import { approverBannerCopy, type ApproverBannerSeverity } from './approverBannerCopy';
+import { selectFocusedApproval } from './approvalTakeover';
 import { useAppDispatch, useAppSelector } from '../store';
 import {
   clearApprovalsError,
@@ -19,6 +21,7 @@ import {
   removeNotificationSubscription,
 } from '../services/notifications';
 import { ApprovalScreen } from '../screens/approvals/ApprovalScreen';
+import { shouldHandleTap } from './pushRouting';
 import { useApprovalQueueSync } from '../screens/approvals/useApprovalQueueSync';
 import { useApprovalTheme, type, spacing, radii } from '../theme';
 
@@ -26,12 +29,32 @@ interface Props {
   children: React.ReactNode;
 }
 
-// Renders ApprovalScreen as a global takeover whenever there is a focused pending approval.
+/**
+ * AsyncStorage key holding the identifier of the last approval push tap we
+ * acted on. Separate from PushTapRouter's ticket key: the two listeners run
+ * independently and must not clobber each other's dedupe state.
+ */
+export const LAST_HANDLED_APPROVAL_RESPONSE_KEY = 'notif:lastHandledApprovalResponseId';
+
+/**
+ * Renders ApprovalScreen as a global takeover OVER `children` whenever there is
+ * a focused pending approval.
+ *
+ * Over, not instead of: this used to `return <ApprovalScreen />` and unmount
+ * the whole MainNavigator. HomeScreen aborts its SSE stream on unmount, so an
+ * `approval_required` event arriving mid-turn tore down the very chat that was
+ * waiting on the decision — the server kept running the tool after approval,
+ * but the phone was left on "RUNNING …" forever. Keeping the navigator mounted
+ * underneath keeps the stream open, exactly like the web chat's inline card.
+ */
 export function ApprovalGate({ children }: Props) {
   const dispatch = useAppDispatch();
-  const focused = useAppSelector((s) =>
-    s.approvals.pending.find((a) => a.id === s.approvals.focusId && a.status === 'pending')
-  );
+  // #5172: shared with ApprovalScreen so the takeover Modal's visibility and
+  // the screen's own "focused" can never drift apart — see approvalTakeover.ts.
+  const focused = useAppSelector((s) => selectFocusedApproval(s.approvals));
+  // Derived from `focused` itself (not a second store subscription) so the
+  // two can never disagree — see the module doc in approvalTakeover.ts.
+  const takeoverVisible = !!focused;
   const error = useAppSelector((s) => s.approvals.error);
   const pushRegistration = useAppSelector((s) => s.auth.pushRegistration);
   const approverRegistration = useAppSelector((s) => s.auth.approverRegistration);
@@ -48,9 +71,36 @@ export function ApprovalGate({ children }: Props) {
   // THIS phone decided something.
   useApprovalQueueSync();
 
+  // The takeover covers whatever was on screen; a keyboard left up from the
+  // chat composer or a ticket form would otherwise sit over the Approve/Deny
+  // buttons.
+  useEffect(() => {
+    if (focused) Keyboard.dismiss();
+  }, [focused?.id]);
+
+  /**
+   * Identifier of the last approval push tap acted on in this process. expo
+   * delivers the response that LAUNCHED the app to the response listener as
+   * well, and a JS relaunch (iOS reclaiming memory during the Face ID prompt
+   * or the approve round-trip) re-registers this listener and replays that
+   * same tap — which re-focused an approval the user had just decided, and
+   * showed the takeover a second time. Same guard PushTapRouter uses for
+   * ticket pushes.
+   */
+  const lastHandledTap = useRef<string | null>(null);
+
   useEffect(() => {
     dispatch(hydrateFromCache());
     dispatch(refreshPending());
+
+    void AsyncStorage.getItem(LAST_HANDLED_APPROVAL_RESPONSE_KEY)
+      .then((stored) => {
+        // Do not clobber a live tap that landed while storage was being read.
+        if (lastHandledTap.current === null) lastHandledTap.current = stored;
+      })
+      .catch(() => {
+        // Storage failure costs at most one redundant takeover.
+      });
 
     const recv = addNotificationReceivedListener((n) => {
       const parsed = parseApprovalNotification(n);
@@ -65,6 +115,14 @@ export function ApprovalGate({ children }: Props) {
     const tap = addNotificationResponseReceivedListener((r) => {
       const parsed = parseApprovalNotification(r.notification);
       if (!parsed) return;
+      const identifier = r.notification.request.identifier;
+      if (!shouldHandleTap(identifier, lastHandledTap.current)) return;
+      if (identifier) {
+        lastHandledTap.current = identifier;
+        AsyncStorage.setItem(LAST_HANDLED_APPROVAL_RESPONSE_KEY, identifier).catch(() => {
+          // Storage failure costs at most one redundant takeover.
+        });
+      }
       dispatch(setFocus(parsed.approvalId));
       dispatch(fetchOne(parsed.approvalId))
         .unwrap()
@@ -79,10 +137,6 @@ export function ApprovalGate({ children }: Props) {
     };
   }, []);
 
-  if (focused) {
-    return <ApprovalScreen />;
-  }
-
   // One banner at a time — they share the same absolute slot. Push failure
   // outranks approver failure: an approval that never arrives is worse than one
   // that arrives unsigned.
@@ -96,14 +150,31 @@ export function ApprovalGate({ children }: Props) {
   const showApprover =
     !error && pushRegistration !== 'failed' && approverSeverity !== null && !dismissedApprover;
 
+  // A native Modal, not an absolute-fill View: a sheet the user already had
+  // open (Settings, Sessions, a ticket picker — all RN Modals) would sit ABOVE
+  // a plain overlay and leave the approval hidden behind an interactive
+  // sheet. A Modal presented later always stacks on top. It also gives
+  // TalkBack/VoiceOver a real modal boundary and swallows Android hardware
+  // Back (`onRequestClose` is a deliberate no-op: an approval is dismissed by
+  // deciding it, expiring, or it being decided elsewhere — never by Back).
   return (
     <>
       {children}
-      {error ? (
+      <Modal
+        visible={takeoverVisible}
+        animationType="none"
+        presentationStyle="fullScreen"
+        statusBarTranslucent
+        onRequestClose={() => undefined}
+        testID="approval-takeover"
+      >
+        <ApprovalScreen />
+      </Modal>
+      {takeoverVisible ? null : error ? (
         <ApprovalErrorBanner message={error} onDismiss={() => dispatch(clearApprovalsError())} />
       ) : null}
-      {showPush ? <PushFailedBanner onDismiss={() => setDismissedPush(true)} /> : null}
-      {showApprover && approverSeverity ? (
+      {!takeoverVisible && showPush ? <PushFailedBanner onDismiss={() => setDismissedPush(true)} /> : null}
+      {!takeoverVisible && showApprover && approverSeverity ? (
         <ApproverSetupBanner
           severity={approverSeverity}
           reason={approverReason}

@@ -48,8 +48,23 @@ vi.mock('../services/tenantStatus', () => ({
   getActiveOrgTenant: vi.fn(async (orgId: string) => ({ orgId, partnerId: 'partner-1' })),
 }));
 
+// portalAuthMiddleware resolves the org's timezone once during hydration
+// (services/portal/timezone.ts) via a real DB left-join query this suite's
+// generic `../db` mock cannot satisfy, and `../db/schema` here doesn't export
+// `organizations`/`partners` at all. Mock the resolver BOUNDARY, same pattern
+// as the tenantStatus mock immediately above — the resolver itself is covered
+// directly by `services/portal/timezone.test.ts` and the hydration contract by
+// `routes/portal/authOrgStatusGate.test.ts`.
+vi.mock('../services/portal/timezone', () => ({
+  resolveOrgTimezone: vi.fn(async () => 'UTC'),
+}));
+
 vi.mock('../db/schema', () => ({
   assetCheckouts: {},
+  backupConfigs: {},
+  backupJobs: {},
+  backupSlaEvents: {},
+  backupVerifications: {},
   devices: {},
   // networkBaseline.ts (pulled in transitively by the portal route graph) reads
   // discoveredAssetTypeEnum.enumValues at module load — required for the mock.
@@ -65,11 +80,14 @@ vi.mock('../db/schema', () => ({
     email: 'portalUsers.email',
     name: 'portalUsers.name',
     passwordHash: 'portalUsers.passwordHash',
+    authMethod: 'portalUsers.authMethod',
     receiveNotifications: 'portalUsers.receiveNotifications',
     status: 'portalUsers.status',
     lastLoginAt: 'portalUsers.lastLoginAt',
     updatedAt: 'portalUsers.updatedAt'
   },
+  recoveryReadiness: {},
+  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'partial'],
   ticketComments: {},
   tickets: {}
 }));
@@ -83,6 +101,7 @@ const portalUser = {
   email: 'portal@example.com',
   name: 'Portal User',
   passwordHash: 'hash',
+  authMethod: 'password',
   receiveNotifications: true,
   status: 'active'
 };

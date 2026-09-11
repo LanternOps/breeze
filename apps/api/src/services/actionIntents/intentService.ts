@@ -1,6 +1,8 @@
+import { buildActionLabel, hasDeviceIdStub } from './actionLabel';
+import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import type { AssuranceLevel } from '@breeze/shared';
+import { actionIntentTaskContextSchema, type ActionIntentTaskContext, type AssuranceLevel } from '@breeze/shared';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type Database, type DbAccessContext } from '../../db';
 import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
@@ -46,6 +48,15 @@ import {
   IntentScopeArgumentMismatchError,
 } from './intentTargetScope';
 import { evaluateTicketAutonomy } from './ticketAutonomy';
+import { aiOperatorOperations, aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
+import {
+  isTaskLinkedIntent,
+  markOperationCancelled,
+  markOperationCancelRequested,
+  OperationReplayError,
+  reserveOperation,
+} from '../aiOperator/operationService';
+import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
 
 /** Statuses the partial `action_intents_org_idem_uniq` index dedupes on
  * (IMPORTANT-4 — migration 2026-07-18-action-intents.sql). Kept as a single
@@ -65,6 +76,13 @@ type AgentRunRef = {
   agentId: string;
   orgId: string;
   deviceId: string | null;
+  /**
+   * #5205 W04: the run's OWN task linkage, read from `ai_agent_runs`. This is
+   * the TRUSTED evidence that a caller-supplied `input.task` really belongs to
+   * this run — the caller asserting a task id proves nothing on its own.
+   */
+  taskId: string | null;
+  taskStepKey: string | null;
 } | null;
 
 // Action intents & durable approval layer — core intent service (spec
@@ -122,7 +140,16 @@ export class ActionIntentAuthorizationError extends ActionIntentError {
 export interface CreateActionIntentInput {
   toolName: string;
   input: Record<string, unknown>;
+  /** Audit justification (an agent's sweep summary, a ticket-triage rationale). */
   reason?: string;
+  /**
+   * Human headline for the approver — "Restart service "Spooler" on KIT".
+   * Distinct from `reason`: callers that pass a justification as `reason`
+   * (agent runs, ticket triage) must not have it surface as the action.
+   * Optional; falls back to the guardrail description, then a label built
+   * from the tool name + recognisable arguments (see actionLabel.ts).
+   */
+  actionLabel?: string;
   /**
    * 'ai_agent' (wave 3b) is valid ONLY for an ai_agent principal — and
    * required for one: createActionIntent enforces the pairing in both
@@ -169,6 +196,23 @@ export interface CreateActionIntentInput {
    * an `autonomyDenied` breadcrumb on its `result` column.
    */
   autonomy?: { kind: 'ticket_autonomy' };
+  /**
+   * #5205 W04 (#5209): AI Operator task context. TRUSTED, INTERNAL-ONLY —
+   * never accepted from an HTTP body (see `actionIntentTaskContextSchema`'s
+   * header in @breeze/shared and `assertTaskContextTrusted` below).
+   *
+   * When present the intent's `idempotency_key` is derived from TASK identity
+   * instead of run identity, so the existing partial unique
+   * `action_intents_org_idem_uniq` stays the SINGLE ON CONFLICT arbiter
+   * (baseline C6/H1) and a continuation run re-proposing the same operation
+   * converges on the live intent instead of minting a second one. The matching
+   * `ai_operator_operations` row is reserved in the SAME transaction as the
+   * intent insert (spec §6.5).
+   *
+   * Only valid for the `ai_agent` principal, and only when the calling run's
+   * own `ai_agent_runs.task_id` matches.
+   */
+  task?: ActionIntentTaskContext;
 }
 
 export type ActionIntentSnapshot = {
@@ -298,8 +342,115 @@ function firstSentence(text: string): string {
   return (match ? match[0] : text).trim();
 }
 
-/** impact = first sentence of the tool description (or the guardrail description) — resolved decision. */
-function buildImpactSummary(toolName: string, guardrail: GuardrailCheck): string {
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/**
+ * #5106: the approval "High impact" box used to always show the tool's
+ * catalog description ("List, start, stop, or restart system services on a
+ * device.") — true of every call to the tool, not what THIS call does. These
+ * builders produce a call-specific sentence from the actual arguments for the
+ * common mutating action tools; every other tool (and any call whose
+ * arguments don't give enough to say something specific) keeps the catalog
+ * fallback below.
+ */
+const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) => string | null> = {
+  manage_services: (input) => {
+    const action = nonEmptyString(input.action);
+    const serviceName = nonEmptyString(input.serviceName);
+    if (!serviceName) return null;
+    switch (action) {
+      case 'restart':
+        return `Restarting "${serviceName}" will briefly interrupt it and anything that depends on it.`;
+      case 'stop':
+        return `Stopping "${serviceName}" will make it — and anything that depends on it — unavailable until it is started again.`;
+      case 'start':
+        return `Starting "${serviceName}".`;
+      default:
+        return null;
+    }
+  },
+  run_script: (input) => {
+    const deviceIds = Array.isArray(input.deviceIds) ? input.deviceIds : null;
+    if (!deviceIds || deviceIds.length === 0) return null;
+    const count = deviceIds.length;
+    return `Running a script on ${count} device${count === 1 ? '' : 's'}.`;
+  },
+  manage_processes: (input) => {
+    if (nonEmptyString(input.action) !== 'kill') return null;
+    const processName = nonEmptyString(input.processName);
+    const processId = nonEmptyString(input.processId);
+    if (processName && processId) return `Terminating process "${processName}" (PID ${processId}).`;
+    if (processName) return `Terminating process "${processName}".`;
+    if (processId) return `Terminating process PID ${processId}.`;
+    return null;
+  },
+  // Neither tool exists in the aiTools registry yet — kept here so the impact
+  // map is complete per #5106's spec the moment either ships, rather than
+  // needing a second follow-up PR.
+  reboot: () =>
+    'Rebooting the device will disconnect any active sessions and interrupt running work until it comes back online.',
+  shutdown: () =>
+    'Shutting down the device will power it off; it will stay unreachable until someone turns it back on.',
+  // #5173: execute_command multiplexes on `commandType` (input.payload is the
+  // agent-command-specific parameters, `z.record(z.string(), z.unknown())` —
+  // deliberately unvalidated, so this is a read-only extraction for display,
+  // never a validation gate). A commandType not covered here, or one whose
+  // payload lacks the field its sentence needs, returns null and falls back
+  // to the catalog description below — same no-regression contract as every
+  // other builder in this map.
+  execute_command: (input) => {
+    const commandType = nonEmptyString(input.commandType);
+    if (!commandType) return null;
+    const payload = input.payload && typeof input.payload === 'object'
+      ? input.payload as Record<string, unknown>
+      : {};
+    const name = nonEmptyString(payload.name);
+    const path = nonEmptyString(payload.path);
+    const logName = nonEmptyString(payload.logName);
+    switch (commandType) {
+      case 'kill_process':
+        return 'Terminates the process immediately. Unsaved work in it is lost.';
+      case 'start_service':
+        return name ? `Starting "${name}".` : null;
+      case 'stop_service':
+        return name
+          ? `Stopping "${name}" will make it — and anything that depends on it — unavailable until it is started again.`
+          : null;
+      case 'restart_service':
+        return name ? `Restarting "${name}" will briefly interrupt it and anything that depends on it.` : null;
+      case 'list_services':
+        return 'Lists services on the device; does not change anything.';
+      case 'list_processes':
+        return 'Lists running processes on the device; does not change anything.';
+      case 'file_read':
+        return path ? `Reads "${path}"; does not modify it.` : "Reads a file's contents; does not modify it.";
+      case 'file_list':
+        return path
+          ? `Lists files in "${path}"; does not change anything.`
+          : 'Lists files in a directory; does not change anything.';
+      case 'event_logs_list':
+        return 'Lists available event logs; does not change anything.';
+      case 'event_logs_query':
+        return logName
+          ? `Reads matching entries from the "${logName}" event log; does not change anything.`
+          : 'Reads matching event log entries; does not change anything.';
+      default:
+        return null;
+    }
+  },
+};
+
+/**
+ * Impact = a call-specific sentence from the actual arguments when the
+ * tool+action allow one (see IMPACT_SUMMARY_BUILDERS above), otherwise the
+ * first sentence of the tool description (or the guardrail description) —
+ * resolved decision.
+ */
+export function buildImpactSummary(toolName: string, input: Record<string, unknown>, guardrail: GuardrailCheck): string {
+  const specific = IMPACT_SUMMARY_BUILDERS[toolName]?.(input);
+  if (specific) return specific;
   const definitionDescription = aiTools.get(toolName)?.definition.description;
   const description = definitionDescription || guardrail.description || `Execute ${toolName}`;
   return firstSentence(description);
@@ -315,7 +466,7 @@ function buildImpactSummary(toolName: string, guardrail: GuardrailCheck): string
  * must land on DIFFERENT keys or the partial unique index would collapse the
  * whole sweep to one live intent.
  */
-function deriveIdempotencyKey(
+export function deriveIdempotencyKey(
   actorId: string,
   actionName: string,
   digest: string,
@@ -325,6 +476,61 @@ function deriveIdempotencyKey(
     ? `${actorId}:${actionName}:${digest}:${scopeDeviceId}`
     : `${actorId}:${actionName}:${digest}`;
   return createHash('sha256').update(material).digest('hex');
+}
+
+/**
+ * #5205 W04 (#5209), baseline §5.2. The predicate that decides whether an
+ * existing LIVE intent found by an idempotency-key conflict is the SAME task
+ * operation being re-proposed — the only condition under which the "reused by
+ * another run" rejection relaxes its run-identity clause.
+ *
+ * Exported so its truth table is unit-testable directly: this predicate is the
+ * hinge of the continuation contract, and every false-positive is a
+ * cross-run/cross-task attachment.
+ *
+ * `existing.taskId !== null` is redundant with the equality below (a null can
+ * never equal a non-null uuid) and is kept only to state the invariant a
+ * reader needs: a task-linked proposal must never attach to a LEGACY task-less
+ * intent. Do not "simplify" it away without leaving that sentence behind.
+ */
+export function isSameTaskOperationReuse(
+  existing: { taskId: string | null; operationKey: string | null },
+  taskContext: { taskId: string; operationKey: string } | null,
+): boolean {
+  return (
+    taskContext !== null
+    && existing.taskId !== null
+    && existing.taskId === taskContext.taskId
+    && existing.operationKey === taskContext.operationKey
+  );
+}
+
+/**
+ * #5205 W04 (#5209), baseline C6/H1: the ONE place an intent's idempotency key
+ * is chosen. A task-linked intent keys on TASK identity so
+ * `action_intents_org_idem_uniq` stays the single ON CONFLICT arbiter; every
+ * other intent keeps the byte-identical legacy derivation.
+ *
+ * Exported for direct unit coverage of both branches and their disjointness.
+ */
+export function deriveIntentIdempotencyKey(args: {
+  taskContext: { taskId: string; operationKey: string } | null;
+  explicitKey: string | undefined;
+  toolName: string;
+  argumentDigest: string;
+  actorId: string;
+  scopeId: string | null;
+}): string {
+  if (args.taskContext) {
+    return deriveIdempotencyKey(
+      `task:${args.taskContext.taskId}`,
+      args.toolName,
+      args.argumentDigest,
+      args.taskContext.operationKey,
+    );
+  }
+  return args.explicitKey
+    ?? deriveIdempotencyKey(args.actorId, args.toolName, args.argumentDigest, args.scopeId);
 }
 
 function computeExpiresAt(source: ActionIntentSource, approvalScope: ActionIntentApprovalScope): Date {
@@ -463,6 +669,8 @@ interface HumanFanoutArgs {
   argumentDigest: string;
   requestingClientLabel: string;
   targetSummary: string;
+  /** Human headline for the approval row, push, and bell — never the raw signature. */
+  actionLabel: string;
   riskTier: 'medium' | 'high' | 'critical';
   impactSummary: string;
   expiresAt: Date;
@@ -499,6 +707,7 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
     argumentDigest,
     requestingClientLabel,
     targetSummary,
+    actionLabel,
     riskTier,
     impactSummary,
     expiresAt,
@@ -517,7 +726,7 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
   const approvalRowFor = (userId: string) => ({
     userId,
     requestingClientLabel,
-    actionLabel: targetSummary,
+    actionLabel,
     actionToolName: toolName,
     actionArguments,
     riskTier,
@@ -611,6 +820,27 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
       status: 'cancelled',
       errorCode: 'no_eligible_approvers',
     };
+    // #5205 W05 (#5210), spec §6.3: this row is freshly inserted in THIS same
+    // transaction (createActionIntent's caller), so the CAS above cannot lose
+    // a race — `cancelled` truthy is the ordinary case; the ?? fallback above
+    // exists only for a defensive read-shape mismatch, not a real loss. A
+    // task-linked intent reaches this path too: `reserveOperation` already ran
+    // earlier in the SAME transaction (spec §6.5), before this fail-closed
+    // cancel — a no-eligible-approvers task operation must not strand the
+    // task in `waiting` any more than any other terminal writer.
+    if (cancelled) {
+      // Nothing was ever dispatched — terminally `cancelled` on the operation
+      // too (distinct from `abandoned`), same reasoning as
+      // cancelActionIntent's identical branch below.
+      if (isTaskLinkedIntent(inserted)) {
+        await markOperationCancelled(tx, inserted.id);
+      }
+      await publishIntentTerminalOutbox(
+        tx,
+        { id: inserted.id, orgId: inserted.orgId, taskId: inserted.taskId },
+        'intent_cancelled',
+      );
+    }
   }
 
   return { approvalRequestIds, requesterApprovalRequestId, fanOutUserIds, finalIntent };
@@ -623,6 +853,7 @@ interface NotifyFannedOutApproversArgs {
   fanOutUserIds: string[];
   requestingClientLabel: string;
   targetSummary: string;
+  actionLabel: string;
   /** Passed to `withDbAccessContext` for the push-token read only — the
    *  in-app notification always runs system-scoped (see the call below).
    *  `userId` on it may be null (agent-originated fan-out has no requester);
@@ -640,7 +871,7 @@ interface NotifyFannedOutApproversArgs {
  * have, instead of a second, drifting copy of this loop.
  */
 async function notifyFannedOutApprovers(args: NotifyFannedOutApproversArgs): Promise<void> {
-  const { orgId, intentId, approvalRequestIds, fanOutUserIds, requestingClientLabel, targetSummary, dbContext } = args;
+  const { orgId, intentId, approvalRequestIds, fanOutUserIds, requestingClientLabel, actionLabel, dbContext } = args;
   for (let i = 0; i < approvalRequestIds.length; i++) {
     const approvalId = approvalRequestIds[i];
     const userId = fanOutUserIds[i];
@@ -661,7 +892,7 @@ async function notifyFannedOutApprovers(args: NotifyFannedOutApproversArgs): Pro
           type: 'approval',
           priority: 'high',
           title: 'Approval requested',
-          message: `${requestingClientLabel}: ${targetSummary}`,
+          message: `${requestingClientLabel}: ${actionLabel}`,
           link: '/approvals',
           metadata: { approvalId, intentId },
           // Survives outbox/BullMQ redelivery: one approver, one intent, one
@@ -686,7 +917,7 @@ async function notifyFannedOutApprovers(args: NotifyFannedOutApproversArgs): Pro
       const tokens = await withDbAccessContext(dbContext, () => getUserPushTokens(userId));
       await dispatchApprovalPushToTokens(tokens, {
         approvalId,
-        actionLabel: targetSummary,
+        actionLabel,
         requestingClientLabel,
       });
     } catch (err) {
@@ -743,6 +974,39 @@ export async function createActionIntent(
       'agent_source_mismatch',
     );
   }
+  // #5205 W04 (#5209): task context is agent-principal only, for the same
+  // reason `scope` is — and more sharply, because it selects the intent's
+  // idempotency key material. A human/MCP caller supplying one could mint an
+  // intent that a task it does not own is then obliged to reconcile.
+  let taskContext: ActionIntentTaskContext | null = null;
+  if (input.task !== undefined) {
+    if (auth.principal.kind !== 'ai_agent') {
+      throw new ActionIntentError(
+        `task context is only valid for the ai_agent principal (got principal '${auth.principal.kind}')`,
+        'task_context_not_allowed',
+      );
+    }
+    // An explicit key and a task context are mutually exclusive, and this is a
+    // REJECTION, not a precedence rule (Codex quorum D1c, adopted). Letting the
+    // explicit key win would silently reinstate the two-arbiter hazard C6
+    // exists to prevent; letting the task win silently would hide a real caller
+    // contract error. `!= null` catches the empty string too.
+    if (input.idempotencyKey != null && input.idempotencyKey !== '') {
+      throw new ActionIntentError(
+        'An explicit idempotencyKey cannot be combined with task context — the task identity IS the key',
+        'task_context_not_allowed',
+      );
+    }
+    const parsed = actionIntentTaskContextSchema.safeParse(input.task);
+    if (!parsed.success) {
+      throw new ActionIntentError(
+        `Malformed task context: ${parsed.error.issues.map((i) => i.path.join('.') + ' ' + i.message).join('; ')}`,
+        'task_context_invalid',
+      );
+    }
+    taskContext = parsed.data;
+  }
+
   // P2-2 (#4189): an explicit device scope is the SWEEP path's way of minting
   // a device-bound intent from a device-less run. It is agent-principal only —
   // a human/MCP caller's target already comes from the tool arguments the
@@ -854,6 +1118,12 @@ export async function createActionIntent(
   // human-originated intent (agentRun stays null, which already forces
   // human_required on its own).
   let agentRunMode: string | undefined;
+  // #5106: the scoped device's human-readable name, threaded through to
+  // buildActionLabel below so the approval headline reads "on <hostname>"
+  // instead of the raw "on device <id>..." stub. Stays null for every
+  // non-agent (or unscoped) intent — the scopedDevice read only happens in
+  // the ai_agent branch below.
+  let scopedDeviceHostname: string | null = null;
   if (auth.principal.kind === 'ai_agent') {
     const principal = auth.principal;
     // scopeDeviceId/scopeTicketId are the top-level consts above — captured
@@ -872,6 +1142,8 @@ export async function createActionIntent(
             orgId: aiAgentRuns.orgId,
             deviceId: aiAgentRuns.deviceId,
             policySnapshot: aiAgentRuns.policySnapshot,
+            taskId: aiAgentRuns.taskId,
+            taskStepKey: aiAgentRuns.taskStepKey,
           })
           .from(aiAgentRuns)
           .where(eq(aiAgentRuns.id, principal.runId))
@@ -897,10 +1169,22 @@ export async function createActionIntent(
         // pin it to the intent's org — a scoped device from another tenant
         // must be indistinguishable from a nonexistent one (same rule
         // resolveIntentTargetScope applies to device args).
-        let scopedDevice: { id: string; orgId: string; siteId: string | null } | null = null;
+        let scopedDevice: {
+          id: string;
+          orgId: string;
+          siteId: string | null;
+          hostname: string | null;
+          displayName: string | null;
+        } | null = null;
         if (scopeDeviceId) {
           const [device] = await db
-            .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
+            .select({
+              id: devices.id,
+              orgId: devices.orgId,
+              siteId: devices.siteId,
+              hostname: devices.hostname,
+              displayName: devices.displayName
+            })
             .from(devices)
             .where(eq(devices.id, scopeDeviceId))
             .limit(1);
@@ -931,6 +1215,25 @@ export async function createActionIntent(
     }
     agentRun = loaded.run;
     agentRow = loaded.agent;
+
+    // #5205 W04 (#5209), Codex quorum D1b (adopted): the caller ASSERTING a
+    // task id proves nothing. `ai_agent_runs.task_id` / `task_step_key` are
+    // written by task admission (W03 schema, W06 writer) and are the only
+    // trusted evidence that this run is a legitimate participant in that task.
+    // Without this check, any agent run in the org could propose an operation
+    // against any task and — via the same-task relaxation below — attach to an
+    // intent minted under a different run's policy snapshot.
+    if (taskContext) {
+      if (agentRun.taskId !== taskContext.taskId || agentRun.taskStepKey !== taskContext.taskStepKey) {
+        throw new ActionIntentError(
+          'Task context does not match the calling run\'s own task linkage',
+          'task_context_invalid',
+        );
+      }
+    }
+    scopedDeviceHostname = loaded.scopedDevice
+      ? (loaded.scopedDevice.displayName ?? loaded.scopedDevice.hostname)
+      : null;
 
     // P2-2 (#4189): an explicit scope must name a device that EXISTS in this
     // intent's org. A missing device and a cross-tenant one hit the same
@@ -1041,21 +1344,57 @@ export async function createActionIntent(
   // id): two runs of the same agent proposing identical arguments must
   // yield DISTINCT intents — an intent is immutably attributed to one run,
   // whose policy snapshot the release path evaluates (review major 4).
-  const idempotencyKey = input.idempotencyKey
-    ?? deriveIdempotencyKey(
-      agentRun ? agentRun.id : requesterId,
-      input.toolName,
-      argumentDigest,
-      // The two scope variants are mutually exclusive; either one (or
-      // neither) folds into the SAME hashed-material parameter that has
-      // always carried the device scope — a ticket-scoped fan-out (multiple
-      // ticket-triage proposals for the same tool+args, one per ticket) must
-      // land on distinct keys for exactly the same reason a device sweep
-      // fan-out does.
-      scopeDeviceId ?? scopeTicketId ?? null,
-    );
+  // #5205 W04 (#5209), baseline C6/H1: a task-linked intent derives its key
+  // from TASK identity, so `action_intents_org_idem_uniq` remains the SINGLE
+  // ON CONFLICT arbiter. Adding a second partial unique on
+  // (org_id, task_id, operation_key) would raise a bare 23505 that the
+  // onConflictDoNothing below cannot absorb — Postgres suppresses conflicts on
+  // the NAMED inference target only. The `task:` prefix cannot collide with the
+  // legacy keyspace: legacy actor ids are UUIDs (a run id or a user id) and a
+  // UUID cannot contain a colon, so no legacy caller can produce this material.
+  // An explicit key alongside a task is rejected outright above, which is what
+  // closes the remaining forge path.
+  const idempotencyKey = deriveIntentIdempotencyKey({
+    taskContext,
+    explicitKey: input.idempotencyKey,
+    toolName: input.toolName,
+    argumentDigest,
+    // Agent default key is RUN-scoped (run id, not the synthetic agent user
+    // id): two runs of the same agent proposing identical arguments must
+    // yield DISTINCT intents — an intent is immutably attributed to one run,
+    // whose policy snapshot the release path evaluates (review major 4).
+    actorId: agentRun ? agentRun.id : requesterId,
+    // The two scope variants are mutually exclusive; either one (or neither)
+    // folds into the SAME hashed-material parameter that has always carried
+    // the device scope — a ticket-scoped fan-out (multiple ticket-triage
+    // proposals for the same tool+args, one per ticket) must land on distinct
+    // keys for exactly the same reason a device sweep fan-out does.
+    scopeId: scopeDeviceId ?? scopeTicketId ?? null,
+  });
   const targetSummary = buildTargetSummary(input.toolName, input.input);
-  const impactSummary = buildImpactSummary(input.toolName, guardrail);
+  const impactSummary = buildImpactSummary(input.toolName, input.input, guardrail);
+  // What the approver READS. `targetSummary` stays the audit signature.
+  const labelReason = input.actionLabel ?? guardrail.description ?? null;
+  // #5106 turned "on device 6eae0f70..." into "on <name>" using the SCOPED
+  // agent device — the one device row this function already loads. #5363:
+  // every other path (chat, mcp_api, an agent intent with no explicit scope)
+  // left the raw stub as the mobile takeover's headline, so resolve the
+  // device THESE arguments name. One indexed, org-pinned read, and only when
+  // the label really carries this call's stub — no read at all for the many
+  // tools whose description never mentions a device.
+  let labelDeviceName = scopedDeviceHostname;
+  if (!labelDeviceName && labelReason) {
+    const argDeviceId = argumentDeviceId(input.input);
+    if (argDeviceId && hasDeviceIdStub(labelReason, argDeviceId)) {
+      labelDeviceName = await resolveApprovalDeviceName(argDeviceId, orgId);
+    }
+  }
+  const actionLabel = buildActionLabel({
+    toolName: input.toolName,
+    input: input.input,
+    reason: labelReason,
+    deviceHostname: labelDeviceName,
+  });
   const expiresAt = computeExpiresAt(input.source, approvalScope);
   const requestingClientLabel = input.requestingClientLabel
     ?? (agentRow ? agentRow.name : input.source === 'chat' ? 'Breeze AI' : 'MCP API client');
@@ -1279,6 +1618,11 @@ export async function createActionIntent(
           scopeKind: scopeDeviceId ? ('device' as const) : scopeTicketId ? ('ticket' as const) : null,
           scopeDeviceId,
           scopeTicketId,
+          // #5205 W04: all three or none — `action_intents_task_link_chk`.
+          // Immutable from here on (2026-10-14-100200 extends the deny-list).
+          taskId: taskContext?.taskId ?? null,
+          taskStepKey: taskContext?.taskStepKey ?? null,
+          operationKey: taskContext?.operationKey ?? null,
           source: input.source,
           requestingClientLabel,
           actionName: input.toolName,
@@ -1372,10 +1716,28 @@ export async function createActionIntent(
         // key AND a byte-identical canonical argument shape (e.g. both take
         // only {deviceId}), and treating tool B as a replay of tool A would
         // silently drop proposal B (review finding 2).
+        // #5205 W04 (#5209), baseline §5.2: the run-identity clause — and ONLY
+        // that clause — is relaxed when this is the same task proposing the
+        // same operation. That is the continuation case the whole slice exists
+        // for: attempt 2 of a task re-proposes the operation attempt 1 left in
+        // flight and must ATTACH to the live intent, never mint a second one.
+        //
+        // Action name, source and argument digest still all have to match, so a
+        // continuation cannot attach to an intent for different arguments —
+        // that is what makes the relaxation safe at all.
+        //
+        // H3: release then evaluates the EARLIER run's policy snapshot, so this
+        // relaxation ships only alongside the live-authority recheck at the
+        // dispatch claim — `checkAgentReleaseAuthority` evaluates the snapshot
+        // AND the current effective policy and denies if either denies
+        // (agentReleaseAuthority.ts, the `candidates` loop). Do not relax this
+        // further without re-reading that.
+        const sameTaskReuse = isSameTaskOperationReuse(existing, taskContext);
         if (
           existing.actionName !== input.toolName ||
           existing.source !== input.source ||
-          (existing.requestingAgentRunId ?? null) !== (agentRun?.id ?? null) ||
+          (!sameTaskReuse
+            && (existing.requestingAgentRunId ?? null) !== (agentRun?.id ?? null)) ||
           existing.argumentDigest !== argumentDigest
         ) {
           throw new ActionIntentError(
@@ -1409,6 +1771,47 @@ export async function createActionIntent(
       // inertness proof. Once Part B's real resolvePolicyDecisionState can
       // return 'authorized', this becomes the seam that skips fan-out
       // entirely for a policy-decided intent.
+      // #5205 W04 (#5209), spec §6.5: reserve the operation row in the SAME
+      // transaction as the intent insert. "Attaching the task only after the
+      // intent commits is insufficient" — a crash in that window would leave an
+      // approvable intent that no task owns and no reconciler can find.
+      //
+      // `plan_revision` is pinned from the task's revision AS READ HERE, i.e.
+      // by the admission the approval will cover. The dispatch claim later
+      // requires the task's CURRENT revision to still equal it, which is how
+      // spec §7.1's "revising plan arguments creates a new operation and
+      // approval" is enforced against a stale approval.
+      //
+      // A conflict on the operation's PERMANENT unique throws
+      // OperationReplayError, which rolls this whole transaction back — no
+      // second intent is minted for an operation whose effect may already have
+      // landed (baseline C7/H2: the intent's live-only index cannot guard
+      // sequential replay because a completed intent frees its key).
+      if (taskContext) {
+        const [taskRow] = await db
+          .select({ revision: aiOperatorTasks.revision })
+          .from(aiOperatorTasks)
+          .where(and(eq(aiOperatorTasks.id, taskContext.taskId), eq(aiOperatorTasks.orgId, orgId)))
+          .limit(1);
+        if (!taskRow) {
+          throw new ActionIntentError(
+            `AI Operator task ${taskContext.taskId} not found in org ${orgId}`,
+            'task_context_invalid',
+          );
+        }
+        await reserveOperation(db, {
+          orgId,
+          taskId: taskContext.taskId,
+          taskStepKey: taskContext.taskStepKey,
+          operationKey: taskContext.operationKey,
+          attemptOrdinal: taskContext.attemptOrdinal,
+          intentId: inserted.id,
+          originatingRunId: agentRun?.id ?? null,
+          argumentDigest,
+          planRevision: taskRow.revision,
+        });
+      }
+
       let approvalRequestIds: string[] = [];
       let requesterApprovalRequestId: string | null = null;
       let fanOutUserIds: string[] = [];
@@ -1428,6 +1831,7 @@ export async function createActionIntent(
             argumentDigest,
             requestingClientLabel,
             targetSummary,
+            actionLabel,
             riskTier,
             impactSummary,
             expiresAt,
@@ -1490,6 +1894,12 @@ export async function createActionIntent(
     // DB/RLS fault in the insert, fan-out, or outbox) as fanout_failed so the
     // caller (chat SDK / MCP) sees a real failure, never a false success.
     if (err instanceof ActionIntentError) throw err;
+    // #5205 W04: the sequential-replay guard tripping is a DELIBERATE refusal,
+    // not a fault — surface it with its own code so the coordinator can tell
+    // "this operation already happened" from "the database broke".
+    if (err instanceof OperationReplayError) {
+      throw new ActionIntentError(err.message, 'operation_replay');
+    }
     console.error('[intentService] action intent creation transaction failed (rolled back):', err);
     throw new ActionIntentError(
       'Failed to create action intent (approval fan-out / outbox)',
@@ -1543,6 +1953,7 @@ export async function createActionIntent(
       fanOutUserIds: creation.fanOutUserIds,
       requestingClientLabel,
       targetSummary,
+      actionLabel,
       dbContext,
     });
   }
@@ -1674,11 +2085,25 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
         .where(eq(aiAgentRuns.id, intent.requestingAgentRunId))
         .limit(1);
       if (!run || run.orgId !== intent.orgId) return null;
-      return { intent, run };
+      // #5106: resolve the intent's target device's hostname (if any) here,
+      // under the same system-scoped read as run/agent above, so the two
+      // buildActionLabel calls below can turn "on device <id>..." into
+      // "on <hostname>" the same way createActionIntent's own call site does.
+      const targetDeviceId = effectiveTargetDeviceId(resolveIntentTargetDevice(intent, run));
+      let deviceHostname: string | null = null;
+      if (targetDeviceId) {
+        const [device] = await db
+          .select({ hostname: devices.hostname, displayName: devices.displayName })
+          .from(devices)
+          .where(eq(devices.id, targetDeviceId))
+          .limit(1);
+        deviceHostname = device ? (device.displayName ?? device.hostname) : null;
+      }
+      return { intent, run, deviceHostname };
     }),
   );
   if (!loaded) return;
-  const { intent, run } = loaded;
+  const { intent, run, deviceHostname } = loaded;
 
   let targetScope: IntentTargetScope;
   try {
@@ -1711,7 +2136,17 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
   // `deviceId` here is inert for targeting — AgentRunRef carries it, but the
   // fan-out reads only `agentRun.id` (and its truthiness). The TARGET device
   // was resolved above, through resolveIntentTargetDevice.
-  const agentRun: AgentRunRef = { id: run.id, agentId: run.agentId, orgId: run.orgId, deviceId: run.deviceId };
+  // #5205 W04: the deferred fan-out never re-derives task context (it acts on
+  // an already-created intent), so the linkage is carried as null here — the
+  // fan-out reads only `agentRun.id`.
+  const agentRun: AgentRunRef = {
+    id: run.id,
+    agentId: run.agentId,
+    orgId: run.orgId,
+    deviceId: run.deviceId,
+    taskId: null,
+    taskStepKey: null,
+  };
 
   const fanoutResult = await withSystemDbAccessContext(async (): Promise<HumanFanoutResult | null> => {
     // The CAS: only the caller that actually flips unattempted -> human_required
@@ -1733,6 +2168,13 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
       argumentDigest: updated.argumentDigest,
       requestingClientLabel: updated.requestingClientLabel ?? 'AI Agent',
       targetSummary: updated.targetSummary,
+      // The guardrail description is not persisted on the intent, so the
+      // deferred path rebuilds a label from the tool + arguments.
+      actionLabel: buildActionLabel({
+        toolName: updated.actionName,
+        input: updated.arguments as Record<string, unknown>,
+        deviceHostname,
+      }),
       riskTier: riskTierLabel(updated.riskTier),
       impactSummary: updated.impactSummary,
       // The SAME deadline creation stamped — not a freshly recomputed one; a
@@ -1785,6 +2227,11 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
     fanOutUserIds: fanoutResult.fanOutUserIds,
     requestingClientLabel: intent.requestingClientLabel ?? 'AI Agent',
     targetSummary: intent.targetSummary,
+    actionLabel: buildActionLabel({
+      toolName: intent.actionName,
+      input: intent.arguments as Record<string, unknown>,
+      deviceHostname,
+    }),
     dbContext: { scope: 'organization', orgId: intent.orgId, accessibleOrgIds: [intent.orgId], userId: null },
   });
 }
@@ -1820,10 +2267,29 @@ export async function getActionIntent(auth: AuthContext, intentId: string): Prom
 // cancelActionIntent
 // ---------------------------------------------------------------------------
 
+export interface CancelActionIntentResult {
+  /** True only when the intent itself moved to `cancelled`. */
+  ok: boolean;
+  status: ActionIntentStatus;
+  /**
+   * #5205 W04 (#5209), spec §7.3. True when the intent is a task-linked one
+   * that had already reached `executing`: the cancellation request was RECORDED
+   * on the operation row (`cancel_requested_at`) and the effect is still in
+   * flight. `ok` stays false because the intent did not move — every existing
+   * caller therefore keeps reading this as "not cancelled", which is the honest
+   * answer — but a task-aware caller can now say "in flight, will be
+   * reconciled" instead of the silent no-op this returned before. Cancellation
+   * is not rollback; an already-dispatched device command may still finish, and
+   * §7.3 forbids ever displaying "nothing happened" when a change may still
+   * land.
+   */
+  inFlight?: boolean;
+}
+
 export async function cancelActionIntent(
   auth: AuthContext,
   intentId: string,
-): Promise<{ ok: boolean; status: ActionIntentStatus }> {
+): Promise<CancelActionIntentResult> {
   const dbContext = dbAccessContextFromAuth(auth);
   const intent = await withDbAccessContext(dbContext, async () => {
     const [row] = await db.select().from(actionIntents).where(eq(actionIntents.id, intentId)).limit(1);
@@ -1847,7 +2313,96 @@ export async function cancelActionIntent(
     throw new ActionIntentAuthorizationError(`Not authorized to cancel action intent ${intentId}`);
   }
 
-  const ok = await transitionIntent(intentId, ['pending_approval', 'approved'], 'cancelled');
+  // Inlined rather than reusing `transitionIntent` (the shared CAS primitive
+  // below): cancel is the only caller that needs an outbox row written
+  // atomically with the CAS, and `transitionIntent` is shared by
+  // intentReleaseWorker.ts / aiAgentSdk.ts release paths that don't. Same
+  // predicate transitionIntent would apply for this call
+  // (`from: ['pending_approval', 'approved']`, `to: 'cancelled'`, no deadline
+  // fold), just with the outbox write folded into the same
+  // withSystemDbAccessContext transaction (#4798) — without this, a
+  // requester already told "approved and is now running" was never told a
+  // subsequent cancel happened, because intentReleaseWorker.ts's outbox
+  // consumer never saw an event for it.
+  const taskLinked = isTaskLinkedIntent(intent);
+  let ok: boolean;
+  let inFlight = false;
+  try {
+    ok = await withSystemDbAccessContext(async () => {
+      // LOCK ORDER — operation BEFORE intent, matching
+      // `claimTaskLinkedIntentForDispatch` (services/aiOperator/dispatchClaim.ts,
+      // which takes task -> operation -> intent). Without this line the cancel
+      // path would take intent -> operation and the two would form an AB-BA
+      // cycle on {operation, intent}: a human cancelling while a release worker
+      // claims the same still-`approved` intent would deadlock, and Postgres
+      // would abort one side with 40P01. Read-only on its own; it exists purely
+      // to order the locks.
+      if (taskLinked) {
+        await db
+          .select({ id: aiOperatorOperations.id })
+          .from(aiOperatorOperations)
+          .where(eq(aiOperatorOperations.intentId, intentId))
+          .for('update')
+          .limit(1);
+      }
+      const rows = await db
+        .update(actionIntents)
+        .set({ status: 'cancelled' })
+        .where(and(eq(actionIntents.id, intentId), inArray(actionIntents.status, ['pending_approval', 'approved'])))
+        .returning({ id: actionIntents.id });
+      if (rows.length === 0) {
+        // #5205 W04 (#5209): the CAS above covers `pending_approval` and
+        // `approved` only, and that stays true — an `executing` intent must NOT
+        // be flipped to `cancelled`, because the effect it dispatched may still
+        // land and §7.3 forbids claiming nothing happened. For a TASK-LINKED
+        // intent the request is instead recorded on the operation row, in this
+        // same transaction, so the coordinator can fence further admissions and
+        // reconcile the in-flight command. Re-read the status inside the
+        // transaction rather than trusting the pre-CAS snapshot: the intent may
+        // have moved from `approved` to `executing` between the two.
+        if (!taskLinked) return false;
+        const [live] = await db
+          .select({ status: actionIntents.status })
+          .from(actionIntents)
+          .where(eq(actionIntents.id, intentId))
+          .limit(1);
+        if (live?.status !== 'executing') return false;
+        await markOperationCancelRequested(db, intentId);
+        inFlight = true;
+        return false;
+      }
+      // Nothing was ever dispatched for a pending/approved intent, so its
+      // operation is terminally `cancelled` — distinct from `abandoned`, which
+      // is a leaked reservation. The reconciler's "terminal task with an
+      // unsettled operation" scan needs to tell the two apart.
+      if (taskLinked) {
+        await markOperationCancelled(db, intentId);
+      }
+      // #5205 W05 (#5210): same intentOutbox row this always wrote, plus (when
+      // task-linked) the task_outbox leg — `intent.taskId` is read from the
+      // pre-transaction snapshot, which is safe since task linkage is
+      // immutable.
+      await publishIntentTerminalOutbox(
+        db,
+        { id: intentId, orgId: intent.orgId, taskId: intent.taskId },
+        'intent_cancelled',
+      );
+      return true;
+    });
+  } catch (err) {
+    // Same posture as createActionIntent's transaction catch: the CAS and
+    // the outbox insert share one Postgres transaction (both run through the
+    // same withSystemDbAccessContext callback), so a thrown insert rolls the
+    // status flip back too — there is no committed 'cancelled' row with a
+    // missing outbox event to reconcile. Logged and re-thrown as a typed,
+    // retryable error rather than a bare exception so a caller (once wired
+    // to a route) sees a real failure, never a false success.
+    console.error('[intentService] cancel action intent transaction failed (rolled back):', err);
+    throw new ActionIntentError(
+      `Failed to cancel action intent ${intentId} (CAS / outbox)`,
+      'cancel_failed',
+    );
+  }
   if (ok) {
     return { ok: true, status: 'cancelled' };
   }
@@ -1856,7 +2411,7 @@ export async function cancelActionIntent(
     const [row] = await db.select({ status: actionIntents.status }).from(actionIntents).where(eq(actionIntents.id, intentId)).limit(1);
     return row?.status ?? intent.status;
   });
-  return { ok: false, status: current };
+  return { ok: false, status: current, ...(inFlight ? { inFlight: true } : {}) };
 }
 
 // ---------------------------------------------------------------------------

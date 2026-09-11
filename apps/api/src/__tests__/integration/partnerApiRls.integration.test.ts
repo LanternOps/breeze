@@ -1,4 +1,5 @@
 import './setup';
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Hono } from 'hono';
@@ -15,8 +16,10 @@ import {
   configPolicyFeatureLinks,
   configurationPolicies,
   customFieldDefinitions,
+  deviceCustomFieldValues,
   deviceGroups,
   devices,
+  enrollmentKeys,
   partnerExportConfigurationOrgState,
   partnerExportDeviceMaterialState,
   partnerExportSiteMaterialState,
@@ -34,6 +37,7 @@ import {
 } from '../../routes/partnerApi/cursor';
 import { partnerDeviceRoutes } from '../../routes/partnerApi/devices';
 import { partnerInventoryRoutes } from '../../routes/partnerApi/inventory';
+import { partnerProvisioningRoutes } from '../../routes/partnerApi/provisioning';
 import { partnerOrganizationRoutes } from '../../routes/partnerApi/organizations';
 import { partnerRelationshipRoutes } from '../../routes/partnerApi/relationships';
 import {
@@ -41,6 +45,7 @@ import {
   type PartnerExportResource,
 } from '../../routes/partnerApi/schemas';
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
+import type { PartnerServicePrincipalScope } from '../../services/partnerServicePrincipalScopes';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getAppDb, getTestDb } from './setup';
 
@@ -112,6 +117,8 @@ interface SeededPartner {
   orgs: Array<{ id: string }>;
   sites: Array<{ id: string; orgId: string }>;
   devices: Array<{ id: string; orgId: string }>;
+  /** The org-owned custom-field definition seeded alongside each org's device. */
+  fieldDefinitions: Array<{ id: string; orgId: string; fieldKey: string; value: string }>;
   groups: Array<{ id: string; orgId: string }>;
   policies: Array<{ id: string }>;
   assignments: Array<{ id: string }>;
@@ -119,6 +126,171 @@ interface SeededPartner {
 }
 
 describe('partner reconstruction export RLS traversal', () => {
+  runDb('enrollment_keys allows an in-partner write and rejects a cross-partner forge as breeze_app', async () => {
+    await ensureAppRole();
+    const [partnerA, partnerB] = await seedInterleavedPartners();
+    const contextA = partnerContext(partnerA);
+
+    const [allowed] = await withDbAccessContext(contextA, () => db.insert(enrollmentKeys).values({
+      orgId: partnerA.orgs[0]!.id,
+      siteId: partnerA.sites[0]!.id,
+      name: 'Partner API allowed RLS proof',
+      key: randomBytes(32).toString('hex'),
+      keySecretHash: randomBytes(32).toString('hex'),
+      maxUsage: 1,
+      expiresAt: new Date(Date.now() + 60_000),
+      createdBy: null,
+    }).returning({ id: enrollmentKeys.id }));
+    expect(allowed?.id).toBeTruthy();
+
+    await expect(withDbAccessContext(contextA, () => db.insert(enrollmentKeys).values({
+      orgId: partnerB.orgs[0]!.id,
+      siteId: partnerB.sites[0]!.id,
+      name: 'Cross-partner forge',
+      key: randomBytes(32).toString('hex'),
+      keySecretHash: randomBytes(32).toString('hex'),
+      maxUsage: 1,
+      expiresAt: new Date(Date.now() + 60_000),
+      createdBy: null,
+    }))).rejects.toMatchObject({ cause: expect.objectContaining({ code: '42501' }) });
+  });
+  runDb('creates an enrollment key through actual Partner API auth and forced RLS', async () => {
+    await ensureAppRole();
+    const [partnerA] = await seedInterleavedPartners();
+    const rawApiKey = await issueKey(partnerA.partner.id, partnerA.user.id, [...ALL_SCOPES, 'enrollment-keys:write']);
+    const observedRoles: Array<{ who: string; bypass: boolean }> = [];
+    const app = actualPartnerApiApp(observedRoles);
+    const mintBody = {
+      orgId: partnerA.orgs[0]!.id,
+      siteId: partnerA.sites[0]!.id,
+      name: 'Actual route RLS proof',
+      // Opt in, so this test still exercises the per-key secret path. The
+      // default path (no per-key secret) is asserted separately below.
+      issueEnrollmentSecret: true,
+    };
+    const response = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { ...apiHeaders(rawApiKey), 'content-type': 'application/json', 'x-forwarded-for': '127.0.0.1', 'x-idempotency-key': 'actual-route-rls-proof' },
+      body: JSON.stringify(mintBody),
+    });
+    expect(response.status, await response.clone().text()).toBe(201);
+    const body = await response.json() as {
+      data: { id: string }; key: string; enrollmentSecret: string; enrollmentSecretSource: string;
+    };
+    expect(body.key).toMatch(/^[a-f0-9]{64}$/);
+    expect(body.enrollmentSecret).toMatch(/^[a-f0-9]{64}$/);
+    expect(body.enrollmentSecretSource).toBe('per_key');
+    const [stored] = await getTestDb().select().from(enrollmentKeys).where(eq(enrollmentKeys.id, body.data.id)).limit(1);
+    expect(stored).toMatchObject({ orgId: partnerA.orgs[0]!.id, siteId: partnerA.sites[0]!.id, createdBy: null });
+    expect(stored?.key).not.toBe(body.key);
+    expect(stored?.keySecretHash).not.toBe(body.enrollmentSecret);
+    expect(observedRoles).toContainEqual({ who: 'breeze_app', bypass: false });
+
+    const replay = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { ...apiHeaders(rawApiKey), 'content-type': 'application/json', 'x-forwarded-for': '127.0.0.1', 'x-idempotency-key': 'actual-route-rls-proof' },
+      body: JSON.stringify(mintBody),
+    });
+    expect(replay.status, await replay.clone().text()).toBe(200);
+    expect(await replay.json()).toMatchObject({
+      data: { id: body.data.id },
+      // Derived from the stored row, so it survives the credential being
+      // unrecoverable on the replay path.
+      enrollmentSecretSource: 'per_key',
+      idempotencyReplay: true,
+    });
+  });
+
+  /**
+   * The default contract, against a real database.
+   *
+   * `enrollment_keys.key_secret_hash` is a switch on the agent enrollment path:
+   * once set, that key REQUIRES the per-key secret and the deployment's global
+   * AGENT_ENROLLMENT_SECRET no longer satisfies it. This endpoint shipped in
+   * v0.105.1 never writing that column, so what is asserted here — a persisted
+   * NULL, and no `enrollmentSecret` in the body — is the contract every partner
+   * already minting through this route depends on.
+   */
+  runDb('leaves key_secret_hash NULL unless the caller opts in', async () => {
+    await ensureAppRole();
+    const [partnerA] = await seedInterleavedPartners();
+    const rawApiKey = await issueKey(partnerA.partner.id, partnerA.user.id, [...ALL_SCOPES, 'enrollment-keys:write']);
+    const app = actualPartnerApiApp([]);
+
+    const response = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { ...apiHeaders(rawApiKey), 'content-type': 'application/json', 'x-forwarded-for': '127.0.0.1' },
+      body: JSON.stringify({ orgId: partnerA.orgs[0]!.id, name: 'Global-secret enrollment key' }),
+    });
+    expect(response.status, await response.clone().text()).toBe(201);
+    const body = await response.json() as {
+      data: { id: string }; key: string; enrollmentSecret?: string; enrollmentSecretSource: string;
+    };
+    expect(body.key).toMatch(/^[a-f0-9]{64}$/);
+    expect(body).not.toHaveProperty('enrollmentSecret');
+    expect(body.enrollmentSecretSource).toBe('global');
+
+    const [stored] = await getTestDb().select().from(enrollmentKeys)
+      .where(eq(enrollmentKeys.id, body.data.id)).limit(1);
+    expect(stored?.keySecretHash).toBeNull();
+  });
+
+  /**
+   * Cross-partner mint refusal at the ROUTE level, not by a direct-DB forge.
+   *
+   * The forge test above proves the RLS backstop. This proves the layer a real
+   * caller actually reaches: a genuine principal of partner A, authenticated
+   * through the real middleware, naming an org that belongs to partner B. It
+   * must be refused before any insert, and partner B's org must be untouched.
+   */
+  runDb('refuses a cross-partner mint through actual Partner API auth', async () => {
+    await ensureAppRole();
+    const [partnerA, partnerB] = await seedInterleavedPartners();
+    const rawApiKey = await issueKey(partnerA.partner.id, partnerA.user.id, [...ALL_SCOPES, 'enrollment-keys:write']);
+    const app = actualPartnerApiApp([]);
+    const victimOrgId = partnerB.orgs[0]!.id;
+
+    const before = await getTestDb().select({ id: enrollmentKeys.id }).from(enrollmentKeys)
+      .where(eq(enrollmentKeys.orgId, victimOrgId));
+
+    const response = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { ...apiHeaders(rawApiKey), 'content-type': 'application/json', 'x-forwarded-for': '127.0.0.1' },
+      body: JSON.stringify({ orgId: victimOrgId, name: 'Cross-partner route mint' }),
+    });
+    expect(response.status, await response.clone().text()).toBe(403);
+    expect(await response.json()).toMatchObject({ code: 'partner_provisioning_org_access_denied' });
+
+    // Nothing was minted into the other partner's org.
+    const after = await getTestDb().select({ id: enrollmentKeys.id }).from(enrollmentKeys)
+      .where(eq(enrollmentKeys.orgId, victimOrgId));
+    expect(after).toHaveLength(before.length);
+  });
+
+  /**
+   * The other half of the same boundary: a site that exists, but under the
+   * other partner. `siteId` is not covered by the accessible-org check, so it
+   * needs its own proof that the route validates site-to-org ownership rather
+   * than trusting the caller.
+   */
+  runDb('refuses a cross-partner siteId even when the org is accessible', async () => {
+    await ensureAppRole();
+    const [partnerA, partnerB] = await seedInterleavedPartners();
+    const rawApiKey = await issueKey(partnerA.partner.id, partnerA.user.id, [...ALL_SCOPES, 'enrollment-keys:write']);
+    const app = actualPartnerApiApp([]);
+
+    const response = await app.request('/enrollment-keys', {
+      method: 'POST',
+      headers: { ...apiHeaders(rawApiKey), 'content-type': 'application/json', 'x-forwarded-for': '127.0.0.1' },
+      body: JSON.stringify({
+        orgId: partnerA.orgs[0]!.id,
+        siteId: partnerB.sites[0]!.id,
+        name: 'Cross-partner site mint',
+      }),
+    });
+    expect(response.status, await response.clone().text()).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'partner_provisioning_site_mismatch' });
+  });
   runDb('cursor-walks every resource through actual auth without crossing partners', async () => {
     await ensureAppRole();
     const [partnerA, partnerB] = await seedInterleavedPartners();
@@ -129,14 +301,17 @@ describe('partner reconstruction export RLS traversal', () => {
       type: 'text',
     }).returning();
     if (!partnerField) throw new Error('partner custom field seed failed');
-    for (const [index, device] of partnerA.devices.entries()) {
-      await getTestDb().update(devices).set({
-        customFields: {
-          [`rack_a_${index + 1}`]: `A-rack-value-${index + 1}`,
-          partner_inventory_label: `A-partner-value-${index + 1}`,
-        },
-      }).where(eq(devices.id, device.id));
-    }
+    // Second datum per device, under the PARTNER-WIDE definition. Written to the
+    // normalized table for the same reason as the org-owned one in seedPartnerOrg:
+    // /custom-field-values reads device_custom_field_values, not the jsonb.
+    const partnerValues = partnerA.devices.map((device, index) => ({
+      deviceId: device.id,
+      orgId: device.orgId,
+      definitionId: partnerField.id,
+      fieldKey: 'partner_inventory_label',
+      valueText: `A-partner-value-${index + 1}`,
+    }));
+    await getTestDb().insert(deviceCustomFieldValues).values(partnerValues);
     const keyA = await issueKey(partnerA.partner.id, partnerA.user.id);
     const keyB = await issueKey(partnerB.partner.id, partnerB.user.id);
     const observedRoles: Array<{ who: string; bypass: boolean }> = [];
@@ -161,6 +336,22 @@ describe('partner reconstruction export RLS traversal', () => {
         allTuples.add(tuple);
       }
     }
+
+    // The suite now seeds only the table, so this proves the projection trigger —
+    // not a test fixture — is what puts the values back into devices.custom_fields.
+    // Without it a future regression could silently stop maintaining the jsonb and
+    // every JS reader of devices.customFields would go blind with nothing red.
+    const [projectedDevice] = partnerA.devices;
+    const projectedDefinition = partnerA.fieldDefinitions
+      .find((definition) => definition.orgId === projectedDevice!.orgId)!;
+    const [projectionRow] = await getTestDb()
+      .select({ customFields: devices.customFields })
+      .from(devices)
+      .where(eq(devices.id, projectedDevice!.id));
+    expect(projectionRow!.customFields).toEqual({
+      [projectedDefinition.fieldKey]: projectedDefinition.value,
+      partner_inventory_label: 'A-partner-value-1',
+    });
 
     const fannedDefinitions = traversals.get('custom-fields')!
       .filter((record) => record.id === partnerField.id);
@@ -399,12 +590,30 @@ describe('partner reconstruction export RLS traversal', () => {
     expect(await captureSqlState(() => admin.delete(devices)
       .where(eq(devices.id, movableDevice.id))))
       .toBe('23503');
-    expect(await captureSqlState(() => admin.update(configurationPolicies)
+    // #5080 W01 put a stricter guard in FRONT of the assignment reverse
+    // validator: configuration_policies ownership can only change in system
+    // scope at all (constraint trigger configuration_policies_parent_guard,
+    // constraint configuration_policies_owner_immutable). Both halves are
+    // pinned -- the outer guard, and, in the one scope that legitimately moves
+    // ownership (org merge), the reverse validator that was always the subject
+    // here. Asserting only the 23514 would quietly retire this test (#5123).
+    expect(await captureSqlFailure(() => admin.update(configurationPolicies)
       .set({ orgId: partnerA.orgs[1]!.id }).where(eq(configurationPolicies.id, orgPolicy.id))))
-      .toBe('23503');
-    expect(await captureSqlState(() => admin.update(configurationPolicies)
+      .toEqual({ code: '23514', constraint: 'configuration_policies_owner_immutable' });
+    expect(await captureSqlState(() => admin.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`);
+      await tx.update(configurationPolicies)
+        .set({ orgId: partnerA.orgs[1]!.id }).where(eq(configurationPolicies.id, orgPolicy.id));
+    }))).toBe('23503');
+    expect(await captureSqlFailure(() => admin.update(configurationPolicies)
       .set({ partnerId: partnerB.partner.id }).where(eq(configurationPolicies.id, partnerPolicy.id))))
-      .toBe('23503');
+      .toEqual({ code: '23514', constraint: 'configuration_policies_owner_immutable' });
+    expect(await captureSqlState(() => admin.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`);
+      await tx.update(configurationPolicies)
+        .set({ partnerId: partnerB.partner.id })
+        .where(eq(configurationPolicies.id, partnerPolicy.id));
+    }))).toBe('23503');
 
     const [updatableAssignment] = await withDbAccessContext(contextA, () =>
       db.insert(configPolicyAssignments).values({
@@ -480,6 +689,10 @@ describe('partner reconstruction export RLS traversal', () => {
       }).returning();
       if (!movingPolicy) throw new Error('concurrent owner policy seed failed');
       const policyMover = admin.transaction(async (tx) => {
+        // System scope: #5080 W01 refuses a configuration-policy owner move in
+        // any other scope, and org merge -- the only real mover -- is system
+        // scoped. Without this the race never starts (#5123).
+        await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`);
         await tx.update(configurationPolicies).set({ orgId: target.orgs[0]!.id })
           .where(eq(configurationPolicies.id, movingPolicy.id));
         ownerMove.resolve();
@@ -581,12 +794,19 @@ describe('partner reconstruction export RLS traversal', () => {
       { partnerId: second.partner.id, name: 'Bulk partner policy B' },
     ]).returning();
     if (!policyA || !policyB) throw new Error('bulk policy seed failed');
-    await expect(admin.update(configurationPolicies).set({
-      partnerId: sql`CASE
-        WHEN ${configurationPolicies.id} = ${policyA.id}::uuid THEN ${second.partner.id}::uuid
-        ELSE ${first.partner.id}::uuid
-      END`,
-    }).where(inArray(configurationPolicies.id, [policyA.id, policyB.id]))).resolves.toBeDefined();
+    // System scope, for the same reason as the owner-move race above: #5080 W01
+    // makes a configuration-policy owner change system-only. The property under
+    // test is unchanged -- a COMPLETE swap must not trip the reverse validator
+    // on the intermediate state (#5123).
+    await expect(admin.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`);
+      return tx.update(configurationPolicies).set({
+        partnerId: sql`CASE
+          WHEN ${configurationPolicies.id} = ${policyA.id}::uuid THEN ${second.partner.id}::uuid
+          ELSE ${first.partner.id}::uuid
+        END`,
+      }).where(inArray(configurationPolicies.id, [policyA.id, policyB.id]));
+    })).resolves.toBeDefined();
     await expect(admin.delete(configurationPolicies)
       .where(inArray(configurationPolicies.id, [policyA.id, policyB.id]))).resolves.toBeDefined();
 
@@ -822,7 +1042,7 @@ async function createPartnerSeed(label: 'A' | 'B'): Promise<SeededPartner> {
   return {
     partner,
     user,
-    orgs: [], sites: [], devices: [], groups: [], policies: [], assignments: [], featureLinks: [],
+    orgs: [], sites: [], devices: [], fieldDefinitions: [], groups: [], policies: [], assignments: [], featureLinks: [],
   };
 }
 
@@ -834,9 +1054,10 @@ async function seedPartnerOrg(seed: SeededPartner, label: 'A' | 'B', index: numb
   });
   const site = await createSite({ orgId: org.id, name: `${label}-Site-${index}` });
   const fieldKey = `rack_${label.toLowerCase()}_${index}`;
-  await admin.insert(customFieldDefinitions).values({
+  const [fieldDefinition] = await admin.insert(customFieldDefinitions).values({
     orgId: org.id, name: `${label}-Rack-${index}`, fieldKey, type: 'text',
-  });
+  }).returning();
+  if (!fieldDefinition) throw new Error('custom field definition seed failed');
   const [device] = await admin.insert(devices).values({
     orgId: org.id,
     siteId: site.id,
@@ -846,9 +1067,20 @@ async function seedPartnerOrg(seed: SeededPartner, label: 'A' | 'B', index: numb
     osVersion: 'Ubuntu 24.04',
     architecture: 'amd64',
     agentVersion: '1.0.0',
-    customFields: { [fieldKey]: `${label}-rack-value-${index}` },
   }).returning();
   if (!device) throw new Error('device seed failed');
+  // #3257 W05 — the datum is the ROW in device_custom_field_values;
+  // devices.custom_fields is the projection its triggers rebuild. Seeding the
+  // jsonb literal here instead would be invisible to /custom-field-values (which
+  // reads the table) and would be discarded by the next projection pass anyway.
+  const fieldValue = `${label}-rack-value-${index}`;
+  await admin.insert(deviceCustomFieldValues).values({
+    deviceId: device.id,
+    orgId: org.id,
+    definitionId: fieldDefinition.id,
+    fieldKey,
+    valueText: fieldValue,
+  });
   const [group] = await admin.insert(deviceGroups).values({
     orgId: org.id, siteId: site.id, name: `${label}-Group-${index}`,
   }).returning();
@@ -894,18 +1126,25 @@ async function seedPartnerOrg(seed: SeededPartner, label: 'A' | 'B', index: numb
   seed.orgs.push(org);
   seed.sites.push(site);
   seed.devices.push(device);
+  seed.fieldDefinitions.push({ id: fieldDefinition.id, orgId: org.id, fieldKey, value: fieldValue });
   seed.groups.push(group);
   seed.policies.push(policy);
   seed.assignments.push(assignment);
   seed.featureLinks.push(featureLink);
 }
 
-async function issueKey(partnerId: string, userId: string): Promise<string> {
+async function issueKey(
+  partnerId: string,
+  userId: string,
+  scopes: readonly PartnerServicePrincipalScope[] = ALL_SCOPES,
+): Promise<string> {
   const admin = getTestDb();
   const [principal] = await admin.insert(partnerServicePrincipals).values({
     partnerId,
     name: `Reconstruction export ${crypto.randomUUID()}`,
-    scopes: [...ALL_SCOPES],
+    scopes: [...scopes],
+    sourceCidrs: scopes.includes('enrollment-keys:write') ? ['127.0.0.1/32', '::1/128'] : [],
+    expiresAt: scopes.includes('enrollment-keys:write') ? new Date(Date.now() + 86_400_000) : null,
     createdBy: userId,
     updatedBy: userId,
   }).returning();
@@ -935,6 +1174,7 @@ function actualPartnerApiApp(observedRoles: Array<{ who: string; bypass: boolean
   app.route('/', partnerInventoryRoutes);
   app.route('/', partnerRelationshipRoutes);
   app.route('/', partnerConfigurationRoutes);
+  app.route('/', partnerProvisioningRoutes);
   return app;
 }
 
@@ -1019,5 +1259,27 @@ async function captureSqlState(work: () => Promise<unknown>): Promise<string | u
   } catch (error) {
     const wrapped = error as { code?: string; cause?: { code?: string } };
     return wrapped.cause?.code ?? wrapped.code;
+  }
+}
+
+/**
+ * SQLSTATE plus the constraint that produced it. `configuration_policies`
+ * carries several 23514 sources, so a bare code would let a future CHECK on the
+ * same statement path satisfy an assertion meant for a specific guard (#5123).
+ */
+async function captureSqlFailure(
+  work: () => Promise<unknown>,
+): Promise<{ code?: string; constraint?: string } | undefined> {
+  try {
+    await work();
+    return undefined;
+  } catch (error) {
+    const wrapped = error as {
+      code?: string;
+      constraint_name?: string;
+      cause?: { code?: string; constraint_name?: string };
+    };
+    const node = wrapped.cause?.code ? wrapped.cause : wrapped;
+    return { code: node.code, constraint: node.constraint_name };
   }
 }

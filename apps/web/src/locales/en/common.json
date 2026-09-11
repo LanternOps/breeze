@@ -1,4 +1,7 @@
 {
+  "lists": {
+    "separator": ", "
+  },
   "nav": {
     "fleetPosture": "Fleet Posture",
     "dashboard": "Dashboard",
@@ -41,6 +44,7 @@
     "auditTrail": "Audit Trail",
     "eventLogs": "Event Logs",
     "partner": "Partner",
+    "billing": "Billing",
     "organizations": "Organizations",
     "aiUsageBudget": "AI Usage & Budget",
     "aiAgents": "AI Agents",
@@ -64,6 +68,7 @@
     "sectionSettings": "Settings",
     "sectionExtensions": "Extensions",
     "llmProviderCatalog": "LLM Provider Catalog",
+    "aiKillSwitch": "AI Kill Switch",
     "sectionAi": "AI",
     "sectionFleetManagement": "Fleet Management",
     "sectionBilling": "Billing",
@@ -73,7 +78,9 @@
     "software": "Software",
     "securityOverview": "Overview",
     "aiRisk": "AI Risk",
-    "deviceBackup": "Device Backup"
+    "deviceBackup": "Device Backup",
+    "sectionServiceDesk": "Service Desk",
+    "serviceManagement": "Service Management"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -164,6 +171,19 @@
     "none": "None",
     "optional": "Optional",
     "required": "Required"
+  },
+  "runContext": {
+    "label": "Run as",
+    "scriptDefault": "Script default",
+    "scriptDefaultNamed": "Script default ({{context}})",
+    "system": "System",
+    "user": "Logged-in user",
+    "elevated": "Elevated",
+    "unknown": "Not recorded",
+    "userInSession": "Logged-in user (session {{session}})",
+    "sessionLabel": "Target session",
+    "sessionAny": "Any active session",
+    "effectiveLabel": "Run context"
   },
   "shared": {
     "accessDenied": {
@@ -355,6 +375,9 @@
       "criticalPending": "{{count}} critical patches pending",
       "criticalPending_one": "{{count}} critical patch pending",
       "criticalPending_other": "{{count}} critical patches pending",
+      "unratedPending": "{{count}} unrated patches pending (won't auto-approve)",
+      "unratedPending_one": "{{count}} unrated patch pending (won't auto-approve)",
+      "unratedPending_other": "{{count}} unrated patches pending (won't auto-approve)",
       "empty": "No patch data yet"
     },
     "vuln": {
@@ -2023,7 +2046,8 @@
           "notMember": "No longer affected by this finding",
           "decommissioned": "Device is removed",
           "timeout": "Timed out after 30 minutes",
-          "dispatchEnqueueFailed": "Never dispatched — queueing failed"
+          "dispatchEnqueueFailed": "Never dispatched — queueing failed",
+          "maintenanceWindow": "Device is in a maintenance window"
         },
         "viewProgress": "View progress",
         "errors": {

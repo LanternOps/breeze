@@ -254,6 +254,13 @@ describe('FilterChipBar', () => {
     expect(next.conditions).toHaveLength(1);
   });
 
+  it('sentence builder renders the group picker for a groupId row', () => {
+    const groups = [{ id: '33333333-3333-3333-3333-333333333333', name: 'Domain Controllers' }];
+    const value: FilterConditionGroup = { operator: 'AND', conditions: [{ field: 'groupId', operator: 'in', value: [] }] };
+    render(<FilterSentenceBuilder value={value} onChange={vi.fn()} groups={groups} />);
+    expect(screen.getByTestId('filter-group-picker')).toBeDefined();
+  });
+
   // ---- Spec 4.12 — keyboard ----
   it("'/' focuses the chip bar add button", () => {
     render(<FilterChipBar value={null} onChange={() => {}} />);

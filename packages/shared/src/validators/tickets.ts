@@ -31,7 +31,15 @@ export const createTicketSchema = z
     // backfills name/email from that row when they aren't supplied here.
     submittedBy: z.string().guid().optional(),
     submitterName: z.string().min(1).max(255).optional(),
-    submitterEmail: z.string().email().max(255).optional()
+    submitterEmail: z.string().email().max(255).optional(),
+    // #5367: the canonical requester PERSON (`tickets.requester_contact_id`,
+    // #3258 W03). Independent of `submittedBy`, which names the optional portal
+    // LOGIN — a contact may have no login at all. The service tenant-validates
+    // it against the ticket's org before any write and backfills the
+    // name/email snapshot from the contact when neither is supplied here.
+    // Declared on the schema because a zod object STRIPS unknown keys: without
+    // this line the route silently drops the field on its way to createTicket.
+    requesterContactId: z.string().guid().optional()
   })
   .superRefine((v, ctx) => {
     if (!v.formId && (!v.subject || v.subject.trim().length === 0)) {
@@ -76,7 +84,11 @@ export const updateTicketSchema = z.object({
   // submitterName mirrors create's min(1) (use null to clear, not an empty string).
   submittedBy: z.string().guid().nullable().optional(),
   submitterName: z.string().min(1).max(255).nullable().optional(),
-  submitterEmail: z.string().email().max(255).nullable().optional()
+  submitterEmail: z.string().email().max(255).nullable().optional(),
+  // #5367: re-point the requester CONTACT explicitly. An explicit value wins
+  // over the link the service otherwise derives from the login/address (the
+  // same precedence createTicket gives a named contact); null clears it.
+  requesterContactId: z.string().guid().nullable().optional()
 });
 
 export const changeTicketStatusSchema = z.object({

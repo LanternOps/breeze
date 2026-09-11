@@ -76,6 +76,15 @@ const (
 	// helper can differentiate "never got to auth" from "auth was rejected".
 	TypePreAuthReject = "pre_auth_reject"
 
+	// Desktop revocation-lease bridge. A helper-hosted session's SessionManager
+	// has no command WebSocket of its own, so its lease renewals travel over
+	// IPC: the helper asks (desktop_lease_renew), the agent turns that into a
+	// renew on the command socket, and forwards the control plane's answer back
+	// (desktop_lease_update). Without this bridge a helper-hosted session
+	// renews nothing and dies at expiresAt+grace.
+	TypeDesktopLeaseRenew  = "desktop_lease_renew"  // helper -> agent
+	TypeDesktopLeaseUpdate = "desktop_lease_update" // agent -> helper
+
 	// Remote-session consent + banner
 	TypeConsentRequest = "consent_request"
 	TypeConsentResult  = "consent_result"
@@ -237,12 +246,21 @@ type IPCCommandResult struct {
 }
 
 // NotifyRequest asks the user helper to show a desktop notification.
+//
+// Actions turns it into an interactive prompt: a helper that understands them
+// renders a modal dialog with those buttons and answers with the clicked label
+// in NotifyResult.ActionClicked. Both Actions and TimeoutMs are optional and
+// omitempty, so an OLD helper still unmarshals the request and shows its plain
+// toast, and a NEW helper on an old agent simply never receives any actions.
 type NotifyRequest struct {
 	Title   string   `json:"title"`
 	Body    string   `json:"body"`
 	Icon    string   `json:"icon,omitempty"`
 	Urgency string   `json:"urgency,omitempty"`
 	Actions []string `json:"actions,omitempty"`
+	// TimeoutMs is how long the helper should hold an interactive prompt open
+	// before giving up and reporting no decision. Ignored when Actions is empty.
+	TimeoutMs int `json:"timeoutMs,omitempty"`
 }
 
 // NotifyResult is the user helper's response after showing a notification.
@@ -319,9 +337,27 @@ type DesktopStartRequest struct {
 	ClipboardViewerToHost   *bool `json:"clipboardViewerToHost,omitempty"`
 	IdleTimeoutMinutes      int   `json:"idleTimeoutMinutes,omitempty"`
 	MaxSessionDurationHours int   `json:"maxSessionDurationHours,omitempty"`
+	// RevocationLease is the server-issued lease this session must keep alive.
+	// The agent process (the only one holding the command WebSocket) performs
+	// the renewals and forwards a revocation to the helper as TypeDesktopStop;
+	// the helper still needs the lease so its own watchdog enforces the hard
+	// deadline and the expiry+grace cutoff locally. Nil is refused by
+	// validateDesktopStartRequest — a session with no lease is unrevokable.
+	RevocationLease *RevocationLease `json:"revocationLease,omitempty"`
 	// Prompt carries the consent/notification configuration for the session.
 	// Nil means no prompt or banner is requested (legacy behaviour).
 	Prompt *DesktopPrompt `json:"prompt,omitempty"`
+}
+
+// RevocationLease is the wire form of a desktop session's revocation lease.
+// Times are epoch milliseconds and intervals are whole seconds so the JSON is
+// identical to what the API ships in the start_desktop payload.
+type RevocationLease struct {
+	Token              string `json:"token"`
+	ExpiresAtUnixMs    int64  `json:"expiresAtUnixMs"`
+	HardDeadlineUnixMs int64  `json:"hardDeadlineUnixMs"`
+	RenewEverySec      int64  `json:"renewEverySec"`
+	GraceSec           int64  `json:"graceSec"`
 }
 
 // DesktopStartResponse is returned by the user helper after creating the
@@ -329,6 +365,30 @@ type DesktopStartRequest struct {
 type DesktopStartResponse struct {
 	SessionID string `json:"sessionId"`
 	Answer    string `json:"answer"`
+}
+
+// DesktopLeaseRenewRequest is sent by a helper that hosts a desktop session,
+// asking the agent to renew that session's revocation lease with the control
+// plane. Unsolicited (no reply on this envelope) — the answer comes back
+// separately as a DesktopLeaseUpdate, because the round trip to the API is far
+// longer than the IPC command timeout and must not hold an IPC slot open.
+type DesktopLeaseRenewRequest struct {
+	SessionID string `json:"sessionId"`
+}
+
+// DesktopLeaseUpdate is the agent forwarding the control plane's answer to a
+// helper-hosted session's lease renewal.
+//
+// Revoked=true means the control plane ended the session; the helper stops it
+// through its normal stop path. Otherwise the deadlines extend the helper's
+// local watchdog, which stays authoritative: it stops the session at
+// expiresAt+grace or the hard deadline whether or not the agent ever answers.
+type DesktopLeaseUpdate struct {
+	SessionID          string `json:"sessionId"`
+	ExpiresAtUnixMs    int64  `json:"expiresAtUnixMs,omitempty"`
+	HardDeadlineUnixMs int64  `json:"hardDeadlineUnixMs,omitempty"`
+	Revoked            bool   `json:"revoked,omitempty"`
+	Reason             string `json:"reason,omitempty"`
 }
 
 // DesktopStopRequest tells the user helper to tear down a desktop session.
@@ -353,8 +413,17 @@ type SASResponse struct {
 // DesktopPeerDisconnectedNotice is sent by the user helper to the service
 // when a WebRTC peer connection drops (Failed or Closed). The service relays
 // this to the API so it can mark the session as disconnected.
+//
+// Reason (#5300) is the session's LastStopReason() at the time it stopped —
+// e.g. the Win32 error the no-video watchdog's capturer swallowed — so a
+// mid-session capture failure reaches the technician the same way the
+// startup probe path already does. Empty for every other stop path (peer
+// disconnect grace timeout, lifetime policy, operator stop). Older helpers
+// omit this field entirely; the service treats a missing Reason the same as
+// an empty one.
 type DesktopPeerDisconnectedNotice struct {
 	SessionID string `json:"sessionId"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 // LaunchProcessRequest asks the user-role helper to launch a binary.
@@ -452,6 +521,13 @@ type StateSync struct {
 	ConfigHash    string `json:"configHash"`
 	Connected     bool   `json:"connected"`
 	LastHeartbeat string `json:"lastHeartbeat"`
+	// ActiveBackupRuns is the number of backup_run commands the backup
+	// helper is currently executing (sessionbroker.Broker.ActiveBackupRunCount).
+	// The watchdog's CheckIPC (internal/watchdog/checks.go) uses this to veto
+	// an IPC-failure escalation while a backup is in flight and this sync is
+	// recent (D3): killing the backup helper mid-run on a transient IPC
+	// hiccup previously had no guard at all.
+	ActiveBackupRuns int `json:"activeBackupRuns,omitempty"`
 }
 
 // IntegrityCheck asks the agent to verify the integrity of the given targets.

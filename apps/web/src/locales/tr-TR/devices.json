@@ -147,7 +147,9 @@
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} çıkarılan gizlendi",
-    "show": "göster"
+    "show": "göster",
+    "shownLabel": "{{count}} kaldırılmış gösteriliyor",
+    "hide": "gizle"
   },
   "deviceActions": {
     "unavailable": {
@@ -157,7 +159,8 @@
       "quarantined": "Cihaz karantinaya alındı",
       "updating": "Cihaz güncelleniyor",
       "pending": "Cihaz kaydedilmeyi bekliyor",
-      "notOnline": "Cihaz çevrimiçi değil"
+      "notOnline": "Cihaz çevrimiçi değil",
+      "unknown": "Cihaz henüz test edilmedi"
     },
     "gateHint": {
       "liveSessionOnly": "{{reason}} — Uzak Terminalin bağlı bir aracıya ihtiyacı var. Sıraya alınan komutlar yeniden bağlanıldığında çalışmaya devam eder.",
@@ -181,18 +184,23 @@
       },
       "exitMaintenance": {
         "title": "Bakım Modundan Çık",
-        "message": "{{hostname}} için bakım modundan çıkmak istediğinizden emin misiniz? Uyarı ve izleme devam edecek.",
+        "message": "{{hostname}} için bakım modundan çıkmak istediğinizden emin misiniz?",
         "confirm": "Bakımdan Çık"
       },
       "enterMaintenance": {
         "title": "Bakım Moduna Girin",
-        "message": "{{hostname}}'yi bakım moduna geçirmek istediğinizden emin misiniz? Bu moddayken uyarı bastırılacaktır.",
+        "message": "{{hostname}}'yi bakım moduna geçirmek istediğinizden emin misiniz?",
         "confirm": "Bakıma Girin"
       },
       "decommission": {
         "title": "Cihazı Çıkar",
         "message": "{{hostname}}'yi çıkarmak istediğinizden emin misiniz? Cihaz etkin filonuzdan çıkarılacak ve izlenmeyecektir. Geçmiş korunur ve daha sonra geri yükleyebilirsiniz.",
         "confirm": "Çıkar"
+      },
+      "permanentDelete": {
+        "title": "{{hostname}} kalıcı olarak silinsin mi?",
+        "message": "Bu işlem, bu cihaza ait tüm geçmişi siler: talepler, uyarılar, yama ve yedekleme kayıtları. Geri alınamaz.",
+        "confirm": "Kalıcı olarak sil"
       },
       "clearSessions": {
         "title": "Oturumları Temizle",
@@ -203,7 +211,33 @@
         "title": "Homebrew'u yükle",
         "message": "Homebrew'u, resmi yükleyicinin sabitlenmiş ve sağlama toplamı doğrulanmış bir kopyasını kullanarak o anda oturum açmış kullanıcı olarak yükler. Etkin veya parolasız bir sudo kimlik bilgisine sahip bir yönetici konsol oturumu gerektirir; aksi takdirde yükleme başarısız olur ve hata geri bildirilir.",
         "confirm": "Homebrew'u yükle"
+      },
+      "bulkDeleteManual": {
+        "title": "{{count}} manuel varlık silinsin mi?",
+        "message": "Bu, seçili manuel varlıkları kalıcı olarak siler. Bu işlem geri alınamaz.",
+        "confirm": "Sil"
+      },
+      "deleteManual": {
+        "title": "{{hostname}} silinsin mi?",
+        "message": "Bu, bu manuel varlığı kalıcı olarak siler. Bu işlem geri alınamaz.",
+        "confirm": "Sil"
       }
+    },
+    "removeDialog": {
+      "titleOne": "{{hostname}} çıkarılsın mı?",
+      "titleMany": "{{count}} cihaz çıkarılsın mı?",
+      "bodyOne": "Etkin filonuzdan çıkarılacak ve izlenmeyecek. Geçmiş korunur ve daha sonra geri yükleyebilirsiniz.",
+      "bodyMany": "Etkin filonuzdan çıkarılacak ve izlenmeyecekler. Geçmiş korunur ve daha sonra geri yükleyebilirsiniz.",
+      "summary": "{{online}} çevrimiçi, {{notOnline}} şu anda çevrimiçi değil.",
+      "legend": "Breeze aracısına ne olsun?",
+      "uninstall": "Breeze aracısını kaldır",
+      "uninstallOnline": "Şimdi sıraya alındı — çevrimiçi bir aracı komutu birkaç saniye içinde alır.",
+      "uninstallQueuedWithWindow": "Sıraya alındı — cihaz bir sonraki bağlantısında çalıştırır. {{hours}} saat içinde bağlanmazsa iptal edilir.",
+      "uninstallQueued": "Sıraya alındı — cihaz bir sonraki bağlantısında çalıştırır.",
+      "uninstallMixed": "Çevrimiçi cihazlar komutu birkaç saniye içinde alır; diğerleri bir sonraki bağlantılarında çalıştırır.",
+      "leave": "Aracıyı yüklü bırak",
+      "leaveHint": "Makine aracıyı çalıştırmaya devam eder ancak yönetilemez.",
+      "confirm": "Çıkar"
     },
     "runScript": "Komut Dosyasını Çalıştır",
     "remoteTools": "Uzaktan Araçlar",
@@ -298,6 +332,26 @@
     "resolve": "Çöz",
     "promote": "Tanıt"
   },
+  "deviceBillingCard": {
+    "title": "Faturalama",
+    "uncovered": "Bu cihazı faturalandıran etkin bir sözleşme satırı yok.",
+    "viewContracts": "Sözleşmeleri görüntüle",
+    "notBillable": {
+      "decommissioned": "Faturalandırılmıyor — bu cihaz hizmet dışı bırakıldı",
+      "ephemeral": "Faturalandırılmıyor — bu cihaz geçici bir destek oturumu cihazı",
+      "not_billable": "Faturalandırılmıyor — bu cihaz şu anda faturalandırılabilir değil"
+    },
+    "error": {
+      "generic": "Faturalama kapsamı yüklenemedi.",
+      "groupEvaluation": "Etkin bir sözleşmedeki bir cihaz grubu değerlendirilemedi ({{group}}). Kapsam bilinmiyor."
+    },
+    "matchedBy": {
+      "org": "Kuruluş geneli",
+      "site": "Bu konum",
+      "role": "Rol: {{role}}",
+      "group": "Grup: {{group}}"
+    }
+  },
   "deviceBootPerformanceTab": {
     "bootMetricsCollectionTriggeredDataWill": "Önyükleme ölçümleri koleksiyonu tetiklendi. Veriler bir sonraki önyükleme veya toplama döngüsünden sonra görünecektir.",
     "failedToTriggerCollection": "Toplama tetiklenemedi",
@@ -353,7 +407,8 @@
     "segments": {
       "all": "Hepsi",
       "agent": "Temsilci",
-      "network": "Ağ"
+      "network": "Ağ",
+      "manual": "Manuel"
     },
     "filterByDeviceClass": "Cihaz sınıfına göre filtrele"
   },
@@ -445,7 +500,8 @@
       "decommissioned": "Çıkarıldı",
       "quarantined": "Karantinaya alındı",
       "updating": "Güncelleniyor",
-      "pending": "Beklemede"
+      "pending": "Beklemede",
+      "unknown": "Bilinmiyor"
     },
     "operatingSystems": {
       "windows": "Windows",
@@ -509,7 +565,6 @@
     "s": "s",
     "decommissionCancelled": "Çıkarma iptal edildi",
     "permanentDeleteCancelled": "Kalıcı silme işlemi iptal edildi",
-    "permanentlyDeletedWithWarning": "{{hostname}} silindi, ancak {{warning}}",
     "failedToQueueScript": "Komut dosyası sıraya alınamadı",
     "loadingDevice": "Cihaz yükleniyor...",
     "backToDevices": "Cihazlara geri dön",
@@ -569,6 +624,18 @@
     "backupStatusJobsSnapshotsAndVerification": "Yedekleme durumu, işler, anlık görüntüler ve doğrulama",
     "theOsReportsAPendingReboot": "İşletim sistemi, beklemede olan bir yeniden başlatma rapor ediyor (Windows kayıt defteri / Linux'un yeniden başlatılması gereken işaretler).",
     "rebootPending": "Yeniden başlatma bekleniyor",
+    "restartScheduled": "Yeniden başlatma planlandı",
+    "restartInProgress": "Yeniden başlatılıyor",
+    "restartScheduledFor": "Yeniden başlatma {{time}} için planlandı",
+    "restartInProgressAt": "Yeniden başlatma {{time}} saatinde başladı",
+    "restartDeadline": "En geç {{time}} itibarıyla yeniden başlatılmalı",
+    "restartPostponed": "{{max}} üzerinden {{used}} kez ertelendi",
+    "restartPostponedTooltip": "Bu cihazı kullanan kişinin, politikanın izin verdiği bütçeden yeniden başlatmayı kaç kez ertelediği.",
+    "restartCannotBePostponed": "Ertelenemez",
+    "restartSourcePatchJob": "Bir yama kurulumu tarafından istendi",
+    "restartSourceMaintenanceWindow": "Bir bakım penceresi tarafından istendi",
+    "restartSourceManual": "Bir teknisyen tarafından istendi",
+    "restartSourceUnknown": "Planlanmış yeniden başlatma",
     "agentV": "Temsilci v",
     "uptime": "Çalışma Süresi",
     "lastSeen": "Son Görülme",
@@ -576,7 +643,9 @@
     "rail": "demiryolu",
     "strip": "şerit",
     "networkAsset": "Ağ varlığı",
-    "networkAssets": "Ağ varlıkları"
+    "networkAssets": "Ağ varlıkları",
+    "operatorTasks": "Operatör Görevleri",
+    "operatorTasksForThisDevice": "Bu cihaz için Operatör görevleri"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Cihaz yalıtılamadı",
@@ -625,13 +694,15 @@
     "priority": "Öncelik",
     "level": "Seviye",
     "policy2": "Politika",
-    "features": "Özellikler"
+    "features": "Özellikler",
+    "inheritedFrom": "Şuradan devralındı: {{name}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Etkinlikler getirilemedi",
     "retry": "Tekrar dene",
     "activities": "Faaliyetler",
     "total": "toplam)",
+    "totalAtLeast": "{{count}} ve üzeri",
     "searchActivities": "Arama etkinlikleri...",
     "all": "Hepsi",
     "success": "Başarılı",
@@ -651,7 +722,8 @@
     "details": "Ayrıntılar",
     "showing": "Gösteriliyor",
     "text": "–",
-    "of": "arasında"
+    "of": "arasında",
+    "noMoreActivity": "Başka etkinlik yok"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Dosya sistemi durumu getirilemedi",
@@ -728,12 +800,17 @@
     "activeFilters": "Aktif filtreler:"
   },
   "deviceGroupsPage": {
+    "viewDevices": "Cihazları görüntüle",
     "failedToFetchDeviceGroups": "Cihaz grupları getirilemedi",
     "windows": "pencereler",
     "put": "PUT",
     "post": "POST",
     "failedToSaveDeviceGroup": "Cihaz grubu kaydedilemedi",
     "failedToDeleteGroup": "Grup silinemedi",
+    "billedByContracts": "Bu grup {{count}} sözleşme kapsamında faturalandırılıyor: {{names}}. Önce bu sözleşme satırlarını kaldırın.",
+    "billedByContractsCount": "Bu grup {{count}} sözleşme kapsamında faturalandırılıyor. Önce bu sözleşme satırlarını kaldırın.",
+    "quotedByQuotes": "Bu grup {{count}} açık teklifte fiyatlandırılıyor: {{names}}. Önce bu teklif satırlarını kaldırın.",
+    "quotedByQuotesCount": "Bu grup {{count}} açık teklifte fiyatlandırılıyor. Önce bu teklif satırlarını kaldırın.",
     "failedToRunScriptOnGroups": "Komut dosyası gruplarda çalıştırılamadı",
     "failedToApplyPolicyToGroups": "Politika gruplara uygulanamadı",
     "failedToMoveDevice": "Cihaz taşınamadı",
@@ -977,7 +1054,15 @@
     "online": "Çevrimiçi"
   },
   "deviceList": {
+    "selectedComposition": "{{agent}} ajanlı, {{network}} ağ",
+    "agentOnlyBulkAction": "Yalnızca ajanlı cihazlar için geçerlidir",
+    "eligibleOfSelected": "{{count}} / {{total}}",
+    "linkAsVmHost": "VM ana bilgisayarı + konuklar olarak bağla",
+    "notApplicable": "Geçerli değil",
+    "viewDevice": "{{name}} görüntüle",
     "tableColumns": {
+      "class": "Sınıf",
+      "type": "Tür",
       "device": "Cihaz",
       "organization": "Organizasyon",
       "site": "Sitesi",
@@ -986,9 +1071,15 @@
       "status": "Durum",
       "cpu": "CPU %'si",
       "ram": "RAM %'si",
-      "lastSeen": "Son Görülme"
+      "lastSeen": "Son Görülme",
+      "serial": "Seri No",
+      "assetTag": "Varlık Etiketi",
+      "location": "Konum",
+      "source": "Kaynak"
     },
     "sortBy": {
+      "class": "Sınıfa göre sırala",
+      "type": "Türe göre sırala",
       "device": "Cihaza göre sırala",
       "organization": "Kuruluşa göre sırala",
       "site": "Siteye göre sırala",
@@ -997,7 +1088,11 @@
       "status": "Duruma göre sırala",
       "cpu": "CPU kullanımına göre sırala",
       "ram": "RAM kullanımına göre sırala",
-      "lastSeen": "Son görülme zamanına göre sırala"
+      "lastSeen": "Son görülme zamanına göre sırala",
+      "serial": "Seri numarasına göre sırala",
+      "assetTag": "Varlık etiketine göre sırala",
+      "location": "Konuma göre sırala",
+      "source": "Kaynağa göre sırala"
     },
     "statuses": {
       "compact": {
@@ -1016,7 +1111,8 @@
         "decommissioned": "Çıkarıldı",
         "quarantined": "Karantinaya alındı",
         "updating": "Güncelleniyor",
-        "pending": "Beklemede"
+        "pending": "Beklemede",
+        "unknown": "Bilinmiyor"
       }
     },
     "roles": {
@@ -1059,6 +1155,7 @@
     "of": "arasında",
     "devices": "cihazlar",
     "advancedFilterActive": "Gelişmiş filtre etkin",
+    "advancedFilterFailed": "Filtre yüklenemedi — hiçbir cihaz gösterilmiyor",
     "filterByDeviceClass": "Cihaz sınıfına göre filtrele",
     "filterByVpn": "VPN'e göre filtrele",
     "allVpn": "Tüm VPN'ler",
@@ -1083,8 +1180,11 @@
     "disableMaintenance": "Bakımı Devre Dışı Bırak",
     "wakeSelected": "Uyandırma Seçilen",
     "compareSelected": "Seçilenleri Karşılaştır",
+    "compareMaxDevices": "Karşılaştırma en fazla {{count}} cihazı destekler",
     "linkAsMultiBoot": "Çoklu önyükleme olarak bağlantı",
     "decommissionSelected": "Seçilenleri Çıkar",
+    "restoreSelected": "Seçilenleri Geri Yükle",
+    "permanentDeleteSelected": "Kalıcı Olarak Sil…",
     "clearSelection": "Seçimi temizle",
     "selectAllDevicesOnThisPage": "Bu sayfadaki tüm cihazları seçin",
     "actions": "Eylemler",
@@ -1097,6 +1197,8 @@
     "sendAWakeOnLanPacket": "Cihazın LAN'ındaki çevrimiçi eş aracı aracılığıyla LAN'da Uyandırma paketi gönderin",
     "wake": "Uyan",
     "settings": "Ayarlar",
+    "enterMaintenance": "Bakıma Girin",
+    "exitMaintenance": "Bakımdan Çık",
     "restore": "Geri Yükle",
     "decommission": "Çıkar",
     "permanentlyDelete": "Kalıcı Olarak Sil",
@@ -1110,7 +1212,26 @@
     "devicesPerPage": "Sayfa başına cihaz sayısı",
     "page": "Sayfa",
     "possibleDuplicate": "Olası kopya",
-    "possibleDuplicateTitle": "Bu cihaz daha önceki bir satırı aynı ana bilgisayar adıyla değiştirebilir. İncelemek için açın."
+    "possibleDuplicateTitle": "Bu cihaz daha önceki bir satırı aynı ana bilgisayar adıyla değiştirebilir. İncelemek için açın.",
+    "manualOnlyBulkAction": "Bu eylemi kullanmak için manuel bir varlık seçin.",
+    "manualAsset": "Manuel varlık",
+    "manual": "Manuel",
+    "selectedCompositionManual": "{{agent}} aracı, {{network}} ağ, {{manual}} manuel",
+    "deleteManualSelected": "Manuel varlıkları sil",
+    "editManualAsset": "{{name}} düzenle",
+    "deleteManualAsset": "{{name}} sil",
+    "edit": "Düzenle",
+    "delete": "Sil",
+    "source": {
+      "scan": "Tarama",
+      "unifi": "UniFi",
+      "manual": "Manuel"
+    },
+    "agentVersionRelation": {
+      "equalTooltip": "Etkin sürümle eşleşiyor: {{version}}",
+      "aheadTooltip": "{{version}} sabitlemesinin ilerisinde",
+      "behindTooltip": "{{version}} sabitlemesinin gerisinde"
+    }
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Cihaz günlükleri getirilemedi",
@@ -1227,6 +1348,8 @@
       "installOsPatches": "Bekleyen işletim sistemi yamalarını yükleyin ({{count}})",
       "installThirdPartyPatches": "3. taraf yamaları yükleyin ({{count}})",
       "lastScan": "Son tarama: {{label}}",
+      "managePatches": "Yamaları yönet",
+      "managedByPolicy": "Şu politika tarafından yönetiliyor:",
       "pendingApprovalCount": "({{count}} onay bekleniyor)",
       "polling": "Oylama...",
       "refreshPatchData": "Yama verilerini yenile",
@@ -1474,27 +1597,15 @@
       "completedAt": "Tamamlanma Tarihi",
       "duration": "Süre",
       "exitCode": "Çıkış Kodu",
+      "runAs": "Çalıştırma Bağlamı",
       "startedAt": "Başlangıç Tarihi"
     },
     "noOutput": "Çıkış yok",
     "output": "Çıkış",
     "refreshing": "Yenileniyor...",
     "running": "Koşuyor...",
+    "runAgain": "Tekrar çalıştır",
     "scriptFallback": "Komut Dosyası",
-    "status": {
-      "cancelled": "İptal edildi",
-      "completed": "Tamamlandı",
-      "failed": "Başarısız",
-      "pending": "Beklemede",
-      "running": "Koşuyor",
-      "timeout": "Zaman Aşımı"
-    },
-    "statusDescriptions": {
-      "completed": "Komut dosyası başarıyla tamamlandı",
-      "pending": "Komut dosyası çalıştırılmayı bekliyor",
-      "running": "Komut dosyası şu anda yürütülüyor...",
-      "timeout": "Komut dosyası yürütme zaman aşımına uğradı"
-    },
     "stderr": "Standart Hata (stderr)",
     "stdout": "Standart Çıkış (stdout)",
     "table": {
@@ -1740,6 +1851,14 @@
       "shutdown": "Kapatma"
     },
     "addDevice": "Cihaz Ekle",
+    "bulkPurge": {
+      "andMore": "ve {{count}} tane daha",
+      "confirm": "Kalıcı olarak sil",
+      "message": "Bu işlem geri alınamaz. Bu cihazlara ait tüm kayıtlar — geçmiş, uyarılar, betikler, oturumlar — birlikte silinir. Talepler korunur ve bağlantısı kaldırılır.",
+      "multipleOrgs": "Bu seçim {{count}} kuruluşu kapsıyor. Devam etmeden önce kuruluş kapsamını kontrol edin.",
+      "title": "{{count}} cihaz kalıcı olarak silinsin mi?",
+      "typeCount": "Onaylamak için {{count}} yazın"
+    },
     "confirmDecommissionedSkip": {
       "message": "Seçilen {{total}} cihazdan {{skipped}} tanesi çıkarıldı ve atlanacak — artık yönetilen bir aracıları yok. Kalan {{eligible}} cihazla devam edilsin mi? Çevrimdışı olanlar bir sonraki bağlantıda bunu çalıştıracaktır.",
       "title": "Seçilen bazı cihazlar çıkarıldı"
@@ -1758,28 +1877,43 @@
       "disablingMaintenance": "Bakım modunun devre dışı bırakılması",
       "enablingMaintenance": "Bakım modunu etkinleştirme"
     },
+    "refresh": "Yenile",
     "selectedOrganization": "seçilen kuruluş",
     "subtitle": "Filonuzu yönetin ve izleyin.",
     "title": "Cihazlar",
     "toasts": {
       "actionFailed": "{{action}}, {{hostname}} üzerinde başarısız oldu",
+      "advancedFilterFailed": "Gelişmiş filtre yüklenemedi — hiçbir cihaz gösterilmiyor. Yeniden denemek için filtreyi düzenleyin veya temizleyin.",
       "agentOnlyAction": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Ağ cihazlarının aracısı yoktur ve atlanmıştır.",
+      "agentOnlyActionManual": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Manuel varlıkların aracısı yoktur.",
       "alreadyPendingTail": "Zaten Bekleyen Kuyruk",
       "bulkActionFailed": "Toplu İşlem Başarısız Oldu",
       "bulkAllDecommissioned": "Seçilen tüm {{total}} cihaz zaten çıkarılmış.",
-      "bulkCommandPartialFailed": "Toplu Komut Kısmi Başarısız",
-      "bulkCommandSent": "Toplu Komut Gönderildi",
+      "bulkCommandPartialFailed": "{{action}}, {{count}} cihaza gönderildi{{queuedTail}}{{skippedTail}}; {{failed}} başarısız oldu: {{failureSummary}}",
+      "bulkCommandSent": "{{action}}, {{count}} cihaza gönderildi{{queuedTail}}{{skippedTail}}",
       "bulkDecommissionAllFailed": "Tüm {{count}} cihaz çıkarılamadı: {{devices}}",
       "bulkDecommissionFailed": "{{succeeded}} cihaz çıkarıldı; {{failed}} başarısız: {{devices}}",
       "bulkDecommissioned": "{{count}} cihaz çıkarıldı",
       "bulkMaintenanceAllFailed": "Tüm {{count}} cihazları için bakım modu güncellenemedi: {{devices}}",
       "bulkMaintenanceSomeFailed": "{{succeeded}} cihaz(lar) {{verb}} bakım modu; {{failed}} başarısız oldu: {{devices}}",
       "bulkMaintenanceSuccess": "{{count}} cihazlar {{verb}} bakım modu",
+      "bulkMaintenanceSuccess_one": "{{count}} cihaz {{verb}} bakım modu",
+      "bulkMaintenanceSuccess_other": "{{count}} cihazlar {{verb}} bakım modu",
+      "bulkPurgeDone": "{{count}} cihaz kalıcı olarak silindi",
+      "bulkPurgeDoneWithSkips": "{{purged}} cihaz kalıcı olarak silindi; {{skipped}} atlandı ({{reasons}})",
+      "bulkPurgeFailed": "Kalıcı silme başarısız: {{reason}}",
+      "bulkPurgeNoneDeleted": "Hiçbir cihaz silinmedi: {{reasons}}",
+      "bulkPurgeStarted": "{{count}} cihaz kalıcı olarak siliniyor…",
+      "bulkRestoreAllFailed": "{{count}} cihazın tamamı geri yüklenemedi",
+      "bulkRestoreSomeFailed": "{{succeeded}} cihaz geri yüklendi; {{failed}} başarısız",
+      "bulkRestoreUninstallAlreadySent": "{{count}} cihaz kaldırma komutunu zaten almıştı — bu makinelerde aracının yeniden kurulması gerekebilir.",
+      "bulkRestored": "{{count}} cihaz geri yüklendi",
       "bulkWakeAllFailed": "Toplu Uyandırma Hepsi Başarısız",
       "bulkWakeSent": "Toplu Uyandırma Gönderildi",
       "bulkWakeSomeFailed": "Toplu Uyandırma Bazıları Başarısız Oldu",
       "commandQueued": "{{action}} sıraya alındı — {{hostname}} yeniden bağlandığında çalışacak",
       "commandSent": "{{action}}, {{hostname}} adlı kişiye gönderildi",
+      "compareNeedsTwo": "Karşılaştırma en az 2 aracı cihaza ihtiyaç duyar.",
       "decommissionCancelled": "Çıkarma İptal Edildi",
       "decommissionFailed": "Çıkarma Başarısız",
       "decommissioned": "Çıkarıldı",
@@ -1792,12 +1926,13 @@
       "maintenanceOff": "Bakım Kapalı",
       "maintenanceOn": "Bakım Açık",
       "multibootLinked": "Çoklu Önyükleme Bağlantılı",
-      "networkSkipped": "{{count}} ağ cihazı/cihazları atlandı — bu eylem yalnızca aracı cihazlar için geçerlidir.",
-      "compareNeedsTwo": "Karşılaştırma en az 2 aracı cihaza ihtiyaç duyar.",
+      "networkSkipped_one": "1 ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
+      "networkSkipped_other": "{{count}} ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
+      "networkSkipped": "{{count}} ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
       "permanentDeleteCancelled": "Kalıcı Silme İptal Edildi",
-      "permanentDeleting": "Kalıcı Silme",
-      "permanentlyDeleted": "Kalıcı Olarak Silindi",
-      "permanentlyDeletedWithWarning": "{{hostname}} silindi, ancak {{warning}}",
+      "permanentDeleting": "{{hostname}} kalıcı olarak siliniyor…",
+      "permanentlyDeleted": "{{hostname}} kalıcı olarak silindi",
+      "refreshFailed": "Cihazlar yenilenemedi. Gösterilen liste güncel olmayabilir.",
       "restored": "Yenilendi",
       "scriptQueueFailed": "Komut Dosyası Sırası Başarısız",
       "scriptQueuedMany": "Komut Dosyası Çok Sayıda Sıraya Alındı",
@@ -1807,13 +1942,38 @@
       "unknownAction": "Bilinmeyen Eylem",
       "unknownBulkAction": "Bilinmeyen Toplu İşlem",
       "wakeSentWatching": "Uyandırma İzlemeye Gönderildi",
-      "wakeTimeout": "Uyanma Zaman Aşımı"
+      "wakeTimeout": "Uyanma Zaman Aşımı",
+      "queuedOfflineTail": ", {{count}} çevrimdışı cihaz için sıraya alındı",
+      "runsWhenOnline": "Cihaz çevrimiçi olduğunda çalışır — son geçerlilik: {{date}}",
+      "runsWhenOnlineNoExpiry": "Cihaz çevrimiçi olduğunda çalışır",
+      "deleteManualFailed": "{{hostname}} silinemedi.",
+      "mfaRequired": "Bu işlem çok faktörlü kimlik doğrulama gerektirir. Lütfen tekrar giriş yapın.",
+      "manualDeleted": "{{hostname}} silindi.",
+      "manualOnlyAction": "Bu eylemi kullanmak için manuel bir varlık seçin.",
+      "manualSkipped": "{{count}} manuel olmayan cihaz atlandı — bu eylem yalnızca manuel varlıklar için geçerlidir.",
+      "nonAgentSkipped": "{{count}} aracısız cihaz atlandı — bu eylem yalnızca aracılı cihazlar için geçerlidir.",
+      "bulkManualDeleted": "{{count}} manuel varlık silindi.",
+      "bulkManualDeleteAllFailed": "{{count}} manuel varlığın tümü silinemedi: {{devices}}.",
+      "bulkManualDeleteSomeFailed": "{{succeeded}} silindi; {{failed}} başarısız oldu: {{devices}}."
     },
     "tryAgain": "Tekrar deneyin",
     "unknownDevice": "Bilinmiyor",
     "unknownOrg": "Bilinmeyen Kuruluş",
     "unknownSite": "Bilinmeyen Site",
-    "viewInstallationGuide": "Kurulum kılavuzunu görüntüleyin"
+    "viewInstallationGuide": "Kurulum kılavuzunu görüntüleyin",
+    "importFromRmm": "Başka bir RMM'den içe aktar",
+    "hiddenNonAgentNotice": "{{count}} {{class}} gizlendi — {{fields}} yalnızca aracılı cihazlar için geçerlidir.",
+    "hiddenNonAgentClassLabel": {
+      "network": "ağ cihazı",
+      "manual": "manuel varlık",
+      "mixed": "cihaz"
+    },
+    "addMenu": {
+      "trigger": "Ekle",
+      "installAgent": "Aracı yükle…",
+      "addNetworkAsset": "Ağ varlığı ekle…",
+      "addManualAsset": "Varlığı manuel olarak ekle…"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Filtre ekle",
@@ -2044,6 +2204,7 @@
     }
   },
   "filterValueEditor": {
+    "deviceGroups": "Cihaz grupları",
     "any": "Herhangi biri",
     "csvPlaceholder": "virgülle ayrılmış uygulama adları",
     "noMatches": "Eşleşme yok",
@@ -2085,84 +2246,125 @@
     },
     "title": "macOS İzinler"
   },
+  "maintenanceModeDialog": {
+    "title": "Bakım modunu başlat",
+    "titleMany": "{{deviceCount}} cihazda bakım modunu başlat",
+    "description": "{{hostname}} için bir bakım penceresi kaydeder ve bunu kimin başlattığını not eder. Uyarılar, izleme, yamalar, komut dosyaları ve yeniden başlatmalar normal şekilde devam eder.",
+    "descriptionMany": "Seçili cihazlar için bir bakım penceresi kaydeder ve bunu kimin başlattığını not eder. Uyarılar, izleme, yamalar, komut dosyaları ve yeniden başlatmalar normal şekilde devam eder.",
+    "reasonLabel": "Gerekçe",
+    "reasonPlaceholder": "Neden bakıma alınıyor?",
+    "reasonHint": "3–500 karakter. Cihazda ve denetim kaydında saklanır.",
+    "durationLabel": "Süre",
+    "durationOptionOne": "Şu andan itibaren 1 saat",
+    "durationOptionOther": "Şu andan itibaren {{hours}} saat",
+    "durationHint": "Pencere her zaman şu andan başlar — uzatmak mevcut pencereyi eklemek yerine değiştirir.",
+    "stepUpHeading": "Kimliğinizi doğrulayın",
+    "stepUpIntro": "Kuruluşunuz, bakım modu başlamadan önce ikinci bir faktör istiyor.",
+    "stepUpCodeLabel": "Kimlik doğrulayıcı kodu",
+    "stepUpPasskeyNote": "Geçiş anahtarınızla onaylayacaksınız.",
+    "noStepUpFactor": "Cihazları bakım moduna almadan önce hesabınıza bir kimlik doğrulayıcı uygulama veya geçiş anahtarı ekleyin.",
+    "mfaRequired": "Önce MFA oturum açmayı tamamlayın, sonra yeniden deneyin.",
+    "submit": "Bakımı başlat",
+    "submitStepUp": "Doğrula ve başlat",
+    "submitting": "İşleniyor…",
+    "cancel": "İptal",
+    "genericError": "Bakım modu başlatılamadı."
+  },
   "networkDeviceDetailPage": {
     "backToDevices": "Cihazlara geri dön",
     "configurePrefix": "SNMP yoklama ve ağ monitörlerini yapılandırma",
     "confirmUnlink": "Bu cihazın bağlantısı kaldırılsın mı?",
-    "connecting": "Bağlanılıyor…",
-    "discoveryAssetView": "Discovery varlık görünümü",
-    "emptyPorts": "Açık bağlantı noktası algılanmadı.",
+    "confirmUnlinkMessage": "Keşfedilen varlık ile yönetilen cihaz ayrı öğeler olarak gösterilecek. Bu varlığı tekrar bağlayana kadar otomatik bağlama devre dışı kalacak.",
+    "connecting": "Bağlanılıyor",
+    "discoveryAssetView": "keşif varlık görünümü",
+    "emptyPorts": "Son taramada açık bağlantı noktası bulunamadı.",
     "emptySnmp": "SNMP verisi toplanmadı — cihaz yanıt vermemiş olabilir veya SNMP incelenmemiş olabilir. SNMP yönteminin etkinleştirildiğini ve topluluk dizesinin keşif profilinde ayarlandığını kontrol edin.",
     "errors": {
-      "load": "Yükle",
-      "malformed": "Bozuk biçimlendirilmiş",
+      "load": "Bu ağ cihazı yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin.",
+      "malformed": "Sunucu bu ağ cihazı için beklenmeyen bir yanıt döndürdü. Tekrar deneyin, sorun devam ederse destek ekibiyle iletişime geçin.",
       "notFound": "Ağ cihazı bulunamadı"
     },
     "fields": {
-      "assetType": "Varlık Türü",
-      "discoveryMethods": "Keşif Yöntemleri",
-      "discoveryProfile": "Keşif Profili",
-      "displayName": "Görünen Ad",
-      "firstSeen": "İlk Görülme",
+      "assetType": "Tür",
+      "discoveryMethods": "Keşif yöntemleri",
+      "discoveryProfile": "Keşif profili",
+      "displayName": "Görünen ad",
+      "firstSeen": "İlk görülme",
       "hostname": "Ana Bilgisayar Adı",
-      "ipAddress": "IP Adresi",
-      "lastSeen": "Son Görülme",
-      "linkedDevice": "Bağlantılı Cihaz",
-      "macAddress": "Mac Adresi",
+      "linkedDevice": "Bağlantılı cihaz",
       "manufacturer": "Üretici",
       "model": "Modeli",
-      "netbiosName": "Netbios Adı",
-      "networkMonitoring": "Ağ İzleme",
+      "netbiosName": "NetBIOS adı",
+      "networkMonitoring": "Ağ izleme",
       "notes": "Notlar",
-      "osFingerprint": "İşletim Sistemi Parmak İzi",
+      "osFingerprint": "İşletim sistemi parmak izi",
       "ping": "Ping",
-      "snmpMonitoring": "SNMP İzleme",
+      "snmpMonitoring": "SNMP izleme",
       "status": "Durum",
       "tags": "Etiketler"
     },
     "goBack": "Geri dön",
-    "lastSeen": "Son görülme {{time}}",
+    "live": {
+      "webUiOpened": "Web arayüzü yeni bir sekmede açıldı",
+      "refreshed": "Cihaz ayrıntıları yenilendi"
+    },
     "loading": "Ağ cihazı yükleniyor...",
     "manageInDiscovery": "Discovery'de yönetin",
     "manuallySet": "Manüel olarak ayarlandı",
     "manuallySetWithDetected": "Manuel olarak ayarlandı · tarama algılandı {{type}}",
     "networkDevice": "Ağ Cihazı",
     "notConfigured": "Yapılandırılmadı",
-    "notLinked": "Bağlantılı değil",
+    "notLinked": "Henüz yönetilen bir cihaza bağlanmadı.",
     "openWebUi": "Web kullanıcı arayüzünü aç",
+    "ports": {
+      "insecure": "Şifrelenmemiş",
+      "insecureHint": "Bu hizmet kimlik bilgilerini düz metin olarak gönderir. Mümkünse cihazda devre dışı bırakın.",
+      "kind": {
+        "mgmt": "Yönetim",
+        "remote": "Uzaktan erişim",
+        "print": "Yazdırma",
+        "file": "Dosya paylaşımı"
+      }
+    },
+    "proxyPort": "Bağlantı noktası",
+    "proxyPortInvalid": "1 ile 65535 arasında bir bağlantı noktası girin",
     "proxyErrors": {
-      "disabled": "Bu hedef proxy erişimi için devre dışı bırakıldı. Bağlanabilmeniz için yöneticinin bunu Ayarlar'da yeniden etkinleştirmesi gerekir.",
-      "mfaRequired": "Uzaktan erişim iki faktörlü kimlik doğrulama gerektirir; bunu profilinizde etkinleştirin.",
-      "noOnlineAgent": "Bu bağlantıyı köprüleyecek çevrimiçi bir temsilci mevcut değil. Bir temsilcinin {{ip}} proxy'sini kullanabilmesi için çevrimiçi olması gerekir."
+      "disabled": "Bir yönetici bu hedefin proxy erişimini devre dışı bıraktı. Ayarlar, Uzaktan erişim bölümünden yeniden etkinleştirmesini isteyin.",
+      "mfaRequired": "Uzaktan erişim iki faktörlü kimlik doğrulama gerektirir. Bunu profilinizde etkinleştirip tekrar deneyin.",
+      "noOnlineAgent": "Şu anda {{ip}} adresine hiçbir çevrimiçi temsilci ulaşamıyor. Bu ağdaki bir temsilciyi çevrimiçi yapıp tekrar deneyin.",
+      "agentListFailed": "Temsilci listesi yüklenemedi. Yeniden deneyin."
     },
     "resetToAutoDetected": "Otomatik algılamaya sıfırla",
+    "savingType": "Kaydediliyor…",
+    "resettingType": "Sıfırlanıyor…",
     "sections": {
       "discovery": "Keşif",
       "identity": "Kimlik",
-      "monitoringStatus": "İzleme Durumu",
-      "networkReachability": "Ağa Erişilebilirlik",
-      "openPorts": "Açık Bağlantı Noktaları",
-      "snmpData": "SNMP Veri"
+      "monitoringStatus": "İzleme durumu",
+      "openPorts": "Açık bağlantı noktaları",
+      "snmpData": "SNMP verisi"
+    },
+    "stats": {
+      "asOf": "{{time}} itibarıyla"
     },
     "tabs": {
       "overview": "Genel Bakış",
       "monitoring": "İzleme"
     },
     "toasts": {
-      "proxyConnectFailed": "Proxy bağlantısı başlatılamadı",
-      "typeReset": "Tür Sıfırla",
-      "typeResetFailed": "Tür Sıfırlama Başarısız",
-      "typeUpdateFailed": "Tür Güncellemesi Başarısız",
-      "typeUpdated": "Tür Güncellendi",
-      "unlinkFailed": "Bağlantıyı Kaldırma Başarısız",
-      "unlinked": "Bağlantı kaldırıldı",
+      "proxyConnectFailed": "Web arayüzü açılamadı",
+      "typeReset": "Cihaz türü otomatik algılamaya sıfırlandı",
+      "typeResetFailed": "Cihaz türü sıfırlanamadı",
+      "typeUpdateFailed": "Cihaz türü güncellenemedi",
+      "typeUpdated": "Cihaz türü güncellendi",
+      "unlinkFailed": "Cihazın bağlantısı kaldırılamadı",
+      "unlinked": "Cihazın bağlantısı kaldırıldı",
       "linked": "Cihaz bağlandı",
       "linkFailed": "Cihaz bağlanamadı"
     },
     "unlink": "Bağlantıyı kaldır",
     "unlinking": "Bağlantı kaldırılıyor…",
-    "viewManagedDevice": "Yönetilen cihazı görüntüle",
-    "autoLinkSuppressed": "Otomatik bağlantı devre dışı bırakıldı — bir kullanıcı tarafından bağlantı kaldırıldı",
+    "autoLinkSuppressed": "Birisi bağlantısını kaldırdığı için bu varlık için otomatik bağlama kapalı. Tekrar açmak için manuel olarak bağlayın.",
     "linkManually": "Manuel olarak bağlantı kurun…",
     "linkManuallySelectDevice": "Bir cihaz seçin",
     "linkManuallyLinking": "Bağlanıyor…",
@@ -2175,7 +2377,17 @@
       "auto": "— otomatik olarak algılandı",
       "manual": "— manuel olarak ayarlayın"
     },
-    "sameDeviceAs": "{{name}} ile aynı cihaz"
+    "sameDeviceAs": "{{name}} ile aynı cihaz",
+    "showMore": "Daha fazla göster",
+    "showLess": "Daha az göster",
+    "showAllPorts": "Tümünü göster ({{count}})",
+    "showFewerPorts": "Daha az göster",
+    "tryAgain": "Yeniden dene",
+    "snmpFields": {
+      "sysName": "Sistem adı",
+      "sysDescr": "Açıklama",
+      "sysObjectId": "Nesne kimliği (OID)"
+    }
   },
   "osIcons": {
     "linux": "Linux",
@@ -2215,7 +2427,7 @@
       "critical": "Kritik",
       "lowDisk": "Düşük Disk",
       "needsPatches": "Yamalara İhtiyaç Var",
-      "notSeen7d": "Görülmedi7d",
+      "notSeen7d": "7 gündür görülmedi",
       "offline": "Çevrimdışı",
       "online": "Çevrimiçi",
       "rebootNeeded": "Yeniden Başlatma Gerekiyor",
@@ -2334,5 +2546,262 @@
     "colDetectedVersion": "Algılanan sürüm",
     "colScannedAt": "Son tarama",
     "loadMore": "Daha fazlasını yükle"
+  },
+  "uninstallState": {
+    "pending": "Aracı kaldırma sıraya alındı — {{when}} sona eriyor",
+    "pendingNoDeadline": "Aracı kaldırma sıraya alındı",
+    "sent": "Aracı kaldırma iletildi",
+    "completed": "Aracı kaldırıldı",
+    "expired": "Kaldırma süresi doldu — aracı hiç bağlanmadı ve hâlâ kurulu olabilir",
+    "failed": "Aracı kaldırma başarısız oldu",
+    "cancelled": "Aracı kaldırma iptal edildi",
+    "none": "Aracı kurulu bırakıldı"
+  },
+  "rmmCustomFieldImport": {
+    "title": "Başka bir RMM'den içe aktar",
+    "description": "Önceki RMM'nizden özel alanları ve değerlerini aktarın.",
+    "close": "Kapat",
+    "sourceLabel": "Kaynak",
+    "sources": {
+      "datto_rmm": "Datto RMM",
+      "ninjaone": "NinjaOne",
+      "cw_automate": "ConnectWise Automate",
+      "n_central": "N-central",
+      "csv": "Genel CSV"
+    },
+    "steps": {
+      "definitions": "Alan tanımları",
+      "values": "Cihaz değerleri"
+    },
+    "backToDefinitions": "Alan tanımlarına dön"
+  },
+  "customFieldDefinitionImport": {
+    "dropzone": "Önceki sağlayıcınızın alan listesini içeren bir CSV'yi buraya bırakın veya göz atmak için tıklayın",
+    "errors": {
+      "previewFailed": "Bu alan tanımları önizlenemedi",
+      "importFailed": "Bu alan tanımları içe aktarılamadı",
+      "allRefused": "Bu alan tanımlarından hiçbiri içe aktarılamadı — aşağıdaki hatalara bakın"
+    },
+    "ownerScope": {
+      "legend": "Bu alanlar kime ait",
+      "allOrganizations": "Tüm kuruluşlar",
+      "thisOrganizationOnly": "Yalnızca bu kuruluş"
+    },
+    "grid": {
+      "heading": "{{count}} alan bulundu — her birini yeniden adlandırın ve türünü belirleyin",
+      "heading_other": "{{count}} alan bulundu — her birini yeniden adlandırın ve türünü belirleyin",
+      "sourceLabel": "Kaynak alan",
+      "name": "Ad",
+      "type": "Tür"
+    },
+    "actions": {
+      "preview": "Önizleme",
+      "previewing": "Önizleniyor…",
+      "import": "Alanları oluştur",
+      "importing": "Oluşturuluyor…",
+      "skipToValues": "Atla — değerlere devam et"
+    },
+    "preview": {
+      "heading": "Önizleme"
+    },
+    "annotations": {
+      "create": "Oluşturulacak",
+      "already-exists": "Zaten mevcut",
+      "type-conflict": "Tür çakışması",
+      "key-shadowed": "Anahtar diğer kapsamda zaten kullanılıyor",
+      "org-not-found": "Kuruluş bulunamadı",
+      "partner-wide-denied": "Tüm kuruluşlar için alan oluşturamazsınız"
+    },
+    "summary": "{{created}} oluşturuldu, {{skipped}} atlandı, {{failed}} başarısız"
+  },
+  "customFieldValueImport": {
+    "dropzone": "Cihaz değerlerini içeren bir CSV'yi buraya bırakın veya göz atmak için tıklayın",
+    "errors": {
+      "previewFailed": "Bu değerler önizlenemedi",
+      "importFailed": "Bu değerler içe aktarılamadı"
+    },
+    "mode": {
+      "label": "Bir değer zaten ayarlıysa",
+      "skip": "Olduğu gibi bırak",
+      "update": "Üzerine yaz"
+    },
+    "dateFormat": {
+      "label": "Tarih biçimi",
+      "iso": "ISO (2026-12-31)"
+    },
+    "overrideProviderWarranty": "Üretici garanti verilerini geçersiz kıl",
+    "mapping": {
+      "ignore": "Bu sütunu yoksay",
+      "identifierGroup": "Cihazı şuna göre eşleştir…",
+      "identifiers": {
+        "deviceId": "Cihaz kimliği",
+        "externalSystem": "Kaynak sistem",
+        "externalId": "Kaynaktaki cihaz kimliği",
+        "serialNumber": "Seri numarası",
+        "hostname": "Ana bilgisayar adı",
+        "organizationId": "Kuruluş kimliği"
+      },
+      "customField": "Özel alan…",
+      "warrantyGroup": "Garanti",
+      "warranty": {
+        "warrantyStartDate": "Garanti başlangıç tarihi",
+        "warrantyEndDate": "Garanti bitiş tarihi",
+        "manufacturer": "Üretici"
+      },
+      "fieldKeyPlaceholder": "field_key",
+      "droppedRows": "{{count}} satır atlandı — tanımlayıcı veya değer eşleşmedi",
+      "droppedRows_other": "{{count}} satır atlandı — tanımlayıcı veya değer eşleşmedi"
+    },
+    "actions": {
+      "preview": "{{count}} satırı önizle",
+      "preview_other": "{{count}} satırı önizle",
+      "previewing": "Önizleniyor…",
+      "import": "{{count}} satırı içe aktar",
+      "import_other": "{{count}} satırı içe aktar",
+      "importing": "İçe aktarılıyor…"
+    },
+    "chunkedNotice": "Bu dosya tek bir istekten daha büyük — otomatik olarak parçalar halinde gönderilecek.",
+    "progress": "{{total}} parçadan {{done}}.",
+    "summary": "{{applied}} uygulandı, {{skipped}} atlandı, {{failed}} değer başarısız",
+    "notAttempted": "{{count}} satır denenmedi çünkü önceki bir parça başarısız oldu — aşağıdaki hatayı düzeltin ve kalan satırlar için içe aktarmayı yeniden çalıştırın",
+    "notAttempted_other": "{{count}} satır denenmedi çünkü önceki bir parça başarısız oldu — aşağıdaki hatayı düzeltin ve kalan satırlar için içe aktarmayı yeniden çalıştırın",
+    "errorRow": "Satır {{index}}",
+    "previewStale": "Bu önizlemeden bu yana eşleme değişti — içe aktarmadan önce önizlemeyi yeniden çalıştırın"
+  },
+  "customFieldImportPreview": {
+    "selectAll": "Tümünü seç",
+    "unresolved": "Çözümlenmedi",
+    "columns": {
+      "device": "Cihaz",
+      "status": "Durum",
+      "values": "Değerler"
+    },
+    "rowOutcomes": {
+      "matched": "Eşleşti",
+      "linkMatch": "Bağlantılı",
+      "ambiguous": "Belirsiz",
+      "notFound": "Bulunamadı",
+      "orgNotFound": "Kuruluş bulunamadı",
+      "identityConflict": "Çakışan eşleşme"
+    },
+    "valueOutcomes": {
+      "applied": "Uygulandı",
+      "skippedAlreadySet": "Zaten ayarlı",
+      "skippedProviderOwned": "Sağlayıcıya ait",
+      "noDefinition": "Böyle bir alan yok",
+      "typeError": "Tür hatası",
+      "notApplicable": "Bu cihaz için geçerli değil",
+      "deviceUnresolved": "Cihaz çözümlenemedi"
+    },
+    "hideCandidates": "Adayları gizle",
+    "showCandidates": "{{count}} adayı göster",
+    "showCandidates_other": "{{count}} adayı göster",
+    "picked": "{{deviceId}} seçildi",
+    "candidate": {
+      "serial": "Seri: {{value}}",
+      "os": "İşletim sistemi: {{value}}",
+      "enrolled": "Kayıt: {{value}}",
+      "lastSeen": "Son görülme: {{value}}",
+      "pick": "Seç",
+      "picked": "Seçildi"
+    },
+    "warrantyFields": {
+      "warrantyStartDate": "Garanti başlangıç tarihi",
+      "warrantyEndDate": "Garanti bitiş tarihi",
+      "manufacturer": "Üretici"
+    },
+    "identityConflictNote": "Bu satırın tanımlayıcıları farklı cihazları işaret ediyor ve olduğu gibi içe aktarılamaz — dosyayı düzeltin ve önizlemeyi yeniden çalıştırın. Aşağıdaki adaylar yalnızca referans için gösterilmektedir."
+  },
+  "queuedActions": {
+    "title": "Sıradaki eylemler",
+    "system": "Sistem",
+    "aUser": "bir kullanıcı",
+    "requestedBy": "{{who}} tarafından istendi",
+    "expires": "Son geçerlilik: {{date}}",
+    "cancel": "İptal",
+    "cancelled": "Sıradaki eylem iptal edildi",
+    "cancelFailed": "Sıradaki eylem iptal edilemedi",
+    "loadFailed": "Sıradaki eylemler yüklenemedi.",
+    "empty": "Sıraya alınmış eylem yok"
+  },
+  "manualAssetModal": {
+    "addTitle": "Manuel varlık ekle",
+    "editTitle": "Manuel varlığı düzenle",
+    "cancel": "İptal",
+    "create": "Oluştur",
+    "save": "Kaydet",
+    "unlink": "Bağlantıyı kaldır",
+    "linkSectionTitle": "Mevcut bir cihaza veya ağ varlığına bağla",
+    "linkDevicePlaceholder": "Bir cihaz seçin…",
+    "linkAssetPlaceholder": "Bir ağ varlığı seçin…",
+    "linkToDevice": "Bağla",
+    "linkToAsset": "Bağla",
+    "linkedTo": "{{name}} ile bağlantılı",
+    "linkedUnknown": "bilinmeyen bir cihaz",
+    "errors": {
+      "mfaRequired": "Bu işlem çok faktörlü kimlik doğrulama gerektirir. Lütfen tekrar giriş yapın.",
+      "createFailed": "Manuel varlık oluşturulamadı.",
+      "updateFailed": "Manuel varlık güncellenemedi.",
+      "linkFailed": "Varlık bağlanamadı.",
+      "unlinkFailed": "Varlığın bağlantısı kaldırılamadı."
+    },
+    "toasts": {
+      "created": "Manuel varlık oluşturuldu.",
+      "updated": "Manuel varlık güncellendi.",
+      "linked": "Varlık bağlandı.",
+      "unlinked": "Varlığın bağlantısı kaldırıldı."
+    },
+    "fields": {
+      "organization": "Organizasyon",
+      "selectOrganization": "Bir organizasyon seçin…",
+      "site": "Site",
+      "selectSite": "Bir site seçin…",
+      "name": "Ad",
+      "namePlaceholder": "ör. yedek dizüstü bilgisayar, resepsiyon telefonu",
+      "assetType": "Varlık türü",
+      "manufacturer": "Üretici",
+      "model": "Model",
+      "serialNumber": "Seri numarası",
+      "assetTag": "Varlık etiketi",
+      "location": "Konum",
+      "locationPlaceholder": "ör. Dolap B, raf 2",
+      "assignedContact": "Atanan kişi",
+      "assignedContactPlaceholder": "Kişi ara…",
+      "tags": "Etiketler",
+      "tagsPlaceholder": "Virgülle ayrılmış",
+      "notes": "Notlar"
+    }
+  },
+  "addNetworkAssetModal": {
+    "title": "Ağ varlığı ekle",
+    "submit": "Varlık ekle",
+    "identityHint": "En az birini belirtin: IP adresi, ana bilgisayar adı veya URL.",
+    "urlRequiredHint": "Web sitesi ve hizmet varlıkları bir URL gerektirir.",
+    "postCreate": {
+      "monitorPrompt": "Bu varlık bir HTTP kontrolüyle izlensin mi?",
+      "actions": {
+        "addHttpCheck": "HTTP kontrolü ekle"
+      }
+    },
+    "fields": {
+      "label": "Ad",
+      "ipAddress": "IP adresi",
+      "hostname": "Ana bilgisayar adı",
+      "url": "URL",
+      "macAddress": "MAC adresi",
+      "manufacturer": "Üretici",
+      "model": "Model",
+      "tags": "Etiketler",
+      "notes": "Notlar"
+    },
+    "placeholders": {
+      "label": "örn. Depo yazıcısı",
+      "selectSite": "Bir konum seçin",
+      "tags": "Virgülle ayrılmış, örn. lobi, kat-2"
+    },
+    "toasts": {
+      "created": "Ağ varlığı oluşturuldu",
+      "createFailed": "Ağ varlığı oluşturulamadı"
+    }
   }
 }

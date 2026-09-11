@@ -24,14 +24,20 @@ vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
+        where: vi.fn(() => {
+          // `.for('key share')` pins the matched contact in the same read (the
+          // caller writes an FK to it next), so the chain has to return itself.
+          const leaf: any = {
           limit: vi.fn(() => selectResult()),
           orderBy: vi.fn(() => selectResult()),
           // bulk-invite's candidates query awaits `.where()` directly with no
           // `.limit()`/`.orderBy()` leaf — make the where-result thenable so
           // `await ...where(x)` also resolves via selectResult().
           then: (resolve: any, reject: any) => selectResult().then(resolve, reject)
-        }))
+          };
+          leaf.for = vi.fn(() => leaf);
+          return leaf;
+        })
       }))
     })),
     insert: vi.fn(() => ({ values: vi.fn((v: unknown) => { valuesSpy(v); return { returning: vi.fn(() => insertReturning()) }; }) })),
@@ -53,7 +59,7 @@ vi.mock('../db', () => ({
   }
 }));
 vi.mock('../db/schema', () => ({
-  portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', receiveNotifications: 'receiveNotifications', status: 'status', invitedBy: 'invitedBy', invitedAt: 'invitedAt', lastLoginAt: 'lastLoginAt', createdAt: 'createdAt', contactId: 'contactId' },
+  portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', authMethod: 'authMethod', receiveNotifications: 'receiveNotifications', status: 'status', invitedBy: 'invitedBy', invitedAt: 'invitedAt', lastLoginAt: 'lastLoginAt', createdAt: 'createdAt', contactId: 'contactId' },
   contacts: { id: 'id', orgId: 'orgId', email: 'email', roles: 'roles' },
   organizations: { id: 'id', name: 'name', deletedAt: 'deletedAt' },
   tickets: { id: 'id', submittedBy: 'submittedBy' },
@@ -65,11 +71,16 @@ vi.mock('../services/contacts/crud', async () => {
   const actual = await vi.importActual<typeof import('../services/contacts/crud')>('../services/contacts/crud');
   return { ...actual, createContact: createContactMock, updateContact: updateContactMock };
 });
-vi.mock('../routes/portal/helpers', () => ({ storePortalInviteToken: vi.fn(async () => 'raw-token'), buildPortalUrl: (p: string) => `https://x/portal${p}` }));
+vi.mock('../routes/portal/helpers', () => ({
+  storePortalInviteToken: vi.fn(async () => 'raw-token'),
+  buildPortalUrl: (p: string) => `https://x/portal${p}`,
+  purgePortalSessionsForUsers: vi.fn(async () => 0),
+}));
 vi.mock('../services/email', () => ({ getEmailService: () => ({ sendPortalInvite: sendInvite }) }));
 
 import { authMiddleware } from '../middleware/auth';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
+import { purgePortalSessionsForUsers } from './portal/helpers';
 
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
 const makeApp = () => { const app = new Hono(); app.use('*', authMiddleware as any); registerOrgPortalUsersRoutes(app); return app; };
@@ -230,7 +241,7 @@ describe('POST /organizations/:id/portal-users/invite', () => {
   it('re-inviting an existing login NEVER overwrites a contact link it already has', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([{ id: 'pu-1', email: 'again@acme.example', passwordHash: null, status: 'invited', contactId: 'ct-existing' }])
+      .mockResolvedValueOnce([{ id: 'pu-1', email: 'again@acme.example', passwordHash: null, authMethod: 'password', status: 'invited', contactId: 'ct-existing' }])
       .mockResolvedValueOnce([{ name: 'Acme Co' }]);
     insertReturning.mockResolvedValueOnce([{ id: 'pu-1' }]);
 
@@ -253,7 +264,7 @@ describe('POST /organizations/:id/portal-users/invite', () => {
   it('re-inviting a login with NO contact link backfills one', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([{ id: 'pu-1', email: 'again@acme.example', passwordHash: null, status: 'invited', contactId: null }])
+      .mockResolvedValueOnce([{ id: 'pu-1', email: 'again@acme.example', passwordHash: null, authMethod: 'password', status: 'invited', contactId: null }])
       .mockResolvedValueOnce([{ id: 'ct-1' }])
       .mockResolvedValueOnce([{ name: 'Acme Co' }]);
     insertReturning.mockResolvedValueOnce([{ id: 'pu-1' }]);
@@ -267,16 +278,26 @@ describe('POST /organizations/:id/portal-users/invite', () => {
   it('409s when the email is already an active account with a password', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([{ id: 'pu-1', email: 'live@acme.example', passwordHash: 'h', status: 'active' }]);
+      .mockResolvedValueOnce([{ id: 'pu-1', email: 'live@acme.example', passwordHash: 'h', authMethod: 'password', status: 'active' }]);
     const res = await invite({ email: 'live@acme.example' });
     expect(res.status).toBe(409);
+    expect(sendInvite).not.toHaveBeenCalled();
+  });
+
+  it('409s without mutation or email when the address belongs to an Entra identity', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([{ id: 'pu-entra', email: 'entra@acme.example', passwordHash: null, authMethod: 'entra', status: 'active', contactId: null }]);
+    const res = await invite({ email: 'entra@acme.example' });
+    expect(res.status).toBe(409);
+    expect(setSpy).not.toHaveBeenCalled();
     expect(sendInvite).not.toHaveBeenCalled();
   });
 
   it('409s when the existing row is disabled — disable is terminal, must not resurrect via invite', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([{ id: 'pu-1', email: 'disabled@acme.example', passwordHash: 'h', status: 'disabled' }]);
+      .mockResolvedValueOnce([{ id: 'pu-1', email: 'disabled@acme.example', passwordHash: 'h', authMethod: 'password', status: 'disabled' }]);
     const res = await invite({ email: 'disabled@acme.example' });
     expect(res.status).toBe(409);
     expect(sendInvite).not.toHaveBeenCalled();
@@ -292,6 +313,20 @@ describe('PATCH /organizations/:id/portal-users/:userId', () => {
     insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'disabled' }]); // update .returning
     const res = await patch('pu-1', { status: 'disabled' });
     expect(res.status).toBe(200);
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ authEpoch: expect.anything() }));
+    expect(purgePortalSessionsForUsers).toHaveBeenCalledWith(['pu-1']);
+  });
+
+  it('rotates the durable session epoch when a user is reactivated', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, status: 'disabled' }]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'active' }]);
+
+    const res = await patch('pu-1', { status: 'active' });
+
+    expect(res.status).toBe(200);
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ authEpoch: expect.anything() }));
   });
 });
 
@@ -301,7 +336,7 @@ describe('POST /organizations/:id/portal-users/:userId/resend-invite', () => {
   it('resends the invite to a pending (no-password) user', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }]) // org
-      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'pending@acme.example', name: null, passwordHash: null, status: 'invited' }]) // target
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'pending@acme.example', name: null, passwordHash: null, authMethod: 'password', status: 'invited' }]) // target
       .mockResolvedValueOnce([{ name: 'Acme Co' }]); // org name
     const res = await resend('pu-1');
     expect(res.status).toBe(200);
@@ -312,8 +347,17 @@ describe('POST /organizations/:id/portal-users/:userId/resend-invite', () => {
   it('409s when the target already has an active password-set account', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }]) // org
-      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'live@acme.example', name: null, passwordHash: 'h', status: 'active' }]); // target
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'live@acme.example', name: null, passwordHash: 'h', authMethod: 'password', status: 'active' }]); // target
     const res = await resend('pu-1');
+    expect(res.status).toBe(409);
+    expect(sendInvite).not.toHaveBeenCalled();
+  });
+
+  it('409s without email when the target is an Entra identity', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([{ id: 'pu-entra', orgId: ORG_ID, email: 'entra@acme.example', name: null, passwordHash: null, authMethod: 'entra', status: 'active' }]);
+    const res = await resend('pu-entra');
     expect(res.status).toBe(409);
     expect(sendInvite).not.toHaveBeenCalled();
   });
@@ -321,7 +365,7 @@ describe('POST /organizations/:id/portal-users/:userId/resend-invite', () => {
   it('409s when the target is disabled — disable is terminal, must not resurrect via resend', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }]) // org
-      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'disabled@acme.example', name: null, passwordHash: 'h', status: 'disabled' }]); // target
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, email: 'disabled@acme.example', name: null, passwordHash: 'h', authMethod: 'password', status: 'disabled' }]); // target
     const res = await resend('pu-1');
     expect(res.status).toBe(409);
     expect(sendInvite).not.toHaveBeenCalled();

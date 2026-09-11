@@ -56,7 +56,7 @@ There is no self-service sign-up. Accounts are created by the customer organisat
 GETTING IN
 1. On first launch, choose "United States" on the server screen. Selecting it fills in the server address; nothing needs to be typed.
 2. Sign in with the review credentials above. MFA is disabled on this account.
-3. The bottom tabs reach Devices, Tickets, Alerts and Time. The review tenant is seeded with devices, tickets, alerts, time entries and approvals.
+3. The bottom tabs are Home (the AI assistant), Systems (organizations, devices and alerts), Tickets and Time. The review tenant is seeded with devices, tickets, alerts, time entries and approvals.
 
 Account deletion: Settings (gear icon) -> Delete Account, which opens a secure web page to submit the request.
 
@@ -126,14 +126,13 @@ covered in items 3 and 5.
 ## 2. Devices and operating systems tested
 
 > **Needs your input — I have no record of what you tested on.** This is also the item that invites
-> a bugs-and-crashes follow-up if it looks thin. Test at least one iPhone *and* one iPad before
-> replying, since the app declares `supportsTablet: true`.
+> a bugs-and-crashes follow-up if it looks thin. The app is iPhone-only (`supportsTablet` is
+> `false` in `app.json`), so list iPhones only; do not list an iPad.
 
 ```
 The app was tested on the following physical devices prior to submission:
 
 - iPhone 16 Pro, iOS 26.x
-- iPad (10th generation), iPadOS 26.x
 
 Builds were distributed to testers through TestFlight and exercised against a live tenant.
 ```
@@ -199,8 +198,8 @@ The account is a technician in a demonstration organisation pre-populated with m
 open tickets and recent alerts, so every feature has real data behind it.
 
 Reaching the main features:
-- Alerts: "Alerts" tab. Tap any alert to see detail and the device it came from.
-- Devices: "Devices" tab. Tap a device for health, installed software and status.
+- AI assistant: "Home" tab. Type or dictate a question about the fleet; suggested prompts are shown on an empty chat.
+- Alerts and devices: "Systems" tab. Active issues are listed at the top; tap an alert for detail and Acknowledge. Tap an organization, then a device, for health, IPs, logged-in user and the Reboot / Shutdown / Wake actions.
 - Tickets: "Tickets" tab. Open any ticket to comment, change status, or attach a photo.
 - Time tracking: open a ticket and use the timer, or the "Time" tab for the timesheet.
 - Approvals: shown in-app when an automation requests a privileged action.

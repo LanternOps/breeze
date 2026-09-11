@@ -45,9 +45,14 @@ import {
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { writeAuditEvent } from '../services/auditEvents';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGovernance';
 import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
+import {
+  describePamRuleTierDrift,
+  PAM_RULE_TIER_UNREACHABLE_CODE,
+} from '../services/pamRuleTierDrift';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { requireCurrentPasswordStepUp, requireFreshMfaStepUp } from './auth/helpers';
@@ -92,13 +97,18 @@ const requirePamRead = requirePermission(
   PERMISSIONS.DEVICES_READ.resource,
   PERMISSIONS.DEVICES_READ.action,
 );
-const requirePamWrite = requirePermission(
-  PERMISSIONS.DEVICES_WRITE.resource,
-  PERMISSIONS.DEVICES_WRITE.action,
+// Dedicated PAM permissions (security review wave 7, SR1-13/SR1-14),
+// replacing the generic devices:write/devices:execute grants these used to
+// ride on. An ordinary technician holding devices:write/execute for routine
+// device work must not thereby be able to approve elevations or author the
+// rules that decide who gets standing admin automatically.
+const requirePamApprove = requirePermission(
+  PERMISSIONS.PAM_APPROVE.resource,
+  PERMISSIONS.PAM_APPROVE.action,
 );
-const requirePamExecute = requirePermission(
-  PERMISSIONS.DEVICES_EXECUTE.resource,
-  PERMISSIONS.DEVICES_EXECUTE.action,
+const requirePamManagePolicy = requirePermission(
+  PERMISSIONS.PAM_MANAGE_POLICY.resource,
+  PERMISSIONS.PAM_MANAGE_POLICY.action,
 );
 
 // Bounds for approval windows. Default matches ingest's auto-approval
@@ -426,7 +436,7 @@ const respondSchema = z.object({
 // and the console falls back to an L1 (session-tap) approval — P2 is opt-in.
 pamRoutes.post(
   '/elevation-requests/:id/assertion-challenge',
-  requirePamExecute,
+  requirePamApprove,
   async (c) => {
     const auth = c.get('auth');
     const perms = c.get('permissions') as UserPermissions | undefined;
@@ -483,7 +493,7 @@ pamRoutes.post(
 
 pamRoutes.post(
   '/elevation-requests/:id/respond',
-  requirePamExecute,
+  requirePamApprove,
   requireMfa(),
   zValidator('json', respondSchema),
   async (c) => {
@@ -809,7 +819,7 @@ const revokeSchema = z.object({
 
 pamRoutes.post(
   '/elevation-requests/:id/revoke',
-  requirePamExecute,
+  requirePamApprove,
   requireMfa(),
   zValidator('json', revokeSchema),
   async (c) => {
@@ -1059,6 +1069,33 @@ function validateRuleShape(rule: RuleCriteriaShape): string | null {
   return null;
 }
 
+/**
+ * #3128: reject a tool-action rule pinned to a risk tier its tool selector can
+ * no longer resolve to. Tool tiers are static code that ships with the API, so
+ * a re-classification (#3105 moved three read-only execute_command
+ * commandTypes from Tier 3 to Tier 2) can leave a stored rule permanently
+ * unmatchable — and the engine's exact-equality match makes that silent.
+ *
+ * Deliberately NOT folded into validateRuleShape: that one feeds a Zod
+ * superRefine on create, which would emit the generic validation-failure body.
+ * Calling this from both handlers gives create and update the SAME
+ * machine-readable 400, and keeps the check off the preview endpoint — a
+ * dry-run must stay able to demonstrate that a stale rule matches nothing.
+ *
+ * Fails OPEN for an unrecognised tool name (see describePamRuleTierDrift).
+ */
+function tierDriftResponse(
+  rule: RuleCriteriaShape & { matchNegate?: readonly string[] | null },
+): { error: string; code: string; validTiers: number[] } | null {
+  const drift = describePamRuleTierDrift(rule);
+  if (!drift) return null;
+  return {
+    error: drift.message,
+    code: PAM_RULE_TIER_UNREACHABLE_CODE,
+    validTiers: drift.validTiers,
+  };
+}
+
 const createRuleSchema = ruleBaseSchema.superRefine((rule, ctx) => {
   const err = validateRuleShape(rule);
   if (err) ctx.addIssue({ code: z.ZodIssueCode.custom, message: err });
@@ -1106,10 +1143,21 @@ pamRoutes.get('/rules', requirePamRead, async (c) => {
     .from(pamRules)
     .where(where)
     .orderBy(pamRules.priority, pamRules.createdAt);
-  return c.json({ success: true, rules: rows });
+  // #3128: surface tier drift so the UI can badge a rule that can no longer
+  // match. Computed per response rather than stored — the tool tier tables are
+  // code, so the answer changes on deploy, not on write.
+  const rules = rows.map((row) => {
+    const drift = describePamRuleTierDrift(row);
+    return {
+      ...row,
+      matchRiskTierStale: drift != null,
+      matchRiskTierValidTiers: drift?.validTiers ?? null,
+    };
+  });
+  return c.json({ success: true, rules });
 });
 
-pamRoutes.post('/rules', requirePamWrite, requireMfa(), zValidator('json', createRuleSchema), async (c) => {
+pamRoutes.post('/rules', requirePamManagePolicy, requireMfa(), zValidator('json', createRuleSchema), async (c) => {
   const auth = c.get('auth');
   const perms = c.get('permissions') as UserPermissions | undefined;
   const payload = c.req.valid('json');
@@ -1125,6 +1173,11 @@ pamRoutes.post('/rules', requirePamWrite, requireMfa(), zValidator('json', creat
   // ability. Mirrors the canAccessSite gate on the elevation handlers.
   if (perms?.allowedSiteIds && !canAccessSite(perms, payload.siteId ?? '')) {
     return c.json({ error: 'Site access denied' }, 403);
+  }
+
+  const tierDrift = tierDriftResponse(payload);
+  if (tierDrift) {
+    return c.json(tierDrift, 400);
   }
 
   const [created] = await db
@@ -1185,7 +1238,7 @@ pamRoutes.post('/rules', requirePamWrite, requireMfa(), zValidator('json', creat
 // but weren't persisted.
 pamRoutes.post(
   '/rules/preview',
-  requirePamWrite,
+  requirePamManagePolicy,
   zValidator('json', previewRuleSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -1238,6 +1291,9 @@ pamRoutes.post(
       priority: 0,
       verdict: 'require_approval' as const,
       approvalDurationMinutes: null,
+      suspendedVerdict: null,
+      reapprovedAt: null,
+      reapprovedByUserId: null,
       createdByUserId: null,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -1329,9 +1385,18 @@ pamRoutes.post(
   },
 );
 
-const updateRuleSchema = ruleBaseSchema.partial().omit({ orgId: true });
+const updateRuleSchema = ruleBaseSchema
+  .partial()
+  .omit({ orgId: true })
+  .extend({
+    // §6B re-approval: restores `verdict` from `suspended_verdict` (set by
+    // the 2026-10-15-150200 migration's auto_approve quarantine) and clears
+    // it. A body combining `reapprove: true` with an explicit `verdict` is
+    // ambiguous intent and is rejected below rather than guessing which wins.
+    reapprove: z.boolean().optional(),
+  });
 
-pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', updateRuleSchema), async (c) => {
+pamRoutes.patch('/rules/:id', requirePamManagePolicy, requireMfa(), zValidator('json', updateRuleSchema), async (c) => {
   const auth = c.get('auth');
   const perms = c.get('permissions') as UserPermissions | undefined;
   const id = c.req.param('id');
@@ -1343,6 +1408,20 @@ pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', 
   const [existing] = await db.select().from(pamRules).where(eq(pamRules.id, id!)).limit(1);
   if (!existing || !auth.canAccessOrg(existing.orgId)) {
     return c.json({ error: 'Rule not found' }, 404);
+  }
+
+  // §6B re-approval of a legacy auto_approve rule quarantined by the
+  // 2026-10-15-150200 migration (verdict forced to require_approval,
+  // original verdict preserved in suspendedVerdict). `reapprove: true` is a
+  // dedicated action, not an ordinary field patch — reject combining it with
+  // an explicit `verdict` in the same body rather than silently picking one.
+  if (payload.reapprove) {
+    if (!existing.suspendedVerdict) {
+      return c.json({ error: 'Rule is not suspended pending re-approval' }, 400);
+    }
+    if (payload.verdict !== undefined) {
+      return c.json({ error: 'Cannot combine reapprove with an explicit verdict change' }, 400);
+    }
   }
 
   // Site axis is app-layer-only (pam_rules RLS Shape-1 org-only). A site-restricted
@@ -1359,11 +1438,27 @@ pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', 
   }
 
   // The merged result must still be a valid rule shape (criterion present,
-  // no executable/tool-action mixing, no ignore on tool-action rules).
-  const merged = { ...existing, ...payload };
+  // no executable/tool-action mixing, no ignore on tool-action rules). A
+  // reapprove restores the original (pre-suspension) verdict for shape
+  // validation purposes, even though it isn't itself in `payload`.
+  const merged = {
+    ...existing,
+    ...payload,
+    // Guarded above: payload.reapprove is only true once we've already
+    // checked existing.suspendedVerdict is non-null, so the `?? undefined`
+    // here is type-narrowing only, not a real fallback.
+    ...(payload.reapprove ? { verdict: existing.suspendedVerdict ?? undefined } : {}),
+  };
   const shapeError = validateRuleShape(merged);
   if (shapeError) {
     return c.json({ error: shapeError }, 400);
+  }
+
+  // Validate the MERGED tier selector: a PATCH that only moves matchRiskTier
+  // must be checked against the rule's STORED matchToolName (and vice versa).
+  const mergedTierDrift = tierDriftResponse(merged);
+  if (mergedTierDrift) {
+    return c.json(mergedTierDrift, 400);
   }
 
   const [updated] = await db.transaction(async (tx) => {
@@ -1401,8 +1496,28 @@ pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', 
       ...(payload.matchNegate !== undefined ? { matchNegate: payload.matchNegate } : {}),
       ...(payload.timeWindow !== undefined ? { timeWindow: payload.timeWindow } : {}),
       ...(payload.verdict !== undefined ? { verdict: payload.verdict } : {}),
+      // An explicit verdict edit supersedes any pending quarantine: without
+      // this, a later plain Re-approve click (payload.reapprove) would
+      // restore the STALE pre-suspension verdict from suspendedVerdict and
+      // silently overwrite the admin's fresh edit. payload.verdict and
+      // payload.reapprove are mutually exclusive (rejected together above),
+      // so this never fights the reapprove branch below.
+      ...(payload.verdict !== undefined && existing.suspendedVerdict !== null
+        ? { suspendedVerdict: null }
+        : {}),
       ...(payload.approvalDurationMinutes !== undefined
         ? { approvalDurationMinutes: payload.approvalDurationMinutes }
+        : {}),
+      // §6B re-approval: restore the pre-suspension verdict and clear the
+      // quarantine marker, stamped with who/when. Mutually exclusive with the
+      // `payload.verdict` branch above (rejected together earlier).
+      ...(payload.reapprove
+        ? {
+            verdict: existing.suspendedVerdict!,
+            suspendedVerdict: null,
+            reapprovedAt: new Date(),
+            reapprovedByUserId: auth.user.id,
+          }
         : {}),
       updatedAt: new Date(),
     })
@@ -1427,7 +1542,7 @@ pamRoutes.patch('/rules/:id', requirePamWrite, requireMfa(), zValidator('json', 
   return c.json({ success: true, rule: updated });
 });
 
-pamRoutes.delete('/rules/:id', requirePamWrite, requireMfa(), async (c) => {
+pamRoutes.delete('/rules/:id', requirePamManagePolicy, requireMfa(), async (c) => {
   const auth = c.get('auth');
   const perms = c.get('permissions') as UserPermissions | undefined;
   const id = c.req.param('id');
@@ -1498,11 +1613,14 @@ pamRoutes.get('/config', requirePamRead, async (c) => {
 
 pamRoutes.put(
   '/config',
-  requirePamWrite,
+  requirePamManagePolicy,
   requireMfa(),
   zValidator('json', updateConfigSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const payload = c.req.valid('json');
     const resolvedOrg = resolveOrgIdForWrite(
       auth,
@@ -1623,11 +1741,14 @@ pamRoutes.get('/signer-groups', requirePamRead, async (c) => {
 
 pamRoutes.post(
   '/signer-groups',
-  requirePamWrite,
+  requirePamManagePolicy,
   requireMfa(),
   zValidator('json', createSignerGroupSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const payload = c.req.valid('json');
     const resolvedOrg = resolveOrgIdForWrite(
       auth,
@@ -1664,11 +1785,14 @@ pamRoutes.post(
 
 pamRoutes.patch(
   '/signer-groups/:id',
-  requirePamWrite,
+  requirePamManagePolicy,
   requireMfa(),
   zValidator('json', updateSignerGroupSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const id = c.req.param('id');
     const payload = c.req.valid('json');
     if (!z.string().guid().safeParse(id).success) {
@@ -1705,8 +1829,11 @@ pamRoutes.patch(
   },
 );
 
-pamRoutes.delete('/signer-groups/:id', requirePamWrite, requireMfa(), async (c) => {
+pamRoutes.delete('/signer-groups/:id', requirePamManagePolicy, requireMfa(), async (c) => {
   const auth = c.get('auth');
+  if (!canMutateOrgWideGovernance(auth)) {
+    return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+  }
   const id = c.req.param('id');
   if (!z.string().guid().safeParse(id).success) {
     return c.json({ error: 'Invalid signer group id' }, 400);

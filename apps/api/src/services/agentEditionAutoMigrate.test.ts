@@ -96,6 +96,8 @@ function primeHappyPath() {
     deliveryOutcome: 'sent',
     executedAt: null,
     ignoredParameters: [],
+    runAs: 'system' as const,
+    targetSessionId: null,
   } as never);
   return claim;
 }
@@ -246,6 +248,66 @@ describe('maybeDispatchEditionMigration', () => {
     vi.mocked(db.update).mockClear();
     await maybeDispatchEditionMigration(baseArgs());
     expect(db.update).not.toHaveBeenCalled();
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+  });
+
+  /**
+   * #4919 — dispatch now refuses a device inside a maintenance window that
+   * suppresses scripts. The migration IS this device's update, so deferring is
+   * correct; what must NOT happen is the deferral being treated like the
+   * `insert_failed` refusal above. That path adds the device to the
+   * process-lifetime `failedDevices` veto and reports to Sentry — which would
+   * mean a device that happened to heartbeat during a nightly window never
+   * migrated again until the API restarted, and would page on an operator's
+   * own maintenance schedule.
+   */
+  it('defers (claim released, no Sentry, retryable next beat) when dispatch reports maintenance_suppressed', async () => {
+    const claim = primeHappyPath();
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: false,
+      code: 'maintenance_suppressed',
+      error: 'Device is in a maintenance window that suppresses script execution',
+    } as never);
+
+    await maybeDispatchEditionMigration(baseArgs());
+
+    expect(captureException).not.toHaveBeenCalled();
+    expect(claim.set).toHaveBeenCalledWith({ editionMigrationDispatchedAt: null });
+
+    // The device is NOT vetoed in-process: the next heartbeat (window now
+    // closed, dispatch permitted) tries again and succeeds.
+    vi.mocked(dispatchScriptToDevice).mockClear();
+    const claim2 = primeHappyPath();
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: true, commandId: 'cmd-2', executionId: 'exec-2', delivered: true,
+    } as never);
+
+    await maybeDispatchEditionMigration(baseArgs());
+
+    expect(dispatchScriptToDevice).toHaveBeenCalledTimes(1);
+    expect(claim2.set).toHaveBeenCalledWith(
+      expect.objectContaining({ editionMigrationDispatchedAt: expect.any(Date) }),
+    );
+  });
+
+  it('treats an UNEVALUATABLE maintenance check as a fault: Sentry, and vetoed in-process', async () => {
+    // Distinct from the deferral above. A maintenance config we cannot read is
+    // a broken safety dependency; retrying it every 60s forever while staying
+    // silent is exactly the shape that hides an outage.
+    primeHappyPath();
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: false,
+      code: 'maintenance_check_failed',
+      error: 'Maintenance window could not be evaluated for this device; refusing to run the script (fail-closed)',
+    } as never);
+
+    await maybeDispatchEditionMigration(baseArgs());
+    expect(captureException).toHaveBeenCalled();
+
+    // Vetoed in-process: no second attempt this process lifetime.
+    vi.mocked(dispatchScriptToDevice).mockClear();
+    vi.mocked(db.update).mockClear();
+    await maybeDispatchEditionMigration(baseArgs());
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
   });
 

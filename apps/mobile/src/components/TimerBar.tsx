@@ -45,12 +45,23 @@ import {
 import { weekStartFor } from '../screens/time/timesheetWeek';
 import { classifyTimeEntryDenial, isAccountLevelDenial } from '../services/timeEntryAccess';
 import { stopRunningTimer } from '../screens/tickets/timerActions';
-import { stopOutcomeEffects } from '../screens/tickets/timerOutcomeEffects';
-import { isQueueWedged, isTimerBarVisible, shouldReplayNow } from './timerBarLogic';
+import {
+  stopComposerTicketId,
+  stopOutcomeEffects,
+} from '../screens/tickets/timerOutcomeEffects';
+import {
+  isQueueWedged,
+  isRunningTimerLong,
+  isTimerBarVisible,
+  shouldReplayNow,
+  shouldShowWaitingToSync,
+  WAITING_TO_SYNC_GRACE_MS,
+} from './timerBarLogic';
 import { useNetworkConnected } from '../lib/useNetworkConnected';
-import { formatElapsed } from '../lib/timeFormat';
+import { formatElapsed, formatMinutes } from '../lib/timeFormat';
 import { ticketRef } from '../screens/tickets/ticketCopy';
-import { Toast } from './Toast';
+import { navigateToTicket } from '../navigation/navigationRef';
+import { useToast } from './toast/ToastHost';
 
 /**
  * Persistent running-timer affordance, mounted above the tab bar.
@@ -76,7 +87,7 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
 
   const [now, setNow] = useState(() => new Date());
   const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const { show: showToast } = useToast();
   /**
    * The head write keeps failing on a status the queue (correctly) retains —
    * usually a 403, which issue #4251 makes the ORDINARY state for a default
@@ -86,6 +97,15 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
   const [wedged, setWedged] = useState(false);
   /** A local timer whose start request may also have landed on the server. */
   const [startUnconfirmed, setStartUnconfirmed] = useState(false);
+  /**
+   * "Time entries waiting to sync" only after `pendingCount` has stayed
+   * positive for WAITING_TO_SYNC_GRACE_MS — see timerBarLogic.ts. The
+   * ordinary stop-then-replay round trip clears well inside the grace
+   * window, so without it the label flashed after every Stop and read like
+   * an error for work that was about to sync fine.
+   */
+  const [waitingToSyncVisible, setWaitingToSyncVisible] = useState(false);
+  const pendingSinceRef = useRef<number | null>(null);
 
   const mounted = useRef(true);
   const stopInFlight = useRef(false);
@@ -127,6 +147,27 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
     const interval = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(interval);
   }, [running]);
+
+  // Arms the "waiting to sync" label after the grace period, and disarms it
+  // immediately once the queue empties — a queue that drains inside the
+  // window never shows it at all.
+  useEffect(() => {
+    if (pendingCount <= 0) {
+      pendingSinceRef.current = null;
+      setWaitingToSyncVisible(false);
+      return;
+    }
+    if (pendingSinceRef.current === null) pendingSinceRef.current = Date.now();
+    const elapsed = Date.now() - pendingSinceRef.current;
+    if (shouldShowWaitingToSync({ pendingCount, elapsedMs: elapsed })) {
+      setWaitingToSyncVisible(true);
+      return;
+    }
+    const timeout = setTimeout(() => {
+      setWaitingToSyncVisible(true);
+    }, WAITING_TO_SYNC_GRACE_MS - elapsed);
+    return () => clearTimeout(timeout);
+  }, [pendingCount]);
 
   const refreshNeedsAttention = useCallback(async (): Promise<void> => {
     const rows = await readNeedsAttention().catch(() => null);
@@ -222,7 +263,7 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
       // nothing behind it can move until somebody acts.
       setWedged(isQueueWedged(result));
       if (result.needsAttention.length > 0) {
-        setToast({
+        showToast({
           kind: 'error',
           text:
             result.needsAttention.length === 1
@@ -232,7 +273,7 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
       } else if (result.sent > 0) {
         // Only writes that actually reached the server are reported as synced —
         // never ones that merely moved to needs-attention.
-        setToast({ kind: 'success', text: `Synced ${result.sent} offline time ${result.sent === 1 ? 'entry' : 'entries'}` });
+        showToast({ kind: 'success', text: `Synced ${result.sent} offline time ${result.sent === 1 ? 'entry' : 'entries'}` });
       }
       // A reconciled or externally started entry can be running without the
       // store knowing, so the server stays the authority on what is live.
@@ -367,24 +408,42 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
       if (effects.accountDenial !== null) dispatch(timeAccessDenied(effects.accountDenial));
       if (effects.refreshQueueDepth) await refreshQueueDepth();
       if (effects.refreshNeedsAttention) await refreshNeedsAttention();
-      if (mounted.current) setToast(effects.toast);
+      if (mounted.current) showToast(effects.toast);
+      /**
+       * #5366. A stop that actually recorded a span opens the ticket with the
+       * internal-note composer focused, so what was just done is written while
+       * it is still in the technician's head — the entry used to land as
+       * `No description` because the only way back to the ticket was to find
+       * it again.
+       *
+       * `stopComposerTicketId` decides which ticket (or none) — shared with
+       * TicketDetailScreen's own stop handler, see timerOutcomeEffects.ts.
+       */
+      const composerTicketId = stopComposerTicketId(outcome, running);
+      if (mounted.current && composerTicketId !== null) {
+        navigateToTicket(composerTicketId, { composeMode: 'internal', focusComposer: true });
+      }
     } finally {
       stopInFlight.current = false;
       if (mounted.current) setBusy(false);
     }
   }, [connected, dispatch, refreshQueueDepth, refreshNeedsAttention, running]);
 
-  // The toast is a child of this bar, not a portal: unmounting on an emptied
-  // queue would swallow the "N offline time entries could not be saved"
-  // warning in exactly the case it exists for.
+  // The bar no longer has to outlive the queue to report on it: replay toasts
+  // go to the app-wide host (#5368), which is not a child of this bar.
   const visible = isTimerBarVisible({
     hasRunningTimer: running !== null,
     // A standing "needs attention" count keeps the bar mounted on its own: it
     // is the only place unbilled work is reported once the toast has gone.
     pendingCount: pendingCount + needsAttentionCount,
-    hasToast: toast !== null,
   });
   if (!visible) return null;
+
+  // Runaway-timer guard (#5115): a timer nobody stopped showed up as a
+  // 12h31m entry on the timesheet. Warns only — never auto-stops, since only
+  // the technician knows when the work actually ended.
+  const runningElapsedSeconds = running !== null ? elapsedSeconds(running, now) : 0;
+  const showsLongRunningWarning = running !== null && isRunningTimerLong(runningElapsedSeconds);
 
   const ticket = running?.ticketId
     ? tickets.find((candidate) => candidate.id === running.ticketId)
@@ -413,9 +472,9 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
               </Text>
             ) : null}
           </>
-        ) : (
+        ) : waitingToSyncVisible ? (
           <Text style={styles.ticket}>Time entries waiting to sync</Text>
-        )}
+        ) : null}
       </View>
 
       {pendingCount > 0 ? (
@@ -436,19 +495,16 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
           <Text style={styles.stopText}>{busy ? '…' : 'Stop'}</Text>
         </Pressable>
       ) : null}
-
-      <Toast
-        visible={toast !== null}
-        text={toast?.text ?? ''}
-        kind={toast?.kind ?? 'success'}
-        onHidden={() => setToast(null)}
-        bottomOffset={spacing['16']}
-      />
     </View>
   );
 
   const notices = (
     <>
+      {showsLongRunningWarning ? (
+        <Text style={styles.noticeAlarm} accessibilityLabel={`Still running — ${formatMinutes(runningElapsedSeconds / 60)}`}>
+          Still running — {formatMinutes(runningElapsedSeconds / 60)}
+        </Text>
+      ) : null}
       {startUnconfirmed ? (
         <Text style={styles.notice}>
           Start not confirmed — a timer may also be running on the server.

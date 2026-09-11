@@ -12,7 +12,7 @@ const idParam = z.object({ id: z.string().guid() });
 const partIdParam = z.object({ id: z.string().guid() });
 import {
   addTicketPart, updateTicketPart, deleteTicketPart,
-  listTimeEntries, getTicketBillingSummary, TimeEntryServiceError
+  listTimeEntries, getTicketBillingSummary, getTicketTimeEntryDefaults, TimeEntryServiceError
 } from '../../services/timeEntryService';
 import { getScopedTicketOr404 } from './tickets';
 import { timeActorFrom } from '../timeEntries/timeEntries';
@@ -96,5 +96,23 @@ ticketPartsRoutes.get('/:id/billing-summary', scopes, readPerm, zValidator('para
   const ticket = await getScopedTicketOr404(auth, c.req.valid('param').id);
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
   const summary = await getTicketBillingSummary(ticket.id);
-  return c.json({ data: summary });
+  // `defaults` (#5321) is what the server would stamp on a new entry for this
+  // ticket. The quick-add prefills its rate from it and warns when it is null —
+  // a rate-less billable entry is only refused much later, at invoice assembly
+  // (ALL_MISSING_RATE 409), by which point the tech has moved on.
+  //
+  // Advisory only, so it is best-effort: the summary itself never depended on
+  // organizations/partner data, and a ticket whose org or partner cannot be
+  // resolved must not take the whole panel down. The client then sees
+  // `defaults: null` and the quick-add falls back to a blank rate plus its
+  // missing-rate warning. An UNEXPECTED fault still propagates as a 500 — only
+  // a typed service error is downgraded, and it is logged either way.
+  let defaults: Awaited<ReturnType<typeof getTicketTimeEntryDefaults>> | null = null;
+  try {
+    defaults = await getTicketTimeEntryDefaults(ticket.id, timeActorFrom(c));
+  } catch (err) {
+    if (!(err instanceof TimeEntryServiceError)) throw err;
+    console.error('[tickets.billing-summary] time-entry defaults unavailable', ticket.id, err.code, err.message);
+  }
+  return c.json({ data: { ...summary, defaults } });
 });

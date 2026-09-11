@@ -16,7 +16,7 @@ import {
   type NetworkBaselineScanSchedule
 } from '../db/schema';
 import type { DiscoveredHostResult } from '../jobs/discoveryWorker';
-import { publishEvent } from './eventBus';
+import { createSourcedAlert } from './alertService';
 
 type NetworkEventType = typeof networkEventTypeEnum.enumValues[number];
 
@@ -637,30 +637,29 @@ export async function createNetworkChangeAlert(
     : eventMessageFallback(normalizedEventType, context);
   const severity = template?.severity ?? EVENT_SEVERITY_FALLBACK[normalizedEventType];
 
-  const [alert] = await db
-    .insert(alerts)
-    .values({
-      ruleId: null,
-      deviceId: alertDeviceId,
-      orgId: changeEvent.orgId,
-      severity,
-      title,
-      message,
-      context: {
-        source: 'network_baseline',
-        networkChangeEventId: changeEvent.id,
-        baselineId: changeEvent.baselineId,
-        ...context
-      },
-      status: 'active',
-      triggeredAt: changeEvent.detectedAt
-    })
-    .returning({ id: alerts.id });
+  // Routed through createSourcedAlert so the row is rolled back if the
+  // alert.triggered publish fails — a committed-but-unpublished alert would be
+  // linked to the change event yet never notify anyone (#5325).
+  const alertId = await createSourcedAlert({
+    deviceId: alertDeviceId,
+    orgId: changeEvent.orgId,
+    severity,
+    title,
+    message,
+    context: {
+      source: 'network_baseline',
+      networkChangeEventId: changeEvent.id,
+      baselineId: changeEvent.baselineId,
+      ...context
+    },
+    publisher: 'network-baseline',
+    eventPayload: { networkChangeEventId: changeEvent.id },
+    triggeredAt: changeEvent.detectedAt
+  });
 
-  const alertId = alert?.id;
   if (!alertId) {
     console.error(
-      `[NetworkBaseline] Alert insert returned no ID for change event ${changeEvent.id} (${normalizedEventType}, device=${alertDeviceId}). Alert may not have been persisted.`
+      `[NetworkBaseline] No alert persisted for change event ${changeEvent.id} (${normalizedEventType}, device=${alertDeviceId}); the change event is left unlinked so a later run can retry.`
     );
     return;
   }
@@ -675,26 +674,6 @@ export async function createNetworkChangeAlert(
       .update(networkChangeEvents)
       .set({ alertId })
       .where(eq(networkChangeEvents.id, changeEvent.id));
-  }
-
-  try {
-    await publishEvent(
-      'alert.triggered',
-      changeEvent.orgId,
-      {
-        alertId,
-        ruleId: null,
-        deviceId: alertDeviceId,
-        severity,
-        title,
-        message,
-        source: 'network-baseline',
-        networkChangeEventId: changeEvent.id
-      },
-      'network-baseline'
-    );
-  } catch (error) {
-    console.error('[NetworkBaseline] Failed to publish alert.triggered event:', error);
   }
 }
 
@@ -800,6 +779,10 @@ export async function compareBaselineScan(input: CompareBaselineInput): Promise<
         );
 
       for (const row of discoveredRows) {
+        // #5213: ip_address is nullable now (manual website / DNS-only assets).
+        // This map is keyed by the scanned IP, so an IP-less row has nothing to
+        // key on — and the inArray() filter above can never have matched one.
+        if (!row.ipAddress) continue;
         discoveredByIp.set(row.ipAddress, {
           linkedDeviceId: row.linkedDeviceId,
           macAddress: row.macAddress,

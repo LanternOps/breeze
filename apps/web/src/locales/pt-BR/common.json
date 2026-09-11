@@ -1,4 +1,7 @@
 {
+  "lists": {
+    "separator": ", "
+  },
   "nav": {
     "fleetPosture": "Postura da frota",
     "dashboard": "Painel",
@@ -41,6 +44,7 @@
     "auditTrail": "Trilha de Auditoria",
     "eventLogs": "Logs de Eventos",
     "partner": "Parceiro",
+    "billing": "Faturamento",
     "organizations": "Organizações",
     "aiUsageBudget": "Uso e Orçamento de IA",
     "aiAgents": "Agentes de IA",
@@ -64,6 +68,7 @@
     "sectionExtensions": "Extensões",
     "variables": "Variáveis",
     "llmProviderCatalog": "Catálogo de Provedores de LLM",
+    "aiKillSwitch": "Interruptor de emergência de IA",
     "sectionAi": "IA",
     "sectionFleetManagement": "Gestão de Frota",
     "sectionBilling": "Faturamento",
@@ -73,7 +78,9 @@
     "software": "Software",
     "securityOverview": "Visão Geral",
     "aiRisk": "Risco de IA",
-    "deviceBackup": "Backup de Dispositivos"
+    "deviceBackup": "Backup de Dispositivos",
+    "sectionServiceDesk": "Central de serviços",
+    "serviceManagement": "Gestão de serviços"
   },
   "documentTitles": {
     "dashboard": "Painel",
@@ -164,6 +171,19 @@
     "none": "Nenhum",
     "optional": "Opcional",
     "required": "Obrigatório"
+  },
+  "runContext": {
+    "label": "Executar como",
+    "scriptDefault": "Padrão do script",
+    "scriptDefaultNamed": "Padrão do script ({{context}})",
+    "system": "Sistema",
+    "user": "Usuário conectado",
+    "elevated": "Elevado",
+    "unknown": "Não registrado",
+    "userInSession": "Usuário conectado (sessão {{session}})",
+    "sessionLabel": "Sessão de destino",
+    "sessionAny": "Qualquer sessão ativa",
+    "effectiveLabel": "Contexto de execução"
   },
   "shared": {
     "accessDenied": {
@@ -355,6 +375,9 @@
       "criticalPending": "{{count}} patches críticos pendentes",
       "criticalPending_one": "{{count}} patch crítico pendente",
       "criticalPending_other": "{{count}} patches críticos pendentes",
+      "unratedPending": "{{count}} patches não avaliados pendentes (não serão aprovados automaticamente)",
+      "unratedPending_one": "{{count}} patch não avaliado pendente (não será aprovado automaticamente)",
+      "unratedPending_other": "{{count}} patches não avaliados pendentes (não serão aprovados automaticamente)",
       "empty": "Ainda sem dados de patches"
     },
     "vuln": {
@@ -2023,7 +2046,8 @@
           "notMember": "Não é mais afetado por esta constatação",
           "decommissioned": "O dispositivo foi removido",
           "timeout": "Expirou após 30 minutos",
-          "dispatchEnqueueFailed": "Nunca despachado — falha ao enfileirar"
+          "dispatchEnqueueFailed": "Nunca despachado — falha ao enfileirar",
+          "maintenanceWindow": "Dispositivo em uma janela de manutenção"
         },
         "viewProgress": "Ver progresso",
         "errors": {

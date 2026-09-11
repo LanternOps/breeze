@@ -1031,12 +1031,14 @@
       "loadWithStatus": "Falha ao carregar regras (HTTP {{status}})",
       "load": "Falha ao carregar regras",
       "updateRule": "Falha ao atualizar a regra",
-      "deleteRule": "Falha ao excluir regra"
+      "deleteRule": "Falha ao excluir regra",
+      "reapproveRule": "Falha ao reaprovar a regra"
     },
     "toasts": {
       "defaultVerdictSet": "Veredito padrão definido como {{verdict}}",
       "ruleToggled": "Regra \"{{name}}\" {{state}}",
-      "ruleDeleted": "Regra \"{{name}}\" excluída"
+      "ruleDeleted": "Regra \"{{name}}\" excluída",
+      "ruleReapproved": "Regra \"{{name}}\" reaprovada — aprovação automática restaurada"
     },
     "states": {
       "disabled": "desativada",
@@ -1044,7 +1046,8 @@
     },
     "description": "Políticas de software são avaliadas primeiro — uma correspondência de lista de permissões/bloqueios decide antes destas regras. Depois, as regras são executadas em ordem de prioridade (menor primeiro); a primeira correspondência decide.",
     "actions": {
-      "addRule": "Adicionar regra"
+      "addRule": "Adicionar regra",
+      "reapprove": "Reaprovar"
     },
     "defaultVerdict": {
       "label": "Veredito padrão",
@@ -1070,6 +1073,15 @@
       "title": "Excluir regra PAM",
       "message": "Excluir a regra \"{{name}}\"? Solicitações de elevação não corresponderão mais a ela.",
       "confirm": "Excluir regra"
+    },
+    "staleTierBadge": {
+      "label": "Obsoleto",
+      "tooltip": "O nível de risco {{tier}} não corresponde mais a nada que esta regra possa selecionar, portanto ela nunca mais poderá corresponder.",
+      "tooltipWithTiers": "O nível de risco {{tier}} não corresponde mais a nada que esta regra possa selecionar, portanto ela nunca mais poderá corresponder. Níveis atualmente em uso: {{tiers}}."
+    },
+    "suspendedBadge": {
+      "label": "Aprovação automática suspensa",
+      "tooltip": "Esta regra aprovava automaticamente antes da atualização. Agora exige aprovação humana até que um administrador a reaprove."
     }
   },
   "pamPamSignerGroupsTab": {

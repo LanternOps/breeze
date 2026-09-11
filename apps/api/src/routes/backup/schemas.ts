@@ -148,7 +148,11 @@ export const jobListSchema = z.object({
 
 export const snapshotListSchema = z.object({
   deviceId: z.string().optional(),
-  configId: z.string().optional()
+  configId: z.string().optional(),
+  // Bare-metal recovery W04a: the recovery-creation panel needs "which
+  // snapshots CAN start a bare-metal recovery" without pulling every
+  // snapshot and filtering client-side.
+  bareMetalRestorable: z.coerce.boolean().optional(),
 });
 
 export const snapshotProtectionReasonSchema = z.object({
@@ -293,6 +297,35 @@ export const bmrRecoveryDownloadSchema = z.object({
   path: z.string().min(1).max(4096),
 });
 
+// ── Bare-metal recovery schemas (W04a) ──────────────────────────────
+
+export const bmrRecoveryCreateSchema = z.object({
+  snapshotId: z.string().guid(),
+  identity: z.enum(['original', 'new']).default('original'),
+});
+
+export const bmrRecoveryListSchema = z.object({
+  deviceId: z.string().guid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+// Deliberately generous bound (1..32): the code is normalized/validated by
+// normalizeRecoveryCode() regardless of exact input shape (dashes, spaces,
+// case), so this schema only needs to keep the request body itself small.
+export const bmrExchangeSchema = z.object({
+  code: z.string().min(1).max(32),
+});
+
+export const bmrProgressSchema = z.object({
+  token: z.string().min(1),
+  status: z.enum(['media_booted', 'planned', 'restoring', 'validated', 'rebooted', 'failed', 'refused']),
+  target: z.record(z.string(), z.any()).optional(),
+  plan: z.any().optional(),
+  result: z.any().optional(),
+  reason: z.string().max(2000).optional(),
+  warnings: z.array(z.string().max(2000)).max(64).optional(),
+});
+
 export const bmrTokenListSchema = z.object({
   status: z.enum(['active', 'authenticated', 'used', 'expired', 'revoked']).optional(),
   deviceId: z.string().guid().optional(),
@@ -310,8 +343,19 @@ export const bmrCompleteSchema = z.object({
     stateApplied: z.boolean().optional(),
     driversInjected: z.number().int().optional(),
     validated: z.boolean().optional(),
-    warnings: z.array(z.string()).optional(),
+    // D14: a completion report for a large recovery hit the global 1MB
+    // body-size limit ("Request body too large") over an unbounded warnings
+    // array — one 10,047-file bare-metal recovery sent ~9,900 entries. The
+    // agent-side helper is being capped at 51 entries, but the API contract
+    // needs its own hard ceiling independent of any given agent build: 200
+    // entries x 2000 chars is a generous multiple of that intended cap while
+    // keeping the worst case comfortably bounded.
+    warnings: z.array(z.string().max(2000)).max(200).optional(),
     error: z.string().optional(),
+    // Per-file restore failures in a partially-successful recovery, mirroring
+    // errorCount on the ordinary backup-result path (resultSchemas.ts). Optional
+    // and omitted (not zero) by an agent that doesn't report it.
+    failedFiles: z.number().int().nonnegative().optional(),
   }),
 });
 

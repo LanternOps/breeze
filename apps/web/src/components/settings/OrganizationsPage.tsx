@@ -4,8 +4,9 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import type { Organization } from './OrganizationList';
 import OrganizationForm from './OrganizationForm';
-import SiteList, { type Site } from './SiteList';
-import SiteForm from './SiteForm';
+import SiteList from './SiteList';
+import SiteModals from './SiteModals';
+import { useSiteCrud } from './useSiteCrud';
 import MergeOrgModal from './MergeOrgModal';
 import ArchiveOrgModal from './ArchiveOrgModal';
 import BulkOrgImport from '../organizations/BulkOrgImport';
@@ -16,9 +17,9 @@ import { extractApiError } from '@/lib/apiError';
 import { runAction, ActionError, handleActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
+import { isArchiveLifecycleOrg } from '@/lib/archiveLifecycle';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'archive' | 'merge';
-type SiteModalMode = 'closed' | 'add' | 'edit' | 'delete';
 
 type OrganizationFormValues = {
   name: string;
@@ -45,28 +46,13 @@ export function shouldShowDeviceCount(count: number | undefined): boolean {
   return typeof count === 'number' && Number.isFinite(count);
 }
 
-// Exported for test — see OrganizationsPage.statusMaps.test.tsx.
-export const statusLabelKeys: Record<Organization['status'], string> = {
-  active: 'organizationsPage.status.active',
-  trial: 'organizationsPage.status.trial',
-  suspended: 'organizationsPage.status.suspended',
-  churned: 'organizationsPage.status.churned',
-  offboarding: 'organizationsPage.status.offboarding',
-  merging: 'organizationsPage.status.merging',
-  archived: 'organizationsPage.status.archived',
-  purging: 'organizationsPage.status.purging',
-};
-
-export const statusColors: Record<Organization['status'], string> = {
-  active: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
-  trial: 'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-400',
-  suspended: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400',
-  churned: 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400',
-  offboarding: 'border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-400',
-  merging: 'border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400',
-  archived: 'border-gray-500/30 bg-gray-500/10 text-gray-700 dark:text-gray-400',
-  purging: 'border-red-400/30 bg-red-400/10 text-red-600 dark:text-red-300',
-};
+// The status pill maps moved to lib/ (#5075) so the organization RECORD header
+// can share them without importing this whole page component — the same reason
+// `fetchAllOrganizations` moved. Re-exported here so this page stays the
+// documented home of the status contract and its tests
+// (OrganizationsPage.statusMaps.test.tsx).
+export { statusLabelKeys, statusColors } from '../../lib/orgStatus';
+import { statusColors, statusLabelKeys } from '../../lib/orgStatus';
 
 /**
  * Days remaining until an archived org's scheduled purge, rounded UP so a
@@ -187,15 +173,9 @@ export default function OrganizationsPage() {
   // never itself trigger a re-render.
   const archivedRequestIdRef = useRef(0);
 
-  // Sites state
-  const [sites, setSites] = useState<Site[]>([]);
-  const [sitesLoading, setSitesLoading] = useState(false);
-  const [siteModalMode, setSiteModalMode] = useState<SiteModalMode>('closed');
-  const [selectedSite, setSelectedSite] = useState<Site | null>(null);
-  const [siteSubmitting, setSiteSubmitting] = useState(false);
-  // True when the site-add modal was auto-opened right after creating an org —
-  // drives first-site guidance copy and a Skip-for-now affordance.
-  const [guidingFirstSite, setGuidingFirstSite] = useState(false);
+  // Sites state — CRUD state and handlers moved to `useSiteCrud` (#5075 W02) so
+  // the organization record's Sites tab can share the exact same behaviour.
+  const siteCrud = useSiteCrud(selectedOrg?.id ?? null, { onUnauthorized: handleSessionExpired, t });
   // Partner's configured timezone, used to pre-select the timezone for new sites
   // instead of falling back to UTC. Undefined until loaded / if unavailable.
   const [partnerTimezone, setPartnerTimezone] = useState<string>();
@@ -237,6 +217,20 @@ export default function OrganizationsPage() {
     if (days <= 0) return t('organizationsPage.archived.purgeToday');
     return t('organizationsPage.archived.purgeCountdown', { count: days });
   };
+
+  /**
+   * Label + colour for an archive-lifecycle row's badge, shared by the list row
+   * and the read-only detail pane. An org still DRAINING toward `archived`
+   * reads "Archiving…" in the offboarding colour; a settled one reads
+   * "Archived". Both are read-only and both live in the Archived section — the
+   * distinction is only whether the agent uninstall is still running (#4166),
+   * which is what tells an operator "the Archive click DID take effect" instead
+   * of leaving them staring at a list the org vanished from.
+   */
+  const archiveBadge = (org: Pick<Organization, 'status'>) =>
+    org.status === 'offboarding'
+      ? { label: t('organizationsPage.archived.archivingBadge'), color: statusColors.offboarding }
+      : { label: t('organizationsPage.archived.badge'), color: statusColors.archived };
 
   /**
    * `silent` skips the page-level loading flag. `loading` is an EARLY RETURN
@@ -365,40 +359,6 @@ export default function OrganizationsPage() {
     }
   }, [fetchOrganizations]);
 
-  // Returns the fetched site list, or null when we couldn't determine the real
-  // count. The null signal lets callers distinguish "confirmed zero sites" from
-  // "couldn't tell" — important for the first-site nudge, which must not fire on
-  // a guess (a transient failure, or an org that DOES have sites, would
-  // otherwise re-introduce the misleading nag of #1978). We fail closed (null)
-  // on BOTH a failed request AND a malformed HTTP-200 body (e.g. {}, {data:null},
-  // or any non-array payload): a 200 whose body isn't a parseable array of sites
-  // tells us nothing about the count, so it must not be read as "zero sites".
-  // Only a genuine empty array returns [] (legitimately zero → show the nag).
-  const fetchSites = useCallback(async (orgId: string): Promise<Site[] | null> => {
-    setSitesLoading(true);
-    try {
-      const response = await fetchWithAuth(`/orgs/sites?organizationId=${orgId}`);
-      if (!response.ok) throw new Error(`Failed to fetch sites (status ${response.status})`);
-      const data = await response.json();
-      const siteList = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : null;
-      if (siteList === null) {
-        // 200 OK but the body isn't a parseable array of sites — fail closed so
-        // callers suppress the nag rather than treat this as confirmed zero.
-        setSites([]);
-        console.warn('[OrganizationsPage] sites response was ok but not a parseable array for org', orgId, data);
-        return null;
-      }
-      setSites(siteList);
-      return siteList;
-    } catch (err) {
-      setSites([]);
-      console.warn('[OrganizationsPage] failed to fetch sites for org', orgId, err);
-      return null;
-    } finally {
-      setSitesLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     fetchOrganizations();
   }, [fetchOrganizations]);
@@ -463,13 +423,14 @@ export default function OrganizationsPage() {
 
   useEffect(() => {
     if (selectedOrg) {
-      // An archived org is outside the request's own accessible-org set by
-      // design (RLS excludes it from `accessibleOrgIds`), so its sites read
-      // would come back an empty array regardless of the real count — reading
-      // that as "confirmed zero sites" would be a lie. The read-only detail
-      // pane has no sites section anyway, so skip the request outright.
-      if (selectedOrg.status === 'archived') {
-        setSites([]);
+      // An archive-lifecycle org (archived, or mid-archive-drain — #4166) is
+      // outside the request's own accessible-org set by design (RLS excludes it
+      // from `accessibleOrgIds`), so its sites read would come back an empty
+      // array regardless of the real count — reading that as "confirmed zero
+      // sites" would be a lie. The read-only detail pane has no sites section
+      // anyway, so skip the request outright.
+      if (isArchiveLifecycleOrg(selectedOrg)) {
+        siteCrud.clear();
         return;
       }
       // Skip the fetch if org creation already fetched sites for this org
@@ -478,11 +439,11 @@ export default function OrganizationsPage() {
         skipSiteFetchForOrgId.current = null;
         return;
       }
-      fetchSites(selectedOrg.id);
+      siteCrud.refresh();
     } else {
-      setSites([]);
+      siteCrud.clear();
     }
-  }, [selectedOrg, fetchSites]);
+  }, [selectedOrg, siteCrud.refresh, siteCrud.clear]);
 
   // Org handlers
   const handleAdd = () => {
@@ -557,8 +518,7 @@ export default function OrganizationsPage() {
 
   const handleSelectOrg = (org: Organization) => {
     setSelectedOrg(prev => prev?.id === org.id ? prev : org);
-    setSiteModalMode('closed');
-    setSelectedSite(null);
+    siteCrud.close();
     window.location.hash = org.id;
   };
 
@@ -610,7 +570,16 @@ export default function OrganizationsPage() {
       });
 
       const restoredStatus = data.status as Organization['status'];
-      const restoredOrg: Organization = { ...org, status: restoredStatus, archived: undefined, purgeAt: undefined };
+      // Clear every archive-lifecycle marker, not just `archived`: a restored
+      // archive DRAIN keeps `offboardingTarget: 'archive'` in the stale local
+      // object otherwise, and the server has already reset it.
+      const restoredOrg: Organization = {
+        ...org,
+        status: restoredStatus,
+        archived: undefined,
+        purgeAt: undefined,
+        offboardingTarget: undefined,
+      };
 
       setArchivedOrgs(prev => prev.filter(o => o.id !== org.id));
       setOrganizations(prev => [...prev, restoredOrg]);
@@ -797,11 +766,13 @@ export default function OrganizationsPage() {
         setSelectedOrg(newOrg);
         window.location.hash = createdOrg.id;
 
-        const existingSites = await fetchSites(createdOrg.id);
+        // Explicit override, not the hook's bound orgId: `setSelectedOrg` above
+        // hasn't re-rendered yet, so `siteCrud` is still closed over the
+        // PREVIOUS selected org at this point in the handler.
+        const existingSites = await siteCrud.refresh(createdOrg.id);
         if (existingSites?.length === 0) {
-          setSelectedSite(null);
-          setGuidingFirstSite(true);
-          setSiteModalMode('add');
+          siteCrud.openAdd();
+          siteCrud.setGuidingFirstSite(true);
         }
       }
     } catch (err) {
@@ -827,142 +798,7 @@ export default function OrganizationsPage() {
     }
   };
 
-  // Site handlers
-  const handleAddSite = () => {
-    setSelectedSite(null);
-    setSiteModalMode('add');
-  };
-
-  const handleEditSite = (site: Site) => {
-    setSelectedSite(site);
-    setSiteModalMode('edit');
-  };
-
-  const handleDeleteSite = (site: Site) => {
-    setSelectedSite(site);
-    setSiteModalMode('delete');
-  };
-
-  const handleCloseSiteModal = () => {
-    setSiteModalMode('closed');
-    setSelectedSite(null);
-    setGuidingFirstSite(false);
-  };
-
-  const handleSiteSubmit = async (values: Record<string, unknown>) => {
-    if (!selectedOrg) return;
-    setSiteSubmitting(true);
-    try {
-      const payload = {
-        orgId: selectedOrg.id,
-        name: values.name,
-        timezone: values.timezone,
-        address: {
-          line1: values.addressLine1,
-          line2: values.addressLine2,
-          city: values.city,
-          state: values.state,
-          postalCode: values.postalCode,
-          country: values.country
-        },
-        contact: {
-          name: values.contactName,
-          email: values.contactEmail,
-          phone: values.contactPhone
-        }
-      };
-
-      const url = siteModalMode === 'edit' && selectedSite
-        ? `/orgs/sites/${selectedSite.id}`
-        : '/orgs/sites';
-      const method = siteModalMode === 'edit' ? 'PATCH' : 'POST';
-
-      // This handler already read the body — but it threw into `setError`,
-      // whose banner sits behind the still-open site modal. runAction keeps the
-      // extracted message and puts it somewhere the user can actually see.
-      await runAction({
-        request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload) }),
-        // `organizationsPage.errors.saveSite` interpolates {{status}}, which
-        // runAction does not expose when building the fallback — passing 0
-        // renders the nonsense "Failed to save site (0)". This is the existing
-        // status-free sibling, present in all 8 locales, so no new keys and
-        // nothing for localeParity to catch.
-        errorFallback: t('siteDetailPage.errors.saveSite'),
-        onUnauthorized: handleSessionExpired,
-      });
-
-      await fetchSites(selectedOrg.id);
-      handleCloseSiteModal();
-    } catch (err) {
-      // See the org handlers above: runAction already toasted an ActionError,
-      // and onUnauthorized handles 401. Only a non-ActionError escape is
-      // unsurfaced, and the page banner is invisible behind this modal anyway.
-      if (!(err instanceof ActionError)) {
-        // A toast, NOT setError. The modal is still open on failure and the
-        // page banner renders behind its `fixed inset-0 z-50` overlay, so
-        // routing an unexpected error there reproduces the exact invisibility
-        // this change removes. Reachable in practice: `runAction` calls
-        // `onUnauthorized` OUTSIDE its request try/catch, so a throw from
-        // handleSessionExpired's logout or location.replace arrives here as a
-        // non-ActionError.
-        showToast({
-          message: err instanceof Error ? err.message : t('organizationsPage.errors.generic'),
-          type: 'error'
-        });
-      }
-    } finally {
-      setSiteSubmitting(false);
-    }
-  };
-
-  const handleConfirmDeleteSite = async () => {
-    if (!selectedSite || !selectedOrg) return;
-    setSiteSubmitting(true);
-    try {
-      await runAction({
-        request: () =>
-          fetchWithAuth(`/orgs/sites/${selectedSite.id}`, { method: 'DELETE' }),
-        errorFallback: t('organizationsPage.errors.deleteSite'),
-        onUnauthorized: handleSessionExpired,
-      });
-
-      await fetchSites(selectedOrg.id);
-      handleCloseSiteModal();
-    } catch (err) {
-      // See the org handlers above: runAction already toasted an ActionError,
-      // and onUnauthorized handles 401. Only a non-ActionError escape is
-      // unsurfaced, and the page banner is invisible behind this modal anyway.
-      if (!(err instanceof ActionError)) {
-        // A toast, NOT setError. The modal is still open on failure and the
-        // page banner renders behind its `fixed inset-0 z-50` overlay, so
-        // routing an unexpected error there reproduces the exact invisibility
-        // this change removes. Reachable in practice: `runAction` calls
-        // `onUnauthorized` OUTSIDE its request try/catch, so a throw from
-        // handleSessionExpired's logout or location.replace arrives here as a
-        // non-ActionError.
-        showToast({
-          message: err instanceof Error ? err.message : t('organizationsPage.errors.generic'),
-          type: 'error'
-        });
-      }
-    } finally {
-      setSiteSubmitting(false);
-    }
-  };
-
-  const getSiteFormDefaults = (site: Site & { address?: Record<string, string>; contact?: Record<string, string> }) => ({
-    name: site.name,
-    timezone: site.timezone,
-    addressLine1: site.address?.line1 ?? '',
-    addressLine2: site.address?.line2 ?? '',
-    city: site.address?.city ?? '',
-    state: site.address?.state ?? '',
-    postalCode: site.address?.postalCode ?? '',
-    country: site.address?.country ?? '',
-    contactName: site.contact?.name ?? '',
-    contactEmail: site.contact?.email ?? '',
-    contactPhone: site.contact?.phone ?? ''
-  });
+  // Site handlers — moved to `useSiteCrud` (#5075 W02); `siteCrud` above.
 
   if (loading) {
     return (
@@ -1097,13 +933,29 @@ export default function OrganizationsPage() {
                         </span>
                       )}
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">{org.name}</p>
+                        <a
+                          href={`/organizations/${org.id}`}
+                          data-testid={`org-open-record-${org.id}`}
+                          onClick={e => e.stopPropagation()}
+                          className="truncate text-sm font-medium hover:underline block"
+                        >
+                          {org.name}
+                        </a>
                         <div className="mt-1 flex items-center gap-2">
-                          <span
-                            className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${statusColors[org.status]}`}
-                          >
-                            {t(/* i18n-dynamic */ statusLabelKeys[org.status])}
-                          </span>
+                          {/* Exception-only: an org's status is worth a glance
+                              only when it's NOT the steady state every other
+                              row is in. `active` is the overwhelming majority
+                              of rows, so giving it the same pill as every
+                              other status just added visual noise the eye had
+                              to filter past to spot the rows that actually
+                              need attention (trial/suspended/churned/etc). */}
+                          {org.status !== 'active' && (
+                            <span
+                              className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${statusColors[org.status]}`}
+                            >
+                              {t(/* i18n-dynamic */ statusLabelKeys[org.status])}
+                            </span>
+                          )}
                           {shouldShowDeviceCount(org.deviceCount) && (
                             <span className="text-xs text-muted-foreground">
                               {t('organizationsPage.deviceCount', { count: org.deviceCount })}
@@ -1113,7 +965,7 @@ export default function OrganizationsPage() {
                       </div>
 
                       {/* Hover action buttons */}
-                      <div className="flex shrink-0 gap-1 opacity-0 transition group-hover:opacity-100">
+                      <div className="flex shrink-0 items-center gap-1 opacity-0 transition group-hover:opacity-100">
                         <button
                           type="button"
                           onClick={e => {
@@ -1121,7 +973,7 @@ export default function OrganizationsPage() {
                             handleEdit(org);
                           }}
                           className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                          title={t('organizationsPage.actions.editOrganization')}
+                          title={t('organizationsPage.actions.openSettings')}
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
@@ -1145,6 +997,21 @@ export default function OrganizationsPage() {
                           </svg>
                         </button>
                       </div>
+
+                      {/* Row-end chevron — persistent (not hover-only), so the
+                          record page is reachable without discovering the
+                          hover affordances above; same icon-button styling. */}
+                      <a
+                        href={`/organizations/${org.id}`}
+                        aria-label={t('organizationsPage.actions.openRecord')}
+                        title={t('organizationsPage.actions.openRecord')}
+                        onClick={e => e.stopPropagation()}
+                        className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="m9 18 6-6-6-6" />
+                        </svg>
+                      </a>
                     </div>
                   </li>
                   );
@@ -1215,9 +1082,9 @@ export default function OrganizationsPage() {
                           <div className="mt-1 flex items-center gap-2">
                             <span
                               data-testid="org-archived-badge"
-                              className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${statusColors.archived}`}
+                              className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${archiveBadge(org).color}`}
                             >
-                              {t('organizationsPage.archived.badge')}
+                              {archiveBadge(org).label}
                             </span>
                             <span data-testid="org-archived-purge" className="text-xs text-muted-foreground">
                               {renderPurgeCountdown(org.purgeAt)}
@@ -1236,13 +1103,16 @@ export default function OrganizationsPage() {
         {/* Right panel - Detail view */}
         <div className="rounded-lg border bg-card shadow-xs" data-testid="org-detail-panel">
           {selectedOrg ? (
-            selectedOrg.status === 'archived' ? (
-              /* Archived org detail — READ-ONLY. No edit/merge/archive buttons: an
-               * archived org is outside the request's own accessible-org set by
-               * design (RLS), so none of those mutations could succeed against it
-               * anyway, and offering them would just produce a confusing 404/409
-               * after the fact. Restore is the only action, and the only way back
-               * to the normal (mutable) detail pane. */
+            isArchiveLifecycleOrg(selectedOrg) ? (
+              /* Archive-lifecycle detail — READ-ONLY. No edit/merge/archive
+               * buttons: an archived org (and, since #4166, one mid-archive-drain)
+               * is outside the request's own accessible-org set by design (RLS),
+               * so none of those mutations could succeed against it anyway, and
+               * offering them would just produce a confusing 404/409 after the
+               * fact. Restore is the only action, and the only way back to the
+               * normal (mutable) detail pane — for a drain it is the abort edge
+               * `restoreOrgFromArchive` implements, which is the whole reason
+               * this row has to be reachable at all. */
               <>
                 <div className="border-b px-6 py-4">
                   <div className="flex items-center justify-between">
@@ -1251,9 +1121,9 @@ export default function OrganizationsPage() {
                       <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
                         <span
                           data-testid="org-archived-detail-badge"
-                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusColors.archived}`}
+                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${archiveBadge(selectedOrg).color}`}
                         >
-                          {t('organizationsPage.archived.badge')}
+                          {archiveBadge(selectedOrg).label}
                         </span>
                         <span data-testid="org-archived-detail-purge">
                           {renderPurgeCountdown(selectedOrg.purgeAt)}
@@ -1276,7 +1146,9 @@ export default function OrganizationsPage() {
                   </div>
                 </div>
                 <div className="p-6 text-sm text-muted-foreground" data-testid="org-archived-readonly-notice">
-                  {t('organizationsPage.archived.readOnlyNotice')}
+                  {selectedOrg.status === 'offboarding'
+                    ? t('organizationsPage.archived.drainNotice')
+                    : t('organizationsPage.archived.readOnlyNotice')}
                 </div>
               </>
             ) : (
@@ -1302,10 +1174,18 @@ export default function OrganizationsPage() {
                     <div className="flex gap-2">
                       <button
                         type="button"
+                        data-testid="org-open-record"
+                        onClick={() => void navigateTo(`/organizations/${selectedOrg.id}`)}
+                        className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition hover:opacity-90"
+                      >
+                        {t('organizationsPage.actions.openRecord')}
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => handleEdit(selectedOrg)}
                         className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
                       >
-                        {t('common:actions.edit')}
+                        {t('organizationsPage.actions.openSettings')}
                       </button>
                       <button
                         type="button"
@@ -1331,17 +1211,17 @@ export default function OrganizationsPage() {
 
                 {/* Sites section */}
                 <div className="p-6">
-                  {sitesLoading ? (
+                  {siteCrud.sitesLoading ? (
                     <div className="flex items-center justify-center py-8">
                       <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
                       <span className="ml-3 text-sm text-muted-foreground">{t('organizationsPage.sites.loading')}</span>
                     </div>
                   ) : (
                     <SiteList
-                      sites={sites}
-                      onAddSite={handleAddSite}
-                      onEdit={handleEditSite}
-                      onDelete={handleDeleteSite}
+                      sites={siteCrud.sites}
+                      onAddSite={siteCrud.openAdd}
+                      onEdit={siteCrud.openEdit}
+                      onDelete={siteCrud.openDelete}
                       onSiteClick={(site) => void navigateTo(`/settings/sites/${site.id}`)}
                     />
                   )}
@@ -1412,89 +1292,18 @@ export default function OrganizationsPage() {
         />
       )}
 
-      {/* Site Add/Edit Modal */}
-      {(siteModalMode === 'add' || siteModalMode === 'edit') && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="mb-4 flex items-start justify-between gap-4 rounded-lg border bg-card p-6 shadow-xs">
-              <div>
-                <h2 className="text-lg font-semibold">
-                  {siteModalMode === 'edit'
-                    ? t('organizationsPage.siteModal.editTitle')
-                    : guidingFirstSite
-                      ? t('organizationsPage.siteModal.firstTitle', { organization: selectedOrg?.name })
-                      : t('organizationsPage.siteModal.addTitle')}
-                </h2>
-                <p className="text-sm text-muted-foreground">
-                  {siteModalMode === 'edit'
-                    ? t('organizationsPage.siteModal.editDescription')
-                    : guidingFirstSite
-                      ? t('organizationsPage.siteModal.firstDescription')
-                      : t('organizationsPage.siteModal.addDescription', { organization: selectedOrg?.name })}
-                </p>
-              </div>
-              {guidingFirstSite && (
-                <button
-                  type="button"
-                  onClick={handleCloseSiteModal}
-                  className="shrink-0 rounded-md border px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                >
-                  {t('organizationsPage.siteModal.skip')}
-                </button>
-              )}
-            </div>
-            <SiteForm
-              onSubmit={handleSiteSubmit}
-              onCancel={handleCloseSiteModal}
-              defaultValues={
-                selectedSite
-                  ? getSiteFormDefaults(selectedSite as Site & { address?: Record<string, string>; contact?: Record<string, string> })
-                  : partnerTimezone
-                    ? { timezone: partnerTimezone }
-                    : undefined
-              }
-              submitLabel={
-                siteModalMode === 'edit'
-                  ? t('organizationsPage.siteModal.saveChanges')
-                  : guidingFirstSite
-                    ? t('organizationsPage.siteModal.createFirst')
-                    : t('organizationsPage.siteModal.create')
-              }
-              loading={siteSubmitting}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Site Delete Confirmation Modal */}
-      {siteModalMode === 'delete' && selectedSite && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">{t('organizationsPage.deleteSite.title')}</h2>
-            <p className="mt-2 text-sm text-muted-foreground">
-              {t('organizationsPage.deleteSite.messagePrefix')} <span className="font-medium">{selectedSite.name}</span>?
-              {t('organizationsPage.deleteSite.messageSuffix')}
-            </p>
-            <div className="mt-6 flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={handleCloseSiteModal}
-                className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
-              >
-                {t('common:actions.cancel')}
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmDeleteSite}
-                disabled={siteSubmitting}
-                className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {siteSubmitting ? t('organizationsPage.actions.deleting') : t('common:actions.delete')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <SiteModals
+        mode={siteCrud.siteModalMode}
+        selectedSite={siteCrud.selectedSite}
+        guidingFirstSite={siteCrud.guidingFirstSite}
+        orgName={selectedOrg?.name}
+        partnerTimezone={partnerTimezone}
+        submitting={siteCrud.siteSubmitting}
+        onSubmit={siteCrud.submit}
+        onClose={siteCrud.close}
+        onConfirmDelete={siteCrud.confirmDelete}
+        getSiteFormDefaults={siteCrud.getSiteFormDefaults}
+      />
     </div>
   );
 }

@@ -23,8 +23,6 @@
  * tenancy boundary — nothing here re-derives an org from the sender.
  */
 import './setup';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 
@@ -54,11 +52,16 @@ import { processInboundEmail } from '../../services/inboundEmail/inboundEmailSer
 import type { NormalizedInboundEmail } from '../../services/inboundEmail/types';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
+import { replayMigration } from './replayMigration';
 import { randomUUID } from 'node:crypto';
 import * as orgMergeModule from '../../services/orgMerge';
 import { devices, sites } from '../../db/schema';
 
-const MIGRATION_FILE = join(__dirname, '../../../migrations/2026-10-04-100000-ticket-requester-contact.sql');
+const MIGRATION_FILE = '2026-10-04-100000-ticket-requester-contact.sql';
+// The follow-up that made portal_users.contact_id same-org (#3258). Needed here
+// only to RESTORE that constraint after the drift-tolerance test forges a row
+// it forbids.
+const PORTAL_USER_FK_MIGRATION_FILE = '2026-10-04-100002-portal-users-contact-composite-fk.sql';
 
 const uniqueSuffix = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const admin = () => getTestDb() as any;
@@ -470,9 +473,10 @@ describe('org merge KEEPS the requester link', () => {
 
 describe('2026-10-04-100000-ticket-requester-contact.sql', () => {
   it('is idempotent — a second apply is a no-op, not a duplicate-constraint abort', async () => {
-    const text = readFileSync(MIGRATION_FILE, 'utf8');
-    await admin().execute(sql.raw(text));
-    await admin().execute(sql.raw(text));
+    const definitionBefore = await admin().execute(sql`SELECT pg_get_functiondef('public.breeze_cascade_device_org_id()'::regprocedure) AS definition`);
+    await replayMigration(MIGRATION_FILE);
+    await replayMigration(MIGRATION_FILE);
+    expect(await admin().execute(sql`SELECT pg_get_functiondef('public.breeze_cascade_device_org_id()'::regprocedure) AS definition`)).toEqual(definitionBefore);
 
     const [{ count: fkCount }] = await admin().execute(
       sql`SELECT count(*)::int AS count FROM pg_constraint WHERE conname = 'tickets_requester_contact_org_fk'`,
@@ -509,7 +513,7 @@ describe('2026-10-04-100000-ticket-requester-contact.sql', () => {
       })
       .returning({ id: tickets.id });
 
-    await admin().execute(sql.raw(readFileSync(MIGRATION_FILE, 'utf8')));
+    await replayMigration(MIGRATION_FILE);
 
     const [row] = await admin()
       .select({ requesterContactId: tickets.requesterContactId })
@@ -519,11 +523,18 @@ describe('2026-10-04-100000-ticket-requester-contact.sql', () => {
   });
 
   it('skips a login whose contact lives in ANOTHER org instead of aborting the file', async () => {
-    // portal_users.contact_id is a SINGLE-column FK to contacts(id): nothing in
-    // the schema forces the login and its contact into the same org. Such a
-    // drifted row makes the backfill propose a pair the composite FK rejects,
-    // and a 23503 inside a migration aborts the WHOLE file — on every database
-    // that has the drift, with no way to skip it.
+    // When THIS migration shipped, portal_users.contact_id was a SINGLE-column
+    // FK to contacts(id): nothing in the schema forced the login and its
+    // contact into the same org. Such a drifted row makes the backfill propose
+    // a pair the composite FK rejects, and a 23503 inside a migration aborts
+    // the WHOLE file — on every database that has the drift, with no way to
+    // skip it. The `EXISTS ... c.org_id = t.org_id` guard in the backfill is
+    // what keeps that from happening, and this is its test.
+    //
+    // 2026-10-04-100002-portal-users-contact-composite-fk.sql later closed the
+    // gap at the source, so the drift is no longer representable and has to be
+    // forged with that constraint dropped — which is exactly the state a
+    // database replaying migrations in order is in when THIS file runs.
     const otherOrg = await createOrganization({ partnerId: fx.partnerId });
     seeded.orgIds.push(otherOrg.id);
     const suffix = uniqueSuffix();
@@ -531,30 +542,53 @@ describe('2026-10-04-100000-ticket-requester-contact.sql', () => {
       .insert(contacts)
       .values({ orgId: otherOrg.id, email: `drift-${suffix}@example.test`, name: 'Drifted' })
       .returning({ id: contacts.id });
-    const [login] = await admin()
-      .insert(portalUsers)
-      .values({ orgId: fx.orgId, email: `drift-${suffix}@example.test`, name: 'Drifted', contactId: foreignContact.id })
-      .returning({ id: portalUsers.id });
-    const [ticket] = await admin()
-      .insert(tickets)
-      .values({
-        orgId: fx.orgId,
-        partnerId: fx.partnerId,
-        ticketNumber: `DRIFT-${suffix}`,
-        internalNumber: `T-2026-${suffix.slice(-4)}`,
-        subject: 'Drifted login',
-        status: 'open',
-        source: 'portal',
-        submittedBy: login.id,
-      })
-      .returning({ id: tickets.id });
+    await admin().execute(sql`ALTER TABLE portal_users DROP CONSTRAINT IF EXISTS portal_users_contact_org_fk`);
+    let ticketId: string;
+    try {
+      const [login] = await admin()
+        .insert(portalUsers)
+        .values({ orgId: fx.orgId, email: `drift-${suffix}@example.test`, name: 'Drifted', contactId: foreignContact.id })
+        .returning({ id: portalUsers.id });
+      const [ticket] = await admin()
+        .insert(tickets)
+        .values({
+          orgId: fx.orgId,
+          partnerId: fx.partnerId,
+          ticketNumber: `DRIFT-${suffix}`,
+          internalNumber: `T-2026-${suffix.slice(-4)}`,
+          subject: 'Drifted login',
+          status: 'open',
+          source: 'portal',
+          submittedBy: login.id,
+        })
+        .returning({ id: tickets.id });
+      ticketId = ticket.id;
 
-    await expect(admin().execute(sql.raw(readFileSync(MIGRATION_FILE, 'utf8')))).resolves.toBeDefined();
+      await expect(replayMigration(MIGRATION_FILE)).resolves.toBeUndefined();
+    } finally {
+      // Restore the constraint for the rest of the shard. Replaying the later
+      // migration is the honest way to do it — it nulls the forged link on its
+      // way past, which is the cleanup that file exists to perform.
+      await replayMigration(PORTAL_USER_FK_MIGRATION_FILE);
+    }
+
+    // Assert the restore landed HERE, at its source. Leaving portal_users
+    // unconstrained would blame whichever suite in this shard next touches
+    // contact_id — and a replay of 2026-08-19-contacts.sql (whose FK guard is
+    // name-only) would quietly resurrect the superseded single-column FK too.
+    const restored = (await admin().execute(sql`
+      SELECT conname FROM pg_constraint
+       WHERE contype = 'f'
+         AND conrelid = 'portal_users'::regclass
+         AND confrelid = 'contacts'::regclass
+       ORDER BY conname
+    `)) as unknown as Array<{ conname: string }>;
+    expect(restored.map((r) => r.conname)).toEqual(['portal_users_contact_org_fk']);
 
     const [row] = await admin()
       .select({ requesterContactId: tickets.requesterContactId })
       .from(tickets)
-      .where(eq(tickets.id, ticket.id));
+      .where(eq(tickets.id, ticketId!));
     // Left unlinked — recoverable — rather than blocking the deploy.
     expect(row.requesterContactId).toBeNull();
   });

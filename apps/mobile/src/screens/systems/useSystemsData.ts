@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { reportInternalError } from '../../lib/errorReporting';
 
-import type { Alert, Device } from '../../services/api';
-import { getAlerts, getAlertsPaged, getDevicesPaged } from '../../services/api';
+import type { Alert, Device, FleetFindingCounts } from '../../services/api';
+import { getAlerts, getAlertsPaged, getDevicesPaged, getFleetFindingCounts } from '../../services/api';
 import {
   addNotificationReceivedListener,
   parseAlertNotification,
@@ -23,12 +23,22 @@ import {
   resolveOrgName,
   type SystemsSlices,
 } from './mergeSystemsResults';
+import { findingsChangedRevision, shouldRefreshOnFocus } from './findingsRefreshSignal';
+import {
+  buildFindingsSummary,
+  foldFindingsIntoOrgRollups,
+  type FindingsOrgSummary,
+} from './orgFindingsRollup';
+
+export type { FindingsOrgSummary } from './orgFindingsRollup';
 
 export interface OrgRollup {
   id: string;
   name: string;
   deviceCount: number;
   issueCount: number;
+  /** #5115: devices currently reporting `status: 'offline'` for this org. */
+  offlineCount: number;
   /**
    * True when the name could not be resolved BECAUSE the `orgs` fetch failed,
    * as opposed to the org genuinely not being in the list. Without the
@@ -44,6 +54,8 @@ export interface SystemsData {
   activeAlerts: Alert[];
   devices: Device[];
   orgs: OrganizationSummary[];
+  /** Open fleet-hygiene finding counts (#5139). Null until the first fetch lands. */
+  findings: FleetFindingCounts | null;
   loading: boolean;
   refreshing: boolean;
   error: string | null;
@@ -88,9 +100,10 @@ function alertOrgId(a: Alert): string | undefined {
   return typeof id === 'string' ? id : undefined;
 }
 
-// Fetches summary, alerts, activeAlerts, devices and orgs in parallel — five,
-// matching `const total = 5` in mergeSystemsResults. Miscounting here is not
-// cosmetic: that total is the threshold for "everything failed". Owns the local
+// Fetches summary, alerts, activeAlerts, devices, orgs and findings in
+// parallel — six, matching `const total = 6` in mergeSystemsResults.
+// Miscounting here is not cosmetic: that total is the threshold for
+// "everything failed". Owns the local
 // org-filter state so the screen reads filtered slices straight from the
 // hook. Failures keep last-known data; only the in-section error banner
 // flips.
@@ -101,6 +114,7 @@ export function useSystemsData() {
     activeAlerts: [],
     devices: [],
     orgs: [],
+    findings: null,
     loading: true,
     refreshing: false,
     error: null,
@@ -129,6 +143,14 @@ export function useSystemsData() {
   // acknowledge is confirmed, which can be 13-15s after the callback was
   // created) instead of a value captured in a stale closure.
   const activeAlertsGenerationRef = useRef<number>(0);
+  // The same primitive for the FINDINGS slice (#5365). `fetchAll`'s boolean
+  // return is an aggregate — "at least one of six slices landed" — and its own
+  // doc comment warns it is not a freshness signal for any single slice. The
+  // findings-changed bypass below must be consumed only when the counts call
+  // itself resolved, or a transient failure on that one call while the other
+  // five succeed would mark the bypass as spent and leave the hero showing a
+  // count the tech already cleared for another full minute.
+  const findingsGenerationRef = useRef<number>(0);
   const [activeAlertsGeneration, setActiveAlertsGeneration] = useState<number>(0);
   const getActiveAlertsGeneration = useCallback(() => activeAlertsGenerationRef.current, []);
 
@@ -167,7 +189,7 @@ export function useSystemsData() {
       // still deserves it.
       let activeTruncated: boolean | null = null;
       let devicesTruncated: boolean | null = null;
-      const [summary, alerts, activeAlerts, devices, orgs] = await Promise.allSettled([
+      const [summary, alerts, activeAlerts, devices, orgs, findings] = await Promise.allSettled([
         getMobileSummary(),
         getAlerts('all'),
         getAlertsPaged('active').then((r) => {
@@ -179,8 +201,9 @@ export function useSystemsData() {
           return r.items;
         }),
         listOrganizations(),
+        getFleetFindingCounts(),
       ]);
-      const results = { summary, alerts, activeAlerts, devices, orgs };
+      const results = { summary, alerts, activeAlerts, devices, orgs, findings };
       // Bump BEFORE the reportInternalError loop below, which can throw and
       // is caught by the outer catch (see its comment): activeAlerts already
       // genuinely arrived by this point regardless of what happens next, so
@@ -189,6 +212,8 @@ export function useSystemsData() {
         activeAlertsGenerationRef.current += 1;
         setActiveAlertsGeneration(activeAlertsGenerationRef.current);
       }
+      // Same reasoning, for the slice the findings-changed bypass cares about.
+      if (findings.status === 'fulfilled') findingsGenerationRef.current += 1;
       // The raw messages are internal (function name + HTTP status) — report
       // them to Sentry and keep only a static string in UI state (issue #3141).
       for (const reason of rejectionReasons(results)) {
@@ -235,7 +260,7 @@ export function useSystemsData() {
       });
       // Only count as a successful fetch when something arrived; an all-failed
       // round must not suppress the next focus refresh for a full minute.
-      const arrived = failedCount < 5;
+      const arrived = failedCount < 6;
       if (arrived) lastFetchAt.current = Date.now();
       return arrived;
     } catch (err) {
@@ -320,10 +345,38 @@ export function useSystemsData() {
 
   // Soft refresh on tab focus, debounced so a rapid Home → Systems →
   // Home → Systems doesn't fire four requests. Manual pull always wins.
+  //
+  // The debounce is bypassed when a finding was acknowledged/dismissed/reopened
+  // since this hook last fetched (#5365). Without that, coming back from the
+  // finding detail screen leaves the hero and the ACTIVE ISSUES findings rows
+  // claiming a count the tech just cleared, for up to a minute — the counts
+  // endpoint is the only source for those numbers and nothing else invalidates
+  // it. The revision is only marked as seen once the findings counts themselves
+  // came back, so neither a coalesced call nor a round where only the other
+  // slices landed consumes the signal.
   const FOCUS_DEBOUNCE_MS = 60_000;
+  const seenFindingsRevision = useRef<number>(findingsChangedRevision());
   const refreshIfStale = useCallback(() => {
-    if (Date.now() - lastFetchAt.current < FOCUS_DEBOUNCE_MS) return;
-    fetchAll('refresh');
+    const signalRevision = findingsChangedRevision();
+    if (
+      !shouldRefreshOnFocus({
+        now: Date.now(),
+        lastFetchAt: lastFetchAt.current,
+        debounceMs: FOCUS_DEBOUNCE_MS,
+        signalRevision,
+        seenRevision: seenFindingsRevision.current,
+      })
+    ) {
+      return;
+    }
+    const generationBefore = findingsGenerationRef.current;
+    void fetchAll('refresh').then(() => {
+      // Consume the bypass only if the COUNTS call actually resolved this
+      // round — not merely because some other slice did.
+      if (findingsGenerationRef.current !== generationBefore) {
+        seenFindingsRevision.current = signalRevision;
+      }
+    });
   }, [fetchAll]);
 
   // Apply the local org filter if one is active.
@@ -374,6 +427,7 @@ export function useSystemsData() {
           name: resolved.name,
           deviceCount: 0,
           issueCount: 0,
+          offlineCount: 0,
           nameUnavailable: resolved.unavailable,
         };
         byId.set(id, row);
@@ -382,7 +436,10 @@ export function useSystemsData() {
     };
 
     for (const d of data.devices) {
-      if (d.organizationId) ensure(d.organizationId).deviceCount++;
+      if (!d.organizationId) continue;
+      const row = ensure(d.organizationId);
+      row.deviceCount++;
+      if (d.status === 'offline') row.offlineCount++;
     }
     // Issue counts come from the active page for the same reason the section
     // does: the unfiltered page is recency-ordered and can contain no
@@ -394,27 +451,86 @@ export function useSystemsData() {
       }
     }
 
-    return Array.from(byId.values()).sort((a, b) => {
-      if (b.issueCount !== a.issueCount) return b.issueCount - a.issueCount;
-      return a.name.localeCompare(b.name);
-    });
+    const base = Array.from(byId.values());
+    // Fold in open fleet findings (#5139) — same failed-fetch degrade as the
+    // rest of this memo: a failed findings fetch means `data.findings` is
+    // whatever last successfully loaded (or null on a first-load failure),
+    // and `foldFindingsIntoOrgRollups` treats an undefined byOrg as a no-op,
+    // so the rollup degrades to alerts-only rather than crashing or zeroing
+    // out real alert-derived counts.
+    return foldFindingsIntoOrgRollups(base, data.findings?.byOrg, data.orgs, orgsFailed);
     // `data.failed` belongs here: a failed orgs fetch keeps the SAME
     // `data.orgs` reference, so without it the memo never recomputes and the
     // rows keep their old authoritative labels.
-  }, [data.activeAlerts, data.devices, data.orgs, data.failed, filterOrgId]);
+  }, [data.activeAlerts, data.devices, data.orgs, data.findings, data.failed, filterOrgId]);
 
   const filterOrgName = useMemo(() => {
     if (!filterOrgId) return null;
     return resolveOrgName(data.orgs, filterOrgId, data.failed.includes('orgs')).name;
   }, [filterOrgId, data.orgs, data.failed]);
 
+  // Device counts scoped to the active org filter, for the hero (#5105: it
+  // used to stay fleet-wide — "77 devices" — while an org filter was active).
+  // Like `orgRollups.deviceCount`, this is a floor rather than a total when
+  // `devicesTruncated` is set: it is built from the same paged device list.
+  const filterOrgDeviceCounts = useMemo(() => {
+    if (!filterOrgId) return null;
+    let online = 0;
+    let offline = 0;
+    let maintenance = 0;
+    let total = 0;
+    for (const d of data.devices) {
+      if (d.organizationId !== filterOrgId) continue;
+      total++;
+      if (d.status === 'online') online++;
+      else if (d.status === 'offline') offline++;
+      else if (d.status === 'warning') maintenance++;
+    }
+    return { total, online, offline, maintenance };
+  }, [filterOrgId, data.devices]);
+
+  // Open-finding count for the hero (#5139): fleet-wide total, or that org's
+  // own count when a filter is active. `data.findings` stays null/stale on a
+  // failed fetch, which this naturally degrades to 0 — alerts-only, per the
+  // contract that a failed findings fetch must never crash the hero.
+  const findingsCount = useMemo(() => {
+    if (!data.findings) return 0;
+    if (filterOrgId) return data.findings.byOrg[filterOrgId] ?? 0;
+    return data.findings.total;
+  }, [data.findings, filterOrgId]);
+
+  // Org ids the fleet-wide findings above belong to, for the hero's "across N
+  // organizations" copy (#5139 follow-up: deriving that from `activeIssues`
+  // alone undercounted a fleet with open findings but zero active alerts).
+  // Empty when a filter is active — `deriveHeroState` forces `orgCount` to 1
+  // in that case regardless, same as it already does for `activeIssues`.
+  const findingsOrgIds = useMemo(() => {
+    if (!data.findings || filterOrgId) return [];
+    return Object.entries(data.findings.byOrg)
+      .filter(([, count]) => count > 0)
+      .map(([orgId]) => orgId);
+  }, [data.findings, filterOrgId]);
+
+  // Per-org open-finding summary rows for ACTIVE ISSUES (#5139) — distinct
+  // from `activeIssues` (alerts): the findings counts endpoint returns
+  // aggregate counts, not individual finding records, so this renders one
+  // summary row per org rather than one row per finding.
+  const activeFindingsSummary = useMemo<FindingsOrgSummary[]>(
+    () => buildFindingsSummary(data.findings?.byOrg, data.orgs, data.failed.includes('orgs'), filterOrgId),
+    [data.findings, data.orgs, data.failed, filterOrgId],
+  );
+
   return {
     ...data,
     activeIssues,
     recent,
     orgRollups,
+    findingsCount,
+    findingsOrgIds,
+    activeFindingsSummary,
     filterOrgId,
     filterOrgName,
+    filterOrgDeviceCounts,
     setFilterOrgId,
     refresh,
     refreshIfStale,

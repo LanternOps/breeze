@@ -117,6 +117,54 @@ describe('buildTenantExportPlan', () => {
     );
   });
 
+  const enrollmentEpochs = [
+    ['enrollment_keys', 'credential_generation', ['key', 'key_secret_hash', 'short_code']],
+    ['installer_bootstrap_tokens', 'parent_credential_generation', ['token']],
+  ] as const;
+
+  it.each(enrollmentEpochs)(
+    'exports the reviewed integer epoch for %s while excluding credentials',
+    async (tableName, epoch, secrets) => {
+      const table = CORE_TENANT_EXPORT_POLICY[tableName]!;
+      mockState.columns = Object.keys(table.columns).map((name, index) =>
+        column(tableName, name, name === epoch ? 'integer' : 'text', index + 1),
+      );
+
+      expect(table.columns[epoch]).toMatchObject({
+        decision: 'include', reviewedSensitiveName: true,
+      });
+      expect(table.columns[epoch]!.rationale).toMatch(/positive integer/i);
+      const [plan] = await buildTenantExportPlan([tableName], CORE_TENANT_EXPORT_POLICY);
+      expect(plan!.includedColumns).toContain(epoch);
+      for (const secret of secrets) {
+        expect(table.columns[secret]!.decision).toBe('exclude');
+        expect(plan!.includedColumns).not.toContain(secret);
+      }
+    },
+  );
+
+  it.each(enrollmentEpochs)(
+    'rejects an unreviewed integer epoch for %s without relaxing the name guard',
+    async (tableName, epoch) => {
+      const table = CORE_TENANT_EXPORT_POLICY[tableName]!;
+      mockState.columns = Object.keys(table.columns).map((name, index) =>
+        column(tableName, name, name === epoch ? 'integer' : 'text', index + 1),
+      );
+      const registry: TenantExportPolicyRegistry = {
+        [tableName]: {
+          ...table,
+          columns: {
+            ...table.columns,
+            [epoch]: { decision: 'include', rationale: 'Unreviewed integer epoch.' },
+          },
+        },
+      };
+      await expect(buildTenantExportPlan([tableName], registry)).rejects.toThrow(
+        new RegExp(`${epoch}.*reviewedSensitiveName`),
+      );
+    },
+  );
+
   it.each([
     ['jsonb type', column('widgets', 'preferences', 'jsonb', 2, 'jsonb')],
     ['bytea type', column('widgets', 'document', 'bytea', 2, 'bytea')],
@@ -269,6 +317,72 @@ describe('buildTenantExportPlan', () => {
 });
 
 describe('CORE_TENANT_EXPORT_POLICY migration-era columns', () => {
+  it('exports deployment dependency fingerprints as reviewed integrity provenance', () => {
+    expect(
+      CORE_TENANT_EXPORT_POLICY.software_deployments!.columns.dependency_fingerprint,
+    ).toMatchObject({
+      decision: 'include',
+      reviewedSensitiveName: true,
+    });
+  });
+
+  it('classifies the portal auth epoch but omits it from the export plan', async () => {
+    const portalPolicy = CORE_TENANT_EXPORT_POLICY.portal_users!;
+    mockState.columns = Object.keys(portalPolicy.columns).map((columnName, index) =>
+      column('portal_users', columnName, 'text', index + 1),
+    );
+
+    const [plan] = await buildTenantExportPlan(
+      ['portal_users'],
+      CORE_TENANT_EXPORT_POLICY,
+    );
+
+    expect(portalPolicy.columns.auth_epoch).toMatchObject({
+      decision: 'exclude',
+      reviewedSensitiveName: true,
+    });
+    expect(plan?.includedColumns).not.toContain('auth_epoch');
+    expect(plan?.includedColumns).toContain('status');
+  });
+
+  it('exports portal report definitions and contact-bound recipients', () => {
+    expect(
+      CORE_TENANT_EXPORT_POLICY.reports!.columns.portal_self_service!.decision,
+    ).toBe('include');
+
+    expect(
+      Object.fromEntries(
+        Object.entries(
+          CORE_TENANT_EXPORT_POLICY.report_schedule_recipients!.columns,
+        ).map(([name, value]) => [name, value.decision]),
+      ),
+    ).toEqual({
+      id: 'include',
+      report_id: 'include',
+      org_id: 'include',
+      contact_id: 'include',
+      created_at: 'include',
+    });
+
+    expect(CORE_TENANT_EXPORT_POLICY).not.toHaveProperty('report_runs');
+  });
+
+  // #2787 wave 04 — `devices` is in CORE_ORG_CASCADE_DELETE_ORDER, so EVERY
+  // column of it must carry an export classification; an unclassified one
+  // fails the tenant-export contract suites. `decommissioned_at` is a plain
+  // timestamp (when the device was removed), not credential material.
+  it('classifies the device removal timestamp as ordinary exportable tenant data', () => {
+    expect(
+      CORE_TENANT_EXPORT_POLICY.devices!.columns.decommissioned_at,
+    ).toBeDefined();
+    expect(
+      CORE_TENANT_EXPORT_POLICY.devices!.columns.decommissioned_at!.decision,
+    ).toBe('include');
+    expect(
+      CORE_TENANT_EXPORT_POLICY.devices!.columns.decommissioned_at!.reviewedSensitiveName,
+    ).toBeUndefined();
+  });
+
   it('rejects a column classified in both a shared group and a specific decision', () => {
     expect(() =>
       tablePolicy('org_id', {

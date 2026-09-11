@@ -26,6 +26,7 @@ const {
   emitAlertStateFeedbackMock,
   writeRouteAuditMock,
   executeScriptOnDevicesMock,
+  assertDeviceExecuteAllowedMock,
   rateLimitState,
   authState
 } = vi.hoisted(() => ({
@@ -34,6 +35,7 @@ const {
   emitAlertStateFeedbackMock: vi.fn().mockResolvedValue(undefined),
   writeRouteAuditMock: vi.fn(),
   executeScriptOnDevicesMock: vi.fn(),
+  assertDeviceExecuteAllowedMock: vi.fn(),
   rateLimitState: { allowed: true },
   authState: {
     permissions: undefined as { allowedSiteIds?: string[] } | undefined,
@@ -108,6 +110,11 @@ vi.mock('../services/scriptExecution', () => ({
   executeScriptOnDevices: executeScriptOnDevicesMock
 }));
 
+vi.mock('../services/partnerTrust.commands', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/partnerTrust.commands')>()),
+  assertDeviceExecuteAllowed: assertDeviceExecuteAllowedMock,
+}));
+
 vi.mock('../services/mlFeedbackEmitters', () => ({
   emitAlertStateFeedback: emitAlertStateFeedbackMock
 }));
@@ -140,6 +147,52 @@ const mockSelectWhereChain = (result: unknown) => ({
   })
 });
 
+// GET /mobile/devices' batched open-alert / open-ticket counts (#5140): a
+// plain SELECT ... WHERE ... GROUP BY, one row per device that has at least
+// one matching row (never per-alert/per-ticket) — this is what keeps the
+// device-list page from fanning out even though a device can have many
+// alerts/tickets.
+const mockSelectGroupByChain = (result: unknown) => ({
+  from: vi.fn().mockReturnValue({
+    where: vi.fn().mockReturnValue({
+      groupBy: vi.fn().mockResolvedValue(result)
+    })
+  })
+});
+
+// Same shape as mockSelectGroupByChain, but records the `where` condition so
+// a test can assert the query actually filters to the "open" status set
+// rather than merely returning whatever the mock hands back regardless of
+// what was queried.
+const mockSelectGroupByChainCapturing = (
+  result: unknown,
+  capture: { where?: unknown }
+) => ({
+  from: vi.fn().mockReturnValue({
+    where: vi.fn((where: unknown) => {
+      capture.where = where;
+      return {
+        groupBy: vi.fn().mockResolvedValue(result)
+      };
+    })
+  })
+});
+
+// Rejects instead of resolving, for the fault-isolation tests below.
+const mockSelectGroupByChainRejecting = (error: unknown) => ({
+  from: vi.fn().mockReturnValue({
+    where: vi.fn().mockReturnValue({
+      groupBy: vi.fn().mockRejectedValue(error)
+    })
+  })
+});
+
+const mockSelectWhereChainRejecting = (error: unknown) => ({
+  from: vi.fn().mockReturnValue({
+    where: vi.fn().mockRejectedValue(error)
+  })
+});
+
 const mockSelectOrderChain = (result: unknown) => ({
   from: vi.fn().mockReturnValue({
     where: vi.fn().mockReturnValue({
@@ -152,19 +205,75 @@ const mockSelectOrderChain = (result: unknown) => ({
   })
 });
 
-const mockSelectLeftJoinChain = (result: unknown) => ({
-  from: vi.fn().mockReturnValue({
-    leftJoin: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        orderBy: vi.fn().mockReturnValue({
-          limit: vi.fn().mockReturnValue({
-            offset: vi.fn().mockResolvedValue(result)
-          })
-        })
+// Supports any number of chained `.leftJoin(...)` calls before `.where(...)` —
+// the inbox query joins devices, alert_rules and alert_templates in sequence
+// (#4535), so a fixed single-leftJoin shape would throw
+// "leftJoin is not a function" on the second call.
+const mockSelectLeftJoinChain = (result: unknown) => {
+  const joinable: { leftJoin: unknown; where: unknown } = {} as never;
+  joinable.leftJoin = vi.fn().mockReturnValue(joinable);
+  joinable.where = vi.fn().mockReturnValue({
+    orderBy: vi.fn().mockReturnValue({
+      limit: vi.fn().mockReturnValue({
+        offset: vi.fn().mockResolvedValue(result)
       })
+    })
+  });
+  return {
+    from: vi.fn().mockReturnValue(joinable)
+  };
+};
+
+// Same shape as `mockSelectOrderChain`, but records the `where` condition and
+// the `orderBy` args the route actually passed — used by the #3770 cursor
+// tests to assert the keyset predicate carries the right anchor and that
+// legacy vs. cursor mode order by different columns.
+const mockSelectOrderChainCapturing = (
+  result: unknown,
+  capture: { where?: unknown; orderByArgs?: unknown[] }
+) => ({
+  from: vi.fn().mockReturnValue({
+    where: vi.fn((where: unknown) => {
+      capture.where = where;
+      return {
+        orderBy: vi.fn((...args: unknown[]) => {
+          capture.orderByArgs = args;
+          return {
+            limit: vi.fn().mockReturnValue({
+              offset: vi.fn().mockResolvedValue(result)
+            })
+          };
+        })
+      };
     })
   })
 });
+
+// Same idea as `mockSelectOrderChainCapturing`, for the inbox query's
+// leftJoin-then-where-then-orderBy shape.
+const mockSelectLeftJoinChainCapturing = (
+  result: unknown,
+  capture: { where?: unknown; orderByArgs?: unknown[] }
+) => {
+  const joinable: { leftJoin: unknown; where: unknown } = {} as never;
+  joinable.leftJoin = vi.fn().mockReturnValue(joinable);
+  joinable.where = vi.fn((where: unknown) => {
+    capture.where = where;
+    return {
+      orderBy: vi.fn((...args: unknown[]) => {
+        capture.orderByArgs = args;
+        return {
+          limit: vi.fn().mockReturnValue({
+            offset: vi.fn().mockResolvedValue(result)
+          })
+        };
+      })
+    };
+  });
+  return {
+    from: vi.fn().mockReturnValue(joinable)
+  };
+};
 
 const objectContains = (value: unknown, needle: string, seen = new WeakSet<object>()): boolean => {
   if (typeof value === 'string') return value === needle;
@@ -173,6 +282,30 @@ const objectContains = (value: unknown, needle: string, seen = new WeakSet<objec
   seen.add(value);
   return Object.values(value as Record<string, unknown>).some((child) => objectContains(child, needle, seen));
 };
+
+// A plain deep search like objectContains() is UNSAFE for asserting the
+// literal values bound into a drizzle `inArray(enumColumn, [...])` filter:
+// every column object on the tree also carries the enum's FULL declared
+// value set on `column.enumValues` (e.g. alerts.status's enumValues includes
+// 'resolved'/'suppressed'/'dismissed' even when the query filters to just
+// ['active','acknowledged']), so objectContains would report a match for a
+// status that was never actually queried. This walks only `.queryChunks`
+// (drizzle SQL nodes) and arrays, and stops at a `Param` node's own `.value`
+// without following its `.encoder`/`.table` back into that enum metadata —
+// so it reports only what was genuinely bound into the query.
+function extractBoundParamValues(node: unknown, seen = new Set<unknown>()): unknown[] {
+  if (node == null || typeof node !== 'object') return [];
+  if (seen.has(node)) return [];
+  seen.add(node);
+  if ((node as { constructor?: { name?: string } }).constructor?.name === 'Param') {
+    return [(node as { value: unknown }).value];
+  }
+  if (Array.isArray(node)) {
+    return node.flatMap((item) => extractBoundParamValues(item, seen));
+  }
+  const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+  return Array.isArray(chunks) ? chunks.flatMap((item) => extractBoundParamValues(item, seen)) : [];
+}
 
 const mockInsertReturning = (result: unknown) => ({
   values: vi.fn().mockReturnValue({
@@ -205,19 +338,19 @@ const mockDeleteReturning = (result: unknown) => ({
 describe('mobile cursor decoding', () => {
   it('returns null when the cursor id is not a UUID', () => {
     const cursor = Buffer.from(JSON.stringify({
-      ts: '2026-07-28T12:00:00.000Z',
+      key: '2026-07-28T12:00:00.000Z',
       id: 'not-a-uuid',
     })).toString('base64url');
 
     expect(decodeCursor(cursor)).toBeNull();
   });
 
-  it('decodes a cursor with a valid UUID id', () => {
+  it('decodes a cursor with a valid UUID id, key kept verbatim', () => {
     const id = '11111111-1111-4111-8111-111111111111';
-    const cursor = encodeCursor('2026-07-28T12:00:00.000Z', id);
+    const cursor = encodeCursor('2026-07-28T12:00:00.123456', id);
 
     expect(decodeCursor(cursor!)).toEqual({
-      ts: new Date('2026-07-28T12:00:00.000Z'),
+      key: '2026-07-28T12:00:00.123456',
       id,
     });
   });
@@ -237,6 +370,7 @@ describe('mobile routes', () => {
     rateLimitState.allowed = true;
     vi.mocked(db.transaction).mockReset();
     executeScriptOnDevicesMock.mockReset();
+    assertDeviceExecuteAllowedMock.mockResolvedValue(undefined);
     _resetRegistrationFallbackReportsForTests();
     app = new Hono();
     app.route('/mobile', mobileRoutes);
@@ -707,7 +841,8 @@ describe('mobile routes', () => {
               deviceId: '11111111-2222-4333-8444-555555555555',
               deviceHostname: 'host-1',
               deviceOsType: 'linux',
-              deviceStatus: 'online'
+              deviceStatus: 'online',
+              category: 'Security'
             },
             {
               id: 'alert-2',
@@ -722,7 +857,10 @@ describe('mobile routes', () => {
               deviceId: null,
               deviceHostname: null,
               deviceOsType: null,
-              deviceStatus: null
+              deviceStatus: null,
+              // Alerts can be created without a rule, so the joined category
+              // is nullable.
+              category: null
             }
           ]) as any
         );
@@ -737,6 +875,11 @@ describe('mobile routes', () => {
       expect(body.pagination.total).toBe(2);
       expect(body.data[0].device).toBeDefined();
       expect(body.data[1].device).toBeNull();
+      // The alert category comes from the rule's template (#4535) — the
+      // client mapper needs it to show something other than the always-'alert'
+      // constant the removed TYPE row used to display.
+      expect(body.data[0].category).toBe('Security');
+      expect(body.data[1].category).toBeNull();
     });
 
     it('should require organization context for org scope', async () => {
@@ -782,32 +925,39 @@ describe('mobile routes', () => {
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
+            // devices -> alert_rules -> alert_templates: three chained
+            // leftJoins before the where clause (#4535).
             leftJoin: vi.fn().mockReturnValue({
-              where: vi.fn((where: unknown) => {
-                captured.rowsWhere = where;
-                return {
-                  orderBy: vi.fn().mockReturnValue({
-                    limit: vi.fn().mockReturnValue({
-                      offset: vi.fn().mockResolvedValue([
-                        {
-                          id: 'alert-allowed',
-                          orgId: 'org-123',
-                          status: 'active',
-                          severity: 'critical',
-                          title: 'Allowed alert',
-                          message: 'Allowed device alert',
-                          triggeredAt: new Date(),
-                          acknowledgedAt: null,
-                          resolvedAt: null,
-                          deviceId: DEVICE_ALLOWED,
-                          deviceHostname: 'allowed-host',
-                          deviceOsType: 'linux',
-                          deviceStatus: 'online'
-                        }
-                      ])
-                    })
+              leftJoin: vi.fn().mockReturnValue({
+                leftJoin: vi.fn().mockReturnValue({
+                  where: vi.fn((where: unknown) => {
+                    captured.rowsWhere = where;
+                    return {
+                      orderBy: vi.fn().mockReturnValue({
+                        limit: vi.fn().mockReturnValue({
+                          offset: vi.fn().mockResolvedValue([
+                            {
+                              id: 'alert-allowed',
+                              orgId: 'org-123',
+                              status: 'active',
+                              severity: 'critical',
+                              title: 'Allowed alert',
+                              message: 'Allowed device alert',
+                              triggeredAt: new Date(),
+                              acknowledgedAt: null,
+                              resolvedAt: null,
+                              deviceId: DEVICE_ALLOWED,
+                              deviceHostname: 'allowed-host',
+                              deviceOsType: 'linux',
+                              deviceStatus: 'online',
+                              category: null
+                            }
+                          ])
+                        })
+                      })
+                    };
                   })
-                };
+                })
               })
             })
           })
@@ -871,6 +1021,106 @@ describe('mobile routes', () => {
         DEVICE_DENIED
       ]);
       expect(db.select).toHaveBeenCalledTimes(2);
+    });
+
+    // #3770: nextCursor used to be computed only inside `if (cursor)`, so a
+    // cold-start caller (no cursor to send) could never obtain one, and the
+    // Date round-trip truncated triggered_at to millisecond precision, which
+    // could skip rows sitting between the truncated cursor and the real
+    // boundary.
+    describe('cursor pagination (#3770)', () => {
+      const row = (id: string, triggeredAtIso: string, triggeredAtKey: string) => ({
+        id,
+        orgId: 'org-123',
+        status: 'active',
+        severity: 'critical',
+        title: `Alert ${id}`,
+        message: 'msg',
+        triggeredAt: new Date(triggeredAtIso),
+        triggeredAtKey,
+        acknowledgedAt: null,
+        resolvedAt: null,
+        deviceId: null,
+        deviceHostname: null,
+        deviceOsType: null,
+        deviceStatus: null,
+        category: null
+      });
+
+      it('a cold-start request (no cursor) returns a usable nextCursor when more rows exist', async () => {
+        // Deliberately give `triggeredAt` (the millisecond-capped Date) a
+        // DIFFERENT value than `triggeredAtKey` (the full-precision text) on
+        // the boundary row — if the route ever regresses to building the
+        // cursor from `triggeredAt` instead of `triggeredAtKey`, this proves
+        // it by asserting the exact string that comes back.
+        const rows = [
+          row('aaaaaaaa-0000-4000-8000-000000000001', '2026-07-28T12:00:00.999Z', '2026-07-28T12:00:00.999999'),
+          row('aaaaaaaa-0000-4000-8000-000000000002', '2026-07-28T11:00:00.111Z', '2026-07-28T11:00:00.111111'),
+          row('aaaaaaaa-0000-4000-8000-000000000003', '2026-07-28T10:00:00.000Z', '2026-07-28T10:00:00.000000')
+        ];
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
+          .mockReturnValueOnce(mockSelectLeftJoinChain(rows) as any); // 3 rows for limit=2 => hasMore
+
+        const res = await app.request('/mobile/alerts/inbox?limit=2', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(2);
+        expect(body.data.map((a: { id: string }) => a.id)).toEqual(['aaaaaaaa-0000-4000-8000-000000000001', 'aaaaaaaa-0000-4000-8000-000000000002']);
+        expect(body.pagination.total).toBe(3);
+        expect(body.pagination.nextCursor).not.toBeNull();
+
+        const decoded = decodeCursor(body.pagination.nextCursor);
+        // Full microsecond precision from `triggeredAtKey` — NOT the
+        // millisecond-truncated `triggeredAt.toISOString()` value.
+        expect(decoded).toEqual({ key: '2026-07-28T11:00:00.111111', id: 'aaaaaaaa-0000-4000-8000-000000000002' });
+      });
+
+      it('following nextCursor reaches the next page and terminates with nextCursor: null on the last page', async () => {
+        const page1Rows = [
+          row('aaaaaaaa-0000-4000-8000-000000000001', '2026-07-28T12:00:00.999Z', '2026-07-28T12:00:00.999999'),
+          row('aaaaaaaa-0000-4000-8000-000000000002', '2026-07-28T11:00:00.111Z', '2026-07-28T11:00:00.111111'),
+          row('aaaaaaaa-0000-4000-8000-000000000003', '2026-07-28T10:00:00.000Z', '2026-07-28T10:00:00.000000')
+        ];
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
+          .mockReturnValueOnce(mockSelectLeftJoinChain(page1Rows) as any);
+
+        const page1 = await app.request('/mobile/alerts/inbox?limit=2', { method: 'GET' });
+        const page1Body = await page1.json();
+        const cursor: string = page1Body.pagination.nextCursor;
+        expect(cursor).toBeTruthy();
+
+        const captured: { where?: unknown; orderByArgs?: unknown[] } = {};
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectLeftJoinChainCapturing(
+              [row('aaaaaaaa-0000-4000-8000-000000000003', '2026-07-28T10:00:00.000Z', '2026-07-28T10:00:00.000000')],
+              captured
+            ) as any
+          );
+
+        const page2 = await app.request(`/mobile/alerts/inbox?limit=2&cursor=${encodeURIComponent(cursor)}`, {
+          method: 'GET'
+        });
+        const page2Body = await page2.json();
+
+        // No overlap with page 1, no gap before alert-3 — the walk continued
+        // from exactly where it left off.
+        expect(page2Body.data.map((a: { id: string }) => a.id)).toEqual(['aaaaaaaa-0000-4000-8000-000000000003']);
+        // Last page: only 1 row came back for limit=2, so there is nothing more.
+        expect(page2Body.pagination.nextCursor).toBeNull();
+
+        // The keyset predicate must carry the cursor's FULL-precision key,
+        // untruncated — this is the actual #3770 regression check. A
+        // `.toISOString()` round-trip would have collapsed it to
+        // '2026-07-28T11:00:00.111Z' and could skip real rows between the
+        // truncated value and the true boundary.
+        expect(objectContains(captured.where, '2026-07-28T11:00:00.111111')).toBe(true);
+        expect(objectContains(captured.where, '2026-07-28T11:00:00.111Z')).toBe(false);
+      });
     });
   });
 
@@ -1186,7 +1436,7 @@ describe('mobile routes', () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(mockSelectWhereChain([{ count: 1 }]) as any)
         .mockReturnValueOnce(
-          mockSelectOrderChain([
+          mockSelectLeftJoinChain([
             {
               id: '11111111-2222-4333-8444-555555555555',
               orgId: 'org-123',
@@ -1195,10 +1445,15 @@ describe('mobile routes', () => {
               displayName: 'Host 1',
               osType: 'linux',
               status: 'online',
-              lastSeenAt: new Date()
+              lastSeenAt: new Date(),
+              organizationName: 'Acme Corp'
             }
           ]) as any
-        );
+        )
+        // Device Details v1 fields (#5140): LAN IP + open alert/ticket counts.
+        .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+        .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+        .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
 
       const res = await app.request('/mobile/devices?status=online&search=host', {
         method: 'GET'
@@ -1208,6 +1463,339 @@ describe('mobile routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(1);
       expect(body.pagination.total).toBe(1);
+      // #5104: the mobile app's row meta line ("org · site") and Device
+      // Details org row both depend on this field actually being returned.
+      expect(body.data[0].organizationName).toBe('Acme Corp');
+    });
+
+    // #5140: Device Details v1 fields (decision #5117-2) — osVersion,
+    // lastUser, lanIp, publicIp, openAlertCount, openTicketCount.
+    describe('Device Details v1 fields (#5140)', () => {
+      const DEVICE_ID = '11111111-2222-4333-8444-555555555555';
+
+      it('a device with none of the genuinely-optional new fields still serialises with null/0 defaults', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 1 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectLeftJoinChain([
+              {
+                id: DEVICE_ID,
+                orgId: 'org-123',
+                siteId: 'site-1',
+                hostname: 'host-1',
+                displayName: 'Host 1',
+                osType: 'linux',
+                // devices.os_version is NOT NULL at the DB level — every real
+                // row has one. lastUser/lastSeenIp ARE nullable, so those are
+                // what a genuinely-sparse device looks like.
+                osVersion: '22.04',
+                lastUser: null,
+                lastSeenIp: null,
+                status: 'online',
+                lastSeenAt: new Date(),
+                organizationName: 'Acme Corp'
+              }
+            ]) as any
+          )
+          // device_network lateral-equivalent (LAN IP)
+          .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+          // open alert count (GROUP BY)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+          // open ticket count (GROUP BY)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
+
+        const res = await app.request('/mobile/devices', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(1);
+        const row = body.data[0];
+        expect(row.osVersion).toBe('22.04');
+        expect(row.lastUser).toBeNull();
+        expect(row.lanIp).toBeNull();
+        expect(row.publicIp).toBeNull();
+        expect(row.openAlertCount).toBe(0);
+        expect(row.openTicketCount).toBe(0);
+      });
+
+      it('surfaces osVersion, lastUser, publicIp, ranked lanIp, and open alert/ticket counts without fanning out the row', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 1 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectLeftJoinChain([
+              {
+                id: DEVICE_ID,
+                orgId: 'org-123',
+                siteId: 'site-1',
+                hostname: 'host-1',
+                displayName: 'Host 1',
+                osType: 'linux',
+                osVersion: '22.04',
+                lastUser: 'jdoe',
+                lastSeenIp: '203.0.113.9',
+                status: 'online',
+                lastSeenAt: new Date(),
+                organizationName: 'Acme Corp'
+              }
+            ]) as any
+          )
+          // Two network interfaces for the SAME device — a non-primary IPv6
+          // link-local row and a primary routable IPv4 row. The primary IPv4
+          // row must win the ranking (mirrors devices/core.ts's #2503 lateral).
+          .mockReturnValueOnce(
+            mockSelectWhereChain([
+              {
+                deviceId: DEVICE_ID,
+                ipAddress: 'fe80::1',
+                ipType: 'ipv6',
+                isPrimary: false,
+                interfaceName: 'eth1'
+              },
+              {
+                deviceId: DEVICE_ID,
+                ipAddress: '10.0.0.5',
+                ipType: 'ipv4',
+                isPrimary: true,
+                interfaceName: 'eth0'
+              }
+            ]) as any
+          )
+          .mockReturnValueOnce(mockSelectGroupByChain([{ deviceId: DEVICE_ID, count: 3 }]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([{ deviceId: DEVICE_ID, count: 2 }]) as any);
+
+        const res = await app.request('/mobile/devices', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Multiple network/alert/ticket rows for the one device must NOT fan
+        // the page out — still exactly one row.
+        expect(body.data).toHaveLength(1);
+        const row = body.data[0];
+        expect(row.osVersion).toBe('22.04');
+        expect(row.lastUser).toBe('jdoe');
+        expect(row.publicIp).toBe('203.0.113.9');
+        expect(row.lanIp).toBe('10.0.0.5');
+        expect(row.openAlertCount).toBe(3);
+        expect(row.openTicketCount).toBe(2);
+      });
+
+      it('filters the alert and ticket count queries to the "open" status sets', async () => {
+        const alertCapture: { where?: unknown } = {};
+        const ticketCapture: { where?: unknown } = {};
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 1 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectLeftJoinChain([
+              {
+                id: DEVICE_ID,
+                orgId: 'org-123',
+                siteId: 'site-1',
+                hostname: 'host-1',
+                displayName: 'Host 1',
+                osType: 'linux',
+                osVersion: '22.04',
+                status: 'online',
+                lastSeenAt: new Date()
+              }
+            ]) as any
+          )
+          .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChainCapturing([], alertCapture) as any)
+          .mockReturnValueOnce(mockSelectGroupByChainCapturing([], ticketCapture) as any);
+
+        const res = await app.request('/mobile/devices', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        // extractBoundParamValues, not objectContains — see its comment for
+        // why a plain deep search is vacuous against an enum-typed column.
+        const alertValues = extractBoundParamValues(alertCapture.where);
+        expect(alertValues).toEqual(expect.arrayContaining(['active', 'acknowledged']));
+        expect(alertValues).not.toContain('resolved');
+        expect(alertValues).not.toContain('suppressed');
+        expect(alertValues).not.toContain('dismissed');
+
+        const ticketValues = extractBoundParamValues(ticketCapture.where);
+        expect(ticketValues).toEqual(expect.arrayContaining(['new', 'open', 'pending', 'on_hold']));
+        expect(ticketValues).not.toContain('resolved');
+        expect(ticketValues).not.toContain('closed');
+      });
+
+      it('ranks a same-priority IPv4 address over IPv6, independent of the is_primary tier', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 1 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectLeftJoinChain([
+              { id: DEVICE_ID, orgId: 'org-123', siteId: 'site-1', hostname: 'host-1', displayName: 'Host 1', osType: 'linux', osVersion: '22.04', status: 'online', lastSeenAt: new Date() }
+            ]) as any
+          )
+          // Neither is primary — the tiebreak must fall through to the
+          // IPv4-before-IPv6 tier, not stop at the (tied) is_primary tier.
+          .mockReturnValueOnce(
+            mockSelectWhereChain([
+              { deviceId: DEVICE_ID, ipAddress: 'fd00::1', ipType: 'ipv6', isPrimary: false, interfaceName: 'eth0' },
+              { deviceId: DEVICE_ID, ipAddress: '10.0.0.9', ipType: 'ipv4', isPrimary: false, interfaceName: 'eth1' }
+            ]) as any
+          )
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
+
+        const res = await app.request('/mobile/devices', { method: 'GET' });
+        const body = await res.json();
+        expect(body.data[0].lanIp).toBe('10.0.0.9');
+      });
+
+      it('ranks a routable address over an APIPA/link-local one, independent of the is_primary/ipType tiers', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 1 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectLeftJoinChain([
+              { id: DEVICE_ID, orgId: 'org-123', siteId: 'site-1', hostname: 'host-1', displayName: 'Host 1', osType: 'linux', osVersion: '22.04', status: 'online', lastSeenAt: new Date() }
+            ]) as any
+          )
+          // Same is_primary, same ipType (both ipv4) — the tiebreak must fall
+          // through to the routable-before-unroutable tier.
+          .mockReturnValueOnce(
+            mockSelectWhereChain([
+              { deviceId: DEVICE_ID, ipAddress: '169.254.1.2', ipType: 'ipv4', isPrimary: false, interfaceName: 'eth0' },
+              { deviceId: DEVICE_ID, ipAddress: '192.168.1.5', ipType: 'ipv4', isPrimary: false, interfaceName: 'eth1' }
+            ]) as any
+          )
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
+
+        const res = await app.request('/mobile/devices', { method: 'GET' });
+        const body = await res.json();
+        expect(body.data[0].lanIp).toBe('192.168.1.5');
+      });
+
+      it('breaks a full tie (same is_primary, ipType, routability) on interface name, ascending', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 1 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectLeftJoinChain([
+              { id: DEVICE_ID, orgId: 'org-123', siteId: 'site-1', hostname: 'host-1', displayName: 'Host 1', osType: 'linux', osVersion: '22.04', status: 'online', lastSeenAt: new Date() }
+            ]) as any
+          )
+          .mockReturnValueOnce(
+            mockSelectWhereChain([
+              { deviceId: DEVICE_ID, ipAddress: '10.0.0.9', ipType: 'ipv4', isPrimary: false, interfaceName: 'eth1' },
+              { deviceId: DEVICE_ID, ipAddress: '10.0.0.5', ipType: 'ipv4', isPrimary: false, interfaceName: 'eth0' }
+            ]) as any
+          )
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
+
+        const res = await app.request('/mobile/devices', { method: 'GET' });
+        const body = await res.json();
+        // eth0 sorts before eth1 — the row from the interface named first
+        // wins, regardless of array order in the network-rows result.
+        expect(body.data[0].lanIp).toBe('10.0.0.5');
+      });
+
+      it('attributes LAN IP and open counts to the correct device on a multi-device page, never mixing rows up', async () => {
+        const DEVICE_A = '11111111-2222-4333-8444-555555555555';
+        const DEVICE_B = '22222222-2222-4333-8444-555555555555';
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 2 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectLeftJoinChain([
+              { id: DEVICE_A, orgId: 'org-123', siteId: 'site-1', hostname: 'host-a', displayName: 'Host A', osType: 'linux', osVersion: '22.04', status: 'online', lastSeenAt: new Date() },
+              { id: DEVICE_B, orgId: 'org-123', siteId: 'site-1', hostname: 'host-b', displayName: 'Host B', osType: 'windows', osVersion: '10', status: 'online', lastSeenAt: new Date() }
+            ]) as any
+          )
+          .mockReturnValueOnce(
+            mockSelectWhereChain([
+              { deviceId: DEVICE_A, ipAddress: '10.0.0.1', ipType: 'ipv4', isPrimary: true, interfaceName: 'eth0' },
+              { deviceId: DEVICE_B, ipAddress: '10.0.0.2', ipType: 'ipv4', isPrimary: true, interfaceName: 'eth0' }
+            ]) as any
+          )
+          .mockReturnValueOnce(
+            mockSelectGroupByChain([
+              { deviceId: DEVICE_A, count: 1 },
+              { deviceId: DEVICE_B, count: 9 }
+            ]) as any
+          )
+          .mockReturnValueOnce(
+            mockSelectGroupByChain([{ deviceId: DEVICE_B, count: 4 }]) as any
+          );
+
+        const res = await app.request('/mobile/devices', { method: 'GET' });
+        const body = await res.json();
+        const byId = Object.fromEntries(body.data.map((d: { id: string }) => [d.id, d]));
+
+        expect(byId[DEVICE_A].lanIp).toBe('10.0.0.1');
+        expect(byId[DEVICE_A].openAlertCount).toBe(1);
+        expect(byId[DEVICE_A].openTicketCount).toBe(0);
+
+        expect(byId[DEVICE_B].lanIp).toBe('10.0.0.2');
+        expect(byId[DEVICE_B].openAlertCount).toBe(9);
+        expect(byId[DEVICE_B].openTicketCount).toBe(4);
+      });
+
+      it('degrades LAN IP to null (not a 500) when the device_network lookup query fails', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 1 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectLeftJoinChain([
+              { id: DEVICE_ID, orgId: 'org-123', siteId: 'site-1', hostname: 'host-1', displayName: 'Host 1', osType: 'linux', osVersion: '22.04', status: 'online', lastSeenAt: new Date() }
+            ]) as any
+          )
+          .mockReturnValueOnce(mockSelectWhereChainRejecting(new Error('connection reset')) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([{ deviceId: DEVICE_ID, count: 2 }]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
+
+        const res = await app.request('/mobile/devices', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data[0].lanIp).toBeNull();
+        // The other two lookups are unaffected by the LAN-IP failure.
+        expect(body.data[0].openAlertCount).toBe(2);
+        expect(body.data[0].openTicketCount).toBe(0);
+      });
+
+      it('sends null (never a false 0) for openAlertCount when the alert-count query fails, without 500ing the list', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 1 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectLeftJoinChain([
+              { id: DEVICE_ID, orgId: 'org-123', siteId: 'site-1', hostname: 'host-1', displayName: 'Host 1', osType: 'linux', osVersion: '22.04', status: 'online', lastSeenAt: new Date() }
+            ]) as any
+          )
+          .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChainRejecting(new Error('statement timeout')) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([{ deviceId: DEVICE_ID, count: 5 }]) as any);
+
+        const res = await app.request('/mobile/devices', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(1);
+        // NOT 0 — a device with several real open alerts must never read as
+        // a confident, wrong zero just because the count query blipped.
+        expect(body.data[0].openAlertCount).toBeNull();
+        expect(body.data[0].openTicketCount).toBe(5);
+      });
+
+      it('sends null for openTicketCount when the ticket-count query fails, without 500ing the list', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 1 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectLeftJoinChain([
+              { id: DEVICE_ID, orgId: 'org-123', siteId: 'site-1', hostname: 'host-1', displayName: 'Host 1', osType: 'linux', osVersion: '22.04', status: 'online', lastSeenAt: new Date() }
+            ]) as any
+          )
+          .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([{ deviceId: DEVICE_ID, count: 3 }]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChainRejecting(new Error('statement timeout')) as any);
+
+        const res = await app.request('/mobile/devices', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data[0].openAlertCount).toBe(3);
+        expect(body.data[0].openTicketCount).toBeNull();
+      });
     });
 
     it('should return empty list when partner has no orgs', async () => {
@@ -1249,29 +1837,38 @@ describe('mobile routes', () => {
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn((where: unknown) => {
-              captured.rowsWhere = where;
-              return {
-                orderBy: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockReturnValue({
-                    offset: vi.fn().mockResolvedValue([
-                      {
-                        id: 'device-allowed',
-                        orgId: 'org-123',
-                        siteId: SITE_ALLOWED,
-                        hostname: 'allowed-host',
-                        displayName: 'Allowed Host',
-                        osType: 'linux',
-                        status: 'online',
-                        lastSeenAt: new Date()
-                      }
-                    ])
+            // #5104: the rows query now leftJoins organizations for the
+            // row's org name before .where(...).
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn((where: unknown) => {
+                captured.rowsWhere = where;
+                return {
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockReturnValue({
+                      offset: vi.fn().mockResolvedValue([
+                        {
+                          id: 'device-allowed',
+                          orgId: 'org-123',
+                          siteId: SITE_ALLOWED,
+                          hostname: 'allowed-host',
+                          displayName: 'Allowed Host',
+                          osType: 'linux',
+                          status: 'online',
+                          lastSeenAt: new Date(),
+                          organizationName: 'Acme Corp'
+                        }
+                      ])
+                    })
                   })
-                })
-              };
+                };
+              })
             })
           })
-        } as any);
+        } as any)
+        // Device Details v1 fields (#5140): LAN IP + open alert/ticket counts.
+        .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+        .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+        .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
 
       const res = await app.request('/mobile/devices', { method: 'GET' });
 
@@ -1298,39 +1895,45 @@ describe('mobile routes', () => {
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn((where: unknown) => {
-              captured.rowsWhere = where;
-              return {
-                orderBy: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockReturnValue({
-                    offset: vi.fn().mockResolvedValue([
-                      {
-                        id: 'device-allowed',
-                        orgId: 'org-123',
-                        siteId: SITE_ALLOWED,
-                        hostname: 'allowed-host',
-                        displayName: 'Allowed Host',
-                        osType: 'linux',
-                        status: 'online',
-                        lastSeenAt: new Date()
-                      },
-                      {
-                        id: 'device-denied',
-                        orgId: 'org-123',
-                        siteId: SITE_DENIED,
-                        hostname: 'denied-host',
-                        displayName: 'Denied Host',
-                        osType: 'linux',
-                        status: 'online',
-                        lastSeenAt: new Date()
-                      }
-                    ])
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn((where: unknown) => {
+                captured.rowsWhere = where;
+                return {
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockReturnValue({
+                      offset: vi.fn().mockResolvedValue([
+                        {
+                          id: 'device-allowed',
+                          orgId: 'org-123',
+                          siteId: SITE_ALLOWED,
+                          hostname: 'allowed-host',
+                          displayName: 'Allowed Host',
+                          osType: 'linux',
+                          status: 'online',
+                          lastSeenAt: new Date()
+                        },
+                        {
+                          id: 'device-denied',
+                          orgId: 'org-123',
+                          siteId: SITE_DENIED,
+                          hostname: 'denied-host',
+                          displayName: 'Denied Host',
+                          osType: 'linux',
+                          status: 'online',
+                          lastSeenAt: new Date()
+                        }
+                      ])
+                    })
                   })
-                })
-              };
+                };
+              })
             })
           })
-        } as any);
+        } as any)
+        // Device Details v1 fields (#5140): LAN IP + open alert/ticket counts.
+        .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+        .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+        .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
 
       const res = await app.request('/mobile/devices', { method: 'GET' });
 
@@ -1339,6 +1942,116 @@ describe('mobile routes', () => {
       expect(body.data.map((row: { siteId: string }) => row.siteId)).toEqual([SITE_ALLOWED, SITE_DENIED]);
       expect(objectContains(captured.countWhere, SITE_ALLOWED)).toBe(false);
       expect(objectContains(captured.rowsWhere, SITE_ALLOWED)).toBe(false);
+    });
+
+    // #3770: nextCursor used to be computed only inside `if (cursor)`, so a
+    // cold-start caller (no cursor to send) could never obtain one. The
+    // keyset also used to run on the nullable, mutable `last_seen_at` column;
+    // it now keys cursor mode on the NOT NULL, immutable `hostname` instead
+    // (ported from `routes/devices/core.ts`), and only cursor mode (no
+    // explicit `?page=`, or a `cursor` present) ever returns a nextCursor —
+    // legacy `?page=N` keeps its old `last_seen_at DESC` order and never
+    // upgrades into the keyset mid-walk.
+    describe('cursor pagination (#3770)', () => {
+      const row = (id: string, hostname: string) => ({
+        id,
+        orgId: 'org-123',
+        siteId: 'site-1',
+        hostname,
+        displayName: hostname,
+        osType: 'linux',
+        status: 'online',
+        lastSeenAt: new Date()
+      });
+
+      it('a cold-start request (no page, no cursor) orders by hostname ASC and returns a nextCursor when more rows exist', async () => {
+        const captured: { orderByArgs?: unknown[] } = {};
+        const rows = [row('dddddddd-0000-4000-8000-00000000000a', 'a-host'), row('dddddddd-0000-4000-8000-00000000000b', 'b-host'), row('dddddddd-0000-4000-8000-00000000000c', 'c-host')];
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
+          .mockReturnValueOnce(mockSelectLeftJoinChainCapturing(rows, captured) as any) // 3 rows for limit=2 => hasMore
+          // Device Details v1 fields (#5140): LAN IP + open alert/ticket counts.
+          .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
+
+        const res = await app.request('/mobile/devices?limit=2', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data.map((d: { id: string }) => d.id)).toEqual(['dddddddd-0000-4000-8000-00000000000a', 'dddddddd-0000-4000-8000-00000000000b']);
+        expect(body.pagination.total).toBe(3);
+        expect(body.pagination.nextCursor).not.toBeNull();
+
+        const decoded = decodeCursor(body.pagination.nextCursor);
+        expect(decoded).toEqual({ key: 'b-host', id: 'dddddddd-0000-4000-8000-00000000000b' });
+
+        // Cursor mode orders by hostname ASC, id ASC — not last_seen_at.
+        expect(captured.orderByArgs?.length).toBe(2);
+        expect(objectContains(captured.orderByArgs, 'hostname')).toBe(true);
+      });
+
+      it('following nextCursor reaches the next page (no duplicates/gaps) and returns nextCursor: null once exhausted', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectLeftJoinChain([row('dddddddd-0000-4000-8000-00000000000a', 'a-host'), row('dddddddd-0000-4000-8000-00000000000b', 'b-host'), row('dddddddd-0000-4000-8000-00000000000c', 'c-host')]) as any
+          )
+          // Device Details v1 fields (#5140): LAN IP + open alert/ticket counts.
+          .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
+
+        const page1 = await app.request('/mobile/devices?limit=2', { method: 'GET' });
+        const page1Body = await page1.json();
+        const cursor: string = page1Body.pagination.nextCursor;
+        expect(cursor).toBeTruthy();
+
+        const captured: { where?: unknown; orderByArgs?: unknown[] } = {};
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
+          .mockReturnValueOnce(mockSelectLeftJoinChainCapturing([row('dddddddd-0000-4000-8000-00000000000c', 'c-host')], captured) as any)
+          // Device Details v1 fields (#5140): LAN IP + open alert/ticket counts.
+          .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
+
+        const page2 = await app.request(`/mobile/devices?limit=2&cursor=${encodeURIComponent(cursor)}`, {
+          method: 'GET'
+        });
+        const page2Body = await page2.json();
+
+        // No overlap with page 1 ([dev-a, dev-b]), no gap before dev-c.
+        expect(page2Body.data.map((d: { id: string }) => d.id)).toEqual(['dddddddd-0000-4000-8000-00000000000c']);
+        // Only 1 row came back for limit=2 — nothing more to walk.
+        expect(page2Body.pagination.nextCursor).toBeNull();
+
+        // The keyset predicate anchors on page 1's last row (b-host / dev-b).
+        expect(objectContains(captured.where, 'b-host')).toBe(true);
+        expect(objectContains(captured.where, 'dddddddd-0000-4000-8000-00000000000b')).toBe(true);
+      });
+
+      it('an explicit ?page=N request keeps the legacy last_seen_at order and never returns a nextCursor', async () => {
+        const captured: { orderByArgs?: unknown[] } = {};
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectLeftJoinChainCapturing([row('dddddddd-0000-4000-8000-00000000000a', 'a-host'), row('dddddddd-0000-4000-8000-00000000000b', 'b-host')], captured) as any
+          )
+          // Device Details v1 fields (#5140): LAN IP + open alert/ticket counts.
+          .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
+
+        const res = await app.request('/mobile/devices?page=1&limit=1', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Legacy contract: never mints a cursor, even though 2 rows came back
+        // for limit=1 (hasMore would be true in cursor mode).
+        expect(body.pagination.nextCursor).toBeNull();
+        expect(objectContains(captured.orderByArgs, 'last_seen_at')).toBe(true);
+      });
     });
   });
 
@@ -1679,8 +2392,43 @@ describe('mobile routes', () => {
       expect('ignoredParameters' in body).toBe(false);
     });
 
-    it.skip('should submit device action commands', async () => {
-      // Skipped: Complex command submission mock required
+    it('returns a trust probation denial without inserting a device command', async () => {
+      const { TrustDeniedError } = await import('../services/partnerTrust.commands');
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([
+          { id: mobileDeviceId, orgId: 'org-123', status: 'online', siteId: null }
+        ]) as any
+      );
+      assertDeviceExecuteAllowedMock.mockRejectedValueOnce(
+        new TrustDeniedError(
+          'TRUST_PROBATION',
+          'probation_default_deny',
+          mobileDeviceId,
+          'reboot',
+        ),
+      );
+
+      const res = await app.request(`/mobile/devices/${mobileDeviceId}/actions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reboot' })
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({
+        error: 'TRUST_PROBATION',
+        capability: 'device_execute',
+        reason: 'probation_default_deny',
+      });
+      expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(
+        mobileDeviceId,
+        'reboot',
+        'user-123',
+      );
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('should submit device action commands when trust allows execution', async () => {
       vi.mocked(db.select).mockReturnValue(
         mockSelectLimitChain([
           { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online' }
@@ -1701,6 +2449,11 @@ describe('mobile routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.commandId).toBe('cmd-1');
+      expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(
+        mobileDeviceId,
+        'reboot',
+        'user-123',
+      );
     });
 
     // #3409 PR0 Task 3: the org-equality invariant itself now lives inside
@@ -1940,6 +2693,57 @@ describe('mobile routes', () => {
         expect(body.alerts.total).toBe(0);
         // Only two db.select calls: no alert-agg issued (short-circuited)
         expect(selectMock).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    describe('decommissioned devices (#5106)', () => {
+      it('builds a total that excludes decommissioned devices and surfaces a decommissioned count', async () => {
+        const selectMock = vi.mocked(db.select);
+        selectMock
+          .mockReturnValueOnce(
+            mockSelectWhereChain([
+              { total: 34, online: 34, offline: 0, maintenance: 0, decommissioned: 20 }
+            ]) as any
+          )
+          .mockReturnValueOnce(
+            mockSelectWhereChain([
+              { total: 0, active: 0, acknowledged: 0, resolved: 0, critical: 0 }
+            ]) as any
+          );
+
+        const res = await app.request('/mobile/summary', { method: 'GET' });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Passed through from the (mocked) aggregate row — proves the route
+        // surfaces the new decommissioned bucket instead of dropping it.
+        expect(body.devices).toEqual({
+          total: 34,
+          online: 34,
+          offline: 0,
+          maintenance: 0,
+          decommissioned: 20
+        });
+
+        // Structural check on the real (unmocked) SQL fragment the route
+        // builds for `total`: it must reference devices.status and exclude
+        // 'decommissioned', not `count(*)` — otherwise decommissioned rows
+        // silently inflate the total past what online+offline+maintenance
+        // show (the original bug: hero read 77, legend summed to 57).
+        const deviceSelectArgs = selectMock.mock.calls[0]![0] as Record<string, any>;
+        const totalChunks = deviceSelectArgs.total.queryChunks;
+        expect(totalChunks).toContainEqual(devices.status);
+        const totalSqlText = totalChunks
+          .filter((chunk: any) => typeof chunk?.value?.[0] === 'string')
+          .map((chunk: any) => chunk.value[0])
+          .join('');
+        expect(totalSqlText).not.toMatch(/^count\(\*\)$/);
+        expect(totalSqlText).toContain('decommissioned');
+        expect(totalSqlText).toMatch(/!=|<>/);
+
+        // decommissioned field itself must be a dedicated aggregate, not a
+        // pass-through of total.
+        const decommissionedChunks = deviceSelectArgs.decommissioned.queryChunks;
+        expect(decommissionedChunks).toContainEqual(devices.status);
       });
     });
   });

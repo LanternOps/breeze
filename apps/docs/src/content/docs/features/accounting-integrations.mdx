@@ -40,13 +40,25 @@ QuickBooks Online connects through Intuit's standard OAuth consent flow. Once co
   Connecting and disconnecting QuickBooks are **MFA-gated** — you may be prompted to complete multi-factor authentication before the action goes through.
 </Aside>
 
+### Who can use the QuickBooks integration
+
+Since v0.112.0 the QuickBooks integration is gated by two dedicated permissions instead of the general billing and invoice permissions:
+
+| Permission | Grants |
+|---|---|
+| **Accounting: read** (`accounting:read`) | See the connection status, browse and import QuickBooks customers, and view customer and income-account mappings. |
+| **Accounting: manage** (`accounting:manage`) | Connect and disconnect QuickBooks, change push settings, edit and sync mappings, reconcile, and push invoices (each also asks for MFA). |
+
+**Partner Admin** holds both through its full-access grant, and the built-in **Org Admin** role is granted both on upgrade. **Every other role — including Partner Technician, Partner Billing and any custom role — must be granted the keys explicitly in Settings → Roles**, or its users get a 403 on the QuickBooks tab and sync actions. The permissions apply only to the QuickBooks routes; the Stripe payments sub-tab is unchanged. Recording and voiding invoice payments in Breeze still uses **Invoices: write**.
+
 ### What syncs
 
 | Item | Direction | Notes |
 |------|-----------|-------|
 | **Customers** | QuickBooks → Breeze | Import your existing QuickBooks customers as Breeze organizations (see below). |
 | **Invoices** | Breeze → QuickBooks | Issued invoices push to QuickBooks, either automatically or manually (your choice). |
-| **Payments** | QuickBooks → Breeze | Payments recorded **in QuickBooks** against a pushed invoice mirror back into Breeze (see [Payment pull-back](#payment-pull-back) below). Pushing a Breeze-recorded payment out to QuickBooks is not yet supported. |
+| **Payments** | QuickBooks → Breeze | Payments recorded **in QuickBooks** against a pushed invoice mirror back into Breeze (see [Payment pull-back](#payment-pull-back) below). |
+| **Payments** | Breeze → QuickBooks | Payments you record **in Breeze** against an invoice already in QuickBooks are created there automatically, and removed there when you void or fully refund them in Breeze (see [Payment push](#payment-push) below). **On by default** since v0.111. |
 
 ### Invoice push mode
 
@@ -56,6 +68,11 @@ On the connected panel, choose how issued invoices reach QuickBooks:
 - **Manual** — invoices are held so you push them on your own schedule.
 
 You can switch between the two at any time; the change is saved immediately.
+Changing the mode requires the **Invoices: write** permission.
+
+Only an invoice that has been **issued** can push: sent, partially paid,
+overdue, and paid invoices are all eligible. Drafts and voided invoices are
+never pushed.
 
 ### Invoice sync status
 
@@ -122,12 +139,6 @@ touched).
 
 **What's not mirrored, on purpose:**
 
-- **Payments you record in Breeze, or Stripe payments Breeze collects, are
-  not pushed to QuickBooks.** That direction — Breeze → QuickBooks payment
-  push — isn't built yet, which is exactly why the **Pull QuickBooks
-  payments** switch below exists: with both directions live at once, a
-  payment could double-count (pushed out, then pulled back in as if it were
-  a second, QuickBooks-originated payment).
 - **Credit memos and QuickBooks-originated refunds** don't flow into Breeze.
 - **Foreign-currency payments** aren't supported — like invoice push, a
   payment pull is blocked (and the invoice's mapping flips to an error you
@@ -153,11 +164,32 @@ region receives instant notifications today; the EU region (and any
 self-hosted deployment without a public webhook URL configured) always
 mirrors on the 15-minute sweep. Either way, the end state is the same.
 
-**Pull QuickBooks payments** is a switch on the connected panel. Turn it off
+Self-hosting and want the faster path? Register `POST /api/v1/webhooks/quickbooks`
+as your Intuit app's webhook endpoint for the Invoice and Payment event groups,
+and set the app's verifier token as [`QBO_WEBHOOK_VERIFIER_TOKEN`](/deploy/environment/#accounting-quickbooks-online).
+Until you do, the endpoint declines every delivery and the sweep does all the
+work — which is the supported configuration, not a degraded one.
+
+**Payment sync** is a switch on the connected panel — *"Pull payments recorded
+in QuickBooks back into Breeze invoices."* It is **on** by default. Turn it off
 to stop pulling payments from QuickBooks into Breeze — for example, while
 you're still reconciling manually and don't want QuickBooks payments
 overwriting Breeze's own record. A **Sync now** button next to the switch runs
-a pull immediately rather than waiting for the sweep or a webhook.
+a pull immediately rather than waiting for the sweep or a webhook; with Payment
+sync turned off it declines with *"Payment sync is turned off for this
+connection. Turn on Payment sync to sync now."*
+
+Changing Payment sync or the invoice push mode, and using **Sync now**, all
+require the **Invoices: write** permission and a multi-factor confirmation.
+
+The panel shows the outcome of the last reconcile run underneath. Three
+messages are worth recognising:
+
+| Message | What it means |
+|---|---|
+| *"run skipped — disabled for this connection"* | Payment sync is off. Nothing is wrong; nothing is being pulled either. |
+| *"QuickBooks truncated the last change window and the backfill did not complete; payments may be missing"* | More changed in QuickBooks than one change window can report. Check recent QuickBooks payments against Breeze by hand. |
+| *"N item(s) failed in the last reconcile run"* | Some payments could not be applied — open the affected invoices to see why. |
 
 Turn it back on and the next sweep resumes from where it stopped — but only
 **within QuickBooks' 30-day change history**. QuickBooks cannot report changes
@@ -166,6 +198,56 @@ or erroring) for more than a month, payments recorded in the gap are **not**
 picked up by the sweep and have to be entered in Breeze by hand. Breeze logs a
 warning and raises an alert to its operators when it detects that gap, and the
 connection panel shows the last pull's outcome.
+
+### Payment push
+
+The other direction: a payment you record **in Breeze** against an invoice that
+is already in QuickBooks is created as a QuickBooks Payment automatically. The
+switch is **Payment push** on the connected panel — *"Send payments recorded in
+Breeze to QuickBooks, and remove them there when they are voided."*
+
+<Aside type="caution" title="Payment push is on by default">
+  Payment push ships **enabled**, so a realm that is connected and in
+  **Automatic (on issue)** push mode begins writing Payments into QuickBooks as
+  soon as the API restarts on v0.111 — no per-realm opt-in step. If you are not
+  ready for Breeze to write into a realm's books, turn the switch **off** before
+  you upgrade, or immediately after.
+</Aside>
+
+**Only payments recorded after the switch became active are pushed.** Breeze
+stamps a horizon when the feature first turns on for a connection, and re-stamps
+it every time you switch Payment push off and back on. That means a deliberate
+pause never flushes a backlog when you resume — and there is no supported way to
+push a payment that was recorded before the current horizon. Enter those in
+QuickBooks by hand if you need them there.
+
+**A removal always propagates.** Once Breeze has created a Payment in
+QuickBooks it owns removing it, so voiding or fully refunding that payment in
+Breeze deletes the QuickBooks Payment **regardless** of the Payment push and
+invoice push-mode switches. Turning the feature off cannot strand money in a
+customer's books.
+
+**When a push fails.** Breeze retries on the same sweep as the rest of the
+connection and gives up after 100 attempts — roughly five hours in practice —
+recording a message that names the reason on the invoice's sync card. Pushing
+the invoice again with **Push to QuickBooks** clears the counter and starts the
+payment over.
+
+**Payment push and Payment sync are independent.** You can run push-only:
+Breeze still makes its reconcile pass so it can adopt, diverge from, or notice
+the QuickBooks-side deletion of its own payments, but every change that
+*originated* in QuickBooks is counted as skipped and the change cursor is
+**held** rather than advanced. Nothing in that window is permanently lost — turn
+Payment sync back on and the next sweep replays it, subject to the same 30-day
+QuickBooks change-history limit described above.
+
+<Aside type="note" title="Voiding an invoice that has payments applied">
+  Voiding an invoice with payments applied to it is now refused outright, synced
+  to QuickBooks or not, rather than silently un-applying them: *"This invoice has
+  &lt;amount&gt; of payments applied to it. Remove those payments first (and in
+  QuickBooks, if it is synced there), then void the invoice."* Remove the
+  payments, then void. See [Invoices](/features/invoices/).
+</Aside>
 
 ### Customer and item mapping
 

@@ -20,6 +20,23 @@ export type AutomationActionTerminalSource =
   | 'command' | 'script_execution' | 'deployment_result'
   | 'timeout' | 'cancellation' | 'reaper' | 'dispatch';
 
+/**
+ * One value of `automation_device_result_status` (#3525 W05 added `cancelled`).
+ * Named rather than inlined so the aggregation functions and the device-row
+ * writer cannot drift apart when the enum grows again.
+ */
+export type AutomationDeviceResultStatus =
+  | 'pending' | 'running' | 'success' | 'failed' | 'skipped' | 'cancelled';
+
+/** One value of `automation_run_status` (#3525 W05 added `cancelled`). */
+export type AutomationRunStatus =
+  | 'running' | 'completed' | 'failed' | 'partial' | 'cancelled';
+
+/** Device-result statuses that mean the device is done, whatever the outcome. */
+const TERMINAL_DEVICE_STATUSES = new Set<AutomationDeviceResultStatus>([
+  'success', 'failed', 'skipped', 'cancelled',
+]);
+
 type Correlations = {
   commandId?: string;
   scriptExecutionId?: string;
@@ -126,36 +143,59 @@ function decideTerminalTransition(
     terminalSource: input.source,
     output: input.output ?? null,
     error: input.error ?? null,
+    // #5128 W4: clear the dispatch-time message, exactly as
+    // `decideDispatchTransition`'s terminal branch already does. `message` is
+    // the "why is this not finished yet" field; once the action IS finished,
+    // `output`/`error` own the story. Leaving it set matters because
+    // `aggregateActionDetails` falls back to it (`output ?? message`, and
+    // `failed.error ?? failed.message`), so a stale value leaks into the
+    // device row: a script that queued while the device was offline, then
+    // reconnected and succeeded printing nothing, would report its output as
+    // "Queued — device offline", and one that later failed with no stderr
+    // would show that string as the red failure reason for a run that
+    // demonstrably executed.
+    message: null,
     completedAt: input.completedAt,
   };
 }
 
 function aggregateActionStatuses(statuses: AutomationActionResultStatus[]): {
-  status: 'pending' | 'running' | 'success' | 'failed' | 'skipped';
+  status: AutomationDeviceResultStatus;
 } {
   if (statuses.some((status) => !TERMINAL.has(status))) {
     return { status: statuses.every((status) => status === 'pending') ? 'pending' : 'running' };
   }
-  if (statuses.some((status) => status === 'failed' || status === 'timed_out' || status === 'cancelled')) {
+  // OD6-A: a REAL failure outranks a stop, so the failed lane is tested first
+  // and `cancelled` gets its own lane after it. Before #3525 W05 `cancelled`
+  // was folded into this predicate, which reported every stopped device as a
+  // failure and poisoned automation health and any devicesFailed alerting.
+  if (statuses.some((status) => status === 'failed' || status === 'timed_out')) {
     return { status: 'failed' };
   }
+  if (statuses.some((status) => status === 'cancelled')) return { status: 'cancelled' };
   if (statuses.every((status) => status === 'skipped')) return { status: 'skipped' };
   return { status: 'success' };
 }
 
-function aggregateDeviceStatuses(statuses: Array<'pending' | 'running' | 'success' | 'failed' | 'skipped'>): {
-  status: 'running' | 'completed' | 'failed' | 'partial';
+function aggregateDeviceStatuses(statuses: AutomationDeviceResultStatus[]): {
+  status: AutomationRunStatus;
   devicesSucceeded: number;
   devicesFailed: number;
+  devicesCancelled: number;
 } {
   const devicesSucceeded = statuses.filter((status) => status === 'success').length;
   const devicesFailed = statuses.filter((status) => status === 'failed').length;
+  const devicesCancelled = statuses.filter((status) => status === 'cancelled').length;
+  const counts = { devicesSucceeded, devicesFailed, devicesCancelled };
   if (statuses.some((status) => status === 'pending' || status === 'running')) {
-    return { status: 'running', devicesSucceeded, devicesFailed };
+    return { status: 'running', ...counts };
   }
-  if (devicesFailed === 0) return { status: 'completed', devicesSucceeded, devicesFailed };
-  if (devicesSucceeded === 0) return { status: 'failed', devicesSucceeded, devicesFailed };
-  return { status: 'partial', devicesSucceeded, devicesFailed };
+  // A run is `cancelled` only when nothing actually failed. One real failure
+  // and the run reports that failure — a stop never hides it.
+  if (devicesFailed === 0 && devicesCancelled > 0) return { status: 'cancelled', ...counts };
+  if (devicesFailed === 0) return { status: 'completed', ...counts };
+  if (devicesSucceeded === 0) return { status: 'failed', ...counts };
+  return { status: 'partial', ...counts };
 }
 
 function aggregateActionDetails(actions: Array<{
@@ -210,7 +250,7 @@ function stateCas(row: ActionState & { id: string }): SQL[] {
 }
 
 type Publication = {
-  type: 'automation.completed' | 'automation.failed';
+  type: 'automation.completed' | 'automation.failed' | 'automation.cancelled';
   orgId: string;
   payload: Record<string, unknown>;
 };
@@ -263,10 +303,30 @@ async function reconcileInCurrentContext(
     group.push(row);
     byDevice.set(row.deviceId, group);
   }
+
+  // #3525 W05 — the device rewrite below is unconditional, so a device that
+  // already proved it STOPPED must not be walked back to pending/running just
+  // because a sibling action of the same device is still in flight. Read the
+  // current statuses once (the run row is held FOR UPDATE above, so nothing
+  // else is rewriting them) and clamp.
+  const currentDeviceStatuses = new Map(
+    (await db.select({
+      deviceId: automationRunDeviceResults.deviceId,
+      status: automationRunDeviceResults.status,
+    })
+      .from(automationRunDeviceResults)
+      .where(eq(automationRunDeviceResults.runId, runId)))
+      .map((row) => [row.deviceId, row.status] as const),
+  );
+
   for (const [deviceId, actions] of byDevice) {
-    const aggregate = aggregateActionStatuses(actions.map((action) => action.status));
+    const derived = aggregateActionStatuses(actions.map((action) => action.status));
+    const aggregate = currentDeviceStatuses.get(deviceId) === 'cancelled'
+      && !TERMINAL_DEVICE_STATUSES.has(derived.status)
+      ? { status: 'cancelled' as const }
+      : derived;
     const details = aggregateActionDetails(actions);
-    const terminal = aggregate.status === 'success' || aggregate.status === 'failed' || aggregate.status === 'skipped';
+    const terminal = TERMINAL_DEVICE_STATUSES.has(aggregate.status);
     const completedAt = terminal
       ? new Date(Math.max(...actions.map((action) => action.completedAt?.getTime() ?? 0), Date.now()))
       : null;
@@ -312,11 +372,87 @@ async function reconcileInCurrentContext(
     devicesTargeted: deviceRows.length,
     devicesSucceeded: aggregate.devicesSucceeded,
     devicesFailed: aggregate.devicesFailed,
+    devicesCancelled: aggregate.devicesCancelled,
   };
+
+  // #3525 W05 — `cancelled` is stamped on the run by the CANCEL REQUEST (that
+  // write is the dispatch fence), long before its children close. So a
+  // cancelled run is NOT "already terminal, stop reconciling": it keeps
+  // counting children home, and only its completed_at marks the end. It is
+  // also never transitioned to anything else — an operator who stopped a run
+  // must not later find it labelled `completed`.
+  const runWasCancelled = run.status === 'cancelled';
+
+  const publicationsOfType = (type: Publication['type'], status: AutomationRunStatus): Publication[] => {
+    const orgIds = [...new Set(actionRows.map((row) => row.orgId))];
+    return orgIds.map((orgId) => ({
+      type,
+      orgId,
+      payload: {
+        ...(run.automationId ? { automationId: run.automationId } : {
+          configPolicyAutomationId: run.configPolicyId,
+          configItemName: run.configItemName,
+        }),
+        runId,
+        triggeredBy: run.triggeredBy,
+        status,
+        ...common,
+      },
+    }));
+  };
+
+  const buildPublications = (status: AutomationRunStatus): Publication[] => publicationsOfType(
+    status === 'completed'
+      ? 'automation.completed'
+      : status === 'cancelled'
+        ? 'automation.cancelled'
+        : 'automation.failed',
+    status,
+  );
+
   if (aggregate.status === 'running') {
+    if (runWasCancelled) {
+      await db.update(automationRuns).set(common)
+        .where(and(eq(automationRuns.id, runId), eq(automationRuns.status, 'cancelled')));
+      return [];
+    }
     await db.update(automationRuns).set({ ...common, completedAt: null })
       .where(and(eq(automationRuns.id, runId), eq(automationRuns.status, 'running')));
     return [];
+  }
+
+  if (runWasCancelled) {
+    // Every child is terminal now, so the cancelled run is finished. The
+    // completed_at IS NULL guard is the transition: exactly one reconcile wins
+    // it, so `automation.cancelled` is published exactly once.
+    const finished = await db.update(automationRuns)
+      .set({ ...common, completedAt: new Date() })
+      .where(and(
+        eq(automationRuns.id, runId),
+        eq(automationRuns.status, 'cancelled'),
+        isNull(automationRuns.completedAt),
+      ))
+      .returning({ id: automationRuns.id });
+    if (finished.length === 0) {
+      await db.update(automationRuns).set(common)
+        .where(and(eq(automationRuns.id, runId), eq(automationRuns.status, 'cancelled')));
+      return [];
+    }
+    // The run KEEPS the `cancelled` label: a deliberate human stop is the most
+    // specific explanation of why it ended, and relabelling it `failed` would
+    // page an MSP for every cancel whose SIGKILL produced a nonzero exit.
+    //
+    // But a stop must not HIDE a failure either, so when devices failed we
+    // publish `automation.failed` alongside. There is no false-alarm cost:
+    // W03's closers stamp a PROVEN post-cancel kill as `cancelled`, never
+    // `failed`, so a device still reading `failed` on a cancelled run is a
+    // failure the cancellation machinery did not account for — exactly what
+    // failure alerting exists for. Both events ride the same
+    // `completed_at IS NULL` transition, so each fires exactly once.
+    return [
+      ...publicationsOfType('automation.cancelled', 'cancelled'),
+      ...(aggregate.devicesFailed > 0 ? publicationsOfType('automation.failed', 'cancelled') : []),
+    ];
   }
 
   const isRepairingPriorTerminal = priorAggregate?.status === run.status;
@@ -330,21 +466,7 @@ async function reconcileInCurrentContext(
     .returning({ id: automationRuns.id });
   if (transitioned.length === 0 || !statusChanged) return [];
 
-  const orgIds = [...new Set(actionRows.map((row) => row.orgId))];
-  return orgIds.map((orgId) => ({
-    type: aggregate.status === 'completed' ? 'automation.completed' : 'automation.failed',
-    orgId,
-    payload: {
-      ...(run.automationId ? { automationId: run.automationId } : {
-        configPolicyAutomationId: run.configPolicyId,
-        configItemName: run.configItemName,
-      }),
-      runId,
-      triggeredBy: run.triggeredBy,
-      status: aggregate.status,
-      ...common,
-    },
-  }));
+  return buildPublications(aggregate.status);
 }
 
 export async function seedAutomationActionResults(input: {

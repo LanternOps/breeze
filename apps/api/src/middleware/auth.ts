@@ -1,12 +1,14 @@
 import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { verifyToken, TokenPayload } from '../services/jwt';
+import { getBoundMobileDeviceBlock, mobileDeviceBlockedResponse } from './mobileDeviceBlocked';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
 import { users, partnerUsers, organizations } from '../db/schema';
 import { and, eq, inArray, isNull, or, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
+import type { PartnerTrustState } from '../db/schema/orgs';
 import { ENABLE_2FA } from '../routes/auth/schemas';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { writeAuditEvent } from '../services/auditEvents';
@@ -178,6 +180,7 @@ declare module 'hono' {
   interface ContextVariableMap {
     auth: AuthContext;
     permissions: UserPermissions;
+    trustState: PartnerTrustState;
   }
 }
 
@@ -215,6 +218,13 @@ export function isMfaEnrollmentExemptPath(path: string): boolean {
   const rel = path.startsWith('/api/v1') ? path.slice('/api/v1'.length) : path;
 
   if (rel === '/auth/logout') return true;
+  // The CF-Access-fronted twin of /auth/logout: it durably revokes refresh
+  // authority and mints a one-time ticket to the Cloudflare logout hops —
+  // pure teardown. A policy-required, unenrolled user (every fresh-install
+  // bootstrap Partner Admin since RMM-QA-164) must still be able to sign
+  // out, or the CF session can never be terminated. Exact match: the GET
+  // hops are ticket-authenticated and never reach this gate.
+  if (rel === '/auth/cf-access-logout/prepare') return true;
   // /users/me is exempted WHOLESALE so an unenrolled user can load their profile
   // (GET) and finish enrolling. This path-level exemption cannot see the body,
   // so the narrower rule — that it must NOT admit a RECOVERY-ADDRESS change
@@ -534,6 +544,7 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
         status: users.status,
         passwordChangedAt: users.passwordChangedAt,
         mfaEnabled: users.mfaEnabled,
+        partnerId: users.partnerId,
         isPlatformAdmin: users.isPlatformAdmin,
         authEpoch: users.authEpoch,
         mfaEpoch: users.mfaEpoch
@@ -583,6 +594,15 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
       liveMep: user.mfaEpoch
     });
     throw new HTTPException(401, { message: 'Invalid or expired token' });
+  }
+
+  // A signed mobile installation binding is live authorization state, not
+  // route-local metadata. Enforce it here so every ordinary authenticated API
+  // path — including future routes used by the mobile client — observes a lost-
+  // phone block. Tokens without mdid (web/MCP) do not incur the lookup.
+  if (payload.mdid) {
+    const block = await getBoundMobileDeviceBlock(user.id, payload.mdid);
+    if (block) return mobileDeviceBlockedResponse(c, block);
   }
 
   // Live system binding: scope='system' is only legitimate for a current
@@ -726,7 +746,17 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   // Response as a value (it does not throw). Dropping it leaves the Hono
   // context unfinalized — every gated request then 500s with "Context is
   // not finalized" instead of the intended 403/503.
-  const runGuardedHandler = () => ipAllowlistGuard(c, next);
+  // Organization-session JWTs deliberately keep partnerId=null so they cannot
+  // acquire partner-axis RLS authority. IP policy is a different boundary:
+  // every organization belongs to a partner, and the live users.partner_id is
+  // constrained to that same owner by the users (org_id, partner_id) FK. Bind
+  // the guard to that current owner without widening the request DB context.
+  const runGuardedHandler = () => ipAllowlistGuard(c, next, {
+    partnerId: user.partnerId,
+    isPlatformAdmin: user.isPlatformAdmin === true,
+    actorId: user.id,
+    actorEmail: user.email,
+  });
 
   // #1448 — a small set of routes (the Stripe pay routes) opt OUT of the auto
   // request-transaction so a slow outbound HTTP call isn't made inside a held

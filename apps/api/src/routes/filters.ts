@@ -5,7 +5,8 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { savedFilters } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
-import { evaluateFilter, evaluateFilterWithPreview, validateFilter, FilterConditionGroup } from '../services/filterEngine';
+import { evaluateFilter, evaluateFilterWithPreview, validateFilter, FilterQueryTimeoutError, FilterConditionGroup } from '../services/filterEngine';
+import { FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS, reportFilterPreviewTimeout } from '../services/filterPreviewTimeout';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import {
@@ -13,7 +14,7 @@ import {
   createSavedFilterSchema,
   updateSavedFilterSchema,
   savedFilterQuerySchema
-} from '@breeze/shared/validators/filters';
+} from '@breeze/shared/validators';
 
 export const filterRoutes = new Hono();
 const requireFilterRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -161,12 +162,20 @@ filterRoutes.post(
     // previewLimit cap never truncates this path.
     if (idsOnly) {
       const deviceIds: string[] = [];
-      for (const orgId of orgIds) {
-        const result = await evaluateFilter(
-          conditions as unknown as FilterConditionGroup,
-          { orgId, allowedSiteIds: auth.allowedSiteIds }
-        );
-        deviceIds.push(...result.deviceIds);
+      let evaluatingOrgId: string | null = null;
+      try {
+        for (const orgId of orgIds) {
+          evaluatingOrgId = orgId;
+          const result = await evaluateFilter(
+            conditions as unknown as FilterConditionGroup,
+            { orgId, allowedSiteIds: auth.allowedSiteIds }
+          );
+          deviceIds.push(...result.deviceIds);
+        }
+      } catch (error) {
+        if (!(error instanceof FilterQueryTimeoutError)) throw error;
+        reportFilterPreviewTimeout(evaluatingOrgId);
+        return c.json(FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS);
       }
 
       writeRouteAudit(c, {
@@ -193,13 +202,21 @@ filterRoutes.post(
     const allDevices: Array<{ id: string; hostname: string; displayName: string | null; osType: string; status: string; lastSeenAt: Date | null }> = [];
     let totalCount = 0;
 
-    for (const orgId of orgIds) {
-      const preview = await evaluateFilterWithPreview(
-        conditions as unknown as FilterConditionGroup,
-        { orgId, previewLimit: limit, allowedSiteIds: auth.allowedSiteIds }
-      );
-      totalCount += preview.totalCount;
-      allDevices.push(...preview.devices);
+    let evaluatingOrgId: string | null = null;
+    try {
+      for (const orgId of orgIds) {
+        evaluatingOrgId = orgId;
+        const preview = await evaluateFilterWithPreview(
+          conditions as unknown as FilterConditionGroup,
+          { orgId, previewLimit: limit, allowedSiteIds: auth.allowedSiteIds }
+        );
+        totalCount += preview.totalCount;
+        allDevices.push(...preview.devices);
+      }
+    } catch (error) {
+      if (!(error instanceof FilterQueryTimeoutError)) throw error;
+      reportFilterPreviewTimeout(evaluatingOrgId);
+      return c.json(FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS);
     }
 
     // Trim to limit after aggregating
@@ -450,10 +467,17 @@ filterRoutes.post(
       return c.json({ error: 'Saved filter not found' }, 404);
     }
 
-    const preview = await evaluateFilterWithPreview(
-      filter.conditions as FilterConditionGroup,
-      { orgId: filter.orgId, previewLimit: query.limit, allowedSiteIds: auth.allowedSiteIds }
-    );
+    let preview;
+    try {
+      preview = await evaluateFilterWithPreview(
+        filter.conditions as FilterConditionGroup,
+        { orgId: filter.orgId, previewLimit: query.limit, allowedSiteIds: auth.allowedSiteIds }
+      );
+    } catch (error) {
+      if (!(error instanceof FilterQueryTimeoutError)) throw error;
+      reportFilterPreviewTimeout(filter.orgId);
+      return c.json(FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS);
+    }
 
     writeRouteAudit(c, {
       orgId: filter.orgId,

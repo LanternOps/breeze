@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // --- Mocks must be declared before importing the unit under test ---
 // vi.mock factories are hoisted above module-scope consts, so the shared mock
 // references are declared via vi.hoisted (which is also hoisted) and reused here.
-const { selectLimit, db, getRedis, rateLimiter, consumeMFAToken, decryptMfaTotpSecret } = vi.hoisted(() => {
+const { selectLimit, db, getRedis, rateLimiter, consumeMFAToken, decryptMfaTotpSecret, getEffectiveMfaPolicy } = vi.hoisted(() => {
   const selectLimit = vi.fn();
   const db = {
     // db.select(...).from(...).where(...).limit(...) chain returning the mocked user row.
@@ -22,6 +22,7 @@ const { selectLimit, db, getRedis, rateLimiter, consumeMFAToken, decryptMfaTotpS
     rateLimiter: vi.fn(),
     consumeMFAToken: vi.fn(),
     decryptMfaTotpSecret: vi.fn(),
+    getEffectiveMfaPolicy: vi.fn(),
   };
 });
 
@@ -69,13 +70,19 @@ vi.mock('../../services/corsOrigins', () => ({
   shouldIncludeDefaultOrigins: vi.fn(() => false),
 }));
 vi.mock('../../services/tenantStatus', () => ({ assertActiveTenantContext: vi.fn() }));
+vi.mock('../../services/mfaPolicy', () => ({ getEffectiveMfaPolicy }));
 
 import { requireFreshMfaStepUp } from './helpers';
 
 // Minimal Hono Context stub: only c.json is exercised by the helper.
-function makeContext() {
+function makeContext(auth: Record<string, unknown> = {
+  scope: 'organization',
+  user: { id: USER_ID },
+  orgId: 'org-1',
+  partnerId: null,
+}) {
   const json = vi.fn((body: unknown, status?: number) => ({ __body: body, __status: status ?? 200 }));
-  return { json } as any;
+  return { json, get: vi.fn(() => auth) } as any;
 }
 
 const USER_ID = 'user-123';
@@ -93,6 +100,11 @@ describe('requireFreshMfaStepUp', () => {
     mockUserRow({ mfaEnabled: true, mfaSecret: 'enc-secret', mfaMethod: 'totp' });
     decryptMfaTotpSecret.mockReturnValue('PLAINTEXT-SECRET');
     consumeMFAToken.mockResolvedValue(true);
+    getEffectiveMfaPolicy.mockResolvedValue({
+      required: true,
+      allowedMethods: { totp: true, sms: true, passkey: true },
+      source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: false },
+    });
   });
 
   it('returns null for a valid TOTP code', async () => {
@@ -107,15 +119,70 @@ describe('requireFreshMfaStepUp', () => {
     consumeMFAToken.mockResolvedValue(false);
     const c = makeContext();
     const result = await requireFreshMfaStepUp(c, USER_ID, '000000');
-    expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
-    expect(result).toEqual({ __body: { error: 'Invalid credentials' }, __status: 401 });
+    expect(c.json).toHaveBeenCalledWith(
+      { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      401,
+    );
+    expect(result).toEqual({
+      __body: { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      __status: 401,
+    });
+  });
+
+  it.each([
+    {
+      scope: 'organization',
+      user: { id: USER_ID },
+      orgId: 'org-1',
+      partnerId: null,
+    },
+    {
+      scope: 'partner',
+      user: { id: USER_ID },
+      orgId: null,
+      partnerId: 'partner-1',
+    },
+  ])('returns 403 before factor lookup when $scope policy prohibits TOTP', async (auth) => {
+    getEffectiveMfaPolicy.mockResolvedValue({
+      required: true,
+      allowedMethods: { totp: false, sms: true, passkey: true },
+      source: { roleForceMfa: false, settingsRequireMfa: true, killSwitchOff: false },
+    });
+    const c = makeContext(auth);
+
+    const result = await requireFreshMfaStepUp(c, USER_ID, '123456');
+
+    expect(result).toEqual({
+      __body: {
+        error: 'This MFA method is not permitted',
+        message: 'This MFA method is not permitted',
+      },
+      __status: 403,
+    });
+    expect(db.select).not.toHaveBeenCalled();
+    expect(consumeMFAToken).not.toHaveBeenCalled();
+  });
+
+  it('preserves system-scope TOTP because platform policy allows every method', async () => {
+    const c = makeContext({
+      scope: 'system',
+      user: { id: USER_ID },
+      orgId: null,
+      partnerId: null,
+    });
+
+    await expect(requireFreshMfaStepUp(c, USER_ID, '123456')).resolves.toBeNull();
+    expect(consumeMFAToken).toHaveBeenCalled();
   });
 
   it('returns 401 when MFA is disabled', async () => {
     mockUserRow({ mfaEnabled: false, mfaSecret: 'enc-secret', mfaMethod: 'totp' });
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
-    expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
+    expect(c.json).toHaveBeenCalledWith(
+      { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      401,
+    );
     expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
@@ -123,7 +190,10 @@ describe('requireFreshMfaStepUp', () => {
     mockUserRow({ mfaEnabled: true, mfaSecret: 'enc-secret', mfaMethod: 'sms' });
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
-    expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
+    expect(c.json).toHaveBeenCalledWith(
+      { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      401,
+    );
     expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
@@ -131,7 +201,10 @@ describe('requireFreshMfaStepUp', () => {
     mockUserRow({ mfaEnabled: true, mfaSecret: 'enc-secret', mfaMethod: 'passkey' });
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
-    expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
+    expect(c.json).toHaveBeenCalledWith(
+      { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      401,
+    );
     expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
@@ -139,7 +212,10 @@ describe('requireFreshMfaStepUp', () => {
     mockUserRow({ mfaEnabled: true, mfaSecret: null, mfaMethod: 'totp' });
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
-    expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
+    expect(c.json).toHaveBeenCalledWith(
+      { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      401,
+    );
     expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
@@ -147,7 +223,10 @@ describe('requireFreshMfaStepUp', () => {
     decryptMfaTotpSecret.mockReturnValue(null);
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
-    expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
+    expect(c.json).toHaveBeenCalledWith(
+      { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      401,
+    );
     expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
@@ -155,7 +234,10 @@ describe('requireFreshMfaStepUp', () => {
     mockUserRow(undefined);
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
-    expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
+    expect(c.json).toHaveBeenCalledWith(
+      { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      401,
+    );
   });
 
   it('returns 429 when rate-limited', async () => {
@@ -174,7 +256,12 @@ describe('requireFreshMfaStepUp', () => {
     getRedis.mockReturnValue(null);
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
-    expect(c.json).toHaveBeenCalledWith({ error: 'Service temporarily unavailable' }, 503);
+    // #4746: `message` mirrors `error` on both non-rejection bodies, because
+    // the web profile form reads `data.message` only.
+    expect(c.json).toHaveBeenCalledWith(
+      { error: 'Service temporarily unavailable', message: 'Service temporarily unavailable' },
+      503,
+    );
     expect(rateLimiter).not.toHaveBeenCalled();
   });
 

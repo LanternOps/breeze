@@ -81,7 +81,13 @@ export const s1Threats = pgTable('s1_threats', {
   orgSeverityStatusIdx: index('s1_threats_org_severity_status_idx').on(table.orgId, table.severity, table.status),
   integrationIdx: index('s1_threats_integration_idx').on(table.integrationId),
   integrationDetectedIdx: index('s1_threats_integration_detected_idx').on(table.integrationId, table.detectedAt),
-  deviceIdx: index('s1_threats_device_idx').on(table.deviceId)
+  deviceIdx: index('s1_threats_device_idx').on(table.deviceId),
+  orgDetectedAtIdx: index('s1_threats_org_detected_at_idx')
+    .on(table.orgId, table.detectedAt)
+    .where(sql`${table.detectedAt} IS NOT NULL`),
+  orgResolvedAtIdx: index('s1_threats_org_resolved_at_idx')
+    .on(table.orgId, table.resolvedAt)
+    .where(sql`${table.resolvedAt} IS NOT NULL`)
 }));
 
 export const s1Actions = pgTable('s1_actions', {

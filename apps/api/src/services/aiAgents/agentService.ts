@@ -7,7 +7,7 @@ import { createAuditLog } from '../auditService';
 import { captureException } from '../sentry';
 import { getEventBus } from '../eventBus';
 import { type RejectedAuthorizationKey, validateAuthorizationKeys } from '../actionIntents/policyDecidable';
-import { ACT_ELIGIBLE_TOOL_NAMES } from './actManifest';
+import { ACT_ELIGIBLE_TOOL_NAMES, SCRIPT_GATED_ACT_TOOLS } from './actManifest';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
 import { isSupportedAgentMode } from './constants';
 import { normalizeAgentPolicy } from './effectivePolicy';
@@ -17,6 +17,7 @@ import {
   syncManagedAutomation,
 } from './managedAutomation';
 import { hasResolvableAgentRecipient, validateAgentRecipients } from './recipients';
+import { assertScriptIdsAuthorizable } from './scriptAuthorization';
 
 export class UnsupportedAgentModeError extends Error {
   readonly code = 'mode_not_supported';
@@ -67,6 +68,41 @@ export class InvalidSupervisedActionKeysError extends Error {
   constructor(public rejected: RejectedAuthorizationKey[]) {
     super(`invalid_supervised_action_keys: ${rejected.map((r) => r.key).join(', ')}`);
     this.name = 'InvalidSupervisedActionKeysError';
+  }
+}
+
+/**
+ * Spec §4.4. A pre-authorized key goes live on an ORG row only through the
+ * four-eyes grant executor (supervisedKeyGrant.ts, a direct `.update(aiAgents)`
+ * under an advisory lock) — never through create/update, no matter how the
+ * caller got here. `rejected` names exactly which keys the write tried to
+ * add so the client can render an actionable message rather than a bare 422.
+ */
+export class SupervisedKeysGrantOnlyError extends Error {
+  readonly code = 'supervised_keys_grant_only';
+
+  constructor(public rejected: Array<{ key: string; reason: 'grant_only' }>) {
+    super(`supervised_keys_grant_only: ${rejected.map((r) => r.key).join(', ')}`);
+    this.name = 'SupervisedKeysGrantOnlyError';
+  }
+}
+
+/**
+ * Spec §4.4: on an ORG row a pre-authorized key goes live only through the
+ * four-eyes grant executor (supervisedKeyGrant.ts, direct UPDATE under an
+ * advisory lock) — never through create/update. Removals stay open so manual
+ * revoke and auto-demotion keep working. Partner rows are the CEILING and are
+ * edited directly, so this is a no-op for them.
+ */
+export function assertOrgRowSupervisedKeysGrantOnly(
+  owner: AgentOwner,
+  existing: readonly string[],
+  next: readonly string[] | undefined,
+): void {
+  if (next === undefined || owner.orgId === null) return;
+  const added = next.filter((key) => !existing.includes(key));
+  if (added.length > 0) {
+    throw new SupervisedKeysGrantOnlyError(added.map((key) => ({ key, reason: 'grant_only' as const })));
   }
 }
 
@@ -126,8 +162,8 @@ function hasActEligibleSurface(
   const eligible = new Set(ACT_ELIGIBLE_TOOL_NAMES);
   const baseName = (entry: string): string => entry.split(':', 1)[0] ?? entry;
   const intersecting = toolAllowlist.filter((entry) => eligible.has(baseName(entry)));
-  if (intersecting.some((entry) => baseName(entry) !== 'run_script')) return true;
-  if (!intersecting.some((entry) => baseName(entry) === 'run_script')) return false;
+  if (intersecting.some((entry) => !SCRIPT_GATED_ACT_TOOLS.has(baseName(entry)))) return true;
+  if (!intersecting.some((entry) => SCRIPT_GATED_ACT_TOOLS.has(baseName(entry)))) return false;
   return (actAssets.scriptIds?.length ?? 0) > 0;
 }
 
@@ -240,12 +276,20 @@ function updatePolicyColumns(
   };
 }
 
-type AgentChange = 'created' | 'updated' | 'disabled';
+/**
+ * `enabled` is the un-archive in `POST /:id/enable` (routes/aiAgents.ts) — the
+ * inverse of `disabled`, and the reason this union is not private to this file:
+ * that route owns the write but must record it through the SAME pair of side
+ * effects, or the one agent mutation implemented outside this service silently
+ * skips the `ai.agent.policy_changed` broadcast every other one publishes.
+ */
+type AgentChange = 'created' | 'updated' | 'disabled' | 'enabled';
 
 async function recordAgentAudit(
   row: AiAgentRow,
   auth: AuthContext,
   change: AgentChange,
+  extraDetails?: Record<string, unknown>,
 ): Promise<void> {
   await createAuditLog({
     orgId: row.orgId,
@@ -255,11 +299,13 @@ async function recordAgentAudit(
     action: `ai.agent.${change}`,
     resourceType: 'ai_agent',
     resourceId: row.id,
+    resourceName: row.name,
     details: {
       agentId: row.id,
       kind: row.kind,
       ownerScope: row.partnerId === null ? 'organization' : 'partner',
       partnerId: row.partnerId,
+      ...extraDetails,
     },
     result: 'success',
   });
@@ -327,22 +373,55 @@ async function publishPolicyChanged(
   }
 }
 
-async function recordMutation(
+/**
+ * The two side effects EVERY agent mutation owes: an awaited `ai.agent.<change>`
+ * audit row and the `ai.agent.policy_changed` broadcast in-flight runners read.
+ *
+ * Exported because `POST /:id/enable` writes its row in the route layer (the
+ * lock, the tenancy predicate and the conflict pre-check are reused there, but
+ * the write itself never moved into this service). It used to audit through
+ * `writeRouteAudit` — the fire-and-forget variant — and publish nothing at all,
+ * so un-archiving an agent was the one mutation whose policy change no runner
+ * ever heard about. Route-layer writers call THIS, not the two halves.
+ *
+ * @param extraDetails merged into the audit `details` after the standard keys,
+ *   for facts only the caller knows (e.g. that an un-archive deliberately
+ *   leaves `enabled` false).
+ */
+export async function recordAgentMutation(
   row: AiAgentRow,
   auth: AuthContext,
   change: AgentChange,
+  extraDetails?: Record<string, unknown>,
 ): Promise<void> {
   await Promise.all([
-    recordAgentAudit(row, auth, change),
+    recordAgentAudit(row, auth, change, extraDetails),
     publishPolicyChanged(row, auth.user.id, change),
   ]);
 }
 
 /**
  * The set of agents this caller may see, on either ownership axis. Partner-wide
- * rows are added only for partner-scoped callers: an org token carries a
- * partnerId but never passes breeze_has_partner_access, so RLS would hide those
- * rows from it regardless — the app layer must not be looser than RLS.
+ * rows are added only for PARTNER-scoped callers.
+ *
+ * LOAD-BEARING, and no longer merely mirroring RLS. It used to be both: an org
+ * token carries a partnerId but never passes breeze_has_partner_access, so RLS
+ * hid partner-wide rows from it regardless and this predicate only avoided being
+ * looser than the database. Since
+ * migrations/2026-10-11-150000-ai-partner-wide-select.sql, ai_agents carries a
+ * separate FOR SELECT policy `org_id IS NULL AND partner_id =
+ * breeze_current_partner_id()`, and an org token DOES populate that GUC — so RLS
+ * now permits an org-scoped SELECT of the caller's own partner's partner-wide
+ * agents. This `auth.scope === 'partner'` gate is what still keeps them out of
+ * org-scoped listings and, crucially, out of `getAgent` — which is what
+ * `POST /ai/agents/:id/runs` (routes/aiAgents.ts) resolves the agent through
+ * before enqueuing a run. An org token cannot resolve a partner-wide agent id,
+ * so it cannot execute the MSP's shared agent. That containment is now an
+ * APP-LAYER property, not an RLS one. Do not "simplify" this to a bare
+ * orgCondition-plus-partner OR on the grounds that RLS will catch it — RLS will
+ * not. (Writes are unaffected either way: the new policy is SELECT-only, so
+ * UPDATE/DELETE targeting of partner-wide rows still requires
+ * breeze_has_partner_access.)
  */
 function accessibleAgentCondition(auth: AuthContext) {
   return auth.scope === 'partner' && auth.partnerId
@@ -361,11 +440,13 @@ export async function listAgents(
   // version of this comment claimed the opposite — that contextless meant a
   // full bypass — which inverted the failure mode on a multi-tenant surface.
   //
-  // The app-layer predicate stays anyway, for two reasons that are real: the
-  // unit-test path mocks the db and has no RLS at all, and the old signature
-  // (_auth, ignored) made an unfiltered read look authorized to the next caller.
-  // Partner-wide rows are only added for partner-scoped callers: an org token
-  // carries a partnerId but never passes breeze_has_partner_access.
+  // The app-layer predicate stays anyway, for three reasons that are real: the
+  // unit-test path mocks the db and has no RLS at all; the old signature
+  // (_auth, ignored) made an unfiltered read look authorized to the next caller;
+  // and since 2026-10-11-150000-ai-partner-wide-select.sql it is STRICTER than
+  // RLS rather than a mirror of it — see accessibleAgentCondition above for why
+  // the `auth.scope === 'partner'` gate is now the only thing keeping
+  // partner-wide agents out of org-scoped listings and org-triggered runs.
   const ownerScope = accessibleAgentCondition(auth);
 
   return db
@@ -485,6 +566,20 @@ export async function createAgent(
   // reason as recipients above — a rejected key must never be persisted.
   assertSupervisedActionKeysValid(input.actAssets.supervisedActionKeys);
 
+  // Spec §4.4: a brand-new ORG row starts with no granted keys, so any create
+  // that supplies a non-empty supervisedActionKeys is trying to add one —
+  // grant-only, refused here regardless of value-validity above.
+  assertOrgRowSupervisedKeysGrantOnly(owner, [], input.actAssets.supervisedActionKeys);
+
+  // #5065: every script a create authorizes for unattended run_script must be
+  // one the OWNER can see and — for an org row — one the partner baseline
+  // also lists (scriptAuthorization.ts). A rejected id is never persisted.
+  await assertScriptIdsAuthorizable(owner, input.kind, {
+    existing: [],
+    next: input.actAssets.scriptIds,
+    toolAllowlist: input.toolAllowlist,
+  });
+
   // Task 6 (#3826): a create that would land with mode: 'act' must already
   // have a resolvable recipient and an act-eligible surface — checked against
   // exactly what THIS create will persist (input's own fields are already
@@ -535,7 +630,7 @@ export async function createAgent(
   // transaction, so a wiring failure must roll the agent insert back rather
   // than leave an audited agent with no trigger automation.
   await ensureManagedTriageAutomation(row);
-  await recordMutation(row, auth, 'created');
+  await recordAgentMutation(row, auth, 'created');
   return row;
 }
 
@@ -573,6 +668,26 @@ export async function updateAgent(
     // the merged/stored value — see assertSupervisedActionKeysValid's doc.
     if (input.actAssets?.supervisedActionKeys !== undefined) {
       assertSupervisedActionKeysValid(input.actAssets.supervisedActionKeys);
+
+      // Spec §4.4: same grant-only rule as createAgent — a patch may keep or
+      // remove an ORG row's already-granted keys, but adding one outside the
+      // four-eyes grant executor is refused before the UPDATE runs.
+      assertOrgRowSupervisedKeysGrantOnly(
+        owner,
+        stored.actAssets.supervisedActionKeys ?? [],
+        input.actAssets.supervisedActionKeys,
+      );
+    }
+
+    // #5065: validate only the script ids THIS patch ADDS, against the
+    // allowlist the row will have after the patch — removals and untouched
+    // stored ids pass (stored-but-inert if they no longer resolve).
+    if (input.actAssets?.scriptIds !== undefined) {
+      await assertScriptIdsAuthorizable(owner, existing.kind, {
+        existing: stored.actAssets.scriptIds ?? [],
+        next: input.actAssets.scriptIds,
+        toolAllowlist: input.toolAllowlist ?? stored.toolAllowlist,
+      });
     }
 
     // Task 6 (#3826): prerequisites are checked against what the update will
@@ -607,7 +722,7 @@ export async function updateAgent(
     if (managedPatch.name !== undefined || managedPatch.enabled !== undefined) {
       await syncManagedAutomation(row.id, managedPatch);
     }
-    await recordMutation(row, auth, 'updated');
+    await recordAgentMutation(row, auth, 'updated');
     return row;
   });
 }
@@ -635,6 +750,6 @@ export async function disableAgent(auth: AuthContext, id: string): Promise<AiAge
   // Agents are never hard-deleted (managed_by_agent_id is ON DELETE RESTRICT),
   // so soft-disable must also stop the wiring from generating queue traffic.
   await setManagedAutomationEnabled(row.id, false);
-  await recordMutation(row, auth, 'disabled');
+  await recordAgentMutation(row, auth, 'disabled');
   return row;
 }

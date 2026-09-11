@@ -106,6 +106,18 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // 30s readyTimeout). testSftpConnection wraps each DB op in its own short
   // withDbAccessContext, so the socket is never held across an open transaction.
   { method: 'POST', pattern: /^\/api\/v1\/catalog\/distributors\/td-synnex-sftp\/test\/?$/ },
+  // #2787 bulk restore — the one route here that opts out for CONNECTION-HOLD
+  // reasons without making an outbound HTTP call. `runBulkIsolated` opens one
+  // short RLS transaction per device (up to 500), and the ambient request
+  // transaction the auth middleware would otherwise open cannot be closed by
+  // `runOutsideDbContext` — it only re-routes the ALS lookup. Left in place it
+  // pins one pooled connection, plus every devices/device_commands row lock the
+  // loop takes, until the last item finishes (#1105), and a Postgres-level
+  // error late in the batch silently rolls back every "succeeded" item before
+  // it. `bulk/permanent-delete` is deliberately ABSENT: it only validates and
+  // enqueues, so it keeps the ambient transaction (same call as
+  // `quotes/bulk-send`).
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/bulk\/restore\/?$/ },
   // PR3 (SSO/OIDC) — the three provider routes that run OIDC discovery
   // (`discoverOIDCConfig` → `safeFetch`, up to OIDC_FETCH_TIMEOUT_MS = 10s
   // against a TENANT-CONTROLLED issuer host). Held inside the request
@@ -205,6 +217,23 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // and writes the verification through the service's own short
   // `withSystemDbAccessContext` blocks, with the harness call between them.
   { method: 'POST', pattern: /^\/api\/v1\/admin\/llm-provider-catalog\/revisions\/[^/]+\/verify\/?$/ },
+  // #3905 — quote send and re-send. `sendQuote`/`resendQuote` take a FOR UPDATE
+  // lock on the quote (and, when sending a revision, on its PARENT) and the
+  // handler then renders the proposal PDF and runs the outbound mail
+  // round-trip. Held inside the request transaction that was: a pooled
+  // connection pinned idle-in-transaction for the whole render + SMTP/Mailgun
+  // call (the #1105 pool-poison class), AND — worse — the parent quote's row
+  // locked while the customer still holds a live accept link for it, so their
+  // own POST /accept blocked behind our mail server. The handlers now open a
+  // short `withAuthDbAccessContext` block for the state transition and run the
+  // returned deferred (services/quoteLifecycle.ts, DeferredQuoteEmail) after it
+  // COMMITS, so no lock and no connection is held across delivery.
+  //
+  // `bulk-send` is deliberately ABSENT: `runBulkIsolated` already gives each
+  // item its own short transaction, and the per-item deferred runs after that
+  // item commits — the ambient request transaction it keeps holds no quote lock.
+  { method: 'POST', pattern: /^\/api\/v1\/quotes\/[^/]+\/send\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/quotes\/[^/]+\/resend\/?$/ },
   // #3922 review round 2 — revision AUTHORING is the second network-touching
   // route on this surface, and the quieter one. `createRevision` runs
   // `validateBaseUrl` → `assertSafeUrl` on the operator-supplied base URL,

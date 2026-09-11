@@ -28,13 +28,12 @@
  *     src/__tests__/integration/recoveryCode.integration.test.ts
  */
 import './setup';
-import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { getTestDb } from './setup';
 import { users } from '../../db/schema';
-import { createPartner, createUser } from './db-utils';
+import { bootstrapAuthTransition, createPartner, createUser } from './db-utils';
 import { hashRecoveryCode } from '../../routes/auth/helpers';
 import { mfaRoutes } from '../../routes/auth/mfa';
 
@@ -42,7 +41,15 @@ const CODE_A = 'AAAA-1111';
 const CODE_B = 'BBBB-2222';
 const CODE_C = 'CCCC-3333';
 
-function pendingRecord(userId: string) {
+// Each racing request must present its OWN binding cookie / transition — see
+// `bootstrapAuthTransition` in db-utils.ts. beginAuthIssuance takes a
+// per-transition row lock, so two genuinely concurrent completions sharing
+// the SAME binding would serialize on that lock and the loser would see a 409
+// "Authentication issuance unavailable" instead of the recovery-code race this
+// test is actually about. Two DISTINCT bindings model the real-world
+// equivalent (two racing tabs/devices each holding their own binding cookie)
+// without introducing that unrelated lock contention.
+async function pendingRecord(userId: string, transition: { transitionId: string; generation: number }) {
   return JSON.stringify({
     userId,
     mfaMethod: 'totp',
@@ -50,8 +57,8 @@ function pendingRecord(userId: string) {
     recoveryAvailable: true,
     authEpoch: 1,
     mfaEpoch: 1,
-    transitionId: randomUUID(),
-    browserGeneration: 1,
+    transitionId: transition.transitionId,
+    browserGeneration: transition.generation,
     statusExpectation: 'active',
     allowedMethods: { totp: true, sms: true, passkey: true },
     expiresAt: Date.now() + 5 * 60 * 1000,
@@ -75,10 +82,10 @@ async function readRecoveryCodes(userId: string): Promise<string[]> {
   return Array.isArray(row?.mfaRecoveryCodes) ? (row!.mfaRecoveryCodes as string[]) : [];
 }
 
-async function verify(app: Hono, tempToken: string, code: string) {
+async function verify(app: Hono, tempToken: string, code: string, cookie: string) {
   return app.request('/auth/mfa/verify', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', cookie },
     body: JSON.stringify({ tempToken, code, method: 'recovery' }),
   });
 }
@@ -101,7 +108,7 @@ describe('POST /auth/mfa/verify (method: recovery) — real-PG single-use concur
     tempTokens.length = 0;
   });
 
-  it('identical-code race: exactly one 200, one 401, persisted array has exactly 2 hashes (no double-spend)', async () => {
+  it('identical-code race: exactly one 200, one 400, persisted array has exactly 2 hashes (no double-spend)', async () => {
     const userId = await seedUserWithRecoveryCodes();
     const { getRedis } = await import('../../services');
     const redis = getRedis();
@@ -113,13 +120,21 @@ describe('POST /auth/mfa/verify (method: recovery) — real-PG single-use concur
     const tokenX = `test-recovery-identical-x-${userId}`;
     const tokenY = `test-recovery-identical-y-${userId}`;
     tempTokens.push(tokenX, tokenY);
-    await redis.set(`mfa:pending:${tokenX}`, pendingRecord(userId), 'EX', 300);
-    await redis.set(`mfa:pending:${tokenY}`, pendingRecord(userId), 'EX', 300);
+    const [transitionX, transitionY] = await Promise.all([bootstrapAuthTransition(), bootstrapAuthTransition()]);
+    await redis.set(`mfa:pending:${tokenX}`, await pendingRecord(userId, transitionX), 'EX', 300);
+    await redis.set(`mfa:pending:${tokenY}`, await pendingRecord(userId, transitionY), 'EX', 300);
 
-    const [r1, r2] = await Promise.all([verify(app, tokenX, CODE_A), verify(app, tokenY, CODE_A)]);
+    const [r1, r2] = await Promise.all([
+      verify(app, tokenX, CODE_A, transitionX.cookie),
+      verify(app, tokenY, CODE_A, transitionY.cookie),
+    ]);
 
+    // #4470: the loser's rejection is a REJECTED PROOF (its code is gone), so
+    // it answers 400 `mfa_code_invalid` — not the bearer guard's 401.
     const statuses = [r1.status, r2.status].sort((a, b) => a - b);
-    expect(statuses).toEqual([200, 401]);
+    expect(statuses).toEqual([200, 400]);
+    const loser = r1.status === 400 ? r1 : r2;
+    expect(await loser.json()).toMatchObject({ code: 'mfa_code_invalid' });
 
     const remaining = await readRecoveryCodes(userId);
     expect(remaining).toHaveLength(2);
@@ -136,13 +151,17 @@ describe('POST /auth/mfa/verify (method: recovery) — real-PG single-use concur
     const tokenX = `test-recovery-distinct-x-${userId}`;
     const tokenY = `test-recovery-distinct-y-${userId}`;
     tempTokens.push(tokenX, tokenY);
-    await redis.set(`mfa:pending:${tokenX}`, pendingRecord(userId), 'EX', 300);
-    await redis.set(`mfa:pending:${tokenY}`, pendingRecord(userId), 'EX', 300);
+    const [transitionX, transitionY] = await Promise.all([bootstrapAuthTransition(), bootstrapAuthTransition()]);
+    await redis.set(`mfa:pending:${tokenX}`, await pendingRecord(userId, transitionX), 'EX', 300);
+    await redis.set(`mfa:pending:${tokenY}`, await pendingRecord(userId, transitionY), 'EX', 300);
 
     // Fire concurrently — no await between requests — so the two `UPDATE ...
     // WHERE mfaRecoveryCodes @> [hash]` statements genuinely race in
     // Postgres rather than serializing by test-code ordering.
-    const [r1, r2] = await Promise.all([verify(app, tokenX, CODE_A), verify(app, tokenY, CODE_B)]);
+    const [r1, r2] = await Promise.all([
+      verify(app, tokenX, CODE_A, transitionX.cookie),
+      verify(app, tokenY, CODE_B, transitionY.cookie),
+    ]);
 
     expect(r1.status).toBe(200);
     expect(r2.status).toBe(200);

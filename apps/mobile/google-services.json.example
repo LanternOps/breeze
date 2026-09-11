@@ -1,0 +1,30 @@
+{
+  "_comment": "Placeholder shape only — NOT a real Firebase config. Download the real file from the Firebase Console (Project Settings -> your Android app -> Download google-services.json), base64-encode it, and set it as the GOOGLE_SERVICES_JSON build secret. See STORE_SUBMISSION.md and scripts/write-google-services.mjs (#3639).",
+  "project_info": {
+    "project_number": "000000000000",
+    "project_id": "breeze-rmm-example",
+    "storage_bucket": "breeze-rmm-example.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:000000000000:android:0000000000000000000000",
+        "android_client_info": {
+          "package_name": "com.breeze.rmm"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "REPLACE_WITH_REAL_API_KEY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

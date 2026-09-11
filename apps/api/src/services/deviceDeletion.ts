@@ -17,6 +17,28 @@ import {
 } from '../routes/devices/core';
 
 /**
+ * Device-cascade tables that are append-only evidence with DELETE fully
+ * revoked from `breeze_app` (#4371 — see `ensureAppRole.ts`'s per-table
+ * writer-path matrix). Permanent device deletion is an audited retention
+ * boundary, so — matching the existing `breeze_audit_admin` pattern this
+ * set generalizes from `peripheral_policy_delivery_events` — arm both the
+ * role and the trigger's retention escape hatch (`breeze.allow_audit_retention`)
+ * only for these statements, immediately restoring the caller's role
+ * afterward, rather than weakening any table's revoke.
+ *
+ * `agent_rollback_events` and `pam_actuation_results` joined this set in
+ * the #4371 fixup: both migrations revoke DELETE from `breeze_app`
+ * entirely (only `breeze_audit_admin` has it), which the blanket per-boot
+ * GRANT this issue fixes had been silently masking — this loop's plain
+ * `DELETE FROM <table>` for them was never actually valid.
+ */
+const DEVICE_CASCADE_AUDIT_ADMIN_TABLES = new Set([
+  'peripheral_policy_delivery_events',
+  'agent_rollback_events',
+  'pam_actuation_results',
+]);
+
+/**
  * Bound on how long the parent-row lock below may wait.
  *
  * Without it, converting a deadlock into a plain lock wait trades a fast 40P01
@@ -95,11 +117,19 @@ export async function deleteDeviceCascade(
   // IMPORTANT — the guarantee is conditional, and issuing this statement is NOT
   // the same as holding the lock. FOR UPDATE locks only rows the statement can
   // SEE, so it locks nothing when the device row is already gone (a re-run, or
-  // two reapers racing) or when RLS filters it out — this cascade runs inside
-  // the caller's tenant-scoped context, and at least one table it touches is
-  // deliberately invisible under that policy (see the abuse_endpoint_fingerprints
-  // note below). In that case the child cleanup below proceeds under the OLD
-  // child-first ordering, which is the exact race this lock exists to close.
+  // two reapers racing). Historically it could ALSO lock nothing when RLS
+  // filtered the row out — before #5023 wave 05, `DELETE /devices/:id/permanent`
+  // ran this whole cascade under the CALLER's tenant-scoped request context,
+  // and at least one table it touches (abuse_endpoint_fingerprints, see the
+  // note below) is deliberately invisible under that policy. That branch no
+  // longer applies: every caller of this function — the single-device route,
+  // the bulk-purge worker's `purgeOne` (jobs/deviceBulkPurge.ts, always
+  // system-scoped), and the Quick Support reaper — now runs it inside a
+  // SYSTEM db context, so the devices row here is fully visible whenever it
+  // exists. The re-run/racing-reaper case above is the only remaining reason
+  // for a zero-row lock; the RLS-visibility hazard survives only as history.
+  // If a future caller ever invokes this from a tenant-scoped context again,
+  // the OLD child-first-ordering race this lock exists to close comes back.
   //
   // Deleting an absent device is legitimately idempotent, so a zero-row result
   // must NOT abort — two reapers racing would then error instead of one simply
@@ -226,28 +256,49 @@ export async function deleteDeviceCascade(
   // Tenant business records (tickets, support_sessions): preserve history,
   // detach the device.
   //
-  // For abuse_endpoint_fingerprints specifically, this UPDATE is a structural
-  // no-op: it's a system-only-RLS corpus table, and this cascade runs inside
-  // the caller's tenant-scoped request context, so the tenant policy filters
-  // every row out before the UPDATE ever sees one. The real detach happens
-  // via the column's `device_id` FK, declared ON DELETE SET NULL — that fires
-  // unconditionally at the DB layer once the device row below is deleted, no
-  // RLS context involved. Listed here anyway for the single detach-tables
-  // contract (getDeviceCascadeDeleteTables et al.), not because this line
-  // does the work for that table.
+  // abuse_endpoint_fingerprints is a system-only-RLS corpus table. Since
+  // #5023 wave 05, every caller of this function runs in a SYSTEM db context
+  // (see the FOR UPDATE comment above), so this UPDATE actually sees and
+  // detaches its rows here — it is no longer the structural no-op it was
+  // before that wave, when the single-device route ran this cascade under
+  // the caller's tenant-scoped request context and the tenant policy filtered
+  // every row out before the UPDATE ever saw one. Either way the detach was
+  // never load-bearing for this table: the column's `device_id` FK is
+  // declared ON DELETE SET NULL, which fires unconditionally at the DB layer
+  // once the device row below is deleted, no RLS context involved. Listed
+  // here anyway for the single detach-tables contract
+  // (getDeviceCascadeDeleteTables et al.), not because this line is the only
+  // thing that does the work for that table.
+  // AI Operator tasks need more than the generic `device_id = NULL` below
+  // (#5205 W03, #5208): a task whose target device is gone must also RECORD
+  // that, or a detached task is indistinguishable from a task that never had a
+  // target, and a live one must be fenced or the coordinator keeps trying to
+  // act on a device that no longer exists. Runs first so the generic loop that
+  // follows is a no-op for these rows rather than clobbering the stamp.
+  // `stopping` is deliberately not terminal — an in-flight command may still
+  // report, and its result belongs on the operation row (spec §6.3).
+  await tx.execute(sql`
+    UPDATE ai_operator_tasks
+       SET device_id = NULL,
+           target_detached_at = COALESCE(target_detached_at, now()),
+           target_detached_reason = COALESCE(target_detached_reason, 'device_deleted'),
+           state = CASE WHEN state IN ('queued', 'running', 'waiting', 'paused') THEN 'stopping' ELSE state END,
+           updated_at = now()
+     WHERE device_id = ${deviceId}`);
+
   for (const detachTable of DEVICE_DETACH_DEVICE_ID_TABLES) {
     await tx.execute(sql`UPDATE ${sql.identifier(detachTable)} SET device_id = NULL WHERE device_id = ${deviceId}`);
   }
 
   for (const table of getDeviceCascadeDeleteTables()) {
-    if (table === 'peripheral_policy_delivery_events') {
-      // Delivery events are append-only and breeze_app has no DELETE grant.
-      // Permanent device deletion is an audited retention boundary, so arm
-      // both layers only for this one statement and immediately restore the
-      // caller's role before continuing through ordinary child tables.
+    if (DEVICE_CASCADE_AUDIT_ADMIN_TABLES.has(table)) {
+      // Append-only evidence: breeze_app has no DELETE grant (see
+      // DEVICE_CASCADE_AUDIT_ADMIN_TABLES above). Arm both layers only for
+      // this one statement and immediately restore the caller's role before
+      // continuing through ordinary child tables.
       await tx.execute(sql`SET LOCAL ROLE breeze_audit_admin`);
       await tx.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
-      await tx.execute(sql`DELETE FROM peripheral_policy_delivery_events WHERE device_id = ${deviceId}`);
+      await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
       await tx.execute(sql`RESET ROLE`);
       continue;
     }

@@ -1,11 +1,11 @@
 ---
 title: First-Login Setup Wizard
-description: Guided two-step setup wizard covering organization setup and device enrollment for new administrators on their first Breeze login.
+description: Guided four-step setup wizard covering account security, organization setup, regional settings, and device enrollment for new administrators on their first Breeze login.
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-The first-login setup wizard guides new Breeze administrators through essential platform configuration immediately after their initial sign-in. It covers organization setup and device enrollment in a two-step workflow. Once finished, you are taken to the main dashboard and the wizard does not appear again.
+The first-login setup wizard guides new Breeze administrators through essential platform configuration immediately after their initial sign-in. It covers account security, organization setup, regional settings, and device enrollment in a four-step workflow. Once finished, you are taken to the main dashboard and the wizard does not appear again.
 
 ---
 
@@ -21,15 +21,19 @@ The setup wizard appears automatically the first time the default `admin@breeze.
 
 ## Setup Steps
 
-The wizard presents two sequential steps. Each step can be saved or skipped individually.
+The wizard presents four sequential steps.
 
 <Steps>
-1. **Organization** -- Create your organization and first site. This sets up the multi-tenant hierarchy (organization and site) that structures your Breeze deployment. Enter your organization name and create your first site (e.g., "Main Office").
+1. **Account** -- Set a new password (and optionally a new email) to replace the default `admin@breeze.local` credentials. This step can be skipped.
 
-2. **Enroll Device** -- Install the Breeze agent on your first endpoint. The wizard displays enrollment instructions and an enrollment key you can copy. Follow the on-screen instructions to install the agent and verify connectivity.
+2. **Organization** -- Create your organization and first site. This sets up the multi-tenant hierarchy (organization and site) that structures your Breeze deployment. Enter your organization name and create your first site (e.g., "Main Office").
+
+3. **Regional** -- Set your default language, time zone, and currency for your partner, your first site, and your own user preferences. This step can be skipped.
+
+4. **Install Agent** -- Install the Breeze agent on your first endpoint. The wizard displays enrollment instructions and an enrollment key you can copy. Follow the on-screen instructions to install the agent and verify connectivity.
 </Steps>
 
-After completing or skipping both steps, click **Go to Dashboard** to finish setup and open the main dashboard.
+After completing or skipping the remaining steps, click **Go to Dashboard** to finish setup and open the main dashboard.
 
 ---
 
@@ -37,7 +41,7 @@ After completing or skipping both steps, click **Go to Dashboard** to finish set
 
 ### Skipping Individual Steps
 
-Every step has a **Skip** button that advances to the next step without making any changes. You can always configure these settings later from the dashboard.
+The **Account** and **Regional** steps have a **Skip** button that advances to the next step without making any changes. You can always configure these settings later from the dashboard. The **Organization** step cannot be skipped -- you need at least one organization and site before the wizard can continue.
 
 ### Skipping the Entire Wizard
 

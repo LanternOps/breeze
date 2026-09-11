@@ -1,6 +1,18 @@
 import type { ScriptBuilderContext } from '@breeze/shared/types/ai';
 
 /**
+ * Mirrors the agent's own derivation in `buildEnvironment`
+ * (agent/internal/executor/executor.go): upper-case the parameter name and
+ * fold "-" to "_", prefixed with BREEZE_PARAM_. Any other non-alphanumeric
+ * character is passed through unchanged by the agent, so it is passed
+ * through unchanged here too — keep parameter names alphanumeric-and-hyphen
+ * only in practice.
+ */
+function toBreezeParamEnvVar(name: string): string {
+  return `BREEZE_PARAM_${name.toUpperCase().replaceAll('-', '_')}`;
+}
+
+/**
  * Build the system prompt for a script builder AI session.
  * Includes the base persona, tool usage instructions, and current editor state.
  */
@@ -39,7 +51,19 @@ status output as [OK], [X], [!], -> and * instead. On Windows these characters a
 mis-decoded and silently turn into string delimiters, which breaks the script with
 parse errors that point at the wrong line.
 
-IMPORTANT: Always use apply_script_code to deliver code to the editor, not just a code block in the chat. The chat message should explain the code; the tool applies it to the editor.`;
+IMPORTANT: Always use apply_script_code to deliver code to the editor, not just a code block in the chat. The chat message should explain the code; the tool applies it to the editor.
+
+--- Runtime parameters ---
+Parameters declared via apply_script_metadata are delivered to the running script two ways, simultaneously, by the Breeze agent:
+(a) as an environment variable named BREEZE_PARAM_<NAME>, where <NAME> is the parameter's declared name upper-cased with every "-" folded to "_" (other characters are passed through as-is, so keep parameter names alphanumeric-and-hyphen only). Example: a parameter named "log-level" is read as $env:BREEZE_PARAM_LOG_LEVEL (PowerShell) or "$BREEZE_PARAM_LOG_LEVEL" (Bash).
+(b) by literal text substitution of {{name}} and \${{name}} placeholders directly in the script body, before the script is written to disk.
+Parameters are NEVER passed as command-line arguments to the script. Concretely:
+- Never write a param() block with a Mandatory parameter for a Breeze parameter — the script is invoked with no arguments, so PowerShell's parameter binder fails before your code runs. Instead read the env var and validate it yourself: if it is empty, print a clear "[X] <Name> parameter is required" message and exit non-zero.
+- Never read a bare $env:<Name> (i.e. without the BREEZE_PARAM_ prefix) — that variable does not exist. Always use $env:BREEZE_PARAM_<NAME>.
+- The parameter name shown in metadata and the env var name your code reads must match under the derivation above — double check this when you declare a parameter.
+BREEZE_VAR_* is a separate, unrelated prefix for tenant/secret variables (API keys, credentials) and is only populated when the script runs as SYSTEM or elevated — never conflate it with BREEZE_PARAM_* (runtime parameters), which are always delivered regardless of runAs.
+If a run reports a parameter as missing, read the actual failing execution first (get_script_execution) and check what runAs it used before theorising about which code path ran it — do not guess based on Test Run vs. execute_script_on_device without evidence.
+Never embed a real customer value (email address, hostname, API key, etc.) into script code as a fallback or default — always read it from the BREEZE_PARAM_ / BREEZE_VAR_ environment.`;
 
   const contextParts: string[] = [];
   if (context?.scriptId) {
@@ -67,6 +91,10 @@ IMPORTANT: Always use apply_script_code to deliver code to the editor, not just 
   if (snap.timeoutSeconds) parts.push(`Timeout: ${snap.timeoutSeconds}s`);
   if (snap.parameters?.length) {
     parts.push(`Parameters: ${JSON.stringify(snap.parameters)}`);
+    const derivations = snap.parameters.map(
+      (p) => `${p.name} → $env:${toBreezeParamEnvVar(p.name)}`,
+    );
+    parts.push(`Runtime env vars for these parameters: ${derivations.join(', ')}`);
   }
 
   parts.push(`\nContent:\n\`\`\`\n${snap.content || '(empty)'}\n\`\`\``);

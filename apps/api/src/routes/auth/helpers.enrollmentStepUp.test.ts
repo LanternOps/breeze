@@ -188,7 +188,11 @@ describe('resolveEnrollmentStepUp', () => {
       const res = await resolveEnrollmentStepUp(ctx(), authCtx(), { currentPassword: 'nope' }, TERMINAL);
 
       expect((res as any).__status).toBe(401);
-      expect((res as any).__body).toEqual({ error: 'Invalid credentials' });
+      expect((res as any).__body).toEqual({
+        error: 'Invalid credentials',
+        message: 'Invalid credentials',
+        code: 'invalid_credentials',
+      });
       expect(consumeStepUpGrant).not.toHaveBeenCalled();
     });
 
@@ -303,7 +307,11 @@ describe('resolveEnrollmentStepUp', () => {
       const res = await resolveEnrollmentStepUp(ctx(), authCtx(), { ssoReauthGrantId: GRANT }, TERMINAL);
 
       expect((res as any).__status).toBe(401);
-      expect((res as any).__body).toEqual({ error: 'Invalid credentials' });
+      expect((res as any).__body).toEqual({
+        error: 'Invalid credentials',
+        message: 'Invalid credentials',
+        code: 'invalid_credentials',
+      });
     });
 
     it('401s when neither proof is supplied', async () => {
@@ -340,7 +348,11 @@ describe('resolveEnrollmentStepUp', () => {
       const res = await resolveEnrollmentStepUp(ctx(), authCtx(), { ssoReauthGrantId: GRANT }, TERMINAL);
 
       expect((res as any).__status).toBe(401);
-      expect((res as any).__body).toEqual({ error: 'Invalid credentials' });
+      expect((res as any).__body).toEqual({
+        error: 'Invalid credentials',
+        message: 'Invalid credentials',
+        code: 'invalid_credentials',
+      });
     });
   });
 
@@ -367,7 +379,11 @@ describe('resolveEnrollmentStepUp', () => {
       const res = await resolveEnrollmentStepUp(ctx(), authCtx(), { ssoReauthGrantId: GRANT }, TERMINAL);
 
       expect((res as any).__status).toBe(401);
-      expect((res as any).__body).toEqual({ error: 'Invalid credentials' });
+      expect((res as any).__body).toEqual({
+        error: 'Invalid credentials',
+        message: 'Invalid credentials',
+        code: 'invalid_credentials',
+      });
       // Refused BEFORE the grant is touched: a rejected enrollment must not
       // burn the caller's single-use grant.
       expect(consumeStepUpGrant).not.toHaveBeenCalled();
