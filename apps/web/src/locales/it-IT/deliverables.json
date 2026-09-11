@@ -196,7 +196,8 @@
       "saveFailed": "Impossibile salvare il set di modelli.",
       "deleteFailed": "Impossibile eliminare il set di modelli.",
       "itemSaveFailed": "Impossibile salvare il deliverable.",
-      "itemDeleteFailed": "Impossibile rimuovere il deliverable."
+      "itemDeleteFailed": "Impossibile rimuovere il deliverable.",
+      "applyFailed": "Impossibile applicare il set di modelli."
     },
     "toast": {
       "setSaved": "Set di modelli salvato",

@@ -196,7 +196,8 @@
       "saveFailed": "Could not save the template set.",
       "deleteFailed": "Could not delete the template set.",
       "itemSaveFailed": "Could not save the deliverable.",
-      "itemDeleteFailed": "Could not remove the deliverable."
+      "itemDeleteFailed": "Could not remove the deliverable.",
+      "applyFailed": "Could not apply the template set."
     },
     "toast": {
       "setSaved": "Template set saved",

@@ -196,7 +196,8 @@
       "saveFailed": "No se pudo guardar el conjunto de plantillas.",
       "deleteFailed": "No se pudo eliminar el conjunto de plantillas.",
       "itemSaveFailed": "No se pudo guardar el entregable.",
-      "itemDeleteFailed": "No se pudo quitar el entregable."
+      "itemDeleteFailed": "No se pudo quitar el entregable.",
+      "applyFailed": "No se pudo aplicar el conjunto de plantillas."
     },
     "toast": {
       "setSaved": "Conjunto de plantillas guardado",

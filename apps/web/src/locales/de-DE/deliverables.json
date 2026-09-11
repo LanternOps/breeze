@@ -196,7 +196,8 @@
       "saveFailed": "Vorlagenset konnte nicht gespeichert werden.",
       "deleteFailed": "Vorlagenset konnte nicht gelöscht werden.",
       "itemSaveFailed": "Leistung konnte nicht gespeichert werden.",
-      "itemDeleteFailed": "Leistung konnte nicht entfernt werden."
+      "itemDeleteFailed": "Leistung konnte nicht entfernt werden.",
+      "applyFailed": "Vorlagenset konnte nicht angewendet werden."
     },
     "toast": {
       "setSaved": "Vorlagenset gespeichert",

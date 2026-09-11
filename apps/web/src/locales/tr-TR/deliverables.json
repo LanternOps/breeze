@@ -196,7 +196,8 @@
       "saveFailed": "Şablon seti kaydedilemedi.",
       "deleteFailed": "Şablon seti silinemedi.",
       "itemSaveFailed": "Çıktı kaydedilemedi.",
-      "itemDeleteFailed": "Çıktı kaldırılamadı."
+      "itemDeleteFailed": "Çıktı kaldırılamadı.",
+      "applyFailed": "Şablon seti uygulanamadı."
     },
     "toast": {
       "setSaved": "Şablon seti kaydedildi",

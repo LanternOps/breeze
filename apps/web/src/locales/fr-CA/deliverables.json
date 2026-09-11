@@ -196,7 +196,8 @@
       "saveFailed": "Impossible d'enregistrer l'ensemble de modèles.",
       "deleteFailed": "Impossible de supprimer l'ensemble de modèles.",
       "itemSaveFailed": "Impossible d'enregistrer le livrable.",
-      "itemDeleteFailed": "Impossible de retirer le livrable."
+      "itemDeleteFailed": "Impossible de retirer le livrable.",
+      "applyFailed": "Impossible d'appliquer l'ensemble de modèles."
     },
     "toast": {
       "setSaved": "Ensemble de modèles enregistré",

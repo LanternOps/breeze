@@ -196,7 +196,8 @@
       "saveFailed": "Não foi possível salvar o conjunto de modelos.",
       "deleteFailed": "Não foi possível excluir o conjunto de modelos.",
       "itemSaveFailed": "Não foi possível salvar a entrega.",
-      "itemDeleteFailed": "Não foi possível remover a entrega."
+      "itemDeleteFailed": "Não foi possível remover a entrega.",
+      "applyFailed": "Não foi possível aplicar o conjunto de modelos."
     },
     "toast": {
       "setSaved": "Conjunto de modelos salvo",
