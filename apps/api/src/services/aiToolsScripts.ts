@@ -265,7 +265,7 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
         const { waitForCommandResult } = await getCommandQueue();
         const cmd = await runOutsideDbContext(() => waitForCommandResult(dispatch.commandId, 60000));
         proposalResults[deviceId] = {
-          ...((cmd.result as Record<string, unknown> | undefined)
+          ...((cmd.result as unknown as Record<string, unknown> | undefined)
             ?? { status: 'failed', error: 'Command did not complete' }),
           commandId: cmd.id,
           executionId: dispatch.executionId,

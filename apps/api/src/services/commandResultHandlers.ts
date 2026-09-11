@@ -452,7 +452,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       const markerCommandId = typeof rawMarkerCommandId === 'string' ? rawMarkerCommandId : null;
 
       phase = 'cancel-confirm-cas';
-      let cancelClosed: Array<{ id: string; scriptId: string }> = [];
+      let cancelClosed: Array<{ id: string; scriptId: string | null }> = [];
       let cancelConfirmed = false;
       if (cancelledMarker && markerCommandId) {
         cancelClosed = await db
@@ -486,7 +486,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
           });
       }
 
-      let updatedExecutions: Array<{ id: string; scriptId: string }> = [];
+      let updatedExecutions: Array<{ id: string; scriptId: string | null }> = [];
       let effectiveExecution = cancelClosed[0] ?? null;
 
       if (cancelClosed.length === 0) {
@@ -698,7 +698,10 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       const countedExecution = updatedExecutions[0] ?? cancelClosed[0] ?? null;
       const batchId = payload?.batchId as string | undefined;
       phase = 'batch-counters';
-      if (batchId && countedExecution) {
+      // A proposal-backed execution has no library script and is never part of
+      // a batch (script_execution_batches.script_id is NOT NULL), so the
+      // counter update only applies to rows that carry a script_id.
+      if (batchId && countedExecution && countedExecution.scriptId) {
         const counterField = scriptStatus === 'completed' ? 'devicesCompleted' : 'devicesFailed';
         await db
           .update(scriptExecutionBatches)

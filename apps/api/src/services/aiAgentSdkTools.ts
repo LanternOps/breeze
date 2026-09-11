@@ -826,7 +826,10 @@ export function scriptProposalToolDefinitions(
   getAuth: () => AuthContext,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
-): SdkTool[] {
+) {
+  // Return type is inferred (like m365ToolDefinitions): the SDK's
+  // SdkMcpToolDefinition generic is invariant in its shape, so an explicit
+  // SdkTool[] annotation does not accept the concrete tool() results.
   if (!aiScriptAuthoringEnabled()) return [];
   const uuid = z.string().guid();
   return [

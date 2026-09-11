@@ -51,7 +51,7 @@ describe('run_script proposal branch', () => {
     } as never);
     const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth));
     expect(dispatchMock).toHaveBeenCalledTimes(1);
-    const dispatchInput = dispatchMock.mock.calls[0]![0] as unknown as Record<string, unknown>;
+    const dispatchInput = (dispatchMock.mock.calls as unknown as Array<[Record<string, unknown>]>)[0]![0];
     expect((dispatchInput.source as { kind: string }).kind).toBe('proposal');
     expect((dispatchInput.provenance as { approvalMethod: string }).approvalMethod).toBe('supervised_self');
     expect((dispatchInput.offlinePolicy as { kind: string }).kind).toBe('reject');
