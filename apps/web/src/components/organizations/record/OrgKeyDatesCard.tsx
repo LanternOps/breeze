@@ -11,7 +11,7 @@ import {
   type KeyDateKind,
 } from '@/lib/api/orgKeyDates';
 import { formatDate } from '@/lib/dateTimeFormat';
-import { handleActionError } from '@/lib/runAction';
+import { ActionError, handleActionError } from '@/lib/runAction';
 import { runClientAction } from '@/lib/runClientAction';
 import { useLatest, type OrgFetch } from './orgRecordFetch';
 
@@ -22,6 +22,12 @@ const KINDS: readonly KeyDateKind[] = [
   'audit',
   'other',
 ];
+
+/** A failed load keeps the server's message so the card can say WHY. */
+interface LoadFailure {
+  failed: true;
+  message: string;
+}
 
 interface FormState {
   label: string;
@@ -88,25 +94,33 @@ function byDate(a: KeyDate, b: KeyDate): number {
  */
 export default function OrgKeyDatesCard({ orgId, orgFetch }: { orgId: string; orgFetch: OrgFetch }) {
   const { t } = useTranslation('deliverables');
-  const [rows, setRows] = useState<KeyDate[] | 'failed' | null>(null);
+  const [rows, setRows] = useState<KeyDate[] | LoadFailure | null>(null);
   // `'new'` = the add form; a row id = editing that row; null = closed.
   const [editing, setEditing] = useState<'new' | string | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [armedDelete, setArmedDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
-  const latest = useLatest<KeyDate[] | 'failed'>();
+  const latest = useLatest<KeyDate[] | LoadFailure>();
   const formId = useId();
 
   const load = useCallback(async () => {
+    const fallback = t('keyDates.errors.loadFailed');
     const result = await latest.run(
       listKeyDates(orgFetch, orgId)
-        .then((list): KeyDate[] | 'failed' => (Array.isArray(list) ? [...list].sort(byDate) : 'failed'))
-        .catch((): 'failed' => 'failed'),
+        .then((list): KeyDate[] | LoadFailure => {
+          if (Array.isArray(list)) return [...list].sort(byDate);
+          console.error('[OrgKeyDatesCard] key dates response is not a list', list);
+          return { failed: true, message: fallback };
+        })
+        .catch((err: unknown): LoadFailure => {
+          console.error('[OrgKeyDatesCard] failed to load key dates', err);
+          return { failed: true, message: err instanceof ActionError && err.message ? err.message : fallback };
+        }),
     );
     if (result === undefined) return;
     setRows(result);
-  }, [latest, orgFetch, orgId]);
+  }, [latest, orgFetch, orgId, t]);
 
   useEffect(() => {
     void load();
@@ -300,8 +314,8 @@ export default function OrgKeyDatesCard({ orgId, orgFetch }: { orgId: string; or
           <div className="h-3 w-3/4 animate-pulse rounded bg-muted" />
           <div className="h-3 w-1/2 animate-pulse rounded bg-muted" />
         </div>
-      ) : rows === 'failed' ? (
-        <p className="px-4 py-4 text-sm text-muted-foreground">{t('keyDates.errors.loadFailed')}</p>
+      ) : !Array.isArray(rows) ? (
+        <p className="px-4 py-4 text-sm text-destructive" data-testid="org-key-dates-error">{rows.message}</p>
       ) : rows.length === 0 ? (
         <p className="px-4 py-4 text-sm text-muted-foreground">{t('keyDates.empty')}</p>
       ) : (

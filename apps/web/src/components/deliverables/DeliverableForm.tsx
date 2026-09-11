@@ -24,6 +24,11 @@ export interface DeliverableFormProps {
   contractId?: string | null;
   /** Contracts to choose from when `contractId` is not fixed. */
   contractOptions?: Array<{ id: string; name: string }>;
+  /** Lifecycle of the `contractOptions` load when `contractId` is not fixed:
+   *  `'loading'` disables the picker, `'failed'` shows an inline error and
+   *  blocks Save — a deliverable that belongs under a contract must never be
+   *  silently created standalone because the list did not arrive. */
+  contractsState?: 'loading' | 'failed';
   /** Present in edit mode; cadence and anchor date become read-only. */
   initial?: Deliverable;
   onSaved: (d: Deliverable) => void;
@@ -100,6 +105,7 @@ export default function DeliverableForm({
   orgId,
   contractId: fixedContractId,
   contractOptions,
+  contractsState,
   initial,
   onSaved,
   onCancel,
@@ -112,7 +118,11 @@ export default function DeliverableForm({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const showContractPicker = !fixedContractId && Array.isArray(contractOptions) && contractOptions.length > 0;
+  // The picker is always offered when no contract is pinned — an empty list
+  // still lets the user confirm "not tied to a contract" deliberately.
+  const showContractPicker = !fixedContractId;
+  const contractsFailed = showContractPicker && contractsState === 'failed';
+  const contractsLoading = showContractPicker && contractsState === 'loading';
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((f) => ({ ...f, [key]: value }));
 
   const resolvedContractId = (): string | null | undefined => {
@@ -123,7 +133,9 @@ export default function DeliverableForm({
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (saving) return;
+    // Enter in a field submits past the disabled Save button; the guard has to
+    // live here too or a failed contracts load still files the row standalone.
+    if (saving || contractsFailed) return;
     setError(null);
     setSaving(true);
     try {
@@ -205,6 +217,8 @@ export default function DeliverableForm({
             className={inputClass}
             value={form.contractId}
             onChange={(e) => set('contractId', e.target.value)}
+            disabled={contractsLoading || contractsFailed}
+            aria-invalid={contractsFailed || undefined}
             data-testid="deliverable-form-contract"
           >
             <option value="">{t('form.noContract')}</option>
@@ -212,6 +226,11 @@ export default function DeliverableForm({
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
           </select>
+          {contractsFailed && (
+            <p className="mt-1 text-xs text-destructive" role="alert" data-testid="deliverable-form-contracts-error">
+              {t('form.contractsUnavailable')}
+            </p>
+          )}
         </div>
       )}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -350,7 +369,7 @@ export default function DeliverableForm({
         </button>
         <button
           type="submit"
-          disabled={saving || !form.name.trim()}
+          disabled={saving || !form.name.trim() || contractsFailed}
           className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           data-testid="deliverable-form-save"
         >

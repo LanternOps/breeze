@@ -53,6 +53,7 @@
     "description": "Açıklama",
     "contract": "Sözleşme",
     "noContract": "Bir sözleşmeye bağlı değil",
+    "contractsUnavailable": "Bu kuruluşun sözleşmeleri yüklenemedi. Kaydetmeden önce sayfayı yenileyin.",
     "cadence": "Sıklık",
     "anchorDueDate": "İlk son tarih",
     "effectiveFrom": "Geçerlilik başlangıcı",

@@ -28,11 +28,19 @@ export function runClientAction<T>(
       } catch (err) {
         if (err instanceof ActionError && err.status > 0) {
           const body = err.body && typeof err.body === 'object' ? err.body : { error: err.message, code: err.code };
-          return new Response(JSON.stringify(body), {
+          // A client that rejected a 2xx (malformed envelope, see `unwrapData`)
+          // carries a success status; `success: false` keeps `runAction` on its
+          // failure branch so the outcome is toasted rather than read as done.
+          const payload = err.status < 400 ? { ...body, success: false, error: err.message } : body;
+          return new Response(JSON.stringify(payload), {
             status: err.status,
             headers: { 'Content-Type': 'application/json' },
           });
         }
+        // Not an API outcome: a network failure (status 0), a JSON parse error,
+        // an AuthThrottledError… `runAction` toasts `errorFallback` for these,
+        // so log the original or the cause is gone.
+        console.error('[runClientAction]', err);
         throw err;
       }
     },

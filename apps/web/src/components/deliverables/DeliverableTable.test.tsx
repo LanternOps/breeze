@@ -61,7 +61,13 @@ function makeFetcher(rows: Deliverable[]) {
     const method = init?.method ?? 'GET';
     if (method === 'GET' && path.startsWith('/orgs/org-1/deliverables')) return jsonResp(200, { data: rows });
     if (method === 'DELETE') return jsonResp(204, {});
-    if (method === 'PATCH') return jsonResp(200, { data: { ...rows[0], portalVisible: false } });
+    if (method === 'PATCH') {
+      // The API answers PATCH/POST with the full summary shape (`Deliverable`),
+      // so `replaceRow(saved)` keeps contractName/status/nextDue intact.
+      const body = JSON.parse(String(init?.body)) as Partial<Deliverable>;
+      const saved: Deliverable = { ...rows[0], ...body, updatedAt: '2026-02-01T00:00:00Z' };
+      return jsonResp(200, { data: saved });
+    }
     throw new Error(`unexpected ${method} ${path}`);
   });
 }
@@ -117,9 +123,9 @@ describe('DeliverableTable', () => {
     await waitFor(() => expect(fetcher.mock.calls.filter(([p, i]) => (i?.method ?? 'GET') === 'GET' && String(p).startsWith('/orgs/org-1/deliverables')).length).toBe(2));
   });
 
-  it('toggles portal visibility with a PATCH through runAction', async () => {
-    const fetcher = makeFetcher([base]);
-    render(<DeliverableTable fetcher={fetcher} orgId="org-1" />);
+  it('toggles portal visibility with a PATCH through runAction and keeps the row summary intact', async () => {
+    const fetcher = makeFetcher([base, standalone]);
+    render(<DeliverableTable fetcher={fetcher} orgId="org-1" groupByContract />);
     const toggle = await screen.findByTestId('deliverable-portal-toggle-d-1');
     expect(toggle).toBeChecked();
     fireEvent.click(toggle);
@@ -130,6 +136,18 @@ describe('DeliverableTable', () => {
       ),
     );
     await waitFor(() => expect(screen.getByTestId('deliverable-portal-toggle-d-1')).not.toBeChecked());
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+
+    // The row was replaced with the PATCH response, which must be the full
+    // summary: status pill, contract group and dates all survive the toggle.
+    const row1 = screen.getByTestId('deliverable-row-d-1');
+    expect(within(row1).getByTestId('deliverable-status-d-1').textContent).toBe('On track');
+    expect(within(row1).getByText('Late')).toBeInTheDocument();
+    expect(within(screen.getByTestId('deliverable-group-ct-1')).getByText('Acme MSA')).toBeInTheDocument();
+    const rows = screen.getAllByTestId(/^deliverable-row-/);
+    expect(rows.map((r) => r.getAttribute('data-testid'))).toEqual(['deliverable-row-d-1', 'deliverable-row-d-2']);
+    // No reload was needed: still exactly one GET.
+    expect(fetcher.mock.calls.filter(([p, i]) => (i?.method ?? 'GET') === 'GET' && String(p).startsWith('/orgs/org-1/deliverables')).length).toBe(1);
   });
 
   it('groups rows by contract name with standalone rows under "No contract"', async () => {

@@ -53,6 +53,7 @@
     "description": "Descripción",
     "contract": "Contrato",
     "noContract": "Sin vínculo a un contrato",
+    "contractsUnavailable": "No se pudieron cargar los contratos de esta organización. Recarga la página antes de guardar.",
     "cadence": "Frecuencia",
     "anchorDueDate": "Primera fecha de vencimiento",
     "effectiveFrom": "Vigente desde",

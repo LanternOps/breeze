@@ -53,6 +53,7 @@
     "description": "Beschreibung",
     "contract": "Vertrag",
     "noContract": "Keinem Vertrag zugeordnet",
+    "contractsUnavailable": "Die Verträge dieser Organisation konnten nicht geladen werden. Laden Sie die Seite neu, bevor Sie speichern.",
     "cadence": "Turnus",
     "anchorDueDate": "Erste Fälligkeit",
     "effectiveFrom": "Gültig ab",

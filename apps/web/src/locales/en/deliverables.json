@@ -53,6 +53,7 @@
     "description": "Description",
     "contract": "Contract",
     "noContract": "Not tied to a contract",
+    "contractsUnavailable": "Could not load this organization's contracts. Reload the page before saving.",
     "cadence": "Cadence",
     "anchorDueDate": "First due date",
     "effectiveFrom": "Effective from",

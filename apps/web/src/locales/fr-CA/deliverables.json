@@ -53,6 +53,7 @@
     "description": "Description",
     "contract": "Contrat",
     "noContract": "Non lié à un contrat",
+    "contractsUnavailable": "Impossible de charger les contrats de cette organisation. Rechargez la page avant d'enregistrer.",
     "cadence": "Fréquence",
     "anchorDueDate": "Première date d'échéance",
     "effectiveFrom": "En vigueur à compter du",

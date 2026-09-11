@@ -53,6 +53,7 @@
     "description": "Descrizione",
     "contract": "Contratto",
     "noContract": "Non collegato a un contratto",
+    "contractsUnavailable": "Impossibile caricare i contratti di questa organizzazione. Ricarica la pagina prima di salvare.",
     "cadence": "Cadenza",
     "anchorDueDate": "Prima scadenza",
     "effectiveFrom": "Valido dal",

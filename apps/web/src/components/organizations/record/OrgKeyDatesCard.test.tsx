@@ -196,10 +196,29 @@ describe('OrgKeyDatesCard', () => {
     expect(calls().some(([, init]) => init?.method === 'DELETE')).toBe(false);
   });
 
-  it('shows the load-failed copy, not the empty state, when the list request fails', async () => {
-    const orgFetch = vi.fn(async () => json({ error: 'boom' }, 500)) as unknown as OrgFetch;
-    render(<OrgKeyDatesCard orgId={ORG_ID} orgFetch={orgFetch} />);
-    await waitFor(() => expect(screen.getByTestId('org-key-dates').textContent).toContain('Could not load key dates.'));
-    expect(screen.getByTestId('org-key-dates').textContent).not.toContain('No key dates recorded.');
+  it('shows the server message, not the empty state, when the list request fails', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const orgFetch = vi.fn(async () => json({ error: 'boom' }, 500)) as unknown as OrgFetch;
+      render(<OrgKeyDatesCard orgId={ORG_ID} orgFetch={orgFetch} />);
+      const error = await screen.findByTestId('org-key-dates-error');
+      expect(error.textContent).toBe('boom');
+      expect(screen.getByTestId('org-key-dates').textContent).not.toContain('No key dates recorded.');
+      expect(errSpy).toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('falls back to the generic load-failed copy when the response is not a list', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const orgFetch = vi.fn(async () => json({ data: { nope: true } })) as unknown as OrgFetch;
+      render(<OrgKeyDatesCard orgId={ORG_ID} orgFetch={orgFetch} />);
+      const error = await screen.findByTestId('org-key-dates-error');
+      expect(error.textContent).toBe('Could not load key dates.');
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });

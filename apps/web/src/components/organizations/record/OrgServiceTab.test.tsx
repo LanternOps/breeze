@@ -89,10 +89,13 @@ function deliverable(overrides: Partial<Deliverable> = {}): Deliverable {
   };
 }
 
-function fetchFor(deliverables: Deliverable[], contracts: Array<{ id: string; name: string }> = []): OrgFetch {
+function fetchFor(
+  deliverables: Deliverable[],
+  contracts: Array<{ id: string; name: string }> | Response = [],
+): OrgFetch {
   return vi.fn(async (path: string) => {
     if (path.startsWith(`/orgs/${ORG_ID}/deliverables`)) return json({ data: deliverables });
-    if (path.startsWith('/contracts')) return json({ data: contracts });
+    if (path.startsWith('/contracts')) return contracts instanceof Response ? contracts : json({ data: contracts });
     return json({ error: 'unexpected' }, 500);
   }) as unknown as OrgFetch;
 }
@@ -159,9 +162,63 @@ describe('OrgServiceTab', () => {
     await waitFor(() => {
       const props = formProps.mock.calls.at(-1)?.[0] as Record<string, unknown>;
       expect(props.contractOptions).toEqual([{ id: 'c-1', name: 'Gold support' }]);
+      expect(props.contractsState).toBeUndefined();
     });
     const calls = (orgFetch as unknown as ReturnType<typeof vi.fn>).mock.calls as [string][];
-    expect(calls.some(([path]) => path.startsWith('/contracts'))).toBe(true);
+    // `listContractsQuerySchema` caps limit at 100; the org pin is orgFetch's job.
+    expect(calls.some(([path]) => path === '/contracts?limit=100')).toBe(true);
     expect(ambientFetch).not.toHaveBeenCalled();
+  });
+
+  it('hands the form contractsState=failed (not an empty list) when the contracts request fails', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const orgFetch = fetchFor([], json({ error: 'contracts unavailable' }, 503));
+      render(<OrgServiceTab orgId={ORG_ID} orgFetch={orgFetch} />);
+      await screen.findByTestId('deliverables-table');
+      await userEvent.click(screen.getByTestId('org-service-add'));
+      await screen.findByTestId('deliverable-form');
+      await waitFor(() => {
+        const props = formProps.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+        expect(props.contractsState).toBe('failed');
+        expect(props.contractOptions).toEqual([]);
+      });
+      expect(errSpy).toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('renders the server message, not the empty copy, when the deliverables request fails', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const orgFetch = vi.fn(async (path: string) => {
+        if (path.startsWith('/contracts')) return json({ data: [] });
+        return json({ error: 'deliverables are on fire' }, 500);
+      }) as unknown as OrgFetch;
+      render(<OrgServiceTab orgId={ORG_ID} orgFetch={orgFetch} />);
+      const error = await screen.findByTestId('org-service-error');
+      expect(error.textContent).toBe('deliverables are on fire');
+      expect(screen.getByTestId('org-service-upcoming').textContent).not.toContain('Nothing due in the next 90 days.');
+      expect(errSpy).toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('falls back to the generic copy when the failure carries no message', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const orgFetch = vi.fn(async (path: string) => {
+        if (path.startsWith('/contracts')) return json({ data: [] });
+        return new Response('<html>bad gateway</html>', { status: 502, headers: { 'content-type': 'text/html' } });
+      }) as unknown as OrgFetch;
+      render(<OrgServiceTab orgId={ORG_ID} orgFetch={orgFetch} />);
+      const error = await screen.findByTestId('org-service-error');
+      // unwrapData's own fallback for a body-less failure; still the real status.
+      expect(error.textContent).toBe('Request failed (502)');
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });

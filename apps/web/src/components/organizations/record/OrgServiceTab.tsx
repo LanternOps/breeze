@@ -6,6 +6,7 @@ import DeliverableTable from '@/components/deliverables/DeliverableTable';
 import OccurrenceDrawer from '@/components/deliverables/OccurrenceDrawer';
 import { listDeliverables, unwrapData, type Deliverable } from '@/lib/api/serviceDeliverables';
 import { formatDate } from '@/lib/dateTimeFormat';
+import { ActionError } from '@/lib/runAction';
 import { useLatest, type OrgFetch } from './orgRecordFetch';
 
 const UPCOMING_WINDOW_DAYS = 90;
@@ -13,6 +14,25 @@ const UPCOMING_WINDOW_DAYS = 90;
 interface ContractOption {
   id: string;
   name: string;
+}
+
+/** A failed load keeps the server's message so the tab can say WHY. */
+interface LoadFailure {
+  failed: true;
+  message: string;
+}
+
+/** The contract list a new deliverable can be filed under: still loading, the
+ *  options, or a failure the form must refuse to save through. */
+type ContractsState = 'loading' | 'failed' | ContractOption[];
+
+/** `listContractsQuerySchema` caps `limit` at 100; the org is appended by the
+ *  record's `orgFetch` (`orgIdOverride`, orgRecordFetch.ts). */
+const CONTRACTS_PATH = '/contracts?limit=100';
+
+function failureFrom(err: unknown, fallback: string): LoadFailure {
+  const message = err instanceof ActionError && err.message ? err.message : fallback;
+  return { failed: true, message };
 }
 
 /** Today as ISO `YYYY-MM-DD` in local time — `nextDue` is a date, not an instant. */
@@ -49,33 +69,42 @@ export function upcomingWithin(rows: Deliverable[], today: string, days: number)
  */
 export default function OrgServiceTab({ orgId, orgFetch }: { orgId: string; orgFetch: OrgFetch }) {
   const { t } = useTranslation('deliverables');
-  const [rows, setRows] = useState<Deliverable[] | 'failed' | null>(null);
-  const [contracts, setContracts] = useState<ContractOption[]>([]);
+  const [rows, setRows] = useState<Deliverable[] | LoadFailure | null>(null);
+  const [contracts, setContracts] = useState<ContractsState>('loading');
   const [adding, setAdding] = useState(false);
   const [selected, setSelected] = useState<Deliverable | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const latest = useLatest<Deliverable[] | 'failed'>();
+  const latest = useLatest<Deliverable[] | LoadFailure>();
 
   const load = useCallback(async () => {
-    const result = await latest.run(listDeliverables(orgFetch, orgId).catch((): 'failed' => 'failed'));
+    const result = await latest.run(
+      listDeliverables(orgFetch, orgId).catch((err: unknown): LoadFailure => {
+        console.error('[OrgServiceTab] failed to load deliverables', err);
+        return failureFrom(err, t('errors.loadFailed'));
+      }),
+    );
     if (result === undefined) return;
     setRows(result);
-  }, [latest, orgFetch, orgId]);
+  }, [latest, orgFetch, orgId, t]);
 
   useEffect(() => {
     void load();
   }, [load, refreshKey]);
 
-  // Contract options for the add form's picker. Loaded once per org; a failed
-  // load leaves the picker empty (the deliverable can still be standalone).
+  // Contract options for the add form's picker, loaded once per org. A failed
+  // load is NOT an empty list: the form keeps the picker, shows the failure and
+  // refuses to save, so a deliverable owed under a contract is never filed
+  // standalone by accident.
   useEffect(() => {
     let cancelled = false;
+    setContracts('loading');
     (async () => {
       try {
-        const list = await unwrapData<Array<{ id: string; name: string }>>(await orgFetch('/contracts'));
+        const list = await unwrapData<Array<{ id: string; name: string }>>(await orgFetch(CONTRACTS_PATH));
         if (!cancelled) setContracts((Array.isArray(list) ? list : []).map((c) => ({ id: c.id, name: c.name })));
-      } catch {
-        if (!cancelled) setContracts([]);
+      } catch (err) {
+        console.error('[OrgServiceTab] failed to load contracts', err);
+        if (!cancelled) setContracts('failed');
       }
     })();
     return () => {
@@ -110,7 +139,8 @@ export default function OrgServiceTab({ orgId, orgFetch }: { orgId: string; orgF
           <DeliverableForm
             fetcher={orgFetch}
             orgId={orgId}
-            contractOptions={contracts}
+            contractOptions={Array.isArray(contracts) ? contracts : []}
+            contractsState={Array.isArray(contracts) ? undefined : contracts}
             onSaved={() => {
               setAdding(false);
               bump();
@@ -129,8 +159,8 @@ export default function OrgServiceTab({ orgId, orgFetch }: { orgId: string; orgF
             <div className="h-3 w-3/4 animate-pulse rounded bg-muted" />
             <div className="h-3 w-1/2 animate-pulse rounded bg-muted" />
           </div>
-        ) : rows === 'failed' ? (
-          <p className="px-4 py-4 text-sm text-muted-foreground">{t('errors.loadFailed')}</p>
+        ) : !Array.isArray(rows) ? (
+          <p className="px-4 py-4 text-sm text-destructive" data-testid="org-service-error">{rows.message}</p>
         ) : upcoming.length === 0 ? (
           <p className="px-4 py-4 text-sm text-muted-foreground">{t('upcoming.empty')}</p>
         ) : (

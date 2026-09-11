@@ -138,8 +138,19 @@ export async function unwrapData<T>(res: Response): Promise<T> {
     throw new ActionError(extractApiError(body, `Request failed (${res.status})`), res.status, code, body);
   }
   if (res.status === 204) return undefined as T;
-  const json = (await res.json()) as { data: T };
-  return json.data;
+  // A 2xx that is not the `{ data }` envelope (an HTML error page from a proxy,
+  // a truncated body, a route that forgot the envelope) must not resolve to
+  // `undefined` and read as success downstream.
+  let json: unknown;
+  try {
+    json = await res.json();
+  } catch {
+    throw new ActionError(`Malformed response body (${res.status})`, res.status);
+  }
+  if (!json || typeof json !== 'object' || Array.isArray(json) || !('data' in json)) {
+    throw new ActionError(`Unexpected response shape (${res.status}): missing data envelope`, res.status, undefined, json);
+  }
+  return (json as { data: T }).data;
 }
 
 function jsonInit(method: 'POST' | 'PATCH', body: unknown): RequestInit {
