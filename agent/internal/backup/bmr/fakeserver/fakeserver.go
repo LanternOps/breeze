@@ -215,9 +215,28 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 
 	s.appendProgress(progressRecord{Status: "media_booted"})
 
+	// Mirror the REAL exchange response shape (apps/api
+	// bmrRecoveries.ts → buildAuthenticatedBootstrapPayload): `bootstrap` is
+	// the authenticate envelope — flat legacy fields plus a nested versioned
+	// `bootstrap` that carries download/recovery. The e2e previously sent the
+	// inner object directly, which hid the console's envelope-decoding bug
+	// until the first run against a real API.
+	inner := s.bootstrapFor("e2e-token-1")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"token":     token,
-		"bootstrap": s.bootstrapFor("e2e-token-1"),
+		"token": token,
+		"bootstrap": map[string]any{
+			"version":          inner.Version,
+			"minHelperVersion": inner.MinHelperVersion,
+			"tokenId":          inner.TokenID,
+			"deviceId":         inner.DeviceID,
+			"snapshotId":       inner.SnapshotID,
+			"restoreType":      inner.RestoreType,
+			"targetConfig":     inner.TargetConfig,
+			"device":           inner.Device,
+			"snapshot":         inner.Snapshot,
+			"authenticatedAt":  inner.AuthenticatedAt,
+			"bootstrap":        inner,
+		},
 	})
 }
 
