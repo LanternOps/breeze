@@ -58,4 +58,9 @@ describe('run_script proposal branch', () => {
     expect(out.proposalId).toBe('p1');
     expect(out.results.d1.executionId).toBe('e1');
   });
+
+  it('passes the releasing intent id from the execution context to the runnability check', async () => {
+    await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, { actionIntentId: 'i1' } as never);
+    expect(runnableMock).toHaveBeenLastCalledWith(auth, expect.objectContaining({ proposalId: 'p1', releasingIntentId: 'i1' }));
+  });
 });

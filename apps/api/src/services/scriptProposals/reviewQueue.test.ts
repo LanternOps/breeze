@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const addMock = vi.fn(async () => undefined);
 vi.mock('bullmq', () => ({ Queue: class { add = addMock; } }));
 vi.mock('../redis', () => ({ getBullMQConnection: () => ({}) }));
+const { captureMock } = vi.hoisted(() => ({ captureMock: vi.fn() }));
+vi.mock('../sentry', () => ({ captureException: captureMock }));
 
 let selectImpl: () => Promise<Record<string, unknown>[]> = async () => [];
 vi.mock('../../db', () => ({
@@ -42,6 +44,9 @@ describe('script review queue', () => {
     const started = Date.now();
     await expect(waitForReviewCompletion('p1', 600_000)).resolves.toBeNull();
     expect(Date.now() - started).toBeLessThan(30_000);
+    // The breaker is an infra fault and must reach Sentry — the caller only
+    // ever sees `pending`.
+    expect(captureMock).toHaveBeenCalledTimes(1);
     // Five errors with a 2 s poll interval is ~8 s of real time, past vitest's
     // 5 s default — the assertion above is what proves the breaker fires.
   }, 20_000);

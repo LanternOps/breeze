@@ -51,6 +51,34 @@ describe('scanScriptContent', () => {
     expect(result.touchClasses).toEqual([...new Set(result.touchClasses)].sort());
   });
 
+  // Every class fires on representative content. A regex that silently stops
+  // matching (a broken `\b`, a typo) would otherwise drop a hard-denied class
+  // from the lane's enforcement set with every other test still green.
+  it.each([
+    ['registry', 'Set-ItemProperty -Path HKLM:\\SOFTWARE\\X -Name Y -Value 1'],
+    ['services', 'systemctl restart nginx'],
+    ['processes', 'taskkill /IM notepad.exe /F'],
+    ['files_system', 'Copy-Item C:\\Windows\\System32\\drivers\\etc\\hosts .'],
+    ['files_system', 'sed -i s/a/b/ /etc/hosts'],
+    ['files_user', 'rm -rf /home/alice/.cache'],
+    ['temp_files', 'Remove-Item $env:TEMP\\*.tmp'],
+    ['network_egress', 'Invoke-WebRequest https://example.com/x.zip -OutFile x.zip'],
+    ['firewall', 'netsh advfirewall set allprofiles state off'],
+    ['credentials', 'cat /etc/shadow'],
+    ['users_groups', 'net user backdoor P@ss /add'],
+    ['packages', 'winget install --id Mozilla.Firefox'],
+    ['scheduled_tasks', 'schtasks /Create /TN x /TR cmd.exe'],
+    ['disk', 'diskpart /s clean.txt'],
+    ['boot', 'bcdedit /set {default} safeboot minimal'],
+    ['security_tooling', 'Set-MpPreference -DisableRealtimeMonitoring $true'],
+    ['dns_cache', 'ipconfig /flushdns'],
+    ['printing', 'Get-Printer | Remove-Printer'],
+    ['browser', 'Remove-Item "C:\\Users\\a\\AppData\\Local\\Google\\Chrome\\User Data\\Default"'],
+    ['shell_eval', 'Invoke-Expression (Get-Content x.ps1)'],
+  ] as const)('classifies %s', (touchClass, content) => {
+    expect(scanScriptContent(content, 'powershell').touchClasses).toContain(touchClass);
+  });
+
   it('exposes exactly the 19 spec classes and a hard-denied subset of 7', () => {
     expect(TOUCH_CLASSES).toHaveLength(19);
     expect([...LANE_HARD_DENIED_CLASSES].sort()).toEqual(

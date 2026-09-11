@@ -3,6 +3,7 @@ import { desc, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { scriptProposalReviews, type ScriptProposalReviewRow } from '../../db/schema/scriptProposals';
 import { getBullMQConnection } from '../redis';
+import { captureException } from '../sentry';
 
 export const SCRIPT_REVIEW_QUEUE = 'script-review';
 
@@ -72,7 +73,15 @@ export async function waitForReviewCompletion(
     } catch (err) {
       consecutiveErrors++;
       console.error(`[script-review] review poll error (attempt ${consecutiveErrors}):`, err);
-      if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) return null;
+      if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+        // The breaker tripping is an infrastructure fault, not review latency:
+        // the caller will report `pending`, which is indistinguishable from a
+        // slow reviewer, so this is the only alarm that fires.
+        captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+          service: 'scriptReviewQueue',
+        });
+        return null;
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
   }

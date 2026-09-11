@@ -38,6 +38,13 @@ describe('assertProposalRunnable', () => {
     await expect(call(over as Record<string, unknown>)).resolves.toEqual({ ok: false, reason });
   });
 
+  it('lets the intent that claimed the proposal release it, and still refuses any other intent', async () => {
+    stored = { ...base, intentId: 'i1' };
+    await expect(call({ releasingIntentId: 'i1' })).resolves.toEqual({ ok: true, proposal: stored });
+    await expect(call({ releasingIntentId: 'i2' })).resolves.toEqual({ ok: false, reason: 'consumed' });
+    await expect(call()).resolves.toEqual({ ok: false, reason: 'consumed' });
+  });
+
   it('never silently degrades to a library run — every refusal is explicit', async () => {
     stored = { ...base, status: 'rejected' };
     const result = await call();

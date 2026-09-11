@@ -2,19 +2,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const rows: Record<string, unknown>[] = [];
 const returningMock = vi.fn(async () => [{ id: 'p1', status: 'proposed' }]);
-const updateWhereMock = vi.fn(() => ({ returning: async () => [{ id: 'p1' }] }));
+const updateSets: Record<string, unknown>[] = [];
+let updateReturning: Record<string, unknown>[] = [{ id: 'p1' }];
+const updateWhereMock = vi.fn(() => ({ returning: async () => updateReturning }));
 
 vi.mock('../../db', () => ({
   db: {
     insert: () => ({ values: (v: Record<string, unknown>) => { rows.push(v); return { returning: returningMock }; } }),
-    update: () => ({ set: () => ({ where: updateWhereMock }) }),
+    update: () => ({ set: (v: Record<string, unknown>) => { updateSets.push(v); return { where: updateWhereMock }; } }),
     select: () => ({ from: () => ({ where: () => ({ limit: async () => [] }) }) }),
   },
   withSystemDbAccessContext: <T,>(fn: () => Promise<T>) => fn(),
   runOutsideDbContext: <T,>(fn: () => T) => fn(),
 }));
 
-import { createScriptProposal } from './proposals';
+import { db } from '../../db';
+import { createScriptProposal, supersedeProposal, transitionProposal } from './proposals';
 
 const auth = { orgId: 'org-1', user: { id: 'u1' } } as never;
 const input = {
@@ -28,7 +31,7 @@ const input = {
   timeoutSeconds: 300,
 };
 
-beforeEach(() => { rows.length = 0; });
+beforeEach(() => { rows.length = 0; updateSets.length = 0; updateReturning = [{ id: 'p1' }]; });
 
 describe('createScriptProposal', () => {
   it('stamps the scan output, the scanner version and a sha256 content digest on the row', async () => {
@@ -67,5 +70,23 @@ describe('createScriptProposal', () => {
     const delta = (rows[0]!.expiresAt as Date).getTime() - Date.now();
     expect(delta).toBeGreaterThan(23 * 3600_000);
     expect(delta).toBeLessThanOrEqual(24 * 3600_000 + 5_000);
+  });
+});
+
+describe('transitionProposal / supersedeProposal', () => {
+  it('reports true when exactly one row moved and false when the CAS matched nothing', async () => {
+    await expect(transitionProposal(db as never, 'p1', ['proposed'], 'reviewed')).resolves.toBe(true);
+    updateReturning = [];
+    await expect(transitionProposal(db as never, 'p1', ['proposed'], 'reviewed')).resolves.toBe(false);
+  });
+
+  it('writes the patch alongside the new status', async () => {
+    await transitionProposal(db as never, 'p1', ['proposed'], 'reviewed', { riskTier: 'low' });
+    expect(updateSets.at(-1)).toEqual({ riskTier: 'low', status: 'reviewed' });
+  });
+
+  it('supersedeProposal terminalises the old row with a pointer to its successor', async () => {
+    await supersedeProposal(db as never, 'old', 'new');
+    expect(updateSets.at(-1)).toEqual({ status: 'superseded', decisionNote: 'Superseded by proposal new' });
   });
 });

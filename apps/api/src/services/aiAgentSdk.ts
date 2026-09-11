@@ -1936,12 +1936,19 @@ export async function attachChatProposalToSession(
   const proposalId = parsedOutput.proposalId;
   if (typeof proposalId !== 'string' || proposalId.length === 0) return;
   try {
-    await withDbAccessContext(
+    const attached = await withDbAccessContext(
       { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
       () => attachProposalToSession(proposalId, session.orgId, session.breezeSessionId),
     );
+    if (!attached) {
+      // Not an error (an idempotent retry lands here too), but a proposal the
+      // handler just created that is NOT attributable is worth a trace: it
+      // means the id in the output and the session's org disagree.
+      console.warn(`[AI-SDK] script proposal ${proposalId} not attributed to session ${session.breezeSessionId} (foreign org or already attributed)`);
+    }
   } catch (err) {
     console.error('[AI-SDK] Failed to attach script proposal to session:', err instanceof Error ? err.message : err);
+    captureException(err, undefined, { service: 'aiAgentSdk', orgId: session.orgId });
   }
 }
 

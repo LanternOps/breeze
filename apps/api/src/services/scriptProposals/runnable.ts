@@ -21,14 +21,24 @@ export type ProposalRunnability =
  * whole design exists to prevent.
  *
  * This is a pre-check, not the mutual exclusion. `consumeProposalForIntent`
- * (proposals.ts) is the real gate, and it runs inside the intent transaction.
- * A `consumed` verdict here just turns a lost race into a readable error.
+ * (proposals.ts) is the real gate, and `createActionIntent` runs it inside the
+ * intent transaction. A `consumed` verdict here just turns a lost race into a
+ * readable error; the intent that WON the claim passes `releasingIntentId`
+ * at release and is let through.
  */
 export async function assertProposalRunnable(
   auth: AuthContext,
   input: {
     proposalId: string; deviceIds: string[];
     runAs?: string; timeoutSeconds?: number; parameters?: unknown;
+    /**
+     * The action intent releasing this run, when the call is a post-approval
+     * release (`ToolExecutionContext.actionIntentId`). `createActionIntent`
+     * CAS-claims the proposal for its own intent at creation, so at release
+     * the row's `intent_id` is that intent — not a competitor. Any OTHER
+     * non-null `intent_id` is still `consumed`.
+     */
+    releasingIntentId?: string;
   },
 ): Promise<ProposalRunnability> {
   const [proposal] = await db
@@ -38,7 +48,9 @@ export async function assertProposalRunnable(
   if (proposal.orgId !== auth.orgId) return { ok: false, reason: 'wrong_org' };
   if (proposal.status === 'superseded') return { ok: false, reason: 'superseded' };
   if (proposal.status !== 'reviewed') return { ok: false, reason: 'not_reviewed' };
-  if (proposal.intentId !== null) return { ok: false, reason: 'consumed' };
+  if (proposal.intentId !== null && proposal.intentId !== input.releasingIntentId) {
+    return { ok: false, reason: 'consumed' };
+  }
   if (proposal.expiresAt.getTime() <= Date.now()) return { ok: false, reason: 'expired' };
 
   const targeted = new Set(proposal.targetDeviceIds);

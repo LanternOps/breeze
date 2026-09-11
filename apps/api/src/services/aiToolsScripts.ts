@@ -230,6 +230,10 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
       runAs: input.runAs as string | undefined,
       timeoutSeconds: input.timeoutSeconds as number | undefined,
       parameters: input.parameters,
+      // A post-approval release carries the intent that claimed the proposal
+      // at creation; without it every approved proposal would read as
+      // `consumed` by itself.
+      releasingIntentId: context?.actionIntentId,
     });
     // Never a silent fallback to scriptId (spec §4.2): running something
     // other than the reviewed artifact is the failure this design exists to

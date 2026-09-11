@@ -438,12 +438,14 @@ const TOUCH_RULES: readonly TouchRule[] = [
   { regex: /\b(?:reg(?:\.exe)?\s+(?:add|delete|import)|New-ItemProperty|Set-ItemProperty|Remove-ItemProperty|Set-Item\s+-Path\s+HK|HKLM[:\\]|HKCU[:\\]|HKEY_[A-Z_]+)/i, touchClass: 'registry' },
   { regex: /\b(?:(?:Start|Stop|Restart|Set|New|Remove)-Service|sc(?:\.exe)?\s+(?:start|stop|config|create|delete)|net\s+(?:start|stop)|systemctl\s+(?:start|stop|restart|enable|disable|mask)|service\s+\S+\s+(?:start|stop|restart))\b/i, touchClass: 'services' },
   { regex: /\b(?:Stop-Process|Start-Process|taskkill|\bkill\s+-9\b|pkill|Get-Process\s+.*\|\s*Stop-Process)\b/i, touchClass: 'processes' },
-  { regex: /\b(?:C:\\Windows|C:\\Program Files|%SystemRoot%|\/etc\/|\/usr\/|\/var\/(?!tmp)|\/opt\/|\/bin\/|\/sbin\/)/i, touchClass: 'files_system' },
+  // No leading `\b`: `/etc/` and `%SystemRoot%` start with non-word characters.
+  { regex: /(?:\bC:\\Windows|\bC:\\Program Files|%SystemRoot%|\/etc\/|\/usr\/|\/var\/(?!tmp)|\/opt\/|\/bin\/|\/sbin\/)/i, touchClass: 'files_system' },
   { regex: /(?:C:\\Users\\|%USERPROFILE%|\$env:USERPROFILE|\/home\/|\/Users\/|~\/)/i, touchClass: 'files_user' },
   { regex: /(?:%TEMP%|%TMP%|\$env:TEMP|C:\\Windows\\Temp|\/tmp\/|\/var\/tmp\/|Get-ChildItem\s+.*Temp)/i, touchClass: 'temp_files' },
   { regex: /\b(?:Invoke-WebRequest|Invoke-RestMethod|curl|wget|New-Object\s+Net\.WebClient|System\.Net\.Http|nc\s+-|Test-NetConnection)\b/i, touchClass: 'network_egress' },
   { regex: /\b(?:netsh\s+advfirewall|New-NetFirewallRule|Set-NetFirewallRule|Remove-NetFirewallRule|iptables|nft\s|ufw\s|firewall-cmd)\b/i, touchClass: 'firewall' },
-  { regex: /\b(?:ConvertTo-SecureString|Get-Credential|cmdkey|\/etc\/shadow|\/etc\/passwd|Export-PfxCertificate|certutil\s+-exportPFX|vaultcmd|Get-StoredCredential)\b/i, touchClass: 'credentials' },
+  // No leading `\b`: `/etc/shadow` starts with a non-word character.
+  { regex: /(?:\bConvertTo-SecureString\b|\bGet-Credential\b|\bcmdkey\b|\/etc\/shadow\b|\/etc\/passwd\b|\bExport-PfxCertificate\b|\bcertutil\s+-exportPFX\b|\bvaultcmd\b|\bGet-StoredCredential\b)/i, touchClass: 'credentials' },
   { regex: /\b(?:New-LocalUser|Set-LocalUser|Remove-LocalUser|Add-LocalGroupMember|net\s+(?:user|localgroup)|useradd|usermod|userdel|groupadd|gpasswd|Add-ADGroupMember)\b/i, touchClass: 'users_groups' },
   { regex: /\b(?:winget|choco|msiexec|Install-Package|Uninstall-Package|Install-Module|apt-get|apt\s+install|yum\s|dnf\s|zypper|brew\s+install|Start-Process\s+.*\.msi)\b/i, touchClass: 'packages' },
   { regex: /\b(?:schtasks|New-ScheduledTask|Register-ScheduledTask|Unregister-ScheduledTask|Set-ScheduledTask|crontab|systemd-run\s+--on)\b/i, touchClass: 'scheduled_tasks' },

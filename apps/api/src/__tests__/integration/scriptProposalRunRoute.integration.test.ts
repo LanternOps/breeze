@@ -4,10 +4,16 @@ import { eq } from 'drizzle-orm';
 import { expect, it } from 'vitest';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { aiSessions, scriptProposals } from '../../db/schema';
-import { createOrganization, createPartner, createUser } from './db-utils';
+import { randomUUID } from 'node:crypto';
+import {
+  assignUserToOrganization, createOrganization, createPartner, createRole, createUser, grantRolePermissions,
+} from './db-utils';
 import {
   attachProposalToSession, consumeProposalForIntent, createScriptProposal,
 } from '../../services/scriptProposals';
+import { ActionIntentError, createActionIntent } from '../../services/actionIntents/intentService';
+import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
 
 /**
  * AI script authoring W01b — live-DB coverage that a mocked route test cannot
@@ -121,4 +127,49 @@ runDb('the chat session back-fill sets session_id once, org-scoped, and never fo
   const [foreign] = await withSystemDbAccessContext(() =>
     db.select().from(scriptProposals).where(eq(scriptProposals.id, foreignId)));
   expect(foreign!.sessionId).toBeNull();
+});
+
+/** Real AuthContext for a requester on `orgId` (mirrors createIntentAtomicity). */
+function requesterAuth(user: { id: string; email: string }, orgId: string, partnerId: string, roleId: string): AuthContext {
+  const { orgCondition, canAccessOrg } = buildOrgAccessClosures([orgId]);
+  return {
+    principal: { kind: 'user_session' },
+    user: { id: user.id, email: user.email, name: 'Requester', isPlatformAdmin: false },
+    token: { sub: user.id, email: user.email, roleId, orgId, partnerId, scope: 'organization', type: 'access', mfa: true },
+    partnerId, orgId, scope: 'organization', accessibleOrgIds: [orgId], orgCondition, canAccessOrg,
+  } as AuthContext;
+}
+
+runDb('createActionIntent claims the proposal for exactly one intent and refuses a second', async () => {
+  const { partner, org } = await seedOrg();
+  const role = await withSystemDbAccessContext(() => createRole({ scope: 'organization', orgId: org.id }));
+  await withSystemDbAccessContext(() => grantRolePermissions(role.id, [PERMISSIONS.APPROVALS_DECIDE]));
+  const requester = await withSystemDbAccessContext(() => createUser({
+    partnerId: partner.id, orgId: org.id, email: `sp-req-${randomUUID().slice(0, 8)}@example.test`,
+  }));
+  await withSystemDbAccessContext(() => assignUserToOrganization(requester.id, org.id, role.id));
+  const deviceId = randomUUID();
+  const proposalId = await seedReviewedProposal(org.id, deviceId);
+  const auth = requesterAuth(requester, org.id, partner.id, role.id);
+
+  const first = await createActionIntent(auth, {
+    toolName: 'run_script', input: { proposalId, deviceIds: [deviceId] }, source: 'chat',
+    idempotencyKey: `sp-first-${proposalId}`,
+  });
+  expect(first.status).toBe('pending_approval');
+
+  const [row] = await withSystemDbAccessContext(() =>
+    db.select().from(scriptProposals).where(eq(scriptProposals.id, proposalId)));
+  expect(row!.intentId).toBe(first.id);
+
+  // A DIFFERENT request (new idempotency key) for the same proposal must be
+  // refused inside the creation transaction, not minted as a second intent.
+  await expect(createActionIntent(auth, {
+    toolName: 'run_script', input: { proposalId, deviceIds: [deviceId] }, source: 'chat',
+    idempotencyKey: `sp-second-${proposalId}`,
+  })).rejects.toMatchObject({ code: 'proposal_not_runnable' });
+  await expect(createActionIntent(auth, {
+    toolName: 'run_script', input: { proposalId, deviceIds: [deviceId] }, source: 'chat',
+    idempotencyKey: `sp-third-${proposalId}`,
+  })).rejects.toBeInstanceOf(ActionIntentError);
 });

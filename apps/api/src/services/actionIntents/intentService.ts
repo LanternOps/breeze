@@ -30,7 +30,7 @@ import {
   type GuardrailCheck,
   type GuardrailContext,
 } from '../aiGuardrails';
-import { loadProposalGuardrailContext } from '../scriptProposals';
+import { consumeProposalForIntent, loadProposalGuardrailContext } from '../scriptProposals';
 import { getUserPermissions, userCanDecideApprovals } from '../permissions';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from '../expoPush';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
@@ -1801,6 +1801,24 @@ export async function createActionIntent(
           isNew: false,
           effectDigestOutcome,
         };
+      }
+
+      // AI script authoring (spec §4.1 / §4.2): a proposal is consumed by
+      // EXACTLY ONE intent. The CAS (`WHERE intent_id IS NULL AND status =
+      // 'reviewed' AND expires_at > now()`) is the mutual exclusion the
+      // `assertProposalRunnable` pre-check only previews; it runs here, inside
+      // the creation transaction, so a lost race rolls the intent insert back
+      // rather than leaving a second live intent pointing at the same
+      // proposal. The replay path above never reaches this: the existing
+      // intent already holds the claim.
+      if (input.toolName === 'run_script' && typeof input.input.proposalId === 'string') {
+        const claimed = await consumeProposalForIntent(db, input.input.proposalId, inserted.id);
+        if (!claimed) {
+          throw new ActionIntentError(
+            `Proposal ${input.input.proposalId} is not runnable: it is not reviewed, has expired, or has already been claimed by another intent`,
+            'proposal_not_runnable',
+          );
+        }
       }
 
       // New intent: fan out the cross-user approval_requests (deferred behind
