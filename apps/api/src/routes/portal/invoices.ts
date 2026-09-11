@@ -23,6 +23,12 @@ import { settleCheckoutSession } from '../../services/stripeSettle';
 import { toMinorUnits } from '../../services/stripeMoney';
 import { computeChargeNow } from '@breeze/shared';
 import { mapStripeCheckoutError, CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../../services/stripeCheckoutErrors';
+import { checkoutSessionExpiry } from '../../services/invoiceCheckout';
+import {
+  assertNoPendingRevocation,
+  markSessionRevocationRequestedInTx,
+  REVOCATION_PENDING_CODE,
+} from '../../services/stripeSessionRevocation';
 
 // The Checkout session id Stripe substitutes into success_url ({CHECKOUT_SESSION_ID}).
 const settleSchema = z.object({ sessionId: z.string().trim().min(1).max(255) });
@@ -214,6 +220,18 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   if (!inv) return c.json({ error: 'Invoice not found' }, 404);
   if (!PAYABLE.has(inv.status)) return c.json({ error: 'Invoice is not payable' }, 409);
 
+  // SEC-150 producer gate — twin of createInvoicePayLink's. A session minted
+  // while a revocation is in flight would not be covered by that revocation, so
+  // the customer is asked to retry rather than handed a link nobody can kill.
+  try {
+    await withSystemDbAccessContext(() => assertNoPendingRevocation(inv.id));
+  } catch (err) {
+    if (err instanceof InvoiceServiceError && err.code === REVOCATION_PENDING_CODE) {
+      return c.json({ error: err.message, code: REVOCATION_PENDING_CODE }, 409);
+    }
+    throw err;
+  }
+
   // Deposit-first: charge the deposit remaining while unmet, else the full
   // balance. computeChargeNow clamps to balance and handles every state (no
   // deposit, deposit partially/fully paid) — never reimplement that logic here.
@@ -259,10 +277,15 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
 
   // Truly outside any DB context/transaction — no pooled connection is held
   // across this ~hundreds-of-ms round trip.
+  const { expiresAt: providerExpiresAtEpoch, quantum: expiryQuantum } = checkoutSessionExpiry();
+
   let session;
   try {
     session = await runOutsideDbContext(() => stripe.checkout.sessions.create({
     mode: 'payment',
+    // SEC-150 defence in depth: an explicit provider-side death clock, so an
+    // unrevoked session cannot outlive the day even if every local control fails.
+    expires_at: providerExpiresAtEpoch,
     // v1 is card-only. Restricting payment_method_types keeps the recorded
     // invoice_payments.method ('card') accurate and avoids enabling async/
     // delayed-settlement methods (which would land as 'unpaid' on completion).
@@ -299,7 +322,10 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     // 50%-deposit invoice has the SAME chargeMinor for the deposit and the later
     // balance charge (different product name but equal amount), so the amount alone
     // can't disambiguate — the explicit dep/bal discriminator does.
-    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}`,
+    // `_e<quantum>` (SEC-150): `expires_at` is part of the request and Stripe
+    // refuses an idempotent replay whose parameters moved, so the hour quantum
+    // is folded into the key — see checkoutSessionExpiry().
+    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}_e${expiryQuantum}`,
   }));
   } catch (err) {
     // Customer-facing path (spec §10): a currency the partner's account cannot
@@ -316,6 +342,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
 
   // Fresh short context so the pending-mapping write isn't a contextless 0-row
   // no-op under forced-RLS breeze_app (#1375).
+  let raced = false;
   const mappingPersisted = await withSystemDbAccessContext(async () => {
     const [currentConnection] = await db.select({ id: stripeConnectAccounts.id })
       .from(stripeConnectAccounts).where(and(
@@ -326,6 +353,18 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     if (!currentConnection) {
       return false;
     }
+    // SEC-150: a transition may have recorded revocation intent while the Stripe
+    // round-trip was in flight. Never refuse before the mapping is written — a
+    // session on Stripe with no mapping row is an orphan no revocation can find,
+    // strictly worse than the race being closed. Commit, then revoke and refuse.
+    const [racedRevocation] = await db.select({ id: invoiceStripePayments.id })
+      .from(invoiceStripePayments)
+      .where(and(
+        eq(invoiceStripePayments.invoiceId, inv.id),
+        eq(invoiceStripePayments.stripeObjectType, 'checkout_session'),
+        eq(invoiceStripePayments.revocationState, 'revocation_requested'),
+      )).limit(1);
+    raced = racedRevocation !== undefined;
     await db.insert(invoiceStripePayments).values({
       orgId: inv.orgId,
       invoiceId: inv.id,
@@ -336,9 +375,24 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
       amount: chargeNow.amount,
       currency: inv.currencyCode,
       status: 'pending',
+      providerExpiresAt: session.expires_at
+        ? new Date(session.expires_at * 1000)
+        : new Date(providerExpiresAtEpoch * 1000),
     });
+    if (raced) {
+      // Intent on THIS transaction handle — escaping to re-take the invoice row
+      // FOR UPDATE would self-deadlock against the FOR KEY SHARE the INSERT above
+      // holds. The sweep expires it within 60s.
+      await markSessionRevocationRequestedInTx(session.id, 'raced_revocation', null, db);
+    }
     return true;
   });
+  if (raced) {
+    return c.json({
+      error: 'A payment link for this invoice is still being revoked — try again in a moment.',
+      code: REVOCATION_PENDING_CODE,
+    }, 409);
+  }
   if (!mappingPersisted) {
     return c.json({
       error: 'Online payment setup changed — please refresh and try again.',

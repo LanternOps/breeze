@@ -875,7 +875,10 @@
     "notCached": "Valuta non ancora in cache — aggiorna per recuperarla da Stripe.",
     "staleCache": "Impossibile raggiungere Stripe — vengono mostrati gli ultimi dettagli dell'account in cache.",
     "reconnectRequired": "La chiave Stripe salvata (•••• {{last4}}) non funziona più: {{reason}} Incolla una nuova chiave per riconnetterti; i pagamenti online falliranno fino ad allora.",
-    "reconciliationError": "La riconciliazione degli storni di pagamento non è in esecuzione: {{reason}} Sostituisci la chiave Stripe con una che possa leggere gli Eventi."
+    "reconciliationError": "La riconciliazione degli storni di pagamento non è in esecuzione: {{reason}} Sostituisci la chiave Stripe con una che possa leggere gli Eventi.",
+    "revocationCredentialUnavailable": "Non è stato possibile annullare {{count}} link di pagamento online perché la chiave Stripe che li ha creati non è più disponibile. Quei link potrebbero essere ancora pagabili su Stripe: annullali dalla dashboard di Stripe e riemetti le fatture.",
+    "revocationChargedRepair": "{{count}} link di pagamento online sono stati pagati dopo che Breeze aveva chiesto a Stripe di annullarli. Il denaro è reale: riconcilia quei pagamenti (e rimborsa se la fattura era già stata saldata in altro modo).",
+    "revocationBlocked": "Non è stato possibile annullare {{count}} link di pagamento online: Stripe ha rifiutato la richiesta con la chiave salvata. Salva una chiave Stripe funzionante per riprovare, oppure annulla i link dalla dashboard di Stripe."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Impossibile salvare le mappature siti.",

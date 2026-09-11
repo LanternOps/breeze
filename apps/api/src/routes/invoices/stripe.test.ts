@@ -4,8 +4,22 @@ import { Hono } from 'hono';
 // Thin route — assert wiring + error mapping (mirrors settings.test.ts).
 vi.mock('../../services/invoiceCheckout', () => ({ createInvoicePayLink: vi.fn() }));
 // './invoices' (for invoiceActorFrom/handleServiceError) imports invoiceService;
-// nothing is called at module load, so an empty mock keeps the chain light.
-vi.mock('../../services/invoiceService', () => ({}));
+// only the two access guards the abandon handler calls are exercised here.
+vi.mock('../../services/invoiceService', () => ({
+  requireOrgAccess: vi.fn(),
+  requireSiteAccess: vi.fn(),
+}));
+vi.mock('../../services/stripeSessionRevocation', () => ({
+  abandonInvoiceSessionRevocation: vi.fn(),
+}));
+vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+vi.mock('../../db', () => ({
+  db: {
+    select: () => ({ from: () => ({ where: () => ({ limit: async () => selectRows.value }) }) }),
+  },
+}));
+
+const selectRows: { value: unknown[] } = { value: [] };
 vi.mock('../../services/invoiceTypes', () => ({
   InvoiceServiceError: class InvoiceServiceError extends Error {
     constructor(msg: string, public status = 400, public code?: string) { super(msg); }
@@ -18,6 +32,7 @@ vi.mock('../../middleware/auth', () => ({
 
 import { invoiceStripeRoutes } from './stripe';
 import * as checkout from '../../services/invoiceCheckout';
+import { abandonInvoiceSessionRevocation } from '../../services/stripeSessionRevocation';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 
 const ID = '11111111-1111-1111-1111-111111111111';
@@ -70,5 +85,57 @@ describe('POST /invoices/:id/pay-link', () => {
     const res = await app().request('/not-a-uuid/pay-link', { method: 'POST' });
     expect(res.status).toBe(400);
     expect(payLink).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * SEC-150 operator override. Accepting that a Checkout session may still be
+ * payable on Stripe while Breeze proceeds as if it were not is a BILLING
+ * decision, not a send action — so it carries billing:manage, a required reason,
+ * and an audit row. The abandon semantics themselves (what the blocked row does
+ * to the next void) are pinned against real Postgres in
+ * __tests__/integration/stripeSessionRevocation.integration.test.ts.
+ */
+describe('POST /invoices/:id/stripe-sessions/abandon', () => {
+  const abandon = vi.mocked(abandonInvoiceSessionRevocation);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectRows.value = [{ id: ID, orgId: 'org-1', siteId: null }];
+  });
+
+  it('abandons the invoice sessions and reports the count', async () => {
+    abandon.mockResolvedValue({ abandoned: 2, orgId: 'org-1' });
+    const res = await app().request(`/${ID}/stripe-sessions/abandon`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'Stripe account closed by the bank' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { abandoned: 2 } });
+    expect(abandon).toHaveBeenCalledWith(expect.objectContaining({ invoiceId: ID, reason: 'Stripe account closed by the bank' }));
+  });
+
+  it('refuses a missing or throwaway reason — the record of WHY must outlive the operator', async () => {
+    for (const body of [{}, { reason: 'gone' }]) {
+      const res = await app().request(`/${ID}/stripe-sessions/abandon`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(abandon).not.toHaveBeenCalled();
+  });
+
+  it('404s an unknown invoice without abandoning anything', async () => {
+    selectRows.value = [];
+    const res = await app().request(`/${ID}/stripe-sessions/abandon`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'Stripe account closed by the bank' }),
+    });
+    expect(res.status).toBe(404);
+    expect(abandon).not.toHaveBeenCalled();
   });
 });

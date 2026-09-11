@@ -875,7 +875,10 @@
     "notCached": "Para birimi henüz önbelleğe alınmadı — Stripe'tan almak için yenileyin.",
     "staleCache": "Stripe'a ulaşılamadı — önbelleğe alınan son hesap ayrıntıları gösteriliyor.",
     "reconnectRequired": "Kayıtlı Stripe anahtarınız (•••• {{last4}}) artık çalışmıyor: {{reason}} Yeniden bağlanmak için yeni bir anahtar yapıştırın; o zamana kadar çevrimiçi ödemeler başarısız olur.",
-    "reconciliationError": "Ödeme ters ibraz mutabakatı çalışmıyor: {{reason}} Stripe anahtarını Olayları okuyabilen bir anahtarla değiştirin."
+    "reconciliationError": "Ödeme ters ibraz mutabakatı çalışmıyor: {{reason}} Stripe anahtarını Olayları okuyabilen bir anahtarla değiştirin.",
+    "revocationCredentialUnavailable": "{{count}} çevrimiçi ödeme bağlantısı iptal edilemedi çünkü bunları oluşturan Stripe anahtarı artık kullanılamıyor. Bu bağlantılar Stripe üzerinde hâlâ ödenebilir olabilir — Stripe panonuzdan iptal edin ve faturaları yeniden düzenleyin.",
+    "revocationChargedRepair": "{{count}} çevrimiçi ödeme bağlantısı, Breeze Stripe'tan iptal etmesini istedikten sonra ödendi. Para gerçek — bu ödemeleri mutabık kılın (ve fatura başka bir yolla zaten kapatıldıysa iade edin).",
+    "revocationBlocked": "{{count}} çevrimiçi ödeme bağlantısı iptal edilemedi — Stripe, kayıtlı anahtarla yapılan isteği reddetti. Yeniden denemek için çalışan bir Stripe anahtarı kaydedin veya bağlantıları Stripe panonuzdan iptal edin."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Site eşlemeleri kaydedilemedi.",

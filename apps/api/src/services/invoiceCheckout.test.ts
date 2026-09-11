@@ -7,6 +7,22 @@ const { dbResults, insertValuesMock } = vi.hoisted(() => ({
   dbResults: [] as unknown[][],
   insertValuesMock: vi.fn(),
 }));
+// SEC-150: the fail-closed Checkout-session revocation phases run BEFORE this
+// suite's transaction and issue their own queries. This file drives a
+// hand-rolled Drizzle mock whose result queue would be consumed by them, so the
+// revocation is stubbed out here and proved for real — against Postgres, with a
+// mocked Stripe SDK — in __tests__/integration/stripeSessionRevocation.integration.test.ts.
+vi.mock('./stripeSessionRevocation', () => ({
+  requestInvoiceSessionRevocation: vi.fn(async () => ({
+    requested: 0, revoked: 0, charged: 0, blocked: 0, stillPending: 0,
+  })),
+  assertInvoiceSessionsRevoked: vi.fn(async () => undefined),
+  assertNoPendingRevocation: vi.fn(async () => undefined),
+  markSiblingRevocationIntentInTx: vi.fn(async () => 0),
+  markSessionChargedRepair: vi.fn(async () => false),
+  REVOCATION_PENDING_CODE: 'STRIPE_REVOCATION_PENDING',
+}));
+
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
@@ -52,7 +68,8 @@ vi.mock('./invoiceService', () => ({
   requireSiteAccess: requireSiteAccessMock,
 }));
 
-import { createInvoicePayLink } from './invoiceCheckout';
+import { createInvoicePayLink, checkoutSessionExpiry } from './invoiceCheckout';
+import { assertNoPendingRevocation } from './stripeSessionRevocation';
 import { InvoiceServiceError } from './invoiceTypes';
 
 // Default fixture: a cached USD account (matches the USD invoices below, so no
@@ -68,11 +85,43 @@ const INV_ID = '11111111-1111-1111-1111-111111111111';
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
 
+/**
+ * SEC-150: `expires_at` is now part of every sessions.create request, and Stripe
+ * refuses an idempotent replay whose parameters moved — so the hour quantum is
+ * folded into the key too. Both are asserted through the real
+ * `checkoutSessionExpiry`, not a hardcoded literal: a drift between the value
+ * sent to Stripe and the value baked into the key would be an
+ * `idempotency_key_in_use` error in production that a literal would hide.
+ */
+function expectedIdempotencyKey(base: string): string {
+  return `${base}_e${checkoutSessionExpiry().quantum}`;
+}
+
 describe('createInvoicePayLink', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     dbResults.length = 0;
     insertValuesMock.mockReset();
+  });
+
+  it('SEC-150: refuses to reach Stripe at all while a revocation is in flight', async () => {
+    // The gate has to fire BEFORE checkout.sessions.create, not after: a session
+    // that exists on Stripe is payable the moment it is minted, so a gate placed
+    // after the round-trip would still hand out a live capability during exactly
+    // the window the revocation intent exists to close.
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '100.00', depositDue: null, amountPaid: '0.00',
+      currencyCode: 'USD', invoiceNumber: 'INV-GATE',
+    }]);
+    vi.mocked(assertNoPendingRevocation).mockRejectedValueOnce(
+      new InvoiceServiceError('still revoking', 409, 'STRIPE_REVOCATION_PENDING'),
+    );
+
+    await expect(createInvoicePayLink(INV_ID, actor))
+      .rejects.toMatchObject({ status: 409, code: 'STRIPE_REVOCATION_PENDING' });
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
+    expect(insertValuesMock).not.toHaveBeenCalled();
   });
 
   it('deposit unpaid: charges the deposit-remaining amount, not the full balance', async () => {
@@ -96,9 +145,10 @@ describe('createInvoicePayLink', () => {
             product_data: { name: 'Deposit — Invoice INV-1' },
           }),
         })],
+        expires_at: checkoutSessionExpiry().expiresAt,
         metadata: expect.objectContaining({ invoice_balance_cents: '300000' }),
       }),
-      { idempotencyKey: `inv_${INV_ID}_300000_dep` },
+      { idempotencyKey: expectedIdempotencyKey(`inv_${INV_ID}_300000_dep`) },
     );
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ amount: '3000.00' }));
   });
@@ -123,9 +173,10 @@ describe('createInvoicePayLink', () => {
             product_data: { name: 'Invoice INV-1' },
           }),
         })],
+        expires_at: checkoutSessionExpiry().expiresAt,
         metadata: expect.objectContaining({ invoice_balance_cents: '700000' }),
       }),
-      { idempotencyKey: `inv_${INV_ID}_700000_bal` },
+      { idempotencyKey: expectedIdempotencyKey(`inv_${INV_ID}_700000_bal`) },
     );
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ amount: '7000.00' }));
   });
@@ -150,9 +201,10 @@ describe('createInvoicePayLink', () => {
             product_data: { name: 'Invoice INV-3' },
           }),
         })],
+        expires_at: checkoutSessionExpiry().expiresAt,
         metadata: expect.objectContaining({ invoice_balance_cents: '10000' }),
       }),
-      { idempotencyKey: `inv_${INV_ID}_10000_bal` },
+      { idempotencyKey: expectedIdempotencyKey(`inv_${INV_ID}_10000_bal`) },
     );
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ amount: '100.00' }));
   });
@@ -173,7 +225,7 @@ describe('createInvoicePayLink', () => {
     dbResults.push([{ id: 'connection' }]);
     await createInvoicePayLink(INV_ID, actor);
     const depositKey = (sessionsCreateMock.mock.calls[0]?.[1] as { idempotencyKey: string }).idempotencyKey;
-    expect(depositKey).toBe(`inv_${INV_ID}_500000_dep`);
+    expect(depositKey).toBe(expectedIdempotencyKey(`inv_${INV_ID}_500000_dep`));
 
     vi.clearAllMocks();
     // Deposit now fully paid: the balance charge is ALSO 5000.00 (equal minor
@@ -188,7 +240,7 @@ describe('createInvoicePayLink', () => {
     dbResults.push([{ id: 'connection' }]);
     await createInvoicePayLink(INV_ID, actor);
     const balanceKey = (sessionsCreateMock.mock.calls[0]?.[1] as { idempotencyKey: string }).idempotencyKey;
-    expect(balanceKey).toBe(`inv_${INV_ID}_500000_bal`);
+    expect(balanceKey).toBe(expectedIdempotencyKey(`inv_${INV_ID}_500000_bal`));
 
     expect(depositKey).not.toBe(balanceKey);
   });

@@ -875,7 +875,10 @@
     "notCached": "Devise pas encore en cache — actualisez pour la récupérer depuis Stripe.",
     "staleCache": "Stripe est injoignable — affichage des derniers détails de compte en cache.",
     "reconnectRequired": "Votre clé Stripe enregistrée (•••• {{last4}}) ne fonctionne plus : {{reason}} Collez une nouvelle clé pour reconnecter; les paiements en ligne échoueront d'ici là.",
-    "reconciliationError": "Le rapprochement des annulations de paiement ne fonctionne pas : {{reason}} Remplacez la clé Stripe par une clé autorisée à lire les événements."
+    "reconciliationError": "Le rapprochement des annulations de paiement ne fonctionne pas : {{reason}} Remplacez la clé Stripe par une clé autorisée à lire les événements.",
+    "revocationCredentialUnavailable": "{{count}} lien(s) de paiement en ligne n'ont pas pu être annulés parce que la clé Stripe qui les a créés n'est plus disponible. Ces liens peuvent encore être payables dans Stripe — annulez-les dans votre tableau de bord Stripe et réémettez les factures.",
+    "revocationChargedRepair": "{{count}} lien(s) de paiement en ligne ont été payés après que Breeze a demandé à Stripe de les annuler. L'argent est réel — rapprochez ces paiements (et remboursez si la facture avait déjà été réglée autrement).",
+    "revocationBlocked": "{{count}} lien(s) de paiement en ligne n'ont pas pu être annulés — Stripe a refusé la demande avec la clé enregistrée. Enregistrez une clé Stripe fonctionnelle pour réessayer, ou annulez les liens dans votre tableau de bord Stripe."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Impossible d’enregistrer les associations de sites.",

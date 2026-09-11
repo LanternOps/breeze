@@ -685,3 +685,27 @@ export function mlFeatureGloballyDisabled(flag: string): boolean {
   if (isFlagListed(process.env.ML_DISABLED_FLAGS, flag)) return true;
   return mlFlagEnvNames(flag).some((name) => envFlag(name));
 }
+
+export type StripeSessionRevocationMode = 'enforce' | 'observe';
+
+/**
+ * Enforcement gate for fail-closed Checkout-session revocation (SEC-150).
+ *
+ * `enforce` (default): a transition that could not prove every open Checkout
+ * session for the invoice is non-payable is REFUSED (503
+ * STRIPE_REVOCATION_PENDING); the durable intent stays and the sweep retries.
+ * `observe`: the intent is still written and Stripe is still called, but a
+ * failure never blocks the transition — the de-escalation lever for an incident.
+ *
+ * Rollback is a flip to `observe`, never a migration revert: code that ignores
+ * `revocation_requested` re-opens the finding and strands the intent rows.
+ * An unrecognized value falls back to `enforce` with a warning — a typo must
+ * never silently unlock the fail-open path.
+ */
+export function stripeSessionRevocationMode(): StripeSessionRevocationMode {
+  const raw = (process.env.STRIPE_SESSION_REVOCATION_MODE ?? '').trim().toLowerCase();
+  if (raw === '' || raw === 'enforce') return 'enforce';
+  if (raw === 'observe') return 'observe';
+  console.warn(`[config] STRIPE_SESSION_REVOCATION_MODE="${raw}" is not enforce|observe — treating as enforce`);
+  return 'enforce';
+}

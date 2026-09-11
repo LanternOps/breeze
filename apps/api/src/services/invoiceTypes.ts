@@ -25,6 +25,10 @@ export interface InvoiceActor {
 }
 
 export type InvoiceServiceErrorCode =
+  // SEC-150: a Checkout session for this invoice is still being revoked.
+  // 503 from a transition (reset/pay/void), 409 from a producer that was
+  // asked to mint another session while the revocation is in flight.
+  | 'STRIPE_REVOCATION_PENDING'
   | 'PARTNER_UNRESOLVABLE'
   | 'ORG_DENIED'
   | 'ORG_NOT_FOUND'
@@ -111,7 +115,10 @@ export type InvoiceServiceErrorCode =
 export class InvoiceServiceError extends Error {
   constructor(
     message: string,
-    public status: 400 | 403 | 404 | 409 | 500 = 400,
+    // 503 (SEC-150 STRIPE_REVOCATION_PENDING): the transition was REFUSED
+    // because Stripe has not yet confirmed an open Checkout session is dead.
+    // Retryable by definition — a 4xx would tell the caller to stop trying.
+    public status: 400 | 403 | 404 | 409 | 500 | 503 = 400,
     public code?: InvoiceServiceErrorCode,
     /** Structured, JSON-safe payload surfaced verbatim on the error body (e.g.
      *  `ALL_BLOCKED_BY_CURRENCY.blockedByCurrency`). Never carries secrets. */
