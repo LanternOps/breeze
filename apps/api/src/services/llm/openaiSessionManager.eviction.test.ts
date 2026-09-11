@@ -94,6 +94,16 @@ vi.mock('./historyBuilder', () => ({
   buildMessagesFromHistory: vi.fn(async () => []),
   ToolUseInHistoryError: class ToolUseInHistoryError extends Error {},
 }));
+
+vi.mock('../aiBudgetReservations', () => ({
+  settleAiBudgetReservation: vi.fn(async () => ({
+    kind: 'settled', reservationId: 'reservation-1', actualCostCents: 0,
+  })),
+  markAiBudgetReservationIndeterminate: vi.fn(),
+  releaseUnusedAiBudgetReservation: vi.fn(),
+}));
+
+vi.mock('../aiCostTracker', () => ({ deductBillingCredits: vi.fn() }));
 vi.mock('../../config/validate', () => ({
   getConfig: () => ({ MCP_LLM_MODEL: 'test-model' }),
 }));
@@ -316,7 +326,7 @@ describe('OpenAISessionManager eviction (#4384)', () => {
         (session as unknown as MutableSession).lastActivityAt =
           Date.now() - 3 * HOUR;
 
-        streaming.startTurn(session, 'm', 'sys', 'hello');
+        streaming.startTurn(session, 'm', 'sys', 'hello', { reservationId: 'reservation-1' });
         await vi.waitFor(() => expect(session.state).toBe('idle'));
 
         expect(Date.now() - session.lastActivityAt).toBeLessThan(5 * MINUTE);
@@ -333,7 +343,7 @@ describe('OpenAISessionManager eviction (#4384)', () => {
         (session as unknown as MutableSession).lastActivityAt =
           Date.now() - 3 * HOUR;
 
-        streaming.startTurn(session, 'm', 'sys', 'hello');
+        streaming.startTurn(session, 'm', 'sys', 'hello', { reservationId: 'reservation-1' });
         await vi.waitFor(() => expect(session.state).toBe('idle'));
 
         // Idle-timeout sweep: the refreshed stamp is what saves it.

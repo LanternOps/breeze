@@ -50,11 +50,28 @@ vi.mock('../services/aiAgentSdk', () => ({
 vi.mock('../services/streamingSessionManager', () => ({
   streamingSessionManager: {
     getOrCreate: vi.fn(),
+    get: vi.fn(() => undefined),
     tryTransitionToProcessing: vi.fn(),
     remove: vi.fn(),
     interrupt: vi.fn(),
     startTurnTimeout: vi.fn(),
   },
+}));
+
+vi.mock('../services/aiBudgetReservations', () => ({
+  reserveAiBudget: vi.fn(async () => ({
+    kind: 'unlimited',
+    reservationId: '66666666-6666-4666-8666-666666666666',
+    dailyPeriodKey: '2026-09-06',
+    monthlyPeriodKey: '2026-09-01',
+    status: 'active',
+  })),
+  releaseUnusedAiBudgetReservation: vi.fn(async () => ({
+    kind: 'released', reservationId: '66666666-6666-4666-8666-666666666666',
+  })),
+  markAiBudgetReservationIndeterminate: vi.fn(async () => ({
+    kind: 'indeterminate', reservationId: '66666666-6666-4666-8666-666666666666',
+  })),
 }));
 
 vi.mock('../services/aiAgent', () => ({
@@ -214,10 +231,11 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
         expect.anything(),
         expect.anything(),
         'System prompt',
-        1,
+        undefined,
         resolved,
         expect.anything(),
         expect.anything(),
+        expect.objectContaining({ budgetReservationId: expect.any(String) }),
       );
     });
 

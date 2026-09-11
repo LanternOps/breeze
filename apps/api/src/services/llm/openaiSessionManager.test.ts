@@ -16,6 +16,20 @@ vi.mock('../sentry', () => ({
   captureException: vi.fn(),
 }));
 
+vi.mock('../aiBudgetReservations', () => ({
+  // The manager settles through the DURABLE wrapper (review item 2): it waits
+  // longer for the org lock, retries once on contention and falls back to
+  // marking the reservation indeterminate, so a lock timeout on the money path
+  // cannot silently drop the spend.
+  settleAiBudgetReservationDurably: vi.fn(),
+  markAiBudgetReservationIndeterminate: vi.fn(async () => ({
+    kind: 'indeterminate', reservationId: 'reservation-1',
+  })),
+  releaseUnusedAiBudgetReservation: vi.fn(),
+}));
+
+vi.mock('../aiCostTracker', () => ({ deductBillingCredits: vi.fn() }));
+
 vi.mock('./historyBuilder', () => ({
   buildMessagesFromHistory: vi.fn(async () => []),
   ToolUseInHistoryError: class ToolUseInHistoryError extends Error {},
@@ -27,6 +41,10 @@ vi.mock('../../config/validate', () => ({
 
 import { OpenAISessionManager } from './openaiSessionManager';
 import { captureException } from '../sentry';
+import {
+  markAiBudgetReservationIndeterminate,
+  settleAiBudgetReservationDurably,
+} from '../aiBudgetReservations';
 import type { RequestLike } from '../auditEvents';
 import type { OpenAICompatibleProvider } from './openaiCompatibleProvider';
 import type { AuthContext } from '../../middleware/auth';
@@ -130,7 +148,9 @@ describe('OpenAISessionManager.startTurn — stream error events reach Sentry (#
       }
     })();
 
-    manager.startTurn(session, 'test-model', 'system prompt', 'hello');
+    manager.startTurn(session, 'test-model', 'system prompt', 'hello', {
+      reservationId: 'reservation-1',
+    });
     await consumer;
 
     // The client-facing behavior is unchanged — the error still publishes.
@@ -145,5 +165,44 @@ describe('OpenAISessionManager.startTurn — stream error events reach Sentry (#
     const [reportedErr] = vi.mocked(captureException).mock.calls.at(0)!;
     expect(reportedErr).toBeInstanceOf(Error);
     expect((reportedErr as Error).message).toContain('LLM endpoint error: HTTP 500: backend unavailable');
+    expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({
+      orgId: 'org-1',
+      reservationId: 'reservation-1',
+    });
+  });
+
+  it('derives the provider token ceiling from the finite reservation and settles known usage', async () => {
+    const maxOutputTokensForBudgetUsd = vi.fn(() => 37);
+    const chatStream = vi.fn(async function* (): AsyncGenerator<LLMStreamEvent> {
+      yield { type: 'content_delta', delta: 'done' };
+      yield { type: 'message_end', inputTokens: 11, outputTokens: 7 };
+    });
+    const fakeProvider = {
+      maxOutputTokensForBudgetUsd,
+      chatStream,
+      computeCostUsd: vi.fn(() => 0.02),
+    } as unknown as OpenAICompatibleProvider;
+    manager = new OpenAISessionManager(fakeProvider);
+    const session = manager.getOrCreate('sess-budgeted', 'org-1', {} as AuthContext, undefined);
+    manager.tryTransitionToProcessing(session);
+    const sub = session.eventBus.subscribe('test-sub');
+    const consumer = (async () => {
+      for await (const event of sub) if (event.type === 'done') break;
+    })();
+
+    manager.startTurn(session, 'test-model', 'system prompt', 'hello', {
+      reservationId: 'reservation-1',
+      maxBudgetUsd: 0.25,
+    });
+    await consumer;
+
+    expect(maxOutputTokensForBudgetUsd).toHaveBeenCalledWith(expect.any(Array), 0.25);
+    expect(chatStream).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ maxTokens: 37 }));
+    expect(settleAiBudgetReservationDurably).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'org-1',
+      reservationId: 'reservation-1',
+      inputTokens: 11,
+      outputTokens: 7,
+    }));
   });
 });
