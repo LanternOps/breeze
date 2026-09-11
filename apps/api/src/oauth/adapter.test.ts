@@ -209,7 +209,7 @@ describe('BreezeOidcAdapter', () => {
 
     expect(updateMock).toHaveBeenCalledWith(oauthClients);
     expect(update.set).toHaveBeenCalledWith({ lastUsedAt: expect.any(Date) });
-    const whereArg = update.where.mock.calls[0]?.[0];
+    const whereArg = (update.where.mock.calls[0] as unknown[])[0];
     expect(collectAllStrings(whereArg)).toContain('client_abc');
   });
 
@@ -226,7 +226,7 @@ describe('BreezeOidcAdapter', () => {
 
     expect(updateMock).toHaveBeenCalledWith(oauthClients);
     expect(update.set).toHaveBeenCalledWith({ lastUsedAt: expect.any(Date) });
-    expect(collectAllStrings(update.where.mock.calls[0]?.[0])).toContain('client_abc');
+    expect(collectAllStrings((update.where.mock.calls[0] as unknown[])[0])).toContain('client_abc');
   });
 
   it('marks AuthorizationCode rows consumed and stamps payload.consumed for the library', async () => {
