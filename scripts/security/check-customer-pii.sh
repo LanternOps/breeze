@@ -27,8 +27,11 @@ cd "$(dirname "$0")/../.."
 # A domain is ALLOWED if it fully matches one of these (suffix shapes for
 # reserved/placeholder TLDs + infra families, then exact known-safe domains).
 # "domains" that are really file extensions (e.g. an icon path "128x128@2x.png"
-# parses as foo@2x.png) — never customer data.
-ALLOW_RE='\.(png|ico|svg|jpe?g|webp|gif|html?|css|js|jsx|ts|tsx|json|md|sh|ya?ml|txt|woff2?|patch)$'
+# parses as foo@2x.png) — never customer data. `.service` covers the same
+# shape for a systemd templated-unit name (e.g. "serial-getty@ttyS0.service"
+# parses as foo@ttyS0.service) — see agent/recovery-media's recovery-console
+# systemd units (W04b).
+ALLOW_RE='\.(png|ico|svg|jpe?g|webp|gif|html?|css|js|jsx|ts|tsx|json|md|sh|ya?ml|txt|woff2?|patch|service)$'
 ALLOW_RE="$ALLOW_RE"'|\.(test|example|local|internal|invalid|localhost)$'
 ALLOW_RE="$ALLOW_RE"'|(^|\.)example\.(com|net|org)$'
 ALLOW_RE="$ALLOW_RE"'|(^|\.)sentry\.io$'

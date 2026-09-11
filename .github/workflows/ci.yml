@@ -1855,16 +1855,37 @@ jobs:
 
       - name: Toolchain
         run: |
+          # live-build/debootstrap are NOT installed here — `lb config`/
+          # `lb build` now run inside a debian:bookworm container (see
+          # "Build helper + ISO" below), so the runner never invokes them
+          # directly. Everything else here is used by the host-side
+          # scripts (run-qemu.sh's own xorriso extraction, seed-snapshot.sh's
+          # mmdebstrap, python3's json comparison, qemu-system-x86/ovmf for
+          # the actual QEMU boots).
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends live-build debootstrap squashfs-tools xorriso grub-efi-amd64-bin mtools dosfstools qemu-system-x86 ovmf mmdebstrap python3
+          sudo apt-get install -y --no-install-recommends squashfs-tools xorriso grub-efi-amd64-bin mtools dosfstools qemu-system-x86 ovmf mmdebstrap python3
 
       - name: Build helper + ISO
         run: |
           cd agent
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o breeze-backup-linux-amd64 ./cmd/breeze-backup
           go build -o breeze-recovery-fakeserver ./cmd/breeze-recovery-fakeserver
-          sudo ./recovery-media/build.sh --arch amd64 --breeze-backup ./breeze-backup-linux-amd64 --version ci --out out/
-          bash ./recovery-media/build_test.sh out/breeze-recovery-linux-amd64.iso
+          # ubuntu-latest's `live-build` is Ubuntu's own old fork
+          # (3.0~a57-based, not Debian's) and rejects flags Debian's
+          # live-build accepts — e.g. `lb config: unrecognized option
+          # '--bootloaders'`, which reddened PR #5588's first CI run even
+          # though the identical build.sh invocation passed locally under
+          # Docker's debian:bookworm. So the ISO build, AND its structural
+          # check (build_test.sh needs a matching xorriso too), both run
+          # inside a real debian:bookworm container instead of directly on
+          # the runner.
+          docker run --rm --privileged -v "$PWD":/src -w /src debian:bookworm bash -c '
+            apt-get update -qq &&
+            apt-get install -y -qq --no-install-recommends live-build debootstrap squashfs-tools xorriso grub-efi-amd64-bin grub-efi-arm64-bin mtools dosfstools ca-certificates >/dev/null &&
+            ./recovery-media/build.sh --arch amd64 --breeze-backup ./breeze-backup-linux-amd64 --version ci --out out/ &&
+            bash recovery-media/build_test.sh out/breeze-recovery-linux-amd64.iso
+          '
+          sudo chown -R "$(id -u):$(id -g)" out/
 
       - name: Seed snapshot + boot + rebuild + reboot
         run: |

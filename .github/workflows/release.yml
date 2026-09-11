@@ -263,7 +263,7 @@ jobs:
   # promotes it to required). See agent/recovery-media/.
   build-recovery-media:
     name: Build recovery media (${{ matrix.arch }})
-    needs: build-agent
+    needs: [build-agent]
     runs-on: ubuntu-latest
     continue-on-error: ${{ matrix.arch == 'arm64' }}
     strategy:
@@ -290,16 +290,39 @@ jobs:
 
       - name: Install live-build toolchain
         run: |
+          # `lb config`/`lb build` themselves now run inside a
+          # debian:bookworm container (see "Build ISO" below) — Ubuntu's
+          # own live-build fork (3.0~a57-based, bundled with ubuntu-latest)
+          # rejects flags Debian's live-build accepts (e.g. --bootloaders),
+          # which reddened PR #5588's Recovery media E2E CI job even though
+          # the identical build.sh invocation passed locally under
+          # Docker's debian:bookworm. live-build/debootstrap/
+          # squashfs-tools/grub-efi-*-bin/mtools/dosfstools are therefore
+          # unused on the runner now (they run inside the container).
+          # qemu-user-static/binfmt-support stay: they register the
+          # binfmt_misc handler in the RUNNER's kernel that lets an amd64
+          # host execute the arm64 chroot's postinst/trigger scripts under
+          # emulation during `lb build` — a host-kernel concern the
+          # container image can't provide for itself, so it has to be
+          # installed out here regardless of where `lb build` itself runs.
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends live-build debootstrap squashfs-tools xorriso grub-efi-amd64-bin grub-efi-arm64-bin mtools dosfstools qemu-user-static binfmt-support
+          sudo apt-get install -y --no-install-recommends qemu-user-static binfmt-support
 
       - name: Build ISO
         env:
           BUILD_VERSION: ${{ steps.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
         run: |
-          chmod +x dist/breeze-backup-linux-${{ matrix.arch }}
-          sudo agent/recovery-media/build.sh --arch ${{ matrix.arch }} --breeze-backup dist/breeze-backup-linux-${{ matrix.arch }} --version "$BUILD_VERSION" --out out/
-          bash agent/recovery-media/build_test.sh out/breeze-recovery-linux-${{ matrix.arch }}.iso
+          chmod +x "dist/breeze-backup-linux-$ARCH"
+          docker run --rm --privileged \
+            -e ARCH="$ARCH" -e BUILD_VERSION="$BUILD_VERSION" \
+            -v "$PWD":/src -w /src/agent debian:bookworm bash -c '
+              apt-get update -qq &&
+              apt-get install -y -qq --no-install-recommends live-build debootstrap squashfs-tools xorriso grub-efi-amd64-bin grub-efi-arm64-bin mtools dosfstools ca-certificates >/dev/null &&
+              ./recovery-media/build.sh --arch "$ARCH" --breeze-backup "../dist/breeze-backup-linux-$ARCH" --version "$BUILD_VERSION" --out ../out/ &&
+              bash recovery-media/build_test.sh "../out/breeze-recovery-linux-$ARCH.iso"
+            '
+          sudo chown -R "$(id -u):$(id -g)" out/
 
       - name: Upload recovery media artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
