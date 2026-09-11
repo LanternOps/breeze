@@ -137,6 +137,7 @@ D]`, clamped. `one_time` has exactly one occurrence at `anchor_due_date`.
 | ticket_id | uuid null | composite FK `(ticket_id, org_id) → tickets(id, org_id)` deferrable, `ON DELETE SET NULL (ticket_id)` |
 | delivered_at | timestamptz null | |
 | delivered_by_user_id | uuid null | |
+| delivered_via | text null | `explicit \| ticket`; an `explicit` delivery is never undone by a ticket reopen (§6) |
 | delivery_note | text null | shown in the portal |
 | waived_at, waived_by_user_id, waived_reason | | all three set together |
 | created_at, updated_at | | |
