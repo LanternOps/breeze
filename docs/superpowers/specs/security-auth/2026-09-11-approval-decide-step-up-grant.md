@@ -325,9 +325,12 @@ This is the whole use case: a supervised row under an **enforcing** partner.
 The enforcing policy is what forces the ceremony in the first place
 (`isPartnerEnforcingForSupervised` disables `skipAssuranceLadder`), and the
 grant satisfies that same floor on subsequent rows instead of re-prompting.
-Under a non-enforcing partner a supervised row never runs the ladder, so no
-grant is ever minted there — and none is needed, #5600 already approves it
-on a plain click.
+Under a non-enforcing partner a *proofless* supervised approve skips the
+ladder (#5600's plain click), so no grant is minted from it — and none is
+needed. If the client does present a proof there, the ladder runs as usual
+(a presented proof is always verified) and a genuine ≥ L3 ceremony can mint
+a grant; that is harmless, since a later proofless row in the same window
+still takes the plain-click path without needing it.
 
 ### L4 is excluded
 
