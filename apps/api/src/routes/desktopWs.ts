@@ -1873,6 +1873,7 @@ export function __createDesktopSharedLeasesForTest(): RemoteWsSharedLeaseManager
     releaseDesktopFinalizationIntent: async () => true,
     observeDesktopFinalization: async () => ({
       ownerPresent: false,
+      everOwned: false,
       finalizationId: null,
       canonicalPayload: null,
       consistent: true,
