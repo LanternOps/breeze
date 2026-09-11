@@ -27,6 +27,7 @@ import {
   type DbAccessContext,
 } from '../../db';
 import { createOrganization, createPartner } from './db-utils';
+import { CUSTOM_EXECUTORS } from '../../services/orgMergeCustomExecutors';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -270,6 +271,53 @@ describe('service deliverables + key dates RLS — org-axis forge (breeze_app ro
       ),
     )[0]!;
     expect(seenByB).toMatchObject({ d: 1, o: 1, e: 1 });
+  });
+
+  runDb('org merge: a name-colliding loser deliverable is RENAMED and repointed, keeping its occurrences and evidence', async () => {
+    const { orgA, orgB, ctxA, ctxB } = await seedTwoOrgs();
+    // Same name, no contract, in both orgs — the exact collision on
+    // service_deliverables_org_contract_name_uq that a repoint-dedupe would resolve by deleting.
+    const loser = await insertDeliverable(ctxA, orgA.id, 'Monthly executive report');
+    await insertDeliverable(ctxB, orgB.id, 'Monthly executive report');
+    const { reportId, runId } = await insertReportWithRun(orgA.id);
+    await withDbAccessContext(ctxA, () =>
+      db.execute(sql`
+        INSERT INTO service_deliverable_evidence (org_id, occurrence_id, kind, report_id, report_run_id)
+        VALUES (${orgA.id}::uuid, ${loser.occurrenceId}::uuid, 'report_run', ${reportId}::uuid, ${runId}::uuid)`),
+    );
+
+    // The merge walks every table inside ONE transaction under SET CONSTRAINTS
+    // ALL DEFERRED (orgMerge.ts); reports, occurrences and evidence are plain
+    // repoint tables it moves itself. Mirror that shape so the executor is
+    // exercised the way production runs it.
+    // withSystemDbAccessContext is itself one transaction, so the deferral
+    // covers the executor and the sibling repoints alike.
+    const outcome = await withSystemDbAccessContext(async () => {
+      await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+      const out = await CUSTOM_EXECUTORS.service_deliverables!(orgA.id, orgB.id);
+      await db.execute(sql`UPDATE reports SET org_id = ${orgB.id}::uuid WHERE org_id = ${orgA.id}::uuid`);
+      await db.execute(sql`UPDATE service_deliverable_occurrences SET org_id = ${orgB.id}::uuid WHERE org_id = ${orgA.id}::uuid`);
+      await db.execute(sql`UPDATE service_deliverable_evidence SET org_id = ${orgB.id}::uuid WHERE org_id = ${orgA.id}::uuid`);
+      return out;
+    });
+    expect(outcome.moved).toBe(1);
+    expect(outcome.dropped).toBe(0);
+    expect(outcome.notes[0]).toMatch(/renamed 1 deliverable/);
+
+    const seenByB = rows(
+      await withDbAccessContext(ctxB, () =>
+        db.execute(sql`
+          SELECT d.id, d.name,
+                 (SELECT count(*) FROM service_deliverable_occurrences o WHERE o.deliverable_id = d.id)::int AS occ,
+                 (SELECT count(*) FROM service_deliverable_evidence e
+                    JOIN service_deliverable_occurrences o ON o.id = e.occurrence_id WHERE o.deliverable_id = d.id)::int AS ev
+            FROM service_deliverables d ORDER BY d.name`),
+      ),
+    );
+    expect(seenByB).toHaveLength(2);
+    const moved = seenByB.find((r) => r.id === loser.deliverableId)!;
+    expect(moved.name).toBe(`Monthly executive report (merged ${orgA.id.slice(0, 8)})`);
+    expect(moved).toMatchObject({ occ: 1, ev: 1 });
   });
 
   runDb('cascade: deleting a deliverable removes its occurrences and evidence', async () => {

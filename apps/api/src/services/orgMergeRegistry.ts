@@ -406,7 +406,12 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   contact_external_links: { kind: 'repoint-dedupe', key: ['system', 'external_id'] }, // verified: contact_external_links_uniq (org_id, system, external_id)
   delegant_m365_connections: { kind: 'repoint-dedupe', key: ['customer_label'] }, // verified: delegant_m365_org_customer_uniq (org_id, customer_label)
   remediation_suggestions: { kind: 'repoint-dedupe', key: ['source_type', 'source_id'] }, // superset of its four partial uniques (org_id, source_type, source_id, {script_id|script_template_id|playbook_id|target_type}); derived rows, over-dropping is safe
-  service_deliverables: { kind: 'repoint-dedupe', key: ["COALESCE({contract_id}, '00000000-0000-0000-0000-000000000000'::uuid)", 'name'] }, // verified: service_deliverables_org_contract_name_uq (org_id, COALESCE(contract_id, nil), name) — 2026-10-15-170000; loser occurrences/evidence follow via ON DELETE CASCADE
+  // service_deliverables_org_contract_name_uq (org_id, COALESCE(contract_id, nil), name)
+  // — 2026-10-15-170000. NOT repoint-dedupe: the loser's row carries its
+  // occurrences and evidence via ON DELETE CASCADE, i.e. the delivered/waived
+  // history the customer portal (#5573) shows. Rename on collision instead,
+  // exactly as audit_baselines does, then repoint everything.
+  service_deliverables: { kind: 'custom', note: "rename colliding loser deliverables (same COALESCE(contract_id), name under the survivor) with a ' (merged <org8>)' suffix, then repoint all rows; NEVER delete — service_deliverable_occurrences/evidence are ON DELETE CASCADE and are the delivery history" },
   tunnel_allowlists: { kind: 'repoint-dedupe', key: ['direction', 'pattern', "COALESCE({site_id}, '00000000-0000-0000-0000-000000000000'::uuid)"] }, // verified: tunnel_allowlists_org_direction_pattern_site_idx (2026-08-08-proxy-session-lifetime.sql)
   // action_intents used to be classified here as a `repoint-dedupe` keyed on
   // action_intents_org_idem_uniq. It is now `leave-for-erasure` above: the
