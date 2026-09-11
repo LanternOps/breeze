@@ -38,6 +38,9 @@ vi.mock('./aiCostTracker', () => ({
   sumInputTokens: (u: Record<string, number | null | undefined> | null | undefined) =>
     (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0),
 }));
+vi.mock('./aiBudgetReservations', () => ({
+  markAiBudgetReservationIndeterminate: vi.fn(async () => ({ kind: 'indeterminate' })),
+}));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./aiAgentSdkTools', () => ({
@@ -369,6 +372,8 @@ describe('result handling — usage-bearing done + recordExtraUsage', () => {
       expect.objectContaining({ total_cost_usd: 0.03 }),
       'platform',
       // 5th arg: catalog pricing snapshot (#3922 W3) — absent off the catalog path.
+      undefined,
+      // 6th arg: no budget reservation is attached to this legacy fixture.
       undefined,
     );
   });

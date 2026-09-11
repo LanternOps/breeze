@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./contractService', () => ({
   listContracts: vi.fn(),
@@ -17,7 +17,7 @@ vi.mock('./contractService', () => ({
 }));
 
 import { registerContractTools } from './aiToolsContracts';
-import { getContract } from './contractService';
+import * as contractService from './contractService';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 
@@ -70,10 +70,60 @@ describe('get_contract line shape (#3205 W03)', () => {
       siteId: 'site-1', site: { id: 'site-1', name: 'HQ' },
       deviceGroupId: null, deviceGroupName: null, deviceGroup: null,
     };
-    (getContract as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (contractService.getContract as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       contract: { id: 'ct-1', currencyCode: 'USD' }, lines: [decorated], periods: [],
     });
     const out = JSON.parse(await getTool('get_contract').handler({ contractId: 'ct-1' }, auth));
     expect(out.lines[0]).toMatchObject({ site: { id: 'site-1', name: 'HQ' }, deviceGroup: null });
+  });
+});
+
+describe('contract tool scope parity with the recurring-contract HTTP surface', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const authForScope = (scope: 'organization' | 'partner' | 'system'): AuthContext => ({
+    ...auth,
+    scope,
+    orgId: scope === 'organization' ? 'org-1' : null,
+    partnerId: scope === 'partner' ? 'p-1' : null,
+    accessibleOrgIds: scope === 'system' ? null : ['org-1'],
+    token: auth.token ? {
+      ...auth.token,
+      scope,
+      orgId: scope === 'organization' ? 'org-1' : null,
+      partnerId: scope === 'partner' ? 'p-1' : null,
+    } : null,
+  });
+
+  it.each([
+    ['list_contracts', {}, 'listContracts'],
+    ['get_contract', { contractId: 'contract-1' }, 'getContract'],
+    ['manage_contracts', { action: 'activate', contractId: 'contract-1' }, 'activateContract'],
+  ] as const)('denies organization scope before %s reaches the contract service', async (toolName, input, serviceName) => {
+    vi.mocked(contractService.listContracts).mockResolvedValue([]);
+    vi.mocked(contractService.getContract).mockResolvedValue({ contract: {}, lines: [], periods: [] } as never);
+    vi.mocked(contractService.activateContract).mockResolvedValue({ id: 'contract-1', status: 'active' } as never);
+
+    const output = await getTool(toolName).handler(input, authForScope('organization'));
+
+    expect(JSON.parse(output)).toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+    expect(contractService[serviceName]).not.toHaveBeenCalled();
+  });
+
+  it.each(['partner', 'system'] as const)('preserves %s contract reads', async (scope) => {
+    vi.mocked(contractService.listContracts).mockResolvedValueOnce([]);
+
+    await expect(getTool('list_contracts').handler({}, authForScope(scope)))
+      .resolves.toBe(JSON.stringify({ contracts: [], showing: 0 }));
+    expect(contractService.listContracts).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed for a malformed partner context with no partner identity', async () => {
+    const malformed = { ...authForScope('partner'), partnerId: null };
+
+    const output = await getTool('list_contracts').handler({}, malformed);
+
+    expect(JSON.parse(output)).toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+    expect(contractService.listContracts).not.toHaveBeenCalled();
   });
 });

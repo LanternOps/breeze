@@ -67,6 +67,7 @@ import {
   checkToolPermission,
   checkPermissionRequirement,
   checkPermissionRequirements,
+  requiredPermissionsForTool,
   TIER1_ACTIONS,
   TIER2_ACTIONS,
   TIER3_ACTIONS,
@@ -914,6 +915,34 @@ describe('buildApprovalDescription — manage_ai_agents copy (P2-5, #4192)', () 
 });
 
 describe('checkGuardrails — billing and proposal action tier escalation', () => {
+  it('requires contract read authority in addition to invoice write for add_contract_line', () => {
+    expect(requiredPermissionsForTool('manage_invoices', { action: 'add_contract_line' })).toEqual([
+      { resource: 'invoices', action: 'write' },
+      { resource: 'contracts', action: 'read' },
+    ]);
+  });
+
+  it.each([
+    ['invoices.write', 'invoices'],
+    ['contracts.read', 'contracts'],
+  ])('denies add_contract_line when %s is absent', async (_label, missingResource) => {
+    const auth = {
+      user: { id: 'user-1' },
+      token: { roleId: 'operator', scope: 'partner' },
+      partnerId: 'partner-1',
+      orgId: null,
+    } as any;
+    vi.mocked(getUserPermissions).mockClear();
+    vi.mocked(hasPermission).mockClear();
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'operator' } as any);
+    vi.mocked(hasPermission).mockImplementation((_perms, resource) => resource !== missingResource);
+
+    const result = await checkToolPermission('manage_invoices', { action: 'add_contract_line' }, auth);
+
+    expect(result).toContain(`requires ${missingResource}.`);
+    expect(getUserPermissions).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ['manage_invoices', 'issue'],
     ['manage_contracts', 'activate'],

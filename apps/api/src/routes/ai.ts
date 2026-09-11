@@ -25,8 +25,17 @@ import {
 } from '../services/aiAgent';
 import { runPreFlightChecks, abortActivePlan, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
+import { redactPersistedToolInput } from '../services/aiToolOutput';
 import { streamingSessionManager } from '../services/streamingSessionManager';
-import { getUsageSummary, updateBudget, getSessionHistory, recordUsage, type CatalogPricingSnapshot } from '../services/aiCostTracker';
+import {
+  calculateCatalogCostCents,
+  calculateCostCents,
+  getUsageSummary,
+  updateBudget,
+  getSessionHistory,
+  recordUsage,
+  type CatalogPricingSnapshot,
+} from '../services/aiCostTracker';
 import { createTicket, changeTicketStatus, TicketServiceError } from '../services/ticketService';
 import { createTimeEntry } from '../services/timeEntryService';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -50,11 +59,22 @@ import { captureException } from '../services/sentry';
 import { getConfig } from '../config/validate';
 import { OpenAICompatibleProvider } from '../services/llm/openaiCompatibleProvider';
 import { OpenAISessionManager } from '../services/llm/openaiSessionManager';
-import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTicketDraft';
+import {
+  draftTicketFromTranscript,
+  ThinTranscriptError,
+  TicketDraftFailedError,
+} from '../services/aiTicketDraft';
 import { getAnthropicClientForPartner, LlmUnavailableError, resolveWireModel } from '../services/llm/llmConfigResolver';
 import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
+import {
+  isAiBudgetLockTimeout,
+  markAiBudgetReservationIndeterminate,
+  releaseUnusedAiBudgetReservation,
+  reserveAiBudget,
+  type ReserveAiBudgetResult,
+} from '../services/aiBudgetReservations';
 
 // Provider check that tolerates an unvalidated config: route unit tests never
 // call validateConfig(), and getConfig() throws in that state. Without a
@@ -123,6 +143,22 @@ function generateSessionTitle(content: string): string {
   const truncated = cleaned.slice(0, 80);
   const lastSpace = truncated.lastIndexOf(' ');
   return (lastSpace > 20 ? truncated.slice(0, lastSpace) : truncated) + '…';
+}
+
+type AiTurnBudgetDispatch = { reservationId: string; maxBudgetUsd?: number };
+
+function budgetDispatchFrom(result: ReserveAiBudgetResult): AiTurnBudgetDispatch | null {
+  if (result.kind === 'denied') return null;
+  return {
+    reservationId: result.reservationId,
+    ...(result.kind === 'reserved'
+      ? { maxBudgetUsd: result.reservedCostCents / 100 }
+      : {}),
+  };
+}
+
+async function releaseUnusedTurn(orgId: string, dispatch: AiTurnBudgetDispatch): Promise<void> {
+  await releaseUnusedAiBudgetReservation({ orgId, reservationId: dispatch.reservationId });
 }
 
 export const aiRoutes = new Hono();
@@ -409,6 +445,7 @@ aiRoutes.post(
     let draft;
     let billingSource: 'platform' | 'partner_key' = 'platform';
     let catalogPricing: CatalogPricingSnapshot | undefined;
+    let reservationId: string | undefined;
     try {
       const { client, resolved } = await getAnthropicClientForPartner(org.partnerId ?? null, {
         surface: 'one_shot_ticket_draft',
@@ -421,6 +458,29 @@ aiRoutes.post(
       // has no verified mapping for this session's model.
       const wire = resolveWireModel(resolved, model);
       catalogPricing = wire.catalogPricing;
+      // S8: no stable request identity reaches this surface — the client sends
+      // no message/draft id — so the key is random per dispatch. The unique
+      // (org_id, idempotency_key) index is therefore a structural guarantee
+      // that two dispatches never share a reservation row, NOT a replay guard.
+      // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
+      // in services/aiAgents/runLoop.ts. Give this one a stable key only when
+      // the request schema starts carrying a client-generated id.
+      let reservation;
+      try {
+        reservation = await reserveAiBudget({
+          orgId: session.orgId,
+          idempotencyKey: `ticket-draft:${sessionId}:${crypto.randomUUID()}`,
+          billingSource,
+          sessionId,
+        });
+      } catch (err) {
+        // Same fail-fast answer as the other admission sites: contention on the
+        // org row is a 503 the client can retry, not a 500.
+        if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
+        throw err;
+      }
+      if (reservation.kind === 'denied') return c.json({ error: reservation.message }, 429);
+      reservationId = reservation.reservationId;
       draft = await draftTicketFromTranscript({
         messages: messages.map((m) => ({ role: m.role, content: m.content })),
         contextSnapshot: session.contextSnapshot,
@@ -429,8 +489,41 @@ aiRoutes.post(
         partnerId: org.partnerId ?? null,
         orgId: session.orgId,
         client,
+        ...(reservation.kind === 'reserved'
+          ? {
+            budgetCents: reservation.reservedCostCents,
+            calculateCostCents: catalogPricing
+              ? (inputTokens, outputTokens) => calculateCatalogCostCents(catalogPricing!, inputTokens, outputTokens)
+              : (inputTokens, outputTokens) => calculateCostCents(model, inputTokens, outputTokens),
+          }
+          : {}),
       });
     } catch (err) {
+      if (reservationId) {
+        try {
+          if (err instanceof ThinTranscriptError
+            || (err instanceof TicketDraftFailedError
+              && !err.providerOutcomeUnknown && err.inputTokens === 0 && err.outputTokens === 0)) {
+            await releaseUnusedAiBudgetReservation({ orgId: session.orgId, reservationId });
+          } else if (err instanceof TicketDraftFailedError && !err.providerOutcomeUnknown) {
+            await recordUsage(
+              sessionId,
+              session.orgId,
+              model,
+              err.inputTokens,
+              err.outputTokens,
+              false,
+              billingSource,
+              catalogPricing,
+              reservationId,
+            );
+          } else {
+            await markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId });
+          }
+        } catch (budgetError) {
+          captureException(budgetError);
+        }
+      }
       if (err instanceof ThinTranscriptError) return c.json({ error: err.message }, 422);
       if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
       console.error('[AI] Ticket draft failed:', err);
@@ -451,9 +544,13 @@ aiRoutes.post(
         // Catalog traffic meters from the revision snapshot, never Anthropic
         // list rates.
         catalogPricing,
+        reservationId,
       );
-    } catch {
-      // non-fatal
+    } catch (err) {
+      captureException(err);
+      if (reservationId) {
+        await markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId }).catch(captureException);
+      }
     }
 
     let deviceHostname: string | null = null;
@@ -572,7 +669,7 @@ aiRoutes.post(
       return c.json({ error: err }, 400);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd, resolved } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, resolved } = preflight;
 
     // ---- OpenAI-compatible path (chat-only, no tool-calling) ----
     const useOpenAICompatibleProvider = isOpenAICompatibleProvider();
@@ -580,10 +677,35 @@ aiRoutes.post(
       return c.json({ error: 'ai_unavailable' }, 503);
     }
     if (useOpenAICompatibleProvider) {
+      const billingSource = resolved.source === 'partner' ? 'partner_key' : 'platform';
+      // S8: no stable request identity reaches this surface — the client sends
+      // no message/draft id — so the key is random per dispatch. The unique
+      // (org_id, idempotency_key) index is therefore a structural guarantee
+      // that two dispatches never share a reservation row, NOT a replay guard.
+      // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
+      // in services/aiAgents/runLoop.ts. Give this one a stable key only when
+      // the request schema starts carrying a client-generated id.
+      let reservation;
+      try {
+        reservation = await reserveAiBudget({
+          orgId: dbSession.orgId,
+          billingSource,
+          sessionId,
+          idempotencyKey: `chat:${sessionId}:${crypto.randomUUID()}`,
+        });
+      } catch (err) {
+        if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
+        throw err;
+      }
+      if (reservation.kind === 'denied') {
+        return c.json({ error: reservation.message }, 402);
+      }
+      const budgetDispatch = budgetDispatchFrom(reservation)!;
       const openaiManager = getOpenAISessionManager();
       const openaiSession = openaiManager.getOrCreate(sessionId, dbSession.orgId, auth, c);
 
       if (!openaiManager.tryTransitionToProcessing(openaiSession)) {
+        await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
         return c.json({ error: 'A message is already being processed for this session' }, 409);
       }
 
@@ -604,6 +726,7 @@ aiRoutes.post(
       } catch (err) {
         console.error('[AI/OpenAI] Failed to save user message to DB:', err);
         openaiSession.state = 'idle';
+        await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
         return c.json({ error: 'Failed to save message' }, 500);
       }
 
@@ -617,7 +740,13 @@ aiRoutes.post(
         }
       }
 
-      openaiManager.startTurn(openaiSession, dbSession.model, systemPrompt, sanitizedContent);
+      openaiManager.startTurn(
+        openaiSession,
+        dbSession.model,
+        systemPrompt,
+        sanitizedContent,
+        budgetDispatch,
+      );
 
       const subscriptionId = crypto.randomUUID();
       return streamSSE(c, async (stream) => {
@@ -645,29 +774,11 @@ aiRoutes.post(
     }
     // ---- End OpenAI-compatible path ----
 
-    // Get or create streaming session
-    const activeSession = await streamingSessionManager.getOrCreate(
-      sessionId,
-      {
-        orgId: dbSession.orgId,
-        sdkSessionId: dbSession.sdkSessionId,
-        model: dbSession.model,
-        maxTurns: dbSession.maxTurns,
-        turnCount: dbSession.turnCount,
-        systemPrompt: dbSession.systemPrompt,
-        // Device-bound sessions narrow tool execution to the device's org
-        // (ai_sessions.org_id), not the login org (#3087).
-        deviceId: dbSession.deviceId,
-      },
-      auth,
-      c,
-      systemPrompt,
-      maxBudgetUsd,
-      resolved,
-    );
-
-    // Concurrent message guard — atomic check-and-set
-    if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+    // A Claude SDK query's maxBudgetUsd is immutable after creation. Finish any
+    // approval-only prior turn, then rotate the idle query so this turn is
+    // created with the exact durable reservation ceiling.
+    const priorSession = streamingSessionManager.get(sessionId);
+    if (priorSession?.state === 'processing') {
       // #3089: when the in-flight turn is blocked ONLY on pending tool
       // approvals, the assistant used to go mute — the user's message bounced
       // with a 409 while the model sat waiting up to 5 minutes per approval.
@@ -677,14 +788,76 @@ aiRoutes.post(
       // concludes the turn, and this message then proceeds normally. If the
       // session is busy for any other reason (model actively working), or the
       // turn doesn't conclude in time, fall back to a 409 as before.
-      const settle = await settleBlockedTurnForNewMessage(activeSession);
-      if (settle !== 'concluded' || !streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+      const settle = await settleBlockedTurnForNewMessage(priorSession);
+      if (settle !== 'concluded') {
         return c.json({
           error: settle === 'not_blocked_on_approvals'
             ? 'A message is already being processed for this session'
             : 'The assistant is wrapping up the previous turn — please try again in a moment',
         }, 409);
       }
+    }
+    if (streamingSessionManager.get(sessionId)) {
+      streamingSessionManager.remove(sessionId);
+    }
+
+    const billingSource = resolved.source === 'partner' ? 'partner_key' : 'platform';
+    // S8: no stable request identity reaches this surface — the client sends
+    // no message/draft id — so the key is random per dispatch. The unique
+    // (org_id, idempotency_key) index is therefore a structural guarantee
+    // that two dispatches never share a reservation row, NOT a replay guard.
+    // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
+    // in services/aiAgents/runLoop.ts. Give this one a stable key only when
+    // the request schema starts carrying a client-generated id.
+    let reservation;
+    try {
+      reservation = await reserveAiBudget({
+        orgId: dbSession.orgId,
+        billingSource,
+        sessionId,
+        idempotencyKey: `chat:${sessionId}:${crypto.randomUUID()}`,
+      });
+    } catch (err) {
+      if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
+      throw err;
+    }
+    if (reservation.kind === 'denied') {
+      return c.json({ error: reservation.message }, 402);
+    }
+    const budgetDispatch = budgetDispatchFrom(reservation)!;
+
+    let activeSession;
+    try {
+      activeSession = await streamingSessionManager.getOrCreate(
+        sessionId,
+        {
+          orgId: dbSession.orgId,
+          sdkSessionId: dbSession.sdkSessionId,
+          model: dbSession.model,
+          maxTurns: dbSession.maxTurns,
+          turnCount: dbSession.turnCount,
+          systemPrompt: dbSession.systemPrompt,
+          // Device-bound sessions narrow tool execution to the device's org
+          // (ai_sessions.org_id), not the login org (#3087).
+          deviceId: dbSession.deviceId,
+        },
+        auth,
+        c,
+        systemPrompt,
+        budgetDispatch.maxBudgetUsd,
+        resolved,
+        undefined,
+        undefined,
+        { budgetReservationId: budgetDispatch.reservationId },
+      );
+    } catch (err) {
+      await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
+      throw err;
+    }
+
+    if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+      await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
+      return c.json({ error: 'A message is already being processed for this session' }, 409);
     }
 
     writeRouteAudit(c, {
@@ -704,6 +877,7 @@ aiRoutes.post(
     } catch (err) {
       console.error('[AI] Failed to save user message to DB:', err);
       activeSession.state = 'idle';
+      await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
       return c.json({ error: 'Failed to save message' }, 500);
     }
 
@@ -1179,7 +1353,7 @@ aiRoutes.get(
 aiRoutes.get(
   '/admin/security-events',
   requireScope('organization', 'partner', 'system'),
-  requireAiRead,
+  requireAiSessionsReadAll,
   async (c) => {
     const auth = c.get('auth');
     const orgId = c.req.query('orgId') || auth.orgId;
@@ -1236,7 +1410,7 @@ aiRoutes.get(
 aiRoutes.get(
   '/admin/tool-executions',
   requireScope('organization', 'partner', 'system'),
-  requireAiRead,
+  requireAiSessionsReadAll,
   async (c) => {
     const auth = c.get('auth');
     const orgId = c.req.query('orgId') || auth.orgId;
@@ -1381,7 +1555,10 @@ aiRoutes.get(
         failed: Number(row.failed),
         rejected: Number(row.rejected),
       })),
-      executions,
+      executions: executions.map((execution) => ({
+        ...execution,
+        toolInput: redactPersistedToolInput(execution.toolInput),
+      })),
     });
   }
 );

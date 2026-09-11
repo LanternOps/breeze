@@ -11,6 +11,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { resolveScopedOrgId } from '../c2c/helpers';
 import { CLIENT_SESSION_TYPES } from '../../services/clientAiHosts';
 import { adminSessionListQuerySchema, flagSessionSchema } from './schemas';
+import { redactPersistedToolInput } from '../../services/aiToolOutput';
 
 /**
  * AI for Office — client-session audit viewer endpoints (spec §9.3).
@@ -29,13 +30,13 @@ import { adminSessionListQuerySchema, flagSessionSchema } from './schemas';
 
 export const clientAiAdminSessionRoutes = new Hono();
 
-const requireOrgsRead = requirePermission(
-  PERMISSIONS.ORGS_READ.resource,
-  PERMISSIONS.ORGS_READ.action
-);
 const requireOrgsWrite = requirePermission(
   PERMISSIONS.ORGS_WRITE.resource,
   PERMISSIONS.ORGS_WRITE.action
+);
+const requireAiSessionsReadAll = requirePermission(
+  PERMISSIONS.AI_SESSIONS_READ_ALL.resource,
+  PERMISSIONS.AI_SESSIONS_READ_ALL.action,
 );
 
 export const REDACTION_MARKER_REGEX = /\[REDACTED:([A-Za-z0-9_-]+)\]/g;
@@ -78,7 +79,7 @@ const sessionSelection = {
 // ── GET /sessions — filtered, paginated list ─────────────────────────────────
 clientAiAdminSessionRoutes.get(
   '/sessions',
-  requireOrgsRead,
+  requireAiSessionsReadAll,
   zValidator('query', adminSessionListQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -154,7 +155,7 @@ async function getClientSession(auth: SessionAuth, sessionId: string) {
 }
 
 // ── GET /sessions/:id — full transcript ──────────────────────────────────────
-clientAiAdminSessionRoutes.get('/sessions/:id', requireOrgsRead, async (c) => {
+clientAiAdminSessionRoutes.get('/sessions/:id', requireAiSessionsReadAll, async (c) => {
   const auth = c.get('auth') as SessionAuth;
   const session = await getClientSession(auth, c.req.param('id')!);
   if (!session) return c.json({ error: 'Session not found' }, 404);
@@ -193,8 +194,26 @@ clientAiAdminSessionRoutes.get('/sessions/:id', requireOrgsRead, async (c) => {
 
   return c.json({
     session,
-    messages: messages.map((m) => ({ ...m, redactionCounts: countRedactions(m.content) })),
-    toolExecutions,
+    // Redaction is UNCONDITIONAL — it applies to the session's own user too,
+    // not only to cross-user admin readers. Deciding per-reader would mean
+    // trusting the stored `userId` to gate secret material, and an admin
+    // reading their own session gains nothing from seeing raw credentials that
+    // were redacted out of the live transcript anyway.
+    //
+    // `toolOutput` is redacted with the same rule as `toolInput`: tool results
+    // carry credentials just as readily as tool arguments (service configs,
+    // connection strings, env dumps), so exempting the output half would leave
+    // the transcript readable for exactly the material this is meant to stop.
+    messages: messages.map((m) => ({
+      ...m,
+      toolInput: redactPersistedToolInput(m.toolInput),
+      toolOutput: redactPersistedToolInput(m.toolOutput),
+      redactionCounts: countRedactions(m.content),
+    })),
+    toolExecutions: toolExecutions.map((execution) => ({
+      ...execution,
+      toolInput: redactPersistedToolInput(execution.toolInput),
+    })),
   });
 });
 

@@ -141,6 +141,15 @@ export function redactSensitiveToolInput(
   return isRecord(redacted) ? redacted : {};
 }
 
+/**
+ * Read-side companion for historical JSONB rows. Unlike the write-side helper,
+ * this preserves null/array/scalar legacy shapes while applying the same deep
+ * key and inline-secret redaction before an admin response is serialized.
+ */
+export function redactPersistedToolInput(input: unknown): unknown {
+  return redactLogFields(input);
+}
+
 function clampInteger(value: unknown, defaultValue: number, min: number, max: number): number {
   const num = Number(value);
   if (!Number.isFinite(num)) return defaultValue;

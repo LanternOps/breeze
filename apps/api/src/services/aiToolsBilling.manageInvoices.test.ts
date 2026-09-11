@@ -18,6 +18,10 @@ vi.mock('./invoiceService', () => ({
   recordPayment: vi.fn().mockResolvedValue({ invoice: { id: 'inv-1', status: 'paid' } }),
   voidPayment: vi.fn().mockResolvedValue({ invoice: { id: 'inv-1', status: 'sent' } }),
   voidInvoice: vi.fn().mockResolvedValue({ invoice: { id: 'inv-1', status: 'void' }, lines: [] }),
+  lockContractLineMaterializationSource: vi.fn().mockResolvedValue({
+    invoice: { id: 'inv-1', orgId: 'org-1' },
+    contract: { id: 'contract-1', orgId: 'org-1' },
+  }),
 }));
 
 vi.mock('./invoiceCheckout', () => ({
@@ -25,7 +29,6 @@ vi.mock('./invoiceCheckout', () => ({
 }));
 
 vi.mock('./contractService', () => ({
-  lockContractRow: vi.fn().mockResolvedValue({ id: 'contract-1', currencyCode: 'USD' }),
   getContract: vi.fn().mockResolvedValue({ contract: { id: 'contract-1' }, lines: [], periods: [] }),
   computeContractEstimate: vi.fn().mockResolvedValue({ lines: [] }),
   materializeContractLineOntoInvoice: vi.fn().mockResolvedValue({
@@ -33,7 +36,13 @@ vi.mock('./contractService', () => ({
   }),
 }));
 
+vi.mock('./permissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./permissions')>()),
+  getUserPermissions: vi.fn(),
+}));
+
 import { registerBillingTools } from './aiToolsBilling';
+import { getUserPermissions } from './permissions';
 import * as invoiceService from './invoiceService';
 import * as contractService from './contractService';
 import type { AiTool } from './aiTools';
@@ -48,8 +57,18 @@ const auth = {
 
 /** The same caller under an ORG-scoped principal (a client-portal-ish session). */
 const orgScopedAuth = { ...auth, scope: 'organization' } as any;
+const selectedSiteAuth = { ...auth, allowedSiteIds: ['site-visible'] } as any;
+const nullSiteClosureAuth = { ...auth, allowedSiteIds: null } as any;
+const systemAuth = { ...auth, scope: 'system', partnerId: null, accessibleOrgIds: null } as any;
 
 const actor = { userId: 'u-1', partnerId: 'p-1', accessibleOrgIds: ['org-1'] };
+// Evidence the actor carries once resolved from the caller's REAL permissions.
+const contractActor = { ...actor, permissions: new Set(['contracts:read']) };
+/** A resolved permission set granting contracts:read (the happy path). */
+const contractReaderPerms = {
+  permissions: [{ resource: 'contracts', action: 'read' }],
+  partnerId: 'p-1', orgId: null, roleId: 'role-1', scope: 'partner',
+} as never;
 const now = new Date('2026-07-01T00:00:00.000Z');
 
 function contractRow(id = 'contract-1'): Awaited<ReturnType<typeof contractService.getContract>>['contract'] {
@@ -123,7 +142,10 @@ function getReadTool(name: 'get_invoice' | 'list_invoices'): AiTool {
 }
 
 describe('manage_invoices', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getUserPermissions).mockResolvedValue(contractReaderPerms);
+  });
 
   it('documents invoice-currency money inputs and non-blocking pay-link currency warnings', () => {
     const tool = getTool();
@@ -161,6 +183,54 @@ describe('manage_invoices', () => {
     expect(invoiceService.assembleDraftFromTicket).toHaveBeenCalledWith('t-1', actor, { currencyCode: 'EUR' });
     await getTool().handler({ action: 'assemble_from_ticket', ticketId: 't-1' }, auth);
     expect(invoiceService.assembleDraftFromTicket).toHaveBeenLastCalledWith('t-1', actor, { currencyCode: undefined });
+  });
+
+  it('add_contract_line denies a caller without contracts:read at the ACTOR level', async () => {
+    // The caller holds invoices:write (they reached the handler) but not
+    // contracts:read. The ContractActor is fail-closed BY CONSTRUCTION, so the
+    // evidence set must come from a REAL resolution — this used to be
+    // hard-coded to `new Set(['contracts:read'])`, which forged exactly the
+    // permission the contract service was relying on the actor to prove.
+    vi.mocked(getUserPermissions).mockResolvedValue({
+      permissions: [{ resource: 'invoices', action: 'write' }],
+      partnerId: 'p-1', orgId: null, roleId: 'role-1', scope: 'partner',
+    } as never);
+
+    const out = await getTool().handler(
+      { action: 'add_contract_line', invoiceId: 'inv-1', contractId: 'contract-1', contractLineId: 'contract-line-1' },
+      auth,
+    );
+
+    expect(JSON.parse(out)).toEqual({
+      error: 'Adding a contract line requires the contracts:read permission',
+      code: 'CONTRACTS_READ_REQUIRED',
+    });
+    // Denied BEFORE any lock, read or materialization.
+    expect(invoiceService.lockContractLineMaterializationSource).not.toHaveBeenCalled();
+    expect(contractService.getContract).not.toHaveBeenCalled();
+    expect(contractService.materializeContractLineOntoInvoice).not.toHaveBeenCalled();
+  });
+
+  it('add_contract_line passes REAL resolved permission evidence to the contract service', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({
+      permissions: [
+        { resource: 'contracts', action: 'read' },
+        { resource: 'contracts', action: 'write' },
+      ],
+      partnerId: 'p-1', orgId: null, roleId: 'role-1', scope: 'partner',
+    } as never);
+
+    await getTool().handler(
+      { action: 'add_contract_line', invoiceId: 'inv-1', contractId: 'contract-1', contractLineId: 'contract-line-1' },
+      auth,
+    );
+
+    expect(getUserPermissions).toHaveBeenCalledWith('u-1', expect.objectContaining({ partnerId: 'p-1' }));
+    // contracts:manage was NOT granted, so it must not appear in the evidence.
+    const passedActor = vi.mocked(contractService.getContract).mock.calls[0]?.[1];
+    expect(passedActor?.permissions?.has('contracts:read')).toBe(true);
+    expect(passedActor?.permissions?.has('contracts:write')).toBe(true);
+    expect(passedActor?.permissions?.has('contracts:manage')).toBe(false);
   });
 
   it('add_contract_line resolves authoritative contract line values before materializing it', async () => {
@@ -209,8 +279,8 @@ describe('manage_invoices', () => {
       auth,
     );
 
-    expect(contractService.getContract).toHaveBeenCalledWith('contract-1', actor);
-    expect(contractService.computeContractEstimate).toHaveBeenCalledWith('contract-1', actor, expect.any(Map));
+    expect(contractService.getContract).toHaveBeenCalledWith('contract-1', contractActor);
+    expect(contractService.computeContractEstimate).toHaveBeenCalledWith('contract-1', contractActor, expect.any(Map));
     expect(contractService.materializeContractLineOntoInvoice).toHaveBeenCalledWith(actor, {
       invoiceId: 'inv-1',
       contract: expect.objectContaining({ id: 'contract-1', currencyCode: 'USD' }),
@@ -223,7 +293,68 @@ describe('manage_invoices', () => {
     expect(JSON.parse(out)).toEqual({ line: { id: 'line-1' }, pricedFrom: 'contract_snapshot', overages: [] });
   });
 
-  it('add_contract_line locks first and materializes the allowance line re-read under that lock', async () => {
+  it('add_contract_line preserves an unrestricted system producer', async () => {
+    const line = contractLineRow({ lineType: 'flat', manualQuantity: '1.00' });
+    vi.mocked(contractService.getContract).mockResolvedValueOnce({
+      contract: contractRow(), lines: [line], periods: [],
+    });
+    vi.mocked(contractService.computeContractEstimate).mockResolvedValueOnce({
+      currencyCode: 'USD', periodTotal: '12.50',
+      lines: [{ lineId: line.id, lineType: 'flat', quantity: 1, value: '12.50', live: false, counted: 1, included: null, overage: 0, overageMode: null, overageValue: '0.00' }],
+      uncoveredDevices: null, overages: [],
+    });
+
+    const out = JSON.parse(await getTool().handler({
+      action: 'add_contract_line', invoiceId: 'inv-1', contractId: 'contract-1', contractLineId: line.id,
+    }, systemAuth));
+
+    const systemActor = { userId: 'u-1', partnerId: null, accessibleOrgIds: null };
+    expect(invoiceService.lockContractLineMaterializationSource).toHaveBeenCalledWith('inv-1', 'contract-1', systemActor);
+    expect(contractService.getContract).toHaveBeenCalledWith('contract-1', {
+      ...systemActor, permissions: new Set(['contracts:read']),
+    });
+    expect(out.line).toEqual({ id: 'line-1' });
+  });
+
+  it.each([
+    ['organization scope', orgScopedAuth, 'PARTNER_SCOPE_REQUIRED'],
+    ['selected-site scope', selectedSiteAuth, 'FULL_PARTNER_SCOPE_REQUIRED'],
+    ['malformed null site closure', nullSiteClosureAuth, 'FULL_PARTNER_SCOPE_REQUIRED'],
+  ])('add_contract_line denies %s before any contract or invoice effect', async (_label, deniedAuth, code) => {
+    const out = JSON.parse(await getTool().handler({
+      action: 'add_contract_line',
+      invoiceId: 'inv-1',
+      contractId: 'contract-1',
+      contractLineId: 'contract-line-1',
+    }, deniedAuth));
+
+    expect(out).toMatchObject({ code });
+    expect(invoiceService.lockContractLineMaterializationSource).not.toHaveBeenCalled();
+    expect(contractService.getContract).not.toHaveBeenCalled();
+    expect(contractService.computeContractEstimate).not.toHaveBeenCalled();
+    expect(contractService.materializeContractLineOntoInvoice).not.toHaveBeenCalled();
+  });
+
+  it('add_contract_line stops when the composite invoice/source lock rejects cross-organization input', async () => {
+    vi.mocked(invoiceService.lockContractLineMaterializationSource).mockRejectedValueOnce(
+      new InvoiceServiceError('Contract line is not available for this invoice', 404, 'INVALID_STATE'),
+    );
+
+    const out = JSON.parse(await getTool().handler({
+      action: 'add_contract_line',
+      invoiceId: 'inv-1',
+      contractId: 'contract-2',
+      contractLineId: 'contract-line-2',
+    }, auth));
+
+    expect(out).toMatchObject({ code: 'INVALID_STATE' });
+    expect(invoiceService.lockContractLineMaterializationSource).toHaveBeenCalledTimes(1);
+    expect(contractService.getContract).not.toHaveBeenCalled();
+    expect(contractService.computeContractEstimate).not.toHaveBeenCalled();
+    expect(contractService.materializeContractLineOntoInvoice).not.toHaveBeenCalled();
+  });
+
+  it('add_contract_line locks invoice then contract and materializes the allowance line re-read under those locks', async () => {
     const rereadLine = contractLineRow({
       includedQuantity: '30.00', overageMode: 'bill', overageUnitPrice: '15.00',
     });
@@ -240,8 +371,8 @@ describe('manage_invoices', () => {
       action: 'add_contract_line', invoiceId: 'inv-1', contractId: 'contract-1', contractLineId: rereadLine.id,
     }, auth);
 
-    expect(contractService.lockContractRow).toHaveBeenCalledWith(expect.anything(), 'contract-1');
-    expect(vi.mocked(contractService.lockContractRow).mock.invocationCallOrder[0]).toBeLessThan(
+    expect(invoiceService.lockContractLineMaterializationSource).toHaveBeenCalledWith('inv-1', 'contract-1', actor);
+    expect(vi.mocked(invoiceService.lockContractLineMaterializationSource).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(contractService.getContract).mock.invocationCallOrder[0]!,
     );
     expect(contractService.materializeContractLineOntoInvoice).toHaveBeenCalledWith(actor, expect.objectContaining({

@@ -9,10 +9,12 @@
  *  - `manage_contracts` — create/update/delete draft contracts, add/remove
  *    lines, and run lifecycle actions.
  *
- * Org-scope guarded AT THE TOOL LAYER: each tool builds a `ContractActor` from
- * the AI session's auth context (partnerId + accessibleOrgIds) and calls
- * `listContracts` / `getContract`, which already enforce `requireOrgAccess` and
- * the defense-in-depth `inArray(contracts.orgId, actor.accessibleOrgIds)` filter.
+ * Scope is guarded AT THE TOOL LAYER to match the recurring-contract HTTP
+ * surface: only partner and system sessions may enter. Each tool then builds a
+ * `ContractActor` from the AI session's auth context (partnerId +
+ * accessibleOrgIds) and calls `listContracts` / `getContract`, which enforce
+ * `requireOrgAccess` and the defense-in-depth
+ * `inArray(contracts.orgId, actor.accessibleOrgIds)` filter.
  * A thrown `ContractServiceError` (e.g. ORG_DENIED, CONTRACT_NOT_FOUND) is
  * converted to a JSON error string rather than propagated. Activate/pause/
  * resume/cancel are approval-gated Tier 3 actions.
@@ -65,6 +67,15 @@ function actorFromAuth(auth: AuthContext): ContractActor {
     partnerId: auth.partnerId ?? null,
     accessibleOrgIds: auth.accessibleOrgIds
   };
+}
+
+/** Keep the AI/MCP door aligned with the recurring-contract HTTP scope policy. */
+function contractScopeDenial(auth: AuthContext): string | null {
+  if (auth.scope === 'system' || (auth.scope === 'partner' && auth.partnerId)) return null;
+  return JSON.stringify({
+    error: 'Recurring contracts require a partner-scoped session',
+    code: 'PARTNER_SCOPE_REQUIRED',
+  });
 }
 
 function serviceErrorToJson(err: unknown): string | null {
@@ -145,6 +156,8 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      const scopeDenial = contractScopeDenial(auth);
+      if (scopeDenial) return scopeDenial;
       const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
       try {
         const rows = await listContracts(
@@ -181,6 +194,8 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      const scopeDenial = contractScopeDenial(auth);
+      if (scopeDenial) return scopeDenial;
       try {
         const result = await getContract(String(input.contractId), actorFromAuth(auth));
         return JSON.stringify(result);
@@ -277,6 +292,8 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input, auth) => {
+      const scopeDenial = contractScopeDenial(auth);
+      if (scopeDenial) return scopeDenial;
       const actor = actorFromAuth(auth);
 
       const action = String(input.action);

@@ -594,7 +594,7 @@ describe('AI routes', () => {
               sessionId: SESSION_ID,
               toolName: 'reset_password',
               status: 'completed',
-              toolInput: {},
+              toolInput: { providerConfig: { secretKey: 'synthetic-secret' } },
               approvedBy: null,
               approvedAt: null,
               durationMs: 100,
@@ -616,6 +616,7 @@ describe('AI routes', () => {
       const body = await res.json();
       expect(body.executions[0].intentId).toBe('intent-1');
       expect(body.executions[0].tempPasswordState).toBe('available');
+      expect(body.executions[0].toolInput.providerConfig.secretKey).toBe('[REDACTED]');
 
       const selectCalls = vi.mocked(db.select).mock.calls;
       const execFields = selectCalls[selectCalls.length - 1]![0] as Record<string, unknown>;
