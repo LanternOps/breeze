@@ -844,6 +844,7 @@ export * from './executiveSummaryReport';
 // ============================================
 
 export * from './portalVisibility';
+export * from './portalService';
 
 // ============================================
 // Public login-context wire contract (#2183)
