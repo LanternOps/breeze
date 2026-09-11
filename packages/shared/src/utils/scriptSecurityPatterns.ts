@@ -59,6 +59,84 @@ function decodeObfuscated(bytes: readonly number[]): string {
   return bytes.map((byte) => String.fromCharCode(byte ^ OBFUSCATION_KEY)).join('');
 }
 
+/**
+ * Web/API mirror of the agent's BASIC-level patterns
+ * (`agent/internal/executor/security.go`, `basicPatterns`).
+ *
+ * BASIC patterns are UNCONDITIONAL on the device: unlike STRICT they can never
+ * be acknowledged, so this mirror carries no `explanation` — there is no
+ * acknowledgement UI for it. Its only consumer is the proposal scanner, which
+ * rejects a proposal outright on a hit (spec §4.4) rather than sending it to a
+ * reviewer or a human.
+ *
+ * The same fail-safe argument as the STRICT mirror holds in both directions: a
+ * BASIC pattern this file misses is still blocked by the agent at execution
+ * (the proposal simply fails on the device instead of at authoring time), and a
+ * pattern only this file matches rejects a harmless proposal early. Neither
+ * direction can loosen the agent.
+ */
+export type BasicScriptPattern = {
+  /** The regex source, mirroring the Go pattern verbatim, matched with `(?i)`. */
+  readonly source: string;
+  /** The agent's description string, byte-for-byte. */
+  readonly description: string;
+};
+
+export const BASIC_SCRIPT_PATTERNS: readonly BasicScriptPattern[] = [
+  // Unix dangerous patterns
+  { source: String.raw`rm\s+-[rR]f?\s+/\s*$`, description: 'recursive delete on root directory' },
+  { source: String.raw`rm\s+-[rR]f?\s+/\*`, description: 'recursive delete on root wildcard' },
+  { source: String.raw`rm\s+-[rR]f?\s+/[a-z]+\s*$`, description: 'recursive delete on system directory' },
+  { source: String.raw`mkfs\s+`, description: 'filesystem format command' },
+  { source: String.raw`dd\s+.*of=/dev/[hs]d`, description: 'direct disk write to block device' },
+  { source: String.raw`>\s*/dev/[hs]d`, description: 'redirect to block device' },
+  { source: String.raw`chmod\s+-[rR]\s+[0-7]*777\s+/`, description: 'dangerous recursive chmod on root' },
+  { source: String.raw`chown\s+-[rR]\s+.*\s+/\s*$`, description: 'dangerous recursive chown on root' },
+  { source: String.raw`:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:`, description: 'fork bomb pattern' },
+  { source: String.raw`/dev/null\s*>\s*/etc/passwd`, description: 'attempt to destroy passwd file' },
+  { source: String.raw`echo\s+.*>\s*/etc/shadow`, description: 'attempt to modify shadow file' },
+
+  // Windows dangerous patterns
+  { source: String.raw`format\s+[a-zA-Z]:`, description: 'disk format command' },
+  { source: String.raw`del\s+/[fFsS]\s+[a-zA-Z]:\\Windows`, description: 'Windows system file deletion' },
+  { source: String.raw`rd\s+/[sS]\s+/[qQ]\s+[a-zA-Z]:\\Windows`, description: 'Windows directory deletion' },
+  { source: String.raw`rd\s+/[sS]\s+/[qQ]\s+[a-zA-Z]:\\Program`, description: 'Program Files deletion' },
+  { source: String.raw`attrib\s+.*[a-zA-Z]:\\Windows`, description: 'modify Windows file attributes' },
+
+  // PowerShell dangerous patterns
+  { source: String.raw`Remove-Item\s+-Recurse\s+-Force\s+[A-Z]:\\Windows`, description: 'PowerShell Windows deletion' },
+  { source: String.raw`Remove-Item\s+-Recurse\s+-Force\s+/`, description: 'PowerShell root deletion' },
+  { source: String.raw`Format-Volume`, description: 'PowerShell volume format' },
+  { source: String.raw`Clear-Disk`, description: 'PowerShell disk clear' },
+  { source: String.raw`Initialize-Disk`, description: 'PowerShell disk initialize' },
+] as const;
+
+export const BASIC_SCRIPT_PATTERN_DESCRIPTIONS: readonly string[] = [
+  ...new Set(BASIC_SCRIPT_PATTERNS.map((pattern) => pattern.description)),
+];
+
+const COMPILED_BASIC_PATTERNS: readonly { regex: RegExp; description: string }[] =
+  BASIC_SCRIPT_PATTERNS.map((pattern) => ({
+    // `i` mirrors the agent's `(?i)` prefix. No `s` flag, same reason as STRICT.
+    regex: new RegExp(pattern.source, 'i'),
+    description: pattern.description,
+  }));
+
+/** The BASIC-level descriptions this content matches, deduped, in the agent's order. */
+export function detectBasicScriptPatterns(content: string): string[] {
+  if (!content) return [];
+  const matched: string[] = [];
+  const seen = new Set<string>();
+  for (const { regex, description } of COMPILED_BASIC_PATTERNS) {
+    if (seen.has(description)) continue;
+    if (regex.test(content)) {
+      seen.add(description);
+      matched.push(description);
+    }
+  }
+  return matched;
+}
+
 export type StrictScriptPattern = {
   /**
    * The regex source, mirroring the Go pattern verbatim. Matched
