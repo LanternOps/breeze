@@ -117,7 +117,10 @@ async function addMissingAssignedDevicesToReadiness(
       const visibleIds = new Set(visible.map((row) => row.id));
       assignedDevices = assignedDevices.filter((device) => visibleIds.has(device.deviceId));
     } catch (error) {
-      console.warn('[backupVerification] Site-scoped assigned-device lookup failed closed:', error);
+      // `rows` is already site-scoped by listRecoveryReadinessFromDb. Returning
+      // it unaugmented drops the synthetic assigned-device rows rather than
+      // adding ones we could not confirm are visible — no unscoped row escapes.
+      console.warn('[backupVerification] Site-scoped assigned-device lookup failed; skipping synthetic readiness rows:', error);
       return rows;
     }
   }

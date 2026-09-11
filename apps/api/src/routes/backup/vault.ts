@@ -309,7 +309,9 @@ vaultRoutes.post(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    // Update sync status to pending
+    // Update sync status to pending. The predicate repeats org_id and the
+    // device_id we just authorized: the vault was read in a separate statement
+    // above, so `id` alone would be a check-then-act window.
     await db
       .update(localVaults)
       .set({
@@ -317,7 +319,11 @@ vaultRoutes.post(
         lastSyncSnapshotId: payload.snapshotId ?? null,
         updatedAt: new Date(),
       })
-      .where(eq(localVaults.id, id));
+      .where(and(
+        eq(localVaults.id, id),
+        eq(localVaults.orgId, orgId),
+        eq(localVaults.deviceId, vault.deviceId),
+      ));
 
     // Dispatch vault_sync command to the device
     try {
@@ -336,7 +342,11 @@ vaultRoutes.post(
         lastSyncStatus: 'failed',
         lastSyncError: 'Failed to dispatch sync command to agent',
         updatedAt: new Date(),
-      }).where(eq(localVaults.id, id));
+      }).where(and(
+        eq(localVaults.id, id),
+        eq(localVaults.orgId, orgId),
+        eq(localVaults.deviceId, vault.deviceId),
+      ));
       return c.json({ error: 'Failed to dispatch sync command to agent' }, 502);
     }
 

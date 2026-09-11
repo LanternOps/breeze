@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const state = vi.hoisted(() => ({ allowedSiteIds: undefined as string[] | undefined }));
+const state = vi.hoisted(() => ({
+  allowedSiteIds: undefined as string[] | undefined,
+  // Which context key carries the ceiling. `permissions` is only set by
+  // requirePermission; `auth` is always populated by the auth middleware.
+  ceilingSource: 'both' as 'both' | 'auth-only' | 'permissions-only',
+}));
 const listBackupVerificationsMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<Record<string, unknown>[]>>(async () => []));
 const listRecoveryReadinessMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<Record<string, unknown>[]>>(async () => []));
 const getBackupHealthSummaryMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<Record<string, unknown>>>(async () => ({
@@ -13,8 +18,15 @@ const recalculateReadinessScoresMock = vi.hoisted(() => vi.fn<(...args: unknown[
 
 vi.mock('../../middleware/auth', () => ({
   requirePermission: vi.fn(() => (c: any, next: any) => {
-    c.set('auth', { orgId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', scope: 'organization', user: { id: 'user-1' } });
-    c.set('permissions', { allowedSiteIds: state.allowedSiteIds });
+    c.set('auth', {
+      orgId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      scope: 'organization',
+      user: { id: 'user-1' },
+      ...(state.ceilingSource === 'permissions-only' ? {} : { allowedSiteIds: state.allowedSiteIds }),
+    });
+    if (state.ceilingSource !== 'auth-only') {
+      c.set('permissions', { allowedSiteIds: state.allowedSiteIds });
+    }
     return next();
   }),
   requireScope: vi.fn(() => (_c: any, next: any) => next()),
@@ -58,6 +70,7 @@ describe('backup verification read site scope', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.allowedSiteIds = undefined;
+    state.ceilingSource = 'both';
   });
 
   it('propagates a selected-site ceiling through lists, aggregates, and refresh', async () => {
@@ -100,6 +113,10 @@ describe('backup verification read site scope', () => {
       devices: [],
     });
     expect(health.data.verification.total).toBe(0);
+    // A reader who can see nothing has NOT observed a healthy fleet. Reporting
+    // 100% coverage / 'healthy' off zero visible devices is a false assurance.
+    expect(health.data.status).toBe('unknown');
+    expect(health.data.verification.coveragePercent).toBeNull();
     expect(getBackupHealthSummaryMock).not.toHaveBeenCalled();
     expect(listBackupVerificationsMock).not.toHaveBeenCalled();
     expect(listRecoveryReadinessMock).not.toHaveBeenCalled();
@@ -123,6 +140,38 @@ describe('backup verification read site scope', () => {
       'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       undefined,
     );
+  });
+
+  it('reads the ceiling from auth when no requirePermission populated permissions', async () => {
+    state.ceilingSource = 'auth-only';
+    state.allowedSiteIds = ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'];
+
+    await app.request('/backup/verifications');
+    await app.request('/backup/recovery-readiness');
+    await app.request('/backup/health');
+
+    expect(listBackupVerificationsMock).toHaveBeenCalledWith(
+      'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      expect.objectContaining({ allowedSiteIds: state.allowedSiteIds }),
+    );
+    expect(listRecoveryReadinessMock).toHaveBeenCalledWith(
+      'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      state.allowedSiteIds,
+    );
+    expect(getBackupHealthSummaryMock).toHaveBeenCalledWith(
+      'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      state.allowedSiteIds,
+    );
+  });
+
+  it('still finds a permissions-only ceiling (route mounted without auth-carried sites)', async () => {
+    state.ceilingSource = 'permissions-only';
+    state.allowedSiteIds = [];
+
+    const list = await (await app.request('/backup/verifications')).json();
+
+    expect(list.data).toEqual([]);
+    expect(listBackupVerificationsMock).not.toHaveBeenCalled();
   });
 
   it('projects verification details to the shipped simulated marker only', async () => {

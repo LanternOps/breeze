@@ -37,13 +37,30 @@ async function isDeviceSiteDenied(orgId: string, deviceId: string, permissions: 
   return !device || typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId);
 }
 
-function allowedSiteIds(c: { get(key: 'permissions'): unknown }): string[] | undefined {
-  return (c.get('permissions') as UserPermissions | undefined)?.allowedSiteIds;
+/**
+ * The caller's site ceiling. `auth.allowedSiteIds` is the primary source: the
+ * auth middleware always populates it, while `c.get('permissions')` is only
+ * set by `requirePermission`. The `permissions` fallback is kept so a route
+ * mounted without `requirePermission` still finds a ceiling if one is present
+ * — reading both can only ever make this stricter, never looser.
+ */
+function allowedSiteIds(
+  auth: { allowedSiteIds?: string[] } | undefined,
+  c: { get(key: 'permissions'): unknown },
+): string[] | undefined {
+  return auth?.allowedSiteIds ?? (c.get('permissions') as UserPermissions | undefined)?.allowedSiteIds;
 }
 
+/**
+ * Payload for a caller whose site ceiling is defined but empty: they can see
+ * no device, so there is nothing to summarize. `coveragePercent` and `status`
+ * are deliberately `null`/`'unknown'` rather than `100`/`'healthy'` — a reader
+ * who can see nothing has not observed a healthy fleet, and reporting full
+ * coverage off zero devices is an affirmative false assurance.
+ */
 function emptyHealthSummary() {
   return {
-    verification: { total: 0, passedLast24h: 0, failedLast24h: 0, partialLast24h: 0, coveragePercent: 100 },
+    verification: { total: 0, passedLast24h: 0, failedLast24h: 0, partialLast24h: 0, coveragePercent: null },
     readiness: { averageScore: 0, lowReadinessCount: 0, criticalDevicesAtRisk: 0 },
     escalations: { verificationFailures: 0, criticalVerificationFailures: 0 },
   };
@@ -57,9 +74,9 @@ backupVerificationRoutes.get('/health', requirePermission(PERMISSIONS.ORGS_READ.
   }
 
   const query = c.req.valid('query');
-  const siteIds = allowedSiteIds(c);
+  const siteIds = allowedSiteIds(auth, c);
   if (siteIds?.length === 0) {
-    return c.json({ data: { status: 'healthy', ...emptyHealthSummary() } });
+    return c.json({ data: { status: 'unknown', ...emptyHealthSummary() } });
   }
   if (query.refresh === true) {
     await recalculateReadinessScores(orgId, siteIds);
@@ -153,7 +170,7 @@ backupVerificationRoutes.get('/verifications', requirePermission(PERMISSIONS.ORG
   }
 
   const query = c.req.valid('query');
-  const siteIds = allowedSiteIds(c);
+  const siteIds = allowedSiteIds(auth, c);
   if (siteIds?.length === 0) return c.json({ data: [] });
   const rows = await listBackupVerifications(orgId, {
     deviceId: query.deviceId,
@@ -181,7 +198,7 @@ backupVerificationRoutes.get('/recovery-readiness', requirePermission(PERMISSION
   }
 
   const query = c.req.valid('query');
-  const siteIds = allowedSiteIds(c);
+  const siteIds = allowedSiteIds(auth, c);
   if (siteIds?.length === 0) {
     return c.json({ data: { summary: { devices: 0, averageScore: 0, lowReadiness: 0, highReadiness: 0 }, devices: [] } });
   }

@@ -40,7 +40,9 @@ type FleetHealth = {
     passedLast24h?: number;
     failedLast24h?: number;
     partialLast24h?: number;
-    coveragePercent?: number;
+    // null when the caller's site ceiling is empty: they can see no device, so
+    // there is no coverage figure to report (API returns null, not 100).
+    coveragePercent?: number | null;
   };
   readiness?: {
     averageScore?: number;
