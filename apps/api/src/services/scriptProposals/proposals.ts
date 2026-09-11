@@ -84,15 +84,19 @@ export async function attachProposalToSession(
   orgId: string,
   sessionId: string,
 ): Promise<boolean> {
-  const result = await db
+  // `.returning` rather than an affected-row count: the count's shape differs
+  // between drivers (postgres.js `count`, pg `rowCount`) and the repo's CAS
+  // idiom (intentService.transitionIntent) reads the returned ids instead.
+  const rows = await db
     .update(scriptProposals)
     .set({ sessionId })
     .where(and(
       eq(scriptProposals.id, proposalId),
       eq(scriptProposals.orgId, orgId),
       isNull(scriptProposals.sessionId),
-    ));
-  return (result as { rowCount?: number }).rowCount === 1;
+    ))
+    .returning({ id: scriptProposals.id });
+  return rows.length === 1;
 }
 
 /** Org-scoped read. Returns null rather than throwing on a cross-org id. */
@@ -123,11 +127,12 @@ export async function transitionProposal(
   to: ScriptProposalStatus,
   patch: Partial<ScriptProposalRow> = {},
 ): Promise<boolean> {
-  const result = await tx
+  const rows = await tx
     .update(scriptProposals)
     .set({ ...patch, status: to })
-    .where(and(eq(scriptProposals.id, proposalId), inArray(scriptProposals.status, from)));
-  return (result as { rowCount?: number }).rowCount === 1;
+    .where(and(eq(scriptProposals.id, proposalId), inArray(scriptProposals.status, from)))
+    .returning({ id: scriptProposals.id });
+  return rows.length === 1;
 }
 
 /** The revision loop: the old row becomes terminal and can never be consumed. */
@@ -155,7 +160,7 @@ export async function consumeProposalForIntent(
   proposalId: string,
   intentId: string,
 ): Promise<boolean> {
-  const result = await tx
+  const rows = await tx
     .update(scriptProposals)
     .set({ intentId })
     .where(and(
@@ -163,6 +168,7 @@ export async function consumeProposalForIntent(
       isNull(scriptProposals.intentId),
       eq(scriptProposals.status, 'reviewed'),
       sql`${scriptProposals.expiresAt} > now()`,
-    ));
-  return (result as { rowCount?: number }).rowCount === 1;
+    ))
+    .returning({ id: scriptProposals.id });
+  return rows.length === 1;
 }

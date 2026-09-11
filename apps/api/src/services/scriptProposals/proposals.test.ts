@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const rows: Record<string, unknown>[] = [];
 const returningMock = vi.fn(async () => [{ id: 'p1', status: 'proposed' }]);
-const updateWhereMock = vi.fn(async () => ({ rowCount: 1 }));
+const updateWhereMock = vi.fn(() => ({ returning: async () => [{ id: 'p1' }] }));
 
 vi.mock('../../db', () => ({
   db: {
