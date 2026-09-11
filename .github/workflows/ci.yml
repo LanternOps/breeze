@@ -1869,8 +1869,10 @@ jobs:
           # `apt-get update` inside the new chroot fails signature
           # verification (NO_PUBKEY) without it — found running this job
           # for the first time ever past the ISO-build stage (PR #5588).
+          # qemu-utils is qemu-img (creates run-qemu.sh's raw target.img) —
+          # a separate package from qemu-system-x86, not pulled in by it.
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends squashfs-tools xorriso grub-efi-amd64-bin mtools dosfstools qemu-system-x86 ovmf mmdebstrap python3 debian-archive-keyring
+          sudo apt-get install -y --no-install-recommends squashfs-tools xorriso grub-efi-amd64-bin mtools dosfstools qemu-system-x86 qemu-utils ovmf mmdebstrap python3 debian-archive-keyring
 
       - name: Build helper + ISO
         run: |
