@@ -3,6 +3,7 @@ title: AI script authoring, independent review, and reviewer-gated execution
 status: Draft v2 — design approved in dialogue (Todd, 2026-09-11); Codex xhigh quorum PROCEED WITH CHANGES folded in (§11); awaiting written-spec review
 date: 2026-09-11
 owner: Todd Hebebrand
+tracking_issue: LanternOps/breeze#5612
 related:
   - docs/superpowers/specs/web-ui/2026-08-15-script-editor-test-loop-design.md
   - docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md

@@ -1,3 +1,7 @@
+---
+tracking_issue: LanternOps/breeze#5612
+---
+
 # AI Script Authoring, Review, and Reviewer-Gated Execution — Roadmap and Cross-Wave Contracts
 
 > **For agentic workers:** this roadmap is the contract layer. Each wave has its own plan
@@ -8,7 +12,7 @@
 
 **Goal:** the AI assistant and background agents can author a script as an immutable proposal, which is scanned, classified, independently reviewed by a model, approved by a human on a readable card (or, when a partner ceiling and an org grant both allow it, released unattended under deterministic invariants), executed with full provenance, verified, and optionally promoted to the library.
 
-**Tracking:** `tracking_issue:` is filled in after `register_feature`; wave branches are `feature/<parent#>-ai-script-authoring/wave-<sub#>`.
+**Tracking:** feature `LanternOps/breeze#5612`; GitHub wave keys W01–W06 map to the plan files in table order (each sub-issue title names its plan file). Wave branches are `feature/5612-ai-script-authoring/wave-<sub-issue#>`; use `get_feature_status` for current state, never this doc.
 
 ---
 
