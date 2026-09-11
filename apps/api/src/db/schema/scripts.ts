@@ -1,12 +1,17 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, numeric, index, primaryKey, type AnyPgColumn } from 'drizzle-orm/pg-core';
-import type { ScriptParameterDefinition } from '@breeze/shared';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, numeric, index, unique, char, primaryKey, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import type { ScriptApprovalMethod, ScriptParameterDefinition } from '@breeze/shared';
 import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
 
 export const scriptLanguageEnum = pgEnum('script_language', ['powershell', 'bash', 'python', 'cmd']);
 export const scriptRunAsEnum = pgEnum('script_run_as', ['system', 'user', 'elevated']);
+// 2026-10-16-100000-script-versions-immutable.sql. The birth record of a
+// version row: who or what produced this exact body.
+// Values mirror SCRIPT_ORIGINS in @breeze/shared (scriptProposals.ts) —
+// scripts.scriptVersions.test.ts pins both to the same order.
+export const scriptOriginEnum = pgEnum('script_origin', ['human', 'ai_proposal', 'imported', 'system']);
 // #3525: 'cancelling' is TRANSIENT — a cancel is in flight and unresolved. Only
 // a PROVEN stop terminalises as 'cancelled'; an unproven one reverts to
 // `cancel_prev_status`. Value order mirrors the installed type
@@ -101,18 +106,51 @@ export const scriptCategories = pgTable('script_categories', {
   orgNameIdx: index('script_categories_org_name_idx').on(table.orgId, table.name)
 }));
 
+/**
+ * An IMMUTABLE, content-addressed definition of one script execution.
+ *
+ * Append-only by construction: the table carries SELECT + INSERT RLS policies
+ * only, plus a BEFORE UPDATE trigger, and rows die solely through the parent's
+ * ON DELETE CASCADE (2026-10-16-100000-script-versions-immutable.sql). The one
+ * writer is services/scriptVersions.ts `cutScriptVersion` — enforced by
+ * services/scriptVersions.writers.contract.test.ts. Do not insert here directly.
+ */
 export const scriptVersions = pgTable('script_versions', {
   id: uuid('id').primaryKey().defaultRandom(),
-  scriptId: uuid('script_id').notNull().references(() => scripts.id),
+  scriptId: uuid('script_id').notNull().references(() => scripts.id, { onDelete: 'cascade' }),
   version: integer('version').notNull(),
   content: text('content').notNull(),
+  // The full run definition, snapshotted at cut time, so readers never have to
+  // join `scripts` to learn what a past body actually ran as.
+  language: scriptLanguageEnum('language').notNull(),
+  timeoutSeconds: integer('timeout_seconds').notNull(),
+  runAs: scriptRunAsEnum('run_as').notNull(),
+  // Parameter DEFINITIONS, same contract as `scripts.parameters` above.
+  parameters: jsonb('parameters').$type<ScriptParameterDefinition[]>(),
+  // sha256 of the canonical content (NFC, CRLF -> LF, no trimming). The SQL
+  // twin of services/scriptVersions.ts `sha256Content` — change both or
+  // neither.
+  contentDigest: char('content_digest', { length: 64 }).notNull(),
+  origin: scriptOriginEnum('origin').notNull().default('human'),
+  // Provenance. Bare uuids, not FKs: proposals and reviews are org-scoped and
+  // left for erasure on a merge (spec §5), so a hard FK would either block
+  // erasure or drag history with it. A stale id simply matches nothing and the
+  // UI renders "review evidence erased".
+  proposalId: uuid('proposal_id'),
+  reviewId: uuid('review_id'),
+  reviewedAt: timestamp('reviewed_at'),
+  approvedBy: uuid('approved_by').references(() => users.id, { onDelete: 'set null' }),
+  approvedAt: timestamp('approved_at'),
+  approvalMethod: text('approval_method').$type<ScriptApprovalMethod>(),
   changelog: text('changelog'),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   scriptIdIdx: index('script_versions_script_id_idx').on(table.scriptId),
-  scriptIdVersionIdx: index('script_versions_script_id_version_idx').on(table.scriptId, table.version)
+  scriptIdVersionKey: unique('script_versions_script_id_version_key').on(table.scriptId, table.version)
 }));
+
+export type ScriptVersionRow = typeof scriptVersions.$inferSelect;
 
 export const scriptTags = pgTable('script_tags', {
   id: uuid('id').primaryKey().defaultRandom(),
