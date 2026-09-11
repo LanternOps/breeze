@@ -644,6 +644,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   s1_threat_action: { resource: 'devices', action: 'execute' },
   execute_command: { resource: 'devices', action: 'execute' },
   run_script: { resource: 'scripts', action: 'execute' },
+  // Authoring is inert, but it is still script work: whoever may read the
+  // library may read a proposal, and whoever may run a script may write one.
+  propose_script: { resource: 'scripts', action: 'execute' },
+  get_script_proposal: { resource: 'scripts', action: 'read' },
   // Same permission the HTTP cancel route requires (PERMISSIONS.SCRIPTS_EXECUTE):
   // whoever may start a script may stop it, and nobody else.
   cancel_script_execution: { resource: 'scripts', action: 'execute' },

@@ -2236,6 +2236,10 @@
           "label": "Skripte und Befehle",
           "description": "Skripte, Playbooks und Systembefehle ausführen und die dabei betroffenen Prozesse, geplanten Aufgaben und Registrierungseinträge verwalten."
         },
+        "author_scripts": {
+          "label": "Skripte verfassen",
+          "description": "Ein neues Skript als Vorschlag für eine unabhängige Prüfung schreiben. Nichts, was ein Agent verfasst, wird ausgeführt, bevor es geprüft und freigegeben wurde."
+        },
         "tickets": {
           "label": "Helpdesk-Tickets",
           "description": "Helpdesk-Tickets prüfen und Antworten oder nächste Schritte vorschlagen."

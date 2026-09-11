@@ -2236,6 +2236,10 @@
           "label": "Betikler ve komutlar",
           "description": "Betikleri, playbook'ları ve sistem komutlarını çalıştırın; bunların etkilediği süreçleri, zamanlanmış görevleri ve kayıt defteri girişlerini yönetin."
         },
+        "author_scripts": {
+          "label": "Betik yazma",
+          "description": "Bağımsız inceleme için öneri olarak yeni bir betik yazın. Bir aracının yazdığı hiçbir şey incelenip onaylanmadan çalıştırılmaz."
+        },
         "tickets": {
           "label": "Yardım masası talepleri",
           "description": "Yardım masası taleplerini inceleyin ve yanıt veya sonraki adımlar önerin."
