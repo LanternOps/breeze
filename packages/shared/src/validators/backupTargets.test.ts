@@ -266,6 +266,51 @@ describe('backupProfileSelectionsSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  // #5493: a whole-machine profile is ONE system_image selection carrying
+  // files + layout + system state, not a system_image + file fan-out into two
+  // snapshots. wholeMachine/excludes default so existing stored selections
+  // (pre-#5493) still parse unchanged.
+  it('defaults wholeMachine to false and excludes to [] for system_image', () => {
+    const result = backupProfileSelectionsSchema.safeParse({
+      system_image: { enabled: true },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.system_image?.wholeMachine).toBe(false);
+      expect(result.data.system_image?.excludes).toEqual([]);
+    }
+  });
+
+  it('accepts system_image.wholeMachine with an exclude list', () => {
+    const result = backupProfileSelectionsSchema.safeParse({
+      system_image: {
+        enabled: true,
+        wholeMachine: true,
+        excludes: ['/proc/**', '/sys/**'],
+      },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.system_image?.wholeMachine).toBe(true);
+      expect(result.data.system_image?.excludes).toEqual(['/proc/**', '/sys/**']);
+    }
+  });
+
+  it('rejects wholeMachine when system_image is not enabled', () => {
+    const result = backupProfileSelectionsSchema.safeParse({
+      system_image: { enabled: false, wholeMachine: true },
+      file: { enabled: true, paths: ['/home'] },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(
+        result.error.issues.some((i) =>
+          i.message.includes('wholeMachine requires system_image.enabled')
+        )
+      ).toBe(true);
+    }
+  });
 });
 
 describe('enabledBackupSelections', () => {
