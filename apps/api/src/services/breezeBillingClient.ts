@@ -15,8 +15,48 @@ export interface SettledCardCharge {
   refunded: boolean;
 }
 
+/**
+ * Risk-hold status for a partner, as reported by breeze-billing.
+ *
+ * - `none` — breeze-billing has records for this partner (or affirmatively has
+ *   none at all) and nothing is holding it.
+ * - `pass` — an unreleased assessment row explicitly cleared the partner.
+ * - `hold` / `review_pending` — an unreleased row is blocking.
+ *
+ * A `null` return from `getSignupRiskHold` is NOT one of these: it means the
+ * status could not be determined and callers must fail closed.
+ */
+export type SignupRiskHoldStatus = 'none' | 'hold' | 'review_pending' | 'pass';
+
 export interface SignupRiskHold {
-  status: string;
+  status: SignupRiskHoldStatus;
+}
+
+/**
+ * The one 404 body that means "breeze-billing answered, and this partner has
+ * no signup-risk records" (`routes/signupRiskInternal.ts`). Every other 404 —
+ * a missing route, a proxy's HTML error page, a generic `Not Found` — means we
+ * did not reach the endpoint and must stay fail-closed.
+ */
+const NO_RISK_RECORDS_ERROR = 'no signup-risk records for partner';
+
+type SignupRiskHoldRow = { state?: unknown; releasedAt?: unknown };
+
+/**
+ * Derives a single status from breeze-billing's hold rows. Only unreleased
+ * rows count. An unrecognised state is treated as a hold: a state we do not
+ * know the semantics of must never read as "clear".
+ */
+export function deriveSignupRiskHoldStatus(holds: SignupRiskHoldRow[]): SignupRiskHoldStatus {
+  const open = holds.filter((row) => row.releasedAt === null || row.releasedAt === undefined);
+  if (open.length === 0) return 'none';
+  const states = open.map((row) => (typeof row.state === 'string' ? row.state : ''));
+  if (states.some((state) => state === 'hold' || !['review_pending', 'pass', 'released'].includes(state))) {
+    return 'hold';
+  }
+  if (states.includes('review_pending')) return 'review_pending';
+  if (states.includes('pass')) return 'pass';
+  return 'none';
 }
 
 export interface BreezeBillingClient {
@@ -148,7 +188,44 @@ export function createBreezeBillingClient(opts: {
     },
 
     async getSignupRiskHold(partnerId) {
-      return internalGet<SignupRiskHold>(partnerId, 'signup-risk-hold');
+      // breeze-billing mounts this as GET /internal/signup-risk/holds/:partnerId
+      // (src/index.ts + routes/signupRiskInternal.ts) — NOT under
+      // /internal/partners/:id, so it cannot go through internalGet.
+      const headers: Record<string, string> = {};
+      const billingKey = process.env.BREEZE_BILLING_API_KEY;
+      if (billingKey) headers.Authorization = `Bearer ${billingKey}`;
+      const url = `${opts.baseUrl}/internal/signup-risk/holds/${encodeURIComponent(partnerId)}`;
+      const unknown = (why: string): null => {
+        console.warn(`[breezeBillingClient] signup-risk hold unknown for partner ${partnerId}: ${why}`);
+        return null;
+      };
+      try {
+        const res = await doFetch(url, { method: 'GET', headers });
+        if (res.status === 404) {
+          // Only the exact domain body means "no records". A generic or HTML
+          // 404 means the route is missing — stay fail-closed.
+          const body = await res.json().catch(() => null) as { error?: unknown } | null;
+          if (body && typeof body === 'object' && body.error === NO_RISK_RECORDS_ERROR) {
+            return { status: 'none' };
+          }
+          return unknown('404 without the no-records body');
+        }
+        if (!res.ok) return unknown(`HTTP ${res.status}`);
+        const body = await res.json().catch(() => null) as
+          { partnerId?: unknown; holds?: unknown } | null;
+        if (!body || typeof body !== 'object') return unknown('malformed body');
+        if (!Array.isArray(body.holds)) return unknown('missing holds array');
+        if (typeof body.partnerId === 'string' && body.partnerId !== partnerId) {
+          return unknown('body is for a different partner');
+        }
+        return { status: deriveSignupRiskHoldStatus(body.holds as SignupRiskHoldRow[]) };
+      } catch (error) {
+        console.warn(
+          `[breezeBillingClient] signup-risk hold request failed for partner ${partnerId}`,
+          error,
+        );
+        return null;
+      }
     },
 
     async hasFraudulentRefundMatch(partnerId) {
