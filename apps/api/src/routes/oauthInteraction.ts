@@ -366,20 +366,24 @@ if (MCP_OAUTH_ENABLED) {
       ...((promptDetails.missingOIDCScope as string[] | undefined) ?? []),
       ...Object.values(missingResourceScopes).flat(),
     ]);
-    // When the interaction is in the `login` prompt (the single-step
-    // login+consent flow this route handles, where the user has no prior
-    // OIDC session), oidc-provider hasn't generated consent metadata yet —
-    // `prompt.details` is empty. The consent UI in that state is rendered
-    // from `details.params.scope` itself (see the GET `/interaction/:uid`
-    // handler above, and `apps/web/src/components/oauth/ConsentForm.tsx`),
-    // so falling back to the request's scope param here matches what the
-    // user actually saw on screen. The H3 invariant — "don't grant a scope
-    // the consent UI didn't display" — still holds because the request
-    // scope passed through oidc-provider's `scopes` whitelist before this
-    // point. Without this fallback, the security check 400s on every
-    // first-visit consent (regression caught by the OAuth integration
-    // test in CI smoke).
-    if (displayedScopeSet.size === 0 && (details.prompt as any)?.name === 'login') {
+    // When `prompt.details` carries no scopes at all, oidc-provider has not
+    // generated consent metadata for this interaction. That happens in two
+    // states: the `login` prompt (single-step login+consent, no prior OIDC
+    // session), and a `consent` prompt whose only reason is `consent_prompt`
+    // — the client sent `prompt=consent` but an existing grant already
+    // covers every requested scope, so nothing is "new" or "missing"
+    // (an MCP client re-authorizing after losing its token, 2026-09-11).
+    // The consent UI in both states is rendered from `details.params.scope`
+    // itself (see the GET `/interaction/:uid` handler above, and
+    // `apps/web/src/components/oauth/ConsentForm.tsx`), so falling back to
+    // the request's scope param here matches what the user actually saw on
+    // screen. The H3 invariant — "don't grant a scope the consent UI didn't
+    // display" — still holds because the request scope passed through
+    // oidc-provider's `scopes` whitelist before this point. Without this
+    // fallback the security check 400s `invalid_scope` on every first-visit
+    // consent (regression caught by the OAuth integration test in CI smoke)
+    // and on every re-consent, leaving the user unable to re-authorize.
+    if (displayedScopeSet.size === 0) {
       for (const s of requestedScopes) displayedScopeSet.add(s);
     }
     const grantedScopes = requestedScopes.filter((s) => displayedScopeSet.has(s));
