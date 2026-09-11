@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -476,6 +477,95 @@ func TestRestoreFromSnapshot_NoFiles(t *testing.T) {
 	}
 	if len(result.Warnings) == 0 {
 		t.Error("expected warning about no matching files")
+	}
+}
+
+// TestRestoreFromSnapshot_VolatileSizeMismatch_WarnsNotFails proves #5581's
+// restore-side policy: a Volatile manifest entry (the source kept changing
+// while it was backed up) whose restored size disagrees with the manifest
+// is restored anyway, with an advisory warning, not counted as a failure.
+// An ordinary (non-Volatile) mismatch must still fail exactly as before —
+// covered in the same test to prove the fix didn't loosen the check
+// generally, only for entries explicitly marked Volatile.
+func TestRestoreFromSnapshot_VolatileSizeMismatch_WarnsNotFails(t *testing.T) {
+	provider := newMockProvider()
+	snapshotID := "test-snap-volatile"
+	prefix := path.Join(snapshotRootDir, snapshotID)
+
+	// The manifest declares 5 bytes (its last pre-upload measurement) but
+	// the stored object is actually 10 bytes (the file kept growing) —
+	// exactly the drift #5581 makes self-consistent at backup time and
+	// advisory at restore time via Volatile.
+	volatileBackupPath := path.Join(prefix, "files", "volatile.log.gz")
+	provider.files[volatileBackupPath] = []byte("0123456789")
+
+	// A same-shaped mismatch on a NON-volatile entry must still fail —
+	// proves this change didn't loosen size checking generally.
+	staleBackupPath := path.Join(prefix, "files", "stale.txt.gz")
+	provider.files[staleBackupPath] = []byte("0123456789")
+
+	snapshot := &Snapshot{
+		ID:        snapshotID,
+		Timestamp: time.Now().UTC(),
+		Files: []SnapshotFile{
+			{
+				SourcePath: "/data/volatile.log",
+				BackupPath: volatileBackupPath,
+				Size:       5,
+				ModTime:    time.Now().UTC(),
+				Volatile:   true,
+			},
+			{
+				SourcePath: "/data/stale.txt",
+				BackupPath: staleBackupPath,
+				Size:       5,
+				ModTime:    time.Now().UTC(),
+				// Volatile: false (default) — an ordinary manifest entry.
+			},
+		},
+	}
+	snapshot.Size = totalSize(snapshot.Files)
+	storeManifest(t, provider, snapshot)
+
+	cfg := RestoreConfig{
+		SnapshotID: snapshotID,
+		TargetPath: t.TempDir(),
+		WorkRoot:   t.TempDir(),
+	}
+	result, err := RestoreFromSnapshot(provider, cfg, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.FilesFailed != 1 {
+		t.Errorf("FilesFailed = %d, want 1 (only the non-volatile mismatch)", result.FilesFailed)
+	}
+	if result.FilesRestored != 1 {
+		t.Errorf("FilesRestored = %d, want 1 (the volatile entry restores despite the mismatch)", result.FilesRestored)
+	}
+	if len(result.FailedFiles) != 1 || result.FailedFiles[0] != "/data/stale.txt" {
+		t.Errorf("FailedFiles = %v, want only /data/stale.txt", result.FailedFiles)
+	}
+
+	foundVolatileWarning := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "/data/volatile.log") && strings.Contains(w, "volatile") {
+			foundVolatileWarning = true
+		}
+	}
+	if !foundVolatileWarning {
+		t.Errorf("expected an advisory warning mentioning the volatile file, got %v", result.Warnings)
+	}
+
+	// The volatile file's bytes on disk must be the ACTUAL restored bytes
+	// (10 bytes), not silently dropped.
+	restoredPath := filepath.Join(cfg.TargetPath, "data", "volatile.log")
+	data, err := os.ReadFile(restoredPath)
+	if err != nil {
+		t.Fatalf("expected the volatile file to be restored to disk: %v", err)
+	}
+	if len(data) != 10 {
+		t.Errorf("restored volatile file is %d bytes, want 10", len(data))
 	}
 }
 

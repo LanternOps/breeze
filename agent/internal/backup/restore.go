@@ -239,23 +239,42 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 			slog.Warn("failed to stat restored file", "target", targetPath, "error", fmt.Sprint(statErr))
 			continue
 		} else if info.Size() != file.Size {
-			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, displayPath)
-			_ = os.Remove(stagingFile)
-			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("restored %s failed size check: manifest %d, restored %d", displayPath, file.Size, info.Size()))
-			slog.Warn("restored file failed size check",
-				"target", targetPath, "manifestSize", file.Size, "restoredSize", info.Size())
-			continue
+			if file.Volatile {
+				// The source kept changing while it was being backed up
+				// (#5581) — the manifest's Size/Checksum describe the last
+				// pre-upload measurement, not necessarily what a fresh
+				// read of the (still-live) object would show. A mismatch
+				// here is expected, not corruption: warn and restore the
+				// bytes anyway rather than failing the file.
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("restored %s: size differs from manifest (manifest %d, restored %d) — file was volatile during backup", displayPath, file.Size, info.Size()))
+				slog.Warn("restored volatile file has a size mismatch (advisory, not a failure)",
+					"target", targetPath, "manifestSize", file.Size, "restoredSize", info.Size())
+			} else {
+				result.FilesFailed++
+				result.FailedFiles = append(result.FailedFiles, displayPath)
+				_ = os.Remove(stagingFile)
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("restored %s failed size check: manifest %d, restored %d", displayPath, file.Size, info.Size()))
+				slog.Warn("restored file failed size check",
+					"target", targetPath, "manifestSize", file.Size, "restoredSize", info.Size())
+				continue
+			}
 		}
 		if file.Checksum != "" && !checksumMatches(stagingFile, file.Checksum) {
-			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, displayPath)
-			_ = os.Remove(stagingFile)
-			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("restored %s failed checksum check (manifest %s)", displayPath, file.Checksum))
-			slog.Warn("restored file failed checksum check", "target", targetPath)
-			continue
+			if file.Volatile {
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("restored %s: checksum differs from manifest (manifest %s) — file was volatile during backup", displayPath, file.Checksum))
+				slog.Warn("restored volatile file has a checksum mismatch (advisory, not a failure)", "target", targetPath)
+			} else {
+				result.FilesFailed++
+				result.FailedFiles = append(result.FailedFiles, displayPath)
+				_ = os.Remove(stagingFile)
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("restored %s failed checksum check (manifest %s)", displayPath, file.Checksum))
+				slog.Warn("restored file failed checksum check", "target", targetPath)
+				continue
+			}
 		}
 
 		// Publish only verified bytes. Linux, macOS and Windows pin the
