@@ -498,6 +498,7 @@ export async function processPeripheralPolicyReconciliationSweep(
     .where(and(
       eq(devices.isEphemeral, false),
       eq(devices.peripheralPolicyProtocolVersion, 2),
+      ne(devices.status, 'decommissioned'),
       ...(afterId ? [gt(devices.id, afterId)] : []),
     ))
     .orderBy(asc(devices.id))
