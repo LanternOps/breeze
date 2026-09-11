@@ -205,7 +205,10 @@ fi
 echo "run-qemu: progress.json = $(cat "$progress_log")"
 
 expected='["media_booted","planned","restoring","validated","rebooted"]'
-actual="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))))' "$progress_log")"
+# Compact separators: json.dumps defaults to ", " which never equals the
+# literal above (CI run 34642541776 failed on exactly that with a fully
+# successful rebuild).
+actual="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])), separators=(",", ":")))' "$progress_log")"
 if [ "$actual" != "$expected" ]; then
   echo "run-qemu: FAIL — progress.json = $actual, want $expected" >&2
   exit 1
