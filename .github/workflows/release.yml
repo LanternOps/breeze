@@ -314,9 +314,17 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           chmod +x "dist/breeze-backup-linux-$ARCH"
+          # grub-efi-arm64-bin is a foreign-architecture package on this
+          # amd64 container — Debian's arm64 apt archive carries it, the
+          # native amd64 one doesn't — so `dpkg --add-architecture arm64`
+          # + a second `apt-get update` must happen before apt can even
+          # see it, on EITHER leg (installing it is a no-op on the amd64
+          # leg, which never references it, but one shared script is
+          # simpler than branching on $ARCH here).
           docker run --rm --privileged \
             -e ARCH="$ARCH" -e BUILD_VERSION="$BUILD_VERSION" \
             -v "$PWD":/src -w /src/agent debian:bookworm bash -c '
+              dpkg --add-architecture arm64 &&
               apt-get update -qq &&
               apt-get install -y -qq --no-install-recommends live-build debootstrap squashfs-tools xorriso grub-efi-amd64-bin grub-efi-arm64-bin mtools dosfstools ca-certificates >/dev/null &&
               ./recovery-media/build.sh --arch "$ARCH" --breeze-backup "../dist/breeze-backup-linux-$ARCH" --version "$BUILD_VERSION" --out ../out/ &&

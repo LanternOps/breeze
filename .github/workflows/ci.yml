@@ -1879,9 +1879,16 @@ jobs:
           # check (build_test.sh needs a matching xorriso too), both run
           # inside a real debian:bookworm container instead of directly on
           # the runner.
+          # This job only ever builds the amd64 leg, so only
+          # grub-efi-amd64-bin is needed — grub-efi-arm64-bin is a
+          # foreign-architecture package (Debian ships it under an arm64
+          # apt architecture, not as arch-agnostic content) that needs
+          # `dpkg --add-architecture arm64` before apt can even see it;
+          # see release.yml's build-recovery-media job, which builds both
+          # legs and does need it.
           docker run --rm --privileged -v "$PWD":/src -w /src debian:bookworm bash -c '
             apt-get update -qq &&
-            apt-get install -y -qq --no-install-recommends live-build debootstrap squashfs-tools xorriso grub-efi-amd64-bin grub-efi-arm64-bin mtools dosfstools ca-certificates >/dev/null &&
+            apt-get install -y -qq --no-install-recommends live-build debootstrap squashfs-tools xorriso grub-efi-amd64-bin mtools dosfstools ca-certificates >/dev/null &&
             ./recovery-media/build.sh --arch amd64 --breeze-backup ./breeze-backup-linux-amd64 --version ci --out out/ &&
             bash recovery-media/build_test.sh out/breeze-recovery-linux-amd64.iso
           '
