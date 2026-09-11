@@ -875,7 +875,10 @@
     "notCached": "Moeda ainda não armazenada em cache — atualize para buscá-la no Stripe.",
     "staleCache": "Não foi possível acessar o Stripe — exibindo os últimos detalhes da conta em cache.",
     "reconnectRequired": "Sua chave do Stripe salva (•••• {{last4}}) não funciona mais: {{reason}} Cole uma nova chave para reconectar; os pagamentos on-line falharão até lá.",
-    "reconciliationError": "A reconciliação de estornos de pagamento não está em execução: {{reason}} Substitua a chave Stripe por uma que possa ler Eventos."
+    "reconciliationError": "A reconciliação de estornos de pagamento não está em execução: {{reason}} Substitua a chave Stripe por uma que possa ler Eventos.",
+    "revocationCredentialUnavailable": "Não foi possível cancelar {{count}} link(s) de pagamento on-line porque a chave do Stripe que os criou não está mais disponível. Esses links ainda podem ser pagáveis no Stripe — cancele-os no seu painel do Stripe e reemita as faturas.",
+    "revocationChargedRepair": "{{count}} link(s) de pagamento on-line foram pagos depois que o Breeze pediu ao Stripe para cancelá-los. O dinheiro é real — concilie esses pagamentos (e reembolse se a fatura já tiver sido quitada de outra forma).",
+    "revocationBlocked": "Não foi possível cancelar {{count}} link(s) de pagamento on-line — o Stripe recusou a solicitação com a chave cadastrada. Salve uma chave do Stripe válida para tentar novamente, ou cancele os links no seu painel do Stripe."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Falha ao salvar mapeamentos de sites.",

@@ -875,7 +875,10 @@
     "notCached": "Moneda aún no almacenada en caché: actualiza para obtenerla de Stripe.",
     "staleCache": "No se pudo contactar a Stripe: se muestran los últimos datos de cuenta almacenados en caché.",
     "reconnectRequired": "Tu clave de Stripe guardada (•••• {{last4}}) ya no funciona: {{reason}} Pega una clave nueva para reconectar; los pagos en línea fallarán hasta que lo hagas.",
-    "reconciliationError": "La conciliación de reversiones de pago no está funcionando: {{reason}} Reemplaza la clave de Stripe por una que pueda leer Eventos."
+    "reconciliationError": "La conciliación de reversiones de pago no está funcionando: {{reason}} Reemplaza la clave de Stripe por una que pueda leer Eventos.",
+    "revocationCredentialUnavailable": "No se pudieron cancelar {{count}} enlace(s) de pago en línea porque la clave de Stripe que los creó ya no está disponible. Es posible que esos enlaces sigan siendo pagaderos en Stripe: cancélelos en su panel de Stripe y vuelva a emitir las facturas.",
+    "revocationChargedRepair": "{{count}} enlace(s) de pago en línea se pagaron después de que Breeze pidiera a Stripe cancelarlos. El dinero es real: concilie esos pagos (y reembólselos si la factura ya se había saldado de otra forma).",
+    "revocationBlocked": "No se pudieron cancelar {{count}} enlace(s) de pago en línea: Stripe rechazó la solicitud con la clave registrada. Guarde una clave de Stripe válida para reintentarlo, o cancele los enlaces en su panel de Stripe."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "No se pudieron guardar las asignaciones del sitio.",

@@ -875,7 +875,10 @@
     "notCached": "Currency not cached yet — refresh to fetch it from Stripe.",
     "staleCache": "Stripe could not be reached — showing the last cached account details.",
     "reconnectRequired": "Your stored Stripe key (•••• {{last4}}) no longer works: {{reason}} Paste a new key to reconnect; online payments fail until you do.",
-    "reconciliationError": "Payment reversal reconciliation is not running: {{reason}} Replace the Stripe key with one that can read Events."
+    "reconciliationError": "Payment reversal reconciliation is not running: {{reason}} Replace the Stripe key with one that can read Events.",
+    "revocationCredentialUnavailable": "{{count}} online payment link(s) could not be cancelled because the Stripe key that created them is no longer available. Those links may still be payable on Stripe — cancel them in your Stripe dashboard and reissue the invoices.",
+    "revocationChargedRepair": "{{count}} online payment link(s) were paid after Breeze asked Stripe to cancel them. The money is real — reconcile those payments (and refund if the invoice was already settled another way).",
+    "revocationBlocked": "{{count}} online payment link(s) could not be cancelled — Stripe rejected the request with the key on file. Save a working Stripe key to retry them, or cancel the links in your Stripe dashboard."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Failed to save site mappings.",

@@ -131,6 +131,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/stripeConnectService.ts': 'Stripe-signed webhook records provider-side disconnect status; no tenant caller',
   'services/stripeFinancialEventPoller.ts': 'system reconciliation worker persists provider cursor/error state; no tenant caller',
   'services/stripeReversalState.ts': 'system poller and verified Stripe webhook own the provider-authoritative reversal inbox',
+  'services/stripeCredentialArchive.ts': 'SEC-150 superseded-credential archive. Every write is made by a SYSTEM-context transition that is itself gated: the archive/erase writes come from savePartnerStripeKey and disconnectPartnerStripe (routes/stripeConnect/index.ts, capability-checked on every handler) and from the revocation sweep, which has no tenant caller at all. The table is never reachable from a request that has not already passed the gate, and its RLS policies additionally require breeze_current_scope() = system, so a partner-scoped write is refused by Postgres regardless.',
   'services/systemScriptLibrary.ts': 'startup-only system script library seed (index.ts boot path); writes is_system rows with org_id/partner_id NULL; no tenant route calls it',
   'services/tenantOffboarding.ts': 'offboarding/erasure lifecycle — the documented system-context exemption class',
   'services/unifi/unifiSyncService.ts': 'UniFi worker sync-run telemetry (jobs/unifiWorker); no tenant route calls the mutator',

@@ -875,7 +875,10 @@
     "notCached": "Währung noch nicht zwischengespeichert – aktualisieren, um sie von Stripe abzurufen.",
     "staleCache": "Stripe war nicht erreichbar – es werden die zuletzt zwischengespeicherten Kontodaten angezeigt.",
     "reconnectRequired": "Ihr gespeicherter Stripe-Schlüssel (•••• {{last4}}) funktioniert nicht mehr: {{reason}} Fügen Sie einen neuen Schlüssel ein, um die Verbindung wiederherzustellen; Online-Zahlungen schlagen bis dahin fehl.",
-    "reconciliationError": "Die Abstimmung von Zahlungsstornierungen läuft nicht: {{reason}} Ersetzen Sie den Stripe-Schlüssel durch einen Schlüssel, der Ereignisse lesen kann."
+    "reconciliationError": "Die Abstimmung von Zahlungsstornierungen läuft nicht: {{reason}} Ersetzen Sie den Stripe-Schlüssel durch einen Schlüssel, der Ereignisse lesen kann.",
+    "revocationCredentialUnavailable": "{{count}} Online-Zahlungslink(s) konnten nicht storniert werden, weil der Stripe-Schlüssel, der sie erstellt hat, nicht mehr verfügbar ist. Diese Links sind bei Stripe möglicherweise noch zahlbar — stornieren Sie sie in Ihrem Stripe-Dashboard und stellen Sie die Rechnungen neu aus.",
+    "revocationChargedRepair": "{{count}} Online-Zahlungslink(s) wurden bezahlt, nachdem Breeze Stripe zur Stornierung aufgefordert hatte. Das Geld ist real — gleichen Sie diese Zahlungen ab (und erstatten Sie sie, falls die Rechnung bereits anderweitig beglichen wurde).",
+    "revocationBlocked": "{{count}} Online-Zahlungslink(s) konnten nicht storniert werden — Stripe hat die Anfrage mit dem hinterlegten Schlüssel abgelehnt. Speichern Sie einen funktionierenden Stripe-Schlüssel, um es erneut zu versuchen, oder stornieren Sie die Links in Ihrem Stripe-Dashboard."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Standort-Zuordnungen konnten nicht gespeichert werden.",
