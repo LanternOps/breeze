@@ -15,6 +15,7 @@ import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
 import { captureException, captureMessage } from './sentry';
 import { evaluateAiBudgetThresholds } from './aiBudgetAlerts';
 import { getCatalogEntryName } from './llmProviderCatalog';
+import { settleAiBudgetReservationDurably } from './aiBudgetReservations';
 
 export type AiBillingSource = 'platform' | 'partner_key';
 
@@ -699,13 +700,36 @@ export async function recordUsage(
   isToolExecution: boolean,
   billingSource: AiBillingSource,
   catalogPricing?: CatalogPricingSnapshot,
+  budgetReservationId?: string,
+  additionalCostCents = 0,
 ): Promise<void> {
-  const costCents = catalogPricing
+  if (!Number.isFinite(additionalCostCents) || additionalCostCents < 0) {
+    throw new Error('additionalCostCents must be a finite non-negative amount');
+  }
+  const tokenCostCents = catalogPricing
     ? calculateCatalogCostCents(catalogPricing, inputTokens, outputTokens)
     : calculateCostCents(model, inputTokens, outputTokens);
+  const costCents = tokenCostCents + additionalCostCents;
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
   const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+
+  if (budgetReservationId) {
+    await settleAiBudgetReservationDurably({
+      orgId,
+      reservationId: budgetReservationId,
+      actualCostCents: costCents,
+      inputTokens,
+      outputTokens,
+      messageCount: 1,
+      toolExecutionCount: isToolExecution ? 1 : 0,
+      ...(sessionId !== null ? { session: { id: sessionId, turnCount: 1 } } : {}),
+    });
+    checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
+      console.error('[AI] Cost anomaly check failed:', err);
+    });
+    return;
+  }
 
   // Run queries individually instead of in a transaction to avoid
   // SAVEPOINT errors with the postgres.js driver (postgres@3.4.8).
@@ -819,6 +843,7 @@ export async function recordUsageFromSdkResult(
   },
   billingSource: AiBillingSource,
   catalogPricing?: CatalogPricingSnapshot,
+  budgetReservationId?: string,
 ): Promise<void> {
   if (!orgId) {
     console.warn(`[AI] Skipping recordUsageFromSdkResult — empty orgId for session=${sessionId}`);
@@ -884,6 +909,26 @@ export async function recordUsageFromSdkResult(
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
   const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+
+  if (budgetReservationId) {
+    await settleAiBudgetReservationDurably({
+      orgId,
+      reservationId: budgetReservationId,
+      actualCostCents: costCents,
+      inputTokens: recordedInputTokens,
+      outputTokens,
+      messageCount: 1,
+      toolExecutionCount,
+      session: { id: sessionId, turnCount: result.num_turns },
+    });
+    checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
+      console.error('[AI] Cost anomaly check failed:', err);
+    });
+    if (billingSource === 'platform' && costCents > 0) {
+      await deductBillingCredits(orgId, costCents);
+    }
+    return;
+  }
 
   // Update session totals
   try {
@@ -993,6 +1038,7 @@ export async function recordSessionlessSdkUsage(
     model?: string;
   },
   billingSource: AiBillingSource,
+  budgetReservationId?: string,
 ): Promise<void> {
   if (!orgId) {
     console.warn('[AI] Skipping recordSessionlessSdkUsage — empty orgId');
@@ -1019,11 +1065,6 @@ export async function recordSessionlessSdkUsage(
     );
   }
 
-  // A cache-only turn (every plain input/output counter 0, the whole prompt
-  // served from cache) still COSTS money — gating the write on
-  // input/output alone silently dropped those from the org rollup.
-  if (!anyTokens && costCents <= 0) return;
-
   // What the `*_input_tokens` COLUMNS store: the three disjoint input slices
   // summed. Pricing above deliberately keeps them split (different rates).
   const recordedInputTokens = sumInputTokens(result.usage);
@@ -1032,6 +1073,30 @@ export async function recordSessionlessSdkUsage(
   // the honest message count for it; 1 keeps the counter monotonic when the SDK
   // reports no turns.
   const messageCount = result.numTurns > 0 ? result.numTurns : 1;
+
+  if (budgetReservationId) {
+    await settleAiBudgetReservationDurably({
+      orgId,
+      reservationId: budgetReservationId,
+      actualCostCents: Math.max(0, costCents),
+      inputTokens: recordedInputTokens,
+      outputTokens,
+      messageCount,
+      toolExecutionCount,
+    });
+    checkCostAnomalies(null, orgId, costCents).catch(err => {
+      console.error('[AI] Cost anomaly check failed (sessionless SDK):', err);
+    });
+    if (billingSource === 'platform' && costCents > 0) {
+      await deductBillingCredits(orgId, costCents);
+    }
+    return;
+  }
+
+  // A cache-only turn (every plain input/output counter 0, the whole prompt
+  // served from cache) still COSTS money — gating the write on
+  // input/output alone silently dropped those from the org rollup.
+  if (!anyTokens && costCents <= 0) return;
 
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
@@ -1258,6 +1323,12 @@ export async function updateBudget(orgId: string, settings: {
   approvalMode?: 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
   alertThresholdPercents?: number[] | null;
 }): Promise<void> {
+  // Serialize local budget changes with reserve/settle, which use the same
+  // stable org row as their transaction lock. Without this, lowering or
+  // disabling a budget can race a provider admission based on stale settings.
+  await db.execute(sql`
+    SELECT id FROM organizations WHERE id = ${orgId}::uuid FOR UPDATE
+  `);
   const [existing] = await db
     .select()
     .from(aiBudgets)

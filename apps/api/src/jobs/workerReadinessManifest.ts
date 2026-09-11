@@ -178,6 +178,11 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('accountingSyncWorker'),
   consumers('aiAgentImpactRollup', ['aiAgentImpactRollupWorker']),
   consumers('aiAgentGraduation'),
+  // SEC-142/143 (review B3). Plain-required (`redis`): read, not inferred —
+  // aiBudgetReservationSweep reads no feature flag anywhere in the module and
+  // constructs exactly one Worker unconditionally, attaching it under its own
+  // registry-key name.
+  consumers('aiBudgetReservationSweep'),
   // Task 8 merge-forward (origin/main ff9e10aec): five more `global` registry
   // entries. Each was read, not inferred from its name — none is feature-flag
   // gated, every one constructs exactly one Worker and attaches it

@@ -112,6 +112,22 @@ vi.mock('../services/aiCostTracker', () => ({
   updateBudget: vi.fn(),
 }));
 
+vi.mock('../services/aiBudgetReservations', () => ({
+  reserveAiBudget: vi.fn(async () => ({
+    kind: 'unlimited',
+    reservationId: '66666666-6666-4666-8666-666666666666',
+    dailyPeriodKey: '2026-09-06',
+    monthlyPeriodKey: '2026-09-01',
+    status: 'active',
+  })),
+  releaseUnusedAiBudgetReservation: vi.fn(async () => ({
+    kind: 'released', reservationId: '66666666-6666-4666-8666-666666666666',
+  })),
+  markAiBudgetReservationIndeterminate: vi.fn(async () => ({
+    kind: 'indeterminate', reservationId: '66666666-6666-4666-8666-666666666666',
+  })),
+}));
+
 vi.mock('../services/streamingSessionManager', () => ({
   streamingSessionManager: {
     getOrCreate: vi.fn(),
@@ -530,6 +546,9 @@ describe('AI routes', () => {
         'SYSTEM PROMPT',
         undefined,
         expect.objectContaining({ source: 'partner', configId: 'config-1', configVersion: 3 }),
+        undefined,
+        undefined,
+        expect.objectContaining({ budgetReservationId: expect.any(String) }),
       );
     });
   });
