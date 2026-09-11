@@ -14,6 +14,7 @@ import {
   recordUsage,
   recordUsageFromSdkResult,
   sumInputTokens,
+  updateBudget,
 } from './aiCostTracker';
 import { db, withSystemDbAccessContext } from '../db';
 import { getEffectiveAiBudget } from './effectiveSettings';
@@ -1906,5 +1907,103 @@ describe('billing telemetry', () => {
     // A deployment mode, not a failure — reporting it would be pure noise.
     expect(vi.mocked(captureMessage)).not.toHaveBeenCalled();
     expect(vi.mocked(captureException)).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================
+// updateBudget — #5592
+// ============================================
+
+/**
+ * Wire `db` for updateBudget: `existingRow` drives the `ai_budgets` lookup
+ * (`undefined` = no row yet, so the insert branch runs). Returns the values
+ * handed to `db.insert(aiBudgets).values(...)` / `db.update(...).set(...)`.
+ */
+function setupBudgetDbMocks(existingRow?: Record<string, unknown>) {
+  const capture: {
+    insertValues?: Record<string, unknown>;
+    updateSet?: Record<string, unknown>;
+  } = {};
+
+  mockDb.select.mockImplementation(() => ({
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({
+        limit: vi.fn().mockResolvedValue(existingRow ? [existingRow] : []),
+      })),
+    })),
+  }));
+
+  mockDb.insert.mockReturnValue({
+    values: vi.fn(async (values: Record<string, unknown>) => {
+      capture.insertValues = values;
+    }),
+  });
+
+  mockDb.update.mockReturnValue({
+    set: vi.fn((values: Record<string, unknown>) => {
+      capture.updateSet = values;
+      return { where: vi.fn().mockResolvedValue(undefined) };
+    }),
+  });
+
+  return capture;
+}
+
+describe('updateBudget', () => {
+  it('persists approvalMode on the FIRST save for an org with no ai_budgets row', async () => {
+    const capture = setupBudgetDbMocks();
+
+    await updateBudget('org-budget-1', { approvalMode: 'auto_approve' });
+
+    expect(mockDb.insert).toHaveBeenCalledTimes(1);
+    expect(mockDb.update).not.toHaveBeenCalled();
+    // The bug (#5592): the insert branch enumerated columns and omitted
+    // approvalMode, so the row fell back to the `per_step` column default and
+    // the user's choice was silently discarded until a second save.
+    expect(capture.insertValues?.approvalMode).toBe('auto_approve');
+  });
+
+  it('defaults approvalMode to per_step when the first save does not set it', async () => {
+    const capture = setupBudgetDbMocks();
+
+    await updateBudget('org-budget-2', { enabled: false });
+
+    expect(capture.insertValues?.approvalMode).toBe('per_step');
+  });
+
+  it('carries every settings field through the insert branch', async () => {
+    const capture = setupBudgetDbMocks();
+
+    await updateBudget('org-budget-3', {
+      enabled: false,
+      monthlyBudgetCents: 5000,
+      dailyBudgetCents: 250,
+      maxTurnsPerSession: 10,
+      messagesPerMinutePerUser: 5,
+      messagesPerHourPerOrg: 60,
+      approvalMode: 'hybrid_plan',
+      alertThresholdPercents: [50, 90],
+    });
+
+    expect(capture.insertValues).toMatchObject({
+      orgId: 'org-budget-3',
+      enabled: false,
+      monthlyBudgetCents: 5000,
+      dailyBudgetCents: 250,
+      maxTurnsPerSession: 10,
+      messagesPerMinutePerUser: 5,
+      messagesPerHourPerOrg: 60,
+      approvalMode: 'hybrid_plan',
+      alertThresholdPercents: [50, 90],
+    });
+  });
+
+  it('updates in place (no insert) when a row already exists', async () => {
+    const capture = setupBudgetDbMocks({ orgId: 'org-budget-4' });
+
+    await updateBudget('org-budget-4', { approvalMode: 'action_plan' });
+
+    expect(mockDb.insert).not.toHaveBeenCalled();
+    expect(capture.updateSet?.approvalMode).toBe('action_plan');
   });
 });
