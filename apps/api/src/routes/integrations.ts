@@ -2,6 +2,11 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import {
+  InvalidIntegrationSecretError,
+  maskIntegrationSettings,
+  sealIntegrationSettings,
+} from '../services/integrationSettingsSecrets';
 import { PERMISSIONS } from '../services/permissions';
 
 export const integrationRoutes = new Hono();
@@ -102,6 +107,22 @@ function requestedOrgId(c: { req: { query: (key: string) => string | undefined }
   return c.req.query('orgId');
 }
 
+function protectSettings(
+  body: Record<string, unknown>,
+  existing: Record<string, unknown> | undefined,
+  family: string,
+  orgId: string,
+): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
+  try {
+    return { ok: true, value: sealIntegrationSettings(body, existing, family, orgId) };
+  } catch (error) {
+    if (error instanceof InvalidIntegrationSecretError) {
+      return { ok: false, error: error.message };
+    }
+    throw error;
+  }
+}
+
 integrationRoutes.use('*', authMiddleware);
 
 integrationRoutes.get('/communication', requireScope('organization', 'partner', 'system'), requireIntegrationRead, async (c) => {
@@ -116,7 +137,7 @@ integrationRoutes.get('/communication', requireScope('organization', 'partner', 
     return c.json({ error: 'Communication settings not found' }, 404);
   }
 
-  return c.json({ data: existing });
+  return c.json({ data: maskIntegrationSettings(existing) });
 });
 
 for (const provider of ['slack', 'teams', 'discord'] as const) {
@@ -132,7 +153,17 @@ for (const provider of ['slack', 'teams', 'discord'] as const) {
     }
 
     const existing = communicationSettings.get(orgResult.orgId) ?? {};
-    const updated = { ...existing, [provider]: body };
+    const currentProvider = existing[provider];
+    const protectedBody = protectSettings(
+      body,
+      currentProvider && typeof currentProvider === 'object' && !Array.isArray(currentProvider)
+        ? currentProvider as Record<string, unknown>
+        : undefined,
+      `communication.${provider}`,
+      orgResult.orgId,
+    );
+    if (!protectedBody.ok) return c.json({ error: protectedBody.error }, 400);
+    const updated = { ...existing, [provider]: protectedBody.value };
     communicationSettings.set(orgResult.orgId, updated);
 
     if (body.test === true) {
@@ -146,7 +177,7 @@ for (const provider of ['slack', 'teams', 'discord'] as const) {
       resourceName: provider
     });
 
-    return c.json({ success: true, data: updated });
+    return c.json({ success: true, data: maskIntegrationSettings(updated) });
   });
 }
 
@@ -157,7 +188,7 @@ integrationRoutes.get('/monitoring', requireScope('organization', 'partner', 'sy
     return c.json({ error: orgResult.error }, orgResult.status);
   }
 
-  return c.json({ data: monitoringSettings.get(orgResult.orgId) ?? {} });
+  return c.json({ data: maskIntegrationSettings(monitoringSettings.get(orgResult.orgId) ?? {}) });
 });
 
 integrationRoutes.put('/monitoring', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
@@ -171,8 +202,15 @@ integrationRoutes.put('/monitoring', requireScope('organization', 'partner', 'sy
     return c.json({ error: orgResult.error }, orgResult.status);
   }
 
-  monitoringSettings.set(orgResult.orgId, body);
-  return c.json({ success: true, data: body });
+  const protectedBody = protectSettings(
+    body,
+    monitoringSettings.get(orgResult.orgId),
+    'monitoring',
+    orgResult.orgId,
+  );
+  if (!protectedBody.ok) return c.json({ error: protectedBody.error }, 400);
+  monitoringSettings.set(orgResult.orgId, protectedBody.value);
+  return c.json({ success: true, data: maskIntegrationSettings(protectedBody.value) });
 });
 
 integrationRoutes.post('/monitoring/test', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
@@ -186,7 +224,7 @@ integrationRoutes.get('/ticketing', requireScope('organization', 'partner', 'sys
     return c.json({ error: orgResult.error }, orgResult.status);
   }
 
-  return c.json({ data: ticketingSettings.get(orgResult.orgId) ?? {} });
+  return c.json({ data: maskIntegrationSettings(ticketingSettings.get(orgResult.orgId) ?? {}) });
 });
 
 integrationRoutes.post('/ticketing', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
@@ -200,8 +238,14 @@ integrationRoutes.post('/ticketing', requireScope('organization', 'partner', 'sy
     return c.json({ error: orgResult.error }, orgResult.status);
   }
 
-  ticketingSettings.set(orgResult.orgId, body);
-  return c.json({ success: true, message: 'Ticketing settings saved.', data: body });
+  const protectedBody = protectSettings(body, ticketingSettings.get(orgResult.orgId), 'ticketing', orgResult.orgId);
+  if (!protectedBody.ok) return c.json({ error: protectedBody.error }, 400);
+  ticketingSettings.set(orgResult.orgId, protectedBody.value);
+  return c.json({
+    success: true,
+    message: 'Ticketing settings saved.',
+    data: maskIntegrationSettings(protectedBody.value),
+  });
 });
 
 integrationRoutes.post('/ticketing/test', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
@@ -220,7 +264,7 @@ integrationRoutes.get('/psa', requireScope('organization', 'partner', 'system'),
     return c.json({ error: 'PSA settings not found' }, 404);
   }
 
-  return c.json({ data: existing });
+  return c.json({ data: maskIntegrationSettings(existing) });
 });
 
 integrationRoutes.post('/psa', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
@@ -234,8 +278,10 @@ integrationRoutes.post('/psa', requireScope('organization', 'partner', 'system')
     return c.json({ error: orgResult.error }, orgResult.status);
   }
 
-  psaSettings.set(orgResult.orgId, body);
-  return c.json({ success: true, data: body });
+  const protectedBody = protectSettings(body, psaSettings.get(orgResult.orgId), 'psa', orgResult.orgId);
+  if (!protectedBody.ok) return c.json({ error: protectedBody.error }, 400);
+  psaSettings.set(orgResult.orgId, protectedBody.value);
+  return c.json({ success: true, data: maskIntegrationSettings(protectedBody.value) });
 });
 
 integrationRoutes.put('/psa', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
@@ -249,8 +295,10 @@ integrationRoutes.put('/psa', requireScope('organization', 'partner', 'system'),
     return c.json({ error: orgResult.error }, orgResult.status);
   }
 
-  psaSettings.set(orgResult.orgId, body);
-  return c.json({ success: true, data: body });
+  const protectedBody = protectSettings(body, psaSettings.get(orgResult.orgId), 'psa', orgResult.orgId);
+  if (!protectedBody.ok) return c.json({ error: protectedBody.error }, 400);
+  psaSettings.set(orgResult.orgId, protectedBody.value);
+  return c.json({ success: true, data: maskIntegrationSettings(protectedBody.value) });
 });
 
 integrationRoutes.post('/psa/test', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
