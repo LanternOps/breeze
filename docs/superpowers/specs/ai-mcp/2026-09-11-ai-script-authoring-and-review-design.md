@@ -1,6 +1,6 @@
 ---
 title: AI script authoring, independent review, and reviewer-gated execution
-status: Draft v2 — design approved in dialogue (Todd, 2026-09-11); Codex xhigh quorum PROCEED WITH CHANGES folded in (§11); awaiting written-spec review
+status: v2.1 — approved by Todd 2026-09-11; Codex xhigh quorum folded in; reconciled against the six wave plans (§11)
 date: 2026-09-11
 owner: Todd Hebebrand
 tracking_issue: LanternOps/breeze#5612
@@ -128,7 +128,7 @@ Incident-bound, not configuration, so `org_id NOT NULL` is justified: a proposal
 | `id` | uuid pk | |
 | `org_id` | uuid NOT NULL → organizations | RLS axis; `UNIQUE (id, org_id)` |
 | `author_kind` | text | `chat_session` or `agent_run` |
-| `session_id` | uuid null → ai_sessions ON DELETE SET NULL | chat author |
+| `session_id` | uuid null → ai_sessions ON DELETE SET NULL | chat author; registry-resident tool handlers do not receive the chat session id, so the SDK's post-tool hook for `propose_script` sets it from the tool output |
 | `agent_run_id` | uuid null (typed reference, no FK) | agent author; runs are left for erasure, never repointed |
 | `language` | existing `script_language` enum | |
 | `content` | text NOT NULL | **immutable**; ≤ 64 KiB |
@@ -141,9 +141,10 @@ Incident-bound, not configuration, so `org_id NOT NULL` is justified: a proposal
 | `target_device_ids` | uuid[] NOT NULL | 1..10 |
 | `scanner_version` | text NOT NULL | version tag of the shared scanner used |
 | `basic_hits`, `strict_hits` | text[] NOT NULL default `{}` | pattern descriptions matched |
+| `acknowledged_patterns` | text[] NOT NULL default `{}` | the STRICT set the approver acknowledged, re-derived as `(submitted ∩ strict_hits)`; added by W03's migration |
 | `touch_classes` | text[] NOT NULL default `{}` | deterministic classifier output (§4.4) |
 | `status` | `script_proposal_status` enum | below |
-| `revision`, `supersedes_id` | int, uuid null → script_proposals | revision chain |
+| `revision`, `supersedes_id` | int, uuid null (no FK) | revision chain; a self-FK would add a cycle to the cascade topo-sort |
 | `risk_tier` | text null | denormalised from the completed model review (§4.4); no FK to reviews |
 | `decided_by`, `decided_at`, `decision_note` | | human decision, if any |
 | `intent_id` | uuid null (no FK) | the one live run request; set by CAS (`WHERE intent_id IS NULL`) so a proposal is consumed by exactly one intent |
@@ -291,15 +292,15 @@ The reviewer's `blastRadius` is shown to the human and stored, but no enforcemen
 | low, medium | `supervised` (requester may approve their own, plain click under a non-enforcing partner, live tool-permission re-check) |
 | high, critical | `four_eyes` (second human, 60-min window, assurance floor per partner policy) |
 
-**STRICT acknowledgements.** Acknowledging on a card carries the library's requirement: the deciding approver must hold `scripts:write` and present a fresh MFA claim (the #5601 step-up grant satisfies it). Supervised self-approve today re-checks only the tool permission (`decideApprovalRequest.ts:538-557`), so the decide endpoint gains an additional check when the intent's proposal has `strict_hits`: missing permission or MFA returns a typed 422 `strict_acknowledgement_not_permitted`, the card disables Approve and names the requirement, and four-eyes fan-out for such proposals is filtered to approvers who hold `scripts:write`. The acknowledged set is submitted with the decision, re-derived server-side as `(submitted ∩ strict_hits)` (there is no "existing" set on a proposal), stored on the intent's decision payload, and rides the dispatch payload exactly as a library script's acknowledgements do.
+**STRICT acknowledgements.** Acknowledging on a card carries the library's requirement: the deciding approver must hold `scripts:write` and carry the JWT `mfa` claim, the same bar `POST /scripts` enforces (`routes/scripts.ts:626-631`). The #5601 step-up grant has no operation for acknowledgements; a resource-bound single-use grant is a possible follow-up, not v1. Supervised self-approve today re-checks only the tool permission (`decideApprovalRequest.ts:538-557`), so the decide endpoint gains an additional check when the intent's proposal has `strict_hits`: missing permission or MFA returns a typed 422 `strict_acknowledgement_not_permitted`, the card disables Approve and names the requirement, and four-eyes fan-out for such proposals is filtered to approvers who hold `scripts:write`. The acknowledged set is submitted with the decision, re-derived server-side as `(submitted ∩ strict_hits)` (there is no "existing" set on a proposal), stored on `script_proposals.acknowledged_patterns` (intents and approval rows carry no decision payload: `action_intents.arguments` is immutable and the release worker projects only `(id, status, bound_argument_digest)` off the winning approval), and rides the dispatch payload exactly as a library script's acknowledgements do, because dispatch already holds the proposal row.
 
-**Effect digest** for `proposalId`: the resolver returns a non-null pinned snapshot `{proposalId, content_digest, language, run_as, timeout_seconds, sorted deviceIds, scanner_version}`; intent creation fails if it cannot. Release re-reads the proposal and fails closed with `content_changed` if the digest differs, and separately with `proposal_not_runnable` if status, expiry, supersession, or `intent_id` no longer match. Lifecycle state is never digest material. The worker dispatches the same verified snapshot.
+**Effect digest** for `proposalId`: the resolver returns a non-null pinned snapshot `{proposalId, content_digest, language, run_as, timeout_seconds, sorted deviceIds, scanner_version}`; intent creation fails if it cannot, with intent error code `effect_digest_unresolvable`. This is the digest module's first throwing path: today unresolved digests become `NULL` and both release paths treat that as nothing to check (`intentService.ts:1537`). Release re-reads the proposal and fails closed with `content_changed` if the digest differs, and separately with `proposal_not_runnable` if status, expiry, supersession, or `intent_id` no longer match. Lifecycle state is never digest material. The worker dispatches the same verified snapshot.
 
 On execution the dispatcher builds the same payload the library path builds (`content`, `language`, `runAs`, `timeoutSeconds`, `acknowledgedSecurityPatterns`), so the Go agent is unchanged. The chat inline release path treats an intent that is already `approved` at creation exactly like a just-approved one: it runs `revalidateApprovedIntentForRelease` before executing.
 
 ### 4.6 The unattended lane (D8, D9, D10)
 
-**Seam.** `createActionIntent` gains `evaluateScriptReviewerAutonomy(...)` beside `evaluateTicketAutonomy` (`intentService.ts:1572`), invoked only when the op is `run_script` with a `proposalId`. It runs inside the intent transaction under `pg_advisory_xact_lock(hashtextextended('ai-script-lane:' || org_id, 0))`. Both transports reach it the way they reach every Tier-3 op: chat through the SDK's intent creation, agents through `runLoop.ts:563-586` with task context passed through unchanged (operation reservation included). Agent act-mode direct execution (`actRevalidation.ts`) is **not** used for proposals.
+**Seam.** `createActionIntent` gains `evaluateScriptReviewerAutonomy(...)` beside `evaluateTicketAutonomy` (`intentService.ts:1572`), invoked only when the op is `run_script` with a `proposalId`. `createActionIntent` also calls `checkGuardrails` itself (`intentService.ts:1042`) and rejects tier ≥ 4, so `CreateActionIntentInput` carries the proposal `GuardrailContext` from every caller. It runs inside the intent transaction under `pg_advisory_xact_lock(hashtextextended('ai-script-lane:' || org_id, 0))`. Both transports reach it the way they reach every Tier-3 op: chat through the SDK's intent creation, agents through `runLoop.ts:563-586` with task context passed through unchanged (operation reservation included). Agent act-mode direct execution (`actRevalidation.ts`) is **not** used for proposals.
 
 **Invariants**, evaluated in order; the first failure is recorded as the refusal reason on the intent and the request falls through to the human path:
 
@@ -315,14 +316,14 @@ On execution the dispatcher builds the same payload the library path builds (`co
 | 8 | `timeout_seconds ≤ 300` | proposal | no |
 | 9 | resolved `approvalScope` would be `supervised` | guardrail | no |
 | 10 | exactly one target device (D6) | proposal | no |
-| 11 | recovery prerequisite: on Windows, when `touch_classes` ∩ `{registry, services, files_system}` ≠ ∅, a System Restore checkpoint is taken before dispatch and its success is a release precondition (extends #4609 from patch-only to script runs); on Linux/macOS such classes are not lane-eligible in v1 | dispatch | no |
+| 11 | recovery prerequisite: on Windows, when `touch_classes` ∩ `{registry, services, files_system}` ≠ ∅, a System Restore checkpoint is taken before dispatch and its success is a release precondition; on Linux/macOS such classes are not lane-eligible in v1 (`checkpoint_unavailable`). No checkpoint primitive exists today anywhere (patch install runs preflight only, `patchJobExecutor.ts:1191-1198`), so W04 implements `ensureRestoreCheckpoint` server-side over a raw script dispatch of a fixed PowerShell body, Windows only; a first-class agent command is a follow-up issue | dispatch | no |
 | 12 | `ai_script_lane_state` closed; per-hour reservation under the advisory lock counts `script_reviewer` intents created in the last hour, **including pending and undispatched ones**, against effective `max_unattended_per_hour` | lane state | cap settable within the ceiling |
 | 13 | requester authority: chat → the session user holds live `run_script` permission on the device (same `checkToolPermission` as supervised); agent → mode `act`, allowlist includes `run_script`, kill switch clear, agent structural guardrails pass, agent per-run action cap not exceeded | RBAC / agent policy | no |
 | 14 | device online and not in a maintenance window | device | no |
 
-**Decision record.** When all hold, the intent is inserted already `approved` with `decided_via = 'script_reviewer'`, `decided_by_user_id = null`, a release lease, no `approval_requests` rows, an `intent_approved` outbox row, and the proposal's `intent_id` set by CAS. A new immutable `script_reviewer_evidence` jsonb on `action_intents` (written at insert, covered by the existing immutability trigger) holds: `proposalId`, `reviewId`, `contentDigest`, `scannerVersion`, `reviewerModel`, `reviewerPromptVersion`, `touchClasses`, `policySnapshot {ceiling, allowedClasses, perHour}`, `laneReservationAt`, `checkpointRequired`, and for agents `agentId`, `policyEpoch`, `killEpoch`.
+**Decision record.** When all hold, the intent is inserted already `approved` with `decided_via = 'script_reviewer'`, `decided_by_user_id = null`, a release lease, no `approval_requests` rows, an `intent_approved` outbox row, and the proposal's `intent_id` set by CAS; `script_proposals.decided_by` stays `NULL`. When refused, the reason is recorded in `action_intents.result` as `{ scriptLaneRefusal }` (the ticket-autonomy twin's breadcrumb, `intentService.ts:1585`), not a new column. A new immutable `script_reviewer_evidence` jsonb on `action_intents` (written at insert, covered by the existing immutability trigger) holds: `proposalId`, `reviewId`, `contentDigest`, `scannerVersion`, `reviewerModel`, `reviewerPromptVersion`, `touchClasses`, `policySnapshot {ceiling, allowedClasses, perHour}`, `laneReservationAt`, `checkpointRequired`, and for agents `agentId`, `policyEpoch`, `killEpoch`.
 
-**Release.** `revalidateRelease.isSystemDecided` recognises `script_reviewer`, and the no-approval-row exception is extended: `!winningApproval && decidedVia === 'script_reviewer' && evidenceValid`, for **both** chat-origin (has `requestedByUserId`) and agent-origin intents. `evidenceValid` re-runs invariants 1–3, 5–8, 12, 13, and 14 against **current** state (policy may have been tightened, the org grant revoked, the agent moved `act → shadow`, the kill switch flipped, the lane opened) and checks that the review id in the evidence is the proposal's latest completed review. Any failure is `failed:lane_revoked` with the specific reason. For invariant 11 the checkpoint result is read back before dispatch.
+**Release.** `revalidateRelease.isSystemDecided` recognises `script_reviewer`, and the no-approval-row exception is extended: `!winningApproval && decidedVia === 'script_reviewer' && evidenceValid`, for **both** chat-origin (has `requestedByUserId`) and agent-origin intents. The existing `!!intent.requestingAgentRunId` clause (`revalidateRelease.ts:170-180`) stays scoped to the `policy` and `ticket_autonomy` branches; regression tests prove the widening does not leak to them. `evidenceValid` re-runs invariants 1–3, 5–8, 12, 13, and 14 against **current** state (policy may have been tightened, the org grant revoked, the agent moved `act → shadow`, the kill switch flipped, the lane opened) and checks that the review id in the evidence is the proposal's latest completed review. Any failure fails the intent through `failIntent` with `errorCode: 'lane_revoked'` and the specific reason in `details`. For invariant 11 the checkpoint result is read back before dispatch.
 
 **After execution.** The verification job (§4.9) runs; a failed or unknown result increments `ai_script_lane_state.consecutive_failed_verifications` (and, for agents, feeds the existing circuit classifier) and notifies the agent's recipients or the session owner. Audit action `ai.script.unattended_run` at approval and `ai.script.unattended_verified` / `ai.script.unattended_failed` after.
 
@@ -347,13 +348,33 @@ The proposal moves to `promoted`. The script is now an ordinary library script a
 
 **Audit log actions**: `script.proposal.created`, `.scan_rejected`, `.reviewed`, `.review_failed`, `.decided` (approve / reject / changes), `.executed`, `.verified`, `.verification_failed`, `.promoted`; `ai.script.unattended_run`, `.unattended_verified`, `.unattended_failed`, `ai.script_lane.opened`, `.reset`.
 
-**Library and device surfaces**: Scripts list gains an Origin column and filter and "Reviewed" / "Edited since review" badges. Script detail gains a Provenance panel (origin, proposal link or "evidence erased", review summary + risk + model + time, approver, method, executions). Device activity lists AI-authored runs from the execution snapshot with a link to the proposal (closes #5022 for this path). `AiRiskDashboard` gains proposals per day, unattended runs, lane state, and reviewer disagreements (human rejected after `recommended_action = approve`, human approved after `reject`).
+**Library and device surfaces**: Scripts list gains an Origin column and filter and "Reviewed" / "Edited since review" badges. Script detail gains a Provenance panel (origin, proposal link or "evidence erased", review summary + risk + model + time, approver, method, executions). Device activity is audit-log driven (`routes/devices/events.ts`, with a performance-sensitive partial-index design), so dispatch writes an `audit_logs` row from the execution snapshot; no query onto `script_executions` or `script_proposals` is added to the feed. Rows link to the proposal or render "evidence erased" (closes #5022 for this path). `AiRiskDashboard` gains proposals per day, unattended runs, lane state, and reviewer disagreements (human rejected after `recommended_action = approve`, human approved after `reject`).
+
+### 4.10 Approval UI
+
+**Web** (`ScriptProposalApprovalCard`, rendered in the chat dialog and on the approvals inbox row when `tool = run_script` and the intent carries `proposalId`; there is no intent-detail page in `apps/web`):
+
+1. Risk band + one-line summary (from the review).
+2. Goal and expected effect, verification claim, rollback note.
+3. Findings list with severity; blast-radius chips (advisory).
+4. Device chips and the existing run-as row.
+5. Script body in the editor's read-only highlighted view, collapsed past 40 lines.
+6. STRICT acknowledgements as required checkboxes, each with the pattern description and the matching line; Approve stays disabled until all are ticked, and is disabled with an explanation when the approver lacks `scripts:write` or the `mfa` claim.
+7. Expiry countdown (existing), then **Approve**, **Request changes** (note required), **Reject**.
+
+The decision ceremony is unchanged and inherits the in-flight fixes: #5600 stops the web client from running a passkey ceremony on supervised self-approvals the server already accepts with a plain click, and #5601 adds a reusable step-up grant for four-eyes and enforcing partners. Four-eyes exclusion of the requester is unchanged. Data comes from `GET /ai/script-proposals/:id`, live-authorised (requester, or `approvals:decide` with org access) on every read, mirroring the `/pending` fix from #3175.
+
+**Mobile**: a typed `ScriptProposalDetails` renderer beside `UacInterceptDetails`: summary, risk band (existing), findings, device, acknowledgements, body in a collapse. Hold-to-confirm and the deny sheet are unchanged. Late approvals continue to work through the existing pending-queue poll. `apps/mobile` has no component tests, so the renderer's logic lives in a pure module with its own tests and the view is covered by the e2e pass.
+
+**Helper**: summary, findings, body collapse, approve or deny. The helper popup is fed by the legacy Tier-2 `approval_required` event, so a proposal-backed run reaches it only when that event carries a proposal; helper coverage is partial in v1 and the PR must say so.
+
+**Approvals inbox list**: risk band and summary on the row.
 
 ## 5. Tenancy, RLS, registration
 
 | Table | Shape | RLS | Cascade / registries | Merge | Export policy |
 |---|---|---|---|---|---|
-| `script_proposals` | 1 (`org_id`, trigger-immutable) | `breeze_has_org_access(org_id)` OR system, FORCE | `CORE_ORG_CASCADE_DELETE_ORDER` (alphabetical, after `script_proposal_reviews` which is its FK child) | `leave-for-erasure`; non-terminal rows fenced to `expired` first | `content`, `goal`, `expected_effect`, `rollback_note`, ids, hits, classes: `include`; `verification`, `verification_result`: `excludedOpen` |
+| `script_proposals` | 1 (`org_id`, trigger-immutable) | `breeze_has_org_access(org_id)` OR system, FORCE | `CORE_ORG_CASCADE_DELETE_ORDER` (alphabetical, after `script_proposal_reviews` which is its FK child) | `custom`: fence non-terminal rows to `expired`, no-op move, preview counter (the `ai_operator_tasks` pattern) — `leave-for-erasure` is a no-op in both merge phases (`orgMerge.ts:704-707`) so it cannot carry a fence | `content`, `goal`, `expected_effect`, `rollback_note`, ids, hits, classes: `include`; `verification`, `verification_result`: `excludedOpen` |
 | `script_proposal_reviews` | 1 | same | before `script_proposals` in the order; `AUDIT_ADMIN_REQUIRED_TABLES` | `leave-for-erasure` | `verdict`: `excludedOpen`; `summary`, tiers: `include`; `input_tokens`/`output_tokens`: `include` + `reviewedSensitiveName: true` |
 | `ai_script_policies` | dual-axis org XOR partner | one `FOR ALL` policy (system OR org-access OR partner-access) **plus** the separate `FOR SELECT`-only partner-wide branch on `breeze_current_partner_id()` | `CORE_ORG_CASCADE_DELETE_ORDER`, `DUAL_AXIS_TENANT_TABLES`, `XOR_OWNERSHIP_DUAL_AXIS_TABLES` | org row repointed like other org config; partner row untouched | all `include`; `protected_resources`: `excludedOpen` |
 | `ai_script_lane_state` | 1 (PK `org_id`) | same as proposals | `CORE_ORG_CASCADE_DELETE_ORDER` | `leave-for-erasure` | all `include` |
@@ -401,8 +422,8 @@ Contract suites that must go green: `rls-coverage.integration.test.ts`, `tenantC
 | Wave | Scope | Flag |
 |---|---|---|
 | W01 Foundation | `script_versions` rebuild (immutable definitions, unique, cascade FK, all writers, backfill), proposals + reviews tables, `script_executions` proposal source + snapshot/provenance columns + reader updates, `scripts.origin`, shared scanner BASIC mirror + touch classifier + parity tests, `propose_script` / `get_script_proposal`, `run_script proposalId` validation + input-aware guardrail + non-null digest resolver, proposal consumption CAS | `BREEZE_AI_SCRIPT_AUTHORING_ENABLED` off |
-| W02 Reviewer | `script-review` worker with budget reservation and settlement, structured verdict, classifier-derived floors, risk → scope mapping, concurrency and output caps | off |
-| W03 Human loop + verification | proposals API for approvers, web card, mobile renderer, helper, inbox rows, STRICT acknowledgement ceremony on decide, Request-changes loop, `script-verify` job and claim kinds, library provenance UI, Save to library gated on `verified` | flag on by default when W03 lands |
+| W02 Reviewer | `script-review` worker with budget reservation and settlement, structured verdict, classifier-derived floors, per-org concurrency (Redis counter) and output caps, model call through the partner BYOK client with its own LLM egress surface (`2026-10-16-100400-…`) | off |
+| W03 Human loop + verification | proposals API for approvers, web card, mobile renderer, helper, inbox rows, STRICT acknowledgement ceremony on decide (`acknowledged_patterns` column, `2026-10-16-101000-…`), Request-changes loop, `script-verify` job and claim kinds, library provenance UI + `GET /scripts/:id/versions`, Save to library gated on `verified` | flag on by default when W03 lands |
 | W04 Unattended lane | `ai_script_policies` + `ai_script_lane_state` + effective-policy resolver + settings UI (partner ceiling, org grant with MFA), `script_reviewer_evidence` column, `evaluateScriptReviewerAutonomy` in `createActionIntent`, `revalidateRelease` branch, hourly reservation under the advisory lock, checkpoint prerequisite (extends #4609), audit | lane off by default (policy) |
 | W05 Close the loop | device activity (#5022), risk dashboard metrics, docs, flag removal | |
 
@@ -419,14 +440,17 @@ Defaults taken without a question, overridable at spec review:
 - Partner ceiling defaults: `max_unattended_risk_tier = low`, `unattended_allowed_classes = {services, processes, temp_files, dns_cache, printing}`, `max_unattended_per_hour = 10`.
 - Lane state opens after 2 consecutive failed or unknown verifications.
 - Unattended `timeout_seconds` cap is 300.
+- `services`, `registry`, and `files_system` classes require the checkpoint, so on non-Windows devices they refuse with `checkpoint_unavailable`; the settings page marks those classes Windows-only.
 
 ## 10. Open items for planning
 
 - Whether W01 splits the `script_versions` rebuild into its own PR (recommended).
 - Exact repair strategy for existing duplicate `(script_id, version)` rows, if any exist in production (the migration must report the count before renumbering).
-- Which device-command primitive backs the Windows System Restore checkpoint for script runs (#4609 is patch-only today); if it cannot land in W04, invariant 11 makes `registry`/`services`/`files_system` classes lane-ineligible on every platform until it does.
+- A first-class `create_restore_point` agent command (follow-up issue): W04's server-side checkpoint over a raw script dispatch is the v1 mechanism; if it slips, invariant 11 makes `registry`/`services`/`files_system` classes lane-ineligible on every platform until it lands.
 
 ## 11. Review record
 
 - 2026-09-11: design approved in dialogue (Todd): proceed; both call sites (A); unattended lane built but off; provenance fields on scripts.
 - 2026-09-11: Codex `xhigh` (gpt-6-astra, read-only) quorum on Draft v1: **PROCEED WITH CHANGES**. One critical (a model label is not an enforcement boundary → D9 classifier + class allowlist + protected resources + checkpoint), eight high (intent-side autonomy seam instead of two transport branches → D8; `script_reviewer` needs a typed revalidation branch; proposal-backed executions need a first-class source → D11; versions must be immutable execution definitions across every writer; proposal↔review FK cycle and `script_versions` erasure; proposals must be left-for-erasure on merge; hourly cap must reserve under the lock and count pending intents; envelope must pin the exact review and exclude lifecycle state; verification before promotion and lane → D12), three medium (reuse the shared scanner; STRICT acknowledgement needs `scripts:write` + MFA; reviewer spend needs reservation). Three disagreements adopted: keep the shared policy table but intersect with agent limits; split partner ceiling from org grant → D10; do not reinterpret flow pre-approval. Every cited line was independently re-read before folding; three citations were corrected (versions FK has no cascade, PUT also bumps on parameter changes, export registry uses `include` + `reviewedSensitiveName`).
+
+- 2026-09-11: reconciled against the six wave plans (W01a, W01b, W02, W03, W04, W05) and restored the Approval UI section (§4.10) dropped in the v2 rewrite. Corrections folded: `supersedes_id` and other cross-schedule links are bare uuids; org merge uses a `custom` fence for proposals; `createActionIntent` receives the proposal `GuardrailContext`; the digest resolver adds the module's first throwing path; the flag gates tool definitions and handlers, never registration; STRICT acknowledgements live on `script_proposals.acknowledged_patterns` and require the JWT `mfa` claim; no checkpoint primitive exists today (W04 builds it server-side, Windows only); lane refusals live in `action_intents.result`; device activity is written as an audit-log row from the execution snapshot; helper coverage is partial. Two migration slots added (W02 `100400`, W03 `101000`).
