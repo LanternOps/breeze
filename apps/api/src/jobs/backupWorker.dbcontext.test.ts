@@ -27,6 +27,7 @@ import type { DispatchOutcome } from '../services/agentCommandRelay';
 const { mockDb, ctxState } = vi.hoisted(() => {
   const db = {
     select: vi.fn(),
+    selectDistinct: vi.fn(),
     update: vi.fn(),
     insert: vi.fn(),
     // D18 W01: stampDispatchPinAndIdentity opens `db.transaction(...)` for a
@@ -66,9 +67,24 @@ vi.mock('../db', () => ({
   SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, partnerId: null },
 }));
 
+// D18 W02: recording stubs (not plain vi.fn()) so this file's REAL ctxState
+// can prove WHERE each call happens -- specifically that
+// sweepUnreferencedBackupObjects runs at depth 0, never nested inside a held
+// DB context (see the describe block below).
+const cleanupExpiredSnapshotsMock = vi.fn(async () => {
+  ctxState.events.push(`cleanupExpiredSnapshots@depth${ctxState.depth}`);
+  return { deleted: 0, skippedLegalHold: 0, skippedImmutable: 0, skippedPinned: 0, skippedUnresolved: 0, prunedByMaxVersions: 0, failed: 0 };
+});
+const sweepUnreferencedBackupObjectsMock = vi.fn(async () => {
+  ctxState.events.push(`sweepUnreferencedBackupObjects@depth${ctxState.depth}`);
+  return {
+    deleted: 0, skippedIdentities: 0, blockedIdentities: 0,
+    retiredSwept: 0, orphansSwept: 0, deferredIdentities: 0, unreachableIdentities: 0,
+  };
+});
 vi.mock('./backupRetention', () => ({
-  cleanupExpiredSnapshots: vi.fn(),
-  sweepUnreferencedBackupObjects: vi.fn(),
+  cleanupExpiredSnapshots: cleanupExpiredSnapshotsMock,
+  sweepUnreferencedBackupObjects: sweepUnreferencedBackupObjectsMock,
   // D18 W01: real (not mocked) identity logic -- stampDispatchPinAndIdentity
   // calls this for every dispatched target.
   normalizeStorageIdentity: (provider: string, providerConfig: Record<string, unknown>): string => {
@@ -314,5 +330,38 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       'ctx:exit',
     ]);
     warn.mockRestore();
+  });
+});
+
+describe('processCleanupExpiredSnapshots DB-context scoping (D18 §3.7 / W02)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ctxState.depth = 0;
+    ctxState.events = [];
+    mockDb.selectDistinct.mockReturnValue({
+      from: vi.fn().mockImplementation(async () => {
+        ctxState.events.push(`orgRowsSelect@depth${ctxState.depth}`);
+        return [];
+      }),
+    });
+  });
+
+  it('calls sweepUnreferencedBackupObjects at depth 0 — never nested inside a held DB context', async () => {
+    const { processCleanupExpiredSnapshots } = await import('./backupWorker');
+    await processCleanupExpiredSnapshots();
+
+    expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledTimes(1);
+    const sweepEvent = ctxState.events.find((e) => e.startsWith('sweepUnreferencedBackupObjects@'));
+    expect(sweepEvent).toBe('sweepUnreferencedBackupObjects@depth0');
+  });
+
+  it('runs the org-row read inside a short context that closes before the sweep', async () => {
+    const { processCleanupExpiredSnapshots } = await import('./backupWorker');
+    await processCleanupExpiredSnapshots();
+
+    const orgReadIndex = ctxState.events.indexOf('orgRowsSelect@depth1');
+    const sweepIndex = ctxState.events.indexOf('sweepUnreferencedBackupObjects@depth0');
+    expect(orgReadIndex).toBeGreaterThanOrEqual(0);
+    expect(sweepIndex).toBeGreaterThan(orgReadIndex);
   });
 });

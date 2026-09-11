@@ -1,4 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtemp, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { backupSnapshots } from '../db/schema';
 
 // ── Chainable Drizzle mock ────────────────────────────────────────────────
 //
@@ -16,8 +20,11 @@ function chainable(rows: unknown[]) {
     leftJoin: () => obj,
     innerJoin: () => obj,
     orderBy: () => obj,
+    groupBy: () => obj,
     limit: () => obj,
     for: () => obj,
+    set: () => obj, // db.update(...).set({...}) — returns itself so .where()/.returning() still chain
+    returning: () => obj, // db.delete(...).returning() / db.update(...).returning()
     then: (resolve: (v: unknown[]) => unknown, reject?: (e: unknown) => unknown) =>
       Promise.resolve(rows).then(resolve, reject),
   };
@@ -26,11 +33,26 @@ function chainable(rows: unknown[]) {
 
 const selectQueue: unknown[][] = [];
 const insertedRows: unknown[] = [];
+// Captures every db.update(<table>).set(<payload>) call so a test can assert
+// WHICH row(s) a write targeted (review round 1, finding 5: proving the
+// cross-identity snapshotId self-heal collision guard needs to see the
+// actual .set() payload, which the generic `chainable` no-op can't record).
+const updateCalls: { table: unknown; payload: Record<string, unknown> }[] = [];
 
 const mockDb = {
   select: vi.fn(() => chainable(selectQueue.shift() ?? [])),
+  // selectDistinct shares the SAME selectQueue as select — from the test's
+  // perspective they're both just "the next db read in source order".
+  // identityHasLegacyHelper (D18 W02 capability gate) is the only
+  // selectDistinct call site in backupRetention.ts.
+  selectDistinct: vi.fn(() => chainable(selectQueue.shift() ?? [])),
   delete: vi.fn(() => chainable([])),
-  update: vi.fn(() => chainable([])),
+  update: vi.fn((table: unknown) => ({
+    set: (payload: Record<string, unknown>) => {
+      updateCalls.push({ table, payload });
+      return chainable([]);
+    },
+  })),
   insert: vi.fn((_table: unknown) => ({
     values: (v: unknown) => {
       insertedRows.push(v);
@@ -39,13 +61,26 @@ const mockDb = {
   })),
 };
 
+const assertOutsideHeldDbContextMock = vi.fn();
 vi.mock('../db', () => ({
   db: mockDb,
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
-  // D18 §3.7 review fix: cleanupExpiredSnapshots asserts no ambient context
-  // is held on entry — a no-op here since this suite's mock has no context
-  // tracking (every call is "outside" by construction).
-  assertOutsideHeldDbContext: () => {},
+  // D18 §3.7 review fix: cleanupExpiredSnapshots/sweepStorageIdentity assert
+  // no ambient context is held on entry — a pass-through here (this suite's
+  // mock has no real context tracking), but still a vi.fn() so the §3.7
+  // tripwire test can assert it fires with the right operation label.
+  assertOutsideHeldDbContext: assertOutsideHeldDbContextMock,
+}));
+
+// Redis-backed failed-key skip set (D18 W02, Task 6) — shared non-blocking
+// client mock, mirroring alertCooldown.ts's isRedisAvailable()/getRedis() usage.
+const redisSaddMock = vi.fn();
+const redisExpireMock = vi.fn();
+const redisSmembersMock = vi.fn();
+let redisAvailableForTest = true;
+vi.mock('../services/redis', () => ({
+  isRedisAvailable: () => redisAvailableForTest,
+  getRedis: () => (redisAvailableForTest ? { sadd: redisSaddMock, expire: redisExpireMock, smembers: redisSmembersMock } : null),
 }));
 
 // notFoundError mirrors what isBackupObjectNotFound (backupSnapshotStorage.ts)
@@ -89,30 +124,35 @@ vi.mock('../services/backupSnapshotStorage', async (importOriginal) => {
 const captureExceptionMock = vi.fn();
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
 
+
 const {
   computeExpiresAt,
   cleanupExpiredSnapshots,
   sweepUnreferencedBackupObjects,
   resolveBackupGcMaxDeletesPerRun,
+  resolveBackupGcGraceMs,
+  resolveBackupManifestlessPrefixMaxAgeMs,
   normalizeStorageIdentity,
-  BACKUP_GC_GRACE_MS,
-  BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS,
-  isRetainableBackupTypeForGc,
+  orphanManifestSnapshotIds,
 } = await import('./backupRetention');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const AGENT_JOURNAL_MAX_AGE_MS = 7 * DAY_MS;
-// Ages relative to the ACTUAL current threshold (not a hardcoded "7 days")
-// so these fixtures stay correct even if the headroom formula changes again.
+const MANIFESTLESS_WINDOW_MS_DEFAULT = 9 * DAY_MS;
+// BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS is no longer a module-load export
+// (D18 W02, Task 1) — its default (9 days) is a fixture constant here,
+// independent of the real per-run resolver under test. The frozen-time
+// boundary tests later in this file exercise the resolver's actual output
+// directly; these two helpers only need "comfortably past the default" for
+// tests that don't care about the exact boundary.
 const JUST_PAST_MANIFESTLESS_THRESHOLD = () =>
-  new Date(Date.now() - BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS - DAY_MS);
+  new Date(Date.now() - MANIFESTLESS_WINDOW_MS_DEFAULT - DAY_MS);
 const EVEN_FURTHER_PAST_MANIFESTLESS_THRESHOLD = () =>
-  new Date(Date.now() - BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS - 2 * DAY_MS);
+  new Date(Date.now() - MANIFESTLESS_WINDOW_MS_DEFAULT - 2 * DAY_MS);
 
 function manifestJson(files: { backupPath: string }[]): string {
   return JSON.stringify({ formatVersion: 2, files });
 }
-
 describe('backup retention', () => {
   it('uses retentionDays when no GFS tiers are configured', () => {
     const expiresAt = computeExpiresAt(
@@ -324,34 +364,155 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
   });
 });
 
+describe('resolveBackupGcGraceMs (per-run)', () => {
+  const prev = process.env.BACKUP_GC_GRACE_MS;
+  const prevEnv = process.env.NODE_ENV;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.BACKUP_GC_GRACE_MS; else process.env.BACKUP_GC_GRACE_MS = prev;
+    if (prevEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = prevEnv;
+  });
+
+  it('defaults to 48h when unset', () => {
+    delete process.env.BACKUP_GC_GRACE_MS;
+    expect(resolveBackupGcGraceMs()).toBe(48 * 60 * 60 * 1000);
+  });
+
+  it('honors a positive override outside production', () => {
+    process.env.NODE_ENV = 'test';
+    process.env.BACKUP_GC_GRACE_MS = '1000';
+    expect(resolveBackupGcGraceMs()).toBe(1000);
+  });
+
+  it('floors an override below 1h in production', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.BACKUP_GC_GRACE_MS = '1000';
+    expect(resolveBackupGcGraceMs()).toBe(60 * 60 * 1000);
+  });
+
+  it('re-resolves on every call (no module-load caching)', () => {
+    process.env.NODE_ENV = 'test';
+    process.env.BACKUP_GC_GRACE_MS = '5000';
+    expect(resolveBackupGcGraceMs()).toBe(5000);
+    process.env.BACKUP_GC_GRACE_MS = '9000';
+    expect(resolveBackupGcGraceMs()).toBe(9000);
+  });
+});
+
+describe('resolveBackupManifestlessPrefixMaxAgeMs (per-run)', () => {
+  const prev = process.env.BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS;
+    else process.env.BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS = prev;
+  });
+
+  it('defaults to 9 days (journalMaxAge + 48h), strictly greater than journalMaxAge', () => {
+    delete process.env.BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS;
+    const resolved = resolveBackupManifestlessPrefixMaxAgeMs();
+    expect(resolved).toBe(9 * 24 * 60 * 60 * 1000);
+    expect(resolved).toBeGreaterThan(AGENT_JOURNAL_MAX_AGE_MS);
+  });
+
+  it('never allows an override at or below journalMaxAge in production (floor holds)', () => {
+    const prevEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    process.env.BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS = String(AGENT_JOURNAL_MAX_AGE_MS);
+    try {
+      expect(resolveBackupManifestlessPrefixMaxAgeMs()).toBeGreaterThan(AGENT_JOURNAL_MAX_AGE_MS);
+    } finally {
+      if (prevEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = prevEnv;
+    }
+  });
+});
+
+describe('orphanManifestSnapshotIds (pure)', () => {
+  it('returns only young, unretained, unretired manifest-bearing ids', () => {
+    const groups = new Map([
+      ['young', { items: [], manifestItem: { key: 'snapshots/young/manifest.json', lastModified: new Date(Date.now() - DAY_MS) } }],
+      ['old', { items: [], manifestItem: { key: 'snapshots/old/manifest.json', lastModified: new Date(Date.now() - 20 * DAY_MS) } }],
+      ['retained', { items: [], manifestItem: { key: 'snapshots/retained/manifest.json', lastModified: new Date(Date.now() - 20 * DAY_MS) } }],
+      ['retired', { items: [], manifestItem: { key: 'snapshots/retired/manifest.json', lastModified: new Date(Date.now() - DAY_MS) } }],
+      ['nomanifest', { items: [{ key: 'snapshots/nomanifest/files/a', lastModified: new Date() }], manifestItem: null }],
+    ]);
+
+    const ids = orphanManifestSnapshotIds(
+      groups as any,
+      new Set(['retained']),
+      new Map([['retired', 'retirement-row-id']]),
+      Date.now(),
+      9 * DAY_MS,
+    );
+    expect(ids.sort()).toEqual(['young']);
+  });
+
+  it('treats a manifest object with unknown last-modified as young (fail-closed protect)', () => {
+    const groups = new Map([
+      ['unknownage', { items: [], manifestItem: { key: 'snapshots/unknownage/manifest.json', lastModified: null } }],
+    ]);
+    const ids = orphanManifestSnapshotIds(groups as any, new Set(), new Map(), Date.now(), 9 * DAY_MS);
+    expect(ids).toEqual(['unknownage']);
+  });
+});
+
 describe('sweepUnreferencedBackupObjects', () => {
   const destination = {
     id: 'cfg-1',
     provider: 's3',
     providerConfig: { bucket: 'backups', region: 'us-east-1' },
   };
+  const identityKeyFor = (d: typeof destination) => normalizeStorageIdentity(d.provider, d.providerConfig);
 
   beforeEach(() => {
     vi.clearAllMocks();
     selectQueue.length = 0;
+    updateCalls.length = 0;
+    redisAvailableForTest = true;
+    redisSmembersMock.mockResolvedValue([]);
     delete process.env.BACKUP_GC_MAX_DELETES_PER_RUN;
+    // Belt-and-braces: vi.clearAllMocks() clears call history but NOT queued
+    // .mockResolvedValueOnce/.mockRejectedValueOnce implementations — a test
+    // that (by design, e.g. a fail-closed abort) consumes fewer/more storage
+    // calls than another test expects can otherwise leak a stale queued
+    // response into the NEXT test's calls. Full reset + restore the shared
+    // "not found" default for fetchBackupObjectTextMock guarantees every test
+    // in this block starts from a clean slate regardless of execution order.
+    fetchBackupObjectTextMock.mockReset();
+    fetchBackupObjectTextMock.mockImplementation(async () => {
+      throw notFoundError();
+    });
+    listBackupObjectsUnderPrefixMock.mockReset();
+    deleteBackupObjectKeysMock.mockReset();
   });
 
   afterEach(() => {
     delete process.env.BACKUP_GC_MAX_DELETES_PER_RUN;
   });
 
+  // Convenience: pushes the 3 run-level reads (unattributedRows, destinations,
+  // identityUsage) that precede every per-identity loop iteration.
+  function pushRunLevel(dests: unknown[], unattributed: unknown[] = []) {
+    selectQueue.push(unattributed);
+    selectQueue.push(dests);
+    const usage = dests.map((d: any) => ({ storageIdentity: identityKeyFor(d), count: 1 }));
+    selectQueue.push(usage);
+  }
+
+  // Convenience: pushes the 4 per-identity reads, in the finalized order
+  // (retainedRows, nullIdentityRows, retirementRows, capabilityRows).
+  function pushIdentity(opts: {
+    retained?: unknown[];
+    nullRows?: unknown[];
+    retirements?: unknown[];
+    capability?: unknown[];
+  } = {}) {
+    selectQueue.push(opts.retained ?? []);
+    selectQueue.push(opts.nullRows ?? []);
+    selectQueue.push(opts.retirements ?? []);
+    selectQueue.push(opts.capability ?? []);
+  }
+
   it('keeps an object referenced by a retained snapshot even though it lives under an older, deleted snapshot prefix', async () => {
-    // Snapshot A's row is already gone (row-level retention ran); snapshot B
-    // is still retained and its manifest references A's file via a
-    // cross-prefix backupPath — the incremental "reference" mechanism. A has
-    // no manifest.json in the listing (its own row/manifest are gone), so
-    // group A is evaluated under the manifest-less/prefix-granularity rule;
-    // both its objects are 10 days old (past the 7-day window), so orphan.dat
-    // is swept while foo.dat survives purely because it's in the live set.
-    selectQueue.push([]); // unattributedRows
-    selectQueue.push([destination]); // destinations
-    selectQueue.push([{ snapshotId: 'B' }]); // retained snapshots for the identity
+    pushRunLevel([destination]);
+    pushIdentity({ retained: [{ snapshotId: 'B' }] });
 
     fetchBackupObjectTextMock.mockResolvedValueOnce(
       manifestJson([{ backupPath: 'snapshots/A/files/foo.dat' }]),
@@ -376,17 +537,23 @@ describe('sweepUnreferencedBackupObjects', () => {
     expect(deletedArg.keys).toEqual(['snapshots/A/files/orphan.dat']);
     expect(deletedArg.keys).not.toContain('snapshots/A/files/foo.dat');
     expect(deletedArg.keys).not.toContain('snapshots/B/manifest.json');
-    expect(result).toEqual({ deleted: 1, skippedIdentities: 0, blockedIdentities: 0 });
+    expect(result.deleted).toBe(1);
+    expect(result.skippedIdentities).toBe(0);
+    expect(result.blockedIdentities).toBe(0);
   });
 
   it('marks snapshots/<id>/layout.json live without fetching it, so the sweep never deletes a retained layout manifest', async () => {
-    selectQueue.push([]); // unattributedRows
-    selectQueue.push([destination]); // destinations
-    selectQueue.push([{ snapshotId: 'A' }]); // retained
+    pushRunLevel([destination]);
+    pushIdentity({ retained: [{ snapshotId: 'A' }] });
 
     fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
 
-    const old = new Date(Date.now() - 10 * DAY_MS);
+    // ORPHAN here has NO manifest.json at all (only a layout.json) — a
+    // manifest-less prefix, past the (default 9-day) manifest-less-prefix
+    // window, so it is reclaimed via that pre-existing rule regardless of
+    // this wave's retired/orphan-window logic (which only applies to
+    // manifest-BEARING prefixes).
+    const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
     listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
       { key: 'snapshots/A/manifest.json', lastModified: old },
       { key: 'snapshots/A/layout.json', lastModified: old },
@@ -410,59 +577,136 @@ describe('sweepUnreferencedBackupObjects', () => {
     const deletedArg = deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] };
     expect(deletedArg.keys).toEqual(['snapshots/ORPHAN/layout.json']);
     expect(deletedArg.keys).not.toContain('snapshots/A/layout.json');
-    expect(result).toEqual({ deleted: 1, skippedIdentities: 0, blockedIdentities: 0 });
+    expect(result.deleted).toBe(1);
+    expect(result.skippedIdentities).toBe(0);
+    expect(result.blockedIdentities).toBe(0);
+  });
+
+  // D18 W02 addition (rooted-and-orphan protection, per #5523 follow-up):
+  // layout.json must get the SAME unconditional-live treatment as
+  // manifest.json in every root-set case this wave adds, not just the
+  // pre-existing "retained row" case above — a rooted NULL-identity
+  // self-heal root, a young (unaged) orphan manifest, and every listed
+  // manifest under the deferred-identity algorithm.
+  it('protects layout.json for a young orphan manifest (no row) and marks it live under the deferred (legacy-helper) algorithm too', async () => {
+    // Part 1: young orphan — no DB row, no retirement, well within the
+    // orphan window — its layout.json must survive alongside its manifest.
+    pushRunLevel([destination]);
+    pushIdentity();
+
+    fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+    const recent = new Date(Date.now() - 1 * DAY_MS);
+    listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+      { key: 'snapshots/YOUNGORPHAN/manifest.json', lastModified: recent },
+      { key: 'snapshots/YOUNGORPHAN/layout.json', lastModified: recent },
+    ]);
+
+    const result1 = await sweepUnreferencedBackupObjects();
+    expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+    expect(result1.deleted).toBe(0);
+
+    // Part 2: deferred (legacy helper) — every listed manifest is a root
+    // under today's algorithm, and layout.json must stay protected there
+    // too, even though the snapshot is old enough it would otherwise be an
+    // orphan-window candidate.
+    pushRunLevel([destination]);
+    pushIdentity({ capability: [{ deviceId: 'device-legacy', backupVersion: '0.109.0' }] });
+
+    fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+    const old = new Date(Date.now() - 30 * DAY_MS);
+    listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+      { key: 'snapshots/DEFERREDOLD/manifest.json', lastModified: old },
+      { key: 'snapshots/DEFERREDOLD/layout.json', lastModified: old },
+    ]);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result2 = await sweepUnreferencedBackupObjects();
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result2.deleted).toBe(0);
+      expect(result2.deferredIdentities).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // A retired (or old-orphan) prefix's layout.json is NOT special-cased —
+  // it sweeps in the non-manifest phase exactly like any other non-manifest
+  // key, subject to the same cap/skip-set rules, with manifest.json only
+  // removed last/once nothing else remains.
+  it('sweeps layout.json for a RETIRED snapshot in the non-manifest phase, alongside its other objects', async () => {
+    pushRunLevel([destination]);
+    pushIdentity({ retirements: [{ id: 'retirement-layout', snapshotId: 'RETIREDLAYOUT' }] });
+
+    const t = new Date(Date.now() - 1000);
+    listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+      { key: 'snapshots/RETIREDLAYOUT/manifest.json', lastModified: t },
+      { key: 'snapshots/RETIREDLAYOUT/layout.json', lastModified: t },
+      { key: 'snapshots/RETIREDLAYOUT/files/x.dat', lastModified: t },
+    ]);
+    deleteBackupObjectKeysMock.mockResolvedValueOnce({
+      deletedKeys: ['snapshots/RETIREDLAYOUT/layout.json', 'snapshots/RETIREDLAYOUT/files/x.dat'],
+      failedKeys: [],
+    });
+    deleteBackupObjectKeysMock.mockResolvedValueOnce({
+      deletedKeys: ['snapshots/RETIREDLAYOUT/manifest.json'],
+      failedKeys: [],
+    });
+
+    const result = await sweepUnreferencedBackupObjects();
+
+    expect(result.deleted).toBe(3);
+    const firstCallKeys = (deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] }).keys;
+    expect(firstCallKeys).toEqual(expect.arrayContaining(['snapshots/RETIREDLAYOUT/layout.json', 'snapshots/RETIREDLAYOUT/files/x.dat']));
+    // Manifest deleted only in the SECOND (last) call, once nothing else remained.
+    const secondCallKeys = (deleteBackupObjectKeysMock.mock.calls[1]![0] as { keys: string[] }).keys;
+    expect(secondCallKeys).toEqual(['snapshots/RETIREDLAYOUT/manifest.json']);
   });
 
   it('keeps a loose unreferenced object under a manifest-bearing prefix that is still inside the 48h grace window', async () => {
-    selectQueue.push([]);
-    selectQueue.push([destination]);
-    selectQueue.push([{ snapshotId: 'B' }]);
+    pushRunLevel([destination]);
+    pushIdentity({ retained: [{ snapshotId: 'B' }] });
 
     fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
 
     const withinGrace = new Date(Date.now() - 1 * 60 * 60 * 1000); // 1h old, grace is 48h
     listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
       { key: 'snapshots/B/manifest.json', lastModified: withinGrace },
-      { key: 'snapshots/B/files/pending.dat', lastModified: withinGrace }, // loose object under B's manifest-bearing prefix
+      { key: 'snapshots/B/files/pending.dat', lastModified: withinGrace },
     ]);
 
     const result = await sweepUnreferencedBackupObjects();
 
     expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
+    expect(result.deleted).toBe(0);
   });
 
   it('never deletes an object with no last-modified data, even if otherwise unreferenced (fail-closed per-object)', async () => {
-    selectQueue.push([]);
-    selectQueue.push([destination]);
-    selectQueue.push([{ snapshotId: 'B' }]);
+    pushRunLevel([destination]);
+    pushIdentity({ retained: [{ snapshotId: 'B' }] });
 
     fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
 
     listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
       { key: 'snapshots/B/manifest.json', lastModified: new Date(Date.now() - 10 * DAY_MS) },
-      { key: 'snapshots/B/files/unknown-age.dat', lastModified: null }, // no age proof
+      { key: 'snapshots/B/files/unknown-age.dat', lastModified: null },
     ]);
 
     const result = await sweepUnreferencedBackupObjects();
 
     expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
+    expect(result.deleted).toBe(0);
   });
 
-  // Manifest-less prefixes are protected at PREFIX granularity for
-  // BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS (9 days = the agent's 7-day
-  // journalMaxAge + 48h resume headroom), not the 48h loose-object grace.
   describe('manifest-less prefix protection', () => {
     it('leaves a manifest-less prefix entirely untouched while ANY of its objects is fresh (mixed-age)', async () => {
-      selectQueue.push([]);
-      selectQueue.push([destination]);
-      selectQueue.push([{ snapshotId: 'B' }]);
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
 
       fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
 
       const veryOld = new Date(Date.now() - 20 * DAY_MS);
-      const fresh = new Date(Date.now() - 1 * DAY_MS); // well past 48h grace but inside the 7-day journal window
+      const fresh = new Date(Date.now() - 1 * DAY_MS);
       listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
         { key: 'snapshots/B/manifest.json', lastModified: veryOld },
         { key: 'snapshots/C/files/partial-old.dat', lastModified: veryOld },
@@ -471,20 +715,17 @@ describe('sweepUnreferencedBackupObjects', () => {
 
       const result = await sweepUnreferencedBackupObjects();
 
-      // The single fresh object protects the WHOLE "C" prefix — including
-      // partial-old.dat, which on its own would look well past any grace.
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
+      expect(result.deleted).toBe(0);
     });
 
     it('sweeps a manifest-less prefix in full once its newest object clears the (9-day) window', async () => {
-      selectQueue.push([]);
-      selectQueue.push([destination]);
-      selectQueue.push([{ snapshotId: 'B' }]);
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
 
       fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
 
-      const allOld = JUST_PAST_MANIFESTLESS_THRESHOLD(); // past the (headroom-inclusive) window
+      const allOld = JUST_PAST_MANIFESTLESS_THRESHOLD();
       listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
         { key: 'snapshots/B/manifest.json', lastModified: allOld },
         { key: 'snapshots/C/files/partial-1.dat', lastModified: allOld },
@@ -506,17 +747,12 @@ describe('sweepUnreferencedBackupObjects', () => {
     });
 
     it('boundary regression: protects a resume opened just inside the agent journal window (day ~6.9) that legitimately runs past day 7', async () => {
-      // The scenario the 48h headroom targets: using journalMaxAge (7 days)
-      // alone as the sweep threshold would have swept
-      // this prefix (its newest object is 7 days + a few hours old — past the
-      // OLD threshold). With the 48h headroom, it must stay protected.
-      selectQueue.push([]);
-      selectQueue.push([destination]);
-      selectQueue.push([{ snapshotId: 'B' }]);
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
 
       fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
 
-      const justPastOldSevenDayThreshold = new Date(Date.now() - AGENT_JOURNAL_MAX_AGE_MS - 6 * 60 * 60 * 1000); // 7d + 6h
+      const justPastOldSevenDayThreshold = new Date(Date.now() - AGENT_JOURNAL_MAX_AGE_MS - 6 * 60 * 60 * 1000);
       listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
         { key: 'snapshots/B/manifest.json', lastModified: justPastOldSevenDayThreshold },
         { key: 'snapshots/D/files/resume-chunk.dat', lastModified: justPastOldSevenDayThreshold },
@@ -525,39 +761,28 @@ describe('sweepUnreferencedBackupObjects', () => {
       const result = await sweepUnreferencedBackupObjects();
 
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
-    });
-
-    it('BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS is strictly larger than the agent journalMaxAge (7 days), not merely equal', () => {
-      expect(BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS).toBeGreaterThan(AGENT_JOURNAL_MAX_AGE_MS);
-      // Exact value pinned for regression safety: 7 days + 48h headroom = 9 days.
-      expect(BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS).toBe(9 * DAY_MS);
+      expect(result.deleted).toBe(0);
     });
   });
 
   it('aborts the sweep for an identity whose manifest fetch fails, but still processes other identities', async () => {
-    // Listing now happens before marking for EVERY identity (the dedup-source
-    // race protection marks every listed manifest live), so both identities
-    // get listed — the broken one's mark phase then fails on the manifest
-    // fetch for its retained snapshot and aborts BEFORE any delete.
     const destinationBroken = { id: 'cfg-broken', provider: 's3', providerConfig: { bucket: 'b1', region: 'us-east-1' } };
     const destinationOk = { id: 'cfg-ok', provider: 's3', providerConfig: { bucket: 'b2', region: 'us-east-1' } };
 
-    selectQueue.push([]); // unattributedRows
-    selectQueue.push([destinationBroken, destinationOk]); // destinations
-    selectQueue.push([{ snapshotId: 'X' }]); // retained for destinationBroken's identity
-    selectQueue.push([{ snapshotId: 'Y' }]); // retained for destinationOk's identity
+    pushRunLevel([destinationBroken, destinationOk]);
+    pushIdentity({ retained: [{ snapshotId: 'X' }] }); // destinationBroken's identity
+    pushIdentity({ retained: [{ snapshotId: 'Y' }] }); // destinationOk's identity
 
     fetchBackupObjectTextMock
-      .mockRejectedValueOnce(new Error('network error fetching manifest')) // destinationBroken's snapshot X
-      .mockResolvedValueOnce(manifestJson([])); // destinationOk's snapshot Y
+      .mockRejectedValueOnce(new Error('network error fetching manifest'))
+      .mockResolvedValueOnce(manifestJson([]));
 
     const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
     listBackupObjectsUnderPrefixMock
-      .mockResolvedValueOnce([]) // destinationBroken's identity — empty listing, mark still attempted+fails on X
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
         { key: 'snapshots/Y/manifest.json', lastModified: old },
-        { key: 'snapshots/Z/files/orphan.dat', lastModified: old }, // manifest-less, all-old — deletable
+        { key: 'snapshots/Z/files/orphan.dat', lastModified: old },
       ]);
 
     deleteBackupObjectKeysMock.mockResolvedValueOnce({
@@ -567,24 +792,22 @@ describe('sweepUnreferencedBackupObjects', () => {
 
     const result = await sweepUnreferencedBackupObjects();
 
-    // Both identities get listed; only the healthy one reaches delete.
     expect(listBackupObjectsUnderPrefixMock).toHaveBeenCalledTimes(2);
     expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1);
     expect(deleteBackupObjectKeysMock).toHaveBeenCalledWith(
       expect.objectContaining({ providerConfig: destinationOk.providerConfig }),
     );
-    // The fail-closed identity is both skipped and BLOCKED (distinct signal),
-    // and the failure is escalated to Sentry.
-    expect(result).toEqual({ deleted: 1, skippedIdentities: 1, blockedIdentities: 1 });
+    expect(result.deleted).toBe(1);
+    expect(result.skippedIdentities).toBe(1);
+    expect(result.blockedIdentities).toBe(1);
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
   });
 
   it('honors the per-run deletion cap, leaving the rest for a later run', async () => {
     process.env.BACKUP_GC_MAX_DELETES_PER_RUN = '1';
 
-    selectQueue.push([]);
-    selectQueue.push([destination]);
-    selectQueue.push([{ snapshotId: 'B' }]);
+    pushRunLevel([destination]);
+    pushIdentity({ retained: [{ snapshotId: 'B' }] });
 
     fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
 
@@ -605,76 +828,30 @@ describe('sweepUnreferencedBackupObjects', () => {
 
     expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1);
     const deletedArg = deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] };
-    // Oldest-first: only 1 of the 2 deletable objects goes this run.
     expect(deletedArg.keys).toEqual(['snapshots/A/files/orphan-2.dat']);
     expect(result.deleted).toBe(1);
   });
 
-  it('grace window matches BACKUP_GC_GRACE_MS (48h)', () => {
-    expect(BACKUP_GC_GRACE_MS).toBe(48 * 60 * 60 * 1000);
-  });
-
-  it('BACKUP_GC_GRACE_MS env override is honoured only when a positive number (lab knob)', async () => {
-    const prev = process.env.BACKUP_GC_GRACE_MS;
-    try {
-      process.env.BACKUP_GC_GRACE_MS = '1000';
-      vi.resetModules();
-      const fresh = await import('./backupRetention');
-      expect(fresh.BACKUP_GC_GRACE_MS).toBe(1000);
-      process.env.BACKUP_GC_GRACE_MS = 'nope';
-      vi.resetModules();
-      const bad = await import('./backupRetention');
-      expect(bad.BACKUP_GC_GRACE_MS).toBe(48 * 60 * 60 * 1000);
-    } finally {
-      if (prev === undefined) delete process.env.BACKUP_GC_GRACE_MS; else process.env.BACKUP_GC_GRACE_MS = prev;
-      vi.resetModules();
-    }
-  });
-
-  it('BACKUP_GC_GRACE_MS override is floored to 1h in production and always logged (review item)', async () => {
-    const prevGrace = process.env.BACKUP_GC_GRACE_MS;
-    const prevEnv = process.env.NODE_ENV;
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      process.env.BACKUP_GC_GRACE_MS = '1000';
-      process.env.NODE_ENV = 'production';
-      vi.resetModules();
-      const prod = await import('./backupRetention');
-      // A 1 s grace in production would sweep objects of any in-flight upload
-      // whose manifest is not published yet; the knob is a lab knob.
-      expect(prod.BACKUP_GC_GRACE_MS).toBe(60 * 60 * 1000);
-      expect(warn.mock.calls.some(([msg]) => String(msg).includes('BACKUP_GC_GRACE_MS'))).toBe(true);
-
-      warn.mockClear();
-      process.env.NODE_ENV = 'test';
-      vi.resetModules();
-      const lab = await import('./backupRetention');
-      expect(lab.BACKUP_GC_GRACE_MS).toBe(1000);
-      expect(warn.mock.calls.some(([msg]) => String(msg).includes('BACKUP_GC_GRACE_MS'))).toBe(true);
-    } finally {
-      warn.mockRestore();
-      if (prevGrace === undefined) delete process.env.BACKUP_GC_GRACE_MS; else process.env.BACKUP_GC_GRACE_MS = prevGrace;
-      if (prevEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = prevEnv;
-      vi.resetModules();
-    }
+  it('grace window matches the default 48h', () => {
+    expect(resolveBackupGcGraceMs()).toBe(48 * 60 * 60 * 1000);
   });
 
   it('skips an identity whose provider has no GC listing support, without touching storage', async () => {
     const unsupported = { id: 'cfg-azure', provider: 'azure_blob', providerConfig: {} };
-    selectQueue.push([]);
-    selectQueue.push([unsupported]);
+    pushRunLevel([unsupported]);
 
     const result = await sweepUnreferencedBackupObjects();
 
     expect(fetchBackupObjectTextMock).not.toHaveBeenCalled();
     expect(listBackupObjectsUnderPrefixMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ deleted: 0, skippedIdentities: 1, blockedIdentities: 0 });
+    expect(result.deleted).toBe(0);
+    expect(result.skippedIdentities).toBe(1);
+    expect(result.blockedIdentities).toBe(0);
   });
 
   it('does not crash the sweep when a delete is rejected (e.g. object-lock) — counts it and moves on', async () => {
-    selectQueue.push([]);
-    selectQueue.push([destination]);
-    selectQueue.push([{ snapshotId: 'B' }]);
+    pushRunLevel([destination]);
+    pushIdentity({ retained: [{ snapshotId: 'B' }] });
 
     fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
 
@@ -691,31 +868,19 @@ describe('sweepUnreferencedBackupObjects', () => {
 
     const result = await sweepUnreferencedBackupObjects();
 
-    expect(result).toEqual({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
+    expect(result.deleted).toBe(0);
+    expect(result.skippedIdentities).toBe(0);
+    expect(result.blockedIdentities).toBe(0);
   });
 
-  // Sweep scope must be storage identity (provider + endpoint + bucket,
-  // excluding prefix), not backupConfigs row, or two configs on one bucket
-  // mass-delete each other's backups.
   describe('storage identity grouping', () => {
     it('unions retained snapshots across two configs sharing one physical bucket, so neither can delete the other\'s live objects', async () => {
       const configA = { id: 'cfg-a', provider: 's3', providerConfig: { bucket: 'shared-bucket', region: 'us-east-1' } };
       const configB = { id: 'cfg-b', provider: 's3', providerConfig: { bucket: 'shared-bucket', region: 'us-east-1' } };
 
-      selectQueue.push([]); // unattributedRows
-      selectQueue.push([configA, configB]); // destinations — same identity (same bucket)
-      selectQueue.push([{ snapshotId: 'A' }, { snapshotId: 'B' }]); // retained rows unioned across BOTH configs
+      pushRunLevel([configA, configB]);
+      pushIdentity({ retained: [{ snapshotId: 'A' }, { snapshotId: 'B' }] });
 
-      // A's manifest has no references of its own; B's manifest (a
-      // different config's snapshot, same bucket) references an object that
-      // physically lives under A's prefix — the cross-config reference the
-      // identity-scoped mark protects.
-      //
-      // Dispatched by key (not a positional .mockResolvedValueOnce chain):
-      // markLiveBackupObjects now fetches TWO keys per snapshot (ordinary +
-      // D15's system-state probe), which would otherwise misalign a
-      // positional queue across multiple snapshots — see the failure this
-      // fixture originally hit before switching to key dispatch.
       fetchBackupObjectTextMock.mockImplementation(async (input: { key: string }) => {
         if (input.key === 'snapshots/A/manifest.json') return manifestJson([]);
         if (input.key === 'snapshots/B/manifest.json') {
@@ -728,34 +893,30 @@ describe('sweepUnreferencedBackupObjects', () => {
       const old = new Date(Date.now() - 10 * DAY_MS);
       listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
         { key: 'snapshots/A/manifest.json', lastModified: old },
-        { key: 'snapshots/A/files/shared.dat', lastModified: old }, // sits under A, referenced by B — must survive
+        { key: 'snapshots/A/files/shared.dat', lastModified: old },
         { key: 'snapshots/B/manifest.json', lastModified: old },
       ]);
 
       const result = await sweepUnreferencedBackupObjects();
 
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
+      expect(result.deleted).toBe(0);
     });
 
     it('blocks the entire run when any backup_snapshots row has a null config_id (cannot be attributed to a bucket)', async () => {
-      selectQueue.push([{ id: 'orphan-snap-1' }]); // unattributedRows — one exists
-      selectQueue.push([destination]); // destinations — used only to size skippedIdentities
+      pushRunLevel([destination], [{ id: 'orphan-snap-1' }]);
 
       const result = await sweepUnreferencedBackupObjects();
 
       expect(fetchBackupObjectTextMock).not.toHaveBeenCalled();
       expect(listBackupObjectsUnderPrefixMock).not.toHaveBeenCalled();
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ deleted: 0, skippedIdentities: 1, blockedIdentities: 0 });
+      expect(result.deleted).toBe(0);
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(0);
     });
 
     it('belt-and-braces: fail-closed-skips every identity that coarsely collides on bucket+host despite normalizeStorageIdentity keeping them apart', async () => {
-      // Genuine variant normalizeStorageIdentity does NOT currently collapse:
-      // one config specifies the port explicitly, the other omits it. That's
-      // a real gap (an implicit default port could mean the same physical
-      // endpoint), so the two land in DIFFERENT identities by construction —
-      // exactly the "unanticipated variant" the coarse check exists to catch.
       const configWithPort = {
         id: 'cfg-port',
         provider: 's3',
@@ -767,227 +928,139 @@ describe('sweepUnreferencedBackupObjects', () => {
         providerConfig: { bucket: 'collide-bucket', endpoint: 'https://minio.local' },
       };
 
-      // Sanity check the premise: normalizeStorageIdentity really does treat
-      // these as different (otherwise this test would be proving nothing).
       expect(normalizeStorageIdentity('s3', configWithPort.providerConfig))
         .not.toBe(normalizeStorageIdentity('s3', configWithoutPort.providerConfig));
 
-      selectQueue.push([]); // unattributedRows
-      selectQueue.push([configWithPort, configWithoutPort]); // destinations — 2 identities, coarsely the same bucket+host
+      pushRunLevel([configWithPort, configWithoutPort]);
 
       const result = await sweepUnreferencedBackupObjects();
 
-      // Neither identity's retained-rows query, listing, mark, or delete
-      // ever runs — both are excluded before any provider call.
       expect(fetchBackupObjectTextMock).not.toHaveBeenCalled();
       expect(listBackupObjectsUnderPrefixMock).not.toHaveBeenCalled();
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ deleted: 0, skippedIdentities: 2, blockedIdentities: 0 });
+      expect(result.deleted).toBe(0);
+      expect(result.skippedIdentities).toBe(2);
+      expect(result.blockedIdentities).toBe(0);
     });
   });
 
-  // Dedup-source race: agents pick their reference base from the bucket
-  // LISTING, not from DB rows, so a listed manifest must be treated as live
-  // even with no (or not-yet-persisted) backup_snapshots row.
-  it('keeps a listed manifest\'s exclusive objects live even though no backup_snapshots row retains it', async () => {
-    selectQueue.push([]); // unattributedRows
-    selectQueue.push([destination]); // destinations
-    selectQueue.push([]); // retained snapshots for the identity — NONE (row never persisted)
+  // D18 W02: replaces the old "every listed manifest is live forever" rule.
+  // An orphan manifest with no row and no retirement is a root only while
+  // younger than the orphan window (default 9 days).
+  describe('orphan manifest root set (age-windowed, no row required)', () => {
+    it('protects a young orphan manifest (no row, no retirement) as a root', async () => {
+      pushRunLevel([destination]);
+      pushIdentity(); // no retained rows, no NULL rows, no retirements, no legacy helper
 
-    // ONE ordinary-manifest fetch expected: snapshot NEW is picked up purely
-    // from the listing (not from a retained row), and NEW is the only
-    // snapshot in this bucket at all. markLiveBackupObjects also probes for a
-    // system-state manifest per snapshot (D15) — that second call falls
-    // through to fetchBackupObjectTextMock's default "not found" (this
-    // snapshot has none), so it isn't queued here.
-    fetchBackupObjectTextMock.mockResolvedValueOnce(
-      manifestJson([{ backupPath: 'snapshots/OLD/files/base.dat' }]),
-    );
+      fetchBackupObjectTextMock.mockResolvedValueOnce(
+        manifestJson([{ backupPath: 'snapshots/OLD/files/base.dat' }]),
+      );
 
-    const recent = new Date(Date.now() - 1 * DAY_MS);
-    const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
-    listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
-      { key: 'snapshots/NEW/manifest.json', lastModified: recent }, // listed manifest — no DB row
-      { key: 'snapshots/OLD/files/base.dat', lastModified: old }, // referenced by NEW — must survive despite being old and manifest-less
-    ]);
+      const recent = new Date(Date.now() - 1 * DAY_MS);
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/NEW/manifest.json', lastModified: recent },
+        { key: 'snapshots/OLD/files/base.dat', lastModified: old },
+      ]);
 
-    const result = await sweepUnreferencedBackupObjects();
+      const result = await sweepUnreferencedBackupObjects();
 
-    expect(fetchBackupObjectTextMock).toHaveBeenCalledTimes(2);
-    expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(
-      expect.objectContaining({ key: 'snapshots/NEW/manifest.json' }),
-    );
-    expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(
-      expect.objectContaining({ key: 'snapshots/NEW/system-state/manifest.json' }),
-    );
-    expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
+      expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(expect.objectContaining({ key: 'snapshots/NEW/manifest.json' }));
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deleted).toBe(0);
+    });
+
+    it('reclaims an orphan manifest once it clears the orphan window (default 9 days), with no retirement row', async () => {
+      pushRunLevel([destination]);
+      pushIdentity();
+
+      const pastWindow = new Date(Date.now() - 10 * DAY_MS);
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/ABANDONED/manifest.json', lastModified: pastWindow },
+        { key: 'snapshots/ABANDONED/files/x.dat', lastModified: pastWindow },
+      ]);
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/ABANDONED/files/x.dat'], failedKeys: [] });
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/ABANDONED/manifest.json'], failedKeys: [] });
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(fetchBackupObjectTextMock).not.toHaveBeenCalled();
+      expect(result.deleted).toBe(2);
+      expect(result.orphansSwept).toBe(1);
+    });
+
+    it('a manifest object with unknown last-modified is treated as young (fail-closed protect)', async () => {
+      pushRunLevel([destination]);
+      pushIdentity();
+
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/UNKNOWNAGE/manifest.json', lastModified: null },
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(expect.objectContaining({ key: 'snapshots/UNKNOWNAGE/manifest.json' }));
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deleted).toBe(0);
+    });
   });
 
-  // FIX 5 — EVERY listed manifest is marked live, not just the newest by
-  // object last-modified. The agent picks its incremental dedup base by the
-  // manifest's INTERNAL timestamp (agent clock), which can diverge from the S3
-  // object's last-modified; so protecting only the newest-by-last-modified
-  // could sweep the in-flight backup's actual base out from under it.
-  describe('marks every listed manifest, not just the newest (FIX 5)', () => {
-    it('protects an OLDER listed manifest (the in-flight dedup base) whose object last-modified is older than a newer sibling', async () => {
-      selectQueue.push([]); // unattributedRows
-      selectQueue.push([destination]); // destinations
-      selectQueue.push([]); // retained snapshots — NONE persisted yet (both are listing-only)
+  describe('all backup types share one retained set via storage_identity (no more backupType filter)', () => {
+    it('includes a system_image row in the retained set alongside a file row on the same identity', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'FILE1' }, { snapshotId: 'IMG1' }] });
 
-      // Two manifest-bearing snapshots in the listing. NEWER's manifest object
-      // is more recently uploaded (server clock), but the in-flight backup is
-      // deduping against OLDER (chosen by OLDER's internal agent-clock
-      // timestamp), so OLDER references a base object that must survive. Under
-      // the old "newest listed manifest only" rule, OLDER would NOT be marked
-      // and its referenced base — being past the grace window and manifest-less
-      // at that prefix — would be swept, dangling the in-flight reference.
-      const newerUpload = new Date(Date.now() - 1 * DAY_MS);
-      const olderUpload = new Date(Date.now() - 3 * DAY_MS);
-      const baseObjOld = JUST_PAST_MANIFESTLESS_THRESHOLD();
-
-      // Marks are driven by which manifests exist in the listing; both are
-      // fetched. NEWER references nothing extra; OLDER references the base.
       fetchBackupObjectTextMock.mockImplementation(async (input: { key: string }) => {
-        if (input.key === 'snapshots/NEWER/manifest.json') return manifestJson([]);
-        if (input.key === 'snapshots/OLDER/manifest.json') {
-          return manifestJson([{ backupPath: 'snapshots/BASE/files/base.dat' }]);
-        }
-        // Neither snapshot has system state — this test predates D15 and
-        // isn't about it. markLiveBackupObjects probes for it unconditionally
-        // per snapshot, so it must resolve as "absent" (routine case), not an
-        // unexpected-key failure.
+        if (input.key === 'snapshots/FILE1/manifest.json') return manifestJson([]);
+        if (input.key === 'snapshots/IMG1/manifest.json') return manifestJson([]);
         if (input.key.endsWith('/system-state/manifest.json')) throw notFoundError();
         throw new Error(`unexpected manifest fetch: ${input.key}`);
       });
 
-      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
-        { key: 'snapshots/NEWER/manifest.json', lastModified: newerUpload },
-        { key: 'snapshots/OLDER/manifest.json', lastModified: olderUpload },
-        { key: 'snapshots/BASE/files/base.dat', lastModified: baseObjOld }, // referenced by OLDER — must survive
-      ]);
-
-      const result = await sweepUnreferencedBackupObjects();
-
-      // BOTH manifests were fetched (every listed manifest is marked), and the
-      // OLDER manifest's referenced base was NOT deleted.
-      expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(
-        expect.objectContaining({ key: 'snapshots/NEWER/manifest.json' }),
-      );
-      expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(
-        expect.objectContaining({ key: 'snapshots/OLDER/manifest.json' }),
-      );
-      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
-    });
-  });
-
-  // D15 Wave 1 finding #3: retainedSnapshotIds' backupType allowlist must
-  // include system_image (it now shares the ordinary snapshots/<id>/
-  // manifest.json layout, per backup.go's Option A publish paths) while
-  // still excluding backupTypes that write their manifest elsewhere
-  // (hyperv's 'application', mssql's 'database') — including one of THOSE
-  // would 404 markLiveBackupObjects's unconditional ordinary-manifest fetch
-  // and fail-close the whole identity, exactly the FIX 6 regression below.
-  describe('isRetainableBackupTypeForGc', () => {
-    it.each([
-      ['file', true],
-      ['system_image', true],
-      [null, true], // legacy rows predating the backupType column
-      ['application', false], // hyperv — different manifest namespace
-      ['database', false], // mssql — different manifest namespace
-    ] as const)('backupType %s → %s', (backupType, want) => {
-      expect(isRetainableBackupTypeForGc(backupType)).toBe(want);
-    });
-  });
-
-  // FIX 6 — the mark phase only fetches snapshots/<id>/manifest.json for
-  // backupTypes in BACKUP_GC_RETAINED_MANIFEST_BACKUP_TYPES (plus NULL). A
-  // snapshot of some OTHER type (hyperv's 'application' / mssql's 'database')
-  // sharing a storage identity writes its manifest to a DIFFERENT key and
-  // never appears under snapshots/<id>/manifest.json, so including it in the
-  // retained set used to 404 the fetch and fail-close the WHOLE identity
-  // forever. The retained-rows query filters to that allowlist (plus NULL).
-  describe('non-file snapshots no longer wedge the file-backup sweep (FIX 6)', () => {
-    it('does not fail-close the identity when a non-file, non-system_image snapshot shares the bucket', async () => {
-      // The retained-rows query (filtered in SQL) returns only the
-      // FILE snapshot; a hyperv (backupType 'application') snapshot's row is
-      // excluded and so its non-existent snapshots/HYPERV1/manifest.json is
-      // never fetched. (The SQL WHERE clause itself is exercised by the
-      // integration suite — the mocked query builder here can't filter, so
-      // we assert the downstream behavior the filter produces: only the file
-      // manifest is fetched, no fail-close.)
-      selectQueue.push([]); // unattributedRows
-      selectQueue.push([destination]); // destinations
-      selectQueue.push([{ snapshotId: 'FILE1' }]); // retained FILE-type snapshots ONLY (non-file filtered out)
-
-      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
-
       const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
       listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
         { key: 'snapshots/FILE1/manifest.json', lastModified: old },
+        { key: 'snapshots/IMG1/manifest.json', lastModified: old },
       ]);
 
       const result = await sweepUnreferencedBackupObjects();
 
-      // Only FILE1's manifests are fetched (ordinary + D15's system-state
-      // probe, which falls through to "not found" since this fixture has
-      // none); the hyperv snapshot's keys are never touched at all, so the
-      // identity is NOT blocked.
-      expect(fetchBackupObjectTextMock).toHaveBeenCalledTimes(2);
-      expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(
-        expect.objectContaining({ key: 'snapshots/FILE1/manifest.json' }),
-      );
-      expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(
-        expect.objectContaining({ key: 'snapshots/FILE1/system-state/manifest.json' }),
-      );
-      expect(fetchBackupObjectTextMock).not.toHaveBeenCalledWith(
-        expect.objectContaining({ key: 'snapshots/HYPERV1/manifest.json' }),
-      );
-      expect(fetchBackupObjectTextMock).not.toHaveBeenCalledWith(
-        expect.objectContaining({ key: 'snapshots/HYPERV1/system-state/manifest.json' }),
-      );
-      expect(result).toEqual({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
-      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(expect.objectContaining({ key: 'snapshots/FILE1/manifest.json' }));
+      expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(expect.objectContaining({ key: 'snapshots/IMG1/manifest.json' }));
+      expect(result.blockedIdentities).toBe(0);
+      expect(result.skippedIdentities).toBe(0);
     });
 
-    it('still fail-closes AND increments blockedIdentities when a genuine FILE manifest is unfetchable', async () => {
-      selectQueue.push([]); // unattributedRows
-      selectQueue.push([destination]); // destinations
-      selectQueue.push([{ snapshotId: 'FILE1' }]); // retained FILE-type snapshot
+    it('still fail-closes AND increments blockedIdentities when ANY retained row\'s manifest is unfetchable', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'IMG1' }] });
 
-      // A genuine file manifest that fails to fetch (network/corruption) must
-      // still abort the sweep for this identity — the FILE-type filter narrows
-      // WHAT is fetched, it does NOT weaken the fail-closed guarantee.
       fetchBackupObjectTextMock.mockRejectedValueOnce(new Error('S3 500 fetching manifest'));
 
       const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
       listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
-        { key: 'snapshots/FILE1/manifest.json', lastModified: old },
-        { key: 'snapshots/ORPHAN/files/x.dat', lastModified: old }, // would be deletable, but the abort protects it
+        { key: 'snapshots/IMG1/manifest.json', lastModified: old },
+        { key: 'snapshots/ORPHAN/files/x.dat', lastModified: old },
       ]);
 
       const result = await sweepUnreferencedBackupObjects();
 
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ deleted: 0, skippedIdentities: 1, blockedIdentities: 1 });
-      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
     });
   });
 
-  // A corrupt/unparseable manifest must abort the identity fail-closed (a live
-  // set that silently dropped an unparseable manifest's references could
-  // justify deleting still-referenced objects).
   describe('corrupt manifest parse (fail-closed)', () => {
     async function runWithManifestBody(body: string) {
-      selectQueue.push([]); // unattributedRows
-      selectQueue.push([destination]); // destinations
-      selectQueue.push([{ snapshotId: 'B' }]); // retained
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
       fetchBackupObjectTextMock.mockResolvedValueOnce(body);
       const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
       listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
         { key: 'snapshots/B/manifest.json', lastModified: old },
-        { key: 'snapshots/A/files/orphan.dat', lastModified: old }, // would be deletable if the live set were trusted
+        { key: 'snapshots/A/files/orphan.dat', lastModified: old },
       ]);
       return sweepUnreferencedBackupObjects();
     }
@@ -995,22 +1068,22 @@ describe('sweepUnreferencedBackupObjects', () => {
     it('aborts the identity when the manifest body is invalid JSON', async () => {
       const result = await runWithManifestBody('{ this is not json');
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ deleted: 0, skippedIdentities: 1, blockedIdentities: 1 });
+      expect(result.deleted).toBe(0);
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
       expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     });
 
     it('aborts the identity when manifest.files is not an array', async () => {
       const result = await runWithManifestBody(JSON.stringify({ files: 'not-an-array' }));
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ deleted: 0, skippedIdentities: 1, blockedIdentities: 1 });
+      expect(result.deleted).toBe(0);
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
       expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     });
   });
 
-  // Boundary tests for the strict-`>` timing operators. Time is frozen so
-  // Date.now() inside the sweep matches the fixture ages to the millisecond;
-  // otherwise the few-ms gap between constructing the fixture and the sweep
-  // reading the clock would make a ±1ms assertion flaky.
   describe('timing-operator boundaries (strict >)', () => {
     const FIXED_NOW = 1_700_000_000_000;
 
@@ -1022,16 +1095,11 @@ describe('sweepUnreferencedBackupObjects', () => {
       vi.useRealTimers();
     });
 
-    // Manifest-bearing prefix, per-object 48h grace: an object is deletable
-    // when `lastModified > graceThreshold` is FALSE, i.e. at age EXACTLY 48h it
-    // is swept, and 1ms short of 48h it is kept.
     async function sweepLooseObjectAtAge(ageMs: number) {
-      selectQueue.push([]); // unattributedRows
-      selectQueue.push([destination]); // destinations
-      selectQueue.push([{ snapshotId: 'B' }]); // retained
-      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([])); // B references nothing
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
       listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
-        // manifest.json is in the live set (markLive adds it) — never a candidate
         { key: 'snapshots/B/manifest.json', lastModified: new Date(FIXED_NOW - 30 * DAY_MS) },
         { key: 'snapshots/B/files/obj.dat', lastModified: new Date(FIXED_NOW - ageMs) },
       ]);
@@ -1043,31 +1111,26 @@ describe('sweepUnreferencedBackupObjects', () => {
     }
 
     it('sweeps a loose object at EXACTLY 48h (not strictly inside the grace window)', async () => {
-      const result = await sweepLooseObjectAtAge(BACKUP_GC_GRACE_MS);
+      const result = await sweepLooseObjectAtAge(48 * 60 * 60 * 1000);
       expect(result.deleted).toBe(1);
     });
 
     it('keeps a loose object 1ms short of 48h (still strictly inside the grace window)', async () => {
-      const result = await sweepLooseObjectAtAge(BACKUP_GC_GRACE_MS - 1);
+      const result = await sweepLooseObjectAtAge(48 * 60 * 60 * 1000 - 1);
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
       expect(result.deleted).toBe(0);
     });
 
     it('sweeps a loose object 1ms past 48h', async () => {
-      const result = await sweepLooseObjectAtAge(BACKUP_GC_GRACE_MS + 1);
+      const result = await sweepLooseObjectAtAge(48 * 60 * 60 * 1000 + 1);
       expect(result.deleted).toBe(1);
     });
 
-    // Manifest-less prefix, 9-day prefix protection: the prefix is protected
-    // when its newest object age is `> manifestlessThreshold` (strictly inside
-    // the window). At age EXACTLY 9 days it is swept; 1ms short it is protected.
     async function sweepManifestlessPrefixAtNewestAge(ageMs: number) {
-      selectQueue.push([]); // unattributedRows
-      selectQueue.push([destination]); // destinations
-      selectQueue.push([{ snapshotId: 'B' }]); // retained (marked, not in listing)
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
       fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
       listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
-        // No snapshots/C/manifest.json → C is a manifest-less prefix.
         { key: 'snapshots/C/files/partial.dat', lastModified: new Date(FIXED_NOW - ageMs) },
       ]);
       deleteBackupObjectKeysMock.mockResolvedValueOnce({
@@ -1078,33 +1141,26 @@ describe('sweepUnreferencedBackupObjects', () => {
     }
 
     it('sweeps a manifest-less prefix whose newest object is EXACTLY at the 9-day threshold', async () => {
-      const result = await sweepManifestlessPrefixAtNewestAge(BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS);
+      const result = await sweepManifestlessPrefixAtNewestAge(9 * DAY_MS);
       expect(result.deleted).toBe(1);
     });
 
     it('protects a manifest-less prefix whose newest object is 1ms short of the 9-day threshold', async () => {
-      const result = await sweepManifestlessPrefixAtNewestAge(BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS - 1);
+      const result = await sweepManifestlessPrefixAtNewestAge(9 * DAY_MS - 1);
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
       expect(result.deleted).toBe(0);
     });
 
     it('sweeps a manifest-less prefix whose newest object is 1ms past the 9-day threshold', async () => {
-      const result = await sweepManifestlessPrefixAtNewestAge(BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS + 1);
+      const result = await sweepManifestlessPrefixAtNewestAge(9 * DAY_MS + 1);
       expect(result.deleted).toBe(1);
     });
   });
 
-  // D15 bare-metal-recovery contract (Option A): a system_image snapshot
-  // publishes system-state/manifest.json + system-state/<artifact.path>
-  // alongside (or instead of) the ordinary manifest.files[] — see
-  // docs/superpowers/plans/backup/2026-09-09-bmr-system-state-contract.md.
-  // markLiveBackupObjects must mark those objects live too, or GC deletes
-  // every system_image snapshot's bare-metal-recovery state 48h after upload.
   describe('D15 system-state GC (Option A)', () => {
     it('keeps system-state objects live when referenced by system-state/manifest.json', async () => {
-      selectQueue.push([]); // unattributedRows
-      selectQueue.push([destination]); // destinations
-      selectQueue.push([{ snapshotId: 'B' }]); // retained
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
 
       fetchBackupObjectTextMock.mockImplementation(async (input: { key: string }) => {
         if (input.key === 'snapshots/B/manifest.json') return manifestJson([]);
@@ -1118,8 +1174,6 @@ describe('sweepUnreferencedBackupObjects', () => {
       listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
         { key: 'snapshots/B/manifest.json', lastModified: old },
         { key: 'snapshots/B/system-state/manifest.json', lastModified: old },
-        // Both old enough to sweep on age alone if NOT marked live by the
-        // system-state manifest's artifacts[] — the thing under test.
         { key: 'snapshots/B/system-state/registry/SYSTEM', lastModified: old },
         { key: 'snapshots/B/system-state/boot/grub.cfg', lastModified: old },
       ]);
@@ -1127,20 +1181,14 @@ describe('sweepUnreferencedBackupObjects', () => {
       const result = await sweepUnreferencedBackupObjects();
 
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
+      expect(result.deleted).toBe(0);
     });
 
-    it('deletes system-state objects under an expired/unretained snapshot the same way ordinary file objects are', async () => {
-      // Snapshot B is retained and references nothing; snapshot EXPIRED is
-      // NOT retained and not in the listing's manifest set either (it has
-      // aged out / its row is gone) — both its ordinary-shaped loose object
-      // and its system-state artifact are old, unreferenced, manifest-less,
-      // and past the 9-day manifest-less-prefix window, so BOTH must sweep.
-      selectQueue.push([]); // unattributedRows
-      selectQueue.push([destination]); // destinations
-      selectQueue.push([{ snapshotId: 'B' }]); // retained
+    it('deletes system-state objects under an old orphan prefix the same way ordinary file objects are', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
 
-      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([])); // B's ordinary manifest; B has no system-state manifest (falls through to "not found")
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
 
       const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
       listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
@@ -1161,9 +1209,8 @@ describe('sweepUnreferencedBackupObjects', () => {
     });
 
     it('does NOT sweep the group when the system-state manifest fetch fails with a non-404 error (fail-closed)', async () => {
-      selectQueue.push([]); // unattributedRows
-      selectQueue.push([destination]); // destinations
-      selectQueue.push([{ snapshotId: 'B' }]); // retained
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
 
       fetchBackupObjectTextMock.mockImplementation(async (input: { key: string }) => {
         if (input.key === 'snapshots/B/manifest.json') return manifestJson([]);
@@ -1176,65 +1223,565 @@ describe('sweepUnreferencedBackupObjects', () => {
       const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
       listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
         { key: 'snapshots/B/manifest.json', lastModified: old },
-        { key: 'snapshots/B/system-state/registry/SYSTEM', lastModified: old }, // would be deletable if the abort didn't protect it
+        { key: 'snapshots/B/system-state/registry/SYSTEM', lastModified: old },
       ]);
 
       const result = await sweepUnreferencedBackupObjects();
 
-      // A non-"not found" fetch failure cannot prove liveness one way or the
-      // other, so the WHOLE identity is fail-closed — same contract as an
-      // unfetchable ordinary manifest.
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ deleted: 0, skippedIdentities: 1, blockedIdentities: 1 });
+      expect(result.deleted).toBe(0);
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
       expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     });
 
-    // D15 Wave 1 finding #3: a retained system_image row used to be excluded
-    // from retainedSnapshotIds outright (see the FIX 6 describe block above,
-    // now updated to use an 'application'/'database' example instead), so its
-    // system-state/* objects had NO db-side protection at all — only the
-    // listing's own manifest.json presence decided their fate. Now that
-    // system_image rows are included, this proves a retained system_image
-    // snapshot's system-state prefix is NOT deleted even in the (defensive,
-    // not routine — see the publish-ordering fix in backup.go) case where the
-    // ordinary snapshots/<id>/manifest.json object itself is missing from the
-    // bucket, with its system-state objects older than the manifest-less
-    // prefix's max-age window (which would otherwise sweep them at PREFIX
-    // granularity on age alone).
     it('protects a retained system_image snapshot whose ordinary manifest object is absent from the bucket', async () => {
-      selectQueue.push([]); // unattributedRows
-      selectQueue.push([destination]); // destinations
-      // Post-fix: the retained-rows query includes system_image (not just
-      // file/null) — IMG1 here stands in for that DB row.
-      selectQueue.push([{ snapshotId: 'IMG1' }]);
-
-      // IMG1's ordinary manifest is genuinely absent from the bucket — the
-      // mock's base implementation (module-level default) already rejects
-      // any unconfigured key as "not found", so no explicit queuing is
-      // needed here to model that; this test asserts the CONSEQUENCE.
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'IMG1' }] });
 
       const old = EVEN_FURTHER_PAST_MANIFESTLESS_THRESHOLD();
       listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
-        // No snapshots/IMG1/manifest.json entry at all — group.manifestItem
-        // is null, so this group is classified manifest-less (protected at
-        // PREFIX granularity by age alone) UNLESS the retained-row lookup
-        // changes the outcome.
         { key: 'snapshots/IMG1/system-state/manifest.json', lastModified: old },
         { key: 'snapshots/IMG1/system-state/registry/SYSTEM', lastModified: old },
       ]);
 
       const result = await sweepUnreferencedBackupObjects();
 
-      // markLiveBackupObjects has no not-found tolerance on the ORDINARY
-      // manifest fetch (only the system-state fetch does) — a retained
-      // snapshot whose ordinary manifest can't be fetched fails the WHOLE
-      // identity closed, exactly like the pre-existing "still fail-closes...
-      // when a genuine FILE manifest is unfetchable" contract above. That is
-      // a STRONGER guarantee than per-group protection: nothing in the
-      // identity deletes this run, so IMG1's system-state objects survive.
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ deleted: 0, skippedIdentities: 1, blockedIdentities: 1 });
+      expect(result.deleted).toBe(0);
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
       expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('§3.7 held-context tripwire', () => {
+    it('calls assertOutsideHeldDbContext with the sweepStorageIdentity operation label before any storage call', async () => {
+      pushRunLevel([destination]);
+      pushIdentity();
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([]);
+
+      await sweepUnreferencedBackupObjects();
+
+      expect(assertOutsideHeldDbContextMock).toHaveBeenCalledWith('backupGC.sweepStorageIdentity');
+    });
+  });
+
+  describe('a NULL-identity row becomes a root of I the moment it resolves; unresolved contributes only to deferral (§3.6 v3)', () => {
+    it('fetches (and requires) the manifest of an UNRESOLVED NULL row too, and defers the whole identity if it is not found in the listing', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({
+        nullRows: [{ id: 'row-neverwritten', snapshotId: 'NEVERWRITTEN' }],
+        retirements: [{ id: 'retirement-5', snapshotId: 'RETIRED5' }],
+      });
+
+      const t = new Date(Date.now() - 1000);
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/RETIRED5/manifest.json', lastModified: t },
+        { key: 'snapshots/RETIRED5/files/x.dat', lastModified: t },
+      ]);
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+        expect(result.retiredSwept).toBe(0);
+        expect(warn.mock.calls.some(([msg]) => String(msg).includes('deferred') && String(msg).includes('1 unresolved') && String(msg).includes('NEVERWRITTEN'))).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('fetch failure for a RESOLVED NULL row (found in the listing) still aborts the identity fail-closed', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ nullRows: [{ id: 'row-badfetch', snapshotId: 'BADFETCH' }] });
+
+      const t = new Date(Date.now() - 1000);
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/BADFETCH/manifest.json', lastModified: t },
+      ]);
+      fetchBackupObjectTextMock.mockRejectedValueOnce(new Error('S3 500'));
+
+      const result = await sweepUnreferencedBackupObjects();
+      expect(result.blockedIdentities).toBe(1);
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('deferral runs EXACTLY today\'s algorithm, not "rooted only" (§3.4 v3)', () => {
+    it('legacy-helper deferral marks EVERY listed manifest live (including a retired one) and only reclaims loose/manifest-less objects', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({
+        retirements: [{ id: 'retirement-3', snapshotId: 'RETIRED3' }],
+        capability: [{ deviceId: 'device-legacy', backupVersion: '0.109.0' }],
+      });
+
+      const t = new Date(Date.now() - 1000);
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/RETIRED3/manifest.json', lastModified: t },
+        { key: 'snapshots/RETIRED3/files/x.dat', lastModified: t },
+      ]);
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(expect.objectContaining({ key: 'snapshots/RETIRED3/manifest.json' }));
+        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+        expect(result.deferredIdentities).toBe(1);
+        expect(result.retiredSwept).toBe(0);
+        expect(warn.mock.calls.some(([msg]) => String(msg).includes('reclamation deferred') && String(msg).includes('legacy helper device-legacy 0.109.0'))).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('a deferred identity STILL reclaims a manifest-less prefix older than 9 days (that rule is unconditional)', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ capability: [{ deviceId: 'device-legacy', backupVersion: '0.109.0' }] });
+
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/ORPHANPARTIAL/files/partial.dat', lastModified: old },
+      ]);
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/ORPHANPARTIAL/files/partial.dat'], failedKeys: [] });
+
+      const result = await sweepUnreferencedBackupObjects();
+      expect(result.deleted).toBe(1);
+      expect(result.deferredIdentities).toBe(1);
+    });
+  });
+
+  describe('self-heal writes by row id, guarded by storage_identity IS NULL (§3.6 v3)', () => {
+    it('resolves a NULL row (found in listing) and reclaims a co-located retirement in the SAME run once nothing is unresolved', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({
+        nullRows: [{ id: 'row-healme', snapshotId: 'HEALME' }],
+        retirements: [{ id: 'retirement-6', snapshotId: 'RETIRED6' }],
+      });
+
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+      const t = new Date(Date.now() - 1000);
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/HEALME/manifest.json', lastModified: t },
+        { key: 'snapshots/RETIRED6/manifest.json', lastModified: t },
+        { key: 'snapshots/RETIRED6/files/r.dat', lastModified: t },
+      ]);
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/RETIRED6/files/r.dat'], failedKeys: [] });
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/RETIRED6/manifest.json'], failedKeys: [] });
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(result.deleted).toBe(2);
+      expect(mockDb.update).toHaveBeenCalledWith(backupSnapshots);
+      expect(result.retiredSwept).toBe(0); // not yet confirmed by a fresh listing
+    });
+  });
+
+  describe('swept_at is set only once a FRESH listing confirms the prefix is gone (two-pass, §3.4 v3)', () => {
+    it('does not set swept_at in the same pass as the deletes, but does on a later run once the listing shows it gone', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-1', snapshotId: 'RETIRED1' }] });
+
+      const t = new Date(Date.now() - 1000);
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/RETIRED1/manifest.json', lastModified: t },
+        { key: 'snapshots/RETIRED1/files/x.dat', lastModified: t },
+      ]);
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/RETIRED1/files/x.dat'], failedKeys: [] });
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/RETIRED1/manifest.json'], failedKeys: [] });
+
+      const firstRun = await sweepUnreferencedBackupObjects();
+      expect(firstRun.deleted).toBe(2);
+      expect(firstRun.retiredSwept).toBe(0);
+
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-1', snapshotId: 'RETIRED1' }] });
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([]);
+
+      const secondRun = await sweepUnreferencedBackupObjects();
+      expect(secondRun.deleted).toBe(0);
+      expect(secondRun.retiredSwept).toBe(1);
+    });
+
+    it('confirms swept_at IMMEDIATELY (first time it is ever swept) when a retirement is already fully absent from the listing', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-7', snapshotId: 'RETIRED7' }] });
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([]);
+
+      const result = await sweepUnreferencedBackupObjects();
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.retiredSwept).toBe(1);
+    });
+
+    it('a manifest-less "retired remnant" (manifest already gone from a prior run) is reclaimed immediately, with no 9-day wait', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-8', snapshotId: 'RETIRED8' }] });
+
+      const veryRecent = new Date(Date.now() - 1000);
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/RETIRED8/files/remnant.dat', lastModified: veryRecent },
+      ]);
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/RETIRED8/files/remnant.dat'], failedKeys: [] });
+
+      const result = await sweepUnreferencedBackupObjects();
+      expect(result.deleted).toBe(1);
+    });
+  });
+
+  describe('Redis-backed skip set (delete-cap fairness) and cap accounting', () => {
+    it('excludes a previously-failed key from candidates on a later run without re-attempting it', async () => {
+      redisSmembersMock.mockResolvedValueOnce(['snapshots/ABANDONED/files/locked.dat']);
+      pushRunLevel([destination]);
+      pushIdentity();
+
+      const pastWindow = new Date(Date.now() - 10 * DAY_MS);
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/ABANDONED/manifest.json', lastModified: pastWindow },
+        { key: 'snapshots/ABANDONED/files/locked.dat', lastModified: pastWindow },
+        { key: 'snapshots/ABANDONED/files/free.dat', lastModified: pastWindow },
+      ]);
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/ABANDONED/files/free.dat'], failedKeys: [] });
+
+      await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalledWith(
+        expect.objectContaining({ keys: expect.arrayContaining(['snapshots/ABANDONED/files/locked.dat']) }),
+      );
+    });
+
+    it('records a failed key with a 7-day TTL after deleteBackupObjectKeys reports it', async () => {
+      pushRunLevel([destination]);
+      pushIdentity();
+
+      const pastWindow = new Date(Date.now() - 10 * DAY_MS);
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/ABANDONED/manifest.json', lastModified: pastWindow },
+        { key: 'snapshots/ABANDONED/files/locked.dat', lastModified: pastWindow },
+      ]);
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({
+        deletedKeys: [],
+        failedKeys: [{ key: 'snapshots/ABANDONED/files/locked.dat', error: 'object-lock' }],
+      });
+
+      await sweepUnreferencedBackupObjects();
+
+      expect(redisSaddMock).toHaveBeenCalledWith(expect.stringMatching(/^backup-gc:failed:/), 'snapshots/ABANDONED/files/locked.dat');
+      expect(redisExpireMock).toHaveBeenCalledWith(expect.stringMatching(/^backup-gc:failed:/), 7 * 24 * 60 * 60);
+    });
+
+    it('degrades to no skip set (proceeds normally) when Redis is unavailable', async () => {
+      redisAvailableForTest = false;
+      pushRunLevel([destination]);
+      pushIdentity();
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([]);
+      const result = await sweepUnreferencedBackupObjects();
+      expect(result.deleted).toBe(0);
+    });
+
+    it('a FAILED delete attempt consumes the per-run cap, not just successful deletes', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+      process.env.BACKUP_GC_MAX_DELETES_PER_RUN = '1';
+      try {
+        const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+        listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+          { key: 'snapshots/B/manifest.json', lastModified: old },
+          { key: 'snapshots/B/files/a.dat', lastModified: old },
+          { key: 'snapshots/B/files/b.dat', lastModified: old },
+        ]);
+        deleteBackupObjectKeysMock.mockResolvedValueOnce({
+          deletedKeys: [],
+          failedKeys: [{ key: 'snapshots/B/files/a.dat', error: 'object-lock' }],
+        });
+
+        await sweepUnreferencedBackupObjects();
+        expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1);
+      } finally {
+        delete process.env.BACKUP_GC_MAX_DELETES_PER_RUN;
+      }
+    });
+
+    it('a rooted-branch delete failure is recorded into the Redis skip set too (not just the retired/orphan branch)', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/B/manifest.json', lastModified: old },
+        { key: 'snapshots/B/files/locked.dat', lastModified: old },
+      ]);
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({
+        deletedKeys: [],
+        failedKeys: [{ key: 'snapshots/B/files/locked.dat', error: 'object-lock' }],
+      });
+
+      await sweepUnreferencedBackupObjects();
+      expect(redisSaddMock).toHaveBeenCalledWith(expect.stringMatching(/^backup-gc:failed:/), 'snapshots/B/files/locked.dat');
+    });
+  });
+
+  // Review round 1, finding 4 (pr-test-analyzer): every existing test proving
+  // a retired group's manifest survives does so via a hard delete FAILURE.
+  // These prove the OTHER two ways a non-manifest key can remain
+  // undeletable this run — capped out, or skip-set-excluded — each of which
+  // must ALSO block the manifest (the v3 rule is "no DELETABLE non-manifest
+  // key remains", not "no FAILED non-manifest key remains").
+  describe('manifest-last rule also holds when a non-manifest key is capped or skip-set-excluded, not just failed (review round 1, finding 4)', () => {
+    it('does not delete the manifest when the per-run cap is exhausted before its non-manifest sibling is attempted', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-cap', snapshotId: 'CAPPED' }] });
+
+      process.env.BACKUP_GC_MAX_DELETES_PER_RUN = '1';
+      try {
+        const t = new Date(Date.now() - 1000);
+        listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+          { key: 'snapshots/CAPPED/manifest.json', lastModified: t },
+          { key: 'snapshots/CAPPED/files/a.dat', lastModified: t },
+          { key: 'snapshots/CAPPED/files/b.dat', lastModified: t },
+        ]);
+        // Cap is 1: only ONE non-manifest delete attempt happens this run —
+        // a.dat succeeds, b.dat is never even attempted (capped out).
+        deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/CAPPED/files/a.dat'], failedKeys: [] });
+
+        await sweepUnreferencedBackupObjects();
+
+        // Only the one non-manifest delete call happened — the cap was
+        // exhausted, so the manifest was never even considered for deletion.
+        expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1);
+        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalledWith(
+          expect.objectContaining({ keys: expect.arrayContaining(['snapshots/CAPPED/manifest.json']) }),
+        );
+      } finally {
+        delete process.env.BACKUP_GC_MAX_DELETES_PER_RUN;
+      }
+    });
+
+    it('does not delete the manifest when its only non-manifest sibling is skip-set-excluded, not failed', async () => {
+      redisSmembersMock.mockResolvedValueOnce(['snapshots/SKIPPED/files/locked-forever.dat']);
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-skip', snapshotId: 'SKIPPED' }] });
+
+      const t = new Date(Date.now() - 1000);
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/SKIPPED/manifest.json', lastModified: t },
+        { key: 'snapshots/SKIPPED/files/locked-forever.dat', lastModified: t }, // in the skip set — never attempted, not "failed"
+      ]);
+
+      await sweepUnreferencedBackupObjects();
+
+      // No delete call at all: the only non-manifest candidate is skip-set
+      // excluded before any attempt, and that alone must still block the
+      // manifest.
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // Review round 1, finding 5 (silent-failure-hunter / pr-test-analyzer):
+  // backup_snapshots.snapshot_id has no uniqueness constraint, so two
+  // DIFFERENT identities can legitimately have a NULL-identity row sharing
+  // the exact same snapshotId string. The self-heal write-back is scoped by
+  // PRIMARY ROW ID (never snapshotId alone) specifically to prevent one
+  // identity's resolution from mis-healing a different identity's
+  // same-named, still-unresolved row.
+  describe('cross-identity snapshotId collision guard on self-heal (review round 1, finding 5)', () => {
+    it('heals only the identity whose OWN listing resolves the row, even though a different identity has an unresolved row with the identical snapshotId', async () => {
+      const destinationB = { id: 'cfg-b', provider: 's3', providerConfig: { bucket: 'other-bucket', region: 'us-east-1' } };
+
+      pushRunLevel([destination, destinationB]);
+      pushIdentity({ nullRows: [{ id: 'row-A', snapshotId: 'DUPLICATE' }] }); // identity A (destination)
+      pushIdentity({ nullRows: [{ id: 'row-B', snapshotId: 'DUPLICATE' }] }); // identity B (destinationB) — same snapshotId, different row
+
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([])); // A's DUPLICATE manifest fetch (it resolves)
+      const t = new Date(Date.now() - 1000);
+      listBackupObjectsUnderPrefixMock
+        .mockResolvedValueOnce([{ key: 'snapshots/DUPLICATE/manifest.json', lastModified: t }]) // identity A's listing — resolves
+        .mockResolvedValueOnce([]); // identity B's listing — DUPLICATE never appears here, stays unresolved
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await sweepUnreferencedBackupObjects();
+      } finally {
+        warn.mockRestore();
+      }
+
+      // Exactly ONE self-heal write happened this run (identity A's), scoped
+      // to identity A's key — if the guard mismatched by bare snapshotId
+      // instead of row id, identity B's unresolved row could have been
+      // healed too (or healed with the wrong identity's key).
+      const selfHealCalls = updateCalls.filter((c) => 'storageIdentity' in c.payload);
+      expect(selfHealCalls).toHaveLength(1);
+      expect(selfHealCalls[0]!.payload.storageIdentity).toBe(identityKeyFor(destination));
+    });
+  });
+
+  describe('unreachable storage identities (no config points at them any more)', () => {
+    it('logs and counts a storage_identity with rows but no matching current config, without touching it', async () => {
+      selectQueue.push([]); // unattributedRows
+      selectQueue.push([destination]); // destinations
+      selectQueue.push([
+        { storageIdentity: identityKeyFor(destination), count: 2 },
+        { storageIdentity: 'local::/var/orphaned-bucket-nobody-points-at', count: 5 },
+      ]); // identityUsage
+      pushIdentity();
+
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([]);
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        expect(result.unreachableIdentities).toBe(1);
+        expect(warn.mock.calls.some(([msg]) => String(msg).includes('unreachable identity local::/var/orphaned-bucket-nobody-points-at: 5 rows'))).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
+
+  // Review round 1 (CRITICAL): a config edit can change the NORMALIZED
+  // identity string while still pointing at the SAME physical bucket/
+  // directory. Rows recorded under the OLD string are unreachable (no
+  // current config produces that key) but their objects physically sit in
+  // the bucket the NEW identity is about to sweep — invisible to the NEW
+  // identity's root query, and (once old enough) indistinguishable from
+  // genuine orphan garbage. These prove the identity is deferred instead.
+  describe('review round 1: coarse alias detection defers a physical-location alias instead of reclaiming it', () => {
+    it('defers an S3 identity that coarsely aliases a stale/unreachable identity (a port-only difference normalizeStorageIdentity does not collapse)', async () => {
+      const aliasedDestination = {
+        id: 'cfg-alias',
+        provider: 's3',
+        providerConfig: { bucket: 'MyBucket', endpoint: 'nyc3.digitaloceanspaces.com' },
+      };
+      const newKey = normalizeStorageIdentity(aliasedDestination.provider, aliasedDestination.providerConfig);
+      // A stale identity string (no current config produces it) that differs
+      // from newKey only by an explicit port — same host+bucket physically.
+      const staleKey = 's3::nyc3.digitaloceanspaces.com:9000::MyBucket';
+
+      selectQueue.push([]); // unattributedRows
+      selectQueue.push([aliasedDestination]); // destinations
+      selectQueue.push([
+        { storageIdentity: staleKey, count: 3 },
+        { storageIdentity: newKey, count: 1 },
+      ]); // identityUsage
+      pushIdentity(); // retained/nullRows/retirements/capability all empty
+
+      // A lone, manifest-only "snapshot" well past ORPHAN_WINDOW — under the
+      // NORMAL (non-deferred) algorithm this would be reclaimed as abandoned
+      // orphan garbage (no row, no retirement, too old to be a young orphan).
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+      const old = new Date(Date.now() - 30 * DAY_MS);
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/OLDORPHAN/manifest.json', lastModified: old },
+      ]);
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        // Deferred -> today's algorithm marks EVERY listed manifest live ->
+        // the lone manifest object is in the live set -> nothing deleted,
+        // where the non-deferred algorithm would have reclaimed it.
+        expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(expect.objectContaining({ key: 'snapshots/OLDORPHAN/manifest.json' }));
+        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+        expect(result.deferredIdentities).toBe(1);
+        expect(
+          warn.mock.calls.some(([msg]) =>
+            String(msg).includes(newKey) && String(msg).includes('aliases a stale/unreachable identity'),
+          ),
+        ).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('defers a local identity whose config path is a symlink alias of a stale/unreachable identity\'s real directory', async () => {
+      const realDir = await mkdtemp(join(tmpdir(), 'breeze-gc-real-'));
+      const linkPath = join(tmpdir(), `breeze-gc-link-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+      await symlink(realDir, linkPath, 'dir');
+
+      const destinationViaSymlink = { id: 'cfg-link', provider: 'local', providerConfig: { path: linkPath } };
+      const newKey = normalizeStorageIdentity('local', destinationViaSymlink.providerConfig); // local::<linkPath> — path.resolve is lexical, does NOT follow the symlink
+      const staleKey = `local::${realDir}`; // a stale identity recorded directly against the REAL directory
+
+      selectQueue.push([]); // unattributedRows
+      selectQueue.push([destinationViaSymlink]); // destinations
+      selectQueue.push([
+        { storageIdentity: staleKey, count: 2 },
+        { storageIdentity: newKey, count: 1 },
+      ]); // identityUsage
+      pushIdentity();
+
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+      const old = new Date(Date.now() - 30 * DAY_MS);
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/OLDORPHAN/manifest.json', lastModified: old },
+      ]);
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+        expect(result.deferredIdentities).toBe(1);
+        expect(
+          warn.mock.calls.some(([msg]) =>
+            String(msg).includes(newKey) && String(msg).includes('aliases a stale/unreachable identity'),
+          ),
+        ).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does NOT defer an identity whose coarse signature does not match any unreachable identity', async () => {
+      // Sanity control: the previous two tests' mechanism must not defer
+      // EVERY identity — only ones that actually coarse-match something
+      // unreachable. destination/identityKeyFor here shares nothing with the
+      // 'local::/var/orphaned-bucket-nobody-points-at' unreachable key used
+      // elsewhere in this file.
+      selectQueue.push([]);
+      selectQueue.push([destination]);
+      selectQueue.push([
+        { storageIdentity: identityKeyFor(destination), count: 1 },
+        { storageIdentity: 'local::/var/totally-unrelated-stale-path', count: 4 },
+      ]);
+      pushIdentity();
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([]);
+
+      const result = await sweepUnreferencedBackupObjects();
+      expect(result.deferredIdentities).toBe(0);
+      expect(result.unreachableIdentities).toBe(1);
+    });
+  });
+
+  // Review round 1: detectSuspiciousStorageIdentityCollisions previously
+  // exempted 'local' entirely from its coarse-collision check, so two
+  // CURRENT local configs whose paths are lexically different but resolve
+  // (via a symlink) to the SAME physical directory were never caught —
+  // each would see only its own retained snapshots and could delete the
+  // other's live objects.
+  describe('review round 1: local provider is now covered by the current-vs-current coarse collision check', () => {
+    it('fail-closed-skips two CURRENT local configs whose paths are a symlink alias of the same physical directory', async () => {
+      const realDir = await mkdtemp(join(tmpdir(), 'breeze-gc-real2-'));
+      const linkPath = join(tmpdir(), `breeze-gc-link2-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+      await symlink(realDir, linkPath, 'dir');
+
+      const configReal = { id: 'cfg-real', provider: 'local', providerConfig: { path: realDir } };
+      const configLink = { id: 'cfg-link', provider: 'local', providerConfig: { path: linkPath } };
+
+      expect(normalizeStorageIdentity('local', configReal.providerConfig))
+        .not.toBe(normalizeStorageIdentity('local', configLink.providerConfig));
+
+      pushRunLevel([configReal, configLink]); // 2 identities, symlink-aliased
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(fetchBackupObjectTextMock).not.toHaveBeenCalled();
+      expect(listBackupObjectsUnderPrefixMock).not.toHaveBeenCalled();
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.skippedIdentities).toBe(2);
     });
   });
 });
