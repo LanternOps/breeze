@@ -14,7 +14,7 @@ function queueError(error: unknown) { results.push({ error }); }
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'innerJoin', 'leftJoin'];
+    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'innerJoin', 'leftJoin', 'onConflictDoNothing'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
     chain.transaction = vi.fn(async (run: (tx: unknown) => unknown) => run(chain));
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) => {
@@ -23,13 +23,17 @@ vi.mock('../db', () => {
     };
     return chain;
   };
-  return { db: makeChain() };
+  return {
+    db: makeChain(),
+    runOutsideDbContext: (fn: () => unknown) => fn(),
+    withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  };
 });
 
 import { db } from '../db';
 import {
   addEvidence, createDeliverable, deactivateDeliverable, deliverOccurrence, getDeliverable, listOccurrences,
-  materializeOccurrences, openOccurrence, markOccurrenceMissed, applyTicketStatusChange,
+  materializeOccurrences, openOccurrence, markOccurrenceMissed, applyTicketStatusChange, markDueOccurrencesMissedForDeliverable,
   removeEvidence, reopenOccurrence, rescheduleOccurrence, summarizeStatus, updateDeliverable, waiveOccurrence,
   DeliverableServiceError,
 } from './serviceDeliverableService';
@@ -572,10 +576,90 @@ describe('serviceDeliverableService', () => {
 
   describe('W02 stubs', () => {
     it('throw not implemented', async () => {
-      await expect(materializeOccurrences('d1', '2026-10-15')).rejects.toThrow('not implemented (W02)');
       await expect(openOccurrence('o1', null)).rejects.toThrow('not implemented (W02)');
-      await expect(markOccurrenceMissed('o1')).rejects.toThrow('not implemented (W02)');
       await expect(applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: null, resolutionNote: null })).rejects.toThrow('not implemented (W02)');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // W02 — sweep (system callers)
+  // -------------------------------------------------------------------------
+
+  const DEF = { id: 'd1', orgId: 'org1', name: 'Sign-in log review', cadence: 'monthly',
+    effectiveFrom: '2026-10-01', effectiveUntil: null, leadDays: 7, graceDays: 14 };
+  const SD = { ...DEF, cadence: 'monthly' as const, anchorDueDate: '2026-10-31', autoEvidenceReportId: null };
+  const lastValuesArray = () => chain.values.mock.calls.at(-1)?.[0] as Array<Record<string, unknown>>;
+
+  describe('materializeOccurrences (spec §5.3 step 1)', () => {
+    it('inserts one row per planned due date with the name snapshot', async () => {
+      queueResult([{ ...DEF, anchorDueDate: '2026-10-31' }]);
+      queueResult([]);                         // existing due dates: none
+      queueResult([{ id: 'o1' }]);             // insert ... returning
+      expect(await materializeOccurrences('d1', '2026-10-25')).toHaveLength(1);
+      const values = lastValuesArray();
+      expect(values).toHaveLength(1);
+      expect(values[0]).toMatchObject({
+        orgId: 'org1', deliverableId: 'd1', nameSnapshot: 'Sign-in log review',
+        periodStart: '2026-10-01', periodEnd: '2026-10-31',
+        dueAt: '2026-10-31', originalDueAt: '2026-10-31', status: 'scheduled',
+      });
+    });
+
+    it('inserts catch-up occurrences past grace directly as missed, capped at 12', async () => {
+      queueResult([{ ...DEF, anchorDueDate: '2025-01-31', effectiveFrom: '2025-01-01' }]);
+      queueResult([]);
+      queueResult([{ id: 'o1' }]);
+      await materializeOccurrences('d1', '2026-10-25');
+      const values = lastValuesArray();
+      expect(values).toHaveLength(12);
+      expect(values[0]).toMatchObject({ dueAt: '2025-01-31', status: 'missed' });
+      expect(values.every((v) => v.status === 'missed')).toBe(true);   // cap reached long before today
+    });
+
+    it('marks only the rows past grace as missed in a short catch-up', async () => {
+      queueResult([{ ...DEF, anchorDueDate: '2026-08-31', effectiveFrom: '2026-08-01' }]);
+      queueResult([]);
+      queueResult([{ id: 'o1' }]);
+      await materializeOccurrences('d1', '2026-10-25');
+      expect(lastValuesArray().map((v) => [v.dueAt, v.status])).toEqual([
+        ['2026-08-31', 'missed'], ['2026-09-30', 'missed'], ['2026-10-31', 'scheduled'],
+      ]);
+    });
+
+    it('is a no-op when every due date is already materialized (keyed on the ORIGINAL due date)', async () => {
+      queueResult([{ ...DEF, anchorDueDate: '2026-10-31' }]);
+      // A rescheduled occurrence: its due_at moved, original_due_at still names the slot.
+      queueResult([{ originalDueAt: '2026-10-31' }]);
+      expect(await materializeOccurrences('d1', '2026-10-25')).toEqual([]);
+      expect(chain.insert.mock.calls).toHaveLength(0);
+    });
+
+    it('throws NOT_FOUND for a deliverable that no longer exists', async () => {
+      queueResult([]);
+      await expect(materializeOccurrences('gone', '2026-10-25')).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+    });
+  });
+
+  describe('markDueOccurrencesMissedForDeliverable (spec §5.3 step 4)', () => {
+    it('moves open / awaiting_evidence rows past grace to missed and never touches the ticket', async () => {
+      queueResult([{ id: 'o1' }, { id: 'o2' }]);
+      expect(await markDueOccurrencesMissedForDeliverable(SD, '2026-10-25')).toBe(2);
+      const patch = lastSet();
+      expect(patch).toMatchObject({ status: 'missed' });
+      expect(patch).not.toHaveProperty('ticketId');
+      // cutoff = today - graceDays: due_at < 2026-10-11 ⇔ due_at + 14 < 2026-10-25
+      const params = updateWhereParams();
+      expect(params).toEqual(expect.arrayContaining(['d1', 'open', 'awaiting_evidence', '2026-10-11']));
+      expect(params).not.toContain('scheduled');
+    });
+  });
+
+  describe('markOccurrenceMissed (single-row form)', () => {
+    it('only moves an open or awaiting_evidence row', async () => {
+      queueResult([]);
+      await markOccurrenceMissed('o1');
+      expect(lastSet()).toMatchObject({ status: 'missed' });
+      expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'open', 'awaiting_evidence']));
     });
   });
 });

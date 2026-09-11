@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, getTableColumns, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, getTableColumns, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
   serviceDeliverables, serviceDeliverableOccurrences, serviceDeliverableEvidence,
@@ -14,7 +14,8 @@ import type {
   RescheduleOccurrenceInput, EvidenceRef,
 } from '@breeze/shared';
 import { transition, InvalidTransitionError, type OccurrenceStatus } from './serviceDeliverableState';
-import { isInLeadWindow, isPastGrace } from './recurrence';
+import { isInLeadWindow, isPastGrace, planOccurrences, type Cadence } from './recurrence';
+import { addDaysISO } from './contractMath';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 
 /**
@@ -582,14 +583,56 @@ export async function removeEvidence(orgId: string, occurrenceId: string, eviden
 // Exported as stubs so W02 replaces bodies, not names.
 // ---------------------------------------------------------------------------
 
-export async function materializeOccurrences(_deliverableId: string, _today: string): Promise<ServiceDeliverableOccurrenceRow[]> {
-  throw new Error('not implemented (W02)');
+/** Spec §5.3 step 1. System caller — run inside withSystemDbAccessContext. */
+export async function materializeOccurrences(deliverableId: string, today: string): Promise<ServiceDeliverableOccurrenceRow[]> {
+  const [d] = await db
+    .select({
+      id: serviceDeliverables.id, orgId: serviceDeliverables.orgId, name: serviceDeliverables.name,
+      cadence: serviceDeliverables.cadence, anchorDueDate: serviceDeliverables.anchorDueDate,
+      effectiveFrom: serviceDeliverables.effectiveFrom, effectiveUntil: serviceDeliverables.effectiveUntil,
+      leadDays: serviceDeliverables.leadDays, graceDays: serviceDeliverables.graceDays,
+    })
+    .from(serviceDeliverables).where(eq(serviceDeliverables.id, deliverableId)).limit(1);
+  if (!d) throw notFound();
+
+  // Keyed on original_due_at: a rescheduled occurrence moved its due_at, but its
+  // nominal slot is still taken and must not be planned again.
+  const existing = await db
+    .select({ originalDueAt: serviceDeliverableOccurrences.originalDueAt })
+    .from(serviceDeliverableOccurrences)
+    .where(eq(serviceDeliverableOccurrences.deliverableId, deliverableId));
+
+  const plan = planOccurrences({
+    anchorDueDate: d.anchorDueDate, cadence: d.cadence as Cadence,
+    effectiveFrom: d.effectiveFrom, effectiveUntil: d.effectiveUntil,
+    leadDays: d.leadDays, graceDays: d.graceDays, today,
+    existingDueDates: existing.map((e) => e.originalDueAt),
+  });
+  if (plan.length === 0) return [];
+
+  return db.insert(serviceDeliverableOccurrences)
+    .values(plan.map((p) => ({
+      orgId: d.orgId, deliverableId: d.id,
+      // Spec §4.2: the name at materialization. A later rename never rewrites history.
+      nameSnapshot: d.name,
+      periodStart: p.periodStart, periodEnd: p.periodEnd,
+      dueAt: p.dueAt, originalDueAt: p.dueAt, status: p.initialStatus,
+    })))
+    // UNIQUE (deliverable_id, period_start) is the claim; a concurrent sweep
+    // loses silently rather than raising 23505 and failing the deliverable.
+    .onConflictDoNothing({ target: [serviceDeliverableOccurrences.deliverableId, serviceDeliverableOccurrences.periodStart] })
+    .returning();
 }
 export async function openOccurrence(_occurrenceId: string, _ticketId: string | null): Promise<void> {
   throw new Error('not implemented (W02)');
 }
-export async function markOccurrenceMissed(_occurrenceId: string): Promise<void> {
-  throw new Error('not implemented (W02)');
+const MISSABLE: readonly OccurrenceStatus[] = ['open', 'awaiting_evidence'];
+
+/** Spec §5.3 step 4, single-row form. System caller. */
+export async function markOccurrenceMissed(occurrenceId: string): Promise<void> {
+  await db.update(serviceDeliverableOccurrences)
+    .set({ status: 'missed', updatedAt: new Date() })
+    .where(and(eq(serviceDeliverableOccurrences.id, occurrenceId), inArray(serviceDeliverableOccurrences.status, MISSABLE)));
 }
 export async function applyTicketStatusChange(_args: {
   ticketId: string; orgId: string; to: string; actorUserId: string | null; resolutionNote: string | null;
@@ -611,8 +654,22 @@ export interface SweepDeliverable {
 export async function openDueOccurrencesForDeliverable(_d: SweepDeliverable, _today: string, _serviceOffWarned: Set<string>): Promise<number> {
   throw new Error('not implemented (W02)');
 }
-export async function markDueOccurrencesMissedForDeliverable(_d: SweepDeliverable, _today: string): Promise<number> {
-  throw new Error('not implemented (W02)');
+/**
+ * Spec §5.3 step 4, sweep form. System caller. The ticket is deliberately
+ * untouched: a missed deliverable's work may still be in flight, and closing
+ * its ticket would destroy that signal.
+ */
+export async function markDueOccurrencesMissedForDeliverable(d: SweepDeliverable, today: string): Promise<number> {
+  const cutoff = addDaysISO(today, -d.graceDays);   // due_at < cutoff ⇔ due_at + grace < today (isPastGrace)
+  const rows = await db.update(serviceDeliverableOccurrences)
+    .set({ status: 'missed', updatedAt: new Date() })
+    .where(and(
+      eq(serviceDeliverableOccurrences.deliverableId, d.id),
+      inArray(serviceDeliverableOccurrences.status, MISSABLE),
+      lt(serviceDeliverableOccurrences.dueAt, cutoff),
+    ))
+    .returning({ id: serviceDeliverableOccurrences.id });
+  return rows.length;
 }
 export async function applyContractCancelledToDeliverables(_contractId: string, _today: string): Promise<number> {
   throw new Error('not implemented (W02)');
