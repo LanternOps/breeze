@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
 	"github.com/breeze-rmm/agent/internal/backup/layout"
@@ -11,6 +14,47 @@ import (
 	"github.com/breeze-rmm/agent/internal/recoveryconsole"
 	"github.com/spf13/cobra"
 )
+
+// recoveryConsoleLockPath is a well-known path under /run (tmpfs on the
+// recovery media, cleared on every real reboot) — see
+// recoveryconsole.Deps.AcquireLock's doc comment for why this lock exists
+// at all: breeze-recovery.service (tty1) and the serial-getty@ttyS0
+// override BOTH unconditionally start on every boot, so without mutual
+// exclusion two console instances would independently partition/format/
+// mount the same target disk concurrently in breeze.ci=1 mode.
+const recoveryConsoleLockPath = "/run/breeze-recovery-console.lock"
+
+// recoveryConsoleLockPollInterval is a var so nothing about this needs to
+// be faster in tests — the console package's own unit tests exercise
+// AcquireLock via a fake, never this real implementation.
+var recoveryConsoleLockPollInterval = 2 * time.Second
+
+// acquireRecoveryConsoleLock blocks until it is the only holder of
+// recoveryConsoleLockPath, using O_EXCL as the mutual-exclusion primitive
+// (portable, no new dependency — a real flock(2) wrapper would be no more
+// robust for two same-host processes racing a create, and simpler to
+// reason about for the one-shot "acquire once at startup, release once at
+// exit" pattern this needs). The losing instance blocks here for as long
+// as it takes the winner to finish — which ends with the winner powering
+// off or rebooting the whole machine either way, so there is no scenario
+// where the loser needs to do anything else.
+func acquireRecoveryConsoleLock(ctx context.Context) (func(), error) {
+	for {
+		f, err := os.OpenFile(recoveryConsoleLockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_ = f.Close()
+			return func() { _ = os.Remove(recoveryConsoleLockPath) }, nil
+		}
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("create recovery console lock %s: %w", recoveryConsoleLockPath, err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(recoveryConsoleLockPollInterval):
+		}
+	}
+}
 
 // newRecoveryConsoleCommand wires the guided bare-metal recovery console
 // (agent/internal/recoveryconsole) to the CLI. It is what
@@ -54,6 +98,7 @@ func newRecoveryConsoleCommand() *cobra.Command {
 					Provider:     bmr.NewRecoveryProvider,
 					Progress:     bmr.PostRecoveryProgress,
 					Shell:        runRecoveryShell,
+					AcquireLock:  acquireRecoveryConsoleLock,
 					Power: func(action string) error {
 						return exec.Command("systemctl", action).Run()
 					},

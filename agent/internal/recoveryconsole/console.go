@@ -42,8 +42,28 @@ type Deps struct {
 	// the seams the console_test.go table exercises), but a real Console
 	// needs something here rather than hard-coding os/exec — nil is legal
 	// and treated as unavailable ("shell not available on this build").
-	Shell   func() error
-	Version string
+	Shell func() error
+	// AcquireLock, if set, is called once at the very start of Run and
+	// MUST BLOCK until this instance is the only one allowed to proceed
+	// (returning a release func to call when done), or return ctx.Err()
+	// if ctx is cancelled first. Exists because breeze-recovery.service
+	// (tty1) and the serial-getty@ttyS0 override (ttyS0) BOTH
+	// unconditionally start on every boot of this media — tty1 is a
+	// kernel VT construct that exists on any Linux boot regardless of
+	// display hardware, so this is not a QEMU-only artifact, it happens
+	// on real bare metal too. In an interactive boot this is harmless
+	// (only the tty an operator is actually typing into ever gets past
+	// the first ReadLine; the other sits blocked forever) — but in
+	// breeze.ci=1 mode NEITHER instance ever blocks on IO, so without
+	// this lock both instances independently partition/format/mount the
+	// SAME target disk concurrently. Found by the W04b QEMU end-to-end
+	// proof: two consoles interleaving Exchange calls, then racing
+	// sgdisk/mkfs/mount against each other — which is what several
+	// earlier "device busy" symptoms actually were, not a udev timing
+	// gap alone. nil is legal (tests that don't care about this skip it
+	// entirely).
+	AcquireLock func(ctx context.Context) (release func(), err error)
+	Version     string
 }
 
 // Console drives the guided recovery flow described in spec §7.3: guard →
@@ -72,6 +92,14 @@ func (c *Console) Run(ctx context.Context) error {
 	media, ci, answers := ParseKernelCmdline(c.Cmdline)
 	if !media && !c.AllowHost {
 		return errors.New("refusing to run: this is not recovery media (no breeze.media=1 on the kernel cmdline); pass --allow-host for development")
+	}
+
+	if c.Deps.AcquireLock != nil {
+		release, err := c.Deps.AcquireLock(ctx)
+		if err != nil {
+			return fmt.Errorf("acquire recovery lock: %w", err)
+		}
+		defer release()
 	}
 
 	server, err := c.promptServer(ci, answers)

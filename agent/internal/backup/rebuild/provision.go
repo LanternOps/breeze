@@ -13,7 +13,7 @@ import (
 // to — the fake System's Exists always reports true immediately).
 var partitionDeviceWaitTimeout = 10 * time.Second
 
-// mkfsBusyRetryAttempts/mkfsBusyRetryDelay bound a short retry around an
+// deviceBusyRetryAttempts/deviceBusyRetryDelay bound a short retry around an
 // mkfs/mkswap call that fails with "device or resource busy" immediately
 // after Rescan. Rescan's udevadm settle waits for the kernel's udev EVENT
 // QUEUE to drain, not for every worker process an event spawned (e.g. a
@@ -27,8 +27,8 @@ var partitionDeviceWaitTimeout = 10 * time.Second
 // slower emulated execution makes a normally sub-millisecond probe-worker
 // window wide enough to lose the race.
 var (
-	mkfsBusyRetryAttempts = 5
-	mkfsBusyRetryDelay    = 500 * time.Millisecond
+	deviceBusyRetryAttempts = 5
+	deviceBusyRetryDelay    = 500 * time.Millisecond
 )
 
 // isDeviceBusyOutput reports whether out (an mkfs/mkswap command's
@@ -50,30 +50,84 @@ func isDeviceBusyOutput(out []byte) bool {
 		// in the same W04b QEMU run: mkfs.vfat on /dev/vda1 succeeded via
 		// the retry above, then mkfs.ext4 on /dev/vda2 failed with this
 		// exact message on the first attempt.
-		strings.Contains(s, "apparently in use by the system")
+		strings.Contains(s, "apparently in use by the system") ||
+		// mount(8)'s own ambiguous phrasing of the same race one step
+		// later: mountTree's first mount of a just-formatted partition
+		// (restore_tree.go) hit this immediately after the mkfs fixes
+		// above resolved provisioning — same underlying "something else
+		// still has an open fd on this device node" cause, mount(8) just
+		// cannot distinguish "genuinely already mounted" from "busy" in
+		// its own error text either. Safe to treat as retryable here
+		// specifically because mountTree mounts each planned partition
+		// exactly once, in order, within a single provision→mount
+		// sequence — nothing else in this run could have mounted it
+		// first.
+		strings.Contains(s, "already mounted or mount point busy") ||
+		strings.Contains(s, "mount point busy") ||
+		// sgdisk's OWN partition-creation failure carries no diagnostic
+		// detail at all ("Could not create partition N from A to B") —
+		// unlike mkfs/mount above, it never says WHY. Found on the same
+		// W04b QEMU run, one step EARLIER than the mkfs case: sgdisk
+		// --zap-all followed immediately by --new=1:... for the first
+		// partition hit this consistently, before udevadm settle had
+		// fully caught up with the just-cleared GPT. Broadened here
+		// (rather than kept mkfs-only) because by the time this was
+		// found, the identical race had already been confirmed at THREE
+		// other points in the exact same provision→mount sequence
+		// (mkfs.vfat, mkfs.ext4, mount) — sgdisk's turn was simply the
+		// first place in program order it could show up, not a
+		// coincidence. A genuinely malformed partition spec (bad
+		// sectors, oversized request) would keep failing after
+		// deviceBusyRetryAttempts retries and is exactly what should
+		// still surface as a hard failure.
+		strings.Contains(s, "could not create partition")
 }
 
-// runMkfsWithBusyRetry runs one mkfs/mkswap invocation, retrying up to
-// mkfsBusyRetryAttempts times (with mkfsBusyRetryDelay between attempts,
+// runWithBusyRetry runs one mkfs/mkswap invocation, retrying up to
+// deviceBusyRetryAttempts times (with deviceBusyRetryDelay between attempts,
 // cancellable via ctx) only while the failure is isDeviceBusyOutput — see
-// that function and mkfsBusyRetryAttempts's doc comment. Any other failure,
+// that function and deviceBusyRetryAttempts's doc comment. Any other failure,
 // or exhausting the retry budget, returns immediately on the last attempt's
 // output/error.
-func runMkfsWithBusyRetry(ctx context.Context, sys System, name string, args ...string) ([]byte, error) {
+func runWithBusyRetry(ctx context.Context, sys System, name string, args ...string) ([]byte, error) {
 	var out []byte
 	var err error
-	for attempt := 1; attempt <= mkfsBusyRetryAttempts; attempt++ {
+	for attempt := 1; attempt <= deviceBusyRetryAttempts; attempt++ {
 		out, err = sys.Run(ctx, name, args...)
-		if err == nil || !isDeviceBusyOutput(out) || attempt == mkfsBusyRetryAttempts {
+		if err == nil || !isDeviceBusyOutput(out) || attempt == deviceBusyRetryAttempts {
 			return out, err
 		}
 		select {
 		case <-ctx.Done():
 			return out, ctx.Err()
-		case <-time.After(mkfsBusyRetryDelay):
+		case <-time.After(deviceBusyRetryDelay):
 		}
 	}
 	return out, err
+}
+
+// mountWithBusyRetry runs one Mount call, retrying up to
+// deviceBusyRetryAttempts times (mirroring runWithBusyRetry) only
+// while the returned error's text is isDeviceBusyOutput — mountTree's
+// first mount of a just-formatted partition hit this immediately after
+// the mkfs fixes above resolved provisioning (see isDeviceBusyOutput's
+// mount(8) case). realSystem.Mount already formats its error as
+// "mount %s %s: %s: %w" (system_linux.go), so err.Error() carries the
+// same text isDeviceBusyOutput matches against mkfs/mkswap's raw output.
+func mountWithBusyRetry(ctx context.Context, sys System, device, dir, fstype string, opts ...string) error {
+	var err error
+	for attempt := 1; attempt <= deviceBusyRetryAttempts; attempt++ {
+		err = sys.Mount(ctx, device, dir, fstype, opts...)
+		if err == nil || !isDeviceBusyOutput([]byte(err.Error())) || attempt == deviceBusyRetryAttempts {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(deviceBusyRetryDelay):
+		}
+	}
+	return err
 }
 
 // waitForPartitionDevices polls for every planned partition's device node
@@ -115,7 +169,7 @@ func provision(ctx context.Context, r *run) error {
 	}
 	plan := r.result.Plan
 	sector := int64(plan.SectorSize)
-	if out, err := r.sys.Run(ctx, "sgdisk", "--zap-all", r.disk); err != nil {
+	if out, err := runWithBusyRetry(ctx, r.sys, "sgdisk", "--zap-all", r.disk); err != nil {
 		return fmt.Errorf("sgdisk --zap-all: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	for _, p := range plan.Partitions {
@@ -132,7 +186,7 @@ func provision(ctx context.Context, r *run) error {
 			args = append(args, fmt.Sprintf("--change-name=%d:%s", p.Number, p.Name))
 		}
 		args = append(args, r.disk)
-		if out, err := r.sys.Run(ctx, "sgdisk", args...); err != nil {
+		if out, err := runWithBusyRetry(ctx, r.sys, "sgdisk", args...); err != nil {
 			return fmt.Errorf("sgdisk partition %d: %s: %w", p.Number, strings.TrimSpace(string(out)), err)
 		}
 	}
@@ -188,7 +242,7 @@ func provision(ctx context.Context, r *run) error {
 			return fmt.Errorf("unsupported filesystem %q reached provision (preflight bug)", p.Filesystem)
 		}
 		args = append(args, dev)
-		if out, err := runMkfsWithBusyRetry(ctx, r.sys, name, args...); err != nil {
+		if out, err := runWithBusyRetry(ctx, r.sys, name, args...); err != nil {
 			return fmt.Errorf("%s %s: %s: %w", name, dev, strings.TrimSpace(string(out)), err)
 		}
 		r.progress(PhaseProvision, "formatted "+dev, int64(i+1), int64(len(plan.Partitions)))

@@ -368,6 +368,75 @@ func TestConsole_ProgressPostFailureIsNonFatal(t *testing.T) {
 	}
 }
 
+// TestConsole_AcquiresAndReleasesLock is the red-first regression test for
+// the W04b QEMU end-to-end finding: breeze-recovery.service (tty1) and the
+// serial-getty@ttyS0 override both unconditionally start on every boot of
+// this media (tty1 is a kernel VT construct present on any Linux boot,
+// unrelated to QEMU's display flags), so without mutual exclusion two
+// console instances independently partitioned/formatted/mounted the SAME
+// target disk concurrently in breeze.ci=1 mode — which is what several
+// "device busy" symptoms actually were. Proves Run acquires the lock
+// before doing anything else and releases it exactly once, even on the
+// success path where Run ends by "rebooting" the machine.
+func TestConsole_AcquiresAndReleasesLock(t *testing.T) {
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "6002248"}}
+	deps := &fakeDeps{
+		exchangeFn: happyExchange(t),
+		collectFn:  func(ctx context.Context) (*layout.Manifest, error) { return singleDiskLayout(), nil },
+		rebuildFn: func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
+			if opts.DryRun {
+				return samplePlan(), nil
+			}
+			return &rebuild.Result{Status: "completed"}, nil
+		},
+	}
+	d := deps.build("0.111.1")
+
+	var acquireCalls, releaseCalls int
+	d.AcquireLock = func(ctx context.Context) (func(), error) {
+		acquireCalls++
+		return func() { releaseCalls++ }, nil
+	}
+
+	c := &Console{IO: io, Deps: d, Cmdline: "breeze.media=1"}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if acquireCalls != 1 {
+		t.Errorf("AcquireLock called %d times, want 1", acquireCalls)
+	}
+	if releaseCalls != 1 {
+		t.Errorf("release called %d times, want 1", releaseCalls)
+	}
+}
+
+// TestConsole_LockAcquisitionFailureAbortsBeforeAnyIO proves a failed (or
+// context-cancelled) lock acquisition stops Run immediately — before the
+// server prompt, before Exchange, before anything — rather than proceeding
+// as the second, losing instance.
+func TestConsole_LockAcquisitionFailureAbortsBeforeAnyIO(t *testing.T) {
+	io := &fakeIO{FailReadLine: true}
+	deps := &fakeDeps{
+		exchangeFn: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
+			t.Fatal("Exchange must not be called when the lock could not be acquired")
+			return "", nil, nil
+		},
+	}
+	d := deps.build("0.111.1")
+	d.AcquireLock = func(ctx context.Context) (func(), error) {
+		return nil, errors.New("lock acquisition cancelled")
+	}
+
+	c := &Console{IO: io, Deps: d, Cmdline: "breeze.media=1"}
+	err := c.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run() error = nil, want the lock-acquisition error")
+	}
+	if io.readLineCalls != 0 {
+		t.Errorf("ReadLine was called %d times, want 0 (must abort before any prompt)", io.readLineCalls)
+	}
+}
+
 func TestVersionAtLeast(t *testing.T) {
 	cases := []struct {
 		have, want string
