@@ -702,6 +702,26 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     resume: { resource: 'contracts', action: 'manage' },
     cancel: { resource: 'contracts', action: 'manage' },
   },
+  // Service deliverables W02 (#5573 spec §10). `contracts`, not a new resource:
+  // the REST routes for deliverables AND key dates gate on contracts:read /
+  // contracts:write, and the AI door must not disagree with the HTTP door.
+  list_deliverables: { resource: 'contracts', action: 'read' },
+  manage_deliverables: {
+    create: { resource: 'contracts', action: 'write' },
+    update: { resource: 'contracts', action: 'write' },
+    deactivate: { resource: 'contracts', action: 'write' },
+    deliver: { resource: 'contracts', action: 'write' },
+    waive: { resource: 'contracts', action: 'write' },
+    reopen: { resource: 'contracts', action: 'write' },
+    reschedule: { resource: 'contracts', action: 'write' },
+    link_evidence: { resource: 'contracts', action: 'write' },
+  },
+  manage_key_dates: {
+    list: { resource: 'contracts', action: 'read' },
+    create: { resource: 'contracts', action: 'write' },
+    update: { resource: 'contracts', action: 'write' },
+    delete: { resource: 'contracts', action: 'write' },
+  },
   // Org document library (service deliverables W03): its own resource, not
   // `contracts` — a technician may file documents without billing authority.
   list_org_documents: { resource: 'documents', action: 'read' },

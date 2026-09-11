@@ -1,3 +1,7 @@
+// Date-only values (YYYY-MM-DD) are calendar dates, not instants. A zone west of
+// UTC is where parsing them as UTC midnight renders the previous day (#5573 smoke).
+process.env.TZ = 'America/Denver';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -123,6 +127,10 @@ describe('OrgServiceTab', () => {
     expect(items.length).toBe(2);
     expect(items[0]).toContain('Soon');
     expect(items[1]).toContain('Later this quarter');
+    // The due date is a calendar date: render the same day the API sent, not the
+    // previous day that a UTC-midnight parse yields west of Greenwich.
+    const laterIso = isoDaysFromToday(60);
+    expect(items[1]).toContain(new Date(`${laterIso}T00:00:00`).toLocaleDateString());
     expect(upcoming.textContent).not.toContain('Far away');
     expect(upcoming.textContent).not.toContain('Overdue');
     expect(upcoming.textContent).not.toContain('Unscheduled');

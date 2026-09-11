@@ -14,6 +14,7 @@ import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { executeTool, aiTools } from './aiTools';
+import { LIST_DELIVERABLES_TOOL, MANAGE_DELIVERABLES_TOOL, MANAGE_KEY_DATES_TOOL } from './aiToolsDeliverables';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
@@ -285,6 +286,9 @@ export const TOOL_TIERS = {
   list_contracts: 2,
   get_contract: 2,
   manage_contracts: 2,          // activate/pause/resume/cancel escalate to 3 in guardrails
+  list_deliverables: 2,
+  manage_deliverables: 2,       // no action escalates: apply_template (the gated one) is W05
+  manage_key_dates: 2,
   list_org_documents: 2,
   manage_org_documents: 2,
   search_catalog: 2,
@@ -2602,6 +2606,49 @@ export function createBreezeMcpServer(
         patch: z.record(z.string(), z.unknown()).optional(),
       },
       makeHandler('manage_contracts', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_deliverables',
+      LIST_DELIVERABLES_TOOL.definition.description ?? 'List service deliverables for one organization. Read-only.',
+      {
+        orgId: uuid,
+        contractId: uuid.optional(),
+        includeInactive: z.boolean().optional(),
+        occurrencesFor: uuid.optional(),
+      },
+      makeHandler('list_deliverables', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_deliverables',
+      MANAGE_DELIVERABLES_TOOL.definition.description ?? 'Create and manage service deliverables and their occurrences.',
+      {
+        action: z.enum(['create', 'update', 'deactivate', 'deliver', 'waive', 'reopen', 'reschedule', 'link_evidence']),
+        orgId: uuid.optional(),
+        deliverableId: uuid.optional(),
+        occurrenceId: uuid.optional(),
+        input: z.record(z.string(), z.unknown()).optional(),
+        patch: z.record(z.string(), z.unknown()).optional(),
+        note: z.string().max(4000).optional(),
+        reason: z.string().max(2000).optional(),
+        dueAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        reportRunId: uuid.optional(),
+      },
+      makeHandler('manage_deliverables', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_key_dates',
+      MANAGE_KEY_DATES_TOOL.definition.description ?? 'List, create, update or delete organization key dates.',
+      {
+        action: z.enum(['list', 'create', 'update', 'delete']),
+        orgId: uuid,
+        keyDateId: uuid.optional(),
+        input: z.record(z.string(), z.unknown()).optional(),
+        patch: z.record(z.string(), z.unknown()).optional(),
+      },
+      makeHandler('manage_key_dates', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

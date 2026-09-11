@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import MonitoringIntegration from "./MonitoringIntegration";
@@ -119,6 +119,40 @@ describe("MonitoringIntegration — token-capability gate (partner admin)", () =
         "/integrations/monitoring",
       ),
     );
+  });
+
+  it("adds a collision-free webhook id beside an existing masked endpoint", async () => {
+    fetchWithAuthMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: {
+          webhooks: {
+            enabled: true,
+            endpoints: [
+              { id: "wh-1", name: "Existing", url: "********", enabled: true },
+            ],
+          },
+        },
+      }),
+    } as Response);
+    render(<MonitoringIntegration />);
+
+    await screen.findByDisplayValue("Existing");
+    fireEvent.change(
+      screen.getByPlaceholderText("https://hooks.monitoring.io/breeze"),
+      { target: { value: "https://hooks.example.test/new" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: /add endpoint/i }));
+    fireEvent.click(screen.getByRole("button", { name: /save settings/i }));
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+    const [, saveOptions] = fetchWithAuthMock.mock.calls[1] ?? [];
+    const saved = JSON.parse(String(saveOptions?.body));
+    expect(saved.webhooks.endpoints).toHaveLength(2);
+    expect(saved.webhooks.endpoints[0]).toMatchObject({ id: "wh-1", url: "********" });
+    expect(saved.webhooks.endpoints[1].id).toEqual(expect.any(String));
+    expect(saved.webhooks.endpoints[1].id).not.toBe("wh-1");
   });
 });
 

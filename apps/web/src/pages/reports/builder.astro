@@ -2,18 +2,21 @@
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import ReportBuilder from '../../components/reports/ReportBuilder';
 import Breadcrumbs from '../../components/layout/Breadcrumbs';
+import { tServer } from '../../lib/i18n/server';
+
+const locale = Astro.locals.locale;
 ---
 
-<DashboardLayout title="Report Builder">
+<DashboardLayout titleKey="titles.reportsBuilder">
   <Breadcrumbs client:load items={[
-    { label: 'Reports', href: '/reports' },
-    { label: 'Builder' }
+    { label: tServer(locale, 'reportsBuilderPage.breadcrumbReports'), href: '/reports' },
+    { label: tServer(locale, 'reportsBuilderPage.breadcrumbBuilder') }
   ]} />
   <div class="space-y-6">
     <div>
-      <h1 class="text-xl font-semibold tracking-tight">Report Builder</h1>
+      <h1 class="text-xl font-semibold tracking-tight">{tServer(locale, 'reportsBuilderPage.heading')}</h1>
       <p class="text-muted-foreground">
-        Design, schedule, and distribute reports with live previews.
+        {tServer(locale, 'reportsBuilderPage.description')}
       </p>
     </div>
 

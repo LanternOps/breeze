@@ -10,7 +10,7 @@ import {
   type KeyDate,
   type KeyDateKind,
 } from '@/lib/api/orgKeyDates';
-import { formatDate } from '@/lib/dateTimeFormat';
+import { formatDate } from '@/components/billing/shared/format';
 import { ActionError, handleActionError } from '@/lib/runAction';
 import { runClientAction } from '@/lib/runClientAction';
 import { useLatest, type OrgFetch } from './orgRecordFetch';

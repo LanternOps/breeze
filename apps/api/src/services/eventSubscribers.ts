@@ -135,6 +135,20 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
   });
 
   registerEventSubscriber({
+    id: 'deliverable-status',
+    // Service deliverables W02 (#5573 spec §6). Lazy for the same reason as
+    // every ticket subscriber above: workerEntrypointClosure.contract.test.ts
+    // constrains what this module may pull into the worker boot closure
+    // statically (serviceDeliverableService reaches ticketService).
+    eventTypes: ['ticket.status_changed'],
+    handler: async (event: BreezeEvent) => {
+      const { handleDeliverableTicketStatusChanged } = await import('./deliverableStatusSubscriber');
+      return handleDeliverableTicketStatusChanged(event);
+    },
+    retry: { attempts: 5, backoffMs: 10_000 },
+  });
+
+  registerEventSubscriber({
     id: 'automation-worker',
     eventTypes: '*',
     // Lazy: jobs/automationWorker.ts is one of two static edges that pull the

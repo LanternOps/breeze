@@ -20,7 +20,9 @@ vi.mock('../middleware/userRateLimit', () => ({
   userRateLimit: () => async (_c: any, next: any) => next(),
 }));
 
-const docMocks = vi.hoisted(() => ({ uploadDocument: vi.fn() }));
+// deleteDocument is mocked (never wired to the route) so the uncompensated
+// link-failure test can assert the upload is NOT rolled back.
+const docMocks = vi.hoisted(() => ({ uploadDocument: vi.fn(), deleteDocument: vi.fn() }));
 vi.mock('../services/orgDocumentService', () => ({ ...docMocks, documentEtag: (s: string) => `"${s}"` }));
 
 const serviceMocks = vi.hoisted(() => ({
@@ -270,7 +272,7 @@ describe('service deliverable routes (#5573 W01)', () => {
       // The document was created and is NOT deleted: a technician's uploaded
       // artifact is customer data we would rather keep and re-link.
       expect(docMocks.uploadDocument).toHaveBeenCalledTimes(1);
-      expect(docMocks.deleteDocument).toBeUndefined();
+      expect(docMocks.deleteDocument).not.toHaveBeenCalled();
     });
 
     it('404s (never 403) an occurrence of another org before any bytes are written', async () => {

@@ -262,6 +262,12 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   manage_org_documents: 'business',
   list_org_documents: 'business',
   get_contract: 'business',
+  // Service deliverables W02 (#5573): the recurring service obligations a
+  // contract promises, and the org key dates beside them — same commercial
+  // capability as the contracts they hang off.
+  list_deliverables: 'business',
+  manage_deliverables: 'business',
+  manage_key_dates: 'business',
   manage_catalog: 'business',
   search_catalog: 'business',
   lookup_distributor_product: 'business',

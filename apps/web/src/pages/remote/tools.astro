@@ -3,6 +3,7 @@ import Layout from '../../layouts/Layout.astro';
 import AuthOverlay from '../../components/auth/AuthOverlay';
 import RemoteToolsPage from '../../components/remote/RemoteToolsPage';
 import { parseRemoteToolsParams } from '../../lib/remoteToolsParams';
+import { tServer } from '../../lib/i18n/server';
 
 const routeParams = parseRemoteToolsParams(Astro.url.searchParams);
 
@@ -11,9 +12,10 @@ if (!routeParams) {
 }
 
 const { deviceId, deviceName, deviceOs } = routeParams;
+const locale = Astro.locals.locale;
 ---
 
-<Layout title="Remote Tools">
+<Layout titleKey="titles.remoteTools">
   <!-- #3984: this page used bare Layout.astro with no AuthOverlay, so an
        AuthThrottledError from a throttled /auth/refresh here went unhandled —
        no waiting mask, no recovery, just a broken remote session. -->
@@ -28,9 +30,9 @@ const { deviceId, deviceName, deviceOs } = routeParams;
     >
       <div slot="fallback" class="flex h-full items-center justify-center">
         <div class="text-center">
-          <p class="text-muted-foreground">Loading Remote Tools...</p>
+          <p class="text-muted-foreground">{tServer(locale, 'remoteToolsPage.loading')}</p>
           <p class="mt-2 text-sm text-muted-foreground">
-            Select a device to access remote management tools
+            {tServer(locale, 'remoteToolsPage.loadingHint')}
           </p>
         </div>
       </div>

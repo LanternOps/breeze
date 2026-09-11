@@ -14,7 +14,7 @@ function queueError(error: unknown) { results.push({ error }); }
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'innerJoin', 'leftJoin'];
+    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'innerJoin', 'leftJoin', 'onConflictDoNothing'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
     chain.transaction = vi.fn(async (run: (tx: unknown) => unknown) => run(chain));
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) => {
@@ -23,13 +23,22 @@ vi.mock('../db', () => {
     };
     return chain;
   };
-  return { db: makeChain() };
+  return {
+    db: makeChain(),
+    runOutsideDbContext: (fn: () => unknown) => fn(),
+    withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  };
 });
+
+const { createTicketMock } = vi.hoisted(() => ({ createTicketMock: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./ticketService', () => ({ createTicket: createTicketMock }));
 
 import { db } from '../db';
 import {
   addEvidence, createDeliverable, deactivateDeliverable, deliverOccurrence, getDeliverable, listOccurrences,
-  materializeOccurrences, openOccurrence, markOccurrenceMissed, applyTicketStatusChange,
+  materializeOccurrences, openOccurrence, markOccurrenceMissed, applyTicketStatusChange, markDueOccurrencesMissedForDeliverable,
+  openDueOccurrencesForDeliverable, periodLabel, applyContractCancelledToDeliverables,
   removeEvidence, reopenOccurrence, rescheduleOccurrence, summarizeStatus, updateDeliverable, waiveOccurrence,
   DeliverableServiceError, getOccurrenceOr404,
 } from './serviceDeliverableService';
@@ -627,12 +636,355 @@ describe('serviceDeliverableService', () => {
     });
   });
 
-  describe('W02 stubs', () => {
-    it('throw not implemented', async () => {
-      await expect(materializeOccurrences('d1', '2026-10-15')).rejects.toThrow('not implemented (W02)');
-      await expect(openOccurrence('o1', null)).rejects.toThrow('not implemented (W02)');
-      await expect(markOccurrenceMissed('o1')).rejects.toThrow('not implemented (W02)');
-      await expect(applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: null, resolutionNote: null })).rejects.toThrow('not implemented (W02)');
+  describe('applyTicketStatusChange (spec §6)', () => {
+    const occRow = (over: Record<string, unknown> = {}) => ({ id: 'o1', status: 'open',
+      deliveredVia: null, artifactRequired: true, completionMode: 'on_ticket_resolve', ...over });
+
+    it('resolve with evidence delivers via ticket and copies the resolution note and actor', async () => {
+      queueResult([occRow()]); queueResult([{ id: 'e1' }]); queueResult([{ id: 'o1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'done' });
+      expect(lastSet()).toMatchObject({ status: 'delivered', deliveredVia: 'ticket', deliveredByUserId: 'u7', deliveryNote: 'done' });
+      expect(lastSet().deliveredAt).toBeInstanceOf(Date);
+      // CAS on the status the decision was made from.
+      expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'open']));
+    });
+
+    it('resolve without an artifact requirement delivers even with no evidence', async () => {
+      queueResult([occRow({ artifactRequired: false })]); queueResult([]); queueResult([{ id: 'o1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'closed', actorUserId: 'u7', resolutionNote: null });
+      expect(lastSet()).toMatchObject({ status: 'delivered', deliveredVia: 'ticket' });
+    });
+
+    it('resolve with artifact required and no evidence goes to awaiting_evidence, keeping the note but stamping no delivery', async () => {
+      queueResult([occRow()]); queueResult([]); queueResult([{ id: 'o1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'closed', actorUserId: 'u7', resolutionNote: 'Reviewed' });
+      const patch = lastSet();
+      expect(patch).toMatchObject({ status: 'awaiting_evidence', deliveryNote: 'Reviewed' });
+      expect(patch.deliveredAt).toBeUndefined();
+      expect(patch.deliveredByUserId).toBeUndefined();
+      expect(patch.deliveredVia).toBeUndefined();
+    });
+
+    it('a late resolution of a missed occurrence still records the delivery', async () => {
+      queueResult([occRow({ status: 'missed' })]); queueResult([{ id: 'e1' }]); queueResult([{ id: 'o1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'late' });
+      expect(lastSet()).toMatchObject({ status: 'delivered' });
+      expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'missed']));
+    });
+
+    it('explicit completion mode changes nothing', async () => {
+      queueResult([occRow({ completionMode: 'explicit' })]); queueResult([]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'x' });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('a reopen undoes a ticket-driven delivery and clears the delivery fields', async () => {
+      queueResult([occRow({ status: 'delivered', deliveredVia: 'ticket' })]); queueResult([{ id: 'o1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'open', actorUserId: 'u7', resolutionNote: null });
+      expect(lastSet()).toMatchObject({ status: 'open', deliveredAt: null, deliveredByUserId: null, deliveredVia: null, deliveryNote: null });
+    });
+
+    it('a reopen NEVER undoes an explicit delivery', async () => {
+      queueResult([occRow({ status: 'delivered', deliveredVia: 'explicit' })]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'open', actorUserId: 'u7', resolutionNote: null });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('is idempotent — a redelivery of an already-delivered occurrence is a no-op', async () => {
+      queueResult([occRow({ status: 'delivered', deliveredVia: 'ticket' })]); queueResult([{ id: 'e1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'done' });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('ignores a ticket no occurrence is linked to, and statuses that are neither resolved nor reopened', async () => {
+      queueResult([]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: null });
+      queueResult([occRow()]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'some_custom', actorUserId: 'u7', resolutionNote: null });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // W02 — sweep (system callers)
+  // -------------------------------------------------------------------------
+
+  const DEF = { id: 'd1', orgId: 'org1', name: 'Sign-in log review', cadence: 'monthly',
+    effectiveFrom: '2026-10-01', effectiveUntil: null, leadDays: 7, graceDays: 14 };
+  const SD = { ...DEF, cadence: 'monthly' as const, anchorDueDate: '2026-10-31', autoEvidenceReportId: null };
+  const lastValuesArray = () => chain.values.mock.calls.at(-1)?.[0] as Array<Record<string, unknown>>;
+
+  describe('materializeOccurrences (spec §5.3 step 1)', () => {
+    it('inserts one row per planned due date with the name snapshot', async () => {
+      queueResult([{ ...DEF, anchorDueDate: '2026-10-31' }]);
+      queueResult([]);                         // existing due dates: none
+      queueResult([{ id: 'o1' }]);             // insert ... returning
+      expect(await materializeOccurrences('d1', '2026-10-25')).toHaveLength(1);
+      const values = lastValuesArray();
+      expect(values).toHaveLength(1);
+      expect(values[0]).toMatchObject({
+        orgId: 'org1', deliverableId: 'd1', nameSnapshot: 'Sign-in log review',
+        periodStart: '2026-10-01', periodEnd: '2026-10-31',
+        dueAt: '2026-10-31', originalDueAt: '2026-10-31', status: 'scheduled',
+      });
+    });
+
+    it('inserts catch-up occurrences past grace directly as missed, capped at 12', async () => {
+      queueResult([{ ...DEF, anchorDueDate: '2025-01-31', effectiveFrom: '2025-01-01' }]);
+      queueResult([]);
+      queueResult([{ id: 'o1' }]);
+      await materializeOccurrences('d1', '2026-10-25');
+      const values = lastValuesArray();
+      expect(values).toHaveLength(12);
+      expect(values[0]).toMatchObject({ dueAt: '2025-01-31', status: 'missed' });
+      expect(values.every((v) => v.status === 'missed')).toBe(true);   // cap reached long before today
+    });
+
+    it('marks only the rows past grace as missed in a short catch-up', async () => {
+      queueResult([{ ...DEF, anchorDueDate: '2026-08-31', effectiveFrom: '2026-08-01' }]);
+      queueResult([]);
+      queueResult([{ id: 'o1' }]);
+      await materializeOccurrences('d1', '2026-10-25');
+      expect(lastValuesArray().map((v) => [v.dueAt, v.status])).toEqual([
+        ['2026-08-31', 'missed'], ['2026-09-30', 'missed'], ['2026-10-31', 'scheduled'],
+      ]);
+    });
+
+    it('is a no-op when every due date is already materialized (keyed on the ORIGINAL due date)', async () => {
+      queueResult([{ ...DEF, anchorDueDate: '2026-10-31' }]);
+      // A rescheduled occurrence: its due_at moved, original_due_at still names the slot.
+      queueResult([{ originalDueAt: '2026-10-31' }]);
+      expect(await materializeOccurrences('d1', '2026-10-25')).toEqual([]);
+      expect(chain.insert.mock.calls).toHaveLength(0);
+    });
+
+    it('throws NOT_FOUND for a deliverable that no longer exists', async () => {
+      queueResult([]);
+      await expect(materializeOccurrences('gone', '2026-10-25')).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+    });
+  });
+
+  describe('markDueOccurrencesMissedForDeliverable (spec §5.3 step 4)', () => {
+    it('moves open / awaiting_evidence rows past grace to missed and never touches the ticket', async () => {
+      queueResult([{ id: 'o1' }, { id: 'o2' }]);
+      expect(await markDueOccurrencesMissedForDeliverable(SD, '2026-10-25')).toBe(2);
+      const patch = lastSet();
+      expect(patch).toMatchObject({ status: 'missed' });
+      expect(patch).not.toHaveProperty('ticketId');
+      // cutoff = today - graceDays: due_at < 2026-10-11 ⇔ due_at + 14 < 2026-10-25
+      const params = updateWhereParams();
+      expect(params).toEqual(expect.arrayContaining(['d1', 'open', 'awaiting_evidence', '2026-10-11']));
+      expect(params).not.toContain('scheduled');
+    });
+  });
+
+  describe('applyContractCancelledToDeliverables (spec §5.4)', () => {
+    it('closes the effective window of every open-ended deliverable on the contract', async () => {
+      queueResult([{ id: 'c1', status: 'cancelled' }]); queueResult([{ id: 'd1' }, { id: 'd2' }]);
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        expect(await applyContractCancelledToDeliverables('c1', '2026-09-10')).toBe(2);
+      } finally { log.mockRestore(); }
+      expect(lastSet()).toMatchObject({ effectiveUntil: '2026-09-10' });
+      expect(updateWhereParams()).toContain('c1');
+    });
+
+    it('does nothing when the contract is no longer cancelled (a replayed or reversed event)', async () => {
+      queueResult([{ id: 'c1', status: 'active' }]);
+      expect(await applyContractCancelledToDeliverables('c1', '2026-09-10')).toBe(0);
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('does nothing for a paused or expired contract (neither ends the service)', async () => {
+      queueResult([{ id: 'c1', status: 'paused' }]);
+      expect(await applyContractCancelledToDeliverables('c1', '2026-09-10')).toBe(0);
+      queueResult([{ id: 'c1', status: 'expired' }]);
+      expect(await applyContractCancelledToDeliverables('c1', '2026-09-10')).toBe(0);
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('does nothing for a contract that no longer exists', async () => {
+      queueResult([]);
+      expect(await applyContractCancelledToDeliverables('gone', '2026-09-10')).toBe(0);
+    });
+
+    it('never overwrites an effective_until the MSP already set', async () => {
+      queueResult([{ id: 'c1', status: 'cancelled' }]); queueResult([]);   // IS NULL predicate matched nothing
+      expect(await applyContractCancelledToDeliverables('c1', '2026-09-10')).toBe(0);
+      const { PgDialect } = await import('drizzle-orm/pg-core');
+      const setOrder = chain.set.mock.invocationCallOrder.at(-1)!;
+      const i = chain.where.mock.invocationCallOrder.findIndex((o) => o > setOrder);
+      expect(new PgDialect().sqlToQuery(chain.where.mock.calls[i]![0] as SQL).sql).toContain('"effective_until" is null');
+    });
+  });
+
+  describe('periodLabel', () => {
+    it('labels each cadence from the period end', () => {
+      expect(periodLabel('monthly', '2026-10-31')).toBe('Oct 2026');
+      expect(periodLabel('one_time', '2026-02-15')).toBe('Feb 2026');
+      expect(periodLabel('quarterly', '2026-12-31')).toBe('Q4 2026');
+      expect(periodLabel('quarterly', '2026-03-31')).toBe('Q1 2026');
+      expect(periodLabel('semiannual', '2026-06-30')).toBe('H1 2026');
+      expect(periodLabel('semiannual', '2026-12-31')).toBe('H2 2026');
+      expect(periodLabel('annual', '2027-03-01')).toBe('2027');
+    });
+  });
+
+  describe('openOccurrence (single-row form)', () => {
+    it('opens a scheduled row and links the ticket', async () => {
+      queueResult([]);
+      await openOccurrence('o1', 't1');
+      expect(lastSet()).toMatchObject({ status: 'open', ticketId: 't1' });
+      expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'scheduled']));
+    });
+    it('opens without touching ticket_id when no ticket was created', async () => {
+      queueResult([]);
+      await openOccurrence('o1', null);
+      expect(lastSet()).not.toHaveProperty('ticketId');
+    });
+  });
+
+  describe('openDueOccurrencesForDeliverable (spec §5.3 step 2)', () => {
+    const OCC = { id: 'o1', nameSnapshot: 'Sign-in log review', periodStart: '2026-10-01', periodEnd: '2026-10-31', dueAt: '2026-10-31' };
+    /** candidates, claim, config */
+    const seedOpen = (claim: unknown[], cfg: Record<string, unknown>) => {
+      queueResult([OCC]); queueResult(claim); queueResult([cfg]);
+    };
+    const NO_CFG = { ownerUserId: null, ticketCategoryId: null, description: null };
+
+    it('creates an SLA-free deliverable ticket and links it to the claimed occurrence', async () => {
+      seedOpen([{ id: 'o1' }], { ownerUserId: 'u1', ticketCategoryId: 'c1', description: 'Review sign-in logs' });
+      createTicketMock.mockResolvedValue({ id: 't1' });
+      expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(1);
+      expect(createTicketMock).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: 'org1', source: 'api', workKind: 'deliverable',
+        subject: 'Sign-in log review — Oct 2026', description: 'Review sign-in logs',
+        dueDate: new Date('2026-10-31T00:00:00.000Z'), assigneeId: 'u1', categoryId: 'c1',
+      }), expect.objectContaining({ userId: expect.any(String) }));
+      // The claim UPDATE is CAS'd on 'scheduled' ...
+      const claimSet = chain.set.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(claimSet).toMatchObject({ status: 'open' });
+      expect(claimSet).not.toHaveProperty('ticketId');
+      // ... and the link UPDATE writes the ticket.
+      expect(lastSet()).toMatchObject({ ticketId: 't1' });
+    });
+
+    it('leaves the occurrence open with a null ticket when Service Management is off, warning once per org', async () => {
+      const warned = new Set<string>();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        seedOpen([{ id: 'o1' }], NO_CFG);
+        createTicketMock.mockRejectedValue(Object.assign(new Error('off'), { code: 'service_management_off' }));
+        expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', warned)).toBe(1);  // the occurrence IS open
+        expect(chain.set.mock.calls).toHaveLength(1);                                     // claim only, no link
+        expect(warn).toHaveBeenCalledTimes(1);
+        seedOpen([{ id: 'o1' }], NO_CFG);
+        await openDueOccurrencesForDeliverable(SD, '2026-10-25', warned);
+        expect(warn).toHaveBeenCalledTimes(1);                                            // once per org per run
+      } finally { warn.mockRestore(); }
+    });
+
+    it('counts no open for any other ticket failure — that occurrence\'s claim rolls back and retries tomorrow', async () => {
+      seedOpen([{ id: 'o1' }], NO_CFG);
+      createTicketMock.mockRejectedValue(new Error('connection reset'));
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(0);
+        expect(err).toHaveBeenCalledWith(expect.stringContaining('opening an occurrence failed'),
+          'orgId=org1', 'deliverableId=d1', 'occurrenceId=o1', 'connection reset');
+      } finally { err.mockRestore(); }
+    });
+
+    it('one failing occurrence never costs the deliverable its other occurrences', async () => {
+      queueResult([OCC, { ...OCC, id: 'o2' }]);
+      queueResult([{ id: 'o1' }]); queueResult([NO_CFG]);          // o1: claim + config
+      createTicketMock.mockRejectedValueOnce(new Error('connection reset'));
+      queueResult([{ id: 'o2' }]); queueResult([NO_CFG]);          // o2: claim + config
+      createTicketMock.mockResolvedValueOnce({ id: 't2' });
+      queueResult([]);                                            // o2: link
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(1);
+      } finally { err.mockRestore(); }
+      expect(lastSet()).toMatchObject({ ticketId: 't2' });
+    });
+
+    it('drops an owner and a category the ticket service refuses instead of stalling forever', async () => {
+      seedOpen([{ id: 'o1' }], { ownerUserId: 'u-gone', ticketCategoryId: 'c-gone', description: null });
+      createTicketMock
+        .mockRejectedValueOnce(Object.assign(new Error('wrong partner'), { code: 'ASSIGNEE_WRONG_PARTNER' }))
+        .mockRejectedValueOnce(Object.assign(new Error('no category'), { code: 'CATEGORY_NOT_FOUND' }))
+        .mockResolvedValueOnce({ id: 't1' });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(1);
+        expect(createTicketMock).toHaveBeenCalledTimes(3);
+        const input = createTicketMock.mock.calls[2]![0] as Record<string, unknown>;
+        expect(input.assigneeId).toBeUndefined();
+        expect(input.categoryId).toBeUndefined();
+        expect(warn).toHaveBeenCalledTimes(2);
+        expect(lastSet()).toMatchObject({ ticketId: 't1' });
+      } finally { warn.mockRestore(); }
+    });
+
+    it('does not loop when the refusal names a reference that is already absent', async () => {
+      seedOpen([{ id: 'o1' }], NO_CFG);
+      createTicketMock.mockRejectedValue(Object.assign(new Error('wrong partner'), { code: 'ASSIGNEE_WRONG_PARTNER' }));
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(0);
+      } finally { err.mockRestore(); }
+      expect(createTicketMock).toHaveBeenCalledTimes(1);      // rethrown, not retried forever
+    });
+
+    it('stops retrying once each refused reference has been dropped once', async () => {
+      seedOpen([{ id: 'o1' }], { ownerUserId: 'u1', ticketCategoryId: 'c1', description: null });
+      createTicketMock.mockRejectedValue(Object.assign(new Error('wrong partner'), { code: 'ASSIGNEE_WRONG_PARTNER' }));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(0);
+      } finally { warn.mockRestore(); err.mockRestore(); }
+      // attempt 1 with the assignee, attempt 2 without it, then the same code
+      // names nothing left to drop and the error propagates.
+      expect(createTicketMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries once without an assignee createTicket still refuses (e.g. deactivated user)', async () => {
+      seedOpen([{ id: 'o1' }], { ownerUserId: 'u-off', ticketCategoryId: 'c1', description: null });
+      createTicketMock
+        .mockRejectedValueOnce(Object.assign(new Error('not eligible'), { code: 'ASSIGNEE_NOT_ELIGIBLE' }))
+        .mockResolvedValueOnce({ id: 't2' });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(1);
+        expect(createTicketMock).toHaveBeenCalledTimes(2);
+        const retry = createTicketMock.mock.calls[1]![0] as Record<string, unknown>;
+        expect(retry.assigneeId).toBeUndefined();
+        expect(retry.categoryId).toBe('c1');
+        expect(lastSet()).toMatchObject({ ticketId: 't2' });
+      } finally { warn.mockRestore(); }
+    });
+
+    it('skips an occurrence another sweep already claimed', async () => {
+      queueResult([OCC]); queueResult([]);             // claim returned 0 rows
+      expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(0);
+      expect(createTicketMock).not.toHaveBeenCalled();
+    });
+
+    it('never opens an occurrence outside its lead window', async () => {
+      queueResult([{ ...OCC, dueAt: '2026-12-31' }]);
+      expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(0);
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+  });
+
+  describe('markOccurrenceMissed (single-row form)', () => {
+    it('only moves an open or awaiting_evidence row', async () => {
+      queueResult([]);
+      await markOccurrenceMissed('o1');
+      expect(lastSet()).toMatchObject({ status: 'missed' });
+      expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'open', 'awaiting_evidence']));
     });
   });
 });
