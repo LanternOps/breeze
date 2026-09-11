@@ -363,16 +363,18 @@ func (s *Server) appendProgress(rec progressRecord) {
 // containedPath resolves an object key under the store root. Keys are
 // always relative, slash-separated object names under snapshots/<id>/, so
 // anything absolute, empty, or containing a ".." segment is rejected
-// outright (CodeQL go/path-injection recognises this shape; the prefix
-// check that follows is belt-and-braces for symlink-free roots).
+// outright. The ".." test is a plain strings.Contains on purpose: that is
+// the guard shape CodeQL's go/path-injection query recognises as a
+// sanitiser (a per-segment loop was still flagged on this PR). Object
+// keys are content hashes and fixed names, so a literal ".." never
+// appears in a legitimate key. The prefix check that follows is
+// belt-and-braces for symlink-free roots.
 func containedPath(root, key string) (string, error) {
 	if key == "" || strings.HasPrefix(key, "/") || filepath.IsAbs(key) {
 		return "", fmt.Errorf("fakeserver: path %q is not a relative object key", key)
 	}
-	for _, seg := range strings.Split(key, "/") {
-		if seg == ".." {
-			return "", fmt.Errorf("fakeserver: path %q contains a parent segment", key)
-		}
+	if strings.Contains(key, "..") {
+		return "", fmt.Errorf("fakeserver: path %q contains a parent segment", key)
 	}
 	full := filepath.Join(root, filepath.FromSlash(key))
 	rootClean := filepath.Clean(root) + string(filepath.Separator)

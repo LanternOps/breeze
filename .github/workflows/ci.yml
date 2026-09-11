@@ -1840,7 +1840,8 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # ~7 min ISO build + up to 40 min QEMU rebuild cycle (see run-qemu.sh).
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

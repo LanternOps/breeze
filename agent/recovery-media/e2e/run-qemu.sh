@@ -176,8 +176,13 @@ rm -f "$serial1_log"
 
 cmdline="boot=live components console=ttyS0,115200n8 breeze.media=1 breeze.ci=1 breeze.server=${guest_server_url} breeze.insecure=1 breeze.code=${recovery_code} breeze.target=/dev/vda breeze.confirm=ERASE breeze.after=poweroff"
 
+# 40 min budget: under TCG on a GitHub runner the restore phase streams the
+# ~16k-file mmdebstrap seed at roughly 16 files/s (CI run 34639503278 reached
+# 13,140/16,325 when the previous 20 min cap killed QEMU mid-restore), so the
+# whole boot → rebuild → validate → poweroff cycle needs ~25 min plus margin.
+# ci.yml's job timeout-minutes covers this plus the ~7 min ISO build.
 echo "run-qemu: boot 1 — recovery ISO (CI-unattended), cmdline: $cmdline"
-timeout 1200 "$qemu_bin" \
+timeout 2400 "$qemu_bin" \
   -machine q35,accel=tcg -cpu max -m 3G -smp 2 \
   -drive if=pflash,format=raw,readonly=on,file="$ovmf_code" \
   -drive if=pflash,format=raw,file="$out_dir/OVMF_VARS.fd" \
