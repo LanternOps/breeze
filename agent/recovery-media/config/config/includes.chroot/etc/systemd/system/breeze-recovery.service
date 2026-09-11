@@ -1,0 +1,18 @@
+[Unit]
+Description=Breeze bare-metal recovery console (tty1)
+After=systemd-networkd-wait-online.service getty.target
+Wants=systemd-networkd-wait-online.service
+ConditionKernelCommandLine=breeze.media=1
+
+[Service]
+ExecStart=/usr/local/bin/breeze-backup recovery-console
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

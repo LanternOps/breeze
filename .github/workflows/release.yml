@@ -256,6 +256,58 @@ jobs:
           fi
           bash scripts/security/check-agent-binary-signatures.sh "${bins[@]}"
 
+  # Bare-metal recovery media (W04b): breeze-recovery-linux-<arch>.iso, a
+  # Debian bookworm live-build image carrying breeze-backup and the guided
+  # recovery-console. amd64 is required (create-release refuses to publish
+  # without it); arm64 is continue-on-error until proven stable in CI (W08
+  # promotes it to required). See agent/recovery-media/.
+  build-recovery-media:
+    name: Build recovery media (${{ matrix.arch }})
+    needs: build-agent
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.arch == 'arm64' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Get version from tag
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download breeze-backup (linux/${{ matrix.arch }})
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: breeze-backup-linux-${{ matrix.arch }}
+          path: dist/
+
+      - name: Install live-build toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends live-build debootstrap squashfs-tools xorriso grub-efi-amd64-bin grub-efi-arm64-bin mtools dosfstools qemu-user-static binfmt-support
+
+      - name: Build ISO
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          chmod +x dist/breeze-backup-linux-${{ matrix.arch }}
+          sudo agent/recovery-media/build.sh --arch ${{ matrix.arch }} --breeze-backup dist/breeze-backup-linux-${{ matrix.arch }} --version "$BUILD_VERSION" --out out/
+          bash agent/recovery-media/build_test.sh out/breeze-recovery-linux-${{ matrix.arch }}.iso
+
+      - name: Upload recovery media artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-recovery-linux-${{ matrix.arch }}
+          path: out/breeze-recovery-linux-${{ matrix.arch }}.iso*
+          retention-days: 30
+
   build-windows-unsigned:
     name: Build Windows Agent Binaries (unsigned)
     if: >-
@@ -2183,7 +2235,7 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-api, build-web, build-agent, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate, validate-release-lineage, build-binaries-image, build-docker-api, build-docker-web, build-docker-portal, build-docker-m365-graph-read-executor, build-docker-m365-graph-actions-executor, build-docker-m365-communications-executor]
+    needs: [build-api, build-web, build-agent, build-recovery-media, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate, validate-release-lineage, build-binaries-image, build-docker-api, build-docker-web, build-docker-portal, build-docker-m365-graph-read-executor, build-docker-m365-graph-actions-executor, build-docker-m365-communications-executor]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
@@ -2192,6 +2244,7 @@ jobs:
       && needs.build-api.result == 'success'
       && needs.build-web.result == 'success'
       && needs.build-agent.result == 'success'
+      && needs.build-recovery-media.result == 'success'
       && needs.release-integrity-gate.result == 'success'
       && needs.build-windows-unsigned.result == 'success'
       && (needs.build-macos-agent.result == 'success' || needs.build-macos-agent.result == 'skipped')
@@ -2223,7 +2276,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
-          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-user-helper-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*,breeze-installer-app,viewer-latest-json,macos-pkg-attestation}'
+          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-user-helper-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*,breeze-installer-app,viewer-latest-json,macos-pkg-attestation,breeze-recovery-*}'
           merge-multiple: false
 
       - name: Download release image metadata
@@ -2292,6 +2345,19 @@ jobs:
               cp "$dir"/* release-assets/
             fi
           done
+
+          # Copy recovery media (W04b). arm64 is continue-on-error in
+          # build-recovery-media, so its artifact may legitimately be
+          # missing — only amd64 is required.
+          for dir in artifacts/breeze-recovery-*; do
+            if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
+              cp "$dir"/* release-assets/
+            fi
+          done
+          if [ ! -f release-assets/breeze-recovery-linux-amd64.iso ]; then
+            echo "missing required release asset: breeze-recovery-linux-amd64.iso" >&2
+            exit 1
+          fi
 
           # Copy viewer update manifest
           if [ -d "artifacts/viewer-latest-json" ] && [ -f "artifacts/viewer-latest-json/latest.json" ]; then
