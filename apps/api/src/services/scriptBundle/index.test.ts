@@ -17,7 +17,11 @@ const h = vi.hoisted(() => {
     selectQueue: [] as unknown[][],
     selectWheres: [] as unknown[],
     inserts: [] as Array<{ table: unknown; values: unknown }>,
-    updates: [] as Array<{ table: unknown; values: unknown }>
+    updates: [] as Array<{ table: unknown; values: unknown }>,
+    // cutScriptVersion calls, recorded rather than executed: the real helper
+    // needs a live `SELECT ... FOR UPDATE`, and its behaviour is proven by
+    // services/scriptVersions.test.ts plus the live-DB bundle RLS suite.
+    cuts: [] as Array<{ scriptId: string; provenance: Record<string, unknown> }>
   };
   function chain(get: () => unknown) {
     const c: Record<string, unknown> = {};
@@ -35,8 +39,19 @@ const h = vi.hoisted(() => {
   return { state, chain };
 });
 
+vi.mock('../scriptVersions', () => ({
+  cutScriptVersion: vi.fn((_tx: unknown, args: { scriptId: string; provenance: Record<string, unknown> }) => {
+    h.state.cuts.push(args);
+    return Promise.resolve({ id: 'version-row', scriptId: args.scriptId, version: 1 });
+  })
+}));
+
 vi.mock('../../db', () => ({
   db: {
+    transaction: vi.fn(async (fn: (tx: unknown) => unknown) => {
+      const { db } = await import('../../db');
+      return fn(db);
+    }),
     select: vi.fn(() => h.chain(() => h.state.selectQueue.shift() ?? [])),
     insert: vi.fn((table: unknown) => ({
       values: vi.fn((values: unknown) => {
@@ -104,6 +119,7 @@ beforeEach(() => {
   h.state.selectWheres = [];
   h.state.inserts = [];
   h.state.updates = [];
+  h.state.cuts = [];
 });
 
 /**
