@@ -5,7 +5,7 @@ import DeliverableForm from '@/components/deliverables/DeliverableForm';
 import DeliverableTable from '@/components/deliverables/DeliverableTable';
 import OccurrenceDrawer from '@/components/deliverables/OccurrenceDrawer';
 import { listDeliverables, unwrapData, type Deliverable } from '@/lib/api/serviceDeliverables';
-import { formatDate } from '@/lib/dateTimeFormat';
+import { formatDate } from '@/components/billing/shared/format';
 import { ActionError } from '@/lib/runAction';
 import { useLatest, type OrgFetch } from './orgRecordFetch';
 
