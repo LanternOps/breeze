@@ -135,18 +135,21 @@ func (h *Heartbeat) RunSupportCleanup() {
 //
 // Must be called right after startAgent returns and before any session can
 // start; the desktop manager's hooks are plain fields set at construction.
-func (h *Heartbeat) SetSupportSessionNotifier(onStart, onStop func(sessionID string)) {
+//
+// onStop takes (sessionID, reason string) — reason mirrors Session's
+// LastStopReason() (#5300) and is "" for a routine disconnect.
+func (h *Heartbeat) SetSupportSessionNotifier(onStart func(sessionID string), onStop func(sessionID, reason string)) {
 	if h == nil || h.desktopMgr == nil {
 		return
 	}
 	previousStop := h.desktopMgr.OnSessionStopped
 	h.desktopMgr.OnSessionStarted = onStart
-	h.desktopMgr.OnSessionStopped = func(sessionID string) {
+	h.desktopMgr.OnSessionStopped = func(sessionID, reason string) {
 		if previousStop != nil {
-			previousStop(sessionID)
+			previousStop(sessionID, reason)
 		}
 		if onStop != nil {
-			onStop(sessionID)
+			onStop(sessionID, reason)
 		}
 	}
 }

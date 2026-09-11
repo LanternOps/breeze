@@ -38,6 +38,12 @@ const DEVICE_ID = '22222222-2222-2222-2222-222222222222';
 const CONFIG_ID = '33333333-3333-3333-3333-333333333333';
 const SNAPSHOT_ID = '44444444-4444-4444-4444-444444444444';
 
+// D20b follow-up: resolveBackupWriteCommandDestination/resolveBackupProviderConfig
+// (services/backupProviderConfig.ts) run for real against the mocked db, so
+// dispatch-and-restore tests need a backup_configs row queued for the
+// destination-resolution select.
+const DESTINATION_CONFIG_ROW = { provider: 'local', providerConfig: { path: '/tmp/backups' }, encryption: false };
+
 const EXPECTED_TOOLS = [
   'query_mssql_instances',
   'get_mssql_backup_status',
@@ -175,35 +181,51 @@ function prepareHandlerMocks(toolName: string) {
       ]]);
       break;
     case 'trigger_mssql_backup':
-      mockSelectSequence([[{ id: DEVICE_ID, orgId: ORG_ID }]]);
+      // D20b follow-up: resolveBackupWriteCommandDestination issues its own
+      // db.select for the backup_configs row (2nd select, after the device
+      // lookup) — same builder the REST /mssql/backup route now uses.
+      mockSelectSequence([
+        [{ id: DEVICE_ID, orgId: ORG_ID }],
+        [DESTINATION_CONFIG_ROW],
+      ]);
       break;
     case 'restore_mssql_database':
+      // D20b follow-up: resolveBackupProviderConfig issues a 3rd db.select
+      // for the backup_configs row the snapshot's configId points at.
       mockSelectSequence([
         [{ id: DEVICE_ID }],
         [{
           id: SNAPSHOT_ID,
+          orgId: ORG_ID,
           providerSnapshotId: 'provider-snapshot-1',
+          configId: CONFIG_ID,
           metadata: {
             backupKind: 'mssql_database',
             instance: 'MSSQLSERVER',
             backupFileName: 'AppDb_full_20260331.bak',
           },
         }],
+        [DESTINATION_CONFIG_ROW],
       ]);
       break;
     case 'verify_mssql_backup':
-      mockSelectSequence([[
-        {
+      // D20b follow-up: resolveBackupProviderConfig issues a 2nd db.select
+      // for the backup_configs row the snapshot's configId points at.
+      mockSelectSequence([
+        [{
           id: SNAPSHOT_ID,
+          orgId: ORG_ID,
           deviceId: DEVICE_ID,
           providerSnapshotId: 'provider-snapshot-1',
+          configId: CONFIG_ID,
           metadata: {
             backupKind: 'mssql_database',
             instance: 'MSSQLSERVER',
             backupFileName: 'AppDb_full_20260331.bak',
           },
-        },
-      ]]);
+        }],
+        [DESTINATION_CONFIG_ROW],
+      ]);
       break;
     default:
       mockSelectSequence([[]]);
@@ -306,11 +328,37 @@ describe('aiToolsMssql handlers', () => {
       'mssql_backup',
       expect.objectContaining({
         backupJobId: 'job-1',
+        // D20b follow-up: same provider/providerConfig/storageEncryption
+        // shape the REST /mssql/backup route now attaches — the helper only
+        // builds a manager from THIS payload when it has no agent.yaml
+        // backup config, the normal state for every policy-managed device.
+        configId: CONFIG_ID,
+        provider: 'local',
+        providerConfig: { path: '/tmp/backups' },
+        storageEncryption: { required: false, mode: 'disabled' },
         instance: 'MSSQLSERVER',
         database: 'AppDb',
       }),
       expect.any(Object)
     );
+  });
+
+  // D20b follow-up: a resolved config id whose backup_configs row has since
+  // been deleted must fail clearly and never dispatch a command the helper
+  // can't act on.
+  it('fails the AI-dispatched MSSQL backup when the destination config no longer resolves', async () => {
+    mockSelectSequence([
+      [{ id: DEVICE_ID, orgId: ORG_ID }],
+      [], // backup_configs row missing
+    ]);
+
+    const result = await toolMap.get('trigger_mssql_backup')!.handler(
+      { deviceId: DEVICE_ID, instance: 'MSSQLSERVER', database: 'AppDb' },
+      makeAuth()
+    );
+
+    expect(JSON.parse(result)).toEqual({ error: 'Backup destination configuration not found for this snapshot' });
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
   });
 
   it('queues MSSQL restore from snapshot metadata instead of a local backup path', async () => {
@@ -328,6 +376,59 @@ describe('aiToolsMssql handlers', () => {
         snapshotId: 'provider-snapshot-1',
         backupFileName: 'AppDb_full_20260331.bak',
         targetDatabase: 'RestoredDb',
+        // D20b follow-up: the helper builds its read provider from THIS
+        // command's own payload the same way REST /mssql/restore does.
+        provider: 'local',
+        providerConfig: { path: '/tmp/backups' },
+      }),
+      expect.any(Object)
+    );
+  });
+
+  // D20b follow-up: a snapshot that predates destination tracking (configId
+  // NULL) must fail with a clear error rather than silently dispatching a
+  // restore the helper can't act on.
+  it('fails AI-dispatched MSSQL restore for a snapshot that predates destination tracking', async () => {
+    mockSelectSequence([
+      [{ id: DEVICE_ID }],
+      [{
+        id: SNAPSHOT_ID,
+        orgId: ORG_ID,
+        providerSnapshotId: 'provider-snapshot-1',
+        configId: null,
+        metadata: {
+          backupKind: 'mssql_database',
+          instance: 'MSSQLSERVER',
+          backupFileName: 'AppDb_full_20260331.bak',
+        },
+      }],
+    ]);
+
+    const result = await toolMap.get('restore_mssql_database')!.handler(
+      { deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, targetDatabase: 'RestoredDb' },
+      makeAuth()
+    );
+
+    expect(JSON.parse(result).error).toMatch(/predates backup destination tracking/);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('queues MSSQL verify with the snapshot destination provider config', async () => {
+    prepareHandlerMocks('verify_mssql_backup');
+
+    await toolMap.get('verify_mssql_backup')!.handler(
+      { snapshotId: SNAPSHOT_ID },
+      makeAuth()
+    );
+
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'mssql_verify',
+      expect.objectContaining({
+        snapshotId: 'provider-snapshot-1',
+        backupFileName: 'AppDb_full_20260331.bak',
+        provider: 'local',
+        providerConfig: { path: '/tmp/backups' },
       }),
       expect.any(Object)
     );

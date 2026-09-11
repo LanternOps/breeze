@@ -582,7 +582,18 @@
     "selfSaving": "This section saves its own changes.",
     "saveSettings": "Save Settings",
     "enforcedDescription": "Values you set here are enforced across all organizations. Leave fields empty to let each organization configure individually.",
-    "ticketingDescription": "Configure ticket statuses, priority SLA defaults, categories, and billing exports. These apply across all of your organizations."
+    "ticketingDescription": "Configure ticket statuses, priority SLA defaults, categories, and billing exports. These apply across all of your organizations.",
+    "modules": {
+      "title": "Modules",
+      "description": "Choose which parts of Breeze this MSP runs. Turning Service Management off hides the service desk and customer billing everywhere and stops new tickets being created.",
+      "nativeLabel": "Breeze service desk & billing",
+      "nativeDescription": "Tickets, timesheets, quotes, invoices and contracts run in Breeze. This is the default.",
+      "offLabel": "Off — RMM only",
+      "offDescription": "Hides the Service Desk and Billing sections and the customer record’s Tickets and Billing tabs. Existing tickets stay readable; no new ones can be created.",
+      "externalNote": "This partner runs an external PSA. Changing that is not available here yet.",
+      "saved": "Modules updated",
+      "saveFailed": "Failed to update modules"
+    }
   },
   "loginBranding": {
     "saved": "Login branding saved",
@@ -1186,6 +1197,7 @@
     "toasts": {
       "inviteSent": "Invite sent",
       "inviteSentAmbiguousContact": "Invite sent, but no contact could be linked — several contacts share this email. This user will not see tickets that were emailed in until a contact is linked.",
+      "inviteEmailFailed": "Portal user created, but the invite email could not be sent.",
       "pendingInvited": "Invited {{count}} pending user(s)",
       "inviteResent": "Invite resent",
       "reactivated": "User reactivated",
@@ -1617,7 +1629,14 @@
       "invalidSupervisedActionKeys": "One or more selected actions can't be authorized by policy.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "That agent is already live.",
-      "actRecipientsUnreachable": "The selected notification roles have no active members, so nobody could be asked. Pick a role that has members before enabling act mode."
+      "actRecipientsUnreachable": "The selected notification roles have no active members, so nobody could be asked. Pick a role that has members before enabling act mode.",
+      "invalidScriptIds": "One or more scripts can't be authorized for this agent.",
+      "scriptRejected": "Script {{id}}: {{reason}}",
+      "scriptReject": {
+        "not_found": "not a script this agent's owner can see",
+        "not_in_partner_baseline": "not in the partner baseline",
+        "run_script_not_allowed": "Run a script is not allowed for this agent"
+      }
     },
     "actions": {
       "add": "New agent",
@@ -2294,9 +2313,9 @@
         "get_effective_configuration": "Effective configuration",
         "get_fleet_findings": "Fleet findings",
         "get_fleet_health": "Fleet health",
-        "get_fleet_status": "Fleet status",
         "get_huntress_incidents": "Huntress incidents",
         "get_huntress_status": "Huntress status",
+        "get_invite_funnel": "Deployment invite funnel",
         "get_invoice": "Invoice details",
         "get_log_trends": "Log trends",
         "get_playbook_history": "Playbook run history",
@@ -2718,7 +2737,9 @@
       "approvers_other": "{{roles}} are asked, via inbox, chat and mobile push. First decision wins.",
       "approversCount_one": "{{count}} role is asked, via inbox, chat and mobile push. First decision wins.",
       "approversCount_other": "{{count}} roles are asked, via inbox, chat and mobile push. First decision wins.",
-      "scriptGateNote": "{{list}} will only run unattended once a script is authorized for this agent; until then it raises an approval request."
+      "scriptGateNote": "{{list}} will only run unattended once a script is authorized for this agent; until then it raises an approval request.",
+      "scriptsAuthorized_one": "{{count}} script is authorized to run unattended.",
+      "scriptsAuthorized_other": "{{count}} scripts are authorized to run unattended."
     },
     "flow": {
       "title": "New agent",
@@ -2772,6 +2793,21 @@
         "recommendedPrefix": "Recommended:",
         "taken": "Already in use for this owner"
       }
+    },
+    "scripts": {
+      "legend": "Scripts allowed to run unattended",
+      "hint": "In act mode, Run a script executes without approval only for the scripts ticked here. Everything else stays an approval request.",
+      "ceilingHint": "Partner-level scripts are a ceiling: an organization's agent can only pick from this list.",
+      "runScriptRequired": "Add \"Run a script\" under What it does before authorizing scripts.",
+      "runScriptNotInBaseline": "The partner baseline doesn't allow \"Run a script\" for this kind of agent, so no script can run unattended.",
+      "ceilingUnavailable": "Couldn't load the partner baseline, so scripts can't be authorized right now.",
+      "ceilingLoading": "Checking the partner baseline…",
+      "loading": "Loading scripts…",
+      "failed": "Couldn't load scripts, so unattended script authorization can't be changed right now.",
+      "empty": "No scripts available.",
+      "searchPlaceholder": "Search scripts…",
+      "selectedCount_one": "{{count}} script authorized",
+      "selectedCount_other": "{{count}} scripts authorized"
     }
   },
   "apiKeyForm": {
@@ -3179,6 +3215,10 @@
     "enterYourPhoneNumberInE164FormatToReceiveAVerificationCo": "Enter your phone number in E.164 format to receive a verification code.",
     "phoneNumber": "Phone number",
     "currentPassword": "Current password",
+    "currentMfaCode": "Current MFA code",
+    "currentMfaCodeRequired": "A current MFA code is required",
+    "currentPasskeyRequired": "Your current passkey will be requested",
+    "sendVerificationCode": "Send verification code",
     "verificationCode": "Verification code",
     "enterThe6DigitCodeSentToYourPhone": "Enter the 6-digit code sent to your phone.",
     "cancel": "Cancel",
@@ -3209,6 +3249,12 @@
     "scanThisQRCodeWithYourAuthenticatorAppThenEnterThe6Digit": "Scan this QR code with your authenticator app, then enter the 6-digit code.",
     "authenticatorQRCode": "Authenticator QR code",
     "qRCodeUnavailable": "QR code unavailable",
+    "cantScanTheCode": "Can't scan the code?",
+    "enterThisSetupKeyInYourAuthenticatorAppInstead": "Enter this setup key in your authenticator app instead.",
+    "setupKey": "Setup key",
+    "copySetupKey": "Copy setup key",
+    "copiedSetupKey": "Copied",
+    "copySetupKeyFailed": "Couldn't copy the setup key. Select it and copy it manually.",
     "enterThe6DigitCodeGeneratedByYourAuthenticatorApp": "Enter the 6-digit code generated by your authenticator app.",
     "disableMFA": "Disable MFA",
     "reEnterYourAccountPasswordToConfirmThisChange": "Re-enter your account password to confirm this change.",
@@ -3296,6 +3342,7 @@
     "passkeyRenamed": "Passkey renamed",
     "currentPasswordIsRequiredToDeleteAPasskey": "Current password is required to delete a passkey",
     "passkeyDeleted": "Passkey deleted",
+    "signInAgainToContinue": "Sign in again to continue.",
     "failedToLoadPasskeys": "Failed to load passkeys",
     "failedToUpdateProfile": "Failed to update profile",
     "failedToUploadAvatar": "Failed to upload avatar",
@@ -3305,6 +3352,9 @@
     "failedToEnableMFA": "Failed to enable MFA",
     "failedToDisableMFA": "Failed to disable MFA",
     "failedToGenerateRecoveryCodes": "Failed to generate recovery codes",
+    "failedToSendVerificationCode": "Failed to send verification code",
+    "failedToVerifyCurrentFactor": "Failed to verify current MFA factor",
+    "verificationCodeSent": "Verification code sent",
     "failedToAddPasskey": "Failed to add passkey",
     "failedToRenamePasskey": "Failed to rename passkey",
     "failedToDeletePasskey": "Failed to delete passkey",
@@ -3344,7 +3394,15 @@
     "verifyWithYourIdentityProvider": "Verify with your identity provider",
     "passkeyIdpVerificationRequired": "Verify with your identity provider before adding a passkey.",
     "ssoReauthFailed": "Could not verify with your identity provider. Please try again.",
-    "couldNotStartIdentityProviderVerification": "Could not start identity provider verification."
+    "couldNotStartIdentityProviderVerification": "Could not start identity provider verification.",
+    "deletePasskeyConfirmTitle": "Delete this passkey?",
+    "deletePasskeyConfirmMessage": "This permanently removes the passkey \"{{name}}\" and it can no longer be used to sign in. Because it is a multi-factor method, deleting it also signs your other sessions out on every device. This cannot be undone.",
+    "passkeyStepUpHeading": "Verify your existing sign-in factor",
+    "passkeyStepUpIntro": "This account already has multi-factor authentication enabled. Confirm it before adding another passkey.",
+    "passkeyStepUpNoUsableFactor": "Your account's current factor can't be confirmed here. Contact an administrator for help adding a passkey.",
+    "passkeyStepUpIncorrectCode": "Incorrect code. Please try again.",
+    "passkeyStepUpTooManyAttempts": "Too many attempts. Please try again in a few minutes.",
+    "passkeyStepUpVerificationExpired": "Verification expired. Please verify again."
   },
   "roleManager": {
     "roles": "Roles",
@@ -4471,7 +4529,8 @@
       "saveOrder": "Failed to save organization order",
       "saveOrganization": "Failed to save organization",
       "saveSite": "Failed to save site ({{status}})",
-      "deleteSite": "Failed to delete site"
+      "deleteSite": "Failed to delete site",
+      "loadSites": "Couldn't load sites for this organization."
     },
     "status": {
       "active": "Active",

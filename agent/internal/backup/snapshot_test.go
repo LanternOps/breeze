@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
+	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
 // mockProvider implements providers.BackupProvider for testing.
@@ -75,7 +76,12 @@ func (m *mockProvider) Download(remotePath, localPath string) error {
 	}
 	data, ok := m.files[remotePath]
 	if !ok {
-		return fmt.Errorf("mock download: file not found: %s", remotePath)
+		// Matches real-provider fidelity (LocalProvider/S3Provider): a
+		// confirmed-missing key wraps providers.ErrObjectNotFound so
+		// fetchPublishedManifest/fetchServerOwnedBase callers can positively
+		// distinguish "confirmed absent" from any other failure mode, which
+		// downloadErr (set above) represents instead.
+		return fmt.Errorf("%w: mock download: file not found: %s", providers.ErrObjectNotFound, remotePath)
 	}
 	return os.WriteFile(localPath, data, 0644)
 }
@@ -195,60 +201,229 @@ func TestCreateSnapshot_EmptyFileSlice(t *testing.T) {
 	}
 }
 
-func TestDeleteSnapshot_DoesNotDeleteAdjacentPrefix(t *testing.T) {
-	provider := newMockProvider()
-	oldSnapshot := Snapshot{
-		ID:        "snapshot-abc",
-		Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+// growOnceProvider wraps mockProvider and, on the first N Upload calls for a
+// specific source path, appends extra bytes to that source file AFTER the
+// (successful) upload lands — simulating a file that keeps changing while it
+// is being backed up (a live log, the agent's own checkpoint journal, #5581).
+// Each grow also advances the file's mtime by a full second so the
+// post-upload os.Stat comparison in reconcileAfterUpload reliably observes a
+// change even on filesystems with 1-second mtime resolution.
+type growOnceProvider struct {
+	*mockProvider
+	growPath string
+	extra    []byte
+	grows    int // number of remaining times to grow growPath on Upload
+
+	mu              sync.Mutex
+	growPathUploads int
+}
+
+func (p *growOnceProvider) Upload(localPath, remotePath string) error {
+	if err := p.mockProvider.Upload(localPath, remotePath); err != nil {
+		return err
 	}
-	adjacentSnapshot := Snapshot{
-		ID:        "snapshot-abc2",
-		Timestamp: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if localPath != p.growPath || p.grows <= 0 {
+		return nil
 	}
-	newSnapshot := Snapshot{
-		ID:        "snapshot-def",
-		Timestamp: time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC),
+	p.grows--
+	p.growPathUploads++
+	f, err := os.OpenFile(p.growPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil
+	}
+	_, _ = f.Write(p.extra)
+	_ = f.Close()
+	// Force the mtime forward so a coarse (1s) mtime clock can't make this
+	// growth look like a no-op to reconcileAfterUpload's comparison.
+	future := time.Now().Add(time.Duration(p.growPathUploads) * time.Second)
+	_ = os.Chtimes(p.growPath, future, future)
+	return nil
+}
+
+// TestCreateSnapshot_GrowingFile_ReconciledOnRetry proves #5581's core fix:
+// a file that grows between the pre-upload measurement and the upload
+// itself is re-measured and re-uploaded ONCE, and the manifest entry ends
+// up describing exactly the bytes that landed in that retry — not the
+// walk-time size, and not a checksum read at some other, unrelated instant.
+func TestCreateSnapshot_GrowingFile_ReconciledOnRetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	growPath := createTempFile(t, tmpDir, "growing.log", "start")
+
+	backing := newMockProvider()
+	provider := &growOnceProvider{mockProvider: backing, growPath: growPath, extra: []byte("-MORE"), grows: 1}
+
+	files := []backupFile{
+		{sourcePath: growPath, snapshotPath: "path_0/growing.log", size: 5, modTime: time.Now()},
+	}
+	snapshot, err := CreateSnapshot(provider, files)
+	if err != nil {
+		t.Fatalf("CreateSnapshot failed: %v", err)
+	}
+	if len(snapshot.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(snapshot.Files))
+	}
+	entry := snapshot.Files[0]
+	if entry.Volatile {
+		t.Errorf("a file that stabilizes after ONE retry must not be marked Volatile, got %+v", entry)
 	}
 
-	for _, snapshot := range []Snapshot{oldSnapshot, adjacentSnapshot, newSnapshot} {
-		manifest, err := json.Marshal(snapshot)
-		if err != nil {
-			t.Fatalf("marshal snapshot: %v", err)
+	finalContent, err := os.ReadFile(growPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	wantSize := int64(len(finalContent))
+	wantChecksum, err := sha256File(growPath)
+	if err != nil {
+		t.Fatalf("sha256File: %v", err)
+	}
+	if entry.Size != wantSize {
+		t.Errorf("entry.Size = %d, want %d (the grown file's final size)", entry.Size, wantSize)
+	}
+	if entry.Checksum != wantChecksum {
+		t.Errorf("entry.Checksum = %q, want %q (the grown file's final checksum)", entry.Checksum, wantChecksum)
+	}
+
+	// The uploaded OBJECT must itself be wantSize bytes — not just the
+	// manifest's claim — proving Size/Checksum describe the bytes that were
+	// actually stored, the whole point of the fix.
+	uploadedBytes, ok := backing.files[entry.BackupPath]
+	if !ok {
+		t.Fatalf("no object stored at %s", entry.BackupPath)
+	}
+	if int64(len(uploadedBytes)) != wantSize {
+		t.Errorf("stored object is %d bytes, want %d", len(uploadedBytes), wantSize)
+	}
+}
+
+// TestCreateSnapshot_FileChangesTwice_RecordedVolatile proves the other half
+// of #5581's policy: a file that keeps changing even across the single
+// reconciliation retry is not chased forever — it is recorded Volatile with
+// the LAST pre-upload measurement (what the retry itself actually
+// uploaded), and the run carries a warning-worthy volatile count rather than
+// failing the file.
+func TestCreateSnapshot_FileChangesTwice_RecordedVolatile(t *testing.T) {
+	tmpDir := t.TempDir()
+	growPath := createTempFile(t, tmpDir, "growing.log", "start")
+
+	backing := newMockProvider()
+	provider := &growOnceProvider{mockProvider: backing, growPath: growPath, extra: []byte("-MORE"), grows: 2}
+
+	files := []backupFile{
+		{sourcePath: growPath, snapshotPath: "path_0/growing.log", size: 5, modTime: time.Now()},
+	}
+	snapshot, err := CreateSnapshot(provider, files)
+	if err != nil {
+		t.Fatalf("CreateSnapshot failed: %v", err)
+	}
+	if len(snapshot.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(snapshot.Files))
+	}
+	entry := snapshot.Files[0]
+	if !entry.Volatile {
+		t.Fatalf("a file that changes again across the retry must be recorded Volatile, got %+v", entry)
+	}
+	if snapshot.VolatileFiles != 1 {
+		t.Errorf("snapshot.VolatileFiles = %d, want 1", snapshot.VolatileFiles)
+	}
+
+	// The entry must describe what the RETRY actually uploaded (the second
+	// upload call for growPath), not the walk-time stat nor the very first
+	// upload's bytes.
+	uploadedBytes, ok := backing.files[entry.BackupPath]
+	if !ok {
+		t.Fatalf("no object stored at %s", entry.BackupPath)
+	}
+	if entry.Size != int64(len(uploadedBytes)) {
+		t.Errorf("entry.Size = %d, want %d (bytes actually stored at BackupPath)", entry.Size, len(uploadedBytes))
+	}
+	gotChecksum := sha256HashBytes(t, uploadedBytes)
+	if entry.Checksum != gotChecksum {
+		t.Errorf("entry.Checksum = %q, want %q (checksum of bytes actually stored)", entry.Checksum, gotChecksum)
+	}
+}
+
+// sha256HashBytes hashes b the same way sha256File hashes a file, for
+// comparing a manifest entry's checksum against in-memory upload bytes.
+func sha256HashBytes(t *testing.T, b []byte) string {
+	t.Helper()
+	tmp := createTempFile(t, t.TempDir(), "hashme", string(b))
+	sum, err := sha256File(tmp)
+	if err != nil {
+		t.Fatalf("sha256File: %v", err)
+	}
+	return sum
+}
+
+// cancelAfterFirstUploadProvider wraps mockProvider and cancels the given
+// CancelFunc right after the FIRST real Upload lands, so an aborted run has
+// something concrete under ITS OWN prefix for the abort cleanup to act on
+// (P3 fix — the previous version of this test never uploaded anything
+// before cancelling, so it could only prove absence-of-harm on an empty
+// prefix, not that own-prefix cleanup actually deletes what it should).
+type cancelAfterFirstUploadProvider struct {
+	*mockProvider
+	cancel   context.CancelFunc
+	uploaded int
+	mu       sync.Mutex
+}
+
+func (p *cancelAfterFirstUploadProvider) Upload(localPath, remotePath string) error {
+	err := p.mockProvider.Upload(localPath, remotePath)
+	p.mu.Lock()
+	p.uploaded++
+	first := p.uploaded == 1
+	p.mu.Unlock()
+	if first && p.cancel != nil {
+		p.cancel()
+	}
+	return err
+}
+
+// TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix_NeverAForeignPublishedPrefix
+// pins the §3.5 exception's boundary from both directions (P3 fix): objects
+// are seeded under BOTH the aborted run's own (to-be-cleaned) prefix and a
+// foreign, already-published sibling prefix, and only the former may be
+// deleted.
+func TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix_NeverAForeignPublishedPrefix(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content-one")
+	file2 := createTempFile(t, tmpDir, "file2.txt", "content-two")
+	backing := newMockProvider()
+
+	// Seed a sibling, already-published snapshot that must never be
+	// touched by the aborted run's cleanup.
+	sibling := &Snapshot{
+		ID:    "snapshot-sibling-published",
+		Files: []SnapshotFile{{SourcePath: "/data/other.txt", BackupPath: "snapshots/snapshot-sibling-published/files/other.txt.gz", Size: 1}},
+	}
+	storeManifest(t, backing, sibling)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	provider := &cancelAfterFirstUploadProvider{mockProvider: backing, cancel: cancel}
+
+	files := []backupFile{
+		{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 11, modTime: time.Now()},
+		{sourcePath: file2, snapshotPath: "path_0/file2.txt", size: 11, modTime: time.Now()},
+	}
+	_, err := createSnapshotWithProgress(ctx, provider, files, nil, nil, nil, nil)
+	if !errors.Is(err, errBackupStopped) {
+		t.Fatalf("err = %v, want errBackupStopped", err)
+	}
+
+	sawOwnPrefixDelete := false
+	for _, key := range backing.deleteCalls {
+		if strings.HasPrefix(key, "snapshots/snapshot-sibling-published/") {
+			t.Fatalf("abort cleanup deleted a key under a PUBLISHED sibling prefix: %s", key)
 		}
-		provider.files[path.Join(snapshotRootDir, snapshot.ID, snapshotManifestKey)] = manifest
-		provider.files[path.Join(snapshotRootDir, snapshot.ID, snapshotFilesDir, "data.txt.gz")] = []byte(snapshot.ID)
+		sawOwnPrefixDelete = true
 	}
-
-	if err := DeleteSnapshot(provider, 2); err != nil {
-		t.Fatalf("DeleteSnapshot failed: %v", err)
+	if !sawOwnPrefixDelete {
+		t.Fatal("expected the aborted run's own uploaded file to be cleaned up under its own prefix")
 	}
-
-	deleted := map[string]bool{}
-	for _, key := range provider.deleteCalls {
-		deleted[key] = true
-		if strings.Contains(key, "snapshot-abc2/") {
-			t.Fatalf("deleted adjacent-prefix key %q", key)
-		}
-	}
-
-	for _, key := range []string{
-		path.Join(snapshotRootDir, oldSnapshot.ID, snapshotManifestKey),
-		path.Join(snapshotRootDir, oldSnapshot.ID, snapshotFilesDir, "data.txt.gz"),
-	} {
-		if !deleted[key] {
-			t.Fatalf("expected old snapshot key %q to be deleted; calls=%v", key, provider.deleteCalls)
-		}
-	}
-
-	for _, key := range []string{
-		path.Join(snapshotRootDir, adjacentSnapshot.ID, snapshotManifestKey),
-		path.Join(snapshotRootDir, adjacentSnapshot.ID, snapshotFilesDir, "data.txt.gz"),
-		path.Join(snapshotRootDir, newSnapshot.ID, snapshotManifestKey),
-		path.Join(snapshotRootDir, newSnapshot.ID, snapshotFilesDir, "data.txt.gz"),
-	} {
-		if _, ok := provider.files[key]; !ok {
-			t.Fatalf("expected retained key %q to remain", key)
-		}
+	if _, stillThere := backing.files["snapshots/snapshot-sibling-published/manifest.json"]; !stillThere {
+		t.Fatal("sibling published manifest must survive the aborted run's cleanup")
 	}
 }
 
@@ -618,10 +793,94 @@ func TestCreateSnapshot_AlreadyGzExtension(t *testing.T) {
 		t.Fatalf("CreateSnapshot failed: %v", err)
 	}
 
+	// A source path that already ends in .gz MUST still gain the upload's own
+	// .gz suffix (double .gz is expected here). Object keys are derived from
+	// source paths via a single ALWAYS-append rule; collapsing "data.txt.gz"
+	// and "data.txt" onto the same one-.gz key is exactly the D2 collision
+	// (a sibling "data.txt" upload would silently clobber this file's bytes).
 	backupPath := snapshot.Files[0].BackupPath
-	if strings.HasSuffix(backupPath, ".gz.gz") {
-		t.Errorf("should not double .gz extension, got %q", backupPath)
+	if !strings.HasSuffix(backupPath, ".gz.gz") {
+		t.Errorf("backup path for an already-.gz source must double the extension to stay injective, got %q", backupPath)
 	}
+}
+
+// TestCreateSnapshot_BackupPathInjectiveOverSourcePaths proves D2: the
+// object key ensureGzipExtension produces for a file's backupPath must be
+// injective over distinct source (snapshot) paths. Before the fix,
+// ensureGzipExtension left an already-".gz"-suffixed path unchanged, so
+// "report" and "report.gz" (or "a.tar" and "a.tar.gz") both mapped to the
+// same stored key — whichever upload landed last silently overwrote the
+// other file's bytes while the job still reported success.
+func TestCreateSnapshot_BackupPathInjectiveOverSourcePaths(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	collidingPairs := []struct {
+		name string
+		a    string
+		b    string
+	}{
+		{"plain-vs-dot-gz", "x", "x.gz"},
+		{"tar-vs-tar-gz", "a.tar", "a.tar.gz"},
+	}
+
+	for _, tc := range collidingPairs {
+		t.Run(tc.name, func(t *testing.T) {
+			fileA := createTempFile(t, tmpDir, tc.name+"-a", "contentA")
+			fileB := createTempFile(t, tmpDir, tc.name+"-b", "contentB-longer")
+
+			files := []backupFile{
+				{sourcePath: fileA, snapshotPath: "path_0/" + tc.a, size: 8, modTime: time.Now()},
+				{sourcePath: fileB, snapshotPath: "path_0/" + tc.b, size: 15, modTime: time.Now()},
+			}
+
+			provider := newMockProvider()
+			snapshot, err := CreateSnapshot(provider, files)
+			if err != nil {
+				t.Fatalf("CreateSnapshot failed: %v", err)
+			}
+			if len(snapshot.Files) != 2 {
+				t.Fatalf("expected 2 files in the manifest, got %d", len(snapshot.Files))
+			}
+
+			backupPathA := snapshot.Files[0].BackupPath
+			backupPathB := snapshot.Files[1].BackupPath
+			if backupPathA == backupPathB {
+				t.Fatalf("source paths %q and %q collided on backupPath %q — one file's bytes were overwritten by the other",
+					tc.a, tc.b, backupPathA)
+			}
+
+			// Both objects must actually be present in storage under distinct
+			// keys with their own content — not merely distinct strings while
+			// one upload clobbered the other via some other collision.
+			if _, ok := provider.files[backupPathA]; !ok {
+				t.Errorf("backupPath %q for %q not found in provider storage", backupPathA, tc.a)
+			}
+			if _, ok := provider.files[backupPathB]; !ok {
+				t.Errorf("backupPath %q for %q not found in provider storage", backupPathB, tc.b)
+			}
+		})
+	}
+
+	// A plain, uncompressed-looking source path is the overwhelmingly common
+	// case and must keep working exactly as before: exactly one .gz suffix,
+	// no double-suffixing regression.
+	t.Run("plain-file-single-gz-suffix", func(t *testing.T) {
+		file1 := createTempFile(t, tmpDir, "plain-y", "plain content")
+		files := []backupFile{
+			{sourcePath: file1, snapshotPath: "path_0/y.txt", size: 13, modTime: time.Now()},
+		}
+
+		provider := newMockProvider()
+		snapshot, err := CreateSnapshot(provider, files)
+		if err != nil {
+			t.Fatalf("CreateSnapshot failed: %v", err)
+		}
+
+		backupPath := snapshot.Files[0].BackupPath
+		if !strings.HasSuffix(backupPath, ".gz") || strings.HasSuffix(backupPath, ".gz.gz") {
+			t.Errorf("plain source path should get exactly one .gz suffix, got %q", backupPath)
+		}
+	})
 }
 
 func TestCreateSnapshot_PreservesFileMetadata(t *testing.T) {
@@ -1141,16 +1400,22 @@ func TestCreateSnapshotWithProgress_NonVSSFilesCarryNoOriginalPath(t *testing.T)
 }
 
 func TestEnsureGzipExtension(t *testing.T) {
+	// ensureGzipExtension ALWAYS appends ".gz", even when the input already
+	// ends in ".gz" — this is what keeps the derived object key injective
+	// over source paths (D2). Leaving an already-".gz" input unchanged would
+	// map two distinct source paths (e.g. "report" and "report.gz") onto the
+	// same stored key, silently losing one file's bytes to the other's
+	// upload.
 	tests := []struct {
 		input string
 		want  string
 	}{
 		{"file.txt", "file.txt.gz"},
-		{"file.txt.gz", "file.txt.gz"},
+		{"file.txt.gz", "file.txt.gz.gz"},
 		{"path/to/data", "path/to/data.gz"},
-		{"path/to/data.gz", "path/to/data.gz"},
+		{"path/to/data.gz", "path/to/data.gz.gz"},
 		{"", ".gz"},
-		{".gz", ".gz"},
+		{".gz", ".gz.gz"},
 		{"file.GZ", "file.GZ.gz"}, // case-sensitive
 	}
 
@@ -1543,7 +1808,7 @@ func TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles(t
 		{sourcePath: f2, snapshotPath: "path_0/f2.txt", size: 3, modTime: modTime},
 		{sourcePath: f3, snapshotPath: "path_0/f3.txt", size: 5, modTime: modTime},
 	}
-	snapshot1, err := createSnapshotWithProgress(context.Background(), provider, run1Files, nil, nil, nil, nil)
+	snapshot1, err := createSnapshotWithProgress(context.Background(), provider, run1Files, nil, nil, nil, nil, withRunIdentity("test-device"))
 	if err != nil {
 		t.Fatalf("run 1 failed: %v", err)
 	}
@@ -1570,7 +1835,7 @@ func TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles(t
 
 	provider.uploadCalls = nil // isolate run 2's upload assertions
 
-	prev, reason := previousManifest(context.Background(), provider)
+	prev, reason := previousManifest(context.Background(), provider, "test-device")
 	if prev == nil {
 		t.Fatalf("expected a usable previous manifest for run 2, got none: %s", reason)
 	}
@@ -1583,7 +1848,7 @@ func TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles(t
 		{sourcePath: f2, snapshotPath: "path_0/f2.txt", size: int64(len("TWO-CHANGED")), modTime: newModTime}, // changed
 		// f3 deliberately absent — deleted from disk before this run's walk.
 	}
-	snapshot2, err := createSnapshotWithProgress(context.Background(), provider, run2Files, nil, nil, prev, nil)
+	snapshot2, err := createSnapshotWithProgress(context.Background(), provider, run2Files, nil, nil, prev, nil, withRunIdentity("test-device"))
 	if err != nil {
 		t.Fatalf("run 2 failed: %v", err)
 	}
@@ -1665,7 +1930,7 @@ func TestIncrementalBackup_FetchFailureFallsBackToFullRun(t *testing.T) {
 
 	// Simulate a broken destination for the previous-manifest fetch only.
 	provider.listErr = errors.New("simulated list failure")
-	prev, reason := previousManifest(context.Background(), provider)
+	prev, reason := previousManifest(context.Background(), provider, "test-device")
 	if prev != nil {
 		t.Fatalf("expected nil previous manifest on a list failure, got %+v", prev)
 	}
@@ -1744,5 +2009,505 @@ func TestCreateSnapshotWithProgress_JournalResumeWinsOverReference(t *testing.T)
 	}
 	if len(provider.uploadCalls) != 1 { // only the manifest uploads
 		t.Fatalf("expected only the manifest to upload (file resumed via journal), got %d upload calls: %v", len(provider.uploadCalls), provider.uploadCalls)
+	}
+}
+
+func TestLeaseGate_RefusesManifestPastLeaseMargin(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content")
+	provider := newMockProvider()
+	gated := &leaseGate{
+		BackupProvider:        provider,
+		publishLeaseExpiresAt: time.Now().Add(30 * time.Minute), // inside the 1h margin
+	}
+
+	files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 7, modTime: time.Now()}}
+	_, err := createSnapshotWithProgress(context.Background(), gated, files, nil, nil, nil, nil)
+	if !errors.Is(err, ErrPublishLeaseExpired) {
+		t.Fatalf("err = %v, want ErrPublishLeaseExpired", err)
+	}
+	// provider.uploads is map[remotePath]localPath — range over the KEYS
+	// (remote paths), never the values (which are local temp filenames and
+	// would make isManifestPath check the wrong string entirely).
+	for key := range provider.uploads {
+		if isManifestPath(key) {
+			t.Fatalf("manifest was uploaded despite an expired lease: %s", key)
+		}
+	}
+}
+
+func TestLeaseGate_ZeroLeaseFailsClosed(t *testing.T) {
+	// Defense in depth for the P1 fix: Task 1's payload validation is
+	// SUPPOSED to make a zero lease alongside server-owned mode
+	// unreachable, but the gate itself must never fail open if that
+	// invariant is ever violated upstream — a missing lease must refuse to
+	// publish, not silently behave as "no lease configured".
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content")
+	provider := newMockProvider()
+	gated := &leaseGate{BackupProvider: provider} // publishLeaseExpiresAt left zero
+
+	files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 7, modTime: time.Now()}}
+	_, err := createSnapshotWithProgress(context.Background(), gated, files, nil, nil, nil, nil)
+	if !errors.Is(err, ErrPublishLeaseExpired) {
+		t.Fatalf("err = %v, want ErrPublishLeaseExpired (zero lease must fail closed)", err)
+	}
+}
+
+func TestLeaseGate_AllowsManifestWellInsideLease(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content")
+	provider := newMockProvider()
+	gated := &leaseGate{
+		BackupProvider:        provider,
+		publishLeaseExpiresAt: time.Now().Add(24 * time.Hour),
+	}
+
+	files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 7, modTime: time.Now()}}
+	snap, err := createSnapshotWithProgress(context.Background(), gated, files, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap == nil {
+		t.Fatal("expected a snapshot")
+	}
+}
+
+func TestLeaseGate_RefusesManifestWhenResumedJournalTooOld(t *testing.T) {
+	restore := setJournalMaxAgeForTest(1 * time.Millisecond)
+	defer restore()
+
+	dir := t.TempDir()
+	j1, _, err := openSnapshotJournal(dir, "lease-journal-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal (1st) failed: %v", err)
+	}
+	j1.Abandon()
+	time.Sleep(5 * time.Millisecond)
+
+	j2, resumed, err := openSnapshotJournal(dir, "lease-journal-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal (2nd) failed: %v", err)
+	}
+	if resumed {
+		t.Fatal("journal should be treated as stale (too old), not resumed")
+	}
+	// Force resumed+old state directly to exercise the gate deterministically
+	// (openSnapshotJournal already discarded the stale one above, matching
+	// production behavior — this constructs the boundary case directly).
+	j2.resumed = true
+	j2.createdAt = time.Now().Add(-2 * journalMaxAge)
+
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content")
+	provider := newMockProvider()
+	// publishLeaseExpiresAt is set well in the future so this test isolates
+	// the journal-age branch specifically — a zero lease would hit
+	// checkPublish's zero-lease guard first (see TestLeaseGate_ZeroLeaseFailsClosed)
+	// and never reach the journal-age check this test is proving.
+	gated := &leaseGate{BackupProvider: provider, publishLeaseExpiresAt: time.Now().Add(24 * time.Hour), journal: j2}
+
+	files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 7, modTime: time.Now()}}
+	_, err = createSnapshotWithProgress(context.Background(), gated, files, nil, j2, nil, nil)
+	if !errors.Is(err, ErrJournalExpiredAtPublish) {
+		t.Fatalf("err = %v, want ErrJournalExpiredAtPublish", err)
+	}
+}
+
+func TestFetchPublishedManifest_ConfirmedAbsent_ReturnsNilNil(t *testing.T) {
+	provider := newMockProvider() // never seeded with the manifest key
+	snap, err := fetchPublishedManifest(context.Background(), provider, "snapshots/never-published")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap != nil {
+		t.Fatalf("expected nil snapshot for a confirmed-absent manifest, got %+v", snap)
+	}
+}
+
+func TestFetchPublishedManifest_TransientError_FailsClosed_NotTreatedAsAbsent(t *testing.T) {
+	provider := newMockProvider()
+	provider.downloadErr = errors.New("connection reset by peer") // NOT ErrObjectNotFound
+	snap, err := fetchPublishedManifest(context.Background(), provider, "snapshots/some-id")
+	if err == nil {
+		t.Fatal("expected a non-nil error for a transient failure — must NOT be treated as confirmed absence")
+	}
+	if snap != nil {
+		t.Fatalf("expected nil snapshot on error, got %+v", snap)
+	}
+}
+
+func TestCreateSnapshot_ResumeWithAlreadyPublishedManifest_SkipsUploadAndDelete(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content one")
+	provider := newMockProvider()
+
+	journalDir := t.TempDir()
+	journal, _, err := openSnapshotJournal(journalDir, "resume-published-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+
+	// Simulate a crash AFTER manifest publish but BEFORE journal.Complete():
+	// the manifest already exists at this snapshot's prefix.
+	published := &Snapshot{
+		ID:        journal.snapshotID,
+		Timestamp: time.Now().UTC(),
+		Files:     []SnapshotFile{{SourcePath: file1, BackupPath: "snapshots/" + journal.snapshotID + "/files/file1.txt.gz", Size: 11}},
+		Size:      11,
+	}
+	storeManifest(t, provider, published)
+	preUploadCount := len(provider.uploadCalls)
+
+	journal.Abandon()
+	journal2, resumed, err := openSnapshotJournal(journalDir, "resume-published-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal (resume) failed: %v", err)
+	}
+	if !resumed {
+		t.Fatal("expected the journal to resume")
+	}
+
+	files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 11, modTime: time.Now()}}
+	snap, err := createSnapshotWithProgress(context.Background(), provider, files, nil, journal2, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap == nil || snap.ID != journal.snapshotID {
+		t.Fatalf("expected the already-published snapshot to be returned, got %+v", snap)
+	}
+	if len(provider.uploadCalls) != preUploadCount {
+		t.Fatalf("expected zero NEW uploads on an already-published resume, got %d new calls", len(provider.uploadCalls)-preUploadCount)
+	}
+	if len(provider.deleteCalls) != 0 {
+		t.Fatalf("expected zero deletes on an already-published resume, got %v", provider.deleteCalls)
+	}
+}
+
+// setUploadLeaseIntervalForTest overrides uploadLeaseInterval so tests don't
+// wait 15 real minutes. Mirrors setJournalMaxAgeForTest's pattern.
+func setUploadLeaseIntervalForTest(d time.Duration) (restore func()) {
+	old := uploadLeaseInterval
+	uploadLeaseInterval = d
+	return func() { uploadLeaseInterval = old }
+}
+
+// slowFirstUploadProvider wraps mockProvider and sleeps for `delay` on the
+// FIRST call to Upload/UploadContext only (the real file, not the
+// upload.lease refreshes or the final manifest), so a test can force the
+// upload loop to sit still long enough for the lease-refresh ticker to fire
+// at least once without depending on real wall-clock file I/O.
+type slowFirstUploadProvider struct {
+	*mockProvider
+	delay    time.Duration
+	slowOnce sync.Once
+}
+
+func (p *slowFirstUploadProvider) Upload(localPath, remotePath string) error {
+	p.slowOnce.Do(func() { time.Sleep(p.delay) })
+	return p.mockProvider.Upload(localPath, remotePath)
+}
+
+func (p *slowFirstUploadProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	p.slowOnce.Do(func() { time.Sleep(p.delay) })
+	return p.mockProvider.Upload(localPath, remotePath)
+}
+
+func TestCreateSnapshot_UploadLease_RefreshedDuringUploadThenDeletedAfterPublish(t *testing.T) {
+	restore := setUploadLeaseIntervalForTest(10 * time.Millisecond)
+	defer restore()
+
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content")
+	backing := newMockProvider()
+	provider := &slowFirstUploadProvider{mockProvider: backing, delay: 50 * time.Millisecond}
+
+	files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 7, modTime: time.Now()}}
+	snap, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	leaseKey := "snapshots/" + snap.ID + "/upload.lease"
+	sawLeaseUpload := false
+	for _, call := range backing.uploadCalls {
+		if call.remotePath == leaseKey {
+			sawLeaseUpload = true
+		}
+	}
+	if !sawLeaseUpload {
+		t.Error("expected at least one upload.lease refresh during a slow upload")
+	}
+	if _, stillThere := backing.files[leaseKey]; stillThere {
+		t.Error("expected upload.lease to be deleted after a successful publish")
+	}
+	sawLeaseDelete := false
+	for _, key := range backing.deleteCalls {
+		if key == leaseKey {
+			sawLeaseDelete = true
+		}
+	}
+	if !sawLeaseDelete {
+		t.Error("expected exactly one Delete call for upload.lease after publish")
+	}
+}
+
+// raceDetectProvider fails every real-file Upload (forcing abortSourceGone's
+// zero-files branch, which is reached via a sourceLiveness failure rather
+// than ctx cancellation — so unlike abortStopped, nothing else kills the
+// lease-refresh ticker as a side effect of the abort trigger itself) and
+// deterministically detects whether a lease-key Upload ever lands WHILE
+// cleanupSnapshotPrefix's List call is in flight — the property that must
+// be impossible once stopLeaseRefresh() runs (and fully blocks until the
+// ticker goroutine has exited) BEFORE cleanup starts, and is otherwise
+// reachable given a wide-enough List window and a short ticker interval.
+type raceDetectProvider struct {
+	*mockProvider
+	mu                sync.Mutex
+	listInFlight      bool
+	violationDetected bool
+	leaseUploadCount  int
+	listDelay         time.Duration
+}
+
+func (p *raceDetectProvider) Upload(localPath, remotePath string) error {
+	if strings.HasSuffix(remotePath, "/upload.lease") {
+		p.mu.Lock()
+		p.leaseUploadCount++
+		if p.listInFlight {
+			p.violationDetected = true
+		}
+		p.mu.Unlock()
+		return p.mockProvider.Upload(localPath, remotePath)
+	}
+	if isManifestPath(remotePath) {
+		return p.mockProvider.Upload(localPath, remotePath)
+	}
+	return errors.New("destination refused the object")
+}
+
+func (p *raceDetectProvider) List(prefix string) ([]string, error) {
+	p.mu.Lock()
+	p.listInFlight = true
+	p.mu.Unlock()
+	time.Sleep(p.listDelay)
+	p.mu.Lock()
+	p.listInFlight = false
+	p.mu.Unlock()
+	return p.mockProvider.List(prefix)
+}
+
+func (p *raceDetectProvider) sawViolation() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.violationDetected
+}
+
+func (p *raceDetectProvider) leaseUploads() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.leaseUploadCount
+}
+
+func TestAbortSourceGone_StopsLeaseRefreshBeforeCleanup_NoOrphanLeaseAfterAbort(t *testing.T) {
+	restoreInterval := setUploadLeaseIntervalForTest(2 * time.Millisecond)
+	defer restoreInterval()
+
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content-one")
+	backing := newMockProvider()
+	provider := &raceDetectProvider{
+		mockProvider: backing,
+		// Wide enough, relative to the 2ms ticker interval, that an
+		// unfixed implementation (ticker still alive during cleanup)
+		// reliably lands at least one Upload while listInFlight is true.
+		listDelay: 100 * time.Millisecond,
+	}
+	liveness := func(string) error { return errSourceSnapshotGone }
+
+	files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 11, modTime: time.Now()}}
+	snap, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, nil, liveness)
+	if !errors.Is(err, errSourceSnapshotGone) {
+		t.Fatalf("err = %v, want errSourceSnapshotGone", err)
+	}
+	if snap != nil {
+		t.Fatalf("expected nil snapshot (zero files landed), got %+v", snap)
+	}
+
+	// No positive-control assertion here on purpose: with the fix in place,
+	// this specific scenario aborts fast enough (a single failed upload
+	// attempt, no retry) that the heartbeat may legitimately never fire
+	// even once before stopLeaseRefresh stops it — that's a CORRECT outcome
+	// of the fix, not a broken heartbeat. The heartbeat firing at all is
+	// separately proven by TestCreateSnapshot_UploadLease_RefreshedDuring
+	// UploadThenDeletedAfterPublish (which uses a slow provider precisely
+	// so the ticker gets a chance to tick). leaseUploads() is logged here
+	// purely as a diagnostic (0 or 1 is both a legitimate outcome, so it is
+	// not asserted on) rather than left as dead instrumentation.
+	t.Logf("lease-key uploads observed during this run: %d", provider.leaseUploads())
+	if provider.sawViolation() {
+		t.Fatal("a lease-key Upload landed while cleanupSnapshotPrefix's List was in flight — " +
+			"the lease-refresh ticker must be fully stopped (stopLeaseRefresh, blocking) before cleanup starts")
+	}
+	for key := range backing.files {
+		if strings.HasSuffix(key, "/upload.lease") {
+			t.Fatalf("upload.lease was resurrected after abort cleanup ran: %s", key)
+		}
+	}
+}
+
+// TestPublishSystemState_SkipsUploadingSymlinkArtifacts pins the D15 Wave 1
+// fix (finding #5): a symlink artifact (LinkTarget set) has no independent
+// file content — publishSystemState must record it in the manifest but NOT
+// try to upload anything for its key, unlike an ordinary artifact.
+func TestPublishSystemState_SkipsUploadingSymlinkArtifacts(t *testing.T) {
+	stagingDir := t.TempDir()
+	regularContent := []byte("hello")
+	if err := os.WriteFile(pathpkg.Join(stagingDir, "real.txt"), regularContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The symlink artifact's Path need not exist as a real file in staging
+	// for this to matter — publishSystemState must not even stat/open it as
+	// a regular file — but stage the actual link too, matching what
+	// collectArtifactsInDir would have produced from a real copyTree run.
+	if err := os.Symlink("real.txt", pathpkg.Join(stagingDir, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := &systemstate.SystemStateManifest{
+		Platform: "test",
+		Artifacts: []systemstate.Artifact{
+			{Name: "real.txt", Category: "config", Path: "real.txt", SizeBytes: int64(len(regularContent))},
+			{Name: "link.txt", Category: "config", Path: "link.txt", LinkTarget: "real.txt"},
+		},
+	}
+
+	provider := newMockProvider()
+	snapshotID := "snap-1"
+	if err := publishSystemState(context.Background(), provider, snapshotID, stagingDir, manifest); err != nil {
+		t.Fatalf("publishSystemState: %v", err)
+	}
+
+	wantRegularKey := path.Join("snapshots", snapshotID, "system-state", "real.txt")
+	wantSymlinkKey := path.Join("snapshots", snapshotID, "system-state", "link.txt")
+	wantManifestKey := path.Join("snapshots", snapshotID, "system-state", "manifest.json")
+
+	if _, ok := provider.files[wantRegularKey]; !ok {
+		t.Errorf("expected the regular artifact to upload to %q, got keys %v", wantRegularKey, providerKeys(provider))
+	}
+	if _, ok := provider.files[wantSymlinkKey]; ok {
+		t.Errorf("symlink artifact must NOT be uploaded as its own object (manifest-only), but found %q", wantSymlinkKey)
+	}
+	for _, c := range provider.uploadCalls {
+		if c.remotePath == wantSymlinkKey {
+			t.Errorf("publishSystemState issued an upload call for the symlink artifact %q, want none", wantSymlinkKey)
+		}
+	}
+	if _, ok := provider.files[wantManifestKey]; !ok {
+		t.Errorf("expected system-state manifest uploaded to %q, got keys %v", wantManifestKey, providerKeys(provider))
+	}
+
+	var gotManifest systemstate.SystemStateManifest
+	if err := json.Unmarshal(provider.files[wantManifestKey], &gotManifest); err != nil {
+		t.Fatalf("decode published manifest: %v", err)
+	}
+	var gotLink *systemstate.Artifact
+	for i := range gotManifest.Artifacts {
+		if gotManifest.Artifacts[i].Name == "link.txt" {
+			gotLink = &gotManifest.Artifacts[i]
+		}
+	}
+	if gotLink == nil {
+		t.Fatal("published manifest is missing the symlink artifact entry")
+	}
+	if gotLink.LinkTarget != "real.txt" {
+		t.Errorf("published symlink artifact LinkTarget = %q, want %q", gotLink.LinkTarget, "real.txt")
+	}
+}
+
+// W02: SnapshotFile gains content-less entry kinds (symlink/dir), full mode
+// bits and owner — HasContent() distinguishes an uploaded-content entry
+// from a content-less one, and snapshotNeedsFidelityFormat decides whether
+// the manifest must be stamped formatVersion 3. Plain-file JSON must stay
+// byte-identical to before these fields existed (omitempty).
+func TestSnapshotFile_HasContentAndFormatVersion(t *testing.T) {
+	file := SnapshotFile{SourcePath: "/etc/hosts", BackupPath: "snapshots/s/files/path_0/etc/hosts", Size: 3}
+	link := SnapshotFile{SourcePath: "/bin", Kind: KindSymlink, LinkTarget: "usr/bin"}
+	dir := SnapshotFile{SourcePath: "/var/empty", Kind: KindDir, ModeBits: 0o755}
+	if !file.HasContent() || link.HasContent() || dir.HasContent() {
+		t.Fatalf("HasContent: file=%v link=%v dir=%v", file.HasContent(), link.HasContent(), dir.HasContent())
+	}
+	if snapshotNeedsFidelityFormat([]SnapshotFile{file}) {
+		t.Error("plain files must not force format 3")
+	}
+	if !snapshotNeedsFidelityFormat([]SnapshotFile{file, link}) {
+		t.Error("a symlink entry must force format 3")
+	}
+	owned := SnapshotFile{SourcePath: "/home/x", BackupPath: "k", Owner: &FileOwner{UID: 1000, GID: 1000}}
+	if !snapshotNeedsFidelityFormat([]SnapshotFile{owned}) {
+		t.Error("an owner must force format 3")
+	}
+	// JSON shape: new fields are omitted when zero so old manifests stay byte-identical.
+	data, _ := json.Marshal(file)
+	for _, k := range []string{"kind", "linkTarget", "modeBits", "owner"} {
+		if strings.Contains(string(data), `"`+k+`"`) {
+			t.Errorf("plain file JSON leaked %s: %s", k, data)
+		}
+	}
+	data, _ = json.Marshal(link)
+	if !strings.Contains(string(data), `"kind":"symlink"`) || !strings.Contains(string(data), `"linkTarget":"usr/bin"`) {
+		t.Errorf("symlink JSON = %s", data)
+	}
+}
+
+// W02: content-less entries (symlinks/directories) are never uploaded,
+// never sha256'd, and never opened from disk at all — the manifest carries
+// their metadata straight from backupFile, and the manifest is stamped
+// formatVersion 3.
+func TestCreateSnapshot_ContentlessEntriesNotUploaded(t *testing.T) {
+	provider := newMockProvider()
+	now := time.Now().UTC()
+	tmp := t.TempDir()
+	hosts := pathpkg.Join(tmp, "hosts")
+	if err := os.WriteFile(hosts, []byte("abc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files := []backupFile{
+		{sourcePath: hosts, snapshotPath: "path_0/etc/hosts", size: 3, modTime: now, mode: 0o644, modeBits: 0o644, owner: &FileOwner{UID: 0, GID: 0}},
+		{sourcePath: "/bin", snapshotPath: "path_0/bin", modTime: now, mode: os.ModeSymlink | 0o777, kind: KindSymlink, linkTarget: "usr/bin"},
+		{sourcePath: "/var/empty", snapshotPath: "path_0/var/empty", modTime: now, mode: os.ModeDir | 0o755, kind: KindDir, modeBits: 0o755},
+	}
+
+	snap, err := CreateSnapshot(provider, files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.uploadCalls) != 2 { // hosts + manifest.json
+		t.Fatalf("upload calls = %+v, want file + manifest only", provider.uploadCalls)
+	}
+	if snap.FormatVersion != manifestFormatFidelity || len(snap.Files) != 3 {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+	var link, dir SnapshotFile
+	for _, f := range snap.Files {
+		switch f.Kind {
+		case KindSymlink:
+			link = f
+		case KindDir:
+			dir = f
+		}
+	}
+	if link.BackupPath != "" || link.Checksum != "" || link.LinkTarget != "usr/bin" || link.Size != 0 {
+		t.Errorf("symlink entry = %+v", link)
+	}
+	if dir.BackupPath != "" || dir.ModeBits != 0o755 {
+		t.Errorf("dir entry = %+v", dir)
+	}
+	var stored Snapshot
+	if err := json.Unmarshal(provider.files[path.Join("snapshots", snap.ID, "manifest.json")], &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.FormatVersion != 3 || stored.Files[0].Owner == nil {
+		t.Errorf("stored manifest = %+v", stored)
 	}
 }

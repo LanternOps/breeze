@@ -18,6 +18,13 @@ import {
 } from '../../db/schema';
 import { complianceSchema, complianceReportSchema } from './schemas';
 import { resolvePatchReportOrgId, resolvePartnerIdForOrg } from './helpers';
+import {
+  decodeSiteScope,
+  isSiteScopeSubset,
+  persistedSiteScopeValues,
+  resolveRequestReportAuthority,
+  type PersistedSiteScopeColumns,
+} from '../../services/siteScope';
 
 export const complianceRoutes = new Hono();
 
@@ -405,6 +412,15 @@ complianceRoutes.get(
     }
     const targetOrgId = orgResolution.orgId;
 
+    const authorityResult = await resolveRequestReportAuthority(
+      auth,
+      targetOrgId,
+      'export',
+    );
+    if (!authorityResult.ok) {
+      return c.json({ error: 'Access to report scope denied' }, 403);
+    }
+
     const [report] = await db
       .insert(patchComplianceReports)
       .values({
@@ -413,7 +429,8 @@ complianceRoutes.get(
         source: query.source ?? null,
         severity: query.severity ?? null,
         format: query.format ?? 'csv',
-        status: 'pending'
+        status: 'pending',
+        ...persistedSiteScopeValues(authorityResult.authority),
       })
       .returning({
         id: patchComplianceReports.id,
@@ -473,7 +490,14 @@ complianceRoutes.get(
         startedAt: patchComplianceReports.startedAt,
         completedAt: patchComplianceReports.completedAt,
         createdAt: patchComplianceReports.createdAt,
-        outputPath: patchComplianceReports.outputPath
+        outputPath: patchComplianceReports.outputPath,
+        executionScopeVersion: patchComplianceReports.executionScopeVersion,
+        executionScopeKind: patchComplianceReports.executionScopeKind,
+        executionScopeSiteIds: patchComplianceReports.executionScopeSiteIds,
+        executionScopeUserId: patchComplianceReports.executionScopeUserId,
+        executionScopeFingerprint: patchComplianceReports.executionScopeFingerprint,
+        executionScopeCapturedAt: patchComplianceReports.executionScopeCapturedAt,
+        executionScopePrincipalKind: patchComplianceReports.executionScopePrincipalKind,
       })
       .from(patchComplianceReports)
       .where(eq(patchComplianceReports.id, reportId))
@@ -483,8 +507,26 @@ complianceRoutes.get(
       return c.json({ error: 'Report not found' }, 404);
     }
 
-    if (!auth.canAccessOrg(report.orgId)) {
-      return c.json({ error: 'Access denied to this organization' }, 403);
+    const authorityResult = await resolveRequestReportAuthority(
+      auth,
+      report.orgId,
+      'read',
+    );
+    try {
+      if (
+        !authorityResult.ok
+        || !isSiteScopeSubset(
+          decodeSiteScope(
+            report as unknown as PersistedSiteScopeColumns,
+            report.orgId,
+          ),
+          authorityResult.authority.scope,
+        )
+      ) {
+        return c.json({ error: 'Report not found' }, 404);
+      }
+    } catch {
+      return c.json({ error: 'Report not found' }, 404);
     }
 
     return c.json({
@@ -523,7 +565,14 @@ complianceRoutes.get(
         orgId: patchComplianceReports.orgId,
         status: patchComplianceReports.status,
         format: patchComplianceReports.format,
-        outputPath: patchComplianceReports.outputPath
+        outputPath: patchComplianceReports.outputPath,
+        executionScopeVersion: patchComplianceReports.executionScopeVersion,
+        executionScopeKind: patchComplianceReports.executionScopeKind,
+        executionScopeSiteIds: patchComplianceReports.executionScopeSiteIds,
+        executionScopeUserId: patchComplianceReports.executionScopeUserId,
+        executionScopeFingerprint: patchComplianceReports.executionScopeFingerprint,
+        executionScopeCapturedAt: patchComplianceReports.executionScopeCapturedAt,
+        executionScopePrincipalKind: patchComplianceReports.executionScopePrincipalKind,
       })
       .from(patchComplianceReports)
       .where(eq(patchComplianceReports.id, reportId))
@@ -533,8 +582,26 @@ complianceRoutes.get(
       return c.json({ error: 'Report not found' }, 404);
     }
 
-    if (!auth.canAccessOrg(report.orgId)) {
-      return c.json({ error: 'Access denied to this organization' }, 403);
+    const authorityResult = await resolveRequestReportAuthority(
+      auth,
+      report.orgId,
+      'export',
+    );
+    try {
+      if (
+        !authorityResult.ok
+        || !isSiteScopeSubset(
+          decodeSiteScope(
+            report as unknown as PersistedSiteScopeColumns,
+            report.orgId,
+          ),
+          authorityResult.authority.scope,
+        )
+      ) {
+        return c.json({ error: 'Report not found' }, 404);
+      }
+    } catch {
+      return c.json({ error: 'Report not found' }, 404);
     }
 
     if (report.status !== 'completed') {

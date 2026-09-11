@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { matchContactByEmail } from './contacts/crud';
@@ -13,6 +13,8 @@ import { emitTicketTriageFeedback } from './mlFeedbackEmitters';
 import { applyIntakeForm, getTicketFormForOrg, TicketFormError } from './ticketFormService';
 import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } from './ticketMoveCurrencyGuard';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
+import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
+import { isEligibleTicketRecipient } from './ticketPush';
 import type { AddinTicketSummary } from '@breeze/shared';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
@@ -37,6 +39,7 @@ export type TicketServiceErrorStatus = 400 | 403 | 404 | 409 | 500;
 export type TicketServiceErrorCode =
   | 'ASSIGNEE_NOT_FOUND'
   | 'ASSIGNEE_WRONG_PARTNER'
+  | 'ASSIGNEE_NOT_ELIGIBLE'
   | 'REQUESTER_NOT_FOUND'
   | 'REQUESTER_WRONG_ORG'
   // #3258 W03: the requester CONTACT (the canonical person), distinct from the
@@ -53,7 +56,12 @@ export type TicketServiceErrorCode =
   | 'INVALID_INPUT'
   // W08 #3902: one or more attachmentIds were not pending, not this user's,
   // or not on this ticket. The comment transaction is rolled back.
-  | 'ATTACHMENT_NOT_CLAIMABLE';
+  | 'ATTACHMENT_NOT_CLAIMABLE'
+  // #5075 W04 — the partner has Service Management switched off; no new
+  // tickets. Lowercase to match the wire code the web/AI surfaces branch on
+  // (`ServiceManagementOffError.code`), unlike the UPPER_SNAKE codes above,
+  // which are internal to the ticket service.
+  | 'service_management_off';
 
 export class TicketServiceError extends Error {
   constructor(
@@ -157,11 +165,11 @@ async function resolveTicketPartnerId(ticket: { partnerId: string | null; orgId:
  *
  * Exported for the bulk route's request-level pre-validation.
  */
-export async function getAssigneeForValidation(assigneeId: string): Promise<{ id: string; partnerId: string } | null> {
+export async function getAssigneeForValidation(assigneeId: string): Promise<{ id: string; partnerId: string; status?: string; email?: string | null } | null> {
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
-        .select({ id: users.id, partnerId: users.partnerId })
+        .select({ id: users.id, partnerId: users.partnerId, status: users.status, email: users.email })
         .from(users)
         .where(eq(users.id, assigneeId))
         .limit(1)
@@ -178,15 +186,35 @@ function throwIfPartnerUnresolvable(partnerId: string | null): asserts partnerId
 
 /**
  * Tenant guard: an assignee must be a user of the same partner as the ticket.
- * users.partner_id is NOT NULL (every user belongs to exactly one MSP), so a
- * same-partner equality check is the complete cross-tenant boundary.
+ * users.partner_id is NOT NULL (every user belongs to exactly one MSP). The
+ * explicit partner comparison preserves the cross-tenant boundary before the
+ * active/read/org/current-site eligibility check below.
  */
-async function assertAssigneeInPartner(assigneeId: string, partnerId: string | null) {
+async function assertAssigneeEligible(
+  assigneeId: string,
+  partnerId: string | null,
+  orgId: string,
+  deviceId?: string | null
+) {
   const assignee = await getAssigneeForValidation(assigneeId);
   if (!assignee) throw new TicketServiceError('Assignee not found', 404, 'ASSIGNEE_NOT_FOUND');
   throwIfPartnerUnresolvable(partnerId);
   if (assignee.partnerId !== partnerId) {
     throw new TicketServiceError('Assignee must belong to the same partner as the ticket', 400, 'ASSIGNEE_WRONG_PARTNER');
+  }
+  const eligible = await isEligibleTicketRecipient(
+    {
+      userId: assignee.id,
+      partnerId: assignee.partnerId,
+      status: assignee.status ?? '',
+      email: assignee.email ?? null,
+    },
+    partnerId,
+    orgId,
+    deviceId
+  );
+  if (!eligible) {
+    throw new TicketServiceError('Assignee is not eligible for this ticket', 400, 'ASSIGNEE_NOT_ELIGIBLE');
   }
 }
 
@@ -498,6 +526,22 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
   const org = orgRows[0];
   if (!org) throw new TicketServiceError('Organization not found', 404);
 
+  // #5075 W04 — Service Management 'off' withdraws NEW ticket creation for the
+  // whole partner. This is the ONE gate: every native creation surface (the
+  // alert dialog, the manage_tickets AI tool, the portal, the Office add-in,
+  // email-to-ticket) routes through createTicket, so no per-route mode check is
+  // needed — nor wanted, since a second check could drift from this one.
+  // Placed after the org resolve (it needs org.partnerId) but before any
+  // ticket-number allocation, so a refused create burns no counter value.
+  try {
+    await assertTicketCreationAllowed(org.partnerId);
+  } catch (err) {
+    if (err instanceof ServiceManagementOffError) {
+      throw new TicketServiceError(err.message, 409, 'service_management_off');
+    }
+    throw err;
+  }
+
   // Intake form (spec 2026-07-10): resolve + validate first so the composed
   // category feeds the existing assertCategoryInPartner guard below.
   let intake: ReturnType<typeof applyIntakeForm> | null = null;
@@ -539,7 +583,7 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
   }
 
   if (input.assigneeId) {
-    await assertAssigneeInPartner(input.assigneeId, org.partnerId);
+    await assertAssigneeEligible(input.assigneeId, org.partnerId, input.orgId, input.deviceId);
   }
 
   const effectiveCategoryId = input.categoryId ?? intake?.categoryId ?? undefined;
@@ -1042,11 +1086,20 @@ export interface UpdateTicketFieldsInput {
   submittedBy?: string | null;
   submitterName?: string | null;
   submitterEmail?: string | null;
+  /**
+   * #5367: name the requester CONTACT explicitly, instead of letting the link
+   * be derived from the login/address rules below. Tenant-validated against
+   * the ticket's org before any write; `null` clears the link.
+   */
+  requesterContactId?: string | null;
 }
 
-// Fields handled by the generic diff loop. The requester triple is excluded —
-// it's resolved/diffed separately (portal-user backfill, single "requester" label).
-type DiffFieldKey = Exclude<keyof UpdateTicketFieldsInput, 'submittedBy' | 'submitterName' | 'submitterEmail'>;
+// Fields handled by the generic diff loop. The requester fields are excluded —
+// they're resolved/diffed separately (portal-user backfill, single "requester" label).
+type DiffFieldKey = Exclude<
+  keyof UpdateTicketFieldsInput,
+  'submittedBy' | 'submitterName' | 'submitterEmail' | 'requesterContactId'
+>;
 
 /** Humanized labels for the system feed entry, in canonical field order. */
 const UPDATE_FIELD_LABELS: Record<DiffFieldKey, string> = {
@@ -1122,7 +1175,8 @@ export async function updateTicketFields(
   const requesterEdit =
     fields.submittedBy !== undefined ||
     fields.submitterName !== undefined ||
-    fields.submitterEmail !== undefined;
+    fields.submitterEmail !== undefined ||
+    fields.requesterContactId !== undefined;
   //
   // #3258 W03: `requester_contact_id` is kept COHERENT with that triple rather
   // than editable on its own — a requester edit either names a portal login
@@ -1181,6 +1235,34 @@ export async function updateTicketFields(
       }
       // A ticket that KEEPS its portal login keeps the link derived from it;
       // an address correction does not re-attribute a login-backed ticket.
+    }
+
+    // #5367: an explicitly named CONTACT overrides whatever the login/address
+    // rules above derived — the caller is stating who the requester IS, which
+    // is strictly more information than either derivation. Same precedence
+    // createTicket gives `namedContact`, and tenant-validated the same way
+    // (before any write, so a cross-org link never reaches the update).
+    if (fields.requesterContactId !== undefined) {
+      if (fields.requesterContactId === null) {
+        // Only the link is dropped. The name/email snapshot is what the notify
+        // worker mails and what threadMatcher binds on, so unlinking a person
+        // must not silently strip the ticket's reply-to identity as well.
+        requesterPatch.requesterContactId = null;
+      } else {
+        const contact = await assertRequesterContactInOrg(fields.requesterContactId, ticket.orgId);
+        requesterPatch.requesterContactId = contact.id;
+        // Backfill mirrors createTicket exactly: the snapshot comes from the
+        // contact only when no portal login owns it, and never over free text
+        // the caller supplied in the same patch.
+        const keepsLogin =
+          'submittedBy' in requesterPatch
+            ? requesterPatch.submittedBy !== null
+            : (tRow.submittedBy ?? null) !== null;
+        if (!keepsLogin) {
+          if (fields.submitterName === undefined) requesterPatch.submitterName = contact.name ?? null;
+          if (fields.submitterEmail === undefined) requesterPatch.submitterEmail = contact.email ?? null;
+        }
+      }
     }
   }
   const requesterChanged =
@@ -1301,7 +1383,7 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
   const prevAssignedTo = ticket.assignedTo;
 
   if (assigneeId) {
-    await assertAssigneeInPartner(assigneeId, await resolveTicketPartnerId(ticket));
+    await assertAssigneeEligible(assigneeId, await resolveTicketPartnerId(ticket), ticket.orgId, ticket.deviceId);
   }
 
   const patch: Partial<typeof tickets.$inferInsert> = { assignedTo: assigneeId, updatedAt: new Date() };
@@ -2200,10 +2282,28 @@ export interface MoveTicketOrgOptions {
 export async function moveTicketOrg(
   ticketId: string,
   targetOrgId: string,
-  actor: TicketActor,
+  actor: TicketActor | { kind: 'ai_agent'; agentId: string; name?: string },
   opts: MoveTicketOrgOptions = {}
 ): Promise<typeof tickets.$inferSelect> {
-  const ticket = await getTicketOrThrow(ticketId);
+  const isAgent = 'kind' in actor;
+  const userId = isAgent ? null : actor.userId;
+  const auditActor = isAgent
+    ? { actorType: 'ai_agent' as const, actorId: actor.agentId, initiatedBy: 'ai' as const }
+    : { actorId: actor.userId };
+  const snapshots = await db
+    .select({ ...getTableColumns(tickets), rowVersion: sql<string>`${tickets}.xmin::text` })
+    .from(tickets)
+    .where(eq(tickets.id, ticketId))
+    .limit(1);
+  const snapshot = snapshots[0];
+  if (!snapshot) throw new TicketServiceError('Ticket not found', 404);
+  const rowVersion = snapshot.rowVersion;
+  // Keep the service's historical no-op contract: callers receive the exact
+  // ticket object produced by Drizzle.  The xmin value is an internal CAS
+  // token, not part of the public ticket shape, so remove only that projected
+  // helper field instead of cloning every selected column.
+  delete (snapshot as Partial<typeof snapshot>).rowVersion;
+  const ticket = snapshot as typeof tickets.$inferSelect;
   if (ticket.orgId === targetOrgId) return ticket;
 
   let updated: typeof tickets.$inferSelect | undefined;
@@ -2409,8 +2509,15 @@ export async function moveTicketOrg(
     const [row] = await tx
       .update(tickets)
       .set({ orgId: targetOrgId, deviceId: null, requesterContactId: null, updatedAt: new Date() })
-      .where(eq(tickets.id, ticketId))
+      .where(and(
+        eq(tickets.id, ticketId),
+        eq(tickets.orgId, ticket.orgId),
+        sql`${tickets}.xmin::text = ${rowVersion}`,
+      ))
       .returning();
+    if (!row) {
+      throw new TicketServiceError('Ticket changed while the organization move was in progress', 409);
+    }
     updated = row;
     // #4524, reverse direction: ticket_comments has no org_id (child-via-parent
     // tenancy — see the TICKET_ORG_DENORMALIZED_TABLES comment above), so every
@@ -2464,9 +2571,13 @@ export async function moveTicketOrg(
     // System feed entry on the moved ticket.
     await tx.insert(ticketComments).values({
       ticketId,
-      userId: actor.userId,
+      userId,
       authorName: actor.name ?? null,
-      authorType: 'internal',
+      authorType: isAgent ? 'ai_agent' : 'internal',
+      originPrincipalKind: isAgent ? 'ai_agent' : 'user',
+      // Runs remain in the source org; never link this destination comment
+      // back to a source-org run after the detach above.
+      agentRunId: null,
       commentType: 'system',
       content: `Moved to ${targetOrg.name}` + (strandedCount > 0
         ? ` — ${strandedCount} unbilled items stay in ${sourceOrg.currencyCode}`
@@ -2481,7 +2592,7 @@ export async function moveTicketOrg(
     ticketId,
     orgId: targetOrgId,
     partnerId: ticket.partnerId ?? null,
-    actorUserId: actor.userId,
+    actorUserId: userId,
     payload: { changed: ['orgId'] }
   });
   // Audit on BOTH orgs so the move shows in source and target feeds (device precedent).
@@ -2493,8 +2604,8 @@ export async function moveTicketOrg(
     detachedDeviceId: ticket.deviceId ?? null,
     ...(accepted?.accepted ? { currencyMismatchAccepted: accepted } : {})
   };
-  await createAuditLogAsync({ orgId: ticket.orgId, actorId: actor.userId, action: 'ticket.move_org.source', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
-  await createAuditLogAsync({ orgId: targetOrgId, actorId: actor.userId, action: 'ticket.move_org.target', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
+  await createAuditLogAsync({ orgId: ticket.orgId, ...auditActor, action: 'ticket.move_org.source', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
+  await createAuditLogAsync({ orgId: targetOrgId, ...auditActor, action: 'ticket.move_org.target', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
   return updated;
 }
 

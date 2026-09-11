@@ -225,7 +225,7 @@ function resetState() {
 describe('alert by-id site-axis scope (T9, #1051)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    grantedRef.current = new Set<string>([ALERTS_WRITE, ALERTS_ACKNOWLEDGE]);
+    grantedRef.current = new Set<string>(['alerts:read', ALERTS_WRITE, ALERTS_ACKNOWLEDGE]);
     authRef.current = {
       scope: 'organization',
       user: { id: 'u-1', name: 'Reed Only', email: 'reed@org.example' },

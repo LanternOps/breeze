@@ -8,6 +8,7 @@ const {
   partnerIdForDeviceMock,
   evaluateCapabilityMock,
   unresolvedPartnerDecisionMock,
+  authorizeLiveRemoteSessionAccessMock,
 } = vi.hoisted(() => {
   const revokeViewerSessionMock = vi.fn(async (_sessionId: string) => undefined);
   return {
@@ -25,6 +26,7 @@ const {
     partnerIdForDeviceMock: vi.fn(),
     evaluateCapabilityMock: vi.fn(),
     unresolvedPartnerDecisionMock: vi.fn(),
+    authorizeLiveRemoteSessionAccessMock: vi.fn(),
   };
 });
 
@@ -139,6 +141,33 @@ vi.mock('../services/rate-limit', () => ({
   })),
 }));
 
+vi.mock('../services/remoteRevocationLease', () => ({
+  AGENT_UPGRADE_REQUIRED_CODE: 'agent_upgrade_required',
+  AGENT_UPGRADE_REQUIRED_MESSAGE: 'agent update required',
+  prepareRevocationLeaseForStart: vi.fn(async () => ({
+    ok: true,
+    lease: {
+      token: 'lease-token',
+      expiresAt: 1_000_060_000,
+      hardDeadline: 1_000_600_000,
+      renewEverySec: 25,
+      graceSec: 90,
+    },
+  })),
+  renewRevocationLease: vi.fn(async () => ({
+    status: 'renewed',
+    expiresAt: 1_000_060_000,
+    hardDeadline: 1_000_600_000,
+    renewEverySec: 25,
+    graceSec: 90,
+  })),
+}));
+
+vi.mock('../services/remoteWsAuthorization', () => ({
+  authorizeConsumedRemoteWsTicket: vi.fn(),
+  authorizeLiveRemoteSessionAccess: authorizeLiveRemoteSessionAccessMock,
+}));
+
 // -------------------------------------------------------------------
 // Imports (after mocks)
 // -------------------------------------------------------------------
@@ -158,6 +187,7 @@ import {
   revokeViewerSession,
 } from '../services/viewerTokenRevocation';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
+import { renewRevocationLease } from '../services/remoteRevocationLease';
 import {
   handleDesktopFrame,
   registerDesktopFrameCallback,
@@ -276,6 +306,7 @@ function setupSuccessfulValidation() {
     orgId: ORG_ID,
   };
 
+  vi.mocked(db.select).mockReset();
   vi.mocked(db.select)
     .mockReturnValueOnce(mockSelectChain([user]))
     .mockReturnValueOnce({
@@ -305,6 +336,30 @@ function buildApp() {
   return createDesktopWsRoutes(upgradeWebSocket);
 }
 
+function liveDesktopAccess(userId: string, email = 'test@example.com') {
+  return {
+    ok: true as const,
+    user: { id: userId, email, status: 'active', partnerId: null },
+    session: {
+      id: SESSION_ID,
+      type: 'desktop',
+      userId,
+      status: 'pending',
+      deviceId: DEVICE_ID,
+      orgId: ORG_ID,
+    },
+    device: {
+      id: DEVICE_ID,
+      agentId: AGENT_ID,
+      hostname: 'test-host',
+      osType: 'windows',
+      status: 'online',
+      orgId: ORG_ID,
+      siteId: 'site-a',
+    },
+  };
+}
+
 // -------------------------------------------------------------------
 // Tests
 // -------------------------------------------------------------------
@@ -314,6 +369,7 @@ describe('desktopWs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     partnerTrustModeMock.mockReturnValue('off');
+    authorizeLiveRemoteSessionAccessMock.mockImplementation(async ({ userId }) => liveDesktopAccess(userId));
     __resetDesktopWsForTest();
   });
 
@@ -422,12 +478,11 @@ describe('desktopWs', () => {
         expiresAt: Date.now() + 60_000
       });
 
-      vi.mocked(db.select).mockReturnValueOnce(mockSelectChain([{
-        id: SESSION_ID,
-        userId,
-        type: 'terminal',
-        status: 'pending'
-      }]));
+      authorizeLiveRemoteSessionAccessMock.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        reason: 'session_missing',
+      });
 
       const app = buildApp();
       const res = await app.request('/connect/exchange', {
@@ -448,12 +503,11 @@ describe('desktopWs', () => {
         expiresAt: Date.now() + 60_000
       });
 
-      vi.mocked(db.select).mockReturnValueOnce(mockSelectChain([{
-        id: SESSION_ID,
-        userId,
-        type: 'desktop',
-        status: 'disconnected'
-      }]));
+      authorizeLiveRemoteSessionAccessMock.mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        reason: 'session_inactive',
+      });
 
       const app = buildApp();
       const res = await app.request('/connect/exchange', {
@@ -497,6 +551,31 @@ describe('desktopWs', () => {
       const body = await res.json();
       expect(body.accessToken).toBe('mock-access-token-xyz');
       expect(body.expiresInSeconds).toBe(900);
+    });
+
+    it('does not mint a viewer bearer after the code owner loses site access', async () => {
+      const userId = 'user-site-revoked';
+      vi.mocked(consumeDesktopConnectCode).mockResolvedValue({
+        sessionId: SESSION_ID,
+        userId,
+        email: 'test@example.com',
+        expiresAt: Date.now() + 60_000,
+      });
+      authorizeLiveRemoteSessionAccessMock.mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        reason: 'site_denied',
+      });
+
+      const res = await buildApp().request('/connect/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: SESSION_ID, code: 'revoked-site-code' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(createViewerAccessToken).not.toHaveBeenCalled();
+      expect(partnerIdForDevice).not.toHaveBeenCalled();
     });
 
     it('returns 403 without issuing a token when probation denies ticket exchange', async () => {
@@ -777,6 +856,10 @@ describe('desktopWs', () => {
           status: 'active',
         },
       }];
+      authorizeLiveRemoteSessionAccessMock.mockResolvedValueOnce({
+        ok: true,
+        ...rows[0],
+      });
       if (queueAccessRows) {
         vi.mocked(db.select).mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
@@ -843,6 +926,29 @@ describe('desktopWs', () => {
         }),
       );
       expect(createWsTicket).not.toHaveBeenCalled();
+    });
+
+    it('does not mint a WebSocket ticket after the viewer loses remote permission', async () => {
+      process.env.REMOTE_WS_AUTH_MODE = 'post_upgrade';
+      setupViewerTicketAccess({
+        mfaSatisfied: true,
+        assuranceAbsoluteExpiresAt: 2_000,
+      });
+      authorizeLiveRemoteSessionAccessMock.mockReset();
+      authorizeLiveRemoteSessionAccessMock.mockResolvedValue({
+        ok: false,
+        status: 403,
+        reason: 'permission_denied',
+      });
+
+      const res = await buildApp().request(`/${SESSION_ID}/viewer/ws-ticket`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer viewer-token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(createWsTicket).not.toHaveBeenCalled();
+      expect(createLegacyViewerCompatibilityWsTicket).not.toHaveBeenCalled();
     });
 
     it('rejects a legacy viewer token in pre-upgrade mode', async () => {
@@ -914,6 +1020,15 @@ describe('desktopWs', () => {
         jti: 'viewer-jti-revoked',
       });
       vi.mocked(isViewerSessionRevoked).mockResolvedValueOnce(true);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: () => ({ innerJoin: () => ({ innerJoin: () => ({ where: () => ({
+          limit: async () => [{
+            session: { id: SESSION_ID, type: 'desktop', status: 'active', userId: 'user-revoked' },
+            device: { id: 'device-1' },
+            user: { id: 'user-revoked', email: 'revoked@example.com', status: 'active' },
+          }],
+        }) }) }) }),
+      } as never);
 
       const app = buildApp();
       const res = await app.request(`/${SESSION_ID}/viewer/session`, {
@@ -922,8 +1037,97 @@ describe('desktopWs', () => {
 
       expect(res.status).toBe(401);
       expect(await res.json()).toEqual({ error: 'Session closed' });
-      expect(db.select).not.toHaveBeenCalled();
+      expect(authorizeLiveRemoteSessionAccessMock).toHaveBeenCalledWith(
+        { sessionId: SESSION_ID, sessionType: 'desktop', userId: expect.any(String) },
+        'failure-diagnostics',
+      );
+      expect(db.update).not.toHaveBeenCalled();
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
     });
   });
 
+});
+
+// ---------------------------------------------------------------------------
+// Viewer-token revocation-lease renewal
+// ---------------------------------------------------------------------------
+
+describe('POST /:id/viewer/lease/renew', () => {
+  const VIEWER_SESSION_ID = SESSION_ID;
+
+  beforeEach(() => {
+    vi.mocked(verifyViewerAccessToken).mockResolvedValue({
+      sub: 'viewer-user',
+      email: 'viewer@example.com',
+      sessionId: VIEWER_SESSION_ID,
+      purpose: 'viewer',
+      jti: 'viewer-jti',
+      iat: 1_000,
+      exp: 2_000,
+    } as never);
+    vi.mocked(isViewerJtiRevoked).mockResolvedValue(false);
+    vi.mocked(renewRevocationLease).mockClear();
+    vi.mocked(renewRevocationLease).mockResolvedValue({
+      status: 'renewed',
+      expiresAt: 111,
+      hardDeadline: 222,
+      renewEverySec: 25,
+      graceSec: 90,
+    } as never);
+  });
+
+  const call = () =>
+    buildApp().request(`/${VIEWER_SESSION_ID}/viewer/lease/renew`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+  it('renews for the session owner and binds the recheck to the token subject', async () => {
+    const res = await call();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      status: 'renewed', expiresAt: 111, hardDeadline: 222, renewEverySec: 25, graceSec: 90,
+    });
+    expect(vi.mocked(renewRevocationLease)).toHaveBeenCalledWith(VIEWER_SESSION_ID, {
+      expectUserId: 'viewer-user',
+    });
+  });
+
+  it('answers 403 with the reason when the recheck revokes', async () => {
+    vi.mocked(renewRevocationLease).mockResolvedValue({
+      status: 'revoked', reason: 'site_scope_lost',
+    } as never);
+    const res = await call();
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ status: 'revoked', reason: 'site_scope_lost' });
+  });
+
+  it('answers 503 lease_unavailable on an infrastructure failure, never a revocation', async () => {
+    vi.mocked(renewRevocationLease).mockResolvedValue({ status: 'unavailable' } as never);
+    const res = await call();
+    expect(res.status).toBe(503);
+    expect((await res.json()).code).toBe('lease_unavailable');
+  });
+
+  it('rejects a token minted for a different session', async () => {
+    vi.mocked(verifyViewerAccessToken).mockResolvedValue({
+      sub: 'viewer-user',
+      email: 'viewer@example.com',
+      sessionId: '99999999-9999-4999-8999-999999999999',
+      purpose: 'viewer',
+      jti: 'viewer-jti',
+      iat: 1_000,
+      exp: 2_000,
+    } as never);
+    const res = await call();
+    expect(res.status).toBe(401);
+    expect(vi.mocked(renewRevocationLease)).not.toHaveBeenCalled();
+  });
+
+  it('rejects a revoked viewer JTI', async () => {
+    vi.mocked(isViewerJtiRevoked).mockResolvedValue(true);
+    const res = await call();
+    expect(res.status).toBe(401);
+    expect(vi.mocked(renewRevocationLease)).not.toHaveBeenCalled();
+  });
 });

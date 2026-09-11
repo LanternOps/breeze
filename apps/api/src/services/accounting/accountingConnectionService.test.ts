@@ -5,6 +5,9 @@ import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { decryptSecret, encryptSecret, hmacFingerprint } from '../secretCrypto';
 
+const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
+vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
+
 // refreshRealmSettings resolves the ambient `db` from '../../db' itself (its
 // signature is `(partnerId, provider)` — no db parameter), so it needs the
 // module mocked. Every OTHER test in this file constructs its own local mock
@@ -625,6 +628,50 @@ describe('accountingConnectionService', () => {
         pullPayments: true,
         cdcCursor: CURSOR,
         lastReconcileAt: null,
+      });
+    });
+  });
+
+  describe('backfillRealmFingerprints', () => {
+    it('#5193: reports a fingerprint collision to Sentry with allowlisted tag keys and keeps scanning other rows', async () => {
+      const collisionErr = Object.assign(
+        new Error('duplicate key value violates unique constraint "accounting_connections_provider_realm_fp_idx"'),
+        { code: '23505', constraint: 'accounting_connections_provider_realm_fp_idx' },
+      );
+      const rows = [
+        { id: 'conn-1', partnerId: 'p1', realmIdEncrypted: encryptSecret('realm-collide'), realmIdFingerprint: null },
+        { id: 'conn-2', partnerId: 'p2', realmIdEncrypted: encryptSecret('realm-ok'), realmIdFingerprint: null },
+      ];
+      let updateCalls = 0;
+      dbRef.current = {
+        select: () => ({ from: () => ({ where: async () => rows }) }),
+        update: () => ({
+          set: () => ({
+            where: () => ({
+              returning: async () => {
+                updateCalls++;
+                if (updateCalls === 1) throw collisionErr;
+                return [{ id: 'conn-2' }];
+              },
+            }),
+          }),
+        }),
+      };
+
+      const { backfillRealmFingerprints } = await import('./accountingConnectionService');
+      const result = await backfillRealmFingerprints();
+
+      // The collision on conn-1 must not abort the sweep: conn-2 still gets
+      // fingerprinted (finding E — Postgres would otherwise poison the whole
+      // batch's shared transaction with 25P02).
+      expect(result).toEqual({ scanned: 2, updated: 1, skipped: 1 });
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+      // `module` and `op` have no allowlisted equivalent and were silently
+      // dropped before the #5193 fix; `service` + `accounting_connection_id`
+      // are what actually triage which connection collided.
+      expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
+        service: 'accountingConnectionService',
+        accounting_connection_id: 'conn-1',
       });
     });
   });

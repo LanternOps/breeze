@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+const { siteScope } = vi.hoisted(() => ({
+  siteScope: { allowedSiteIds: undefined as string[] | undefined },
+}));
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -29,7 +33,8 @@ vi.mock('../db/schema', () => ({
   },
 }));
 
-vi.mock('../middleware/auth', () => ({
+vi.mock('../middleware/auth', async () => ({
+  ...(await vi.importActual<typeof import('../middleware/auth')>('../middleware/auth')),
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
@@ -37,6 +42,7 @@ vi.mock('../middleware/auth', () => ({
       partnerId: null,
       orgId: 'org-111',
       accessibleOrgIds: ['org-111'],
+      allowedSiteIds: siteScope.allowedSiteIds,
       orgCondition: () => undefined,
       canAccessOrg: (id: string) => id === 'org-111',
     });
@@ -214,6 +220,7 @@ describe('enrollment key routes — installer download', () => {
     clampTtlToCapMock.mockImplementation(
       async (_orgId: string, ttlMinutes: number) => ttlMinutes,
     );
+    siteScope.allowedSiteIds = undefined;
     // Default: Windows bootstrap token issuance succeeds.
     vi.mocked(issueBootstrapTokenForKey).mockResolvedValue({
       id: 'tok-1',
@@ -230,6 +237,19 @@ describe('enrollment key routes — installer download', () => {
   // GET /:id/installer/:platform
   // ============================================
   describe('GET /enrollment-keys/:id/installer/:platform', () => {
+    it('denies a restricted organization caller before deriving an installer for a hidden site', async () => {
+      siteScope.allowedSiteIds = ['site-visible'];
+      mockSelectFromWhereLimit([makeEnrollmentKey({ siteId: 'site-hidden' })]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+        method: 'GET', headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(issueBootstrapTokenForKey).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(createAuditLogAsync).not.toHaveBeenCalled();
+    });
     it('returns 400 for invalid platform', async () => {
       const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/linux`, {
         method: 'GET',

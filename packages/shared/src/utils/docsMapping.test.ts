@@ -410,4 +410,29 @@ describe('getDocsForPath', () => {
       expect(result.url).toContain('/features/dns-security/');
     });
   });
+
+  describe('v0.111.0 mappings', () => {
+    it('/organizations/:id maps to the organisation record page section', () => {
+      const result = getDocsForPath('/organizations/9f1c0c8e-0000-4000-8000-000000000000');
+      expect(result.label).toBe('Organization Record');
+      expect(result.url).toContain('/reference/organizations-and-sites/#the-organisation-record-page');
+    });
+
+    it('/settings/organizations still wins over /organizations', () => {
+      const result = getDocsForPath('/settings/organizations');
+      expect(result.label).toBe('Organizations');
+    });
+
+    it('/operator/tasks/:id maps to the AI Operator section', () => {
+      const result = getDocsForPath('/operator/tasks/9f1c0c8e-0000-4000-8000-000000000000');
+      expect(result.label).toBe('AI Operator Tasks');
+      expect(result.url).toContain('/features/ai-agents/#ai-operator-preview');
+    });
+
+    it('/operator maps to the AI Operator section', () => {
+      const result = getDocsForPath('/operator');
+      expect(result.label).toBe('AI Operator');
+      expect(result.url).toContain('/features/ai-agents/#ai-operator-preview');
+    });
+  });
 });

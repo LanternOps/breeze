@@ -68,11 +68,6 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
 
-vi.mock('../services/webhookConfig', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../services/webhookConfig')>();
-  return { ...actual, toWebhookConfig: vi.fn(actual.toWebhookConfig) };
-});
-
 vi.mock('../workers/webhookDelivery', () => ({
   getWebhookWorker: () => ({ queueDelivery: queueDeliveryMock })
 }));
@@ -88,7 +83,6 @@ import {
   buildRecoveryClaimCas,
   runWebhookDeliveryRecoverySweep
 } from './webhookDeliveryRecovery';
-import { toWebhookConfig } from '../services/webhookConfig';
 
 const NOW = new Date('2026-09-11T12:00:00.000Z');
 
@@ -103,13 +97,8 @@ function orphan(overrides: Record<string, unknown> = {}) {
     recoveryAttempts: 0,
     createdAt: new Date(NOW.getTime() - STALE_PENDING_MS - 60_000),
     webhookOrgId: 'org-1',
-    webhookName: 'Ops hook',
     webhookStatus: 'active',
-    webhookUrl: 'https://example.test/hook',
-    webhookSecret: null,
-    webhookEvents: ['*'],
-    webhookHeaders: null,
-    webhookRetryPolicy: null,
+    webhookApprovalGeneration: 1,
     ...overrides
   };
 }
@@ -143,7 +132,6 @@ describe('webhook delivery recovery sweep', () => {
     queueDeliveryMock.mockReset();
     queueDeliveryMock.mockResolvedValue('delivery-1');
     captureExceptionMock.mockReset();
-    vi.mocked(toWebhookConfig).mockClear();
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -162,17 +150,20 @@ describe('webhook delivery recovery sweep', () => {
     expect(summary).toMatchObject({ scanned: 1, requeued: 1, exhausted: 0, raced: 0 });
     expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
 
-    const [config, event, deliveryId] = queueDeliveryMock.mock.calls[0]!;
+    const [webhookId, generation, event, deliveryId] = queueDeliveryMock.mock.calls[0]!;
     // The SAME row is driven, not a new one: the delivery callback updates by
     // this id, and `event.id` goes out as the customer's X-Breeze-Event-Id
-    // idempotency key.
+    // idempotency key. Site-ceiling gate contract §7E: the sweep enqueues by
+    // webhookId + the row's CURRENT approval_generation — no decrypted config
+    // is ever built on this path; the worker resolves and decrypts at send
+    // time.
     expect(deliveryId).toBe('delivery-1');
     expect((event as { id: string }).id).toBe('event-1');
     expect((event as { type: string }).type).toBe('alert.triggered');
     expect((event as { orgId: string }).orgId).toBe('org-1');
     expect((event as { payload: unknown }).payload).toEqual({ alertId: 'a-1' });
-    expect((config as { id: string }).id).toBe('webhook-1');
-    expect((config as { url: string }).url).toBe('https://example.test/hook');
+    expect(webhookId).toBe('webhook-1');
+    expect(generation).toBe(1);
   });
 
   it('leases the row it claimed so a concurrent sweep cannot re-queue it', async () => {
@@ -348,26 +339,17 @@ describe('webhook delivery recovery sweep', () => {
     expect(summary.scanned).toBe(2);
     expect(summary.requeued).toBe(1);
     expect(queueDeliveryMock).toHaveBeenCalledTimes(2);
-    expect(queueDeliveryMock.mock.calls[1]![2]).toBe('delivery-2');
+    expect(queueDeliveryMock.mock.calls[1]![3]).toBe('delivery-2');
   });
 
-  it('marks a row terminal when the webhook credentials will not decrypt', async () => {
-    state.candidates = [orphan()];
-    state.updateResults = [claimWon(1), [{ id: 'delivery-1' }]];
-    vi.mocked(toWebhookConfig).mockImplementationOnce(() => {
-      throw new Error('decrypt failed: AAD mismatch');
-    });
-
-    const summary = await runWebhookDeliveryRecoverySweep(NOW);
-
-    // Delivering with unusable credentials is worse than not delivering — but
-    // the row must not stay pending forever either.
-    expect(queueDeliveryMock).not.toHaveBeenCalled();
-    expect(summary).toMatchObject({ undeliverable: 1 });
-    expect(state.updateCalls[1]!.set).toMatchObject({ status: 'failed' });
-    structured(consoleLines(errorSpy), 'WEBHOOK_DELIVERY_RECOVERY_DECRYPT_FAILED');
-    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
-  });
+  // The former "marks a row terminal when the webhook credentials will not
+  // decrypt" test lived here. Site-ceiling gate contract §7E moved ALL
+  // decryption out of this sweep and into the delivery worker's send path —
+  // this file no longer touches ciphertext at all, so it cannot observe a
+  // decrypt failure. The equivalent terminal-outcome behavior (a decrypt
+  // failure is recorded as a superseded/failed delivery, never retried) is
+  // covered in workers/webhookDelivery.test.ts against
+  // `resolveDeliveryWebhookConfig`.
 
   it('never re-POSTs a delivery a worker had already claimed — outcome unknown', async () => {
     // `retrying` means a worker won the execution claim and then died. The POST
@@ -451,7 +433,7 @@ describe('webhook delivery recovery sweep', () => {
 
     expect(summary).toMatchObject({ scanned: 2, requeued: 1 });
     expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
-    expect(queueDeliveryMock.mock.calls[0]![2]).toBe('delivery-2');
+    expect(queueDeliveryMock.mock.calls[0]![3]).toBe('delivery-2');
     const payload = structured(
       consoleLines(errorSpy),
       'WEBHOOK_DELIVERY_RECOVERY_CANDIDATE_FAILED'

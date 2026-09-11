@@ -210,6 +210,7 @@ import { emitTicketTriageFeedback } from '../../services/mlFeedbackEmitters';
 
 const TICKET_ID = '3f2f1d8e-1111-4222-8333-444455556666';
 const ORG_ID    = '3f2f1d8e-1111-4222-8333-444455556666';
+const CONTACT_ID = '9c8d7e6f-2222-4333-8444-555566667777';
 const STUB_TICKET = { id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1', subject: 'Printer' };
 
 const DEFAULT_AUTH = {
@@ -470,6 +471,50 @@ describe('POST /tickets', () => {
       body: JSON.stringify({ orgId: ORG_ID })
     });
     expect(res.status).toBe(400);
+  });
+
+  // #5367: the mobile New-ticket form names the requester CONTACT. The route
+  // spreads the parsed body, so this asserts the SCHEMA carries the field —
+  // an omitted key is stripped silently and the ticket lands with no requester.
+  it('passes requesterContactId through to createTicket', async () => {
+    serviceMocks.createTicket.mockResolvedValue({ id: 't-5', internalNumber: 'T-2026-0005' });
+    const res = await makeApp().request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, subject: 'Printer offline', requesterContactId: CONTACT_ID })
+    });
+    expect(res.status).toBe(201);
+    expect(serviceMocks.createTicket).toHaveBeenCalledWith(
+      expect.objectContaining({ requesterContactId: CONTACT_ID, source: 'manual' }),
+      expect.anything()
+    );
+  });
+
+  it('400s on a non-uuid requesterContactId before reaching the service', async () => {
+    const res = await makeApp().request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, subject: 'x', requesterContactId: 'not-a-uuid' })
+    });
+    expect(res.status).toBe(400);
+    expect(serviceMocks.createTicket).not.toHaveBeenCalled();
+  });
+
+  // The same-org rule stays where it already is — `assertRequesterContactInOrg`
+  // in the service, which runs before the ticket number is allocated. The route
+  // only has to surface it; this pins the status/code the client sees.
+  it('surfaces the service cross-org contact rejection as 400 with its code', async () => {
+    const { TicketServiceError } = await vi.importActual<typeof import('../../services/ticketService')>('../../services/ticketService');
+    serviceMocks.createTicket.mockRejectedValue(
+      new TicketServiceError('Requester contact must belong to the ticket organization', 400, 'REQUESTER_CONTACT_WRONG_ORG')
+    );
+    const res = await makeApp().request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, subject: 'x', requesterContactId: CONTACT_ID })
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'REQUESTER_CONTACT_WRONG_ORG' });
   });
 
   it('maps TicketServiceError status through (404 org)', async () => {
@@ -741,6 +786,45 @@ describe('ticket triage suggestion routes', () => {
     expect(vi.mocked(evaluateTicketTriage)).toHaveBeenCalledWith({
       orgIds: [ORG_ID],
       labelWindowDays: 30,
+    });
+  });
+
+  it('GET /tickets/triage-evaluation propagates the caller site ceiling', async () => {
+    authRef.current = {
+      ...DEFAULT_AUTH,
+      scope: 'organization',
+      orgId: ORG_ID,
+      partnerId: null,
+      allowedSiteIds: ['site-visible'],
+    } as typeof authRef.current;
+    vi.mocked(evaluateTicketTriage).mockResolvedValue({
+      labelWindowDays: 90,
+      totalLabels: 0,
+      acceptedSuggestionLabels: 0,
+      manualOverrideLabels: 0,
+      rejectedSuggestionLabels: 0,
+      categoryLabels: 0,
+      priorityLabels: 0,
+      assigneeLabels: 0,
+      overrideRate: null,
+    });
+
+    const res = await makeApp().request('/tickets/triage-evaluation');
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(evaluateTicketTriage)).toHaveBeenCalledWith({
+      orgIds: [ORG_ID],
+      labelWindowDays: 90,
+      allowedSiteIds: ['site-visible'],
+    });
+
+    authRef.current = { ...authRef.current, allowedSiteIds: [] } as typeof authRef.current;
+    const zeroSiteRes = await makeApp().request('/tickets/triage-evaluation');
+    expect(zeroSiteRes.status).toBe(200);
+    expect(vi.mocked(evaluateTicketTriage)).toHaveBeenLastCalledWith({
+      orgIds: [ORG_ID],
+      labelWindowDays: 90,
+      allowedSiteIds: [],
     });
   });
 

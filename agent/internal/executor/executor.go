@@ -114,6 +114,16 @@ type ScriptExecution struct {
 	// SecretEnv's own String/Format/MarshalJSON redact as a second layer.
 	// Populated only by heartbeat.handleScript, which validates it first.
 	SecretEnv SecretEnv `json:"-"`
+
+	// #5129 — the STRICT-level security-pattern descriptions an admin
+	// acknowledged on this script record, dispatched by the server over the
+	// authenticated command channel. The agent never writes this: it is a
+	// server-side decision made by a human who can already manage scripts.
+	//
+	// Basic-level patterns ignore it entirely. An absent or empty slice is the
+	// pre-#5129 behaviour (fail closed), so an older API talking to a newer
+	// agent cannot loosen anything.
+	AcknowledgedSecurityPatterns []string `json:"acknowledgedSecurityPatterns,omitempty"`
 }
 
 // ScriptResult represents the result of a script execution
@@ -441,7 +451,7 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 	scriptContent := SubstituteParameters(script.Script, script.Parameters)
 
 	// Validate script content for security (after parameter substitution)
-	if err := e.validateScript(scriptContent); err != nil {
+	if err := e.validateScript(scriptContent, script.AcknowledgedSecurityPatterns); err != nil {
 		log.Warn("script validation failed", "executionId", script.ID, "error", err)
 		result.ExitCode = -1
 		result.Error = fmt.Sprintf("script validation failed: %v", err)
@@ -541,6 +551,13 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 			log.Error("failed to configure runAs", "executionId", script.ID, "user", script.RunAs, "error", err)
 			result.ExitCode = -1
 			result.Error = fmt.Sprintf("failed to configure runAs: %v", err)
+			result.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+			return result, err
+		}
+		if err := prepareScriptForRunAs(scriptPath, script.RunAs); err != nil {
+			log.Error("failed to prepare script ownership", "executionId", script.ID, "user", script.RunAs, "error", err)
+			result.ExitCode = -1
+			result.Error = fmt.Sprintf("failed to prepare script for runAs: %v", err)
 			result.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 			return result, err
 		}
@@ -826,8 +843,12 @@ func (e *Executor) GetRunningCount() int {
 	return count
 }
 
-// validateScript performs security validation on script content
-func (e *Executor) validateScript(content string) error {
+// validateScript performs security validation on script content.
+//
+// `acknowledged` is the set of STRICT-level pattern descriptions the server
+// dispatched for this script (#5129); basic-level patterns are unconditional
+// and ignore it. Nil is the fail-closed default.
+func (e *Executor) validateScript(content string, acknowledged []string) error {
 	if content == "" {
 		return fmt.Errorf("script content is empty")
 	}
@@ -838,7 +859,7 @@ func (e *Executor) validateScript(content string) error {
 	}
 
 	// Use the SecurityValidator for comprehensive pattern checking
-	return e.validator.Validate(content)
+	return e.validator.ValidateWithAcknowledgements(content, acknowledged)
 }
 
 // buildEnvironment creates the environment variables for script execution

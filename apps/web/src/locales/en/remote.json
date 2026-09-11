@@ -31,6 +31,7 @@
     "dismiss": "Dismiss",
     "downloadFor": "Download for {{platform}}",
     "errors": {
+      "agentUpgradeRequired": "Remote desktop needs an agent update on this device (session revocation lease support). The agent updates itself automatically — this usually clears within a minute. Terminal and file transfer are unaffected.",
       "connectionFailed": "Connection failed",
       "createDesktopCode": "Failed to create desktop connect code",
       "createDesktopSession": "Failed to create desktop session",
@@ -196,7 +197,7 @@
       "justNow": "Just now",
       "minutesAgo": "{{count}}m ago"
     },
-    "title": "Title",
+    "title": "File Activity",
     "unverifiedHint": "Unverified Hint"
   },
   "fileManager": {
@@ -236,7 +237,7 @@
       "scanned": "Scanned: {{count}} files",
       "selected": "Selected: {{count}} · {{size}}",
       "threshold": "Threshold",
-      "title": "Title",
+      "title": "Disk Intelligence",
       "trigger": "Trigger: {{value}}"
     },
     "dismiss": "Dismiss",
@@ -260,7 +261,7 @@
     "moveTo": "Move To",
     "selectedCount": "Selected Count",
     "size": "Size",
-    "title": "Title",
+    "title": "File Manager",
     "transfers": "Transfers",
     "trash": "Trash",
     "selectedCount_one": "{{count}} selected",
@@ -440,7 +441,7 @@
       "generic": "An error occurred"
     },
     "refreshStatus": "Refresh Status",
-    "title": "Title"
+    "title": "File Manager"
   },
   "remoteTerminal": {
     "connectedBang": "Connected!",
@@ -616,7 +617,7 @@
     "noServicesFound": "No Services Found",
     "ok": "Ok",
     "page": "Page {{current}} of {{total}}",
-    "refreshHint": "Refresh Hint",
+    "refreshHint": "Try refreshing to check for services.",
     "restartService": "Restart Service",
     "searchPlaceholder": "Search Placeholder",
     "serviceConfirm": "Are you sure you want to {{action}} the service {{service}}?",

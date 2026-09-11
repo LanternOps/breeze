@@ -24,7 +24,7 @@ import {
 } from '../../services/timeSuggestions';
 import { classifyDrainOutcome, suggestionDedupeKey } from '../../services/timeSuggestionDrain';
 import { enqueue } from '../../services/timeEntryQueue';
-import { Toast } from '../../components/Toast';
+import { useToast } from '../../components/toast/ToastHost';
 import { reportInternalError } from '../../lib/errorReporting';
 import { track } from '../../lib/analytics';
 
@@ -56,8 +56,7 @@ export function TimeSuggestionsScreen({ route }: Props): React.JSX.Element {
   const enabled = useAppSelector(selectSuggestionsEnabled);
   const status = useAppSelector(selectSuggestionsStatus);
   const error = useAppSelector(selectSuggestionsError);
-  const [toast, setToast] = useState<string | null>(null);
-  const [toastKind, setToastKind] = useState<'success' | 'error'>('success');
+  const { show: showToast } = useToast();
   const [confirming, setConfirming] = useState<TimeSuggestion | null>(null);
   const [undo, setUndo] = useState<{ suggestion: TimeSuggestion; index: number } | null>(null);
 
@@ -114,8 +113,7 @@ export function TimeSuggestionsScreen({ route }: Props): React.JSX.Element {
         // so the technician is not left believing a dismiss landed.
         dispatch(suggestionRestored({ suggestion, index }));
         setUndo(null);
-        setToastKind('error');
-        setToast('Could not dismiss that session');
+        showToast({ kind: 'error', text: 'Could not dismiss that session' });
       }
     },
     [dispatch]
@@ -130,8 +128,7 @@ export function TimeSuggestionsScreen({ route }: Props): React.JSX.Element {
       await undismissSuggestion(suggestion.signals.map((s) => ({ kind: s.kind, id: s.id })));
     } catch (err) {
       reportInternalError(err, 'timeSuggestions.undismiss');
-      setToastKind('error');
-      setToast('Undo did not reach the server — pull to refresh');
+      showToast({ kind: 'error', text: 'Undo did not reach the server — pull to refresh' });
     }
   }, [dispatch, undo]);
 
@@ -204,8 +201,7 @@ export function TimeSuggestionsScreen({ route }: Props): React.JSX.Element {
           onClose={() => setConfirming(null)}
           onLogged={(message) => {
             setConfirming(null);
-            setToastKind('success');
-            setToast(message);
+            showToast({ kind: 'success', text: message });
           }}
         />
       ) : null}
@@ -215,13 +211,6 @@ export function TimeSuggestionsScreen({ route }: Props): React.JSX.Element {
           <Text style={styles.undoText}>Session dismissed · Undo</Text>
         </Pressable>
       ) : null}
-
-      <Toast
-        visible={toast !== null}
-        text={toast ?? ''}
-        kind={toastKind}
-        onHidden={() => setToast(null)}
-      />
     </View>
   );
 }

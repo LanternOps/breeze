@@ -276,3 +276,199 @@ func TestRunRecoveryWithToken_RequiresServerAuthentication(t *testing.T) {
 		t.Fatal("expected recovery runner not to be invoked without server authentication")
 	}
 }
+
+// TestRunRecoveryWithToken_RewritesUnreachableDescriptorOrigin reproduces
+// D10: `--server http://10.0.2.2:33933` authenticates fine, but the
+// bootstrap's download descriptor carries the server's configured public
+// URL (e.g. `http://localhost/...`), which may be unreachable from the
+// operator's vantage point. The helper must rewrite the descriptor to the
+// --server origin it actually authenticated against rather than dialing the
+// descriptor's URL verbatim.
+func TestRunRecoveryWithToken_RewritesUnreachableDescriptorOrigin(t *testing.T) {
+	origRunRecovery := runRecovery
+	defer func() { runRecovery = origRunRecovery }()
+	runRecovery = func(ctx context.Context, cfg RecoveryConfig, provider providers.BackupProvider) (*RecoveryResult, error) {
+		destPath := filepath.Join(t.TempDir(), "manifest.json")
+		if err := provider.Download("snapshots/provider-snapshot-1/manifest.json", destPath); err != nil {
+			t.Fatalf("provider download failed: %v (descriptor origin was not rewritten to --server)", err)
+		}
+		return &RecoveryResult{Status: "completed", FilesRestored: 1}, nil
+	}
+
+	var server *httptest.Server                                                                 //nolint:staticcheck // S1021: the handler closure refers to server, so it must be declared first
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { //nolint:staticcheck
+		switch r.URL.Path {
+		case "/api/v1/backup/bmr/recover/authenticate":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"bootstrap": BootstrapResponse{
+					Version:    BootstrapResponseVersion,
+					TokenID:    "token-1",
+					DeviceID:   "device-1",
+					SnapshotID: "db-snapshot-1",
+					Download: &AuthenticatedDownloadDescriptor{
+						Type: "breeze_proxy",
+						// The server's configured public URL, unreachable
+						// from the operator's --server vantage point.
+						URL:            "http://localhost/api/v1/backup/bmr/recover/download",
+						PathQueryParam: "path",
+						PathPrefix:     "snapshots/provider-snapshot-1",
+					},
+					Snapshot: &AuthenticatedSnapshot{
+						ID:         "snapshot-db-id",
+						SnapshotID: "provider-snapshot-1",
+					},
+				},
+			})
+		case "/api/v1/backup/bmr/recover/download":
+			if got := r.URL.Query().Get("path"); got != "snapshots/provider-snapshot-1/manifest.json" {
+				http.Error(w, "unexpected path", http.StatusBadRequest)
+				return
+			}
+			_, _ = io.WriteString(w, `{"ok":true}`)
+		case "/api/v1/backup/bmr/recover/complete":
+			_ = json.NewEncoder(w).Encode(map[string]any{"restoreJobId": "job-1", "status": "completed"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	result, err := RunRecoveryWithToken(RecoveryConfig{
+		RecoveryToken: "brz_rec_test",
+		ServerURL:     server.URL,
+	})
+	if err != nil {
+		t.Fatalf("RunRecoveryWithToken: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+}
+
+// TestHasSystemStateManifest proves the three raw-JSON shapes
+// bootstrap.Snapshot.SystemStateManifest (json.RawMessage) can actually take
+// coming off the wire: absent entirely (nil/empty), an explicit JSON null
+// (a SQL NULL jsonb column decoded by encoding/json), and a real object —
+// only the last one means "this snapshot has system state".
+func TestHasSystemStateManifest(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  json.RawMessage
+		want bool
+	}{
+		{name: "nil", raw: nil, want: false},
+		{name: "empty", raw: json.RawMessage(``), want: false},
+		{name: "whitespace_only", raw: json.RawMessage("   "), want: false},
+		{name: "json_null", raw: json.RawMessage(`null`), want: false},
+		{name: "real_manifest", raw: json.RawMessage(`{"platform":"linux","schemaVersion":1}`), want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasSystemStateManifest(tt.raw); got != tt.want {
+				t.Errorf("hasSystemStateManifest(%q) = %v, want %v", string(tt.raw), got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRunRecoveryWithToken_SetsExpectSystemStateFromBootstrap proves
+// session.go's wiring (RunRecoveryWithTokenContext): the effective
+// RecoveryConfig handed to runRecovery must carry ExpectSystemState=true
+// when the bootstrap's Snapshot.SystemStateManifest is a real (non-null)
+// manifest, so applySystemState (bmr.go) can tell "state was captured for
+// this snapshot" apart from "no state was ever captured" (see
+// RecoveryConfig.ExpectSystemState's doc comment).
+func TestRunRecoveryWithToken_SetsExpectSystemStateFromBootstrap(t *testing.T) {
+	origRunRecovery := runRecovery
+	defer func() { runRecovery = origRunRecovery }()
+
+	var gotExpectSystemState bool
+	runRecovery = func(ctx context.Context, cfg RecoveryConfig, provider providers.BackupProvider) (*RecoveryResult, error) {
+		gotExpectSystemState = cfg.ExpectSystemState
+		return &RecoveryResult{Status: "completed"}, nil
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/backup/bmr/recover/authenticate":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"bootstrap": BootstrapResponse{
+					Version:    BootstrapResponseVersion,
+					TokenID:    "token-1",
+					DeviceID:   "device-1",
+					SnapshotID: "db-snapshot-1",
+					Snapshot: &AuthenticatedSnapshot{
+						ID:                  "snapshot-db-id",
+						SnapshotID:          "provider-snapshot-1",
+						SystemStateManifest: json.RawMessage(`{"platform":"linux","schemaVersion":1}`),
+					},
+					BackupConfig: &AuthenticatedProviderConfig{
+						Provider:       "local",
+						ProviderConfig: map[string]any{"path": t.TempDir()},
+					},
+				},
+			})
+		case "/api/v1/backup/bmr/recover/complete":
+			_ = json.NewEncoder(w).Encode(map[string]any{"restoreJobId": "job-1", "status": "completed"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	if _, err := RunRecoveryWithToken(RecoveryConfig{RecoveryToken: "brz_rec_test", ServerURL: server.URL}); err != nil {
+		t.Fatalf("RunRecoveryWithToken: %v", err)
+	}
+	if !gotExpectSystemState {
+		t.Fatal("expected ExpectSystemState=true when the bootstrap's snapshot carries a real SystemStateManifest")
+	}
+}
+
+// TestRunRecoveryWithToken_ExpectSystemStateFalseWithoutManifest is the
+// negative half of the above: a bootstrap snapshot with no
+// SystemStateManifest at all (an ordinary, non-system-image snapshot) must
+// leave ExpectSystemState false.
+func TestRunRecoveryWithToken_ExpectSystemStateFalseWithoutManifest(t *testing.T) {
+	origRunRecovery := runRecovery
+	defer func() { runRecovery = origRunRecovery }()
+
+	gotExpectSystemState := true // start true so a no-op wiring bug would be caught
+	runRecovery = func(ctx context.Context, cfg RecoveryConfig, provider providers.BackupProvider) (*RecoveryResult, error) {
+		gotExpectSystemState = cfg.ExpectSystemState
+		return &RecoveryResult{Status: "completed"}, nil
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/backup/bmr/recover/authenticate":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"bootstrap": BootstrapResponse{
+					Version:    BootstrapResponseVersion,
+					TokenID:    "token-1",
+					DeviceID:   "device-1",
+					SnapshotID: "db-snapshot-1",
+					Snapshot: &AuthenticatedSnapshot{
+						ID:         "snapshot-db-id",
+						SnapshotID: "provider-snapshot-1",
+					},
+					BackupConfig: &AuthenticatedProviderConfig{
+						Provider:       "local",
+						ProviderConfig: map[string]any{"path": t.TempDir()},
+					},
+				},
+			})
+		case "/api/v1/backup/bmr/recover/complete":
+			_ = json.NewEncoder(w).Encode(map[string]any{"restoreJobId": "job-1", "status": "completed"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	if _, err := RunRecoveryWithToken(RecoveryConfig{RecoveryToken: "brz_rec_test", ServerURL: server.URL}); err != nil {
+		t.Fatalf("RunRecoveryWithToken: %v", err)
+	}
+	if gotExpectSystemState {
+		t.Fatal("expected ExpectSystemState=false when the bootstrap's snapshot has no SystemStateManifest")
+	}
+}

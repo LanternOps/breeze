@@ -1,3 +1,4 @@
+import { lockMfaPolicySettings, countMfaPolicyLockouts, mfaPolicyLockoutResponse } from '../services/mfaPolicyActivation';
 import { isDeepStrictEqual } from 'node:util';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -12,6 +13,11 @@ import { partners, organizations, sites, devices, agentVersions, partnerUsers } 
 // constant added to it would throw "No export is defined on the mock" at the
 // exact moment this 409 mapping runs.
 import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
+// Imported from the concrete schema module rather than the '../db/schema'
+// barrel: several route tests partially mock that barrel, and a new named
+// import there fails their module load ("No 'psaConnections' export is defined
+// on the mock") before a single test runs.
+import { psaConnections } from '../db/schema/integrations';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
@@ -55,7 +61,10 @@ import { isValidIpOrCidr } from '../services/ipMatch';
 import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
-import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../services/partnerWideAccess';
 import { clearPartnerAllowlistCache, ipAllowlistMode, readPartnerAllowlist } from '../services/ipAllowlist';
 import { commitOrgImport, previewOrgImport, MAX_IMPORT_ROWS } from '../services/orgImport';
 import { writeOrgImportAudits } from '../services/orgImport/audit';
@@ -453,6 +462,8 @@ const partnerPublicColumns = () => ({
   invoiceDeviceAppendix: partners.invoiceDeviceAppendix,
   catalogAiStyle: partners.catalogAiStyle,
   aiForOfficeEnabled: partners.aiForOfficeEnabled,
+  serviceManagementMode: partners.serviceManagementMode,
+  serviceManagementPsaConnectionId: partners.serviceManagementPsaConnectionId,
   createdAt: partners.createdAt,
   updatedAt: partners.updatedAt,
 });
@@ -819,7 +830,17 @@ const updatePartnerSettingsSchema = z.object({
     .max(63)
     .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/, 'Use lowercase letters, numbers, and hyphens only')
     .nullable()
-    .optional()
+    .optional(),
+  // #5075 W04 — which service-desk/billing module this partner runs. Unlike
+  // `aiForOfficeEnabled` (platform-granted, writable only on PATCH /partners/:id),
+  // this is the partner's own product choice, so it lives here and NOT on the
+  // system-scoped partner schema.
+  //
+  // `external` is accepted by the API today even though the UI does not offer it
+  // yet — the follow-on external service-desk feature turns the radio on without
+  // needing an API change, and rejecting it here would make that a breaking one.
+  serviceManagementMode: z.enum(['native', 'external', 'off']).optional(),
+  serviceManagementPsaConnectionId: z.string().uuid().nullable().optional()
 });
 
 // Get own partner details (for partner-scoped users)
@@ -865,6 +886,12 @@ orgRoutes.patch(
   requirePartner,
   requireOrgWrite,
   requireMfa(),
+  async (c, next) => {
+    if (!canManagePartnerWidePolicies(c.get('auth'))) {
+      return c.json({ error: 'Full partner access required' }, 403);
+    }
+    await next();
+  },
   zValidator('json', updatePartnerSettingsSchema, (result, c) => {
     if (!result.success && result.error.issues.some((issue) => issue.path[0] === 'inboundLocalPart')) {
       return c.json({ error: 'Use lowercase letters, numbers, and hyphens only' }, 422);
@@ -881,6 +908,9 @@ orgRoutes.patch(
   if (pinError) {
     return c.json({ error: pinError }, 400);
   }
+
+  // This endpoint always writes the merged settings, even on name-only edits.
+  await lockMfaPolicySettings({ kind: 'partner', id: auth.partnerId! });
 
   // Get current partner to merge settings
   const [current] = await db
@@ -980,6 +1010,49 @@ orgRoutes.patch(
     );
   }
 
+  if (body.settings !== undefined) {
+    const count = await countMfaPolicyLockouts({ kind: 'partner', id: auth.partnerId! }, newSettings);
+    if (count) return c.json(mfaPolicyLockoutResponse(count), 409);
+  }
+
+  // #5075 W04 — Service Management mode. `external` binds a PSA connection that
+  // must belong to THIS partner and be partner-wide (org_id IS NULL): a
+  // cross-partner id here would point a partner's whole service desk at another
+  // tenant's PSA credentials, and an org-scoped connection cannot serve every
+  // org under the partner. The read runs under the request RLS context, so the
+  // partner_id equality is a defence-in-depth check, not the only boundary.
+  //
+  // `native`/`off` FORCE the connection id to null rather than leaving whatever
+  // was there: partners_service_management_connection_chk is a biconditional, so
+  // a retained id would abort the UPDATE with 23514 (a 500 to the caller).
+  let nextMode: 'native' | 'external' | 'off' | undefined;
+  if (body.serviceManagementMode !== undefined) {
+    nextMode = body.serviceManagementMode;
+    if (nextMode === 'external') {
+      const connectionId = body.serviceManagementPsaConnectionId;
+      if (!connectionId) {
+        return c.json({ error: 'External mode requires one of your partner-wide PSA connections' }, 400);
+      }
+      const [connectionOk] = await db
+        .select({ id: psaConnections.id })
+        .from(psaConnections)
+        .where(and(
+          eq(psaConnections.id, connectionId),
+          eq(psaConnections.partnerId, auth.partnerId as string),
+          isNull(psaConnections.orgId),
+        ))
+        .limit(1);
+      if (!connectionOk) {
+        return c.json({ error: 'External mode requires one of your partner-wide PSA connections' }, 400);
+      }
+    }
+  } else if (body.serviceManagementPsaConnectionId !== undefined) {
+    // A connection id with no mode alongside it can only ever contradict the
+    // stored mode (native/off forbid one; external already has one), so refuse
+    // rather than write a row the CHECK will reject with an opaque 500.
+    return c.json({ error: 'serviceManagementPsaConnectionId requires serviceManagementMode' }, 400);
+  }
+
   // Encrypt secret-bearing fields (e.g. remoteAccessProviders[*].password)
   // BEFORE writing. Without this, every PATCH from the UI would regress the
   // column to plaintext between deploy-day batch re-encrypt runs.
@@ -988,6 +1061,11 @@ orgRoutes.patch(
     updatedAt: new Date()
   };
 
+  if (nextMode !== undefined) {
+    updateData.serviceManagementMode = nextMode;
+    updateData.serviceManagementPsaConnectionId =
+      nextMode === 'external' ? (body.serviceManagementPsaConnectionId as string) : null;
+  }
   if (body.name) updateData.name = body.name;
   if (body.billingEmail) updateData.billingEmail = body.billingEmail;
   // Explicit null (or an all-whitespace value) clears the signature.
@@ -1117,6 +1195,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   }
 
   if (updates.settings !== undefined) {
+    await lockMfaPolicySettings({ kind: 'partner', id });
     // Fold the legacy `security.allowedMfaMethods` alias into the canonical
     // `security.allowedMethods` before anything else touches settings. This
     // is a wholesale-replace path (updatePartnerSchema uses `settings: z.any()`),
@@ -1170,6 +1249,9 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
         updates.timezone = canonicalTz;
       }
     }
+    const count = await countMfaPolicyLockouts({ kind: 'partner', id }, updates.settings);
+    if (count) return c.json(mfaPolicyLockoutResponse(count), 409);
+
     // Encrypt secret-bearing fields in partners.settings before writing.
     updates.settings = encryptColumnValueForWrite('partners', 'settings', updates.settings);
   }
@@ -1505,17 +1587,23 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
   // `devices_org_id_last_seen_at_idx`, and EXPLAIN on a populated deployment
   // takes the index, not a seq scan.
   //
-  // `devices` has no soft-delete or archive column, so every row is a live
-  // device and a plain count is the whole story. An org with no devices is
-  // absent from the grouped result, hence the `?? 0` rather than leaving it
-  // undefined — "0 devices" is the truth for a new tenant, and undefined is
-  // what produced the blank label in the first place.
+  // Removed devices are excluded (#5315). `devices` has no soft-delete column,
+  // but `status = 'decommissioned'` is the removal marker, and every device
+  // surface a tech reads — the fleet list, the org record's Devices tab, its
+  // Overview tile — hides those rows, so counting them here made this card the
+  // odd one out. An org with no (live) devices is absent from the grouped
+  // result, hence the `?? 0` rather than leaving it undefined — "0 devices" is
+  // the truth for a new tenant, and undefined is what produced the blank label
+  // in the first place.
   const pageOrgIds = ordered.map((org) => org.id);
   const deviceCounts = pageOrgIds.length
     ? await db
         .select({ orgId: devices.orgId, count: sql<number>`count(*)` })
         .from(devices)
-        .where(inArray(devices.orgId, pageOrgIds))
+        .where(and(
+          inArray(devices.orgId, pageOrgIds),
+          ne(devices.status, 'decommissioned'),
+        ))
         .groupBy(devices.orgId)
     : [];
   const deviceCountByOrgId = new Map(
@@ -1593,6 +1681,7 @@ orgRoutes.patch(
     );
     const validOrgIds = partnerOrgs.map((o) => o.id);
     const sanitized = sanitizeOrganizationOrder(orderedIds, validOrgIds);
+    await lockMfaPolicySettings({ kind: 'partner', id: partnerId });
 
     const [current] = await db
       .select({ settings: partners.settings })
@@ -1742,8 +1831,18 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
 //
 // Preview → commit pipeline over services/orgImport. CSV is parsed client-side;
 // the API takes JSON only, so the migration-toolkit scripts can call these
-// directly. Gating matches the single-record write routes this composes
-// (POST /organizations, POST /sites): partner/system scope + orgs:write + MFA.
+// directly. Unlike the single-record routes this composes, the import seam
+// enumerates and can mutate ANY organization in the resolved partner while
+// running under system DB context. Selected/none partner members therefore
+// need an additional full-partner capability gate on both preview and commit.
+
+const requireFullPartnerOrgImportAccess = async (c: Context, next: Next) => {
+  const auth = c.get('auth') as AuthContext;
+  if (!canManagePartnerWidePolicies(auth)) {
+    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+  }
+  return next();
+};
 
 // Row shape lives in services/orgImport/schemas.ts so the PSA company-import
 // route (#3246) accepts the byte-identical row contract.
@@ -1762,7 +1861,7 @@ const commitOrgImportSchema = z.object({
 // The import creates SITES as well as orgs, so it is gated on sites:write in
 // addition to orgs:write (#3242). Preview carries the same gate for an early,
 // honest failure — a preview a caller could never commit is a trap.
-orgRoutes.post('/import/preview', requireScope('partner', 'system'), requireOrgWrite, requireSiteWrite, requireMfa(), zValidator('json', previewOrgImportSchema), async (c) => {
+orgRoutes.post('/import/preview', requireScope('partner', 'system'), requireOrgWrite, requireSiteWrite, requireMfa(), requireFullPartnerOrgImportAccess, zValidator('json', previewOrgImportSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { rows, partnerId: bodyPartnerId } = c.req.valid('json');
 
@@ -1775,7 +1874,7 @@ orgRoutes.post('/import/preview', requireScope('partner', 'system'), requireOrgW
   return c.json({ rows: annotated });
 });
 
-orgRoutes.post('/import', requireScope('partner', 'system'), requireOrgWrite, requireSiteWrite, requireMfa(), zValidator('json', commitOrgImportSchema), async (c) => {
+orgRoutes.post('/import', requireScope('partner', 'system'), requireOrgWrite, requireSiteWrite, requireMfa(), requireFullPartnerOrgImportAccess, zValidator('json', commitOrgImportSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { rows, mode, partnerId: bodyPartnerId } = c.req.valid('json');
 
@@ -2039,6 +2138,10 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     }
   }
 
+  if (data.settings !== undefined) {
+    await lockMfaPolicySettings({ kind: 'organization', id });
+  }
+
   // Wave 4 introduces the frozen statuses, so it owns the guard on the way OUT.
   // Deliberately AFTER the partner-scope 404 above: a partner caller can only
   // reach here for an org it may already see, so refusing with a 409 that names
@@ -2161,6 +2264,9 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   if (data.type !== undefined) updates.type = data.type;
   if (data.status !== undefined) updates.status = data.status;
   if (data.settings !== undefined) {
+    const count = await countMfaPolicyLockouts({ kind: 'organization', id }, data.settings);
+    if (count) return c.json(mfaPolicyLockoutResponse(count), 409);
+
     // This write replaces `settings` WHOLESALE, so a client payload naming a
     // lifecycle-internal key would become that key's stored value. Strip them
     // first: a preseeded `purgingRecoveryAttempts` would neuter the purge-retry
@@ -2475,7 +2581,15 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
     const counts = await db
       .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
       .from(devices)
-      .where(and(inArray(devices.siteId, siteIds), eq(devices.isEphemeral, false)))
+      // Removed (decommissioned) devices are excluded alongside the ephemeral
+      // Quick Support ones (#5315): the org record's Devices tab lists
+      // `GET /devices`, which drops decommissioned rows by default, so counting
+      // them here made the Sites table disagree with the tab beside it.
+      .where(and(
+        inArray(devices.siteId, siteIds),
+        eq(devices.isEphemeral, false),
+        ne(devices.status, 'decommissioned'),
+      ))
       .groupBy(devices.siteId);
     for (const row of counts) {
       deviceCountBySite.set(row.siteId, Number(row.count));

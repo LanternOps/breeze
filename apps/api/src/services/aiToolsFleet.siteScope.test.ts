@@ -350,16 +350,30 @@ describe('SR5-05 manage_automations — target site scoping', () => {
     expect(JSON.parse(r).automation.id).toBe('a1');
   });
 
+  it('get omits org-wide run metadata for a restricted caller', async () => {
+    mockCheck.mockResolvedValue({ ok: true, unbounded: false, outOfScopeDeviceIds: [] });
+    mockDb.select.mockReturnValue({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([{
+        ...autoRow, runCount: 99, lastRunAt: new Date('2026-09-05T00:00:00Z'),
+      }]) }) }),
+    });
+    const r = await handlerFor('manage_automations')({ action: 'get', automationId: 'a1' }, makeAuth(['site-A']));
+    expect(JSON.parse(r).automation).not.toHaveProperty('runCount');
+    expect(JSON.parse(r).automation).not.toHaveProperty('lastRunAt');
+  });
+
   it('list omits automations that fail the site-scope check', async () => {
     mockCheck.mockImplementation(async (a: any) => ({ ok: a.id === 'keep', unbounded: false, outOfScopeDeviceIds: [] }));
-    mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([
-      { id: 'keep', name: 'K', trigger: {}, orgId: 'org-1', partnerId: null, conditions: {} },
-      { id: 'drop', name: 'D', trigger: {}, orgId: 'org-1', partnerId: null, conditions: {} },
-    ]) }) }) }) });
+    mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ orderBy: () => ({ limit: () => ({ offset: () => Promise.resolve([
+      { id: 'keep', name: 'K', trigger: {}, orgId: 'org-1', partnerId: null, conditions: {}, runCount: 7, lastRunAt: new Date() },
+      { id: 'drop', name: 'D', trigger: {}, orgId: 'org-1', partnerId: null, conditions: {}, runCount: 9, lastRunAt: new Date() },
+    ]) }) }) }) }) });
     const r = await handlerFor('manage_automations')({ action: 'list' }, makeAuth(['site-A']));
     const parsed = JSON.parse(r);
     expect(parsed.showing).toBe(1);
     expect(parsed.automations[0].id).toBe('keep');
+    expect(parsed.automations[0]).not.toHaveProperty('runCount');
+    expect(parsed.automations[0]).not.toHaveProperty('lastRunAt');
   });
 });
 
@@ -736,5 +750,30 @@ describe('manage_maintenance_windows — site-axis read scoping (#3654)', () => 
 
     expect(JSON.parse(raw).window.siteIds).toEqual(['site-A']);
     expect(raw).not.toContain('site-FORBIDDEN');
+  });
+});
+
+describe('manage_patches setup_auto_approval — site-ceiling gate (contract-site-ceiling-gate §7A)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // setup_auto_approval is disabled for EVERY caller (see the unconditional
+  // early-return in aiToolsFleet.ts) — patch policies must be configured via
+  // manage_policy_feature_link instead. The org configuration_policies insert
+  // further down the handler is therefore dead code today; it carries its own
+  // canMutateOrgWideGovernance check as defense-in-depth in case the disabled
+  // gate is ever lifted (same convention as the canManagePartnerWidePolicies
+  // check a few lines above it). These two cases pin the LIVE behavior: the
+  // action is blocked identically for a site-restricted and an unrestricted
+  // caller, i.e. there is no live bypass through this action today.
+  it('is blocked for a site-restricted caller (via the disabled-action gate, not reachable)', async () => {
+    const r = await handlerFor('manage_patches')({ action: 'setup_auto_approval' }, makeAuth(['site-A'])) as string;
+    expect(r).toContain('disabled');
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it('is blocked identically for an unrestricted caller (no live bypass either way)', async () => {
+    const r = await handlerFor('manage_patches')({ action: 'setup_auto_approval' }, makeAuth(undefined)) as string;
+    expect(r).toContain('disabled');
+    expect(mockDb.insert).not.toHaveBeenCalled();
   });
 });

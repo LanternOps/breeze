@@ -13,7 +13,8 @@ import Breadcrumbs from '../layout/Breadcrumbs';
 import { asList } from '@/lib/asList';
 import { deviceScriptsHref, scriptExecutionsHref } from '@/lib/deviceScriptsLink';
 import type { ScriptAdmissionResult } from '@breeze/shared';
-import { runAction, handleActionError } from '@/lib/runAction';
+import { handleActionError } from '@/lib/runAction';
+import { requestScriptExecutionCancel } from '@/lib/cancelScriptExecution';
 import { usePermissions } from '@/lib/permissions';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -138,21 +139,11 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
 
   const handleCancel = useCallback(async (execution: ScriptExecution, graceSeconds: number) => {
     try {
-      await runAction({
-        request: () =>
-          fetchWithAuth(`/scripts/executions/${execution.id}/cancel`, {
-            method: 'POST',
-            body: JSON.stringify({ graceSeconds }),
-          }),
+      await requestScriptExecutionCancel({
+        executionId: execution.id,
+        graceSeconds,
         errorFallback: t('executionHistory.errors.cancelFailed'),
-        // The route's 409 body is a dynamic message ("Cannot cancel execution
-        // with status: completed"), not a machine token — matched by prefix
-        // rather than exact-equality against a `code` field the route never
-        // sends.
-        friendly: (token) =>
-          typeof token === 'string' && token.startsWith('Cannot cancel execution with status')
-            ? t('executionHistory.errors.noLongerCancellable')
-            : undefined,
+        noLongerCancellableMessage: t('executionHistory.errors.noLongerCancellable'),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
       await fetchExecutions();

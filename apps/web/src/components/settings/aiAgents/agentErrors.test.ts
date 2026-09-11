@@ -10,6 +10,21 @@ function actPrereq(missing: string[]): ActionError {
 }
 
 describe('agentSaveIssuesFromError', () => {
+  it('renders one line per rejected script id with its translated reason, keeping an unknown reason verbatim and dropping a malformed entry (#5065, #5089 review)', () => {
+    const err = new ActionError('invalid_script_ids', 422, 'invalid_script_ids', {
+      rejected: [
+        { id: 's-1', reason: 'not_in_partner_baseline' },
+        { id: 's-2', reason: 'something_new' },
+        { id: 's-3' },
+        'garbage',
+      ],
+    });
+    expect(agentSaveIssuesFromError(err, t)).toEqual([
+      'settings:aiAgentsPage.errors.scriptRejected({"id":"s-1","reason":"settings:aiAgentsPage.errors.scriptReject.not_in_partner_baseline"})',
+      'settings:aiAgentsPage.errors.scriptRejected({"id":"s-2","reason":"something_new"})',
+    ]);
+  });
+
   it('returns null for anything that is not an ActionError with a structured body', () => {
     expect(agentSaveIssuesFromError(new Error('boom'), t)).toBeNull();
     expect(agentSaveIssuesFromError(new ActionError('other_code', 400, 'other_code', {}), t)).toBeNull();

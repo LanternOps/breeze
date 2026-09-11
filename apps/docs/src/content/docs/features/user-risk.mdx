@@ -93,7 +93,7 @@ The score boundaries between risk levels are configurable:
 | Spike delta | 15 | A score increase of this many points in one calculation cycle triggers a spike notification |
 | Auto-assign training | 80 | Score at or above this level triggers automatic training assignment (if enabled) |
 
-To change these thresholds, navigate to **Settings > User Risk > Policy** and adjust the values under the **Thresholds** tab.
+These thresholds are part of the risk policy. Policy configuration is API-only today — see [Risk Policy](#risk-policy) below.
 
 ---
 
@@ -123,6 +123,10 @@ The scores list includes summary statistics:
 | `search` | String | Search by user name or email |
 | `page` | Number | Page number (default: 1) |
 | `limit` | Number | Results per page (1-200, default: 25) |
+
+<Aside type="caution">
+  The `siteId` filter is opt-in only: a site-restricted technician who omits it still sees risk scores for every user in the organization, not just their assigned site. Site-scoped visibility for this feature is not yet enforced -- tracked in issue [#5428](https://github.com/LanternOps/breeze/issues/5428).
+</Aside>
 
 ### User Risk Detail
 
@@ -177,14 +181,18 @@ Weights determine how much each risk factor contributes to the total score. They
 
 ```json
 {
-  "failedLogins": 2.5,
-  "unusualLocation": 3.0,
-  "privilegeEscalation": 5.0,
-  "policyViolation": 4.0,
-  "overdueTraining": 1.5,
-  "staleCredentials": 2.0
+  "mfaRisk": 0.14,
+  "authFailureRisk": 0.2,
+  "sessionAnomalyRisk": 0.1,
+  "threatExposureRisk": 0.2,
+  "softwareViolationRisk": 0.15,
+  "deviceSecurityRisk": 0.1,
+  "staleAccessRisk": 0.06,
+  "recentImpactRisk": 0.05
 }
 ```
+
+The keys must match the eight risk factors listed above exactly — any other key is silently ignored.
 
 Higher weights mean that factor has a greater impact on the overall score.
 
@@ -218,26 +226,13 @@ Interventions are automated actions triggered by risk conditions.
 
 ### Updating the Policy
 
-<Steps>
-1. Navigate to **Settings > User Risk > Policy**.
-2. Adjust weights, thresholds, or intervention settings.
-3. Click **Save**. Changes take effect immediately for future score calculations.
-</Steps>
+Policy configuration is API-only today — there is no policy editor in the dashboard. Send a `PUT` request to the user risk policy endpoint with the weights, thresholds, and/or intervention settings you want to change; changes take effect immediately for future score calculations.
 
 ---
 
 ## Security Training Assignment
 
-When a user's risk score exceeds the configured threshold, Breeze can automatically assign security training. You can also manually assign training to any user.
-
-### Assigning Training
-
-<Steps>
-1. Navigate to the user's risk detail page.
-2. Click **Assign Training**.
-3. Optionally select a specific training module and provide a reason.
-4. Click **Assign**. The assignment is recorded as a risk event.
-</Steps>
+When a user's risk score exceeds the configured threshold, Breeze can automatically assign security training. Training can also be assigned manually, but this is API-only today — there is no **Assign Training** button in the dashboard. Send a `POST` request to the assign-training endpoint with the user, an optional module, and an optional reason; the assignment is recorded as a risk event.
 
 ### Assignment Fields
 
@@ -332,6 +327,7 @@ All endpoints require authentication with `organization`, `partner`, or `system`
 | `GET` | `/scores` | `users:read` | List risk scores with filters and summary stats |
 | `GET` | `/users/:userId` | `users:read` | Get detailed risk profile for a specific user |
 | `GET` | `/events` | `users:read` | List risk events with filters |
+| `GET` | `/evaluation` | `users:read` | Scoring-quality summary over a window (`days`, default 30): true/false positive counts and precision from reviewer feedback, training assignment/completion rates, and repeat-risk-signal rates |
 | `GET` | `/policy` | `users:read` | Get the current risk policy for the organization |
 | `PUT` | `/policy` | `users:write` | Update the risk policy (weights, thresholds, interventions) |
 | `POST` | `/assign-training` | `users:write` | Assign security training to a user |

@@ -3,6 +3,10 @@ import { optionalQueryBoolean } from './queryParams';
 
 export const billingStatusSchema = z.enum(['not_billed', 'billed', 'no_charge', 'contract']);
 export type BillingStatus = z.infer<typeof billingStatusSchema>;
+// `billed` is an invoice lifecycle fact, not a routine time/part disposition.
+// Invoice issue writes it internally after locking the invoice and every source;
+// public create/update inputs retain the technician-owned dispositions only.
+const routineBillingStatusSchema = z.enum(['not_billed', 'no_charge', 'contract']);
 
 const CLOCK_SKEW_MS = 5 * 60_000;
 const notFarFuture = (d: Date) => d.getTime() <= Date.now() + CLOCK_SKEW_MS;
@@ -19,7 +23,7 @@ export const createTimeEntrySchema = z.object({
   description: z.string().max(10_000).optional(),
   isBillable: z.boolean().optional(),
   hourlyRate: z.number().nonnegative().multipleOf(0.01).nullable().optional(),
-  billingStatus: billingStatusSchema.optional()
+  billingStatus: routineBillingStatusSchema.optional()
 }).refine((v) => v.endedAt.getTime() > v.startedAt.getTime(), {
   message: 'endedAt must be after startedAt',
   path: ['endedAt']
@@ -32,7 +36,7 @@ export const updateTimeEntrySchema = z.object({
   description: z.string().max(10_000).nullable().optional(),
   isBillable: z.boolean().optional(),
   hourlyRate: z.number().nonnegative().multipleOf(0.01).nullable().optional(),
-  billingStatus: billingStatusSchema.optional()
+  billingStatus: routineBillingStatusSchema.optional()
 }).refine((v) => Object.keys(v).length > 0, { message: 'At least one field is required' });
 
 export const startTimerSchema = z.object({
@@ -83,7 +87,7 @@ export const ticketPartSchema = z.object({
   unitPrice: z.number().nonnegative().multipleOf(0.01).default(0),
   costBasis: z.number().nonnegative().multipleOf(0.01).nullable().optional(),
   isBillable: z.boolean().optional(),
-  billingStatus: billingStatusSchema.optional(),
+  billingStatus: routineBillingStatusSchema.optional(),
   notes: z.string().max(10_000).optional()
 });
 

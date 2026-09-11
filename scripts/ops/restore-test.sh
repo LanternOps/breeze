@@ -136,15 +136,25 @@ docker run -d --name "${CONTAINER}" \
 
 SCRATCH_URL="postgresql://postgres:${PG_PASSWORD}@127.0.0.1:${PG_PORT}/breeze"
 
-log "Waiting for scratch postgres to accept connections..."
-ready=false
-for _ in $(seq 1 30); do
-  if docker exec "${CONTAINER}" pg_isready -U postgres -d breeze >/dev/null 2>&1; then
-    ready=true; break
+# The official postgres image boots a temporary, socket-only server to run its
+# init scripts and then restarts it as the real, TCP-listening server. An
+# in-container `pg_isready` can pass during that first phase, after which the
+# restart closes the connection pg_restore just opened ("server closed the
+# connection unexpectedly" — seen 2026-08-30 on breeze-us). So: probe from the
+# host over the published port, and require three consecutive successes.
+log "Waiting for scratch postgres to accept TCP connections..."
+ready=false; streak=0
+for _ in $(seq 1 60); do
+  if PGPASSWORD="${PG_PASSWORD}" psql -h 127.0.0.1 -p "${PG_PORT}" -U postgres -d breeze \
+       -t -A -c 'select 1' >/dev/null 2>&1; then
+    streak=$((streak + 1))
+    [ "${streak}" -ge 3 ] && { ready=true; break; }
+  else
+    streak=0
   fi
   sleep 1
 done
-$ready || fail "scratch postgres never became ready" 2
+$ready || fail "scratch postgres never became ready over TCP" 2
 
 # --- 3) restore via the existing, tested restore.sh ---
 # restore.sh runs pg_restore + a device-count sanity check; we point it at the

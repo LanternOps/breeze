@@ -13,7 +13,7 @@ The Breeze Helper is a companion application that runs in the end user's desktop
 The Helper is designed for **end users**, not IT administrators. It speaks in simple, non-technical language and uses a filtered subset of AI tools appropriate for the permission level configured by the organization. Destructive operations always require explicit approval before they reach the device.
 
 <Aside>
-  The Helper requires the Breeze agent to be enrolled and connected. It authenticates to the API using the agent's `brz_` token and communicates with the agent service over a local IPC socket.
+  The Helper requires the Breeze agent to be enrolled and connected. It authenticates to the API using its own helper-scoped `brz_`-prefixed token — issued alongside, but distinct from, the agent's own token — and communicates with the agent service over a local IPC socket.
 </Aside>
 
 ---
@@ -147,8 +147,8 @@ The Helper provides a conversational AI interface for end users. Chat sessions a
 User types message
   → Helper app (Tauri frontend)
   → POST /helper/chat/sessions/:id/messages
-    Authorization: Bearer brz_<agent-token>
-  → API validates agent token (SHA-256 hash lookup)
+    Authorization: Bearer brz_<helper-token>
+  → API validates helper token (SHA-256 hash lookup)
   → Pre-flight: session validity, rate limit, budget check, input sanitization
   → Streaming session manager invokes Claude with filtered tool set
   → SSE stream returns AI response chunks + tool execution events
@@ -170,39 +170,36 @@ Each session is stored in the `ai_sessions` table with a `contextSnapshot` that 
 
 ### Tool Permission Levels
 
-The Helper uses a tiered tool whitelist that controls which AI tools are available. The permission level is set when creating a session and stored in the session's `contextSnapshot`.
+The Helper uses a tiered tool whitelist that controls which AI tools are available. The permission level is set when creating a session and stored in the session's `contextSnapshot`. Every tool available to the Helper is single-device — org-wide enumeration tools like `query_devices` or `get_fleet_health` are never available here, no matter the permission level, because the Helper's identity is pinned to the one device it runs on.
 
 | Tool | Basic | Standard | Extended |
 |------|:-----:|:--------:|:--------:|
-| `take_screenshot` | Yes | Yes | Yes |
-| `analyze_screen` | Yes | Yes | Yes |
-| `query_devices` | Yes | Yes | Yes |
 | `get_device_details` | Yes | Yes | Yes |
 | `analyze_metrics` | Yes | Yes | Yes |
-| `get_active_users` | Yes | Yes | Yes |
-| `get_user_experience_metrics` | Yes | Yes | Yes |
-| `get_security_posture` | Yes | Yes | Yes |
-| `get_fleet_health` | Yes | Yes | Yes |
 | `analyze_disk_usage` | Yes | Yes | Yes |
-| `query_audit_log` | Yes | Yes | Yes |
+| `get_cis_device_report` | Yes | Yes | Yes |
+| `get_security_posture` | Yes | Yes | Yes |
+| `take_screenshot` | Yes | Yes | Yes |
+| `analyze_screen` | Yes | Yes | Yes |
 | `search_logs` | Yes | Yes | Yes |
-| `get_log_trends` | Yes | Yes | Yes |
-| `query_change_log` | Yes | Yes | Yes |
-| `detect_log_correlations` | -- | Yes | Yes |
+| `get_active_users` | -- | Yes | Yes |
+| `get_user_experience_metrics` | -- | Yes | Yes |
 | `manage_alerts` | -- | Yes | Yes |
 | `manage_services` | -- | Yes | Yes |
 | `disk_cleanup` | -- | Yes | Yes |
 | `file_operations` | -- | Yes | Yes |
-| `computer_control` | -- | Yes | Yes |
+| `computer_control` | -- | -- | Yes |
 | `execute_command` | -- | -- | Yes |
 | `security_scan` | -- | -- | Yes |
+| `s1_isolate_device` | -- | -- | Yes |
 | `network_discovery` | -- | -- | Yes |
+| `apply_cis_remediation` | -- | -- | Yes |
 
 <Aside type="caution">
-  The **extended** permission level grants access to `execute_command`, `security_scan`, and `network_discovery`. `security_scan` and `network_discovery` are Tier 3; `execute_command` is Tier 2 for a handful of read-only command types (`list_processes`, `file_list`, `event_logs_list`) and Tier 3 for everything else — but on the Helper path, PAM governs any Tier ≥ 2 tool call regardless of that split, so all of these still require explicit approval before execution here. Only enable extended mode for trusted environments where end users should be able to trigger device commands.
+  The **extended** permission level grants access to `computer_control`, `execute_command`, `security_scan`, `s1_isolate_device`, `network_discovery`, and `apply_cis_remediation`. `security_scan` and `network_discovery` are Tier 3; `execute_command` is Tier 2 for a handful of read-only command types (`list_processes`, `file_list`, `event_logs_list`) and Tier 3 for everything else — but on the Helper path, PAM governs any Tier ≥ 2 tool call regardless of that split, so all of these still require explicit approval before execution here. Only enable extended mode for trusted environments where end users should be able to trigger device commands.
 </Aside>
 
-The default permission level is `standard`. Organizations can override this per-device or globally through the Helper configuration endpoint.
+The default permission level is `basic`. Organizations can raise it via a configuration policy's **Breeze Assist** feature link, applied at the partner, organization, site, device-group, or device level (most specific wins). There is no way to set it directly through the Helper configuration endpoint — `GET /helper/config` reports the resolved level but does not accept writes.
 
 ---
 
@@ -216,7 +213,7 @@ The Helper can capture the user's screen and send it to the AI for analysis. Thi
 
 1. The AI invokes the `take_screenshot` tool during a chat conversation.
 
-2. The Helper captures the screen using platform-native APIs (DXGI on Windows, Core Graphics on macOS, X11/Wayland on Linux). These APIs are only available in the user session, not in Session 0 -- this is why the Helper exists.
+2. The Helper captures the screen using platform-native APIs (DXGI on Windows, Core Graphics on macOS, X11 on Linux -- Wayland-only sessions are not supported yet). These APIs are only available in the user session, not in Session 0 -- this is why the Helper exists.
 
 3. The screenshot is uploaded to the API via `POST /helper/screenshots` as a base64-encoded image.
 
@@ -254,12 +251,12 @@ The `analyze_screen` tool goes beyond simple screenshot capture. It interprets t
 
 ## Computer Control
 
-When enabled (standard and extended permission levels), the AI can interact with the user's desktop by controlling the mouse and keyboard. This allows the AI to perform guided fixes -- clicking buttons, typing commands, navigating menus -- while explaining each step to the user.
+When enabled (extended permission level only), the AI can interact with the user's desktop by controlling the mouse and keyboard. This allows the AI to perform guided fixes -- clicking buttons, typing commands, navigating menus -- while explaining each step to the user.
 
 Computer control commands are dispatched from the API to the agent service, then forwarded over IPC to the Helper process running in the user's session. The Helper executes the commands using platform-native input APIs (SendInput on Windows, Core Graphics events on macOS, XTest on Linux).
 
 <Aside type="caution">
-  Computer control is a powerful capability. The AI always explains what it intends to do before acting, and destructive operations require user approval. The `computer_control` tool is not available at the `basic` permission level.
+  Computer control is a powerful capability. The AI always explains what it intends to do before acting, and destructive operations require user approval. The `computer_control` tool is only available at the `extended` permission level -- it is not available at `basic` or `standard`.
 </Aside>
 
 ### Supported Actions
@@ -342,17 +339,17 @@ The Helper retrieves its configuration on startup:
 
 ```
 GET /helper/config
-Authorization: Bearer brz_<agent-token>
+Authorization: Bearer brz_<helper-token>
 ```
 
 **Response:**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | boolean | Whether the Helper chat is active for this org |
-| `permissionLevel` | string | Default permission level: `basic`, `standard`, or `extended` |
-| `allowScreenCapture` | boolean | Whether screenshot/vision tools are available |
-| `sessionRetentionHours` | number | How long chat sessions are retained (default: 24) |
+| `enabled` | boolean | Always `true` today -- this field does not yet reflect the org's Helper chat toggle. See [Enabling / Disabling Helper Chat](#enabling--disabling-helper-chat), which uses a separate `helperEnabled` flag on the agent heartbeat response instead. |
+| `permissionLevel` | string | The resolved permission level for this device: `basic`, `standard`, or `extended` (see [Tool Permission Levels](#tool-permission-levels)) |
+| `allowScreenCapture` | boolean | Always `true` today -- not currently configurable |
+| `sessionRetentionHours` | number | Always `24` today -- not currently configurable |
 
 ---
 
@@ -418,7 +415,7 @@ The Helper communicates with the agent service over a local IPC connection (Unix
 - **Authentication**: The Helper sends its UID/SID, username, PID, and a SHA-256 hash of its own binary. The agent service validates these against expected values.
 - **Session key**: After authentication, the agent issues a hex-encoded session key used for subsequent message integrity.
 - **Scoped access**: The agent controls which IPC message types the Helper is allowed to receive via `AllowedScopes`.
-- **API authentication**: Chat requests to the API use the agent's `brz_` bearer token, which is validated by SHA-256 hash lookup against the `devices.agentTokenHash` column.
+- **API authentication**: Chat requests to the API use a dedicated helper-scoped `brz_` bearer token -- issued at enrollment alongside, but distinct from, the agent's own token -- validated by SHA-256 hash lookup against the `devices.helperTokenHash` column (not `agentTokenHash`).
 - **Org isolation**: All API queries include an organization condition derived from the device's `orgId`, ensuring the Helper cannot access data from other organizations.
 
 ---
@@ -433,18 +430,22 @@ The Helper communicates with the agent service over a local IPC connection (Unix
 | GET | `/helper/chat/sessions` | List chat sessions for this device |
 | POST | `/helper/chat/sessions/:id/messages` | Send a message and receive SSE response stream |
 | GET | `/helper/chat/sessions/:id/messages` | Load message history for a session |
+| POST | `/helper/chat/sessions/:id/tool-results` | Report the outcome of a client-declared tool call (see below) |
+| POST | `/helper/chat/sessions/:id/flag` | Flag a session for admin review, with an optional `reason` |
 | DELETE | `/helper/chat/sessions/:id` | Close a chat session |
-| POST | `/helper/chat/sessions/:id/approve/:executionId` | Approve or reject a pending tool execution |
+
+Some tools run on the end-user's machine rather than the server -- for example, a client-side confirmation dialog. For those, the SSE stream's `tool_use` event parks the call instead of resolving it immediately, and the Helper process reports the result back via `POST /helper/chat/sessions/:id/tool-results` with `{ toolUseId, output }` (or `{ toolUseId, error }` on failure). The server persists the outcome as a `tool_result` message so it renders the same way on reload as a server-executed tool.
 
 ### Helper Configuration & Screenshots
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/helper/config` | Get Helper configuration for this device |
+| GET | `/helper/device-info` | Get basic device details (hostname, OS, status, agent version) for the authenticated device |
 | POST | `/helper/screenshots` | Upload a screenshot for AI analysis |
 
 <Aside>
-  All Helper endpoints require a valid agent bearer token (`Authorization: Bearer brz_...`). The token is validated by hashing with SHA-256 and matching against the `agentTokenHash` column in the `devices` table. Decommissioned and quarantined devices are rejected with 403.
+  All Helper endpoints require a valid helper bearer token (`Authorization: Bearer brz_...`) -- a separate credential from the agent's own token, issued to the device at enrollment time. The token is validated by hashing with SHA-256 and matching against the `helperTokenHash` column in the `devices` table. Decommissioned and quarantined devices are rejected with 403.
 </Aside>
 
 ### Creating a Session
@@ -452,15 +453,14 @@ The Helper communicates with the agent service over a local IPC connection (Unix
 ```bash
 POST /helper/chat/sessions
 Content-Type: application/json
-Authorization: Bearer brz_<agent-token>
+Authorization: Bearer brz_<helper-token>
 
 {
-  "permissionLevel": "standard",
   "helperUser": "jsmith"
 }
 ```
 
-Both fields are optional. `permissionLevel` defaults to `standard`. `helperUser` associates the session with a specific logged-in user for filtering.
+`helperUser` is optional and associates the session with a specific logged-in user for filtering. Permission level is not a request field -- the request body accepts only `helperUser` and `clientTools`. The level is always resolved server-side from the device's configuration-policy assignment (see [Tool Permission Levels](#tool-permission-levels)); a `permissionLevel` field sent in the body is silently ignored.
 
 **Response (201):**
 
@@ -476,7 +476,7 @@ Both fields are optional. `permissionLevel` defaults to `standard`. `helperUser`
 ```bash
 POST /helper/chat/sessions/:id/messages
 Content-Type: application/json
-Authorization: Bearer brz_<agent-token>
+Authorization: Bearer brz_<helper-token>
 
 {
   "content": "Why is my computer running slowly?"
@@ -490,24 +490,14 @@ The response is an SSE stream. Events include:
 | `text_delta` | Incremental text from the AI response |
 | `tool_use` | AI is invoking a tool (includes tool name and parameters) |
 | `tool_result` | Tool execution result |
-| `approval_required` | A Tier 3 tool needs user approval before execution |
+| `approval_required` | A Tier 2+ tool call is waiting on PAM approval (see below) |
 | `title_updated` | Session title was auto-generated from the first message |
 | `done` | Stream complete |
 | `error` | An error occurred during processing |
 
-### Approving a Tool Execution
+### Tool Approval
 
-```bash
-POST /helper/chat/sessions/:id/approve/:executionId
-Content-Type: application/json
-Authorization: Bearer brz_<agent-token>
-
-{
-  "approved": true
-}
-```
-
-Returns `{ "success": true, "approved": true }` on success.
+The end user does not approve tool calls from inside the Helper chat -- there is no endpoint for that. When the AI wants to run a Tier 2+ tool, it opens a PAM (Privileged Access Management) elevation request instead: the `approval_required` event above lets the Helper UI show a "waiting for approval" state, and an administrator decides the request out-of-band via `POST /pam/elevation-requests/:id/respond` (or the PAM Requests tab in the dashboard). See [PAM](/security/pam/) for the full elevation-request lifecycle.
 
 ---
 
@@ -520,7 +510,7 @@ First check whether it was hidden on purpose: a configuration policy with **Syst
 Expected on some desktops. Hiding an appindicator sets it to `Passive`; hosts that render passive items keep showing it. The Helper's other functions are unaffected. See the platform table under [Hiding the System Tray Icon](#hiding-the-system-tray-icon).
 
 **"Invalid agent credentials" when Helper tries to chat.**
-The Helper authenticates to the API using the agent's `brz_` token. If the device was re-enrolled or the token was rotated, the Helper's cached token may be stale. Restart the agent service to pick up the new token. Also verify the device is not in `decommissioned` or `quarantined` status.
+The Helper authenticates to the API using its own helper-scoped `brz_` token, separate from the agent's own token. If the device was re-enrolled or the token was rotated, the Helper's cached token may be stale. Restart the agent service to pick up the new token. Also verify the device is not in `decommissioned` or `quarantined` status.
 
 **AI chat returns "Rate limit exceeded."**
 The Helper enforces a rate limit of 30 messages per 60 seconds per device. Wait for the window to reset before sending another message. If multiple users share a device, they share the same rate limit.
@@ -529,7 +519,7 @@ The Helper enforces a rate limit of 30 messages per 60 seconds per device. Wait 
 The organization's AI budget may be exhausted or the budget service is temporarily unavailable. Contact your IT administrator to check the org AI budget in **Settings > AI Configuration**.
 
 **Screenshot capture fails.**
-Screen capture requires display access. On Windows, DXGI requires the Helper to be running in the user's desktop session (not Session 0). On Linux, the Helper needs access to the X11 or Wayland display. Check that `CanCapture` is `true` in the capabilities message logged at startup.
+Screen capture requires display access. On Windows, DXGI requires the Helper to be running in the user's desktop session (not Session 0). On Linux, the Helper needs access to an X11 display; Wayland-only sessions cannot be captured yet -- the device page shows **Wayland Unsupported**, or, where XWayland is running, capture attaches to it and shows only X11 application windows (see [Supported Linux Distributions](/agents/installation/#supported-linux-distributions)). Check that `CanCapture` is `true` in the capabilities message logged at startup.
 
 **Computer control actions have no effect.**
 Input injection requires the Helper to have appropriate permissions. On Windows, the Helper runs with a SYSTEM token that can `OpenInputDesktop(GENERIC_ALL)` for UAC and lock screen access. On Linux, `XTest` extension must be available. On macOS, the Helper needs Accessibility permissions in System Preferences > Privacy & Security > Accessibility.

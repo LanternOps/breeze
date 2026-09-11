@@ -609,7 +609,6 @@ A rule matches an elevation candidate on one or more of these fields (`POST`/`PA
 | `POST` | `/remote/sessions/:id/desktop-connect-code` | Get desktop connect code |
 | `GET` | `/remote/ice-servers` | Get ICE/TURN server config |
 | `POST` | `/remote/sessions/:id/offer` | WebRTC SDP offer |
-| `POST` | `/remote/sessions/:id/answer` | WebRTC SDP answer |
 | `POST` | `/remote/sessions/:id/ice` | ICE candidate exchange |
 | `POST` | `/remote/sessions/:id/end` | End session |
 
@@ -687,11 +686,8 @@ Device-scoped management commands exposed as REST endpoints.
 | `PUT` | `/policies/:id` | Replace policy |
 | `PATCH` | `/policies/:id` | Update policy |
 | `DELETE` | `/policies/:id` | Delete policy |
-| `POST` | `/policies/:id/activate` | Activate policy |
 | `POST` | `/policies/:id/deactivate` | Deactivate policy |
-| `POST` | `/policies/:id/evaluate` | Evaluate policy |
 | `GET` | `/policies/:id/compliance` | Policy compliance details |
-| `POST` | `/policies/:id/remediate` | Remediate non-compliant devices |
 
 ## Deployments
 
@@ -755,16 +751,16 @@ Saved reports schedule via `schedule` (`daily` / `weekly` / `monthly`) plus a `c
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/audit` | List audit events |
-| `GET` | `/audit/logs` | List audit logs (paginated) |
-| `GET` | `/audit/logs/:id` | Get log entry |
-| `GET` | `/audit/search` | Search audit logs |
-| `GET` | `/audit/export` | Export as CSV/JSON |
-| `POST` | `/audit/export` | Export with filters |
-| `GET` | `/audit/reports/user-activity` | User activity report |
-| `GET` | `/audit/reports/security-events` | Security events report |
-| `GET` | `/audit/reports/compliance` | Compliance report |
-| `GET` | `/audit/stats` | Audit statistics |
+| `GET` | `/audit-logs` | List audit events |
+| `GET` | `/audit-logs/logs` | List audit logs (paginated) |
+| `GET` | `/audit-logs/logs/:id` | Get log entry |
+| `GET` | `/audit-logs/search` | Search audit logs |
+| `GET` | `/audit-logs/export` | Export as CSV/JSON |
+| `POST` | `/audit-logs/export` | Export with filters |
+| `GET` | `/audit-logs/reports/user-activity` | User activity report |
+| `GET` | `/audit-logs/reports/security-events` | Security events report |
+| `GET` | `/audit-logs/reports/compliance` | Compliance report |
+| `GET` | `/audit-logs/stats` | Audit statistics |
 
 ## Notifications
 
@@ -1187,7 +1183,7 @@ Canned reply templates are partner-scoped. Management operations require `partne
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | `POST` | `/agents/enroll` | Enrollment secret | Enroll new device |
-| `GET` | `/agents/download/:os/:arch` | None | Download agent binary |
+| `GET` | `/agents/download/:os/:arch` | None | Download agent binary. Optional `?version=` serves that exact registered release instead of the promoted one (used for pinned/pilot versions); an unregistered version returns 404. |
 | `GET` | `/agents/install.sh` | None | One-line install script |
 
 ### Agent Versions
@@ -1267,6 +1263,17 @@ Over the transport, the server speaks JSON-RPC 2.0. Alongside `tools/*` and `res
 |---|---|---|
 | `GET` | `/partner/dashboard` | Partner dashboard data |
 
+## Other Route Groups
+
+A few mounted route groups are documented on their feature pages rather than repeated here:
+
+| Prefix | Purpose |
+|---|---|
+| `/backup` | Device backup, restore, boot-media, and SLA endpoints. See [Backup Overview](/backup/overview/). |
+| `/ai/agents`, `/ai/agents/schedules`, `/ai/operator` | Autonomous scheduled AI agents (triage, sweeps, reports) — distinct from the interactive `/ai` chat assistant above. See [AI Agents](/features/ai-agents/). |
+| `/s1`, `/huntress` | SentinelOne and Huntress EDR integration endpoints (credentials, mappings, webhooks, sync). See [EDR Integrations](/features/edr-integrations/). |
+| `/m365`, `/onedrive`, `/office-addin` | Microsoft 365 tenant connection, Graph sync, OneDrive helper, and Office add-in endpoints. See [Identity Integrations (M365)](/features/identity-integrations/) and [OneDrive Helper](/features/onedrive-helper/). |
+
 ## Search
 
 | Method | Path | Description |
@@ -1283,7 +1290,7 @@ List endpoints support cursor-based pagination:
 curl "https://breeze.yourdomain.com/api/v1/devices?limit=50&cursor=eyJ..."
 ```
 
-`GET /devices` accepts a `limit` of up to **500** per page (default 50) so partners can pull large fleets in fewer round trips; other list endpoints keep the standard default of 100. The dashboard's devices list has its own per-page selector (10–200).
+`GET /devices` accepts a `limit` of up to **1000** per page (default **500**) so partners can pull large fleets in fewer round trips; other list endpoints use their own, generally smaller, defaults and caps. The dashboard's devices list has its own per-page selector (10–200).
 
 Response:
 
@@ -1291,8 +1298,8 @@ Response:
 {
   "data": [...],
   "pagination": {
-    "hasMore": true,
-    "cursor": "eyJ..."
+    "nextCursor": "eyJ...",
+    "limit": 500
   }
 }
 ```
@@ -1312,5 +1319,5 @@ All errors follow a consistent format:
 ```
 
 <Aside>
-  Enable the interactive Swagger UI by setting `ENABLE_API_DOCS=true` and `ENABLE_API_DOCS_UI=true` in your environment.
+  Enable the interactive Swagger UI by setting `ENABLE_API_DOCS_UI=true` in your environment (on by default outside production).
 </Aside>

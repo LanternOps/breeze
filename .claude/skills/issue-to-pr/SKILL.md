@@ -205,8 +205,8 @@ omitting the line — a missing line reads as "didn't run it."
 
 Report the PR number + a one-line summary to the orchestrator/user. Then stop.
 
-**The worker does NOT merge and does NOT close the issue.** Merge (`--admin`,
-gated on green required checks) and closure (after the reporter/user verifies)
+**The worker does NOT merge and does NOT close the issue.** Merge (a bare `gh pr merge <N>`
+into the merge queue, gated on green required checks; never `--admin`) and closure (after the reporter/user verifies)
 are the user's judgment calls — see the merge/hold rules. The issue stays
 **open and assigned to you** until then.
 

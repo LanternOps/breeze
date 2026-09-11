@@ -13,18 +13,41 @@ export const queueActorMetaSchema = z.object({
   source: z.string().min(1),
 }).strict();
 
-const backupSnapshotFileSchema = z.object({
-  sourcePath: z.string().min(1),
-  backupPath: z.string().min(1),
-  size: z.number().nonnegative().optional(),
-  modTime: z.string().min(1).optional(),
-}).strict();
+const backupSnapshotFileSchema = z
+  .object({
+    sourcePath: z.string().min(1),
+    // Stable pre-VSS path (D12): under a shadow copy sourcePath is the
+    // \\?\GLOBALROOT device path; originalPath is the real C:\ path the index,
+    // browse tree and selective restore must use. Strict schema: a missing entry
+    // here silently drops the whole result and leaves the job running forever.
+    originalPath: z.string().min(1).optional(),
+    // W02: content-less entries (symlinks/directories) never upload an
+    // object, so backupPath is '' for those — see the superRefine below.
+    backupPath: z.string(),
+    size: z.number().nonnegative().optional(),
+    modTime: z.string().min(1).optional(),
+    // W02 fidelity — mirrors resultSchemas.ts's backupSnapshotFileResultSchema.
+    kind: z.enum(['symlink', 'dir']).optional(),
+    linkTarget: z.string().optional(),
+  })
+  .strict()
+  .superRefine((file, ctx) => {
+    if (!file.kind && file.backupPath.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['backupPath'], message: 'backupPath is required for file entries' });
+    }
+  });
 
 const backupSnapshotSummarySchema = z.object({
   id: z.string().min(1),
   timestamp: z.string().min(1).optional(),
   size: z.number().nonnegative().optional(),
   files: z.array(backupSnapshotFileSchema).optional(),
+  // D18 (#5429/§3.1): mirrors resultSchemas.ts's backupSnapshotResultSchema —
+  // must be added here too or `.strict()` drops/rejects these before
+  // backupWorker.ts's process-results handler ever sees them.
+  baseSnapshotId: z.string().optional(),
+  formatVersion: z.number().optional(),
+  backupIdentity: z.string().optional(),
 }).strict();
 
 export const backupProcessResultSchema = z.object({
@@ -50,6 +73,12 @@ export const backupProcessResultSchema = z.object({
   // still must be declared here or the whole job fails validation.
   backupType: z.enum(['file', 'system_image', 'database', 'application']).optional(),
   systemStateManifest: z.record(z.string(), z.unknown()).nullish(),
+  // Bare-metal recovery (W01): disk layout + guard verdict, forwarded the same
+  // way systemStateManifest is — open record for the manifest, closed shape
+  // for the verdict. See routes/backup/resultSchemas.ts's twins for the
+  // rationale.
+  layoutManifest: z.record(z.string(), z.unknown()).nullish(),
+  bareMetal: z.object({ restorable: z.boolean(), reasons: z.array(z.string()) }).nullish(),
   // Windows VSS diagnostics (#3027), forwarded so persistence can write
   // backup_jobs.vss_metadata. `z.unknown()` rather than a record for the same
   // reason as the ingress schema (routes/backup/resultSchemas.ts): this parse
@@ -82,6 +111,11 @@ export const backupQueueJobDataSchema = z.discriminatedUnion('type', [
     configId: z.string().min(1),
     orgId: z.string().min(1),
     deviceId: z.string().min(1),
+    // Site-ceiling gate contract §3: backup_configs.approval_generation
+    // snapshotted at enqueue time; undefined for jobs enqueued before this
+    // field existed (legacy job payloads never re-hydrate this field, so the
+    // dispatch precheck treats undefined as "skip the comparison").
+    configGeneration: z.number().int().optional(),
     meta: queueActorMetaSchema.optional(),
   }).strict(),
   z.object({
@@ -346,10 +380,17 @@ export const fixWatchQueueJobDataSchema = z.discriminatedUnion('phase', [
   z.object({ phase: z.literal('recover') }).strict(),
 ]);
 
-export const sensitiveDataQueueJobDataSchema = z.discriminatedUnion('type', [
+export const sensitiveDataQueueJobDataSchema = z.union([
   z.object({
     type: z.literal('dispatch-scan'),
     scanId: z.string().min(1),
+    origin: z.literal('manual'),
+  }).strict(),
+  z.object({
+    type: z.literal('dispatch-scan'),
+    scanId: z.string().min(1),
+    origin: z.literal('policy_scheduler'),
+    authorityGeneration: z.string().uuid(),
   }).strict(),
   z.object({
     type: z.literal('schedule-policies'),
@@ -433,6 +474,27 @@ export const deliverEventJobDataSchema = z.object({
   subscriberId: eventSubscriberIdSchema,
   event: breezeEventEnvelopeSchema,
 }).strict();
+
+/**
+ * #5205 W05 (#5210), spec §6.3 — the AI Operator task coordinator's wake
+ * queue. `jobs/aiOperatorTaskOutboxPublisher.ts` (this wave) is the sole
+ * producer, draining `ai_operator_task_outbox`; the task coordinator (W06,
+ * not built yet) is the sole consumer. Job data is a TYPED REFERENCE only —
+ * never an embedded payload (spec §6.3) — so the consumer always re-reads the
+ * authoritative source row rather than trusting what shipped on the wire.
+ */
+export const AI_OPERATOR_COORDINATOR_QUEUE_NAME = 'ai-operator-coordinator';
+export const AI_OPERATOR_COORDINATOR_WAKE_JOB_NAME = 'task-wake';
+
+export const aiOperatorTaskWakeJobDataSchema = z.object({
+  v: z.literal(1),
+  orgId: z.string().min(1),
+  taskId: z.string().min(1),
+  sourceKind: z.enum(['run', 'intent', 'execution', 'verification', 'user_answer', 'target', 'cancellation']),
+  sourceId: z.string().min(1),
+  transitionSeq: z.number().int(),
+}).strict();
+export type AiOperatorTaskWakeJobData = z.infer<typeof aiOperatorTaskWakeJobDataSchema>;
 
 export type BackupQueueJobData = z.infer<typeof backupQueueJobDataSchema>;
 export type DiscoveryQueueJobData = z.infer<typeof discoveryQueueJobDataSchema>;

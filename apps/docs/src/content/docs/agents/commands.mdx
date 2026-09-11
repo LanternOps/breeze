@@ -8,7 +8,22 @@ sidebar:
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-The Breeze agent supports **120+ commands** organized into 30+ categories. Commands are sent from the API to agents over WebSocket, each with an `action` string and an optional JSON `payload`.
+The Breeze agent supports **120+ commands** organized into 30+ categories. Commands are sent from the API to agents over WebSocket, each with an `action` string and an optional JSON `payload`. This page documents the commands MSP admins and integrators use most often — it is not an exhaustive reference for every command type the agent implements.
+
+### Other Command Categories
+
+The categories below exist in the agent but aren't covered in detail on this page. Most are driven by dedicated features elsewhere in the docs rather than sent ad hoc:
+
+| Category | Actions | Purpose |
+|---|---|---|
+| Software install/update | `software_install`, `software_update` | Push an install or version update for a specific package -- see [Software Inventory](/features/software-inventory/) |
+| Backup ops (SQL Server / Hyper-V / bare metal) | `mssql_backup`, `mssql_restore`, `mssql_verify`, `hyperv_backup`, `hyperv_restore`, `hyperv_checkpoint`, `hyperv_vm_state`, `vm_restore_from_backup`, `vm_restore_estimate`, `bmr_recover` | Application-aware backup/restore for SQL Server and Hyper-V VMs, and full bare-metal recovery -- see the [Backup](/backup/overview/) docs |
+| CIS remediation | `cis_benchmark`, `apply_cis_remediation` | Run a CIS benchmark scan and apply a specific remediation -- see [CIS Hardening](/features/cis-hardening/) |
+| Incident response | `collect_evidence`, `execute_containment` | Collect forensic evidence from a device and isolate/contain it |
+| Tunnel / proxy | `tunnel_open`, `tunnel_data`, `tunnel_close`, `http_request` | Relay a TCP tunnel (used for VNC and network-device access) or make a one-shot proxied HTTP request through the agent |
+| PAM actuation | `actuate_elevation`, `pam_apply_v2`, `pam_cleanup_v2` | Type an approved elevation credential into the Windows UAC consent prompt, and apply/clean up PAM policy state -- see [PAM](/security/pam/) |
+| Wake-on-LAN | `wake_on_lan` | Send a WOL magic packet to wake a sleeping device on the local network |
+| Agent rollback | `agent_rollback_v1` | Roll the agent binary back to a previously installed version after a failed update |
 
 ## Command Flow
 
@@ -288,7 +303,7 @@ This command is also exposed directly as `POST /devices/:id/auto-update` with bo
 
 Ask the agent to collect a fresh hardware/software inventory snapshot immediately instead of waiting for its scheduled run. The dashboard exposes this as the **Refresh Inventory** button on the device detail page; the API surface is `POST /devices/:id/commands` with `{ "type": "refresh_inventory" }`.
 
-Duplicates are rejected: while an inventory refresh is already queued or running for a device, a second request returns `409 Conflict` with `code: "ALREADY_PENDING"`. The bulk variant (`POST /devices/bulk/commands`) applies the same check per device and partitions its response into `commands` (newly issued), `skipped` (already-pending refreshes, each with the existing `commandId`), and `failed`.
+Duplicates are rejected while a `refresh_inventory` command for the device is still in `pending` status (not yet claimed by the agent): a second request returns `409 Conflict` with `code: "ALREADY_PENDING"`. This check only looks at `pending` status — once the agent has claimed the command, a new request is allowed even if the first one hasn't finished running yet. The bulk variant (`POST /devices/bulk/commands`) applies the same check per device and partitions its response into `commands` (newly issued), `skipped` (already-pending refreshes, each with the existing `commandId`), and `failed`.
 
 ---
 
@@ -332,6 +347,10 @@ Maximum file read size is 1 MB. Larger files will be rejected.
 | `path` | string | Required | File path to write |
 | `content` | string | `""` | File content |
 | `encoding` | string | `"text"` | `"text"` or `"base64"` |
+
+<Aside>
+Maximum file write size is 4 MB (decoded). Larger content is rejected.
+</Aside>
 
 Parent directories are created automatically. Files are written with `0644` permissions.
 
@@ -825,8 +844,9 @@ Run, list, stop, and verify backups using the configured backup provider.
 | `backup_run` | Start a backup job | -- |
 | `backup_list` | List backup snapshots | -- |
 | `backup_stop` | Stop a running backup | -- |
-| `backup_verify` | Verify backup integrity | `verificationType` |
-| `backup_test_restore` | Test-restore a snapshot | `snapshotId`, `targetPath` |
+| `backup_restore` | Restore a snapshot to a target path | `snapshotId`, `targetPath`, `selectedPaths` |
+| `backup_verify` | Verify backup integrity (checksum only) | `snapshotId` |
+| `backup_test_restore` | Test-restore a snapshot | `snapshotId` |
 | `backup_cleanup` | Clean up expired snapshots | -- |
 
 ### `backup_run`
@@ -845,16 +865,35 @@ No payload parameters. Returns `{ snapshots[], count }`.
 
 No payload parameters. Stops the currently running backup job.
 
+### `backup_restore`
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `snapshotId` | string | Yes | Snapshot to restore |
+| `targetPath` | string | No | Directory to restore into. Defaults to the original file locations if omitted. |
+| `selectedPaths` | string[] | No | Restore only these paths from the snapshot instead of the full snapshot. See [selective restore](/backup/restoring/) for matching behavior. |
+
+Unlike `backup_test_restore`, `backup_restore` writes to `targetPath` (or the original locations) rather than a managed temp directory -- it is the action that actually puts files back in place.
+
+```json
+{
+  "action": "backup_restore",
+  "payload": { "snapshotId": "snap-20260329-0200", "targetPath": "/restore" }
+}
+```
+
 ### `backup_verify`
 
-| Param | Type | Default | Description |
+| Param | Type | Required | Description |
 |---|---|---|---|
-| `verificationType` | string | `"integrity"` | `integrity` (checksum) or `test_restore` (extract to temp) |
+| `snapshotId` | string | Yes | Snapshot to verify |
+
+Always performs a checksum integrity check against the snapshot's manifest — there is no `verificationType` option, and this action does not extract/restore any files. To confirm a snapshot can actually be restored, use `backup_test_restore` instead.
 
 ```json
 {
   "action": "backup_verify",
-  "payload": { "verificationType": "test_restore" }
+  "payload": { "snapshotId": "snap-20260329-0200" }
 }
 ```
 
@@ -863,15 +902,13 @@ No payload parameters. Stops the currently running backup job.
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `snapshotId` | string | Yes | Snapshot to test-restore |
-| `targetPath` | string | No | Temporary restore destination |
+
+There is no `targetPath` override — the agent always extracts to its own managed temp directory and reports the actual path back in the result's `restorePath` field.
 
 ```json
 {
   "action": "backup_test_restore",
-  "payload": {
-    "snapshotId": "snap-20260329-0200",
-    "targetPath": "/tmp/restore-test"
-  }
+  "payload": { "snapshotId": "snap-20260329-0200" }
 }
 ```
 
@@ -966,7 +1003,8 @@ The API runs a **stale command reaper** every 2 minutes that cleans up commands 
 | Tier | Duration | Command types |
 |------|----------|---------------|
 | **Short** | 5 min | Process management, service management, event logs, scheduled tasks, registry, file operations, screenshots, computer actions, security status collection |
-| **Medium** | 30 min | Security scans, patch scans, software uninstall, filesystem analysis, safe mode reboot, self-uninstall, evidence collection, containment actions, reliability metrics, CIS remediation |
+| **Medium** | 30 min | Security scans, patch scans, software uninstall, filesystem analysis, safe mode reboot, self-uninstall, evidence collection, containment actions, reliability metrics, CIS remediation, `backup_restore` |
+| **Restore** | 60 min | VM restore/instant-boot, BMR recovery, MSSQL restore, Hyper-V restore |
 | **Long** | 2 hours | Patch installation, backup verify/test-restore/cleanup, CIS benchmarks, sensitive data scans, file encryption/secure delete/quarantine |
 | **Excluded** | Never reaped | Terminal sessions (`terminal_start`, `terminal_data`, `terminal_resize`, `terminal_stop`) |
 
@@ -978,7 +1016,7 @@ When a command times out, it is marked `failed` with `timedOutBy: 'server'` in t
 
 ## Heartbeat Telemetry
 
-The agent sends a heartbeat every 60 seconds containing:
+By default, the agent sends a heartbeat every 60 seconds (configurable via `heartbeat_interval_seconds` in `agent.yaml`, clamped to a 5–3600 second range) containing:
 
 | Field | Description |
 |---|---|
@@ -1045,5 +1083,8 @@ systemctl --user enable breeze-agent-user
 sudo make install-user-helper
 # LaunchAgent auto-starts at login
 ```
+  </TabItem>
+  <TabItem label="Windows">
+No manual step needed. The MSI installer registers a **Scheduled Task** (`\Breeze\AgentUserHelper`) that launches `breeze-user-helper.exe` at user logon, as part of installing the agent -- there is nothing extra to run.
   </TabItem>
 </Tabs>

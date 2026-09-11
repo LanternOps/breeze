@@ -1,7 +1,8 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Play, Loader2, Clock, AlertCircle, Filter } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { showToast } from '../shared/Toast';
 import { Dialog } from '../shared/Dialog';
 import ProgressBar from '../shared/ProgressBar';
 import type { Script } from './ScriptList';
@@ -247,6 +248,23 @@ export default function ScriptExecutionModal({
     setRunAs(script.runAs === 'user' ? 'user' : 'system');
   }, [script.id, script.runAs, isOpen]);
 
+  // #5270 — the success path schedules a 1.5s auto-close. Left untracked it
+  // outlived the component: in Test Web it fired after that file's jsdom had
+  // been torn down and threw `ReferenceError: window is not defined` as an
+  // unhandled error, failing the job with every test passing. In the app it
+  // would call `onClose` on a modal the operator had already closed and
+  // re-opened. Track it and cancel it on unmount and on every close.
+  const autoCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelAutoClose = useCallback(() => {
+    if (autoCloseTimer.current !== null) {
+      clearTimeout(autoCloseTimer.current);
+      autoCloseTimer.current = null;
+    }
+  }, []);
+
+  useEffect(() => cancelAutoClose, [cancelAutoClose]);
+
   const handleClearSelection = () => {
     setSelectedDeviceIds(new Set());
   };
@@ -291,8 +309,18 @@ export default function ScriptExecutionModal({
           : 'rejected';
       setExecutionState(presentationState);
       setShowConfirm(false);
+      // #5128 W2 — an admitted target isn't necessarily running yet: a
+      // target dispatched while its device was offline is `queued_offline`,
+      // and the inline admission panel alone doesn't say so. `deliverBy` isn't
+      // on the admission contract yet, so this is always the no-expiry copy
+      // for now.
+      if (result.targets.some(target => target.delivery === 'queued_offline')) {
+        showToast({ type: 'success', message: t('scriptExecutionModal.toasts.runsWhenOnline') });
+      }
       if (presentationState === 'admitted') {
-        setTimeout(() => {
+        cancelAutoClose();
+        autoCloseTimer.current = setTimeout(() => {
+          autoCloseTimer.current = null;
           onClose();
           setExecutionState('idle');
           setAdmissionResult(null);
@@ -308,6 +336,7 @@ export default function ScriptExecutionModal({
 
   const handleClose = () => {
     if (executionState === 'submitting') return;
+    cancelAutoClose();
     onClose();
     setExecutionState('idle');
     setShowConfirm(false);

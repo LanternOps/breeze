@@ -3,6 +3,7 @@ import type { Tokens, User } from './auth';
 import { applyResolvedLocalePreferences } from '@/lib/appearance';
 import {
   apiAcceptInvite,
+  apiConfirmPhone,
   apiEnableSmsMfa,
   apiEnableTotpMfa,
   apiEnrollPasskey,
@@ -70,6 +71,21 @@ const makeResponseWithHeaders = (
 
 const refreshCallsOf = (fetchMock: { mock: { calls: unknown[][] } }) =>
   fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/refresh'));
+
+// Like makeResponse, but with a working `.clone()` — fetchWithAuth's 428
+// handling clones the response to peek at the body without consuming the
+// one handed back to the caller, and the plain makeResponse double has no
+// clone() at all (every test exercising it never reached that branch).
+const makeCloneableResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response => {
+  const res = {
+    ok,
+    status,
+    json: vi.fn().mockResolvedValue(payload),
+    clone: vi.fn()
+  } as unknown as Response;
+  (res.clone as ReturnType<typeof vi.fn>).mockReturnValue(res);
+  return res;
+};
 
 const baseUser: User = {
   id: 'user-1',
@@ -276,6 +292,48 @@ describe('auth store fetchWithAuth', () => {
     const retryHeaders = retryCall[1].headers as Headers;
     expect(retryHeaders.get('Authorization')).toBe(`Bearer ${refreshedTokens.accessToken}`);
     expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
+  });
+
+  // The server installs the replacement `breeze_auth_binding` cookie on the
+  // 428 response itself (Set-Cookie); the browser's cookie jar picks it up
+  // automatically on the next `fetch` with `credentials: 'include'`. So the
+  // fix is a bare replay of the exact same request, no token dance needed.
+  it('replays the request once on a binding-rotation 428, returning the retry result', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const rotationRequired = makeCloneableResponse(
+      { error: 'binding rotated', reason: 'auth_binding_rotation_required' },
+      false,
+      428
+    );
+    const retrySuccess = makeResponse({ data: { id: 'dev-1' } }, true, 200);
+
+    const fetchMock = vi.fn().mockResolvedValueOnce(rotationRequired).mockResolvedValueOnce(retrySuccess);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await fetchWithAuth('/devices/dev-1');
+
+    expect(response).toBe(retrySuccess);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [firstUrl] = fetchMock.mock.calls[0] as [string];
+    const [secondUrl] = fetchMock.mock.calls[1] as [string];
+    expect(secondUrl).toBe(firstUrl);
+  });
+
+  it('surfaces a second binding-rotation 428 as-is instead of looping', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const rotationRequired = () =>
+      makeCloneableResponse({ error: 'binding rotated', reason: 'auth_binding_rotation_required' }, false, 428);
+    const first = rotationRequired();
+    const second = rotationRequired();
+
+    const fetchMock = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await fetchWithAuth('/devices/dev-1');
+
+    expect(response).toBe(second);
+    expect(response.status).toBe(428);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('restores token before request when authenticated but token is missing', async () => {
@@ -2441,6 +2499,52 @@ describe('MFA enrollment session adoption', () => {
     })).toBe(false);
     expect(useAuthStore.getState().tokens).toEqual(newerTokens);
     expect(useAuthStore.getState().user?.mfaEnabled).toBe(false);
+  });
+});
+
+// #5198: confirming a number that REPLACES the one behind a live SMS factor
+// revokes every refresh family. The caller used to be revoked along with them
+// and got no replacement back, so changing your own phone number bounced you to
+// /login?reason=session-expired. The store must now adopt the replacement the
+// response carries — and say so honestly when there is none to adopt.
+describe('apiConfirmPhone — SMS-factor replacement keeps the caller signed in (#5198)', () => {
+  it('adopts the replacement session on a factor replacement', async () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const tokens = { accessToken: 'replacement-phone', expiresInSeconds: 900 };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      success: true, message: 'Phone number verified', sessionReplaced: true, tokens,
+    })));
+
+    await expect(apiConfirmPhone('+15555550100', '123456', 'password'))
+      .resolves.toEqual({ success: true, reauthRequired: false });
+    expect(useAuthStore.getState().tokens).toEqual(tokens);
+    // Adopting a replacement is not a new session.
+    expect(useAuthStore.getState().sessionGeneration).toBe(generation);
+  });
+
+  it('reports reauthRequired when the server revoked everything but withheld the tokens', async () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true }, baseTokens);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      success: true, message: 'Phone number verified', sessionReplaced: true,
+    })));
+
+    await expect(apiConfirmPhone('+15555550100', '123456', 'password'))
+      .resolves.toEqual({ success: true, reauthRequired: true });
+    // The stale token is left in place rather than silently swapped for nothing;
+    // the caller is told to re-authenticate instead.
+    expect(useAuthStore.getState().tokens).toEqual(baseTokens);
+  });
+
+  it('leaves the session alone on an initial verification, which replaces nothing', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      success: true, message: 'Phone number verified',
+    })));
+
+    await expect(apiConfirmPhone('+15555550100', '123456', 'password'))
+      .resolves.toEqual({ success: true });
+    expect(useAuthStore.getState().tokens).toEqual(baseTokens);
   });
 });
 

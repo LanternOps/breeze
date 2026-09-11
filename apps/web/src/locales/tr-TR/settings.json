@@ -582,7 +582,18 @@
     "selfSaving": "Bu bölüm kendi değişikliklerini kaydeder.",
     "saveSettings": "Ayarları Kaydet",
     "enforcedDescription": "Burada belirlediğiniz değerler tüm kuruluşlarda uygulanır. Her kuruluşun ayrı ayrı yapılandırmasına izin vermek için alanları boş bırakın.",
-    "ticketingDescription": "Bilet durumlarını, öncelik SLA varsayılanlarını, kategorileri ve faturalandırma dışa aktarımlarını yapılandırın. Bunlar tüm kuruluşlarınız için geçerlidir."
+    "ticketingDescription": "Bilet durumlarını, öncelik SLA varsayılanlarını, kategorileri ve faturalandırma dışa aktarımlarını yapılandırın. Bunlar tüm kuruluşlarınız için geçerlidir.",
+    "modules": {
+      "title": "Modüller",
+      "description": "Bu MSP’nin Breeze’in hangi bölümlerini kullandığını seçin. Servis yönetimini kapatmak servis masasını ve müşteri faturalandırmasını her yerde gizler ve yeni talep oluşturulmasını durdurur.",
+      "nativeLabel": "Breeze servis masası ve faturalandırma",
+      "nativeDescription": "Talepler, zaman çizelgeleri, teklifler, faturalar ve sözleşmeler Breeze içinde yürütülür. Varsayılan seçenek budur.",
+      "offLabel": "Kapalı — yalnızca RMM",
+      "offDescription": "Servis masası ve Faturalandırma bölümlerini, ayrıca müşteri kaydındaki Talepler ve Faturalandırma sekmelerini gizler. Mevcut talepler okunabilir kalır; yenileri oluşturulamaz.",
+      "externalNote": "Bu iş ortağı harici bir PSA kullanıyor. Bu seçim buradan henüz değiştirilemez.",
+      "saved": "Modüller güncellendi",
+      "saveFailed": "Modüller güncellenemedi"
+    }
   },
   "loginBranding": {
     "saved": "Giriş markası kaydedildi",
@@ -1186,6 +1197,7 @@
     "toasts": {
       "inviteSent": "Davet gönderildi",
       "inviteSentAmbiguousContact": "Davet gönderildi, ancak birden fazla kişi bu e-posta adresini paylaştığı için hiçbir kişi bağlanamadı. Bir kişi bağlanana kadar bu kullanıcı e-posta yoluyla gelen talepleri göremeyecek.",
+      "inviteEmailFailed": "Portal kullanıcısı oluşturuldu, ancak davet e-postası gönderilemedi.",
       "pendingInvited": "Davet edildi {{count}} bekleyen kullanıcı(lar)",
       "inviteResent": "Yeniden davet et",
       "reactivated": "Kullanıcı yeniden etkinleştirildi",
@@ -1617,7 +1629,14 @@
       "invalidSupervisedActionKeys": "Seçilen işlemlerden biri veya birkaçı politika tarafından yetkilendirilemez.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Bu aracı zaten etkin.",
-      "actRecipientsUnreachable": "Seçilen bildirim rollerinin etkin üyesi yok, bu nedenle kimseye sorulamaz. Uygula modunu etkinleştirmeden önce üyesi olan bir rol seçin."
+      "actRecipientsUnreachable": "Seçilen bildirim rollerinin etkin üyesi yok, bu nedenle kimseye sorulamaz. Uygula modunu etkinleştirmeden önce üyesi olan bir rol seçin.",
+      "invalidScriptIds": "Bir veya daha fazla betik bu aracı için yetkilendirilemiyor.",
+      "scriptRejected": "Betik {{id}}: {{reason}}",
+      "scriptReject": {
+        "not_found": "bu aracının sahibinin görebildiği bir betik değil",
+        "not_in_partner_baseline": "partner taban çizgisinde yok",
+        "run_script_not_allowed": "\"Betik çalıştır\" bu aracı için izinli değil"
+      }
     },
     "actions": {
       "add": "Yeni aracı",
@@ -2294,9 +2313,9 @@
         "get_effective_configuration": "Etkin yapılandırma",
         "get_fleet_findings": "Filo bulguları",
         "get_fleet_health": "Filo sağlığı",
-        "get_fleet_status": "Filo durumu",
         "get_huntress_incidents": "Huntress olayları",
         "get_huntress_status": "Huntress durumu",
+        "get_invite_funnel": "Dağıtım davet hunisi",
         "get_invoice": "Fatura ayrıntıları",
         "get_log_trends": "Günlük eğilimleri",
         "get_playbook_history": "Playbook çalıştırma geçmişi",
@@ -2718,7 +2737,9 @@
       "approvers_other": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{roles}} sorulur. İlk karar geçerli olur.",
       "approversCount_one": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
       "approversCount_other": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
-      "scriptGateNote": "{{list}}, bu aracı için bir betik yetkilendirilene kadar gözetimsiz çalışmaz; o zamana kadar bir onay isteği oluşturur."
+      "scriptGateNote": "{{list}}, bu aracı için bir betik yetkilendirilene kadar gözetimsiz çalışmaz; o zamana kadar bir onay isteği oluşturur.",
+      "scriptsAuthorized_one": "{{count}} betik gözetimsiz çalışmak üzere yetkilendirildi.",
+      "scriptsAuthorized_other": "{{count}} betik gözetimsiz çalışmak üzere yetkilendirildi."
     },
     "flow": {
       "title": "Yeni ajan",
@@ -2772,6 +2793,21 @@
         "recommendedPrefix": "Önerilen:",
         "taken": "Bu sahip için zaten kullanımda"
       }
+    },
+    "scripts": {
+      "legend": "Gözetimsiz çalışmasına izin verilen betikler",
+      "hint": "Uygula modunda \"Betik çalıştır\" yalnızca burada işaretlenen betikler için onaysız çalışır. Diğer her şey onay isteği olarak kalır.",
+      "ceilingHint": "Partner düzeyindeki betikler bir üst sınırdır: bir kuruluşun aracısı yalnızca bu listeden seçim yapabilir.",
+      "runScriptRequired": "Betikleri yetkilendirmeden önce \"Ne yapar\" altında \"Betik çalıştır\" seçeneğini ekleyin.",
+      "runScriptNotInBaseline": "Partner taban çizgisi bu aracı türü için \"Betik çalıştır\" seçeneğine izin vermiyor, bu nedenle hiçbir betik gözetimsiz çalışamaz.",
+      "ceilingUnavailable": "Partner taban çizgisi yüklenemedi, bu nedenle şu anda betikler yetkilendirilemiyor.",
+      "ceilingLoading": "Partner taban çizgisi denetleniyor…",
+      "loading": "Betikler yükleniyor…",
+      "failed": "Betikler yüklenemedi, bu nedenle gözetimsiz betik yetkilendirmesi şu anda değiştirilemez.",
+      "empty": "Kullanılabilir betik yok.",
+      "searchPlaceholder": "Betik ara…",
+      "selectedCount_one": "{{count}} betik yetkilendirildi",
+      "selectedCount_other": "{{count}} betik yetkilendirildi"
     }
   },
   "apiKeyForm": {
@@ -3179,6 +3215,10 @@
     "enterYourPhoneNumberInE164FormatToReceiveAVerificationCo": "Doğrulama kodunu almak için telefon numaranızı E.164 formatında girin.",
     "phoneNumber": "Telefon numarası",
     "currentPassword": "Mevcut şifre",
+    "currentMfaCode": "Mevcut MFA kodu",
+    "currentMfaCodeRequired": "Mevcut bir MFA kodu gerekli",
+    "currentPasskeyRequired": "Mevcut geçiş anahtarınız istenecek",
+    "sendVerificationCode": "Doğrulama kodu gönder",
     "verificationCode": "Doğrulama kodu",
     "enterThe6DigitCodeSentToYourPhone": "Telefonunuza gönderilen 6 haneli kodu girin.",
     "cancel": "İptal",
@@ -3209,6 +3249,12 @@
     "scanThisQRCodeWithYourAuthenticatorAppThenEnterThe6Digit": "Kimlik doğrulayıcı uygulamanızla bu QR kodunu tarayın ve ardından 6 haneli kodu girin.",
     "authenticatorQRCode": "Kimlik Doğrulayıcı QR kodu",
     "qRCodeUnavailable": "QR kodu kullanılamıyor",
+    "cantScanTheCode": "Kodu tarayamıyor musunuz?",
+    "enterThisSetupKeyInYourAuthenticatorAppInstead": "Bunun yerine bu kurulum anahtarını kimlik doğrulayıcı uygulamanıza girin.",
+    "setupKey": "Kurulum anahtarı",
+    "copySetupKey": "Kurulum anahtarını kopyala",
+    "copiedSetupKey": "Kopyalandı",
+    "copySetupKeyFailed": "Kurulum anahtarı kopyalanamadı. Anahtarı seçip elle kopyalayın.",
     "enterThe6DigitCodeGeneratedByYourAuthenticatorApp": "Kimlik doğrulayıcı uygulamanız tarafından oluşturulan 6 haneli kodu girin.",
     "disableMFA": "MFA'yı devre dışı bırak",
     "reEnterYourAccountPasswordToConfirmThisChange": "Bu değişikliği onaylamak için hesap şifrenizi yeniden girin.",
@@ -3296,6 +3342,7 @@
     "passkeyRenamed": "Geçiş anahtarı yeniden adlandırıldı",
     "currentPasswordIsRequiredToDeleteAPasskey": "Bir şifreyi silmek için mevcut şifre gerekli",
     "passkeyDeleted": "Şifre silindi",
+    "signInAgainToContinue": "Devam etmek için yeniden oturum açın.",
     "failedToLoadPasskeys": "Şifre anahtarları yüklenemedi",
     "failedToUpdateProfile": "Profil güncellenemedi",
     "failedToUploadAvatar": "Avatar yüklenemedi",
@@ -3305,6 +3352,9 @@
     "failedToEnableMFA": "MFA etkinleştirilemedi",
     "failedToDisableMFA": "MFA devre dışı bırakılamadı",
     "failedToGenerateRecoveryCodes": "Kurtarma kodları oluşturulamadı",
+    "failedToSendVerificationCode": "Doğrulama kodu gönderilemedi",
+    "failedToVerifyCurrentFactor": "Mevcut MFA faktörü doğrulanamadı",
+    "verificationCodeSent": "Doğrulama kodu gönderildi",
     "failedToAddPasskey": "Şifre eklenemedi",
     "failedToRenamePasskey": "Şifre yeniden adlandırılamadı",
     "failedToDeletePasskey": "Şifre silinemedi",
@@ -3344,7 +3394,15 @@
     "verifyWithYourIdentityProvider": "Kimlik sağlayıcınızla doğrulayın",
     "passkeyIdpVerificationRequired": "Geçiş anahtarı eklemeden önce kimlik sağlayıcınızla doğrulayın.",
     "ssoReauthFailed": "Kimlik sağlayıcınızla doğrulanamadı. Lütfen tekrar deneyin.",
-    "couldNotStartIdentityProviderVerification": "Kimlik sağlayıcısı doğrulaması başlatılamadı."
+    "couldNotStartIdentityProviderVerification": "Kimlik sağlayıcısı doğrulaması başlatılamadı.",
+    "deletePasskeyConfirmTitle": "Bu geçiş anahtarı silinsin mi?",
+    "deletePasskeyConfirmMessage": "Bu işlem \"{{name}}\" geçiş anahtarını kalıcı olarak kaldırır ve artık oturum açmak için kullanılamaz. Çok faktörlü bir yöntem olduğu için silmek diğer oturumlarınızı da tüm cihazlarda kapatır. Bu işlem geri alınamaz.",
+    "passkeyStepUpHeading": "Mevcut oturum açma faktörünüzü doğrulayın",
+    "passkeyStepUpIntro": "Bu hesapta zaten çok faktörlü kimlik doğrulama etkin. Başka bir geçiş anahtarı eklemeden önce bunu onaylayın.",
+    "passkeyStepUpNoUsableFactor": "Hesabınızın mevcut faktörü burada onaylanamıyor. Geçiş anahtarı eklemek için bir yöneticiyle iletişime geçin.",
+    "passkeyStepUpIncorrectCode": "Kod hatalı. Lütfen tekrar deneyin.",
+    "passkeyStepUpTooManyAttempts": "Çok fazla deneme. Lütfen birkaç dakika içinde tekrar deneyin.",
+    "passkeyStepUpVerificationExpired": "Doğrulamanın süresi doldu. Lütfen tekrar doğrulayın."
   },
   "roleManager": {
     "roles": "Roller",
@@ -4471,7 +4529,8 @@
       "saveOrder": "Organizasyon sırası kaydedilemedi",
       "saveOrganization": "Kuruluş kaydedilemedi",
       "saveSite": "Site kaydedilemedi ({{status}})",
-      "deleteSite": "Site silinemedi"
+      "deleteSite": "Site silinemedi",
+      "loadSites": "Bu kuruluşun siteleri yüklenemedi."
     },
     "status": {
       "active": "Aktif",

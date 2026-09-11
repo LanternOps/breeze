@@ -199,13 +199,14 @@ describe('org merge engine SQL against real Postgres', () => {
         token: portalToken,
         portalUserId,
         orgId: L,
+        authEpoch: 1,
         createdAt: new Date(),
         expiresAt: new Date(Date.now() + 3600_000),
       });
 
       const redis = getRedis();
       expect(redis, 'this test requires the test Redis to be reachable').not.toBeNull();
-      await redis!.setex(`clientai:session:${clientAiToken}`, 3600, JSON.stringify({ portalUserId, orgId: L }));
+      await redis!.setex(`clientai:session:${clientAiToken}`, 3600, JSON.stringify({ portalUserId, orgId: L, authEpoch: 1 }));
       await redis!.sadd(`clientai:user-sessions:${portalUserId}`, clientAiToken);
 
       await fenceLoser(candidate);

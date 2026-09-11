@@ -11,6 +11,7 @@ vi.mock('../../middleware/auth', () => ({
   },
   requireScope: () => async (_c: any, next: any) => next(),
   requirePermission: () => async (_c: any, next: any) => next(),
+  requireMfa: () => async (_c: any, next: any) => next(),
 }));
 
 // The invoice route handlers are never reached in these tests (auth blocks them),

@@ -606,7 +606,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_device_vulnerabilities: { resource: 'devices', action: 'read' },
   remediate_vulnerability: { resource: 'patches', action: 'execute' },
   analyze_metrics: { resource: 'devices', action: 'read' },
-  get_s1_status: { resource: 'organizations', action: 'read' },
+  get_s1_status: { resource: 'devices', action: 'read' },
   get_s1_threats: { resource: 'devices', action: 'read' },
   s1_isolate_device: { resource: 'devices', action: 'execute' },
   s1_threat_action: { resource: 'devices', action: 'execute' },
@@ -900,7 +900,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Security + reliability read tools
   get_security_posture: { resource: 'devices', action: 'read' },
   get_fleet_health: { resource: 'devices', action: 'read' },
-  get_fleet_status: { resource: 'devices', action: 'read' },
+  get_invite_funnel: { resource: 'devices', action: 'read' },
   // Fleet hygiene findings (Task 8) — read-only, mirrors the
   // GET /fleet/findings route's requireFindingsRead (DEVICES_READ) gate.
   get_fleet_findings: { resource: 'devices', action: 'read' },
@@ -1121,9 +1121,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     false_positive: { resource: 'devices', action: 'write' },
     mark_remediated: { resource: 'devices', action: 'write' },
   },
-  request_elevation: { resource: 'devices', action: 'execute' },   // routes/pam.ts: respond gates on requirePamExecute; rule auto-approve makes this privilege-granting
-  revoke_elevation: { resource: 'devices', action: 'execute' },    // routes/pam.ts revoke gates on requirePamExecute
-  get_elevation_history: { resource: 'devices', action: 'read' },  // requirePamRead
+  request_elevation: { resource: 'devices', action: 'execute' },   // requesting is not approving — unchanged (fix/pam-dedicated-permissions); rule auto-approve makes this privilege-granting; an admin-authored auto_approve rule yields elevation with no pam:approve holder in the loop
+  revoke_elevation: { resource: 'pam', action: 'approve' },    // routes/pam.ts revoke gates on requirePamApprove (fix/pam-dedicated-permissions)
+  get_elevation_history: { resource: 'devices', action: 'read' },  // requirePamRead, unchanged
 
   // Compliance / software / peripheral (analogy: query_compliance_policies policies:read;
   // manage_configuration_policy map)
@@ -2062,6 +2062,73 @@ export async function checkToolRateLimit(
   return null;
 }
 
+/** A trimmed string, or a finite number coerced to a string — never '', null, undefined, NaN. */
+function nonEmptyText(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+/**
+ * Match execute_command's service payload selection before display formatting.
+ * A defined name wins even when it cannot produce a named headline; only an
+ * undefined name falls back to serviceName. Formatting is not agent validation.
+ */
+function serviceNameFromPayload(payload: Record<string, unknown>): string | null {
+  return nonEmptyText(payload.name !== undefined ? payload.name : payload.serviceName);
+}
+
+/**
+ * #5173: `execute_command`'s headline used to be the raw call signature
+ * ('Execute "kill_process" command on device 74e15ef8...') for every
+ * commandType, mutating or not. These builders read `input.payload` (the
+ * tool's `payload: z.record(z.string(), z.unknown())` — deliberately
+ * unvalidated, so these are read-only extractions for display, never a
+ * validation gate) to produce a call-specific verb phrase for the
+ * commandTypes execute_command's schema actually accepts. A commandType not
+ * in this map, or one whose payload lacks the field its builder needs,
+ * returns null and buildApprovalDescription falls back to the pre-existing
+ * generic "Execute "<type>" command" wording below — so an unrecognised or
+ * sparse call never regresses to something worse than what shipped before.
+ */
+const EXECUTE_COMMAND_HEADLINE_BUILDERS: Record<string, (payload: Record<string, unknown>) => string | null> = {
+  kill_process: (payload) => {
+    const processName = nonEmptyText(payload.processName);
+    const pid = nonEmptyText(payload.pid);
+    if (processName && pid) return `Kill process "${processName}" (PID ${pid})`;
+    if (processName) return `Kill process "${processName}"`;
+    if (pid) return `Kill process PID ${pid}`;
+    return null;
+  },
+  start_service: (payload) => {
+    const name = serviceNameFromPayload(payload);
+    return name ? `Start service "${name}"` : null;
+  },
+  stop_service: (payload) => {
+    const name = serviceNameFromPayload(payload);
+    return name ? `Stop service "${name}"` : null;
+  },
+  restart_service: (payload) => {
+    const name = serviceNameFromPayload(payload);
+    return name ? `Restart service "${name}"` : null;
+  },
+  list_services: () => 'List services',
+  list_processes: () => 'List running processes',
+  file_read: (payload) => {
+    const path = nonEmptyText(payload.path);
+    return path ? `Read file "${path}"` : null;
+  },
+  file_list: (payload) => {
+    const path = nonEmptyText(payload.path);
+    return path ? `List files in "${path}"` : 'List files';
+  },
+  event_logs_list: () => 'List event logs',
+  event_logs_query: (payload) => {
+    const logName = nonEmptyText(payload.logName);
+    return logName ? `Query "${logName}" event log` : 'Query event log';
+  },
+};
+
 /**
  * Build a human-readable description of what the tool is about to do.
  */
@@ -2073,10 +2140,16 @@ function buildApprovalDescription(
   const parts: string[] = [];
 
   switch (toolName) {
-    case 'execute_command':
-      parts.push(`Execute "${input.commandType}" command`);
+    case 'execute_command': {
+      const commandType = nonEmptyText(input.commandType);
+      const payload = (input.payload && typeof input.payload === 'object'
+        ? input.payload as Record<string, unknown>
+        : {});
+      const specific = commandType ? EXECUTE_COMMAND_HEADLINE_BUILDERS[commandType]?.(payload) : null;
+      parts.push(specific ?? `Execute "${input.commandType}" command`);
       if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
       break;
+    }
 
     case 'run_script':
       parts.push(`Run script ${(input.scriptId as string)?.slice(0, 8) ?? 'unknown'}...`);

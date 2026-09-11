@@ -31,6 +31,7 @@
     "dismiss": "Descartar",
     "downloadFor": "Descargar para {{platform}}",
     "errors": {
+      "agentUpgradeRequired": "El escritorio remoto necesita una actualización del agente en este dispositivo (compatibilidad con la concesión de revocación de sesión). El agente se actualiza automáticamente; normalmente se resuelve en un minuto. La terminal y la transferencia de archivos no se ven afectadas.",
       "connectionFailed": "La conexión falló",
       "createDesktopCode": "No se pudo crear el código de conexión al escritorio",
       "createDesktopSession": "No se pudo crear la sesión de escritorio",
@@ -196,7 +197,7 @@
       "justNow": "En este momento",
       "minutesAgo": "hace {{count}}m"
     },
-    "title": "Título",
+    "title": "Actividad de archivos",
     "unverifiedHint": "Pista no verificada"
   },
   "fileManager": {
@@ -236,7 +237,7 @@
       "scanned": "Escaneado: archivos {{count}}",
       "selected": "Seleccionado: {{count}} · {{size}}",
       "threshold": "Límite",
-      "title": "Título",
+      "title": "Inteligencia de disco",
       "trigger": "Activador: {{value}}"
     },
     "dismiss": "Descartar",
@@ -260,7 +261,7 @@
     "moveTo": "Convidar a",
     "selectedCount": "Recuento seleccionado",
     "size": "Tamaño",
-    "title": "Título",
+    "title": "Administrador de archivos",
     "transfers": "Transferencias",
     "trash": "Papelera",
     "selectedCount_one": "{{count}} seleccionado",
@@ -440,7 +441,7 @@
       "generic": "Se produjo un error"
     },
     "refreshStatus": "Actualizar estado",
-    "title": "Título"
+    "title": "Administrador de archivos"
   },
   "remoteTerminal": {
     "connectedBang": "¡Conectado!",
@@ -616,7 +617,7 @@
     "noServicesFound": "No se encontraron servicios",
     "ok": "De acuerdo",
     "page": "Página {{current}} de {{total}}",
-    "refreshHint": "Actualizar sugerencia",
+    "refreshHint": "Actualiza para buscar servicios.",
     "restartService": "Reiniciar servicio",
     "searchPlaceholder": "Buscar servicios...",
     "serviceConfirm": "¿Está seguro de que desea {{action}} el servicio {{service}}?",

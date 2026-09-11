@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   partnerTrustMode: vi.fn(),
   unresolvedPartnerDecision: vi.fn(),
   insert: vi.fn(),
+  select: vi.fn(),
   runOutsideDbContext: vi.fn(<T>(fn: () => T): T => fn()),
   withSystemDbAccessContext: vi.fn(async <T>(fn: () => Promise<T>): Promise<T> => fn()),
 }));
@@ -17,17 +18,22 @@ vi.mock('./partnerTrust', () => ({
 }));
 vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode: mocks.partnerTrustMode }));
 vi.mock('../db', () => ({
-  db: { insert: mocks.insert },
+  db: { insert: mocks.insert, select: mocks.select },
   runOutsideDbContext: mocks.runOutsideDbContext,
   withSystemDbAccessContext: mocks.withSystemDbAccessContext,
 }));
 vi.mock('../db/schema', () => ({
+  users: { id: 'users.id', permissionsEpoch: 'users.permissions_epoch' },
   remoteSessions: { table: 'remote' },
   supportSessions: { table: 'support' },
   tunnelSessions: { table: 'tunnel' },
 }));
 
-import { createRemoteSession, RemoteSessionDeniedError } from './remoteSessionCreate';
+import {
+  createRemoteSession,
+  RemoteSessionDeniedError,
+  RemoteSessionLeaseBaselineError,
+} from './remoteSessionCreate';
 
 const remoteInput = {
   deviceId: 'device-1',
@@ -53,6 +59,15 @@ const tunnelInput = {
   targetPort: 5900,
 };
 
+/** Stub the `users.permissions_epoch` baseline read done for remote sessions. */
+function epochSelect(rows: unknown[]) {
+  const limit = vi.fn().mockResolvedValue(rows);
+  const where = vi.fn().mockReturnValue({ limit });
+  const from = vi.fn().mockReturnValue({ where });
+  mocks.select.mockReturnValue({ from });
+  return { from, where, limit };
+}
+
 function insertReturning(row: unknown) {
   const returning = vi.fn().mockResolvedValue([row]);
   const values = vi.fn().mockReturnValue({ returning });
@@ -65,6 +80,7 @@ beforeEach(() => {
   mocks.partnerTrustMode.mockReturnValue('enforce');
   mocks.partnerIdForDevice.mockResolvedValue('partner-1');
   mocks.evaluateCapability.mockResolvedValue({ allow: true });
+  epochSelect([{ permissionsEpoch: 7 }]);
 });
 
 describe.each([
@@ -183,4 +199,69 @@ it('keeps support inserts in the escaped system DB context and strips partnerId'
   expect(mocks.runOutsideDbContext).toHaveBeenCalledOnce();
   expect(mocks.withSystemDbAccessContext).toHaveBeenCalledOnce();
   expect(values).toHaveBeenCalledWith(expect.not.objectContaining({ partnerId: expect.anything() }));
+});
+
+// ---------------------------------------------------------------------------
+// Revocation-lease baseline: a desktop session with no epoch snapshot is
+// unrenewable (the renew recheck treats a null baseline as a definitive
+// negative), so creating one is worse than failing the create.
+// ---------------------------------------------------------------------------
+
+describe('desktop revocation-lease epoch baseline', () => {
+  it('fails the create with a 503 when the epoch read throws', async () => {
+    insertReturning({ id: 'remote-1', status: 'pending' });
+    mocks.select.mockImplementation(() => {
+      throw new Error('db down');
+    });
+
+    await expect(createRemoteSession('remote', remoteInput)).rejects.toBeInstanceOf(
+      RemoteSessionLeaseBaselineError,
+    );
+    await expect(createRemoteSession('remote', remoteInput)).rejects.toMatchObject({
+      status: 503,
+    });
+    expect(mocks.insert).not.toHaveBeenCalled();
+  });
+
+  it('fails the create with a 503 when the user row is missing', async () => {
+    insertReturning({ id: 'remote-1', status: 'pending' });
+    epochSelect([]);
+
+    await expect(createRemoteSession('remote', remoteInput)).rejects.toBeInstanceOf(
+      RemoteSessionLeaseBaselineError,
+    );
+    expect(mocks.insert).not.toHaveBeenCalled();
+  });
+
+  it('fails the create with a 503 when the epoch column is null', async () => {
+    insertReturning({ id: 'remote-1', status: 'pending' });
+    epochSelect([{ permissionsEpoch: null }]);
+
+    await expect(createRemoteSession('remote', remoteInput)).rejects.toBeInstanceOf(
+      RemoteSessionLeaseBaselineError,
+    );
+    expect(mocks.insert).not.toHaveBeenCalled();
+  });
+
+  it('persists the epoch snapshot on the happy path', async () => {
+    const { values } = insertReturning({ id: 'remote-1', status: 'pending' });
+    epochSelect([{ permissionsEpoch: 42 }]);
+
+    await createRemoteSession('remote', remoteInput);
+    expect(values).toHaveBeenCalledWith(
+      expect.objectContaining({ permissionsEpochSnapshot: 42 }),
+    );
+  });
+
+  it.each(['terminal', 'file_transfer'] as const)(
+    'still creates a %s session when the baseline is unavailable',
+    async (type) => {
+      const row = { id: `remote-${type}`, status: 'pending' };
+      insertReturning(row);
+      epochSelect([]);
+
+      await expect(createRemoteSession('remote', { ...remoteInput, type })).resolves.toBe(row);
+      expect(mocks.insert).toHaveBeenCalledOnce();
+    },
+  );
 });

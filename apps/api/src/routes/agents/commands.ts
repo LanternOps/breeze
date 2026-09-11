@@ -44,9 +44,12 @@ import {
 
 import {
   ACCEPTED_COMMAND_RESULT_STATUSES,
+  BACKUP_QUEUE_ACK_RESULT_STATUS,
   commandAcceptsAgentResult,
   commandAcceptsAgentResultCondition,
 } from '../../services/commandResultAcceptance';
+import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../../services/commandTypes';
+import { tryParseBackupResultPayload, isBackupQueuedAck, isBackupStartedAck } from '../../services/backupProgress';
 import {
   pamAgentResultV2Schema,
   type PamActuationResultClassification,
@@ -398,7 +401,7 @@ commandsRoutes.post(
     // 'timeout'`, written by the wait deadline in commandQueue or by the stale
     // reaper) remains acceptable for non-PAM commands. Every other terminal
     // result preserves the historical short circuit.
-    if (!commandAcceptsAgentResult(command.status, command.result)) {
+    if (!commandAcceptsAgentResult(command.status, command.result, command.type)) {
       return c.json({ success: true });
     }
 
@@ -429,6 +432,21 @@ commandsRoutes.post(
       rawStdout,
     );
 
+    // D20-D (REST twin of agentWs.ts processCommandResult): mssql_backup and
+    // hyperv_backup's FIRST reply can be a non-terminal queue-admission/
+    // started ack rather than the real outcome. Detected the same way the
+    // WS twin and the backup_run orphaned-result branch already do
+    // (tryParseBackupResultPayload + isBackupQueuedAck/isBackupStartedAck).
+    const isQueuedBackupWorkload = QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES.includes(
+      command.type as (typeof QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES)[number],
+    );
+    const isBackupAck =
+      isQueuedBackupWorkload &&
+      (() => {
+        const parsed = tryParseBackupResultPayload(normalizedData.result, stdout);
+        return isBackupQueuedAck(parsed) || isBackupStartedAck(parsed);
+      })();
+
     // Terminal compare-and-set, outside the agentAuth transaction for the same
     // visibility reasons as the lookup above, and under an explicit system
     // context so this is not a contextless bare-pool write (#1375). Mirrors the
@@ -446,6 +464,7 @@ commandsRoutes.post(
     // usually short-circuits first — which is itself a useful signal.
     let updated: unknown;
     const terminalCompletedAt = new Date();
+    const storedCommandResult = buildStoredCommandResult(command.type, normalizedData, stdout);
     const updatedRows = await runOutsideDbContext(async () => withSystemDbAccessContext(async () =>
       dbWriteExpectingRows(
         'device_commands.rest_result_terminal_cas',
@@ -455,7 +474,14 @@ commandsRoutes.post(
             .set({
               status: normalizedData.status === 'completed' ? 'completed' : 'failed',
               completedAt: terminalCompletedAt,
-              result: buildStoredCommandResult(command.type, normalizedData, stdout),
+              // D20-D: a queue-ack stays 'completed' at the top level (the
+              // caller — e.g. a HTTP-polling agent's dispatch loop — must
+              // still see it as delivered) but the STORED result.status is
+              // overridden to the marker so commandAcceptsAgentResultCondition
+              // reopens the row for the real terminal result later.
+              result: isBackupAck
+                ? { ...storedCommandResult, status: BACKUP_QUEUE_ACK_RESULT_STATUS }
+                : storedCommandResult,
               // Credentials ride the payload for some command types (FileVault
               // rotation, and the #3409 script secret envelope); strip them
               // once the command is terminal. Shared with the ten other
@@ -484,6 +510,17 @@ commandsRoutes.post(
     }
 
     if (updatedRows.length === 0) {
+      return c.json({ success: true });
+    }
+
+    if (isBackupAck) {
+      // D20-D: non-terminal signal — no applyCommandAutomationTerminal, no
+      // per-type handler dispatch. Without this guard,
+      // handleProviderBackedBackupResult would parse {"queued":true}/
+      // {"started":true} against the all-optional backupCommandResultSchema,
+      // "succeed" vacuously, and mark the backup_jobs row completed with no
+      // snapshot at all — a false-positive this fix would otherwise introduce
+      // now that the command payload carries jobId (D20-E).
       return c.json({ success: true });
     }
 

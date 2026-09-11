@@ -61,10 +61,16 @@ export function deliveryTtlMs(cls: DeliveryTtlClass): number {
  * Gates the `queue` arm for callers that hard-rejected offline devices before
  * #5128 (patch executor, automations, scan/rollback, AI tools). Scripts,
  * software installs and the generic device-command routes already queued and
- * are NOT gated. Defaults on once W3/W4 ship; removed the release after.
+ * are NOT gated.
+ *
+ * #5128 W4 flipped the default ON: only an explicit
+ * `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED=false` opts back out, which is the
+ * documented escape hatch for an operator who wants the pre-#5128 hard
+ * rejection while they adjust their automations. The flag and this function
+ * are removed entirely in W5.
  */
 export function isOfflineQueueEnabled(): boolean {
-  return process.env.DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED === 'true';
+  return process.env.DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED !== 'false';
 }
 
 const C = CommandTypes;

@@ -46,6 +46,15 @@ type MFASettingsProps = {
   phoneLast4?: string;
   smsAllowed?: boolean;
   qrCodeDataUrl?: string;
+  /**
+   * #5319: the base32 TOTP secret the `/auth/mfa/setup` response already
+   * returns alongside the QR image. Rendering only the QR strands anyone
+   * enrolling on the device the browser is on (no second camera to scan with)
+   * and anyone using a screen reader — a QR image has no accessible content.
+   * Undefined only when the caller predates this or the API omitted it, in
+   * which case the manual-entry block is not rendered at all.
+   */
+  totpSecret?: string;
   recoveryCodes?: string[];
   /**
    * #4413: resolve to `false` when the write was REJECTED (e.g. the 400
@@ -57,7 +66,8 @@ type MFASettingsProps = {
    */
   onEnable?: (code: string, currentPassword: string) => void | boolean | Promise<void | boolean>;
   onDisable?: (code: string, currentPassword: string) => void | boolean | Promise<void | boolean>;
-  onGenerateRecoveryCodes?: (currentPassword: string) => void | boolean | Promise<void | boolean>;
+  onGenerateRecoveryCodes?: (currentPassword: string, currentFactorCode: string) => void | boolean | Promise<void | boolean>;
+  onSendRecoveryStepUpCode?: () => void | boolean | Promise<void | boolean>;
   onRequestSetup?: (currentPassword: string) => Promise<boolean> | boolean;
   onVerifyPhone?: (phoneNumber: string, currentPassword: string) => Promise<{ success: boolean; error?: string }>;
   onConfirmPhone?: (phoneNumber: string, code: string, currentPassword: string) => Promise<{ success: boolean; error?: string }>;
@@ -87,10 +97,12 @@ export default function MFASettings({
   phoneLast4,
   smsAllowed = false,
   qrCodeDataUrl,
+  totpSecret,
   recoveryCodes,
   onEnable,
   onDisable,
   onGenerateRecoveryCodes,
+  onSendRecoveryStepUpCode,
   onRequestSetup,
   onVerifyPhone,
   onConfirmPhone,
@@ -106,6 +118,16 @@ export default function MFASettings({
   const [showCodes, setShowCodes] = useState(false);
   // #4471: the codes are shown exactly once, so a copy has to say whether it worked.
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  // #5319: the manual-entry key has its own copy verdict — it is on screen at
+  // the same time as nothing else copyable, but the recovery-codes state lives
+  // in a different view and must not be reused across them.
+  const [secretCopyState, setSecretCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  // Authenticator apps accept the key unspaced; humans read it in groups of
+  // four. Show the grouped form, copy the raw one.
+  const normalizedTotpSecret = totpSecret?.replace(/\s+/g, '').toUpperCase() || undefined;
+  const groupedTotpSecret = normalizedTotpSecret
+    ? (normalizedTotpSecret.match(/.{1,4}/g) ?? []).join(' ')
+    : undefined;
   // #4414: the regeneration is destructive and irreversible, so it is gated on
   // an explicit confirm that states the invalidation BEFORE the request goes
   // out — not on a warning the user reads after their saved codes are dead.
@@ -128,6 +150,7 @@ export default function MFASettings({
   const [currentPassword, setCurrentPassword] = useState('');
   const [disablePassword, setDisablePassword] = useState('');
   const [recoveryPassword, setRecoveryPassword] = useState('');
+  const [recoveryFactorCode, setRecoveryFactorCode] = useState('');
   const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
   const phoneInputRefs = useRef<Array<HTMLInputElement | null>>([]);
 
@@ -333,6 +356,11 @@ export default function MFASettings({
       setConfirmRegenerateOpen(false);
       return;
     }
+    if ((currentMethod === 'totp' || currentMethod === 'sms') && recoveryFactorCode.length !== DIGIT_COUNT) {
+      setLocalError(t('mFASettings.currentMfaCodeRequired', { defaultValue: 'A current MFA code is required' }));
+      setConfirmRegenerateOpen(false);
+      return;
+    }
 
     try {
       setIsSubmitting(true);
@@ -340,7 +368,7 @@ export default function MFASettings({
       // #4414: only reveal on a confirmed success. The old unconditional
       // `setShowCodes(true)` re-displayed the PREVIOUS set after a failed
       // regeneration, which reads as "here are your new codes".
-      if ((await onGenerateRecoveryCodes?.(recoveryPassword)) !== false) {
+      if ((await onGenerateRecoveryCodes?.(recoveryPassword, recoveryFactorCode)) !== false) {
         // `displayCodes` prefers `smsRecoveryCodes`, and a regeneration only
         // refreshes the `recoveryCodes` PROP. Leaving the SMS set in place
         // would keep rendering the codes this call just invalidated.
@@ -354,6 +382,7 @@ export default function MFASettings({
       // The field is on this same screen, so re-typing costs one action —
       // cheap next to leaving a plaintext password in component state.
       setRecoveryPassword('');
+      setRecoveryFactorCode('');
       setConfirmRegenerateOpen(false);
     }
   };
@@ -372,6 +401,21 @@ export default function MFASettings({
       window.setTimeout(() => setCopyState((s) => (s === 'copied' ? 'idle' : s)), 2000);
     } catch {
       setCopyState('failed');
+    }
+  };
+
+  // #5319: the same clipboard failure modes as the recovery codes (insecure
+  // context, permissions policy, no user gesture) apply here, and a silent
+  // miss on the enrollment screen leaves the user with no way to finish.
+  const handleCopyTotpSecret = async () => {
+    if (!normalizedTotpSecret) return;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(normalizedTotpSecret);
+      setSecretCopyState('copied');
+      window.setTimeout(() => setSecretCopyState((s) => (s === 'copied' ? 'idle' : s)), 2000);
+    } catch {
+      setSecretCopyState('failed');
     }
   };
 
@@ -892,6 +936,61 @@ export default function MFASettings({
                 {t('mFASettings.qRCodeUnavailable')}</div>
             )}
           </div>
+          {/* #5319: the manual-entry key. The QR image alone is unusable when
+              the authenticator lives on the device already showing this page,
+              and carries no content a screen reader can read out. */}
+          {groupedTotpSecret && (
+            <div className="space-y-2 rounded-md border bg-muted/30 p-4">
+              <p className="text-sm font-medium">{t('mFASettings.cantScanTheCode')}</p>
+              <p className="text-sm text-muted-foreground">
+                {t('mFASettings.enterThisSetupKeyInYourAuthenticatorAppInstead')}
+              </p>
+              <div className="flex flex-wrap items-center gap-3">
+                {/* The sr-only label is a SIBLING, never an aria-label on the
+                    <code>: an accessible name overrides the element's text, so
+                    labelling it would announce "Setup key" INSTEAD of the key —
+                    the exact failure this block exists to fix. */}
+                <span>
+                  <span className="sr-only">{t('mFASettings.setupKey')}</span>
+                  <code
+                    data-testid="mfa-totp-secret"
+                    className="rounded-sm bg-background px-2 py-1 font-mono text-sm tracking-wider break-all select-all"
+                  >
+                    {groupedTotpSecret}
+                  </code>
+                </span>
+                <button
+                  type="button"
+                  data-testid="mfa-copy-totp-secret"
+                  onClick={handleCopyTotpSecret}
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    aria-hidden="true"
+                    className="h-4 w-4"
+                  >
+                    <path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.12A1.5 1.5 0 0117 6.622V12.5a1.5 1.5 0 01-1.5 1.5h-1v-3.379a3 3 0 00-.879-2.121L10.5 5.379A3 3 0 008.379 4.5H7v-1z" />
+                    <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
+                  </svg>
+                  {secretCopyState === 'copied'
+                    ? t('mFASettings.copiedSetupKey')
+                    : t('mFASettings.copySetupKey')}
+                </button>
+              </div>
+              {secretCopyState === 'failed' && (
+                <p
+                  data-testid="mfa-copy-totp-secret-error"
+                  role="alert"
+                  className="text-sm text-destructive"
+                >
+                  {t('mFASettings.copySetupKeyFailed')}
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="space-y-2">
@@ -1080,6 +1179,38 @@ export default function MFASettings({
           {t('mFASettings.eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat')}</div>
 
         <div className="space-y-2">
+          <label className="text-sm font-medium" htmlFor="mfa-recovery-factor-code">
+            {currentMethod === 'passkey'
+              ? t('mFASettings.currentPasskeyRequired', { defaultValue: 'Your current passkey will be requested' })
+              : t('mFASettings.currentMfaCode', { defaultValue: 'Current MFA code' })}
+          </label>
+          {currentMethod !== 'passkey' && (
+            <input
+              id="mfa-recovery-factor-code"
+              data-testid="mfa-recovery-factor-code"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={DIGIT_COUNT}
+              value={recoveryFactorCode}
+              onChange={e => setRecoveryFactorCode(e.target.value.replace(/\D/g, '').slice(0, DIGIT_COUNT))}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              disabled={isLoading}
+            />
+          )}
+          {currentMethod === 'sms' && (
+            <button
+              type="button"
+              data-testid="mfa-recovery-send-sms"
+              onClick={() => { void onSendRecoveryStepUpCode?.(); }}
+              disabled={isLoading}
+              className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {t('mFASettings.sendVerificationCode', { defaultValue: 'Send verification code' })}
+            </button>
+          )}
+        </div>
+
+        <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="mfa-recovery-password">
             {t('mFASettings.currentPassword')}</label>
           <input
@@ -1101,6 +1232,7 @@ export default function MFASettings({
             type="button"
             onClick={() => {
               setRecoveryPassword('');
+              setRecoveryFactorCode('');
               setView('status');
             }}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
@@ -1113,7 +1245,10 @@ export default function MFASettings({
             type="button"
             data-testid="mfa-recovery-regenerate"
             onClick={() => setConfirmRegenerateOpen(true)}
-            disabled={isLoading || !recoveryPassword}
+            disabled={isLoading || !recoveryPassword || (
+              (currentMethod === 'totp' || currentMethod === 'sms')
+              && recoveryFactorCode.length !== DIGIT_COUNT
+            )}
             className="inline-flex h-10 items-center justify-center rounded-md border border-destructive/40 bg-destructive/10 px-4 text-sm font-medium text-destructive transition hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isLoading ? t('mFASettings.generating') : t('mFASettings.regenerateCodes')}

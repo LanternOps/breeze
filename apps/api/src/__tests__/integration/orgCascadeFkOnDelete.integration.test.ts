@@ -53,7 +53,7 @@ import {
  *   b) the action is `SET NULL` AND every column Postgres would actually null
  *      (`confdelsetcols`, else the whole `conkey`) is nullable. A `SET NULL`
  *      onto a NOT NULL column is accepted at DDL time and fails at delete time
- *      with 23502 -- `action_intents -> tickets` does exactly this today;
+ *      with 23502 -- the former `action_intents -> tickets` bug (#4872);
  *   c) the child is a step-1b pre-clear target and that pre-clear runs before
  *      the parent's DELETE -- always true when the parent is only in the
  *      cascade set, and otherwise decided by array order;
@@ -69,8 +69,9 @@ import {
  * actually matters is that closure. A nullable `org_id` breaks it: under the
  * partner-wide config shape (epic #2135) `WHERE org_id = $1` leaves the
  * partner-owned rows behind, and a surviving row pointing at a deleted one
- * raises 23503 regardless of the action. `script_categories` is in exactly
- * that state today.
+ * raises 23503 regardless of the action. `script_categories.parent_id` was in
+ * exactly that state until #4873, which fixed it forward with `ON DELETE SET
+ * NULL` -- so it is now safe under (b), not (e).
  *
  * WHAT THIS DOES NOT PROVE
  *
@@ -204,7 +205,13 @@ const preClearOrder = new Map(
  * too -- otherwise an un-cleared grandchild aborts the original DELETE.
  */
 function protectedTables(rows: FkRow[]): Set<string> {
-  const reached = new Set<string>([...cascadeTables, ...preClearOrder.keys()]);
+  // An `unwire` pre-clear UPDATEs its table to release an FK and deletes
+  // nothing from it, so that table is not a parent erasure removes rows from
+  // (it still occupies a pre-clear step for the edge it releases).
+  const deletingPreClears = __testOnly.ASSOCIATED_SYSTEM_SCOPED_TABLES
+    .filter((entry) => entry.kind !== 'unwire')
+    .map((entry) => entry.table);
+  const reached = new Set<string>([...cascadeTables, ...deletingPreClears]);
   for (let changed = true; changed;) {
     changed = false;
     for (const row of rows) {

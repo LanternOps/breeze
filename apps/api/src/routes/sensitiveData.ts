@@ -2,11 +2,12 @@ import { createHash } from 'crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
-import { and, desc, eq, gte, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, ne, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';
 import {
   devices,
+  organizations,
   sensitiveDataFindings,
   sensitiveDataPolicies,
   sensitiveDataScans
@@ -21,7 +22,13 @@ import { CommandTypes, queueCommand } from '../services/commandQueue';
 import { enqueueSensitiveDataScan } from '../jobs/sensitiveDataJobs';
 import { publishEvent } from '../services/eventBus';
 import { resolveSensitiveDataKeySelection } from '../services/sensitiveDataKeys';
-import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { canAccessSite, hasPermission, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import {
+  captureSensitiveDataAuthority,
+  EMPTY_SENSITIVE_DATA_AUTHORITY,
+  type SensitiveDataAuthorityValues,
+  type SensitiveDataPolicyOwner,
+} from '../services/sensitiveDataPolicyAuthority';
 import { writeRouteAudit } from '../services/auditEvents';
 import {
   recordSensitiveDataRemediationDecision,
@@ -89,6 +96,61 @@ const updatePolicySchema = z.object({
   schedule: policyScheduleSchema.optional(),
   isActive: z.boolean().optional(),
 });
+
+function isActiveRecurringPolicy(schedule: unknown, isActive: boolean): boolean {
+  if (!isActive || !isObject(schedule)) return false;
+  return schedule.enabled !== false && (schedule.type === 'interval' || schedule.type === 'cron');
+}
+
+function canExecuteSensitiveData(permissions: UserPermissions | undefined): boolean {
+  return Boolean(permissions && hasPermission(
+    permissions,
+    PERMISSIONS.DEVICES_EXECUTE.resource,
+    PERMISSIONS.DEVICES_EXECUTE.action,
+  ));
+}
+
+async function scheduledTargetsFitAuthority(
+  schedule: unknown,
+  owner: SensitiveDataPolicyOwner,
+  authority: SensitiveDataAuthorityValues,
+): Promise<boolean> {
+  if (!isObject(schedule) || !Array.isArray(schedule.deviceIds) || schedule.deviceIds.length === 0) {
+    return true;
+  }
+  const ids = [...new Set(schedule.deviceIds.filter((id): id is string => typeof id === 'string'))];
+  if (ids.length === 0) return false;
+  const conditions: SQL[] = [inArray(devices.id, ids)];
+  if (owner.orgId !== null) {
+    conditions.push(eq(devices.orgId, owner.orgId));
+  } else {
+    conditions.push(eq(organizations.partnerId, owner.partnerId), ne(organizations.type, 'quick_support'));
+  }
+  if (authority.executionAuthoritySiteIds !== null) {
+    conditions.push(inArray(devices.siteId, authority.executionAuthoritySiteIds));
+  }
+  const rows = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .innerJoin(organizations, eq(organizations.id, devices.orgId))
+    .where(and(...conditions));
+  return rows.length === ids.length;
+}
+
+function publicPolicy<T extends typeof sensitiveDataPolicies.$inferSelect>(row: T) {
+  const {
+    executionAuthorityVersion: _version,
+    executionAuthorityKind: _kind,
+    executionAuthoritySiteIds: _siteIds,
+    executionAuthorityUserId: _userId,
+    executionAuthorityPrincipalKind: _principalKind,
+    executionAuthorityFingerprint: _fingerprint,
+    executionAuthorityCapturedAt: _capturedAt,
+    executionAuthorityGeneration: _generation,
+    ...visible
+  } = row;
+  return visible;
+}
 
 const createScanSchema = z.object({
   deviceIds: z.array(z.string().guid()).min(1).max(200),
@@ -950,7 +1012,7 @@ sensitiveDataRoutes.get(
 
     return c.json({
       data: rows.map((row) => ({
-        ...row,
+        ...publicPolicy(row),
         createdAt: asIso(row.createdAt),
         updatedAt: asIso(row.updatedAt),
       }))
@@ -970,7 +1032,7 @@ sensitiveDataRoutes.post(
 
     // Resolve the ownership axis (#2131): partner-wide creation requires the
     // partner-wide capability; the default path stays org-owned.
-    let owner: { orgId: string | null; partnerId: string | null };
+    let owner: SensitiveDataPolicyOwner;
     if (payload.ownerScope === 'partner') {
       if (!canManagePartnerWidePolicies(auth) || !auth.partnerId) {
         return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
@@ -984,6 +1046,20 @@ sensitiveDataRoutes.post(
       owner = { orgId, partnerId: null };
     }
 
+    const recurring = isActiveRecurringPolicy(payload.schedule, payload.isActive ?? true);
+    let authority: SensitiveDataAuthorityValues | typeof EMPTY_SENSITIVE_DATA_AUTHORITY = EMPTY_SENSITIVE_DATA_AUTHORITY;
+    if (recurring) {
+      const permissions = c.get('permissions') as UserPermissions | undefined;
+      if (!canExecuteSensitiveData(permissions)) {
+        return c.json({ error: 'Permission denied' }, 403);
+      }
+      const captured = captureSensitiveDataAuthority(auth, owner);
+      if (!captured || !(await scheduledTargetsFitAuthority(payload.schedule, owner, captured))) {
+        return c.json({ error: 'Scheduled scan target is outside authorized scope' }, 403);
+      }
+      authority = captured;
+    }
+
     const [policy] = await db
       .insert(sensitiveDataPolicies)
       .values({
@@ -994,7 +1070,8 @@ sensitiveDataRoutes.post(
         detectionClasses: payload.detectionClasses,
         schedule: payload.schedule ?? null,
         isActive: payload.isActive ?? true,
-        createdBy: auth.user.id
+        createdBy: auth.user.id,
+        ...authority,
       })
       .returning();
 
@@ -1010,7 +1087,7 @@ sensitiveDataRoutes.post(
 
     return c.json({
       data: {
-        ...policy,
+        ...publicPolicy(policy),
         createdAt: asIso(policy.createdAt),
         updatedAt: asIso(policy.updatedAt),
       }
@@ -1048,6 +1125,25 @@ sensitiveDataRoutes.put(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
+    const owner: SensitiveDataPolicyOwner = existing.orgId
+      ? { orgId: existing.orgId, partnerId: null }
+      : { orgId: null, partnerId: existing.partnerId! };
+    const nextSchedule = payload.schedule ?? existing.schedule;
+    const nextIsActive = payload.isActive ?? existing.isActive;
+    const recurring = isActiveRecurringPolicy(nextSchedule, nextIsActive);
+    let authority: SensitiveDataAuthorityValues | typeof EMPTY_SENSITIVE_DATA_AUTHORITY = EMPTY_SENSITIVE_DATA_AUTHORITY;
+    if (recurring) {
+      const permissions = c.get('permissions') as UserPermissions | undefined;
+      if (!canExecuteSensitiveData(permissions)) {
+        return c.json({ error: 'Permission denied' }, 403);
+      }
+      const captured = captureSensitiveDataAuthority(auth, owner);
+      if (!captured || !(await scheduledTargetsFitAuthority(nextSchedule, owner, captured))) {
+        return c.json({ error: 'Scheduled scan target is outside authorized scope' }, 403);
+      }
+      authority = captured;
+    }
+
     const [updated] = await db
       .update(sensitiveDataPolicies)
       .set({
@@ -1056,6 +1152,7 @@ sensitiveDataRoutes.put(
         detectionClasses: payload.detectionClasses ?? existing.detectionClasses,
         schedule: payload.schedule ?? existing.schedule,
         isActive: payload.isActive ?? existing.isActive,
+        ...authority,
         updatedAt: new Date()
       })
       .where(eq(sensitiveDataPolicies.id, id))
@@ -1074,7 +1171,7 @@ sensitiveDataRoutes.put(
 
     return c.json({
       data: {
-        ...updated,
+        ...publicPolicy(updated),
         createdAt: asIso(updated.createdAt),
         updatedAt: asIso(updated.updatedAt),
       }

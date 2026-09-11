@@ -1,3 +1,8 @@
+vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/mfaPolicyActivation')>()),
+  lockMfaPolicySettings: vi.fn().mockResolvedValue(undefined),
+  countMfaPolicyLockouts: vi.fn().mockResolvedValue(0),
+}));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { orgRoutes } from './orgs';

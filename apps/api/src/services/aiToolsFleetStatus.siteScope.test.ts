@@ -48,7 +48,7 @@ function mockSelects(inviteRows: Array<Record<string, unknown>>, deviceRows: Arr
   });
 }
 
-describe('get_fleet_status — site narrowing of enrolled devices', () => {
+describe('get_invite_funnel — site narrowing of enrolled devices', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('excludes enrolled devices in forbidden sites for a site-restricted caller', async () => {
@@ -58,7 +58,7 @@ describe('get_fleet_status — site narrowing of enrolled devices', () => {
       [{ id: 'i1', email: 'a@b.c', status: 'enrolled', clickedAt: new Date(), enrolledAt: new Date(), deviceId: 'd1', keySiteId: 'site-A' }],
       [{ id: 'd1', hostname: 'h', osType: 'windows', status: 'online', orgId: 'org-1', siteId: 'site-B' }],
     );
-    const r = await handlerFor('get_fleet_status')({}, makeAuth(['site-A']));
+    const r = await handlerFor('get_invite_funnel')({}, makeAuth(['site-A']));
     const parsed = JSON.parse(r);
     expect(parsed.invite_funnel.devices_online).toBe(0);
     expect(parsed.invite_funnel.recent_enrollments.every((e: any) => e.hostname === 'unknown' || e.hostname === undefined)).toBe(true);
@@ -69,13 +69,13 @@ describe('get_fleet_status — site narrowing of enrolled devices', () => {
       [{ id: 'i1', email: 'a@b.c', status: 'enrolled', clickedAt: new Date(), enrolledAt: new Date(), deviceId: 'd1', keySiteId: 'site-B' }],
       [{ id: 'd1', hostname: 'h', osType: 'windows', status: 'online', orgId: 'org-1', siteId: 'site-B' }],
     );
-    const r = await handlerFor('get_fleet_status')({}, makeAuth(undefined));
+    const r = await handlerFor('get_invite_funnel')({}, makeAuth(undefined));
     const parsed = JSON.parse(r);
     expect(parsed.invite_funnel.devices_online).toBe(1);
   });
 });
 
-describe('get_fleet_status — SR5-18 invite-total narrowing', () => {
+describe('get_invite_funnel — SR5-18 invite-total narrowing', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('excludes invite totals/clicks whose enrollment key is outside the caller site allowlist', async () => {
@@ -84,7 +84,7 @@ describe('get_fleet_status — SR5-18 invite-total narrowing', () => {
       { id: 'i2', email: 'out@x.c', status: 'clicked', clickedAt: new Date(), enrolledAt: null, deviceId: null, keySiteId: 'site-B' },
       { id: 'i3', email: 'orgwide@x.c', status: 'clicked', clickedAt: new Date(), enrolledAt: null, deviceId: null, keySiteId: null },
     ]);
-    const r = await handlerFor('get_fleet_status')({}, makeAuth(['site-A']));
+    const r = await handlerFor('get_invite_funnel')({}, makeAuth(['site-A']));
     const parsed = JSON.parse(r);
     // Only the site-A invite is visible; site-B and the org-wide (null-site) key are excluded (fail closed).
     expect(parsed.invite_funnel.total_invited).toBe(1);
@@ -97,7 +97,7 @@ describe('get_fleet_status — SR5-18 invite-total narrowing', () => {
       { id: 'i2', email: 'out@x.c', status: 'clicked', clickedAt: new Date(), enrolledAt: null, deviceId: null, keySiteId: 'site-B' },
       { id: 'i3', email: 'orgwide@x.c', status: 'sent', clickedAt: null, enrolledAt: null, deviceId: null, keySiteId: null },
     ]);
-    const r = await handlerFor('get_fleet_status')({}, makeAuth(undefined));
+    const r = await handlerFor('get_invite_funnel')({}, makeAuth(undefined));
     const parsed = JSON.parse(r);
     expect(parsed.invite_funnel.total_invited).toBe(3);
     expect(parsed.invite_funnel.invites_clicked).toBe(2);
@@ -121,7 +121,7 @@ describe('get_fleet_status — SR5-18 invite-total narrowing', () => {
       }),
     }));
     const auth = makeAuth(undefined, { scope: 'organization', orgId: 'org-1' });
-    await handlerFor('get_fleet_status')({}, auth);
+    await handlerFor('get_invite_funnel')({}, auth);
     // The invite query narrows by the actor's org axis, not partner-wide only.
     expect(capturedWhere).toEqual(eq(deploymentInvites.orgId, 'org-1'));
   });

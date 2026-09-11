@@ -14,9 +14,21 @@ const { editorInstances } = vi.hoisted(() => ({
 vi.mock('@monaco-editor/react', async () => {
   const React = (await vi.importActual<typeof import('react')>('react'));
   const loader = { config: vi.fn() };
-  function MockEditor({ onMount, value }: { onMount?: (e: unknown) => void; value?: string }) {
+  function MockEditor({ onMount, value, onChange }: { onMount?: (e: unknown) => void; value?: string; onChange?: (v: string) => void }) {
+    const valueRef = React.useRef(value ?? '');
+    valueRef.current = value ?? '';
     React.useEffect(() => {
-      const instance = { layout: vi.fn(), dispose: vi.fn() };
+      // Enough of the Monaco surface for CustomFieldHelp's insert path (#5233):
+      // executeEdits appends to the current value and getModel reads it back.
+      const instance = {
+        layout: vi.fn(),
+        dispose: vi.fn(),
+        getSelection: () => null,
+        pushUndoStop: vi.fn(),
+        executeEdits: (_src: string, edits: Array<{ text: string }>) => { valueRef.current += edits.map(e => e.text).join(''); onChange?.(valueRef.current); },
+        getModel: () => ({ getValue: () => valueRef.current }),
+        focus: vi.fn()
+      };
       editorInstances.push(instance);
       onMount?.(instance);
       // The real wrapper disposes on its own unmount; the mock deliberately does
@@ -722,7 +734,13 @@ describe('ScriptForm sourced parameters', () => {
 
     const trigger = await screen.findByRole('button', { name: 'About the device custom field binding' });
     fireEvent.click(trigger);
-    expect(await screen.findByRole('tooltip')).toHaveTextContent(/PATCH request/i);
+    const tip = await screen.findByRole('tooltip');
+    // #5233: the marker replaces the stale PATCH-plus-API-key advice, the env
+    // var is named, and the literal {{paramName}} survives i18next interpolation.
+    expect(tip).toHaveTextContent('::breeze:custom-fields::');
+    expect(tip).toHaveTextContent('BREEZE_PARAM_<KEY>');
+    expect(tip).toHaveTextContent('{{paramName}}');
+    expect(tip).not.toHaveTextContent(/PATCH/i);
   });
 
   it('clears the previous arm\'s binding key when the source changes', async () => {
@@ -750,5 +768,102 @@ describe('ScriptForm sourced parameters', () => {
     });
     expect((screen.getByPlaceholderText('e.g. vendor_token') as HTMLInputElement).value).toBe('');
     expect(screen.queryByTestId('script-parameter-secret-warning')).toBeNull();
+  });
+});
+
+// #5129. ScriptSecurityReview is unit-tested in isolation, but the part that
+// actually matters to a user is the WIRING: the checkbox has to reach form
+// state and ride the submitted payload. A broken `watch`/`setValue` key here
+// would leave every backend test green while the acknowledgement UI is a
+// silent no-op — the whole feature inert with nothing red.
+describe('ScriptForm security acknowledgement wiring', () => {
+  const HKLM = 'PowerShell HKLM modification';
+  const hklmLine = "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Contoso' -Name Enabled -Value 1";
+
+  const baseDefaults = {
+    name: 'Registry tweak',
+    category: 'Maintenance',
+    language: 'powershell' as const,
+    osTypes: ['windows' as const],
+    content: hklmLine,
+    timeoutSeconds: 300,
+    runAs: 'system' as const,
+  };
+
+  it('does not render the security review for a script that matches nothing', () => {
+    render(<ScriptForm defaultValues={{ ...baseDefaults, content: 'Write-Output "hi"' }} />);
+    expect(screen.queryByTestId('script-security-review')).toBeNull();
+  });
+
+  it('seeds the checkboxes from an already-acknowledged script', async () => {
+    render(
+      <ScriptForm
+        defaultValues={{ ...baseDefaults, acknowledgedSecurityPatterns: [HKLM] }}
+      />
+    );
+    const checkbox = (await screen.findByTestId(
+      `script-security-ack-${HKLM}`
+    )) as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+  });
+
+  it('carries an existing acknowledgement through an untouched save', async () => {
+    // The metadata-only edit case: the user renames the script and never
+    // touches the security section. The approval must still be submitted, or
+    // the server would read the omission as a revoke.
+    const onSubmit = vi.fn();
+    render(
+      <ScriptForm
+        defaultValues={{ ...baseDefaults, acknowledgedSecurityPatterns: [HKLM] }}
+        onSubmit={onSubmit}
+      />
+    );
+    await screen.findByTestId('script-security-review');
+
+    fireEvent.submit(screen.getByTestId('script-security-review').closest('form')!);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit.mock.calls[0]![0].acknowledgedSecurityPatterns).toEqual([HKLM]);
+  });
+
+  it('puts a newly ticked acknowledgement on the submitted payload', async () => {
+    const onSubmit = vi.fn();
+    render(<ScriptForm defaultValues={baseDefaults} onSubmit={onSubmit} />);
+
+    const checkbox = (await screen.findByTestId(
+      `script-security-ack-${HKLM}`
+    )) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    fireEvent.click(checkbox);
+    await waitFor(() => expect((screen.getByTestId(`script-security-ack-${HKLM}`) as HTMLInputElement).checked).toBe(true));
+
+    fireEvent.submit(screen.getByTestId('script-security-review').closest('form')!);
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    // Verbatim: the agent compares against its own description string.
+    expect(onSubmit.mock.calls[0]![0].acknowledgedSecurityPatterns).toEqual([HKLM]);
+  });
+});
+
+describe('ScriptForm custom-field help (#5233)', () => {
+  beforeEach(() => {
+    editorInstances.length = 0;
+    getJwtClaimsMock.mockReturnValue({ scope: 'organization', partnerId: null, orgId: 'o-1' });
+    orgStoreMock.mockReturnValue({ organizations: [{ id: 'o-1', name: 'Org One' }], partners: [], sites: [] });
+  });
+  afterEach(() => { vi.clearAllMocks(); });
+
+  it('renders the "Reading and writing custom fields" aside under the editor', async () => {
+    render(<ScriptForm isNew />);
+    await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
+    expect(screen.getByTestId('custom-field-help-toggle').textContent).toContain('Reading and writing custom fields');
+  });
+
+  it('Insert example writes the snippet into the form content the editor renders', async () => {
+    render(<ScriptForm isNew />);
+    await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByTestId('custom-field-help-toggle'));
+    fireEvent.click(screen.getByTestId('custom-field-help-insert'));
+    await waitFor(() => expect(screen.getByTestId('mock-monaco').textContent).toContain('::breeze:custom-fields::'));
   });
 });

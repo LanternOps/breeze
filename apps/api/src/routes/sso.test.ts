@@ -34,7 +34,14 @@ vi.mock('../services/redis', () => ({
 }));
 
 const authTransitionMocks = vi.hoisted(() => {
-  class AuthBindingRotationRequiredError extends Error {}
+  class AuthBindingRotationRequiredError extends Error {
+    constructor(
+      readonly replacement: { kind: 'browser' | 'native'; value: string } = { kind: 'browser', value: 'r'.repeat(64) },
+      readonly reason?: string,
+    ) {
+      super('rotation required');
+    }
+  }
   class AuthBindingUnavailableError extends Error {}
   class AuthIssuanceCapabilityError extends Error {}
   class AuthIssuanceConflictError extends Error {}
@@ -57,7 +64,17 @@ const ssoTransitionMocks = vi.hoisted(() => ({
   consumeDurableSsoExchangeGrant: vi.fn(),
   lockSsoProviderAuthority: vi.fn(),
   withLockedSsoProviderAuthority: vi.fn(),
-  grants: new Map<string, { accessToken: string; refreshToken: string; expiresInSeconds: number }>(),
+  grants: new Map<string, {
+    accessToken: string;
+    refreshToken: string;
+    expiresInSeconds: number;
+    identity: {
+      userId: string;
+      email: string;
+      partnerId: string | null;
+      isPlatformAdmin: boolean;
+    };
+  }>(),
   nextCode: 0,
 }));
 
@@ -240,6 +257,7 @@ vi.mock('../db/schema', () => ({
     createdAt: 'createdAt',
     authorizationUrl: 'authorizationUrl',
     tokenUrl: 'tokenUrl',
+    clientSecret: 'clientSecret',
     userInfoUrl: 'userInfoUrl',
     jwksUrl: 'jwksUrl',
     // SR2-11 (config generation) + SR2-10 (default-role delegation) columns —
@@ -390,6 +408,22 @@ vi.mock('../services/mfaPolicy', () => ({
   })),
 }));
 
+const ipAllowlistState = vi.hoisted(() => ({
+  decision: { decision: 'allow' as 'allow' | 'deny', reason: 'matched' },
+  error: null as Error | null,
+  calls: [] as Array<Record<string, unknown>>,
+}));
+
+vi.mock('../services/ipAllowlist', () => ({
+  IP_NOT_ALLOWED_BODY: { code: 'ip_not_allowed', error: 'Access denied from this IP address' },
+  isBlocked: (decision: { decision: string }) => decision.decision === 'deny',
+  enforceIpAllowlist: vi.fn(async (_c: unknown, params: Record<string, unknown>) => {
+    ipAllowlistState.calls.push(params);
+    if (ipAllowlistState.error) throw ipAllowlistState.error;
+    return ipAllowlistState.decision;
+  }),
+}));
+
 // Partial-mock auth/helpers: keep the real cookie helpers the callback uses,
 // but stub auditLogin so partner-axis login tests can assert the audit call
 // (method: 'sso-partner') without invoking the real async audit-log writer.
@@ -520,6 +554,9 @@ describe('sso routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    ipAllowlistState.decision = { decision: 'allow', reason: 'matched' };
+    ipAllowlistState.error = null;
+    ipAllowlistState.calls = [];
     // #4067 pending-link Redis (services/redis mock): default to a working
     // client; clearAllMocks wipes implementations set via mock*Once.
     pendingLinkRedis.setex.mockResolvedValue('OK');
@@ -557,7 +594,15 @@ describe('sso routes', () => {
     ssoTransitionMocks.nextCode = 0;
     ssoTransitionMocks.createDurableSsoExchangeGrant.mockImplementation(async (_tx, input) => {
       const code = `durable-test-code-${++ssoTransitionMocks.nextCode}`;
-      ssoTransitionMocks.grants.set(code, input.tokens);
+      ssoTransitionMocks.grants.set(code, {
+        ...input.tokens,
+        identity: {
+          userId: input.userId,
+          email: 'test@example.com',
+          partnerId: PARTNER_UUID,
+          isPlatformAdmin: false,
+        },
+      });
       return code;
     });
     ssoTransitionMocks.consumeDurableSsoExchangeGrant.mockImplementation(async (code) => {
@@ -1031,6 +1076,9 @@ describe('sso routes', () => {
       orgId: ORG_UUID,
       partnerId: null,
       issuer: 'https://old-issuer.example.com',
+      tokenUrl: 'https://old-issuer.example.com/token',
+      clientSecret: 'enc:stored-client-secret',
+      configVersion: 1,
       type: 'oidc',
     };
 
@@ -1091,7 +1139,10 @@ describe('sso routes', () => {
       const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ issuer: 'https://new-issuer.example.com' })
+        body: JSON.stringify({
+          issuer: 'https://new-issuer.example.com',
+          clientSecret: 'replacement-client-secret',
+        })
       });
 
       expect(res.status).toBe(200);
@@ -1104,6 +1155,95 @@ describe('sso routes', () => {
         tokenUrl: 'https://new-issuer.example.com/token',
         userInfoUrl: 'https://new-issuer.example.com/userinfo',
         jwksUrl: 'https://new-issuer.example.com/jwks',
+        clientSecret: expect.any(String),
+      }));
+    });
+
+    it('PATCH → rejects a token-origin change that would retain the stored client secret', async () => {
+      selectExisting();
+      vi.mocked(discoverOIDCConfig).mockResolvedValue({
+        issuer: 'https://new-issuer.example.com',
+        authorization_endpoint: 'https://new-issuer.example.com/auth',
+        token_endpoint: 'https://tokens.attacker.example/token',
+        userinfo_endpoint: 'https://new-issuer.example.com/userinfo',
+        jwks_uri: 'https://new-issuer.example.com/jwks'
+      } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issuer: 'https://new-issuer.example.com' })
+      });
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toMatchObject({
+        code: 'oidc_client_secret_reentry_required',
+      });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'sso.provider.update.rejected',
+        details: expect.objectContaining({
+          reason: 'oidc_token_origin_changed_without_secret_replacement',
+        }),
+      }));
+    });
+
+    it('PATCH → permits explicit client-secret clearing when the token origin changes', async () => {
+      selectExisting();
+      vi.mocked(discoverOIDCConfig).mockResolvedValue({
+        issuer: 'https://new-issuer.example.com',
+        authorization_endpoint: 'https://new-issuer.example.com/auth',
+        token_endpoint: 'https://tokens.new-issuer.example/token',
+        userinfo_endpoint: 'https://new-issuer.example.com/userinfo',
+        jwks_uri: 'https://new-issuer.example.com/jwks'
+      } as any);
+      const setMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Okta', orgId: ORG_UUID }])
+        })
+      });
+      vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issuer: 'https://new-issuer.example.com', clientSecret: '' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ clientSecret: null }));
+    });
+
+    it('PATCH → returns conflict when another config edit wins during discovery', async () => {
+      selectExisting();
+      vi.mocked(discoverOIDCConfig).mockResolvedValue({
+        issuer: 'https://new-issuer.example.com',
+        authorization_endpoint: 'https://new-issuer.example.com/auth',
+        token_endpoint: 'https://new-issuer.example.com/token',
+        userinfo_endpoint: 'https://new-issuer.example.com/userinfo',
+        jwks_uri: 'https://new-issuer.example.com/jwks'
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) })
+        })
+      } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          issuer: 'https://new-issuer.example.com',
+          clientSecret: 'replacement-client-secret',
+        })
+      });
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({
+        error: expect.stringMatching(/changed concurrently/i),
+      });
+      expect(writeRouteAudit).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'sso.provider.update',
       }));
     });
 
@@ -1593,6 +1733,59 @@ describe('sso routes', () => {
     expect(replayRes.status).toBe(400);
   });
 
+  it('denies a durable SSO exchange when the owning partner allowlist changed after callback admission', async () => {
+    ssoTransitionMocks.consumeDurableSsoExchangeGrant.mockResolvedValueOnce({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      expiresInSeconds: 900,
+      identity: {
+        userId: USER_UUID,
+        email: 'test@example.com',
+        partnerId: PARTNER_UUID,
+        isPlatformAdmin: false,
+      },
+    } as any);
+    ipAllowlistState.decision = { decision: 'deny', reason: 'not_in_list' };
+
+    const res = await app.request('/sso/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: 'durable-code-admitted-before-policy-change' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'ip_not_allowed' });
+    expect(res.headers.get('set-cookie')).toBeNull();
+    expect(ipAllowlistState.calls).toEqual([
+      expect.objectContaining({ partnerId: PARTNER_UUID, actorId: USER_UUID }),
+    ]);
+  });
+
+  it('fails a durable SSO exchange closed when the owning partner allowlist cannot be read', async () => {
+    ssoTransitionMocks.consumeDurableSsoExchangeGrant.mockResolvedValueOnce({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      expiresInSeconds: 900,
+      identity: {
+        userId: USER_UUID,
+        email: 'test@example.com',
+        partnerId: PARTNER_UUID,
+        isPlatformAdmin: false,
+      },
+    } as any);
+    ipAllowlistState.error = new Error('database unavailable');
+
+    const res = await app.request('/sso/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: 'durable-code-admitted-before-read-error' }),
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ code: 'ip_check_failed' });
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
   it('never returns the SSO refresh token in JSON under the removed compatibility flag', async () => {
     process.env.SSO_EXCHANGE_RETURN_REFRESH_TOKEN = 'true';
     vi.mocked(exchangeCodeForTokens).mockResolvedValue({
@@ -2066,6 +2259,18 @@ describe('sso routes', () => {
       expect(exchangeCodeForTokens).not.toHaveBeenCalled();
     });
 
+    it('fails closed before token exchange when an origin move explicitly cleared the client secret', async () => {
+      primeCallback();
+      vi.mocked(db.select).mockReturnValueOnce(
+        sel([{ ...PROVIDER_ROW[0], clientSecret: null }])
+      );
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('/login?error=sso_error');
+      expect(exchangeCodeForTokens).not.toHaveBeenCalled();
+    });
+
     it('starts the link ceremony (#4067) instead of auto-linking an existing PASSWORD account (1B)', async () => {
       primeCallback();
       vi.mocked(db.select)
@@ -2236,6 +2441,7 @@ describe('sso routes', () => {
         .mockReturnValueOnce(sel([{ userId: USER_UUID }])) // identity link
         .mockReturnValueOnce(sel([{
           id: USER_UUID, email: 'test@example.com', name: 'Linked',
+          partnerId: PARTNER_UUID,
           mfaEnabled: opts.userMfaEnabled === true,
         }]))
         .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
@@ -2247,6 +2453,18 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: true }), expect.any(Object));
+    });
+
+    it('denies an org-axis SSO identity outside its owning partner allowlist before minting', async () => {
+      ipAllowlistState.decision = { decision: 'deny', reason: 'not_in_list' };
+      wireLinkedLogin({ trustsIdpMfa: false });
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=ip_not_allowed');
+      expect(ipAllowlistState.calls).toEqual([expect.objectContaining({ partnerId: PARTNER_UUID, actorId: USER_UUID })]);
+      expect(createTokenPair).not.toHaveBeenCalled();
     });
 
     it('mints mfa:false when the provider trusts IdP MFA but amr does NOT attest it', async () => {
@@ -3087,15 +3305,36 @@ describe('sso routes', () => {
       expect(setCookie).toContain('breeze_sso_state=');
     });
 
-    it('refuses direct partner SSO initiation when no valid browser binding is present', async () => {
+    it('installs the replacement binding cookie and redirects to /login instead of a raw 409 (top-level nav)', async () => {
+      // GET /sso/login/... is a top-level browser navigation (the SPA sends
+      // the browser here to be redirected on to the IdP) — a raw JSON 409
+      // body renders as plain text instead of landing the user back on
+      // /login. The cookie install must still happen so a retry succeeds.
       vi.mocked(db.select).mockReturnValueOnce(providerSelectChain([ACTIVE_OIDC_PROVIDER_ROW]) as any);
       authTransitionMocks.beginAuthIssuance.mockRejectedValueOnce(
-        new authTransitionMocks.AuthBindingRotationRequiredError(),
+        new authTransitionMocks.AuthBindingRotationRequiredError({ kind: 'browser', value: 'r'.repeat(64) }),
       );
 
       const res = await app.request(`/sso/login/partner/${PARTNER_UUID}`);
 
-      expect(res.status).toBe(409);
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('/login?');
+      expect(res.headers.get('location')).toContain('error=binding');
+      expect(res.headers.get('set-cookie') ?? '').toContain('breeze_auth_binding=');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('redirects to /login instead of a raw 409 when auth issuance is otherwise unavailable', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(providerSelectChain([ACTIVE_OIDC_PROVIDER_ROW]) as any);
+      authTransitionMocks.beginAuthIssuance.mockRejectedValueOnce(
+        new authTransitionMocks.AuthBindingUnavailableError('unavailable'),
+      );
+
+      const res = await app.request(`/sso/login/partner/${PARTNER_UUID}`);
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('/login?');
+      expect(res.headers.get('location')).toContain('error=binding');
       expect(db.insert).not.toHaveBeenCalled();
     });
 
@@ -3198,6 +3437,23 @@ describe('sso routes', () => {
       expect(db.select).not.toHaveBeenCalled();
       expect(db.insert).not.toHaveBeenCalled();
     });
+
+    it('installs the replacement binding cookie and redirects to /login instead of a raw 409 (top-level nav)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(
+        providerSelectChain([{ ...ACTIVE_OIDC_PROVIDER_ROW, orgId: ORG_UUID, partnerId: null }]) as any
+      );
+      authTransitionMocks.beginAuthIssuance.mockRejectedValueOnce(
+        new authTransitionMocks.AuthBindingRotationRequiredError({ kind: 'browser', value: 'r'.repeat(64) }),
+      );
+
+      const res = await app.request(`/sso/login/${ORG_UUID}`);
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('/login?');
+      expect(res.headers.get('location')).toContain('error=binding');
+      expect(res.headers.get('set-cookie') ?? '').toContain('breeze_auth_binding=');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /sso/check/:orgId (#2195)', () => {
@@ -3294,6 +3550,24 @@ describe('sso routes', () => {
         expect.anything(),
         expect.objectContaining({ scope: 'partner', method: 'sso-partner', orgId: null, userId: USER_UUID })
       );
+    });
+
+    it('denies a linked partner SSO identity outside the partner IP allowlist before minting', async () => {
+      ipAllowlistState.decision = { decision: 'deny', reason: 'not_in_list' };
+      prime();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([PARTNER_PROVIDER]))
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }]))
+        .mockReturnValueOnce(sel([STAFF]))
+        .mockReturnValueOnce(selJoin([{ roleId: 'prole-1', roleScope: 'partner' }]));
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=ip_not_allowed');
+      expect(ipAllowlistState.calls).toEqual([expect.objectContaining({ partnerId: PARTNER_UUID, actorId: USER_UUID })]);
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(ssoTransitionMocks.createDurableSsoExchangeGrant).not.toHaveBeenCalled();
     });
 
     it('auto-links by email ONLY for passwordless unlinked partner staff', async () => {
@@ -5128,6 +5402,7 @@ describe('sso routes', () => {
       email: 'pw@example.com',
       name: 'Pw User',
       orgId: null,
+      partnerId: PARTNER_UUID,
       status: 'active',
       passwordHash: '$argon2id$real-hash',
       mfaEnabled: false,
@@ -5231,6 +5506,21 @@ describe('sso routes', () => {
         expect(setCookies.some((v) => v.startsWith('breeze_sso_pending_link=;'))).toBe(true);
         expect(res.headers.get('cache-control')).toBe('no-store');
         expect(vi.mocked(clearAccountFailures)).toHaveBeenCalled();
+      });
+
+      it('denies a correct-password link confirmation outside the partner allowlist before MFA handoff or mint', async () => {
+        wireRecord();
+        ipAllowlistState.decision = { decision: 'deny', reason: 'not_in_list' };
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        vi.mocked(db.select).mockReturnValueOnce(sel([USER_ROW]));
+
+        const res = await confirm();
+
+        expect(res.status).toBe(403);
+        await expect(res.json()).resolves.toMatchObject({ code: 'ip_not_allowed' });
+        expect(pendingLinkRedis.setex).not.toHaveBeenCalled();
+        expect(pendingLinkRedis.getdel).not.toHaveBeenCalled();
+        expect(createTokenPair).not.toHaveBeenCalled();
       });
 
       it('rejects a wrong password with the generic 401, bumps the lockout counter, and keeps the record for a retry', async () => {

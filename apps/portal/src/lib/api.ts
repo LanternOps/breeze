@@ -351,8 +351,15 @@ export interface TicketCommentAttachment {
 export interface TicketComment {
   id: string;
   authorName: string;
-  /** 'portal' is the customer's own reply; anything else came from the IT team. */
+  /** 'portal' is the customer's own reply; 'email' is any email-authored comment. */
   authorType: string | null;
+  /**
+   * The portal login the inbound email resolved to, or null. `authorType` alone
+   * cannot tell a customer's emailed reply from a technician's own reply linked
+   * through the Outlook add-in — both are stored as 'email'. A non-null sender
+   * on an 'email' comment is the only signal that the CUSTOMER wrote it.
+   */
+  senderPortalUserId?: string | null;
   content: string;
   createdAt: string;
   /** Absent on a reply the customer just posted locally. */
@@ -937,7 +944,7 @@ export const portalApi = {
   },
 
   updateProfile: async (
-    data: { name?: string; receiveNotifications?: boolean; password?: string; email?: string },
+    data: { name?: string; receiveNotifications?: boolean },
     config: ApiRequestConfig = {}
   ): Promise<ApiResponse<Profile>> => {
     const response = await apiPatch<{ user: Profile }>('/portal/profile', data, config);
@@ -966,6 +973,11 @@ export const portalApi = {
     if (!response.data) {
       return {
         error: response.error,
+        // `code` (sweep 2026-09-08 G5-6) used to be dropped here — the
+        // account-disabled 403's code never reached loadPortalBranding, so
+        // the middleware's login-redirect guard had no way to tell a disabled
+        // account apart from any other branding-load failure.
+        code: response.code,
         statusCode: response.statusCode,
         headers: response.headers
       };
@@ -991,6 +1003,7 @@ export const portalApi = {
     if (!response.data) {
       return {
         error: response.error,
+        code: response.code,
         statusCode: response.statusCode,
         headers: response.headers
       };

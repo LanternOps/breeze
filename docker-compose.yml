@@ -120,6 +120,15 @@ x-api-env: &api-env
   ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:?Set ENROLLMENT_KEY_PEPPER in .env}
   MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER:?Set MFA_RECOVERY_CODE_PEPPER in .env}
   PATCH_REPORT_STORAGE_PATH: /data/patch-reports
+  # Scratch directory for bare-metal-recovery bundle/ISO builds (a 45-65MB
+  # helper binary plus a tarball or ISO, written under mkdtemp). Both the api
+  # and worker containers below mount /tmp as a 64MB tmpfs, so building
+  # straight under os.tmpdir() fails with ENOSPC (D7) — default it under the
+  # already-mounted api_data volume instead. Mapped here explicitly (not just
+  # set in .env) per the compose-interpolation rule above.
+  RECOVERY_MEDIA_WORK_DIR: ${RECOVERY_MEDIA_WORK_DIR:-/data/recovery-work}
+  # Backup GC per-object grace (ms). Lab/test knob only; leave unset in production (48h).
+  BACKUP_GC_GRACE_MS: ${BACKUP_GC_GRACE_MS:-}
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_JSON: ${LOG_JSON:-true}
   # Agent diagnostic log retention (worker role; all optional, see .env.example).
@@ -160,6 +169,12 @@ x-api-env: &api-env
   SMTP_USER: ${SMTP_USER:-}
   SMTP_PASS: ${SMTP_PASS:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  # Hardware warranty lookups (all optional, OFF unless set). See
+  # https://docs.breezermm.com/deploy/environment/#warranty-lookups
+  DELL_CLIENT_ID: ${DELL_CLIENT_ID:-}
+  DELL_CLIENT_SECRET: ${DELL_CLIENT_SECRET:-}
+  LENOVO_API_KEY: ${LENOVO_API_KEY:-}
+  LENOVO_WARRANTY_ENABLED: ${LENOVO_WARRANTY_ENABLED:-}
   # Breeze AI for Office (Excel add-in). Entra app-registration client ID that
   # gates the /client-ai exchange + admin surface. Empty/unmapped = surface
   # stays dark (env.ts defaults to ''), so this must be threaded through compose
@@ -255,6 +270,13 @@ x-api-env: &api-env
   # a pgvector-capable Postgres — see POSTGRES_IMAGE_REF in .env.example.
   BREEZE_WORKSPACE_ENABLED: ${BREEZE_WORKSPACE_ENABLED:-false}
   BREEZE_AI_AGENTS_ENABLED: ${BREEZE_AI_AGENTS_ENABLED:-false}
+  # AI Operator (#5205), both default OFF per decision D2 (internal/test orgs
+  # only). Mapped here explicitly because Compose interpolates ONLY what this
+  # block names — a value in `.env` alone never reaches the container, so
+  # without these two lines the feature cannot be switched on in any
+  # deployment and `GET /config` reports it disabled with no error anywhere.
+  AI_OPERATOR_TASKS_ENABLED: ${AI_OPERATOR_TASKS_ENABLED:-false}
+  AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED: ${AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED:-false}
   # Wave 5 Part B (#3827) sub-flag — see .env.example for what it gates.
   BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: ${BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED:-false}
   # BYO-LLM partner provider catalog (#3922 W01–W04) — off by default.
@@ -281,7 +303,8 @@ x-api-env: &api-env
   # Auth / security / session
   ENABLE_2FA: ${ENABLE_2FA:-}
   # RMM-QA-164 relief valve (see .env.example). Empty when unset → envFlag
-  # default true; mapped so a locked-out self-hoster can actually flip it.
+  # default false this release (#4491, opt in with true); mapped so a
+  # self-hoster can actually flip it either way.
   MFA_FORCE_FOR_PARTNER_ADMIN: ${MFA_FORCE_FOR_PARTNER_ADMIN:-}
   # Optional per-refresh-token-family budget for POST /auth/refresh (#3696).
   # Mapped so the knob is actually reachable inside the container — a value
@@ -312,6 +335,15 @@ x-api-env: &api-env
   PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT: ${PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT:-}
   PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT: ${PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT:-}
   AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET: ${AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET:-}
+  # Offline work queue (#5128). Queueing for previously-rejecting callers
+  # (patches, automations, scan/rollback) is ON by default since W4 — pass
+  # `false` to opt back out. The TTL vars are per delivery class, in hours;
+  # left empty so services/commandOfflinePolicy.ts owns the defaults
+  # (168 / 24 / 24) in exactly one place.
+  DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED: ${DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED:-}
+  DEVICE_COMMAND_QUEUE_TTL_HOURS: ${DEVICE_COMMAND_QUEUE_TTL_HOURS:-}
+  DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS: ${DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS:-}
+  DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS: ${DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS:-}
   # Email — SMTP extras + Mailgun provider
   SMTP_FROM: ${SMTP_FROM:-}
   SMTP_SECURE: ${SMTP_SECURE:-}
@@ -377,7 +409,6 @@ x-api-env: &api-env
   COOKIE_FORCE_SECURE: ${COOKIE_FORCE_SECURE:-}
   AUTH_COOKIE_SAME_SITE: ${AUTH_COOKIE_SAME_SITE:-}
   AUTH_COOKIE_FORCE_SECURE: ${AUTH_COOKIE_FORCE_SECURE:-}
-  AUTH_BROWSER_TRANSITIONS_ENFORCED: ${AUTH_BROWSER_TRANSITIONS_ENFORCED:-false}
   AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: ${AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED:-false}
   PORTAL_COOKIE_SAME_SITE: ${PORTAL_COOKIE_SAME_SITE:-}
   PORTAL_COOKIE_FORCE_SECURE: ${PORTAL_COOKIE_FORCE_SECURE:-}

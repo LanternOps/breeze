@@ -8,6 +8,12 @@ import {
 const UUID = '3f2f1d8e-1111-4222-8333-444455556666';
 
 describe('createTimeEntrySchema', () => {
+  it('reserves billed for invoice issuance while retaining technician dispositions', () => {
+    const base = { startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:30:00Z' };
+    expect(createTimeEntrySchema.safeParse({ ...base, billingStatus: 'billed' }).success).toBe(false);
+    expect(createTimeEntrySchema.safeParse({ ...base, billingStatus: 'no_charge' }).success).toBe(true);
+    expect(createTimeEntrySchema.safeParse({ ...base, billingStatus: 'contract' }).success).toBe(true);
+  });
   it('accepts a minimal manual entry', () => {
     const r = createTimeEntrySchema.safeParse({
       startedAt: '2026-06-11T09:00:00Z',
@@ -61,6 +67,11 @@ describe('listTimeEntriesQuerySchema', () => {
 });
 
 describe('updateTimeEntrySchema', () => {
+  it('reserves billed for invoice issuance while retaining technician dispositions', () => {
+    expect(updateTimeEntrySchema.safeParse({ billingStatus: 'billed' }).success).toBe(false);
+    expect(updateTimeEntrySchema.safeParse({ billingStatus: 'no_charge' }).success).toBe(true);
+    expect(updateTimeEntrySchema.safeParse({ billingStatus: 'contract' }).success).toBe(true);
+  });
   it('rejects empty object (at-least-one-field refine)', () => {
     expect(updateTimeEntrySchema.safeParse({}).success).toBe(false);
   });
@@ -91,6 +102,12 @@ describe('bulkApproveSchema', () => {
 });
 
 describe('ticketPartSchema', () => {
+  it('reserves billed for invoice issuance while retaining technician dispositions', () => {
+    const base = { description: 'SSD', quantity: 1 };
+    expect(ticketPartSchema.safeParse({ ...base, billingStatus: 'billed' }).success).toBe(false);
+    expect(ticketPartSchema.safeParse({ ...base, billingStatus: 'no_charge' }).success).toBe(true);
+    expect(ticketPartSchema.safeParse({ ...base, billingStatus: 'contract' }).success).toBe(true);
+  });
   it('accepts a minimal part', () => {
     expect(ticketPartSchema.safeParse({ description: 'SSD 1TB', quantity: 1 }).success).toBe(true);
   });
@@ -102,6 +119,11 @@ describe('ticketPartSchema', () => {
 });
 
 describe('updateTicketPartSchema', () => {
+  it('reserves billed for invoice issuance while retaining technician dispositions', () => {
+    expect(updateTicketPartSchema.safeParse({ billingStatus: 'billed' }).success).toBe(false);
+    expect(updateTicketPartSchema.safeParse({ billingStatus: 'no_charge' }).success).toBe(true);
+    expect(updateTicketPartSchema.safeParse({ billingStatus: 'contract' }).success).toBe(true);
+  });
   it('rejects empty object (at-least-one-field refine)', () => {
     expect(updateTicketPartSchema.safeParse({}).success).toBe(false);
   });

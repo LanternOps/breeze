@@ -479,6 +479,7 @@
       "selectSite": "Standort auswählen"
     },
     "paused": "Angehalten",
+    "scheduleBlocked": "Wiederkehrender Scan pausiert: erneute Genehmigung erforderlich",
     "permissionManage": "Mutationsaktionen werden nach einem Fehler bei der Berechtigungsprüfung deaktiviert. Benötigt `devices:write`.",
     "placeholders": {
       "subnet": "192.168.1.0/24"
@@ -707,6 +708,8 @@
     "iot": "IoT",
     "camera": "Kamera",
     "nas": "NAS",
+    "website": "Website",
+    "service": "Dienst",
     "unknown": "Unbekannt",
     "patchPanel": "Patchpanel",
     "other": "Andere"

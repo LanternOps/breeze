@@ -12,7 +12,6 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/breeze-rmm/agent/internal/remote/clipboard"
-	"github.com/breeze-rmm/agent/internal/remote/filedrop"
 )
 
 const (
@@ -35,29 +34,34 @@ const (
 
 // Session represents a remote desktop WebRTC session with H264 encoding.
 type Session struct {
-	id              string
-	peerConn        *webrtc.PeerConnection
-	videoTrack      *webrtc.TrackLocalStaticSample
-	dataChannel     *webrtc.DataChannel
-	inputHandler    InputHandler
-	capturer        ScreenCapturer
-	encoder         atomic.Pointer[VideoEncoder]
-	encoderPF       PixelFormat // cached encoder input format for CPU Encode() path
-	clipboardSync   *clipboard.ClipboardSync
-	fileDropHandler *filedrop.FileDropHandler
-	cursorDC        *webrtc.DataChannel
-	controlDC       *webrtc.DataChannel
-	audioTrack      *webrtc.TrackLocalStaticSample
-	audioCapturer   AudioCapturer
-	audioEnabled    atomic.Bool
-	done            chan struct{}
-	mu              sync.RWMutex
-	isActive        bool
-	fps             int
-	cleanupOnce     sync.Once
-	stopOnce        sync.Once
-	startOnce       sync.Once
-	wg              sync.WaitGroup
+	id            string
+	peerConn      *webrtc.PeerConnection
+	videoTrack    *webrtc.TrackLocalStaticSample
+	dataChannel   *webrtc.DataChannel
+	inputHandler  InputHandler
+	capturer      ScreenCapturer
+	encoder       atomic.Pointer[VideoEncoder]
+	encoderPF     PixelFormat // cached encoder input format for CPU Encode() path
+	clipboardSync *clipboard.ClipboardSync
+	cursorDC      *webrtc.DataChannel
+	controlDC     *webrtc.DataChannel
+	audioTrack    *webrtc.TrackLocalStaticSample
+	audioCapturer AudioCapturer
+	audioEnabled  atomic.Bool
+	done          chan struct{}
+	mu            sync.RWMutex
+	isActive      bool
+	fps           int
+	// stopReason is the short, technician-facing text describing why teardown
+	// happened, set by StopWithReason (#5300). Empty for a plain Stop() call
+	// (operator-initiated stop, lifetime policy, peer disconnect) — callers
+	// fall back to the generic ended-session text in that case, same as the
+	// startup probe path does when describeCaptureFailure has nothing to add.
+	stopReason  string
+	cleanupOnce sync.Once
+	stopOnce    sync.Once
+	startOnce   sync.Once
+	wg          sync.WaitGroup
 
 	// Optimized pipeline components (shared with WS path)
 	differ   *frameDiffer
@@ -156,6 +160,11 @@ type Session struct {
 	// viewer would never idle out and the idle timeout would be defeated.
 	// Updated via recordInputActivity().
 	lastInputUnixNano atomic.Int64
+
+	// leaseState tracks this session's revocation lease: the latest expiry and
+	// hard deadline, plus whether the control plane revoked it. Never nil for a
+	// session created by StartSession (a start without a lease is refused).
+	leaseState *revocationLeaseState
 }
 
 // SessionManager manages remote desktop sessions
@@ -178,10 +187,24 @@ type SessionManager struct {
 	// which can call SendSAS(FALSE). In direct mode it defaults to InvokeSAS().
 	OnSASRequest func() error
 
+	// RequestRevocationLeaseRenew, if set, asks the control plane to renew the
+	// revocation lease for a session. Set by the layer that owns the agent's
+	// command WebSocket (the heartbeat), because this package has no transport
+	// of its own. Fire-and-forget: the answer arrives asynchronously and is
+	// applied via ApplyRevocationLease / RevokeSession.
+	RequestRevocationLeaseRenew func(sessionID string)
+
 	// OnSessionStopped is called when a WebRTC peer connection transitions to
 	// Failed or Closed. Used to notify the API so it can mark the session as
 	// disconnected and allow reconnection.
-	OnSessionStopped func(sessionID string)
+	//
+	// reason is the session's LastStopReason() at the time this fires (#5300)
+	// — "" for every stop path except the no-video watchdog, which records the
+	// swallowed capture error via StopWithReason. Safe to read here: by the
+	// time a call site below invokes this, Session.Stop/StopWithReason has
+	// already returned (called synchronously, earlier in the same call chain),
+	// so the reason is fully committed under s.mu before this ever reads it.
+	OnSessionStopped func(sessionID, reason string)
 
 	// OnSessionStarted is the symmetric hook: called when a WebRTC peer
 	// connection reaches Connected, i.e. the viewer is actually watching.
@@ -406,14 +429,56 @@ func (m *SessionManager) StopAllSessions() {
 	}
 }
 
+// maxStopReasonBytes bounds the text StopWithReason records. Every source we
+// feed it (gdiCallError's Win32 text, describeCaptureFailure's wrapping) is
+// already short by construction, but the bound is enforced here — not left to
+// callers — so a future caller cannot regress it. Mirrors the ~400-byte bar
+// describeCaptureFailure is held to on the startup path (#5284/#5295).
+const maxStopReasonBytes = 300
+
+// Stop tears down the session with no specific reason recorded. Existing
+// call sites (operator-initiated stop, lifetime-policy expiry, peer
+// disconnect) are unaffected — LastStopReason() reads back empty, and callers
+// fall back to the generic ended-session text.
 func (s *Session) Stop() {
+	s.StopWithReason("")
+}
+
+// StopWithReason tears down the session, recording reason as the short,
+// technician-facing explanation for why it ended.
+//
+// This exists for #5300: the no-video watchdog (session_capture.go) used to
+// call Stop() with nothing, so a mid-session capture failure left the viewer
+// with the same generic "This remote session has ended" text regardless of
+// cause — while the startup probe path (#5284/#5295) already attaches the
+// real Win32 error via describeCaptureFailure. StopWithReason gives teardown
+// the same channel: pass the swallowed capture error (see noVideoStopReason)
+// when one is known, or "" to fall back to the generic text, same as the
+// probe path does when describeCaptureFailure has nothing to add.
+//
+// reason should already be short and free of OS handle values — the same bar
+// gdiCallError's text is held to — but it is truncated defensively regardless.
+//
+// stopOnce means only the first caller's reason is ever recorded — a second,
+// concurrent StopWithReason (e.g. an operator-initiated Stop() racing the
+// no-video watchdog) never runs this body at all. That second reason is not
+// silently dropped: it's logged at Debug below so a real failure reason lost
+// to that race is still visible to anyone reading agent logs, even though it
+// never reaches LastStopReason().
+func (s *Session) StopWithReason(reason string) {
+	if len(reason) > maxStopReasonBytes {
+		reason = reason[:maxStopReasonBytes]
+	}
+	ran := false
 	s.stopOnce.Do(func() {
+		ran = true
 		s.mu.Lock()
 		if !s.isActive {
 			s.mu.Unlock()
 			return
 		}
 		s.isActive = false
+		s.stopReason = reason
 		s.mu.Unlock()
 
 		close(s.done)
@@ -429,19 +494,44 @@ func (s *Session) Stop() {
 		s.doCleanup()
 
 		snap := s.metrics.Snapshot()
-		slog.Info("Desktop WebRTC session stopped",
+		logArgs := []any{
 			"session", s.id,
 			"totalCaptured", snap.FramesCaptured,
 			"totalSent", snap.FramesSent,
 			"totalSkipped", snap.FramesSkipped,
 			"uptime", snap.Uptime.Round(time.Second),
-		)
+			"reason", reason,
+		}
+		if reason != "" {
+			// A recorded reason means teardown was triggered by a real
+			// failure (currently: the no-video watchdog), not a routine
+			// stop — log it at a level that stands out from normal teardown.
+			slog.Warn("Desktop WebRTC session stopped", logArgs...)
+		} else {
+			slog.Info("Desktop WebRTC session stopped", logArgs...)
+		}
 
 		// Desktop sessions allocate large buffers (DXGI textures, NV12
 		// staging, RGBA frames). Return memory to the OS promptly rather
 		// than waiting for the next GC cycle.
 		debug.FreeOSMemory()
 	})
+	if !ran && reason != "" {
+		slog.Debug("Desktop session already stopping; discarding late stop reason",
+			"session", s.id,
+			"discardedReason", reason,
+			"recordedReason", s.LastStopReason(),
+		)
+	}
+}
+
+// LastStopReason returns the reason the most recent StopWithReason call
+// recorded, or "" when the session hasn't stopped yet or was stopped via the
+// plain zero-arg Stop(). Safe to call before, during, or after teardown.
+func (s *Session) LastStopReason() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.stopReason
 }
 
 func (s *Session) doCleanup() {
@@ -451,9 +541,6 @@ func (s *Session) doCleanup() {
 		}
 		if s.clipboardSync != nil {
 			s.clipboardSync.Stop()
-		}
-		if s.fileDropHandler != nil {
-			s.fileDropHandler.Close()
 		}
 		if s.cursorDC != nil {
 			s.cursorDC.Close()

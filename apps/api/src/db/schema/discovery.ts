@@ -8,12 +8,14 @@ import {
   jsonb,
   pgEnum,
   integer,
+  bigint,
   inet,
   real,
   doublePrecision,
   uniqueIndex,
   index
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { organizations, sites, partners } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
@@ -32,7 +34,20 @@ export const discoveredAssetTypeEnum = pgEnum('discovered_asset_type', [
   'iot',
   'camera',
   'nas',
-  'unknown'
+  'unknown',
+  // #5213 — appended in this order deliberately: `ALTER TYPE … ADD VALUE`
+  // without BEFORE/AFTER appends to the end of the pg enum, so the TS order
+  // must match or drift detection reports a phantom difference.
+  'website',
+  'service'
+]);
+
+// #5213 — who wrote the row. `manual` rows are operator-entered and must never
+// be relabelled by a scan or a UniFi enrichment pass.
+export const discoveredAssetSourceEnum = pgEnum('discovered_asset_source', [
+  'scan',
+  'unifi',
+  'manual'
 ]);
 
 
@@ -129,7 +144,11 @@ export const discoveredAssets = pgTable('discovered_assets', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   siteId: uuid('site_id').notNull().references(() => sites.id),
-  ipAddress: inet('ip_address').notNull(),
+  // NULLable since #5213: a website/DNS-only manual asset has no stable IP.
+  // Uniqueness is now enforced by a PARTIAL index (see below), and two CHECK
+  // constraints keep the old guarantee for scan/unifi rows
+  // (discovered_assets_scan_requires_ip_chk, discovered_assets_manual_identity_chk).
+  ipAddress: inet('ip_address'),
   macAddress: varchar('mac_address', { length: 17 }),
   hostname: varchar('hostname', { length: 255 }),
   label: varchar('label', { length: 255 }),
@@ -164,10 +183,21 @@ export const discoveredAssets = pgTable('discovered_assets', {
   discoveryMethods: discoveryMethodEnum('discovery_methods').array().default([]),
   notes: text('notes'),
   tags: text('tags').array().default([]),
+  // #5213 — who created the row. Insert-side only for every writer: a scan or a
+  // UniFi enrichment pass must never relabel an existing (possibly manual) row.
+  source: discoveredAssetSourceEnum('source').notNull().default('scan'),
+  // Website/SaaS endpoint for asset_type website|service — the identity of an
+  // IP-less asset.
+  url: text('url'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
-  orgIpUnique: uniqueIndex('discovered_assets_org_ip_unique').on(table.orgId, table.ipAddress)
+  // PARTIAL as of #5213 — many IP-less manual rows may coexist in one org, but a
+  // non-NULL IP is still unique per org. Every upsert onto this index must
+  // repeat the predicate via `targetWhere`, or Postgres cannot infer it (42P10).
+  orgIpUnique: uniqueIndex('discovered_assets_org_ip_unique')
+    .on(table.orgId, table.ipAddress)
+    .where(sql`${table.ipAddress} is not null`)
 }));
 
 export interface KnownNetworkDevice {
@@ -220,9 +250,30 @@ export const networkBaselines = pgTable('network_baselines', {
     changed: true,
     rogueDevice: false
   }),
+  // SEC-2026-09-05-146 — creator-bound versioned authority envelope. A recurring
+  // scan_schedule is an effect that keeps firing long after the request that
+  // armed it; without a durable record of WHO armed it the scheduler cannot tell
+  // whether that authority still exists. Every arming path (REST create/update,
+  // AI tool create/update) writes this envelope from the CURRENT authenticated
+  // user in the same transaction as the schedule change and bumps
+  // authorityGeneration; the dispatch gate re-resolves it live under a row lock
+  // before any discovery job, profile or queue effect. A row with no envelope is
+  // fail-closed (never dispatched) — see services/networkBaselineAuthority.ts.
+  authorityUserId: uuid('authority_user_id').references(() => users.id, { onDelete: 'set null' }),
+  // The arming user's site ceiling at arm time. NULL = unrestricted org access.
+  authoritySiteIds: uuid('authority_site_ids').array(),
+  authorityPermissionsEpoch: bigint('authority_permissions_epoch', { mode: 'number' }),
+  authorityMfaEpoch: integer('authority_mfa_epoch'),
+  // sha256 over org_id|site_id|subnet|canonical schedule (enabled + intervalHours
+  // only — nextScanAt is rewritten every tick and must not self-invalidate).
+  authorityFingerprint: text('authority_fingerprint'),
+  authorityGeneration: bigint('authority_generation', { mode: 'number' }).notNull().default(0),
+  authorityArmedAt: timestamp('authority_armed_at', { withTimezone: true }),
+  scheduleBlockedReason: text('schedule_blocked_reason'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
+  authorityUserIdIdx: index('network_baselines_authority_user_id_idx').on(table.authorityUserId),
   orgSiteSubnetUnique: uniqueIndex('network_baselines_org_site_subnet_unique').on(
     table.orgId,
     table.siteId,

@@ -39,6 +39,17 @@ func TestExcludeMatcher(t *testing.T) {
 		{name: "case-insensitive on windows", patterns: []string{"thumbs.db"}, relPath: "pics/Thumbs.DB", caseInsensitive: true, want: true},
 		{name: "case-sensitive elsewhere", patterns: []string{"thumbs.db"}, relPath: "pics/Thumbs.DB", want: false},
 
+		// Root-anchored patterns (leading slash) — gitignore semantics.
+		{name: "anchored dir matches at root", patterns: []string{"/proc/**"}, relPath: "proc", want: true},
+		{name: "anchored dir matches root contents", patterns: []string{"/proc/**"}, relPath: "proc/1/status", want: true},
+		{name: "anchored dir does not match nested same-name dir", patterns: []string{"/proc/**"}, relPath: "home/alice/proc", want: false},
+		{name: "anchored dir does not match nested same-name contents", patterns: []string{"/dev/**"}, relPath: "home/alice/dev/project/main.go", want: false},
+		{name: "anchored file at root", patterns: []string{"/swapfile"}, relPath: "swapfile", want: true},
+		{name: "anchored file spares nested", patterns: []string{"/swapfile"}, relPath: "backup/swapfile", want: false},
+		{name: "anchored backslash form", patterns: []string{"\\pagefile.sys"}, relPath: "pagefile.sys", caseInsensitive: true, want: true},
+		{name: "anchored is case-insensitive on windows", patterns: []string{"/$Recycle.Bin/**"}, relPath: "$RECYCLE.BIN/S-1-5/x", caseInsensitive: true, want: true},
+		{name: "unanchored keeps any-depth behaviour", patterns: []string{"proc/**"}, relPath: "home/alice/proc/x", want: true},
+
 		// No excludes / invalid patterns
 		{name: "no patterns passes everything through", patterns: nil, relPath: "anything.tmp", want: false},
 		{name: "invalid pattern is dropped not fatal", patterns: []string{"[unclosed"}, relPath: "file.txt", want: false},
@@ -129,6 +140,11 @@ func TestCollectBackupFiles_Excludes(t *testing.T) {
 			},
 		},
 		{
+			// #5493: the excluded directory's CONTENTS are pruned, but the
+			// directory itself now gets its own (contentless) manifest
+			// entry — see TestCollectBackupFiles_ExcludedDirectoriesStillGetManifestEntries
+			// for why: without it, a directory excluded by the whole-machine
+			// preset (e.g. /proc, /tmp) never gets recreated by a rebuild.
 			name:     "directory name exclusion skips whole subtree",
 			excludes: []string{"node_modules"},
 			want: []string{
@@ -136,6 +152,7 @@ func TestCollectBackupFiles_Excludes(t *testing.T) {
 				"path_0/junk.tmp",
 				"path_0/keep.txt",
 				"path_0/src/app.ts",
+				"path_0/src/node_modules",
 			},
 		},
 		{
@@ -146,14 +163,17 @@ func TestCollectBackupFiles_Excludes(t *testing.T) {
 				"path_0/junk.tmp",
 				"path_0/keep.txt",
 				"path_0/src/app.ts",
+				"path_0/src/node_modules",
 			},
 		},
 		{
 			name:     "combined patterns",
 			excludes: []string{"*.tmp", "node_modules/**", "cache/**"},
 			want: []string{
+				"path_0/cache",
 				"path_0/keep.txt",
 				"path_0/src/app.ts",
+				"path_0/src/node_modules",
 			},
 		},
 	}
@@ -208,8 +228,11 @@ func TestCollectBackupFiles_BaseNameGlobExcludesDirectorySubtree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collectBackupFiles failed: %v", err)
 	}
-	if len(files) != 1 || files[0].snapshotPath != "path_0/keep.txt" {
-		t.Fatalf("expected only path_0/keep.txt (cache.tmp/ subtree pruned), got %+v", files)
+	// #5493: cache.tmp/ contents are pruned (data.txt never appears), but
+	// the excluded directory itself now gets a contentless KindDir entry —
+	// see TestCollectBackupFiles_ExcludedDirectoriesStillGetManifestEntries.
+	if len(files) != 2 || files[0].snapshotPath != "path_0/cache.tmp" || files[0].kind != KindDir || files[1].snapshotPath != "path_0/keep.txt" {
+		t.Fatalf("expected path_0/cache.tmp (dir) + path_0/keep.txt (cache.tmp/ subtree pruned), got %+v", files)
 	}
 }
 
@@ -226,7 +249,7 @@ func TestCollectBackupFilesFromPaths_PerRunExcludesOverrideConfig(t *testing.T) 
 
 	// Per-run override: exclude *.tmp instead (as backup_run payload would).
 	files, err := mgr.collectBackupFilesFromPaths(
-		t.Context(), []string{root}, newExcludeMatcher([]string{"*.tmp"}),
+		t.Context(), []string{root}, newExcludeMatcher([]string{"*.tmp"}), nil,
 	)
 	if err != nil {
 		t.Fatalf("collectBackupFilesFromPaths failed: %v", err)

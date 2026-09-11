@@ -50,6 +50,15 @@ export function ensureOrgAccess(orgId: string, auth: { canAccessOrg: (orgId: str
   return auth.canAccessOrg(orgId);
 }
 
+/** Device-bound alerts follow current device site; deviceless alerts are org-wide.
+ * Callers applying this predicate must left-join devices. */
+export function alertSiteScopeCondition(allowedSiteIds: string[] | undefined) {
+  if (allowedSiteIds === undefined) return undefined;
+  return allowedSiteIds.length === 0
+    ? isNull(alerts.deviceId)
+    : or(isNull(alerts.deviceId), inArray(devices.siteId, allowedSiteIds));
+}
+
 /**
  * Resolve the org a mutating alerts request should write to, honouring an
  * explicit (query-param) orgId for partner/system callers.
@@ -202,12 +211,18 @@ export async function getNotificationChannelWithOrgCheck(
   }
 
   // Dual-axis access (#2130, same shape as getAlertRuleWithOrgCheck): org-owned
-  // channels via org access; partner-wide channels (orgId NULL) via the
-  // caller's own partner (or system scope). Writes are additionally gated on
-  // canManagePartnerWidePolicies at the routes.
+  // channels via org access; partner-wide channels (orgId NULL) via
+  // canReadPartnerWideRows (system scope, or the owning partner's own
+  // PARTNER-scoped token). Org tokens carry a partnerId too
+  // (middleware/auth.ts feeds it into DbAccessContext.currentPartnerId), so
+  // matching on partnerId alone (sweep 2026-09-08 G6-4) handed every
+  // partner-wide channel's existence to every org user under that partner —
+  // canReadPartnerWideRows is the scope-gated version, matching the by-id
+  // read branch used by GET /alerts/channels. Writes are additionally gated
+  // on canManagePartnerWidePolicies at the routes.
   const hasAccess = channel.orgId !== null
     ? ensureOrgAccess(channel.orgId, auth)
-    : auth.scope === 'system' || (!!auth.partnerId && channel.partnerId === auth.partnerId);
+    : canReadPartnerWideRows({ scope: auth.scope ?? '', partnerId: auth.partnerId ?? null }, channel.partnerId);
   if (!hasAccess) {
     return null;
   }
@@ -232,7 +247,7 @@ export async function getEscalationPolicyWithOrgCheck(
   // Dual-axis access (#2130) — see getNotificationChannelWithOrgCheck.
   const hasAccess = policy.orgId !== null
     ? ensureOrgAccess(policy.orgId, auth)
-    : auth.scope === 'system' || (!!auth.partnerId && policy.partnerId === auth.partnerId);
+    : canReadPartnerWideRows({ scope: auth.scope ?? '', partnerId: auth.partnerId ?? null }, policy.partnerId);
   if (!hasAccess) {
     return null;
   }

@@ -71,7 +71,7 @@ function mockInsertReturns(row: unknown) {
 
 function mockUpdate() {
   const where = vi.fn(async () => undefined);
-  const set = vi.fn(() => ({ where }));
+  const set = vi.fn((_payload: Record<string, unknown>) => ({ where }));
   updateMock.mockReturnValue({ set });
   return { set, where };
 }
@@ -195,5 +195,23 @@ describe('manage_software_policies update — audit fan-out (#3543)', () => {
     expect(recordPolicyAuditMock).not.toHaveBeenCalled();
     expect(writeAuditEventMock).not.toHaveBeenCalled();
     expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  // Site-ceiling gate contract §3/finding 2: this AI-tool write is a second
+  // (non-route) write path to software_policies and needs its own bump.
+  it('bumps approvalGeneration, excluded from the audited updatedFields', async () => {
+    mockSelectReturns([{ id: POLICY_ID, name: 'Detect only', orgId: ORG_ID, partnerId: null, mode: 'blocklist' }]);
+    const { set } = mockUpdate();
+
+    const out = JSON.parse(await tool().handler({
+      action: 'update', policyId: POLICY_ID, enforceMode: true,
+    }, makeOrgAuth()));
+
+    expect(out.success).toBe(true);
+    const setArg = set.mock.calls[0]![0];
+    expect(setArg.approvalGeneration).toBeDefined();
+
+    const updatedFields = (policyAudit()[0]!.details as any).updatedFields as string[];
+    expect(updatedFields).not.toContain('approvalGeneration');
   });
 });

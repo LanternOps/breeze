@@ -98,6 +98,9 @@ const BACKUP_STALL_TIMEOUT_MS = 15 * 60 * 1000;      // progress-capable agent w
 const BACKUP_OFFLINE_GRACE_MS = 10 * 60 * 1000;      // device offline mid-job (covers reboot)
 const BACKUP_ABSOLUTE_TIMEOUT_MS = 24 * 60 * 60 * 1000; // legacy agents: no progress signal exists
 const BACKUP_PENDING_TIMEOUT_MS = 60 * 60 * 1000;    // dispatch enqueued but never flipped/failed
+// D18 W01 (#5429/§3.2 F8): a restore_jobs row created pending BEFORE its
+// command_id exists — see reapCommandlessPendingRestores's docstring.
+const RESTORE_COMMANDLESS_PENDING_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 
 // Reads the threshold from services/deviceLiveness, its single owner (D7).
 // This file used to carry its own `= 5` copy, mirroring what was then a
@@ -175,6 +178,35 @@ export async function propagateTimedOutDeviceCommand(params: {
       errorMessage: errorMsg,
       completedAt,
     });
+  }
+
+  // #5128 W3 — patch installs. A queued install whose delivery deadline passed
+  // (or whose execution clock ran out) has to release the device from the patch
+  // job's counters through the shared finalizer, or the job never terminalises
+  // and its `queued` rows sit there forever: reapStalePatchJobResults only
+  // selects `pending`/`running`, deliberately, because the DELIVERY clock owns
+  // a queued row and this is where that clock reports.
+  // Cheap local discriminator so the dynamic import below only happens for a
+  // command that actually belongs to a patch job (the finalizer re-checks).
+  const carriesPatchJobId =
+    typeof payload?.patchJobId === 'string' && payload.patchJobId.trim().length > 0;
+  if (carriesPatchJobId) {
+    try {
+      // Dynamic, like the drExecution reconcile below: `patchJobFinalizer`
+      // registers its claim-time hold with `commandClaimEligibility`, which this
+      // module already reaches through `commandQueue`. A static edge would close
+      // that into an import cycle.
+      const { finalizePatchDeviceForCommand } = await import('../services/patchJobFinalizer');
+      await finalizePatchDeviceForCommand({
+        commandId,
+        payload,
+        terminal: { kind: params.kind ?? 'timeout', message: errorMsg },
+        completedAt,
+      });
+    } catch (err) {
+      console.error(`[StaleCommandReaper] Failed to finalize patch device for command ${commandId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
   }
 
   // Software deployment results, keyed on the owning command row.
@@ -1452,6 +1484,46 @@ export async function reapStaleBackupJobs(): Promise<number> {
   return reaped;
 }
 
+/**
+ * D18 §3.2 (Codex F8): a restore_jobs row is created `pending` BEFORE its
+ * command_id exists (routes/backup/restore.ts:281,361) — a crash between
+ * those two statements leaves a row propagateTimedOutDeviceCommand can never
+ * reach, because that path matches restores ONLY by command_id
+ * (`WHERE command_id = $1`). Without this reaper, such a row keeps
+ * retention's restore pin alive past its linger only by luck of the linger
+ * window, then pins forever with no path to a terminal status. This rule is
+ * independent of that linger: any commandless pending row older than one
+ * hour is failed outright, regardless of the (separately configurable)
+ * BACKUP_RESTORE_PIN_LINGER_MS retention uses for its own pin check.
+ */
+export async function reapCommandlessPendingRestores(): Promise<number> {
+  const cutoff = new Date(Date.now() - RESTORE_COMMANDLESS_PENDING_TIMEOUT_MS);
+  const completedAt = new Date();
+  const reapedRows = await db
+    .update(restoreJobs)
+    .set({
+      status: 'failed',
+      completedAt,
+      updatedAt: completedAt,
+      targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object(
+        'error', 'Restore never received a command (crashed before dispatch)'
+      )`,
+    })
+    .where(
+      and(
+        isNull(restoreJobs.commandId),
+        eq(restoreJobs.status, 'pending'),
+        lt(restoreJobs.createdAt, cutoff),
+      ),
+    )
+    .returning({ id: restoreJobs.id });
+
+  if (reapedRows.length > 0) {
+    console.log(`[StaleCommandReaper] Reaped ${reapedRows.length} commandless pending restore(s)`);
+  }
+  return reapedRows.length;
+}
+
 // ── Worker & queue management ─────────────────────────────────────
 
 /**
@@ -1473,6 +1545,7 @@ export const REAPER_DOMAINS = [
   ['softwareDeploymentResults', reapStaleSoftwareDeploymentResults],
   ['remoteSessions', reapStaleRemoteSessions],
   ['backupJobs', reapStaleBackupJobs],
+  ['commandlessRestores', reapCommandlessPendingRestores],
 ] as const;
 
 function createWorker(): Worker<ReaperJobData> {

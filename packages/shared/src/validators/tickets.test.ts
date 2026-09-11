@@ -145,6 +145,7 @@ describe('ticket validators', () => {
   describe('requester fields', () => {
     const ORG = '3f2f1d8e-1111-4222-8333-444455556666';
     const PORTAL_USER = '5a6b7c8d-1234-4321-abcd-000011112222';
+    const CONTACT = '9c8d7e6f-2222-4333-8444-555566667777';
 
     it('createTicketSchema accepts a portal-user requester (submittedBy)', () => {
       const r = createTicketSchema.safeParse({ orgId: ORG, subject: 'x', submittedBy: PORTAL_USER });
@@ -175,6 +176,35 @@ describe('ticket validators', () => {
     it('updateTicketSchema rejects an empty submitterName (clear via null, not "")', () => {
       expect(updateTicketSchema.safeParse({ submitterName: '' }).success).toBe(false);
       expect(updateTicketSchema.safeParse({ submitterName: null }).success).toBe(true);
+    });
+
+    // #5367: the staff create/update surface can now name the canonical
+    // requester PERSON directly (`tickets.requester_contact_id`), not just a
+    // portal login. A missing field here is not a validation error — it is a
+    // SILENT DROP, because the schema strips unknown keys before the route
+    // spreads the body into `createTicket`.
+    it('createTicketSchema accepts and preserves requesterContactId', () => {
+      const r = createTicketSchema.safeParse({ orgId: ORG, subject: 'x', requesterContactId: CONTACT });
+      expect(r.success).toBe(true);
+      if (r.success) expect(r.data.requesterContactId).toBe(CONTACT);
+    });
+
+    it('createTicketSchema rejects a non-uuid requesterContactId', () => {
+      expect(createTicketSchema.safeParse({ orgId: ORG, subject: 'x', requesterContactId: 'nope' }).success).toBe(false);
+    });
+
+    it('updateTicketSchema accepts requesterContactId, incl null to clear the contact link', () => {
+      const set = updateTicketSchema.safeParse({ requesterContactId: CONTACT });
+      expect(set.success).toBe(true);
+      if (set.success) expect(set.data.requesterContactId).toBe(CONTACT);
+
+      const cleared = updateTicketSchema.safeParse({ requesterContactId: null });
+      expect(cleared.success).toBe(true);
+      if (cleared.success) expect(cleared.data.requesterContactId).toBeNull();
+    });
+
+    it('updateTicketSchema rejects a non-uuid requesterContactId', () => {
+      expect(updateTicketSchema.safeParse({ requesterContactId: 'nope' }).success).toBe(false);
     });
   });
 

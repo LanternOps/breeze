@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import {
@@ -83,6 +83,7 @@ type AlertListProps = {
   onSuppress?: (alert: Alert) => void;
   onDismiss?: (alert: Alert) => void;
   onBulkAction?: (action: string, alerts: Alert[]) => void;
+  actionsBlocked?: boolean;
   submittingId?: string | null;
   pageSize?: number;
   alertCorrelationDisabled?: boolean;
@@ -109,6 +110,7 @@ export default function AlertList({
   onSuppress,
   onDismiss,
   onBulkAction,
+  actionsBlocked = false,
   submittingId,
   pageSize = 25,
   alertCorrelationDisabled = false,
@@ -175,11 +177,17 @@ export default function AlertList({
     });
   }, [alerts, query, statusFilter, severityFilter, deviceFilter, dateRangeFilter]);
 
+  useEffect(() => {
+    setSelectedIds(previous => new Set([...previous].filter(id => !actionsBlocked && filteredAlerts.some(a => a.id === id))));
+    if (actionsBlocked) setBulkMenuOpen(false);
+  }, [actionsBlocked, filteredAlerts]);
+
   const totalPages = Math.ceil(filteredAlerts.length / pageSize);
   const startIndex = (currentPage - 1) * pageSize;
   const paginatedAlerts = filteredAlerts.slice(startIndex, startIndex + pageSize);
 
   const handleSelectAll = (checked: boolean) => {
+    if (actionsBlocked) return;
     if (checked) {
       setSelectedIds(new Set(paginatedAlerts.map(a => a.id)));
     } else {
@@ -188,6 +196,7 @@ export default function AlertList({
   };
 
   const handleSelectOne = (id: string, checked: boolean) => {
+    if (actionsBlocked) return;
     const newSet = new Set(selectedIds);
     if (checked) {
       newSet.add(id);
@@ -198,8 +207,9 @@ export default function AlertList({
   };
 
   const handleBulkAction = (action: string) => {
-    const selected = alerts.filter(a => selectedIds.has(a.id));
-    onBulkAction?.(action, selected);
+    if (actionsBlocked) return;
+    const selected = filteredAlerts.filter(a => selectedIds.has(a.id));
+    if (selected.length) onBulkAction?.(action, selected);
     setBulkMenuOpen(false);
     setSelectedIds(new Set());
   };
@@ -366,6 +376,7 @@ export default function AlertList({
           <div className="relative">
             <button
               type="button"
+              disabled={actionsBlocked}
               onClick={() => setBulkMenuOpen(!bulkMenuOpen)}
               aria-expanded={bulkMenuOpen}
               aria-haspopup="menu"
@@ -374,7 +385,7 @@ export default function AlertList({
               {t('alertList.bulkActions')}
               <ChevronDown className="h-3.5 w-3.5" />
             </button>
-            {bulkMenuOpen && (
+            {bulkMenuOpen && !actionsBlocked && (
               <div role="menu" className="absolute left-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
                 <button
                   type="button"
@@ -433,6 +444,7 @@ export default function AlertList({
               <th className="px-4 py-3 w-10">
                 <input
                   type="checkbox"
+                        disabled={actionsBlocked}
                   checked={allSelected}
                   aria-label={t('alertList.selectAllAlerts')}
                   ref={el => {
@@ -486,6 +498,7 @@ export default function AlertList({
                     <td className="px-4 py-3">
                       <input
                         type="checkbox"
+                        disabled={actionsBlocked}
                         checked={selectedIds.has(alert.id)}
                         aria-label={t('alertList.selectAlert', { title: alert.title })}
                         onClick={e => e.stopPropagation()}

@@ -455,7 +455,7 @@ func runSupportSession() {
 	// peer-disconnect notification.
 	comps.hb.SetSupportSessionNotifier(
 		func(string) { fmt.Println("Technician connected.") },
-		func(string) { fmt.Println("Technician disconnected.") },
+		func(string, string) { fmt.Println("Technician disconnected.") },
 	)
 
 	fmt.Print(supportBanner)

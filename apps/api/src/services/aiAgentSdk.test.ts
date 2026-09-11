@@ -6,6 +6,7 @@ import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
 import type { IntentReleaseRevalidation } from './actionIntents/revalidateRelease';
 import { APPROVED_EXECUTING_MESSAGE, APPROVED_EXECUTING_STATUS } from './aiToolHandoff';
+import { setActionIntentMetricsRecorder } from './actionIntents/metrics';
 
 // ============================================
 // Mocks
@@ -130,6 +131,16 @@ vi.mock('./actionIntents/intentService', () => ({
   createActionIntent: (...args: unknown[]) => mockCreateActionIntent(...args),
   waitForIntentDecision: (...args: unknown[]) => mockWaitForIntentDecision(...args),
   transitionIntent: (...args: unknown[]) => mockTransitionIntent(...args),
+}));
+
+// #5205 W05 (#5210): the terminal outbox publication, mocked wholesale — its
+// own contract (the intent_outbox row, the conditional task_outbox leg) is
+// pinned by taskOutbox.test.ts and the writer contract integration test, not
+// here. The real function reads `intentOutbox` from the `../db/schema/
+// actionIntents` mock below, which only stubs `actionIntents`.
+const mockPublishIntentTerminalOutbox = vi.fn((..._args: unknown[]) => Promise.resolve());
+vi.mock('./aiOperator/taskOutbox', () => ({
+  publishIntentTerminalOutbox: (...args: unknown[]) => mockPublishIntentTerminalOutbox(...args),
 }));
 
 // Mocked as a collaborator (like intentService): the inline release path calls
@@ -632,21 +643,10 @@ describe('runPreFlightChecks', () => {
     expect(mockBuildSystemPrompt).toHaveBeenCalledWith(auth);
   });
 
-  // --- Remaining budget ---
+  // --- Durable budget handoff ---
 
-  it('returns remaining budget as maxBudgetUsd', async () => {
+  it('does not return an advisory remaining-budget snapshot', async () => {
     mockGetRemainingBudgetUsd.mockResolvedValue(42.5);
-
-    const result = await runPreFlightChecks('session-1', 'hello', auth);
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.maxBudgetUsd).toBe(42.5);
-    }
-  });
-
-  it('sets maxBudgetUsd to undefined when remaining budget is null', async () => {
-    mockGetRemainingBudgetUsd.mockResolvedValue(null);
 
     const result = await runPreFlightChecks('session-1', 'hello', auth);
 
@@ -654,14 +654,7 @@ describe('runPreFlightChecks', () => {
     if (result.ok) {
       expect(result.maxBudgetUsd).toBeUndefined();
     }
-  });
-
-  it('returns error when getRemainingBudgetUsd throws', async () => {
-    mockGetRemainingBudgetUsd.mockRejectedValue(new Error('DB timeout'));
-
-    const result = await runPreFlightChecks('session-1', 'hello', auth);
-
-    expect(result).toEqual({ ok: false, error: 'Unable to verify spending budget. Please try again later.' });
+    expect(mockGetRemainingBudgetUsd).not.toHaveBeenCalled();
   });
 
   // --- Successful result ---
@@ -679,7 +672,7 @@ describe('runPreFlightChecks', () => {
       expect(result.session).toEqual(session);
       expect(result.sanitizedContent).toBe('clean input');
       expect(result.systemPrompt).toBeDefined();
-      expect(result.maxBudgetUsd).toBe(25.0);
+      expect(result.maxBudgetUsd).toBeUndefined();
       expect(result.resolved).toEqual({
         source: 'platform',
         apiKey: 'platform-key',
@@ -1277,6 +1270,121 @@ describe('createSessionPreToolUse', () => {
         executedAt: expect.any(Date),
         result: expect.objectContaining({ status: 'completed' }),
       }));
+      // #5205 W05 (#5210): the CAS win must also publish the terminal outbox
+      // event, with taskId always null here (this file never threads a task
+      // context through createActionIntent).
+      expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+        expect.anything(),
+        { id: 'intent-6', orgId: 'org-1', taskId: null },
+        'intent_completed',
+      );
+    });
+
+    // ---------------------------------------------------------------------
+    // #5232: a LOST executing -> terminal CAS after the tool already ran.
+    // `transitionIntent` returns false and never throws, so before this the
+    // inline path executed a real side effect and then discarded its result
+    // with no log line, no Sentry event and no audit row — strictly more
+    // silent than jobs/intentReleaseWorker.ts, which handles the same race.
+    // ---------------------------------------------------------------------
+    async function runInlineTier3WithCasOutcome(opts: {
+      intentId: string;
+      execId: string;
+      casWon: boolean;
+    }) {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: opts.execId });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({ id: opts.intentId, approvalRequestIds: ['appr-cas'] }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      // The approved -> executing release CAS must WIN, otherwise the session
+      // never runs the tool and there is no post-execution race to test.
+      mockTransitionIntent.mockResolvedValue(true);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const pre = await createSessionPreToolUse(session)('execute_command', {});
+      expect(pre).toEqual({ allowed: true, intentId: opts.intentId });
+
+      // Only the TERMINAL CAS loses.
+      mockTransitionIntent.mockClear();
+      mockWriteAuditEvent.mockClear();
+      mockCaptureException.mockClear();
+      mockTransitionIntent.mockResolvedValue(opts.casWon);
+
+      await createSessionPostToolUse(session)(
+        'execute_command',
+        {},
+        JSON.stringify({ status: 'completed' }),
+        false,
+        10,
+      );
+
+      expect(mockTransitionIntent).toHaveBeenCalledWith(
+        opts.intentId,
+        'executing',
+        'completed',
+        expect.anything(),
+      );
+      return mockWriteAuditEvent.mock.calls.find(
+        (c) => (c[1] as any)?.action === 'action_intent.executed',
+      );
+    }
+
+    it('records a CAS-lost marker + Sentry event when the terminal CAS loses after the tool ran (#5232)', async () => {
+      const marker = await runInlineTier3WithCasOutcome({
+        intentId: 'intent-cas-lost',
+        execId: 'exec-cas-lost',
+        casWon: false,
+      });
+
+      // The side effect already happened and cannot be undone — but the
+      // intent now carries someone else's terminal state, so the result this
+      // execution produced is recorded nowhere. That must be loud.
+      expect(marker).toBeDefined();
+      expect(marker![1]).toMatchObject({
+        orgId: 'org-1',
+        resourceType: 'action_intent',
+        resourceId: 'intent-cas-lost',
+        result: 'failure',
+        details: expect.objectContaining({
+          actionName: 'execute_command',
+          source: 'chat',
+          errorCode: 'execution_cas_lost',
+          intendedStatus: 'completed',
+          // Pins WHICH of the five call sites lost — a copy-pasted label
+          // would make the marker untriageable.
+          casLabel: 'ai_sdk_inline_completion',
+          executed: true,
+        }),
+      });
+      expect(mockCaptureException).toHaveBeenCalled();
+      // The Sentry tag must be the snake_case `cas_label` (allowlisted in
+      // services/sentry.ts); a camelCase key is voided by the scrubber.
+      expect(mockCaptureException.mock.calls[0]?.[2]).toEqual({
+        cas_label: 'ai_sdk_inline_completion',
+      });
+    });
+
+    it('writes NO CAS-lost marker when the terminal CAS wins (#5232)', async () => {
+      // Discriminating control: without it, a helper that unconditionally
+      // wrote the marker would satisfy the test above.
+      const marker = await runInlineTier3WithCasOutcome({
+        intentId: 'intent-cas-won',
+        execId: 'exec-cas-won',
+        casWon: true,
+      });
+
+      expect(marker).toBeUndefined();
+      expect(mockCaptureException).not.toHaveBeenCalled();
     });
 
     // ---------------------------------------------------------------------
@@ -2488,6 +2596,57 @@ describe('inline secret-bearing completion (Task 6)', () => {
     // plan completion, audit event) still ran for this postToolUse call
     // instead of being aborted by an uncaught throw.
     expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'tool_result' }));
+
+    // #5205 W05 (#5210): the guard-tripped CAS win must also publish the
+    // terminal outbox event.
+    expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'intent-leak', orgId: 'org-1', taskId: null },
+      'intent_failed',
+    );
+  });
+
+  // #5232: the worst of the five call sites. The reset ALREADY happened, the
+  // credential it produced is being refused persistence, and now the intent
+  // records neither — it carries the winner's terminal state instead. Shares
+  // the `executed: true` branch with the completion site but is a distinct
+  // call with its own casLabel/intendedStatus, so a copy-paste slip here
+  // would not show up in the completion test.
+  it('records a CAS-lost marker for the plaintext-guard site when its CAS loses after the tool ran (#5232)', async () => {
+    mockTransitionIntent.mockResolvedValue(false);
+    const session = makeActiveSession({ auditSnapshot: { requestId: 'req-1' } as any });
+
+    await createSessionPostToolUse(session)(
+      'm365_reset_password',
+      { userIdentifier: 'a@b.com' },
+      'Reset done.',
+      false,
+      12,
+      { intentId: 'intent-leak-cas-lost', sealedResult: { temporaryPassword: 'hunter2-plaintext' } },
+    );
+
+    const marker = mockWriteAuditEvent.mock.calls.find(
+      (c) => (c[1] as any)?.action === 'action_intent.executed',
+    );
+    expect(marker).toBeDefined();
+    expect(marker![1]).toMatchObject({
+      resourceId: 'intent-leak-cas-lost',
+      result: 'failure',
+      details: expect.objectContaining({
+        actionName: 'm365_reset_password',
+        errorCode: 'execution_cas_lost',
+        intendedStatus: 'failed',
+        casLabel: 'ai_sdk_inline_plaintext_guard',
+        executed: true,
+      }),
+    });
+    // Two captures: the guard trip itself, and the lost CAS on top of it.
+    // Neither may swallow the other.
+    expect(
+      mockCaptureException.mock.calls.some((c) => (c[2] as any)?.cas_label === 'ai_sdk_inline_plaintext_guard'),
+    ).toBe(true);
+    // The guarded plaintext must never ride along into the marker.
+    expect(JSON.stringify(marker![1])).not.toContain('hunter2-plaintext');
   });
 
   describe('Important 4: PAM-helper tier-3-but-intentless path pins intentId===undefined (deliberately out of scope for the plan-step fix below — PAM/helper sessions use their own elevation governance, not durable action-intents; see design doc docs/superpowers/specs/ai-mcp/2026-07-27-tier3-plan-mode-approval-parity-design.md §1.5)', () => {
@@ -2959,6 +3118,139 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     expect(session.eventBus.publish).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'plan_step_start' }),
     );
+    // #5205 W05 (#5210): the executing -> failed CAS this revalidation
+    // failure drives must also publish the terminal outbox event.
+    expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'intent-plan-revalidate-fail', orgId: 'org-1', taskId: null },
+      'intent_failed',
+    );
+  });
+
+  // #5326: a pre-execution terminal-CAS loss (this one on the revalidation
+  // -failure path) used to be a bare console.warn — invisible to Prometheus.
+  // It now bumps breeze_action_intents_total{outcome="cas_lost"} so contention
+  // on the pre-execution terminalization paths is countable and alertable.
+  it('bumps the cas_lost action-intent metric when a PRE-EXECUTION terminal CAS loses (#5326)', async () => {
+    const onEvent = vi.fn();
+    setActionIntentMetricsRecorder({ onEvent });
+    try {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-plan-revalidate-cas-lost' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({
+          id: 'intent-plan-revalidate-cas-lost',
+          approvalRequestIds: ['appr-plan-revalidate-cas-lost'],
+        }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      // Wins the approved -> executing release CAS; LOSES the terminal
+      // executing -> failed CAS that the revalidation failure drives.
+      mockTransitionIntent.mockResolvedValueOnce(true).mockResolvedValue(false);
+      mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: false, errorCode: 'actor_invalid' });
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        activePlanId: 'plan-1',
+        approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+      });
+
+      const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+      expect(result).toEqual({
+        allowed: false,
+        error: 'Authorization for this action could no longer be verified; it was not executed.',
+      });
+      expect(onEvent).toHaveBeenCalledWith('chat', 'execute_command', 'cas_lost');
+      // Discriminating control: the tool never ran, so this must NOT be
+      // counted as an execution.
+      expect(onEvent).not.toHaveBeenCalledWith('chat', 'execute_command', 'executed');
+    } finally {
+      setActionIntentMetricsRecorder(null);
+    }
+  });
+
+  // Guard for the metric call itself: a throw out of the metrics layer must
+  // not unwind into the caller's outer catch and replace the specific
+  // revalidation diagnosis with a generic execution_error.
+  it('keeps the specific revalidation error when the cas_lost metric recorder throws (#5326)', async () => {
+    setActionIntentMetricsRecorder({
+      onEvent: () => {
+        throw new Error('prom registry exploded');
+      },
+    });
+    try {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-plan-metric-throws' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({
+          id: 'intent-plan-metric-throws',
+          approvalRequestIds: ['appr-plan-metric-throws'],
+        }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValueOnce(true).mockResolvedValue(false);
+      mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: false, errorCode: 'actor_invalid' });
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        activePlanId: 'plan-1',
+        approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+      });
+
+      const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+      expect(result).toEqual({
+        allowed: false,
+        error: 'Authorization for this action could no longer be verified; it was not executed.',
+      });
+    } finally {
+      setActionIntentMetricsRecorder(null);
+    }
+  });
+
+  // Control for the test above: when the terminal CAS WINS there is no
+  // contention to report, so nothing may be counted as cas_lost.
+  it('does NOT bump cas_lost when the pre-execution terminal CAS wins (#5326)', async () => {
+    const onEvent = vi.fn();
+    setActionIntentMetricsRecorder({ onEvent });
+    try {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-plan-revalidate-cas-won' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({
+          id: 'intent-plan-revalidate-cas-won',
+          approvalRequestIds: ['appr-plan-revalidate-cas-won'],
+        }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(true);
+      mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: false, errorCode: 'actor_invalid' });
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        activePlanId: 'plan-1',
+        approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+      });
+
+      await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+      expect(onEvent).not.toHaveBeenCalledWith('chat', 'execute_command', 'cas_lost');
+    } finally {
+      setActionIntentMetricsRecorder(null);
+    }
   });
 
   // Effect-digest revalidation (tier3-supervised-four-eyes design §4.1): the
@@ -3022,6 +3314,74 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
       'failed',
       { errorCode: 'content_changed' },
     );
+    // #5205 W05 (#5210): same CAS win must publish the terminal outbox event.
+    expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'intent-plan-digest-mismatch', orgId: 'org-1', taskId: null },
+      'intent_failed',
+    );
+  });
+
+  // #5232, `executed: false` branch. The other half of `reportLostTerminalCas`:
+  // a CAS lost BEFORE the tool ran is the mutual exclusion working, not a lost
+  // outcome — nothing executed, so there is no result to strand and no reason
+  // to duplicate an audit row the winner already wrote. Without this test the
+  // "quiet on the pre-execution path" decision (which mirrors
+  // intentReleaseWorker.ts's failIntent) is unproven, and a regression that
+  // started marking these would look identical to the real thing.
+  it('does NOT write a CAS-lost marker or capture when the digest-mismatch CAS loses BEFORE the tool ran (#5232)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-digest-cas-lost' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-digest-cas-lost', approvalRequestIds: ['appr-digest-cas-lost'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    // The approved -> executing release CAS WINS; only the terminal
+    // executing -> failed:content_changed CAS loses.
+    mockTransitionIntent.mockResolvedValueOnce(true).mockResolvedValue(false);
+    const selectChain: Record<string, unknown> = {
+      from: vi.fn(() => selectChain),
+      where: vi.fn(() => selectChain),
+      limit: vi.fn(async () => [
+        {
+          id: 'intent-digest-cas-lost',
+          boundArgumentDigest: 'digest',
+          actionName: 'execute_command',
+          arguments: { command: 'whoami' },
+          effectDigest: 'stored-digest-abc',
+        },
+      ]),
+    };
+    vi.mocked(db.select).mockReturnValue(selectChain as any);
+    mockComputeEffectDigest.mockResolvedValueOnce({ digest: 'recomputed-digest-xyz' });
+    const session = makeActiveSession({ approvalMode: 'per_step' });
+
+    const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    // Still refuses to execute — losing the terminal CAS must not turn a
+    // content_changed stop into an allowed run.
+    expect(result).toEqual({
+      allowed: false,
+      error: 'The referenced content changed after approval; it was not executed.',
+    });
+    expect(mockTransitionIntent).toHaveBeenCalledWith(
+      'intent-digest-cas-lost',
+      'executing',
+      'failed',
+      { errorCode: 'content_changed' },
+    );
+    // No side effect happened, so no marker and no Sentry event.
+    expect(
+      mockWriteAuditEvent.mock.calls.find((c) => (c[1] as any)?.action === 'action_intent.executed'),
+    ).toBeUndefined();
+    expect(mockCaptureException).not.toHaveBeenCalled();
+    // A lost CAS means the winner owns the outbox row too.
+    expect(mockPublishIntentTerminalOutbox).not.toHaveBeenCalled();
   });
 
   // The mirror image: a stored NULL effect digest (supervised intents never
@@ -3455,6 +3815,13 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
     });
     expect(session.activePlanId).toBeNull();
     expect(session.approvedPlanSteps.size).toBe(0);
+    // #5205 W05 (#5210): the executing -> failed CAS this revalidation
+    // failure drives must also publish the terminal outbox event.
+    expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'intent-task3-revalidate', orgId: 'org-1', taskId: null },
+      'intent_failed',
+    );
   });
 
   // ----------------------------------------------------------------------
@@ -3551,6 +3918,14 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
     );
     expect(session.activePlanId).toBeNull();
     expect(session.approvedPlanSteps.size).toBe(0);
+    // #5205 W05 (#5210): the self-heal CAS win must also publish the
+    // terminal outbox event — without this, a stranded-intent self-heal
+    // would silently never wake anything watching for the outcome.
+    expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'intent-selfheal', orgId: 'org-1', taskId: null },
+      'intent_failed',
+    );
   });
 
   // ----------------------------------------------------------------------

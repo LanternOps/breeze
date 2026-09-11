@@ -29,7 +29,8 @@ const {
   }
   const authState = {
     scope: 'partner' as 'partner' | 'system',
-    permissions: new Set<string>(['organizations:write', 'catalog:write']),
+    partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
+    permissions: new Set<string>(['accounting:read', 'accounting:manage', 'organizations:write', 'catalog:write']),
     mfa: true,
   };
   return {
@@ -73,6 +74,7 @@ vi.mock('../../middleware/auth', () => ({
     c.set('auth', {
       scope: authState.scope,
       partnerId: authState.scope === 'system' ? null : 'p1',
+      partnerOrgAccess: authState.partnerOrgAccess,
       user: { id: 'u1' },
     });
     await next();
@@ -145,7 +147,7 @@ const INTERNAL_MAPPING_FIELDS = ['integrationId', 'partnerId', 'remoteSyncToken'
 beforeEach(() => {
   vi.clearAllMocks();
   authState.scope = 'partner';
-  authState.permissions = new Set(['organizations:write', 'catalog:write']);
+  authState.permissions = new Set(['accounting:read', 'accounting:manage', 'organizations:write', 'catalog:write']);
   authState.mfa = true;
 });
 
@@ -273,7 +275,7 @@ describe('GET /accounting/:provider/income-accounts', () => {
   });
 
   it('is read-only: no MFA/permission gate blocks a plain partner-scoped caller', async () => {
-    authState.permissions = new Set();
+    authState.permissions = new Set(['accounting:read', 'accounting:manage']);
     listRemoteIncomeAccountsForPartnerMock.mockResolvedValue([]);
     const res = await app().request('/accounting/quickbooks/income-accounts');
     expect(res.status).toBe(200);
@@ -390,7 +392,7 @@ describe('PUT /accounting/:provider/mappings', () => {
   });
 
   it('denies an org decision without ORGS_WRITE (403) before calling the service', async () => {
-    authState.permissions = new Set(['catalog:write']);
+    authState.permissions = new Set(['accounting:read', 'accounting:manage', 'catalog:write']);
     const res = await putMapping({
       breezeEntityType: 'org',
       breezeEntityId: VALID_ORG_ID,
@@ -401,7 +403,7 @@ describe('PUT /accounting/:provider/mappings', () => {
   });
 
   it('denies a catalog_item decision without CATALOG_WRITE (403) before calling the service', async () => {
-    authState.permissions = new Set(['organizations:write']);
+    authState.permissions = new Set(['accounting:read', 'accounting:manage', 'organizations:write']);
     const res = await putMapping({
       breezeEntityType: 'catalog_item',
       breezeEntityId: VALID_ITEM_ID,
@@ -413,7 +415,7 @@ describe('PUT /accounting/:provider/mappings', () => {
 
   it('allows a SYSTEM-scope caller that holds no per-partner role', async () => {
     authState.scope = 'system';
-    authState.permissions = new Set();
+    authState.permissions = new Set(['accounting:read', 'accounting:manage']);
     saveMappingDecisionMock.mockResolvedValue(fullMappingRow({
       partnerId: OTHER_PARTNER_ID, remoteEntityId: null, linkStatus: 'create_new',
     }));
@@ -545,14 +547,14 @@ describe('POST /accounting/:provider/mappings/sync', () => {
   });
 
   it('denies an org sync without ORGS_WRITE (403) before calling the service', async () => {
-    authState.permissions = new Set(['catalog:write']);
+    authState.permissions = new Set(['accounting:read', 'accounting:manage', 'catalog:write']);
     const res = await postSync({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID });
     expect(res.status).toBe(403);
     expect(syncMappedEntityMock).not.toHaveBeenCalled();
   });
 
   it('denies a catalog_item sync without CATALOG_WRITE (403) before calling the service', async () => {
-    authState.permissions = new Set(['organizations:write']);
+    authState.permissions = new Set(['accounting:read', 'accounting:manage', 'organizations:write']);
     const res = await postSync({ breezeEntityType: 'catalog_item', breezeEntityId: VALID_ITEM_ID });
     expect(res.status).toBe(403);
     expect(syncMappedEntityMock).not.toHaveBeenCalled();

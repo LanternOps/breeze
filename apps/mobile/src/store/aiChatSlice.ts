@@ -14,6 +14,13 @@ export interface ToolEvent {
    * See `toolIndicatorLogic.toolRowStatus` for why the distinction matters.
    */
   handoff?: string;
+  /**
+   * The tool call's arguments, off the SSE `tool_use_start` event (#5170).
+   * Lets the row read `input.action` to tell a read-only call (`list`,
+   * `get`, …) apart from a mutation with the same leading verb — see
+   * `aiToolLabel`. Only ever set once, at `tool_use_start`.
+   */
+  input?: Record<string, unknown>;
 }
 
 export type ChatMessage =
@@ -35,7 +42,7 @@ export interface AiChatState {
   // Lets the UI render a streaming pulse on the right row without scanning.
   streamingMessageId: string | null;
   // Tracks the in-flight tool name for the mid-stream caption ("CHECKING FLEET").
-  inFlightTool: { toolUseId: string; toolName: string } | null;
+  inFlightTool: { toolUseId: string; toolName: string; input?: Record<string, unknown> } | null;
   status: ChatStatus;
   error: string | null;
 }
@@ -83,7 +90,10 @@ const aiChatSlice = createSlice({
         msg.content += action.payload.delta;
       }
     },
-    setInFlightTool(state, action: PayloadAction<{ toolUseId: string; toolName: string } | null>) {
+    setInFlightTool(
+      state,
+      action: PayloadAction<{ toolUseId: string; toolName: string; input?: Record<string, unknown> } | null>,
+    ) {
       state.inFlightTool = action.payload;
     },
     appendToolEvent(state, action: PayloadAction<{ messageId: string; event: ToolEvent }>) {
@@ -95,6 +105,7 @@ const aiChatSlice = createSlice({
           if (action.payload.event.output !== undefined) existing.output = action.payload.event.output;
           if (action.payload.event.isError !== undefined) existing.isError = action.payload.event.isError;
           if (action.payload.event.handoff !== undefined) existing.handoff = action.payload.event.handoff;
+          if (action.payload.event.input !== undefined) existing.input = action.payload.event.input;
         } else {
           msg.toolEvents.push(action.payload.event);
         }
@@ -185,7 +196,9 @@ const aiChatSlice = createSlice({
       last.isStreaming = true;
       state.streamingMessageId = last.id;
       const running = last.toolEvents.find((t) => t.state === 'started');
-      state.inFlightTool = running ? { toolUseId: running.toolUseId, toolName: running.toolName } : null;
+      state.inFlightTool = running
+        ? { toolUseId: running.toolUseId, toolName: running.toolName, input: running.input }
+        : null;
       state.status = 'streaming';
     },
   },

@@ -20,7 +20,7 @@ Six capabilities extend and govern this system:
 
 ## AI Risk Engine
 
-The AI Risk Engine categorises every AI tool into one of four tiers that control how it executes. Navigate to it via **Monitoring → AI Risk Engine** in the sidebar.
+The AI Risk Engine categorises every AI tool into one of four tiers that control how it executes. Navigate to it via **Security → AI Risk** in the sidebar.
 
 ### Tool tiers
 
@@ -72,7 +72,7 @@ To decide a pending four-eyes request:
 
 <Steps>
 
-1. Open **Monitoring → AI Risk Engine**.
+1. Open **Security → AI Risk**.
 
 2. Click **Approval History**.
 
@@ -112,7 +112,7 @@ When an approved Microsoft 365 **password reset** executes this way, the request
 
 ### Rate limits
 
-Each tool has a per-tool sliding window rate limit. Requests that exceed the limit are rejected and logged in the **Rejection & Denial Log**.
+Many tools have a per-tool sliding window rate limit. Requests that exceed the limit are rejected and logged in the **Rejection & Denial Log**. Read-only or lower-risk tools not listed here (for example `get_user_experience_metrics`, `query_backups`, `get_backup_status`, `browse_snapshots`, `create_incident`, `get_incident_timeline`, `generate_incident_report`, and `list_playbooks`) currently have no rate limit.
 
 | Tool | Limit | Window |
 |---|---|---|
@@ -124,24 +124,16 @@ Each tool has a per-tool sliding window rate limit. Requests that exceed the lim
 | `file_operations` | 20 requests | 5 min |
 | `manage_services` | 10 requests | 5 min |
 | `analyze_disk_usage` | 10 requests | 5 min |
-| `get_user_experience_metrics` | 20 requests | 5 min |
 | `manage_configuration_policy` | 20 requests | 5 min |
 | `manage_processes` | 15 requests | 5 min |
 | `query_monitors` | 30 requests | 5 min |
 | `manage_monitors` | 10 requests | 5 min |
 | `get_service_monitoring_status` | 30 requests | 5 min |
-| `query_backups` | 20 requests | 5 min |
-| `get_backup_status` | 20 requests | 5 min |
-| `browse_snapshots` | 20 requests | 5 min |
-| `trigger_backup` | 3 requests | 10 min |
+| `trigger_backup` | 5 requests | 10 min |
 | `restore_snapshot` | 3 requests | 10 min |
-| `create_incident` | 5 requests | 5 min |
 | `execute_containment` | 5 requests | 10 min |
 | `collect_evidence` | 10 requests | 5 min |
-| `get_incident_timeline` | 20 requests | 5 min |
-| `generate_incident_report` | 10 requests | 5 min |
-| `list_playbooks` | 20 requests | 5 min |
-| `execute_playbook` | 3 requests | 10 min |
+| `execute_playbook` | 5 requests | 10 min |
 
 ### Action Plans
 
@@ -177,7 +169,7 @@ The Risk Engine dashboard provides five views, each filterable by time range (24
 
 ## Fleet Orchestration Brain
 
-The Fleet Orchestration Brain is an AI command centre for fleet-scale operations. Open it via **Fleet** in the main navigation sidebar.
+The Fleet Orchestration Brain is an AI command centre for fleet-scale operations. Open it via **AI → Fleet Orchestration** in the main navigation sidebar.
 
 ### Dashboard metrics
 
@@ -196,11 +188,12 @@ The page shows eight stat cards that aggregate live fleet data:
 
 ### AI tools
 
-When you are on the Fleet Orchestration page, the AI assistant gains access to eight fleet-level tools:
+When you are on the Fleet Orchestration page, the AI assistant gains access to nine fleet-level tools:
 
 | Tool | What it does |
 |---|---|
-| `manage_policies` | List, evaluate, create, activate/deactivate, and remediate policies |
+| `manage_configuration_policy` | Create, update, activate/deactivate, and delete configuration policies |
+| `configuration_policy_compliance` | Check org-wide compliance summary or per-device compliance status for a policy |
 | `manage_deployments` | Create, start, pause, resume, and cancel deployments |
 | `manage_patches` | Scan, approve, decline, defer, bulk approve, and rollback patches |
 | `manage_groups` | Create static/dynamic groups and manage membership |
@@ -452,7 +445,7 @@ These tools are currently exposed to external AI clients through the [MCP Server
 
 **Tier 3 action pending but never executing**
 
-Tier 3 actions require manual approval. Open **Monitoring → AI Risk Engine → Approval History** and approve or reject the pending request.
+Tier 3 actions require manual approval. Open **Security → AI Risk → Approval History** and approve or reject the pending request.
 
 **AI Risk Engine dashboard shows no data**
 

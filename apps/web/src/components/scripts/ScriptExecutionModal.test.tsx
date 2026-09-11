@@ -7,11 +7,14 @@ import ScriptExecutionModal, { type Device } from './ScriptExecutionModal';
 import type { ScriptParameter } from './ScriptFormSchema';
 import type { Script } from './ScriptList';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 import type { ScriptAdmissionResult } from '@breeze/shared';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
+const showToastMock = vi.mocked(showToast);
 
 // The advanced-filter panel is closed on open, so `useFilterPreview` is disabled
 // and never fetches — no transport stub is needed for these cases.
@@ -48,7 +51,7 @@ function renderModal(
   onClose = vi.fn(),
   availableDevices = devices,
 ) {
-  render(
+  const view = render(
     <ScriptExecutionModal
       script={{ ...baseScript, parameters }}
       devices={availableDevices}
@@ -57,7 +60,7 @@ function renderModal(
       onExecute={onExecute}
     />
   );
-  return { onExecute, onClose };
+  return { onExecute, onClose, unmount: view.unmount };
 }
 
 /** Select the one online device and drive the two-step execute button. */
@@ -250,6 +253,44 @@ describe('ScriptExecutionModal admission truth', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  // #5270 — the 1.5s auto-close timer used to outlive the component. A test
+  // that unmounted before it fired left it pending, and when it eventually ran
+  // (after that file's jsdom was torn down) it threw
+  // `ReferenceError: window is not defined` as an unhandled error, failing
+  // Test Web with every file passing.
+  it('cancels the pending auto-close timer on unmount and never calls onClose afterwards', async () => {
+    const onClose = vi.fn();
+    const { unmount } = renderModal([], vi.fn().mockResolvedValue(admittedResult), onClose);
+
+    await execute();
+    await act(async () => { await Promise.resolve(); });
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+
+    await act(async () => { await vi.runAllTimersAsync(); });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  // #5270 — the modal's own close path must cancel it too, so a re-open can't
+  // be slammed shut by a timer scheduled before the operator closed it.
+  it('cancels the pending auto-close timer when the operator closes the modal first', async () => {
+    const onClose = vi.fn();
+    renderModal([], vi.fn().mockResolvedValue(admittedResult), onClose);
+
+    await execute();
+    await act(async () => { await Promise.resolve(); });
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByText('Cancel'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    await act(async () => { await vi.runAllTimersAsync(); });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps a partial admission open and renders every target with its reason', async () => {
     const secondDevice: Device = {
       id: 'd-2', hostname: 'ws-02', os: 'windows', status: 'online', siteId: 's-1', siteName: 'HQ',
@@ -300,6 +341,44 @@ describe('ScriptExecutionModal admission truth', () => {
 
     await vi.waitFor(() => expect(screen.getByText('network unavailable')).toBeInTheDocument());
     expect(screen.queryByText('No devices were admitted. Review the reasons below.')).toBeNull();
+  });
+
+  // #5128 W2 — an admitted target is not necessarily running: one dispatched
+  // while its device was offline is `queued_offline`, and the inline
+  // "admitted and queued" panel text alone doesn't say the device has to
+  // reconnect first. Surface that as a toast.
+  it('toasts the offline-queue copy when an admitted target is queued_offline', async () => {
+    const onClose = vi.fn();
+    renderModal([], vi.fn().mockResolvedValue({
+      requestId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      status: 'queued',
+      targets: [{
+        requestedDeviceId: 'd-1',
+        admission: 'admitted',
+        executionId: 'execution-1',
+        commandId: 'command-1',
+        delivery: 'queued_offline',
+      }],
+    } satisfies ScriptAdmissionResult), onClose);
+
+    await execute();
+    await act(async () => { await Promise.resolve(); });
+
+    expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Runs when the device is online' }),
+    );
+  });
+
+  it('does not toast the offline-queue copy when every admitted target was delivered', async () => {
+    renderModal([], vi.fn().mockResolvedValue({
+      ...admittedResult,
+      targets: [{ ...admittedResult.targets[0], delivery: 'delivered' }],
+    } satisfies ScriptAdmissionResult));
+
+    await execute();
+    await act(async () => { await Promise.resolve(); });
+
+    expect(showToastMock).not.toHaveBeenCalled();
   });
 });
 

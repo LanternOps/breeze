@@ -61,3 +61,19 @@ export function buildActionLabel(args: ActionLabelInput): string {
   label = label.replace(/\s+/g, ' ').trim();
   return label.length > MAX_LABEL_LENGTH ? `${label.slice(0, MAX_LABEL_LENGTH - 1)}…` : label;
 }
+
+/**
+ * #5363 — does `text` carry the id stub for THIS call's device?
+ *
+ * `buildActionLabel` above rewrites any `on device <8 hex>...` it finds, so a
+ * caller must only hand it a `deviceHostname` once it knows the stub actually
+ * names the device that hostname belongs to. Matched on the call's own id
+ * prefix, literally (the rule the chat bridge in aiAgentSdk.ts applied before
+ * #5363 moved this into the intent service), so a caller-supplied label that
+ * happens to mention some OTHER device's id is never relabelled — and so the
+ * resolving read below it is skipped entirely for the many tools whose
+ * description has no device stub at all.
+ */
+export function hasDeviceIdStub(text: string, deviceId: string): boolean {
+  return text.toLowerCase().includes(`on device ${deviceId.slice(0, 8).toLowerCase()}...`);
+}

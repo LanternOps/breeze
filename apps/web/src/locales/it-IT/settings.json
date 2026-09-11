@@ -582,7 +582,18 @@
     "selfSaving": "Questa sezione salva autonomamente le proprie modifiche.",
     "saveSettings": "Salva impostazioni",
     "enforcedDescription": "I valori impostati qui vengono applicati a tutte le organizzazioni. Lascia i campi vuoti per consentire a ogni organizzazione di configurarli singolarmente.",
-    "ticketingDescription": "Configura stati dei ticket, valori predefiniti SLA per priorità, categorie ed esportazioni di fatturazione. Si applicano a tutte le tue organizzazioni."
+    "ticketingDescription": "Configura stati dei ticket, valori predefiniti SLA per priorità, categorie ed esportazioni di fatturazione. Si applicano a tutte le tue organizzazioni.",
+    "modules": {
+      "title": "Moduli",
+      "description": "Scegli quali parti di Breeze utilizza questo MSP. Disattivando la gestione servizi si nascondono ovunque il service desk e la fatturazione clienti e non è più possibile creare nuovi ticket.",
+      "nativeLabel": "Service desk e fatturazione Breeze",
+      "nativeDescription": "Ticket, fogli ore, preventivi, fatture e contratti sono gestiti in Breeze. È l’impostazione predefinita.",
+      "offLabel": "Disattivato — solo RMM",
+      "offDescription": "Nasconde le sezioni Service desk e Fatturazione e le schede Ticket e Fatturazione della scheda cliente. I ticket esistenti restano consultabili; non è possibile crearne di nuovi.",
+      "externalNote": "Questo partner utilizza un PSA esterno. La modifica non è ancora disponibile qui.",
+      "saved": "Moduli aggiornati",
+      "saveFailed": "Impossibile aggiornare i moduli"
+    }
   },
   "loginBranding": {
     "saved": "Branding di accesso salvato",
@@ -1186,6 +1197,7 @@
     "toasts": {
       "inviteSent": "Invito inviato",
       "inviteSentAmbiguousContact": "Invito inviato, ma non è stato possibile collegare alcun contatto: più contatti condividono questo indirizzo email. Questo utente non vedrà i ticket ricevuti via email finché non verrà collegato un contatto.",
+      "inviteEmailFailed": "Utente del portale creato, ma non è stato possibile inviare l'email di invito.",
       "pendingInvited": "Invitati {{count}} utenti in sospeso",
       "inviteResent": "Invito reinviato",
       "reactivated": "Utente riattivato",
@@ -1617,7 +1629,14 @@
       "invalidSupervisedActionKeys": "Una o più azioni selezionate non possono essere autorizzate dalla policy.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Questo agente è già attivo.",
-      "actRecipientsUnreachable": "I ruoli di notifica selezionati non hanno membri attivi, quindi nessuno potrebbe essere interpellato. Scegli un ruolo con membri prima di attivare la modalità Agire."
+      "actRecipientsUnreachable": "I ruoli di notifica selezionati non hanno membri attivi, quindi nessuno potrebbe essere interpellato. Scegli un ruolo con membri prima di attivare la modalità Agire.",
+      "invalidScriptIds": "Uno o più script non possono essere autorizzati per questo agente.",
+      "scriptRejected": "Script {{id}}: {{reason}}",
+      "scriptReject": {
+        "not_found": "non è uno script visibile al proprietario di questo agente",
+        "not_in_partner_baseline": "non presente nella baseline del partner",
+        "run_script_not_allowed": "\"Esegui uno script\" non è consentito per questo agente"
+      }
     },
     "actions": {
       "add": "Nuovo agente",
@@ -2294,9 +2313,9 @@
         "get_effective_configuration": "Configurazione effettiva",
         "get_fleet_findings": "Rilevazioni della flotta",
         "get_fleet_health": "Salute della flotta",
-        "get_fleet_status": "Stato della flotta",
         "get_huntress_incidents": "Incidenti Huntress",
         "get_huntress_status": "Stato di Huntress",
+        "get_invite_funnel": "Imbuto degli inviti di distribuzione",
         "get_invoice": "Dettagli della fattura",
         "get_log_trends": "Tendenze dei log",
         "get_playbook_history": "Cronologia di esecuzione del playbook",
@@ -2718,7 +2737,9 @@
       "approvers_other": "Vengono interpellati {{roles}}, tramite posta in arrivo, chat e notifiche push mobili. Vince la prima decisione.",
       "approversCount_one": "Viene interpellato {{count}} ruolo, tramite posta in arrivo, chat e notifiche push mobili. Vince la prima decisione.",
       "approversCount_other": "Vengono interpellati {{count}} ruoli, tramite posta in arrivo, chat e notifiche push mobili. Vince la prima decisione.",
-      "scriptGateNote": "{{list}} verrà eseguito senza supervisione solo dopo che uno script sarà autorizzato per questo agente; fino ad allora genera una richiesta di approvazione."
+      "scriptGateNote": "{{list}} verrà eseguito senza supervisione solo dopo che uno script sarà autorizzato per questo agente; fino ad allora genera una richiesta di approvazione.",
+      "scriptsAuthorized_one": "{{count}} script è autorizzato a essere eseguito senza supervisione.",
+      "scriptsAuthorized_other": "{{count}} script sono autorizzati a essere eseguiti senza supervisione."
     },
     "flow": {
       "title": "Nuovo agente",
@@ -2772,6 +2793,21 @@
         "recommendedPrefix": "Consigliato:",
         "taken": "Già in uso per questo proprietario"
       }
+    },
+    "scripts": {
+      "legend": "Script autorizzati a essere eseguiti senza supervisione",
+      "hint": "In modalità Agire, \"Esegui uno script\" viene eseguito senza approvazione solo per gli script selezionati qui. Tutto il resto resta una richiesta di approvazione.",
+      "ceilingHint": "Gli script a livello partner sono un limite: l'agente di un'organizzazione può scegliere solo da questo elenco.",
+      "runScriptRequired": "Aggiungi \"Esegui uno script\" in \"Cosa fa\" prima di autorizzare gli script.",
+      "runScriptNotInBaseline": "La baseline del partner non consente \"Esegui uno script\" per questo tipo di agente, quindi nessuno script può essere eseguito senza supervisione.",
+      "ceilingUnavailable": "Impossibile caricare la baseline del partner, quindi al momento non è possibile autorizzare script.",
+      "ceilingLoading": "Verifica della baseline del partner…",
+      "loading": "Caricamento degli script…",
+      "failed": "Impossibile caricare gli script, quindi l'autorizzazione degli script senza supervisione non può essere modificata al momento.",
+      "empty": "Nessuno script disponibile.",
+      "searchPlaceholder": "Cerca script…",
+      "selectedCount_one": "{{count}} script autorizzato",
+      "selectedCount_other": "{{count}} script autorizzati"
     }
   },
   "apiKeyForm": {
@@ -3174,6 +3210,10 @@
     "enterYourPhoneNumberInE164FormatToReceiveAVerificationCo": "Inserisci il numero di telefono in formato E.164 per ricevere un codice di verifica.",
     "phoneNumber": "Numero di telefono",
     "currentPassword": "Password attuale",
+    "currentMfaCode": "Codice MFA attuale",
+    "currentMfaCodeRequired": "È richiesto un codice MFA attuale",
+    "currentPasskeyRequired": "Verrà richiesta la passkey attuale",
+    "sendVerificationCode": "Invia codice di verifica",
     "verificationCode": "Codice di verifica",
     "enterThe6DigitCodeSentToYourPhone": "Inserisci il codice a 6 cifre inviato al telefono.",
     "cancel": "Annulla",
@@ -3204,6 +3244,12 @@
     "scanThisQRCodeWithYourAuthenticatorAppThenEnterThe6Digit": "Scansiona questo codice QR con l'app authenticator, quindi inserisci il codice a 6 cifre.",
     "authenticatorQRCode": "Codice QR authenticator",
     "qRCodeUnavailable": "Codice QR non disponibile",
+    "cantScanTheCode": "Non riesci a scansionare il codice?",
+    "enterThisSetupKeyInYourAuthenticatorAppInstead": "Inserisci invece questa chiave di configurazione nell'app di autenticazione.",
+    "setupKey": "Chiave di configurazione",
+    "copySetupKey": "Copia la chiave di configurazione",
+    "copiedSetupKey": "Copiata",
+    "copySetupKeyFailed": "Impossibile copiare la chiave di configurazione. Selezionala e copiala manualmente.",
     "enterThe6DigitCodeGeneratedByYourAuthenticatorApp": "Inserisci il codice a 6 cifre generato dall'app authenticator.",
     "disableMFA": "Disabilita MFA",
     "reEnterYourAccountPasswordToConfirmThisChange": "Reinserisci la password dell'account per confermare questa modifica.",
@@ -3291,6 +3337,7 @@
     "passkeyRenamed": "Passkey rinominata",
     "currentPasswordIsRequiredToDeleteAPasskey": "La password attuale è obbligatoria per eliminare una passkey",
     "passkeyDeleted": "Passkey eliminata",
+    "signInAgainToContinue": "Accedi di nuovo per continuare.",
     "failedToLoadPasskeys": "Caricamento passkey non riuscito",
     "failedToUpdateProfile": "Aggiornamento profilo non riuscito",
     "failedToUploadAvatar": "Caricamento avatar non riuscito",
@@ -3300,6 +3347,9 @@
     "failedToEnableMFA": "Abilitazione MFA non riuscita",
     "failedToDisableMFA": "Disabilitazione MFA non riuscita",
     "failedToGenerateRecoveryCodes": "Generazione codici di recupero non riuscita",
+    "failedToSendVerificationCode": "Invio del codice di verifica non riuscito",
+    "failedToVerifyCurrentFactor": "Verifica del fattore MFA attuale non riuscita",
+    "verificationCodeSent": "Codice di verifica inviato",
     "failedToAddPasskey": "Aggiunta passkey non riuscita",
     "failedToRenamePasskey": "Rinomina passkey non riuscita",
     "failedToDeletePasskey": "Eliminazione passkey non riuscita",
@@ -3339,7 +3389,15 @@
     "verifyWithYourIdentityProvider": "Verifica con il tuo provider di identità",
     "passkeyIdpVerificationRequired": "Verifica con il tuo provider di identità prima di aggiungere una passkey.",
     "ssoReauthFailed": "Non è stato possibile verificare con il tuo provider di identità. Riprova.",
-    "couldNotStartIdentityProviderVerification": "Non è stato possibile avviare la verifica tramite il provider di identità."
+    "couldNotStartIdentityProviderVerification": "Non è stato possibile avviare la verifica tramite il provider di identità.",
+    "deletePasskeyConfirmTitle": "Eliminare questa passkey?",
+    "deletePasskeyConfirmMessage": "Questa operazione rimuove definitivamente la passkey \"{{name}}\", che non potrà più essere usata per accedere. Trattandosi di un metodo a più fattori, l'eliminazione disconnette anche le altre sessioni su tutti i dispositivi. Non può essere annullata.",
+    "passkeyStepUpHeading": "Verifica il tuo fattore di accesso esistente",
+    "passkeyStepUpIntro": "Questo account ha già l'autenticazione a più fattori abilitata. Confermala prima di aggiungere un'altra passkey.",
+    "passkeyStepUpNoUsableFactor": "Il fattore attuale del tuo account non può essere confermato qui. Contatta un amministratore per aggiungere una passkey.",
+    "passkeyStepUpIncorrectCode": "Codice errato. Riprova.",
+    "passkeyStepUpTooManyAttempts": "Troppi tentativi. Riprova tra qualche minuto.",
+    "passkeyStepUpVerificationExpired": "La verifica è scaduta. Verifica di nuovo."
   },
   "roleManager": {
     "roles": "Ruoli",
@@ -4466,7 +4524,8 @@
       "saveOrder": "Impossibile salvare l'ordine delle organizzazioni",
       "saveOrganization": "Impossibile salvare l'organizzazione",
       "saveSite": "Impossibile salvare il sito ({{status}})",
-      "deleteSite": "Impossibile eliminare il sito"
+      "deleteSite": "Impossibile eliminare il sito",
+      "loadSites": "Impossibile caricare i siti di questa organizzazione."
     },
     "status": {
       "active": "Attiva",

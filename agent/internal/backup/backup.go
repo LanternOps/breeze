@@ -7,14 +7,15 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/layout"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 	"github.com/breeze-rmm/agent/internal/backup/vss"
@@ -46,11 +47,32 @@ const (
 
 var errBackupStopped = errors.New("backup stopped")
 
+// ErrPublishLeaseExpired is returned when a server-dispatched run (D18
+// §3.1) cannot publish its manifest because the server's publish lease
+// (BackupConfig.PublishLeaseExpiresAt, minus the 1h publishMargin) expired
+// before upload finished. The server treats a late result past lease
+// expiry as failed — returning this distinct, unwrapped-comparable error
+// lets logs and tests tell it apart from an ordinary publish failure. No
+// manifest is uploaded and nothing is deleted: the partial, manifest-less
+// prefix is reclaimed by GC's existing manifest-less-prefix rule.
+var ErrPublishLeaseExpired = errors.New("backup publish lease expired before manifest could be published")
+
+// ErrJournalExpiredAtPublish is the same fail-closed rule as
+// ErrPublishLeaseExpired but keyed on the checkpoint journal's age for a
+// RESUMED run: if journalMaxAge has elapsed by the time upload finishes,
+// the server can no longer distinguish this manifest from an abandoned
+// resume attempt, so publishing is refused.
+var ErrJournalExpiredAtPublish = errors.New("checkpoint journal expired before manifest could be published")
+
 // collectSystemState is a seam over systemstate.CollectSystemState so tests can
 // exercise the failure and partial-collection paths deterministically — the
 // real collector shells out to OS tools and succeeds on any CI host, which
 // would otherwise leave the system-state fail-loud/warning branches uncovered.
 var collectSystemState = systemstate.CollectSystemState
+
+// collectLayout is the seam over layout.Collect (disk layout for bare-metal
+// rebuilds, spec §5.2). Same rationale as collectSystemState above.
+var collectLayout = layout.Collect
 
 // BackupConfig defines backup configuration settings.
 type BackupConfig struct {
@@ -61,6 +83,44 @@ type BackupConfig struct {
 	VSSEnabled         bool   // Windows only: create VSS shadow copy before backup
 	SystemStateEnabled bool   // Collect system state alongside file backup
 	StagingDir         string // Base directory for temporary staging (empty = OS temp dir)
+
+	// AgentID identifies the DEVICE this manager is running on, for
+	// incremental-dedupe base-snapshot selection (see runBackupIdentity /
+	// Snapshot.BackupIdentity). backupIdentity(Provider, Paths) alone
+	// distinguishes DESTINATIONS, not devices: two devices backing up to the
+	// same bucket with the same configured paths produce the identical
+	// string, which is exactly how D6 happened — one device's incremental
+	// run picked another device's snapshot as its dedupe base and
+	// re-uploaded everything (or worse, would have silently referenced a
+	// same-path/size/mtime coincidence as though it were its own data).
+	//
+	// The caller should populate this from config.Config.AgentID — the
+	// agent's enrollment identifier, which is guaranteed non-empty for any
+	// enrolled agent (config.IsEnrolled checks AgentID != "") — rather than
+	// config.Config.DeviceID, which is left empty on any agent that enrolled
+	// before that field existed and never backfills on its own (see its doc
+	// comment in internal/config/config.go).
+	//
+	// Empty (the zero value — e.g. CreateSnapshotContext callers with no
+	// manager/device context, or a caller that hasn't wired AgentID through
+	// yet) means this run stamps no BackupIdentity onto its own manifest,
+	// and previousManifest then refuses to match ANY previous snapshot
+	// against it — including one this same process produced earlier under
+	// the same empty identity — since an unstamped run cannot prove whose
+	// snapshot it is either way. Fail-open to a full backup, the same safe
+	// default as every other dedupe failure mode in this package.
+	AgentID string
+
+	// AgentVersion is stamped onto a collected system state manifest's
+	// CollectorVersion field (see systemstate.SystemStateManifest) so a
+	// restore can tell which agent/helper build produced it. The systemstate
+	// package itself has no notion of "the agent version" — it collects OS
+	// state, not agent identity — so this is wired through BackupConfig the
+	// same way AgentID is (see that field's doc comment): the caller
+	// populates it from the running binary's version string (e.g. breeze-
+	// backup's `version` build var). Empty means the manifest carries no
+	// CollectorVersion, e.g. an older caller that hasn't wired this through.
+	AgentVersion string
 
 	// VSSProvider overrides where a VSS-enabled run gets its provider from.
 	// Nil — the production case, and what every real caller sets — means
@@ -79,6 +139,28 @@ type BackupConfig struct {
 	// plumbing (#3269) is free to change the session's shape underneath without
 	// touching this field.
 	VSSProvider vss.Provider
+
+	// BaseSnapshotID switches this run between server-owned base selection
+	// (D18 §3.1) and the legacy bucket-listing previousManifest path. nil
+	// means the dispatching server predates the field (legacy mode,
+	// unchanged behavior — see exec_backup.go's payload decode). A non-nil
+	// pointer to "" means the server explicitly selected no base for this
+	// run (full run, no dedupe attempted). A non-nil pointer to a snapshot
+	// id means the server selected that snapshot as this run's dedupe base
+	// — fetchServerOwnedBase fetches and validates it (D6 identity guard)
+	// before use, failing open to a full run on any problem (download
+	// error, decode error, or identity mismatch).
+	BaseSnapshotID *string
+
+	// PublishLeaseExpiresAt is the deadline (verbatim from the backup_run
+	// payload's publishLeaseExpiresAt field) after which this run must not
+	// publish snapshots/<id>/manifest.json — see leaseGate. Set for every
+	// server-dispatched file/system_image run, base or not (it fences late
+	// results server-side too, D18 §3.1). Zero value means the dispatching
+	// server predates the field, disabling the check entirely (legacy
+	// behavior: publish whenever ready). There is no renewal — this is
+	// exactly what the server chose at dispatch time.
+	PublishLeaseExpiresAt time.Time
 }
 
 // BackupJob tracks the state of a backup run.
@@ -88,10 +170,21 @@ type BackupConfig struct {
 // `bytesBackedUp`, `filesBackedUp`). Without tags Go emits PascalCase and the
 // server can't record snapshot id / size (total_size stays null).
 type BackupJob struct {
-	ID            string    `json:"id"`
-	StartedAt     time.Time `json:"startedAt"`
-	CompletedAt   time.Time `json:"completedAt"`
-	Snapshot      *Snapshot `json:"snapshot"`
+	ID          string    `json:"id"`
+	StartedAt   time.Time `json:"startedAt"`
+	CompletedAt time.Time `json:"completedAt"`
+	// Snapshot is nil whenever no snapshot was created — most notably a
+	// fail-loud run (D11: e.g. a system-state-only run whose collection
+	// errored). `omitempty` is load-bearing, not cosmetic: the API's
+	// backupCommandResultSchema models this field as
+	// `backupSnapshotResultSchema.optional()` (apps/api/src/routes/backup/
+	// resultSchemas.ts), and Zod's `.optional()` accepts a MISSING key but
+	// rejects an explicit `null`. Without `omitempty` a failed run's body
+	// carries `"snapshot":null`, which 400s the whole result at the API and
+	// discards the real failure reason (Stderr/job.Error) the job otherwise
+	// carried correctly — see TestBackupJob_FailedRunJSON_OmitsNullSnapshot
+	// and TestMarshalBackupRunResultFailedSystemImageRunOmitsNullSnapshot.
+	Snapshot      *Snapshot `json:"snapshot,omitempty"`
 	FilesBackedUp int       `json:"filesBackedUp"`
 	BytesBackedUp int64     `json:"bytesBackedUp"`
 	Status        string    `json:"status"`
@@ -118,6 +211,13 @@ type BackupJob struct {
 	ErrorCount          int                              `json:"errorCount,omitempty"`
 	VSSMetadata         *vss.VSSMetadata                 `json:"vssMetadata,omitempty"`         // nil when VSS was not used
 	SystemStateManifest *systemstate.SystemStateManifest `json:"systemStateManifest,omitempty"` // nil when system state was not collected
+	// LayoutManifest is the disk layout captured for bare-metal rebuilds
+	// (snapshots/<id>/layout.json). nil on file-only runs and when capture
+	// failed. BareMetal is the guard verdict for that layout; on capture
+	// failure it is non-nil with Restorable=false and the error as the reason,
+	// so the server never mistakes "unknown" for "restorable".
+	LayoutManifest *layout.Manifest      `json:"layoutManifest,omitempty"`
+	BareMetal      *layout.Restorability `json:"bareMetal,omitempty"`
 	// ReferencedFiles/ReferencedBytes count how much of FilesBackedUp/
 	// BytesBackedUp this run satisfied by referencing an older snapshot's
 	// object instead of re-uploading (see decideFile / isReferenceEntry).
@@ -169,15 +269,42 @@ func (m *BackupManager) GetProvider() providers.BackupProvider {
 }
 
 // GetPaths returns the configured backup source paths.
+// GetAgentID returns the device identity stamped into manifests for
+// incremental-dedupe base selection (BackupConfig.AgentID).
+func (m *BackupManager) GetAgentID() string {
+	return m.config.AgentID
+}
+
 func (m *BackupManager) GetPaths() []string {
 	return m.config.Paths
 }
 
-// GetRetention returns the configured retention count. On the helper's
-// backup_run path this is 0: retention is owned by the server, and 0 makes
-// DeleteSnapshotContext a no-op so the agent never prunes remote storage.
+// GetExcludes returns the configured file-exclusion glob patterns
+// (BackupConfig.Excludes). RunBackupContext's excludes parameter overrides
+// this per-run when non-nil (#2418); this is the config-level fallback.
+func (m *BackupManager) GetExcludes() []string {
+	return m.config.Excludes
+}
+
+// GetRetention returns the configured retention count. It is retained for
+// config-shape compatibility only: agent-side retention pruning has been
+// removed entirely (D18 §3.5) — the server is the sole retention/GC
+// authority. This value drives no behavior anywhere in this package.
 func (m *BackupManager) GetRetention() int {
 	return m.config.Retention
+}
+
+// GetBaseSnapshotID returns the server-selected incremental-dedupe base for
+// this run (D18 §3.1): nil in legacy mode, a pointer to "" for an
+// explicit full run, a pointer to a snapshot id otherwise.
+func (m *BackupManager) GetBaseSnapshotID() *string {
+	return m.config.BaseSnapshotID
+}
+
+// GetPublishLeaseExpiresAt returns the deadline this run must publish its
+// manifest by (zero value = no lease, legacy server).
+func (m *BackupManager) GetPublishLeaseExpiresAt() time.Time {
+	return m.config.PublishLeaseExpiresAt
 }
 
 // GetStagingDir returns the configured staging base directory, or an empty
@@ -363,6 +490,136 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	stopRunKeepalive := startRunKeepalive(runCtx, progressFn)
 	defer stopRunKeepalive()
 
+	// Checkpoint journal: keyed by destination identity (provider kind +
+	// endpoint/bucket/path + the *configured* source paths — never the
+	// VSS-rewritten or system-state-staging paths in backupPaths, which are
+	// ephemeral per run and would defeat identity matching across runs).
+	// The journal dir comes from resolveJournalDir: explicit StagingDir, else
+	// a root-owned per-user/agent dir — NEVER the world-writable OS temp dir
+	// (a deterministic root-owned filename there is a symlink/tamper surface;
+	// a forged journal can trigger remote snapshot cleanup or silent file
+	// skips). If no secure dir exists, the run simply doesn't journal: resume
+	// is an optimization, never worth a world-writable root-owned write.
+	var journal *snapshotJournal
+	var resumedJournal bool
+	// journalDirsForExclude is threaded into collectBackupFilesFromPaths
+	// below so the walker never backs up this run's own checkpoint-journal
+	// files (or another run's, sharing the same directory) as ordinary
+	// content — see collectBackupFilesFromPaths's journalDirs doc comment
+	// and #5581. Holds the LITERAL journal directory whenever one resolved,
+	// even if opening the journal itself failed (the directory can still
+	// hold OTHER journal files, e.g. from a concurrent run with a different
+	// destination identity); a second, VSS-shadow-rewritten form is
+	// appended below once vssSession is known (a VSS run's walker only ever
+	// visits shadow-copy paths, never the literal ones — see that block's
+	// comment). Left nil only when resolveJournalDir found nowhere secure
+	// to journal at all, matching "no journal, nothing to exclude".
+	var journalDirsForExclude []string
+	if journalDir, ok := resolveJournalDir(m.GetStagingDir()); !ok {
+		log.Warn("no secure checkpoint journal directory available, proceeding without resume support")
+	} else {
+		journalDirsForExclude = append(journalDirsForExclude, journalDir)
+		var journalErr error
+		journal, resumedJournal, journalErr = openSnapshotJournal(journalDir, backupIdentity(m.config.Provider, m.config.Paths), journalMaxAge)
+		if journalErr != nil {
+			// A journal is a best-effort checkpoint, never a correctness
+			// requirement: degrade to a journal-less run rather than failing
+			// the backup over it.
+			log.Warn("failed to open checkpoint journal, proceeding without resume support", "error", journalErr.Error())
+			journal = nil
+		}
+	}
+	// The journal is now open earlier than it used to be (before VSS/scan,
+	// P2 fix) — a stop/failure between here and createSnapshotWithProgress's
+	// call site (VSS ctx cancellation, a scan/system-state failure, the
+	// resume-shortcut's own early returns) would otherwise leak the open
+	// file descriptor and leave an unresolved journal on disk. journalOwned
+	// flips true only once the journal's fd lifecycle has been handed off
+	// (to createSnapshotWithProgress, or resolved directly by the
+	// resume-shortcut's own Complete() call below); every other exit path
+	// closes it here via Abandon() (idempotent alongside Complete() — both
+	// just Close() the file; a resumable journal with zero new entries is
+	// harmless to leave for pickup on the next run).
+	journalOwned := false
+	if journal != nil {
+		defer func() {
+			if !journalOwned {
+				journal.Abandon()
+			}
+		}()
+	}
+	if journal != nil {
+		if staleID, ok := journal.StaleSnapshotID(); ok {
+			// StaleSnapshotID covers both an actually-stale (>journalMaxAge)
+			// journal and the (near-impossible) identity-mismatch case — see
+			// openSnapshotJournal — so the message below is deliberately
+			// generic rather than claiming a specific cause. The agent no
+			// longer cleans up the STALE JOURNAL'S remote prefix itself
+			// (D18 §3.5): that prefix belongs to a PRIOR, different run
+			// (not this run's own in-progress prefix, which is the only
+			// exception §3.5 keeps — see abortStopped/abortSourceGone in
+			// snapshot.go), so it is simply dropped and GC's existing
+			// manifest-less-prefix rule reclaims it.
+			log.Warn("discarding unusable checkpoint journal",
+				"snapshotId", staleID,
+				"maxAge", journalMaxAge.String(),
+			)
+		}
+		if resumedJournal {
+			log.Info("resuming interrupted backup from checkpoint journal",
+				"snapshotId", journal.snapshotID,
+				"resumedBytes", journal.ResumedBytes(),
+			)
+		}
+	}
+
+	// Resume-with-already-published-manifest, checked BEFORE any source
+	// scanning (P2 fix): a resumed run whose manifest is already published
+	// must report success even if the configured source has since vanished
+	// — the len(files)==0 exits later in this function (and in
+	// createSnapshotWithProgress) must never get a chance to fail this run
+	// first. See fetchPublishedManifest's three-state contract: only a
+	// CONFIRMED-absent result falls through to a normal run; any other
+	// error fails the job closed right here.
+	if journal != nil && resumedJournal {
+		resumePrefix := path.Join(snapshotRootDir, journal.snapshotID)
+		existing, fetchErr := fetchPublishedManifest(runCtx, m.config.Provider, resumePrefix)
+		if fetchErr != nil {
+			job.Status = jobStatusFailed
+			job.CompletedAt = time.Now().UTC()
+			job.Error = fmt.Errorf("resume check failed, refusing to guess whether %s was already published: %w", resumePrefix, fetchErr)
+			return job, job.Error
+		}
+		if existing != nil {
+			log.Info("resume: manifest already published, skipping the entire run",
+				"snapshotId", existing.ID,
+				"files", len(existing.Files),
+			)
+			if err := journal.Complete(); err != nil {
+				log.Warn("failed to remove completed checkpoint journal", "error", err.Error())
+			}
+			journalOwned = true
+			job.Status = jobStatusCompleted
+			job.CompletedAt = time.Now().UTC()
+			job.Snapshot = existing
+			job.FilesBackedUp = len(existing.Files)
+			job.BytesBackedUp = existing.Size
+			for _, f := range existing.Files {
+				// A content-less entry (symlink/dir) is never a reference —
+				// isReferenceEntry already guards on BackupPath=="", this is
+				// belt-and-suspenders against the same miscount (review
+				// finding, PR #5520).
+				if f.HasContent() && isReferenceEntry(f, existing.ID) {
+					job.ReferencedFiles++
+					job.ReferencedBytes += f.Size
+				}
+			}
+			return job, nil
+		}
+		// existing == nil, fetchErr == nil: confirmed absent — proceed to
+		// VSS/scan/upload normally, reusing this SAME journal (no second
+		// open) all the way down to createSnapshotWithProgress's call site.
+	}
 	// VSS: create shadow copy on Windows for application-consistent backup
 	var vssSession *vss.VSSSession
 	if provider, useVSS := m.resolveVSSProvider(); useVSS {
@@ -414,19 +671,13 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 
 	// System state collection: gather OS config, hardware profile, etc.
 	var systemStateErr error
-	// systemStateStagingIdx marks the staging dir's slot in backupPaths so the
-	// VSS rewrite below can leave it alone — it is created after the snapshot
-	// and therefore only exists on the live volume (#3026). Because it is never
-	// rewritten, systemStateStagingDir is simply the path collectSystemState
-	// returned, and it is the same prefix collectBackupFilesFromPaths produces
-	// for markSystemStateFiles to match on.
-	//
-	// The index is POSITIONAL and captured immediately before the append below.
-	// Nothing may insert into, reorder, filter or dedupe backupPaths between
-	// that append and rewritePathsForVSS, or the exclusion lands on a real user
-	// path — which would then read live with its warning suppressed, i.e. the
-	// #2999 class this file works to keep visible. If backupPaths ever needs
-	// post-processing, append the staging dir after it instead of moving this.
+	// systemStateStagingIdx is always noStagingIdx now: the staging dir is
+	// published separately (see publishSystemState) rather than appended to
+	// backupPaths, so there is never an entry in backupPaths for the VSS
+	// rewrite below to protect. Kept as a named constant purely so
+	// rewritePathsForVSS/reportableLiveReads (D8/D12's VSS machinery, out of
+	// scope for this change) keep their existing "no staging dir" signature
+	// unchanged.
 	var systemStateStagingDir string
 	systemStateStagingIdx := noStagingIdx
 	if m.config.SystemStateEnabled {
@@ -446,6 +697,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			// failed, i.e. the capture would not boot at restore time.
 			appendWarning(job, "system state was not collected: "+ssErr.Error())
 		} else {
+			manifest.CollectorVersion = m.config.AgentVersion
 			job.SystemStateManifest = manifest
 			// Collection succeeded on all *required* artifacts (missing a
 			// required class returns an error above and fails the run). Any
@@ -471,17 +723,45 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 				appendWarning(job, incomplete)
 				log.Warn("system state collection incomplete", "warning", incomplete)
 			}
-			// Append the staging dir to the walked paths so its artifacts land
-			// in the backup manifest. NOT in the VSS shadow copy — the rewrite
-			// below deliberately skips this entry (see rewritePathsForVSS).
-			systemStateStagingIdx = len(backupPaths)
+			// The staging dir is published to snapshots/<id>/system-state/ as
+			// its own step (see publishSystemState in snapshot.go), never
+			// appended to backupPaths — Option A of the D15 bare-metal-recovery
+			// contract (see docs/superpowers/plans/backup/
+			// 2026-09-09-bmr-system-state-contract.md). Record it so the
+			// publish step(s) below can find it, and clean it up once this run
+			// is done with it either way.
 			systemStateStagingDir = stagingDir
-			backupPaths = append(backupPaths, stagingDir)
 			defer func() {
 				if removeErr := os.RemoveAll(stagingDir); removeErr != nil {
 					log.Warn("failed to clean up system state staging dir", "dir", stagingDir, "error", removeErr.Error())
 				}
 			}()
+		}
+
+		// Disk layout — independent of system-state success: a partial state
+		// capture with a good layout is still worth knowing about, and vice
+		// versa. Never fatal: the run is still a valid file backup.
+		//
+		// ErrUnsupportedPlatform (no collector for this GOOS, e.g. darwin) is
+		// an EXPECTED, permanent condition, not a collection failure — it
+		// never becomes a run warning, and job.BareMetal stays nil exactly
+		// like a file-only run, so a healthy system-state run on an
+		// unsupported platform stays warning-free.
+		if lm, lerr := collectLayout(runCtx); lerr != nil {
+			if errors.Is(lerr, layout.ErrUnsupportedPlatform) {
+				log.Debug("disk layout capture skipped: unsupported platform")
+			} else {
+				log.Warn("disk layout capture failed", "error", lerr.Error())
+				appendWarning(job, "disk layout was not captured: "+lerr.Error())
+				job.BareMetal = &layout.Restorability{Restorable: false, Reasons: []string{"disk layout was not captured: " + lerr.Error()}}
+			}
+		} else {
+			job.LayoutManifest = lm
+			verdict := layout.Assess(lm)
+			job.BareMetal = &verdict
+			if !verdict.Restorable {
+				appendWarning(job, "not bare-metal restorable: "+strings.Join(verdict.Reasons, "; "))
+			}
 		}
 	}
 
@@ -506,6 +786,34 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		sourceLiveness = newShadowRootLiveness(vssSession.ShadowPaths)
 		var unmappedIdx []int
 		backupPaths, unmappedIdx = rewritePathsForVSS(backupPaths, vssSession.ShadowPaths, systemStateStagingIdx)
+
+		// journalDirsForExclude was computed from the LITERAL staging dir
+		// above, before this rewrite — but the walker below only ever
+		// visits the REWRITTEN backupPaths on a VSS run, never the literal
+		// ones. That alone would make the hard-exclude silently never fire
+		// under VSS: VSS snapshots the WHOLE volume, so the shadow copy
+		// also contains whatever the journal directory held at the instant
+		// of the snapshot (a real, uploadable file, not a hypothetical) —
+		// only the whole-machine preset's glob exclude would be left
+		// protecting a whole-machine run, and nothing would protect a
+		// custom path selection (review finding on #5583). Run every
+		// already-collected literal journal dir through the SAME
+		// volume→shadow substitution rewritePathsForVSS just used, and add
+		// whichever ones actually mapped to a shadow root (a dir on a
+		// volume VSS couldn't shadow is unmapped — matches
+		// rewritePathsForVSS's own live-volume fallback, nothing to add).
+		literalJournalDirs := journalDirsForExclude
+		rewrittenJournalDirs, unmappedJournalIdx := rewritePathsForVSS(literalJournalDirs, vssSession.ShadowPaths, noStagingIdx)
+		unmappedJournalSet := make(map[int]struct{}, len(unmappedJournalIdx))
+		for _, idx := range unmappedJournalIdx {
+			unmappedJournalSet[idx] = struct{}{}
+		}
+		for i, shadowed := range rewrittenJournalDirs {
+			if _, unmapped := unmappedJournalSet[i]; unmapped {
+				continue
+			}
+			journalDirsForExclude = append(journalDirsForExclude, shadowed)
+		}
 		if liveReads := reportableLiveReads(backupPaths, unmappedIdx, systemStateStagingIdx); len(liveReads) > 0 {
 			shadowedVolumes := make([]string, 0, len(vssSession.ShadowPaths))
 			for vol := range vssSession.ShadowPaths {
@@ -549,7 +857,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// timing in snapshot.go (#2790).
 	log.Info("scanning backup paths", "jobId", job.ID, "pathCount", len(backupPaths))
 	scanStart := time.Now()
-	files, scanErr := m.collectBackupFilesFromPaths(runCtx, backupPaths, newExcludeMatcher(excludes))
+	files, scanErr := m.collectBackupFilesFromPaths(runCtx, backupPaths, newExcludeMatcher(excludes), journalDirsForExclude)
 	if scanErr != nil {
 		if errors.Is(scanErr, errBackupStopped) {
 			return stopBackupRun()
@@ -567,42 +875,58 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// backupFile.originalPath doc comment.
 		originalPathsForVSS(files, vssSession.ShadowPaths)
 	}
-	if systemStateArtifactsMissing(job.SystemStateManifest, markSystemStateFiles(files, systemStateStagingDir)) {
-		// Reached only when the manifest and the collected files disagree, so
-		// it cannot fire on a healthy run.
-		//
-		// Warning rather than failure for the JOB: the file-path portion is
-		// still valid and restorable, so failing would throw away good data.
-		// But a warning alone is not enough, because unlike job.VSSMetadata the
-		// manifest DOES survive the trip — it is persisted to
-		// backup_snapshots.system_state_manifest and handed to the bare-metal
-		// recovery paths. Left intact it would advertise a complete system
-		// state on a restore point that holds none of it, which is the #3026
-		// symptom rather than a report of it. So drop the artifact list it can
-		// no longer vouch for, and keep the rest of the manifest (platform, OS
-		// version, hardware profile) — that is inline collector output, still
-		// accurate, and the hardware profile is persisted from here for
-		// recovery planning.
-		artifactCount := len(job.SystemStateManifest.Artifacts)
-		log.Warn("system state manifest was recorded but none of its artifacts were captured; "+
-			"the restore point does not contain the system state it describes",
-			"jobId", job.ID,
-			"artifacts", artifactCount,
-			"stagingDir", systemStateStagingDir,
-		)
-		job.SystemStateManifest.Artifacts = nil
-		appendWarning(job, "system state artifacts were not captured: the manifest described "+
-			strconv.Itoa(artifactCount)+" artifacts but none reached the snapshot")
+	// NOTE: system-state artifacts are no longer part of `files` at all (see
+	// the SystemStateEnabled block above) — they are uploaded by
+	// publishSystemState from job.SystemStateManifest/systemStateStagingDir
+	// directly, below and after createSnapshotWithProgress. That function
+	// reads each artifact straight from disk and fails loudly if one is
+	// missing or unreadable, which is a strictly stronger guarantee than the
+	// old "did the file walk happen to see it" proxy check this replaced —
+	// see the plan doc's Wave 1 section for why the old check (markSystem-
+	// StateFiles/systemStateArtifactsMissing) is now dead code and was
+	// removed rather than left inert.
+	// Gate manifest publication whenever server-owned mode is on (D18
+	// §3.1) — keyed on BaseSnapshotID being present, NOT on the lease
+	// being non-zero (P1 fix): Task 1's payload validation guarantees a
+	// non-zero lease whenever BaseSnapshotID is set, but the gate's
+	// INSTALLATION must not itself depend on that value, or a payload that
+	// somehow slipped validation with a zero lease would run completely
+	// ungated instead of hitting checkPublish's fail-closed zero-lease
+	// branch. Legacy servers (nil BaseSnapshotID) get the unwrapped
+	// provider and fully unchanged behavior. Applies to full runs too, not
+	// just incremental ones — the server fences every dispatched run's
+	// late-result window this way.
+	//
+	// Built BEFORE the len(files)==0 branch below (moved here on the D15
+	// merge) because that branch's state-only-zero-files publish path
+	// (publishSystemState + publishSnapshotManifest, D15 Wave 1) also
+	// writes snapshots/<id>/system-state/manifest.json and
+	// snapshots/<id>/manifest.json directly — isManifestPath matches both
+	// by basename, so leaseGate fences that path exactly like the ordinary
+	// createSnapshotWithProgress call below. Using the raw m.config.Provider
+	// there instead would let a state-only run publish past its lease with
+	// no fence at all.
+	uploadProvider := m.config.Provider
+	if m.config.BaseSnapshotID != nil {
+		uploadProvider = &leaseGate{
+			BackupProvider:        m.config.Provider,
+			publishLeaseExpiresAt: m.config.PublishLeaseExpiresAt,
+			journal:               journal,
+		}
 	}
+
 	if len(files) == 0 {
 		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
 		}
-		// A system-state-only run (no configured file paths) that produced
-		// nothing is a hard failure, not a no-op skip: there are no files to
-		// fall back on, so a green empty snapshot would silently protect
-		// nothing. Surface the collection error (or a synthetic one).
-		if m.config.SystemStateEnabled && len(m.config.Paths) == 0 {
+		stateHasArtifacts := systemStateStagingDir != "" && job.SystemStateManifest != nil && len(job.SystemStateManifest.Artifacts) > 0
+		if !stateHasArtifacts && m.config.SystemStateEnabled && len(m.config.Paths) == 0 {
+			// A system-state-only run (no configured file paths) that
+			// collected nothing: success depends entirely on what was
+			// collected above, since there is no ordinary-files fallback.
+			// Nothing to publish (collection failed, or produced a manifest
+			// with zero artifacts) is a hard failure — a green empty
+			// snapshot would silently protect nothing.
 			runErr := systemStateErr
 			if runErr == nil {
 				runErr = errors.New("system state collection produced no artifacts")
@@ -612,30 +936,127 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			job.Error = errors.Join(scanErr, runErr)
 			return job, job.Error
 		}
+		if stateHasArtifacts {
+			// State was collected with at least one artifact — publish it
+			// even though the ordinary file walk yielded nothing.
+			// Deliberately NOT gated on len(m.config.Paths)==0: a MIXED run
+			// (SystemStateEnabled with configured file paths too) can walk
+			// zero files just as easily — an empty directory, everything
+			// excluded, or a stale configured path — and losing the
+			// already-collected state in that case is exactly as silent a
+			// failure as the pure state-only case this branch was written
+			// for. Publish it as its own snapshot: system-state/ artifacts +
+			// manifest, plus the ordinary (empty-files) manifest.json so the
+			// snapshot-id group stays "manifest-bearing" for GC (see
+			// markLiveBackupObjects in apps/api/src/jobs/backupRetention.ts).
+			// A publish failure here is a hard job failure, not `completed`
+			// — there is no ordinary-files fallback for this snapshot.
+			snapshot := &Snapshot{
+				ID:        newSnapshotID(),
+				Timestamp: time.Now().UTC(),
+				// Files must be a non-nil empty slice, not the zero value: the
+				// field has no `omitempty` (a genuine empty-files manifest
+				// must still round-trip as "files":[]), and a nil slice
+				// encodes as `"files":null`, which the API's resultSchemas/
+				// queueSchemas reject (z.array(...).optional() accepts a
+				// missing key or [] but not null) — that silently drops the
+				// whole job result server-side.
+				Files:          []SnapshotFile{},
+				BackupIdentity: m.runBackupIdentity(),
+			}
+			prefix := path.Join(snapshotRootDir, snapshot.ID)
+			if pubErr := publishSystemState(runCtx, uploadProvider, snapshot.ID, systemStateStagingDir, job.SystemStateManifest); pubErr != nil {
+				job.Status = jobStatusFailed
+				job.CompletedAt = time.Now().UTC()
+				job.Error = fmt.Errorf("system state publish failed: %w", pubErr)
+				return job, job.Error
+			}
+			if job.LayoutManifest != nil {
+				if pubErr := publishLayoutManifest(runCtx, uploadProvider, snapshot.ID, job.LayoutManifest); pubErr != nil {
+					job.Status = jobStatusFailed
+					job.CompletedAt = time.Now().UTC()
+					job.Error = fmt.Errorf("layout manifest publish failed: %w", pubErr)
+					return job, job.Error
+				}
+			}
+			if pubErr := publishSnapshotManifest(runCtx, uploadProvider, snapshot, prefix); pubErr != nil {
+				job.Status = jobStatusFailed
+				job.CompletedAt = time.Now().UTC()
+				job.Error = fmt.Errorf("system state publish failed: %w", pubErr)
+				return job, job.Error
+			}
+			job.Snapshot = snapshot
+			job.BytesBackedUp = 0
+			job.CompletedAt = time.Now().UTC()
+			job.Status = jobStatusCompleted
+			log.Info("backup run finished with state artifacts but zero walked files",
+				"status", job.Status,
+				"jobId", job.ID,
+				"snapshotId", snapshot.ID,
+				"artifacts", len(job.SystemStateManifest.Artifacts),
+				"configuredPaths", len(m.config.Paths),
+				"elapsedMs", time.Since(job.StartedAt).Milliseconds(),
+			)
+			return job, nil
+		}
 		job.Status = jobStatusSkipped
 		job.CompletedAt = time.Now().UTC()
 		job.Error = scanErr
 		return job, scanErr
 	}
 
+	// This run's backup identity (device + destination + run kind — see
+	// runBackupIdentity/Snapshot.BackupIdentity) is computed once and reused
+	// both to select this run's dedupe base below and to stamp the new
+	// snapshot's own manifest, so a LATER run can find this one without
+	// picking up another device's or run-kind's snapshot instead (D6).
+	runIdentity := m.runBackupIdentity()
+
 	// Previous-manifest fetch for incremental reference decisions (manifest
 	// v2). Fail-open: any fetch/parse problem collapses to a loud log line
 	// and a full run — dedupe is strictly an optimization and must never
 	// fail or block a backup (see previousManifest's doc comment).
 	//
-	// Skipped entirely for a system-state-only run (no configured file
-	// paths): every one of its files is staging-dir and therefore already
-	// excluded from reference decisions by markSystemStateFiles above, so
-	// there is nothing eligible to dedupe against — the extra remote
-	// list+manifest-download would be pure waste.
+	// A system-state-only run (SystemStateEnabled with no configured file
+	// paths) never reaches this line at all — see the len(files)==0 branch
+	// above, which returns before this point since system-state artifacts
+	// are no longer part of `files` (they are published separately by
+	// publishSystemState). So len(m.config.Paths) > 0 always holds by the
+	// time we get here; this expression is kept as an explicit guard rather
+	// than assumed, so a future change to the branches above fails safe
+	// (skips dedupe) instead of silently building a reference index off an
+	// unintended run shape.
 	var prevSnapshot *Snapshot
 	incrementalDedupeActive := !m.config.SystemStateEnabled || len(m.config.Paths) > 0
 	if incrementalDedupeActive {
-		prev, reason := previousManifest(runCtx, m.config.Provider)
-		if prev == nil {
-			log.Info("running full backup, no reference dedupe", "reason", reason)
+		if m.config.BaseSnapshotID != nil {
+			// Server-owned mode (D18 §3.1): the protocol switch is presence
+			// of baseSnapshotId in the backup_run payload (see
+			// exec_backup.go). The agent never lists the bucket to choose a
+			// base in this mode.
+			prev, reason := fetchServerOwnedBase(runCtx, m.config.Provider, *m.config.BaseSnapshotID, runIdentity)
+			if prev == nil {
+				log.Info("running full backup, no reference dedupe",
+					"mode", "server-owned",
+					"baseSnapshotId", *m.config.BaseSnapshotID,
+					"reason", reason,
+				)
+			} else {
+				prevSnapshot = prev
+				log.Info("using server-selected base for incremental reference dedupe",
+					"mode", "server-owned",
+					"baseSnapshotId", prev.ID,
+				)
+			}
 		} else {
-			prevSnapshot = prev
+			// Legacy mode: server predates the field, fall back to the
+			// original bucket-listing lookup.
+			prev, reason := previousManifest(runCtx, m.config.Provider, runIdentity)
+			if prev == nil {
+				log.Info("running full backup, no reference dedupe", "mode", "legacy", "reason", reason)
+			} else {
+				prevSnapshot = prev
+			}
 		}
 	}
 
@@ -659,52 +1080,29 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		progressFn(0, len(files), 0, bytesTotal, "")
 	}
 
-	// Checkpoint journal: keyed by destination identity (provider kind +
-	// endpoint/bucket/path + the *configured* source paths — never the
-	// VSS-rewritten or system-state-staging paths in backupPaths, which are
-	// ephemeral per run and would defeat identity matching across runs).
-	// The journal dir comes from resolveJournalDir: explicit StagingDir, else
-	// a root-owned per-user/agent dir — NEVER the world-writable OS temp dir
-	// (a deterministic root-owned filename there is a symlink/tamper surface;
-	// a forged journal can trigger remote snapshot cleanup or silent file
-	// skips). If no secure dir exists, the run simply doesn't journal: resume
-	// is an optimization, never worth a world-writable root-owned write.
-	var journal *snapshotJournal
-	var resumedJournal bool
-	if journalDir, ok := resolveJournalDir(m.GetStagingDir()); !ok {
-		log.Warn("no secure checkpoint journal directory available, proceeding without resume support")
-	} else {
-		var journalErr error
-		journal, resumedJournal, journalErr = openSnapshotJournal(journalDir, backupIdentity(m.config.Provider, m.config.Paths), journalMaxAge)
-		if journalErr != nil {
-			// A journal is a best-effort checkpoint, never a correctness
-			// requirement: degrade to a journal-less run rather than failing
-			// the backup over it.
-			log.Warn("failed to open checkpoint journal, proceeding without resume support", "error", journalErr.Error())
-			journal = nil
-		}
+	// D18 W03 hoisted the journal-open (and its stale-journal handling) to
+	// before VSS/scan, and removed the agent-side stale-journal remote
+	// cleanup entirely (D18 §3.5) — see that block earlier in this
+	// function. D15's snapshotOpts/withSystemState wiring is independent of
+	// that and slots in here unchanged.
+	snapshotOpts := []createSnapshotOption{withRunIdentity(runIdentity)}
+	if m.config.SystemStateEnabled && systemStateStagingDir != "" && job.SystemStateManifest != nil && len(job.SystemStateManifest.Artifacts) > 0 {
+		// Publish system state under this call's own snapshot ID, BEFORE its
+		// ordinary manifest.json — see withSystemState's doc comment. This
+		// replaces a separate publishSystemState call this function used to
+		// make AFTER createSnapshotWithProgress returned, which published the
+		// ordinary manifest first (wrong order — D15 Wave 1 finding #4).
+		snapshotOpts = append(snapshotOpts, withSystemState(systemStateStagingDir, job.SystemStateManifest))
 	}
-	if journal != nil {
-		if staleID, ok := journal.StaleSnapshotID(); ok {
-			// StaleSnapshotID covers both an actually-stale (>journalMaxAge)
-			// journal and the (near-impossible) identity-mismatch case — see
-			// openSnapshotJournal — so the message below is deliberately
-			// generic rather than claiming a specific cause.
-			log.Warn("discarding unusable checkpoint journal, cleaning up its remote prefix",
-				"snapshotId", staleID,
-				"maxAge", journalMaxAge.String(),
-			)
-			cleanupSnapshotPrefix(m.config.Provider, staleID)
-		}
-		if resumedJournal {
-			log.Info("resuming interrupted backup from checkpoint journal",
-				"snapshotId", journal.snapshotID,
-				"resumedBytes", journal.ResumedBytes(),
-			)
-		}
+	if m.config.SystemStateEnabled && job.LayoutManifest != nil {
+		snapshotOpts = append(snapshotOpts, withLayout(job.LayoutManifest))
 	}
-
-	snapshot, snapErr := createSnapshotWithProgress(runCtx, m.config.Provider, files, progressFn, journal, prevSnapshot, sourceLiveness)
+	// Ownership of the journal's fd lifecycle transfers to
+	// createSnapshotWithProgress from here on (it has its own
+	// completed/Abandon defer) — this function's defer above must not also
+	// Abandon() it out from under that call.
+	journalOwned = true
+	snapshot, snapErr := createSnapshotWithProgress(runCtx, uploadProvider, files, progressFn, journal, prevSnapshot, sourceLiveness, snapshotOpts...)
 	if errors.Is(snapErr, errBackupStopped) {
 		return stopBackupRun()
 	}
@@ -719,39 +1117,17 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// reference-count fields (they're result/wire-only, not manifest
 		// content — see BackupJob.ReferencedFiles's doc comment).
 		for _, f := range snapshot.Files {
-			if isReferenceEntry(f, snapshot.ID) {
+			// See the identical guard/comment above: a content-less entry
+			// is never a reference (review finding, PR #5520).
+			if f.HasContent() && isReferenceEntry(f, snapshot.ID) {
 				job.ReferencedFiles++
 				job.ReferencedBytes += f.Size
 			}
 		}
 	}
 
-	retentionErr := error(nil)
 	if err := runCtx.Err(); err != nil {
 		return stopBackupRun()
-	}
-	// Agent-side retention pruning is DISABLED whenever incremental dedupe is
-	// active for this run. Incremental is now unconditional (previousManifest is
-	// consulted on every file-mode run), and a reference entry carries the
-	// ORIGINAL upload's BackupPath forward: an unchanged file's bytes live under
-	// the OLDEST snapshot's prefix indefinitely while every newer manifest
-	// references back into it. DeleteSnapshotContext deletes an expired
-	// snapshot's ENTIRE prefix with ZERO reference-awareness, so pruning the
-	// oldest prefix here would strand every retained manifest's references as
-	// dangling pointers — an unrestorable backup that only surfaces at restore
-	// time. Only a reference-aware GC may prune, and the server is the sole
-	// retention authority (dispatched runs pin Retention:0 — see exec_backup.go's
-	// server-owns-retention invariant). Reference-aware agent-side pruning for
-	// standalone storage reclamation is deliberately deferred: reimplementing
-	// mark-and-sweep GC on the agent is out of scope and too risky to one-shot.
-	if snapshot != nil && m.config.Retention > 0 && !incrementalDedupeActive {
-		retentionErr = DeleteSnapshotContext(runCtx, m.config.Provider, m.config.Retention)
-		if retentionErr != nil {
-			if errors.Is(retentionErr, errBackupStopped) {
-				return stopBackupRun()
-			}
-			log.Warn("failed to enforce snapshot retention", "error", retentionErr.Error())
-		}
 	}
 
 	if snapErr != nil {
@@ -763,6 +1139,17 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		job.Error = combinedErr
 		return job, combinedErr
 	}
+
+	// A run with BOTH configured file paths and system state (SystemStateEnabled
+	// with len(m.config.Paths) > 0 — the state-only case above already handled
+	// SystemStateEnabled with no configured paths) already published its
+	// collected system state INSIDE createSnapshotWithProgress above, via the
+	// withSystemState option — before its ordinary manifest, per D15 Wave 1
+	// finding #4. A publish failure there surfaces as snapErr (checked
+	// above), which fails the job loudly: a system_image-shaped run that
+	// reports `completed` while its state silently never reached the
+	// snapshot is exactly the bug this fixes, so a partial success (files
+	// ok, state missing) must not read as `completed`.
 
 	// Per-file upload failures on a PARTIAL success (some files uploaded,
 	// some skipped/stalled/retry-exhausted): the job still completes — the
@@ -776,6 +1163,17 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		failureWarning := summarizeUploadFailures(snapshot.UploadFailures, len(files))
 		appendWarning(job, failureWarning)
 		log.Warn("snapshot completed with upload failures", "warning", failureWarning, "errorCount", job.ErrorCount)
+	}
+
+	// Volatile files (#5581): kept changing while being backed up, so their
+	// manifest entry describes the last pre-upload measurement rather than
+	// any single instant an observer could point to. Not an error (the
+	// files ARE backed up, and restore/verify treat a mismatch on them as
+	// advisory) — surfaced as a Warning only, no ErrorCount contribution.
+	if snapshot != nil && snapshot.VolatileFiles > 0 {
+		volatileWarning := fmt.Sprintf("%d file(s) were modified while being backed up (recorded as volatile)", snapshot.VolatileFiles)
+		appendWarning(job, volatileWarning)
+		log.Warn("snapshot completed with volatile files", "warning", volatileWarning, "volatileFiles", snapshot.VolatileFiles)
 	}
 
 	// Collection-phase (scan) errors — permission-denied files, walk failures,
@@ -801,7 +1199,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// failures in a large run still completes, preserving the deliberate
 	// partial-success design above.
 	job.Status = classifyCompletionStatus(job.BytesBackedUp, totalScannedBytes(files), job.ErrorCount, len(files)+len(scanFailures))
-	job.Error = errors.Join(scanErr, retentionErr)
+	job.Error = scanErr
 	log.Info("backup run finished",
 		"status", job.Status,
 		"jobId", job.ID,
@@ -1040,19 +1438,115 @@ type backupFile struct {
 	// copy device path every run), so keying the journal on it would make
 	// resume silently never match on Windows-with-VSS.
 	originalPath string
-	// systemState marks a file collected from the run's system-state
-	// staging directory (see markSystemStateFiles / collectSystemState's
-	// call site in RunBackupContext). decideFile always uploads these —
-	// they are never reference candidates, see markSystemStateFiles's doc
-	// comment for why this is explicit rather than incidental.
-	systemState bool
+	// kind is "" for a regular file, KindSymlink or KindDir for a
+	// content-less entry — see SnapshotFile.Kind. linkTarget is the verbatim
+	// os.Readlink result for a symlink. modeBits/owner are the full Unix
+	// mode (perm + setuid/setgid/sticky) and uid/gid; nil/0 on Windows.
+	kind       string
+	linkTarget string
+	modeBits   uint32
+	owner      *FileOwner
+	// placeholder mirrors SnapshotFile.Placeholder — see that field's doc
+	// comment (snapshot.go). Set only via contentlessEntry for a KindDir
+	// entry the walker force-recorded because the directory matched an
+	// exclude pattern (#5493).
+	placeholder bool
+}
+
+// fullModeBits keeps perm + setuid/setgid/sticky; everything else (type bits)
+// is dropped so the value round-trips through os.Chmod.
+func fullModeBits(mode os.FileMode) uint32 {
+	return uint32(mode & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky))
+}
+
+// dirNeedsEntry decides whether a directory gets its own manifest entry:
+// empty directories always (nothing else recreates them); otherwise only
+// when mode/owner differ from the MkdirAll default the restore would apply.
+func dirNeedsEntry(info os.FileInfo, owner *FileOwner, empty bool) bool {
+	if empty {
+		return true
+	}
+	if runtime.GOOS == "windows" {
+		return false
+	}
+	if fullModeBits(info.Mode()) != 0o755 {
+		return true
+	}
+	if owner == nil {
+		return false
+	}
+	// Compare against the CURRENT PROCESS's own effective owner rather than
+	// a hardcoded 0:0: a restore's MkdirAll creates directories owned by
+	// whichever identity runs it. In production both the whole-machine
+	// backup and the bare-metal restore run as root, so this reduces to
+	// "owner != 0:0" exactly as designed. Hardcoding 0:0 instead would flag
+	// EVERY non-empty directory a non-root run walks (dev machines, and
+	// this package's own test suite on a non-root CI runner) as needing an
+	// entry, since every directory is legitimately owned by that non-root
+	// user — a false positive on every single directory, not a rare edge
+	// case.
+	return owner.UID != os.Geteuid() || owner.GID != os.Getegid()
 }
 
 func (m *BackupManager) collectBackupFiles() ([]backupFile, error) {
-	return m.collectBackupFilesFromPaths(context.Background(), m.config.Paths, newExcludeMatcher(m.config.Excludes))
+	return m.collectBackupFilesFromPaths(context.Background(), m.config.Paths, newExcludeMatcher(m.config.Excludes), nil)
 }
 
-func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths []string, excl *excludeMatcher) ([]backupFile, error) {
+// isWithinDir reports whether path IS dir, or lies somewhere inside it.
+// Used to hard-exclude this run's own checkpoint-journal directory from the
+// backup walk (see collectBackupFilesFromPaths's journalDirs parameter)
+// independent of any user-configured exclude pattern: a live journal file
+// growing while the walker is mid-scan is exactly the #5581 failure mode,
+// and this guard must keep working even when an operator edits or removes
+// the whole-machine preset excludes that also target this directory
+// (apps/web/.../backupTabPresets.ts) by name. An unresolvable relative path
+// (different volumes on Windows, etc.) is treated as "not within" — the
+// same fail-open default filepath.Rel errors already get everywhere else in
+// this file.
+func isWithinDir(path, dir string) bool {
+	if dir == "" {
+		return false
+	}
+	path = filepath.Clean(path)
+	dir = filepath.Clean(dir)
+	if path == dir {
+		return true
+	}
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// isWithinAnyDir reports whether path is within (or equal to) any of dirs —
+// see isWithinDir. collectBackupFilesFromPaths passes both the journal's
+// literal directory and, on a VSS run, its shadow-copy-rewritten form
+// (#5583 review fix): the walker only ever visits ONE of those two forms
+// depending on whether VSS is active, but journalDirs carries both
+// unconditionally, so this must check every candidate rather than just the
+// first.
+func isWithinAnyDir(path string, dirs []string) bool {
+	for _, dir := range dirs {
+		if isWithinDir(path, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// journalDirs, when non-empty, are every path form that identifies this
+// run's own checkpoint-journal directory: the literal directory (see
+// resolveJournalDir) and, on a VSS run, its shadow-copy-rewritten form —
+// the walker below visits the REWRITTEN backupPaths under VSS, never the
+// literal ones, and VSS snapshots the whole volume, so the shadow copy also
+// contains whatever the journal directory held at snapshot time (#5583).
+// Every directory's subtree is skipped entirely regardless of excl, so the
+// walker never captures the very journal file this run is writing to (or
+// another run's, in the same directory) as ordinary backup content. Empty
+// for callers with no journal context (the collectBackupFiles() test/legacy
+// helper above).
+func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths []string, excl *excludeMatcher, journalDirs []string) ([]backupFile, error) {
 	var files []backupFile
 	var errs []error
 	seen := make(map[string]struct{})
@@ -1078,7 +1572,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				continue
 			}
 			relPath := filepath.Base(cleanRoot)
-			if excl.matches(relPath) {
+			if excl.matches(relPath) || isWithinAnyDir(cleanRoot, journalDirs) {
 				continue
 			}
 			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, relPath))
@@ -1093,9 +1587,47 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				size:         info.Size(),
 				modTime:      info.ModTime(),
 				mode:         info.Mode(),
+				modeBits:     fullModeBits(info.Mode()),
+				owner:        fileOwner(info),
 			})
 			continue
 		}
+
+		// walkedDir/dirs/childCount defer the "does this directory need its
+		// own manifest entry" decision until after the walk: emptiness is
+		// only known once every child has been visited (see dirNeedsEntry).
+		// childCount is keyed by the ABSOLUTE parent path and counts only
+		// children that actually make it into the backup (non-excluded
+		// files/symlinks/subdirs) — an excluded child, file or directory,
+		// does NOT count. That matters two ways (#5493):
+		//   - a directory whose children are ALL excluded (e.g. a cache dir
+		//     holding only *.tmp files under a "*.tmp" exclude) still reads
+		//     as empty and gets its own manifest entry, same as a directory
+		//     that was always empty.
+		//   - a directory that is ITSELF excluded (walkedDir.forced below)
+		//     is force-recorded regardless of childCount/mode — its contents
+		//     are skipped, but the directory's presence, mode, and ownership
+		//     still need to survive a rebuild. This is what keeps mount
+		//     points like /proc, /tmp, and /var/tmp (whole-machine preset
+		//     excludes) present after a bare-metal restore: nothing else in
+		//     the manifest recreates them, and systemd/update-initramfs
+		//     require them to exist.
+		type walkedDir struct {
+			path, rel string
+			// forced marks a directory that was itself pattern-excluded
+			// (never the journal dir — see the walker below, which checks
+			// journalDirs first and returns before this can be set for
+			// it): it always gets a manifest entry — mode and ownership
+			// recorded, contents skipped — bypassing dirNeedsEntry's
+			// "would the default MkdirAll suffice" check, since nothing
+			// else will ever recreate this directory. Carried into the
+			// resulting backupFile/SnapshotFile as Placeholder, which
+			// restore uses to avoid re-permissioning an already-existing
+			// directory (review fix, #5493).
+			forced bool
+		}
+		var dirs []walkedDir
+		childCount := map[string]int{}
 
 		err = filepath.WalkDir(cleanRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 			if err := ctx.Err(); err != nil {
@@ -1105,39 +1637,79 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				errs = append(errs, fmt.Errorf("walk error for %s: %w", path, walkErr))
 				return nil
 			}
+			relPath, relErr := filepath.Rel(cleanRoot, path)
+			if relErr != nil {
+				errs = append(errs, fmt.Errorf("failed to resolve relative path for %s: %w", path, relErr))
+				return nil
+			}
+			slashRel := filepath.ToSlash(relPath)
 			if entry.IsDir() {
-				// An excluded directory is skipped entirely (fs.SkipDir), not
-				// just its immediate files (#2418).
-				if excl != nil && path != cleanRoot {
-					relPath, relErr := filepath.Rel(cleanRoot, path)
-					if relErr == nil && excl.matches(filepath.ToSlash(relPath)) {
-						return fs.SkipDir
-					}
+				if path == cleanRoot {
+					return nil
 				}
+				// An excluded directory's CONTENTS are skipped entirely
+				// (fs.SkipDir), not just its immediate files (#2418). The
+				// journal-dir check rides the same fs.SkipDir path so the
+				// whole checkpoint journal subtree — not just files that
+				// happen to match a glob — is pruned in one step (#5581).
+				//
+				// The journal-dir check runs FIRST and unconditionally wins
+				// (review fix): the journal directory is this run's own
+				// ephemeral bookkeeping location and must NEVER appear in
+				// the manifest at all — not even if it also happens to
+				// match a user-configured exclude pattern (e.g. an explicit
+				// "**/backup-journal/**" exclude, or simply a pattern broad
+				// enough to catch it incidentally). Checking journalDirs
+				// first, and returning before excludedByPattern is even
+				// evaluated, means that combination can never accidentally
+				// force an entry for it — see
+				// TestRunBackupContext_JournalHardExclude_MatchesVSSShadowPath
+				// and TestRunBackupContext_JournalHardExclude_WinsOverMatchingUserExclude.
+				//
+				// Only THEN does a PATTERN-excluded directory get
+				// force-recorded (see walkedDir.forced above): it
+				// represents a real, user-owned filesystem location (e.g.
+				// /proc, /tmp under the whole-machine preset) that a
+				// rebuild must still recreate.
+				if isWithinAnyDir(path, journalDirs) {
+					return fs.SkipDir
+				}
+				if excl != nil && excl.matches(slashRel) {
+					dirs = append(dirs, walkedDir{path: path, rel: slashRel, forced: true})
+					return fs.SkipDir
+				}
+				dirs = append(dirs, walkedDir{path: path, rel: slashRel})
+				childCount[filepath.Dir(path)]++
 				return nil
 			}
-			if entry.Type()&os.ModeSymlink != 0 {
+			if excl.matches(slashRel) || isWithinAnyDir(path, journalDirs) {
 				return nil
 			}
-			info, err := entry.Info()
+			childCount[filepath.Dir(path)]++
+			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, relPath))
+			if _, exists := seen[snapshotPath]; exists {
+				log.Debug("duplicate backup path skipped", "snapshotPath", snapshotPath)
+				return nil
+			}
+			info, err := entry.Info() // Lstat semantics: never follows the link
 			if err != nil {
 				errs = append(errs, fmt.Errorf("failed to read info for %s: %w", path, err))
 				return nil
 			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				target, linkErr := os.Readlink(path)
+				if linkErr != nil {
+					errs = append(errs, fmt.Errorf("failed to read symlink %s: %w", path, linkErr))
+					return nil
+				}
+				seen[snapshotPath] = struct{}{}
+				files = append(files, backupFile{
+					sourcePath: path, snapshotPath: snapshotPath, modTime: info.ModTime(), mode: info.Mode(),
+					kind: KindSymlink, linkTarget: target, owner: fileOwner(info),
+				})
+				return nil
+			}
 			if !info.Mode().IsRegular() {
-				return nil
-			}
-			relPath, err := filepath.Rel(cleanRoot, path)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("failed to resolve relative path for %s: %w", path, err))
-				return nil
-			}
-			if excl.matches(filepath.ToSlash(relPath)) {
-				return nil
-			}
-			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, relPath))
-			if _, exists := seen[snapshotPath]; exists {
-				log.Debug("duplicate backup path skipped", "snapshotPath", snapshotPath)
 				return nil
 			}
 			seen[snapshotPath] = struct{}{}
@@ -1147,6 +1719,8 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				size:         info.Size(),
 				modTime:      info.ModTime(),
 				mode:         info.Mode(),
+				modeBits:     fullModeBits(info.Mode()),
+				owner:        fileOwner(info),
 			})
 			return nil
 		})
@@ -1155,6 +1729,37 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				return files, errBackupStopped
 			}
 			errs = append(errs, fmt.Errorf("backup walk failed for %s: %w", cleanRoot, err))
+		}
+
+		for _, d := range dirs {
+			info, statErr := os.Lstat(d.path)
+			if statErr != nil {
+				continue
+			}
+			owner := fileOwner(info)
+			// A forced (pattern-excluded — never the journal dir, see the
+			// walker above) entry always gets recorded — dirNeedsEntry's
+			// emptiness/mode/owner heuristics are about whether the default
+			// restore behavior (MkdirAll 0755) would already recreate it
+			// correctly; an excluded directory is never recreated by
+			// anything else in the manifest, so it always needs its own
+			// entry regardless of what dirNeedsEntry would say. It is also
+			// marked Placeholder (review fix, #5493): restore must only
+			// apply its mode/owner when creating it fresh, never re-apply
+			// them over a directory a customer may have deliberately
+			// reconfigured since the backup — see SnapshotFile.Placeholder.
+			if !d.forced && !dirNeedsEntry(info, owner, childCount[d.path] == 0) {
+				continue
+			}
+			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, d.rel))
+			if _, exists := seen[snapshotPath]; exists {
+				continue
+			}
+			seen[snapshotPath] = struct{}{}
+			files = append(files, backupFile{
+				sourcePath: d.path, snapshotPath: snapshotPath, modTime: info.ModTime(), mode: info.Mode(),
+				kind: KindDir, modeBits: fullModeBits(info.Mode()), owner: owner, placeholder: d.forced,
+			})
 		}
 	}
 
@@ -1248,6 +1853,15 @@ func summarizeLiveReads(paths []string) string {
 
 // rewritePathsForVSS rewrites source paths to use VSS shadow copy device paths.
 // e.g., "C:\\Users\\data" with shadow "C:" -> "\\\\?\\GLOBALROOT\\...\\Users\\data"
+//
+// NOTE: as of Wave 1 of the D15 bare-metal-recovery contract, the caller
+// (RunBackupContext) never appends the system-state staging dir into
+// backupPaths anymore — it is published separately (see
+// snapshot.go's publishSystemState) — so stagingIdx is always noStagingIdx in
+// production today. The parameter and the exclusion logic below are kept
+// (rather than removed) because this function's own tests exercise it
+// directly, and because a future caller that DOES need to walk a directory
+// alongside VSS-rewritten paths can still opt in without re-deriving this.
 //
 // stagingIdx (noStagingIdx when the run has none) is the index of the
 // system-state staging directory, which is excluded from the rewrite. It is

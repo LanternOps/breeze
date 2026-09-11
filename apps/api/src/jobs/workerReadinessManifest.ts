@@ -136,6 +136,12 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('approvalExpiryReaper'),
   consumers('offboardingDrainReaper'),
   consumers('intentOutboxPublisher'),
+  consumers('aiOperatorTaskOutboxPublisher'),
+  // #5205 W06 (#5211). The string must match the one passed to
+  // `attachWorkerObservability` in jobs/aiOperatorTaskWorker.ts exactly —
+  // `workerReadinessCoverage.test.ts` AST-scans every `new Worker(...)` site
+  // and diffs the two lists for an exact set match.
+  consumers('aiOperatorTaskWorker'),
   consumers('intentExpiryReaper'),
   consumers('intentReleaseWorker'),
   consumers('stripeReconcileSweep'),
@@ -172,6 +178,11 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('accountingSyncWorker'),
   consumers('aiAgentImpactRollup', ['aiAgentImpactRollupWorker']),
   consumers('aiAgentGraduation'),
+  // SEC-142/143 (review B3). Plain-required (`redis`): read, not inferred —
+  // aiBudgetReservationSweep reads no feature flag anywhere in the module and
+  // constructs exactly one Worker unconditionally, attaching it under its own
+  // registry-key name.
+  consumers('aiBudgetReservationSweep'),
   // Task 8 merge-forward (origin/main ff9e10aec): five more `global` registry
   // entries. Each was read, not inferred from its name — none is feature-flag
   // gated, every one constructs exactly one Worker and attaches it

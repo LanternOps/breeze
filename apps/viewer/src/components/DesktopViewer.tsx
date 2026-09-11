@@ -2,7 +2,12 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { type ConnectionParams } from '../lib/protocol';
 import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '../lib/api';
-import { scaleVideoCoords, isWebRTCSupported, AgentSessionError, SessionEndedError, type AuthenticatedConnectionParams } from '../lib/webrtc';
+import { scaleVideoCoords, isWebRTCSupported, AgentSessionError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '../lib/webrtc';
+import {
+  startRevocationLeaseRenewal,
+  LEASE_REVOKED_MESSAGE,
+  LEASE_LOST_MESSAGE,
+} from '../lib/revocationLease';
 import { connectWebRTC as connectWebRTCTransport, type WebRTCSessionWrapper } from '../lib/transports/webrtc';
 import { connectWebSocket as connectWebSocketTransport, type WebSocketSessionWrapper } from '../lib/transports/websocket';
 import { capabilitiesFor, type TransportCapabilities } from '../lib/transports/types';
@@ -18,6 +23,7 @@ import { createInputCapabilitiesGate } from '../lib/inputCapabilities';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
 import { handleCtrlVPaste } from '../lib/clipboardPaste';
 import { shouldAutoHandoffToVnc, shouldAutoHandoffToWebRTC } from '../lib/autoHandoff';
+import { startFrameCounter } from '../lib/frameCounter';
 import { createStatsReporter } from '../lib/statsReporter';
 import ViewerToolbar from './ViewerToolbar';
 import CredentialsPromptModal from './CredentialsPromptModal';
@@ -49,6 +55,18 @@ const PASTE_NOTICE_TTL_MS = 8_000;
 // operator must relaunch from the dashboard.
 const SESSION_ENDED_MESSAGE =
   'This remote session has ended. Relaunch it from the Breeze dashboard.';
+
+// #5300: a SessionEndedError carries a real server-provided reason (e.g. the
+// no-video watchdog's swallowed capture error) exactly when the caller found
+// one via fetchSessionEndedReason — SessionEndedError otherwise defaults to
+// SESSION_ENDED_DEFAULT_MESSAGE. Keep the relaunch call-to-action either way;
+// only the diagnostic clause changes.
+function sessionEndedDisplayMessage(err: SessionEndedError): string {
+  if (err.message && err.message !== SESSION_ENDED_DEFAULT_MESSAGE) {
+    return `${err.message} Relaunch it from the Breeze dashboard.`;
+  }
+  return SESSION_ENDED_MESSAGE;
+}
 
 // Shown when the WebSocket upgrade was refused before it completed. The
 // browser never exposes the HTTP status behind a failed handshake, so this
@@ -835,8 +853,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         stopReconnect();
         setStatus('error');
         setConnectedAt(null);
-        setErrorMessage(SESSION_ENDED_MESSAGE);
-        onError(SESSION_ENDED_MESSAGE);
+        const msg = sessionEndedDisplayMessage(err);
+        setErrorMessage(msg);
+        onError(msg);
         reconnectInFlightRef.current = false;
         return;
       }
@@ -1019,9 +1038,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           userDisconnectRef.current = true;
           stopReconnect();
           setStatus('error');
-          setErrorMessage(SESSION_ENDED_MESSAGE);
+          const msg = sessionEndedDisplayMessage(err);
+          setErrorMessage(msg);
           setConnectedAt(null);
-          onError(SESSION_ENDED_MESSAGE);
+          onError(msg);
           return;
         }
         const msg = err instanceof Error ? err.message : 'Connection failed';
@@ -1128,40 +1148,65 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	    params.deviceId,
 	  ]);
 
-  // Count WebRTC video frames via requestVideoFrameCallback
+  // Revocation-lease renewal. A live session is peer-to-peer, so once the
+  // answer arrives the server has no other way to reach this viewer: every 25s
+  // we ask it to re-verify that this operator is still authorized for this
+  // session. A definitive "no" (403/410) closes the connection here as well as
+  // agent-side; an inconclusive answer rides the 90s grace window, so an API or
+  // network blip cannot end a session.
+  //
+  // Runs for every desktop transport (WebRTC and the WebSocket fallback) —
+  // both stream the screen and inject input, so both must be revokable.
+  useEffect(() => {
+    if (params.mode !== 'desktop') return;
+    if (status !== 'connected') return;
+    const auth = authRef.current;
+    if (!auth?.sessionId || !auth.accessToken) return;
+
+    const endSession = (message: string) => {
+      userDisconnectRef.current = true; // no auto-reconnect onto a dead session
+      stopReconnect();
+      const prevRtc = webrtcRef.current;
+      webrtcRef.current = null;
+      prevRtc?.close();
+      wsCleanupRef.current?.();
+      wsCleanupRef.current = null;
+      setStatus('error');
+      setConnectedAt(null);
+      setErrorMessage(message);
+      onError(message);
+    };
+
+    return startRevocationLeaseRenewal(
+      {
+        apiUrl: auth.apiUrl,
+        sessionId: auth.sessionId,
+        accessToken: auth.accessToken,
+      },
+      {
+        onRevoked: () => endSession(LEASE_REVOKED_MESSAGE),
+        onLost: () => endSession(LEASE_LOST_MESSAGE),
+      },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, params.mode, stopReconnect, onError]);
+
+  // Count WebRTC video frames for the FPS readout. See lib/frameCounter.ts
+  // for the rVFC-with-watchdog-fallback strategy: some WebViews (notably
+  // WKWebView on macOS) expose requestVideoFrameCallback but never invoke it
+  // for a WebRTC MediaStream, which otherwise left this reading a permanent
+  // 0 FPS while the picture was visibly updating (issue #5292).
   useEffect(() => {
     if (transport !== 'webrtc') return;
     const videoEl = videoRef.current;
     if (!videoEl) return;
 
-    let active = true;
-
-    const rvfc = (videoEl as unknown as { requestVideoFrameCallback?: (cb: () => void) => number })
-      .requestVideoFrameCallback;
-
-    if (typeof rvfc === 'function') {
-      const onFrame = () => {
-        if (!active) return;
-        frameCountRef.current++;
-        rvfc.call(videoEl, onFrame);
-      };
-      rvfc.call(videoEl, onFrame);
-      return () => { active = false; };
-    }
-
-    // Fallback: approximate frames by watching currentTime advance.
-    let lastTime = videoEl.currentTime;
-    const tick = () => {
-      if (!active) return;
-      const t = videoEl.currentTime;
-      if (t !== lastTime) {
-        lastTime = t;
-        frameCountRef.current++;
-      }
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-    return () => { active = false; };
+    const counter = startFrameCounter({
+      video: videoEl,
+      onFrame: () => { frameCountRef.current++; },
+      log: (message) => console.debug('[DesktopViewer]', message),
+    });
+    return () => counter.stop();
   }, [transport]);
 
   // Request a keyframe when the viewer window/tab regains focus so the

@@ -81,7 +81,7 @@
     "jspdf-autotable": "^5.0.8",
     "nanoid": "^6.0.0",
     "node-stream-zip": "^1.16.0",
-    "nodemailer": "^9.0.3",
+    "nodemailer": "^9.1.0",
     "oidc-provider": "^9",
     "otplib": "^13.4.1",
     "pdf-lib": "^1.17.1",
@@ -101,7 +101,7 @@
   "devDependencies": {
     "@types/archiver": "^7.0.0",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.4.1",
     "@types/nodemailer": "^8.0.1",
     "@types/oidc-provider": "^9.5.0",
     "@types/pdfkit": "^0.17.6",
@@ -115,7 +115,7 @@
     "drizzle-kit": "^0.31.10",
     "jszip": "^3.10.1",
     "tsup": "^8.3.5",
-    "tsx": "^4.23.12",
+    "tsx": "^4.23.13",
     "typescript": "^5.7.2",
     "vitest": "^4.1.11"
   }

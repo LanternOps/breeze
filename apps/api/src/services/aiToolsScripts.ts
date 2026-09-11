@@ -27,7 +27,7 @@ import {
   scriptTemplates,
   scriptExecutions,
 } from '../db/schema';
-import { eq, and, desc, sql, ilike, isNull, or, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, ilike, inArray, isNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
@@ -96,7 +96,10 @@ async function verifyDeviceAccess(
   if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
     return { error: 'Device not found or access denied' };
   }
-  if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
+  if (requireOnline && device.status !== 'online')
+    return {
+      error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
+    };
   return { device };
 }
 
@@ -222,7 +225,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'execute_command',
-      description: 'Execute a system command on a device. Read-only command types (list_processes, file_list, event_logs_list) run without a durable approval step in auto-execute session modes (still audit logged); under the default per-step mode they still take a lightweight inline confirmation. list_services, event_logs_query, and all mutating/file_read command types always require full user approval. Use for process management, service control, file operations, etc. Paging/filter payload params: list_processes { page, limit (max 500; larger values reset to 50), search, sortBy, sortDesc }; event_logs_query (Windows only) { page (max 20), limit (max 500), logName, level, source, eventId }; file_list { path, limit (max 5000) } — no paging, narrow the path to see more. Large results are compacted for chat — if the result carries stdoutTruncation/_chat metadata, page or narrow the payload rather than repeating the same call.',
+      description: 'Execute a system command on a device. Read-only command types (list_processes, file_list, event_logs_list) run without a durable approval step in auto-execute session modes (still audit logged); under the default per-step mode they still take a lightweight inline confirmation. list_services, event_logs_query, and all mutating/file_read command types always require full user approval. Use for process management, service control, file operations, etc. Paging/filter payload params: list_processes { page, limit (max 500; larger values reset to 50), search, sortBy, sortDesc }; event_logs_query (Windows only) { page (max 20), limit (max 500), logName, level, source, eventId }; file_list { path, limit (max 5000) } — no paging, narrow the path to see more. Other payload keys: start_service/stop_service/restart_service { serviceName } (same key manage_services takes; `name` also works — either key reaches the agent as `name`, which is what it actually reads); kill_process { processName, pid }; file_read { path }. Large results are compacted for chat — if the result carries stdoutTruncation/_chat metadata, page or narrow the payload rather than repeating the same call.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -244,15 +247,35 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       const deviceId = input.deviceId as string;
+      const commandType = input.commandType as string;
 
       // Verify device access
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
       const { device } = access;
 
+      const payload = { ...((input.payload as Record<string, unknown>) ?? {}) };
+
+      // The tool description tells the model to send { serviceName } for the
+      // three service commands — the same key manage_services' own input
+      // schema takes — but unlike manage_services (which normalizes it to
+      // `name` at ~L668 before calling executeCommand), this handler used to
+      // forward the payload verbatim. The agent only reads payload["name"]
+      // (agent/internal/remote/tools/services.go), so a model-issued
+      // serviceName call silently no-oped on the device while the approval
+      // headline still confidently named the service. Accept either key;
+      // `name` wins if a caller somehow sends both.
+      if (
+        (commandType === 'start_service' || commandType === 'stop_service' || commandType === 'restart_service') &&
+        payload.serviceName !== undefined
+      ) {
+        if (payload.name === undefined) payload.name = payload.serviceName;
+        delete payload.serviceName;
+      }
+
       // Import and use executeCommand from commandQueue
       const { executeCommand } = await getCommandQueue();
-      const result = await executeCommand(deviceId, input.commandType as string, (input.payload as Record<string, unknown>) ?? {}, {
+      const result = await executeCommand(deviceId, commandType, payload, {
         userId: auth.user.id,
         timeoutMs: 30000
       });
@@ -270,7 +293,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'run_script',
-      description: 'Execute a script on one or more devices. Existing scripts can be referenced by ID; inline scripts require approval.',
+      description: 'Execute a script on one or more devices. Existing scripts can be referenced by ID; inline scripts require approval. A device inside a maintenance window that suppresses scripts is skipped, not failed: that device\'s result carries status "suppressed" with a message — report it as deferred and do not retry it now.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -484,12 +507,31 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
                 // it always did.
                 runAs: runContext.data.runAs,
                 targetSessionId: runContext.data.targetSessionId,
-                requireOnline: true,
+                // #5128 W4 — the AI run_script tool answers synchronously and
+                // has no way to surface a later result, so it keeps the hard
+                // offline rejection the `requireOnline` alias used to give it.
+                // W5 softens the error TEXT, not the behaviour.
+                offlinePolicy: { kind: 'reject' },
                 variableScope,
               });
             })
           );
           if (!dispatch.ok) {
+            if (dispatch.code === 'maintenance_suppressed') {
+              // #4919 — NOT an error. A maintenance window is the operator's
+              // deliberate "not now", and reporting it as a failure is how an
+              // assistant ends up retrying, escalating, or telling the user
+              // the script broke. `status: 'suppressed'` keeps it out of the
+              // error shape every other branch here uses; the message carries
+              // the distinction between an open window and a window we could
+              // not evaluate (fail-closed), so the assistant can say which.
+              results[deviceId] = {
+                status: 'suppressed',
+                suppressedBy: 'maintenance_window',
+                message: dispatch.error,
+              };
+              continue;
+            }
             results[deviceId] = { error: dispatch.error };
             continue;
           }
@@ -978,22 +1020,39 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 10), 50);
 
+      const executionConditions: SQL[] = [eq(scriptExecutions.scriptId, input.scriptId as string)];
+      const executionOrgCondition = auth.orgCondition(scriptExecutions.orgId);
+      if (executionOrgCondition) executionConditions.push(executionOrgCondition);
+      if (auth.allowedSiteIds !== undefined) {
+        executionConditions.push(inArray(devices.siteId, auth.allowedSiteIds));
+      }
+
       const results = await db
         .select({
           id: scriptExecutions.id,
           status: scriptExecutions.status,
           exitCode: scriptExecutions.exitCode,
-          stdout: scriptExecutions.stdout,
-          stderr: scriptExecutions.stderr,
+          stdout: sql<string | null>`left(${scriptExecutions.stdout}, 16385)`,
+          stderr: sql<string | null>`left(${scriptExecutions.stderr}, 8193)`,
           createdAt: scriptExecutions.createdAt,
           completedAt: scriptExecutions.completedAt,
         })
         .from(scriptExecutions)
-        .where(eq(scriptExecutions.scriptId, input.scriptId as string))
+        .innerJoin(devices, eq(devices.id, scriptExecutions.deviceId))
+        .where(and(...executionConditions))
         .orderBy(desc(scriptExecutions.createdAt))
         .limit(limit);
 
-      return JSON.stringify({ executions: results, count: results.length });
+      const executions = results.map((execution) => ({
+        ...execution,
+        ...(execution.stdout && execution.stdout.length > 16_384
+          ? { stdout: execution.stdout.slice(0, 16_384), stdoutTruncated: true }
+          : {}),
+        ...(execution.stderr && execution.stderr.length > 8_192
+          ? { stderr: execution.stderr.slice(0, 8_192), stderrTruncated: true }
+          : {}),
+      }));
+      return JSON.stringify({ executions, count: executions.length });
     },
   });
 

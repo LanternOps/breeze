@@ -13,9 +13,6 @@ import { BILLING_URL, MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { ERROR_IDS, logOauthError } from '../oauth/log';
 import { writeRouteAudit } from '../services/auditEvents';
 
-// Grant TTL in seconds — must match `ttl.Grant` in oauth/provider.ts so the
-// breeze metadata side-table entry expires no later than the Grant itself.
-const GRANT_TTL_SECONDS = 14 * 24 * 60 * 60;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const asSystem = <T>(fn: () => Promise<T>): Promise<T> =>
@@ -433,7 +430,7 @@ if (MCP_OAUTH_ENABLED) {
     // null` that bearer middleware rejects. The Grant.save() above is
     // recoverable on a retry click since the auth code is short-lived.
     try {
-      await setGrantBreezeMeta(grantId, { partner_id: body.partner_id, org_id: orgId }, GRANT_TTL_SECONDS);
+      await setGrantBreezeMeta(grantId, { partner_id: body.partner_id, org_id: orgId });
     } catch {
       // setGrantBreezeMeta already logs with errorId. Surface a generic 500
       // to the consent client; they can retry.

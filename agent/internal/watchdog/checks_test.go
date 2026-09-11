@@ -305,7 +305,8 @@ func TestStaleFileVetoedByFreshStateSync(t *testing.T) {
 	if got := hc.CheckHeartbeatStaleness(s); got != CheckHeartbeatStale {
 		t.Fatalf("precondition: frozen file should be stale, got %q", got)
 	}
-	hc.NoteStateSync(time.Now().Add(-20 * time.Second)) // agent just heartbeated
+	hc.NoteStateSync(time.Now().Add(-20*time.Second), 0) // agent just heartbeated
+
 	if got := hc.CheckHeartbeatStaleness(s); got != CheckOK {
 		t.Fatalf("fresh state_sync must override frozen file: expected %q, got %q", CheckOK, got)
 	}
@@ -316,7 +317,7 @@ func TestNilFileWithFreshStateSyncIsOK(t *testing.T) {
 	hc := NewHealthChecker(nil, nil, 3*time.Minute)
 	// The field shape: agent.state was NEVER writable, state.Read fails
 	// forever, agentState stays nil — but state_syncs flow.
-	hc.NoteStateSync(time.Now().Add(-10 * time.Second))
+	hc.NoteStateSync(time.Now().Add(-10*time.Second), 0)
 	if got := hc.CheckHeartbeatStaleness(nil); got != CheckOK {
 		t.Fatalf("nil file with fresh sync must be OK: got %q", got)
 	}
@@ -333,7 +334,7 @@ func TestNilFileWithoutAnySyncStaysStale(t *testing.T) {
 func TestStaleSyncDoesNotMaskFreshFile(t *testing.T) {
 	t.Parallel()
 	hc := NewHealthChecker(nil, nil, 3*time.Minute)
-	hc.NoteStateSync(time.Now().Add(-1 * time.Hour))
+	hc.NoteStateSync(time.Now().Add(-1*time.Hour), 0)
 	s := &state.AgentState{LastHeartbeat: time.Now().Add(-5 * time.Second)}
 	if got := hc.CheckHeartbeatStaleness(s); got != CheckOK {
 		t.Fatalf("fresh file must win over stale sync: got %q", got)
@@ -343,7 +344,7 @@ func TestStaleSyncDoesNotMaskFreshFile(t *testing.T) {
 func TestBothSourcesStaleIsStale(t *testing.T) {
 	t.Parallel()
 	hc := NewHealthChecker(nil, nil, 3*time.Minute)
-	hc.NoteStateSync(time.Now().Add(-10 * time.Minute))
+	hc.NoteStateSync(time.Now().Add(-10*time.Minute), 0)
 	s := &state.AgentState{LastHeartbeat: time.Now().Add(-20 * time.Minute)}
 	if got := hc.CheckHeartbeatStaleness(s); got != CheckHeartbeatStale {
 		t.Fatalf("both sources stale must be stale: got %q", got)
@@ -354,8 +355,9 @@ func TestNoteStateSyncNeverRegresses(t *testing.T) {
 	t.Parallel()
 	hc := NewHealthChecker(nil, nil, 3*time.Minute)
 	fresh := time.Now().Add(-10 * time.Second)
-	hc.NoteStateSync(fresh)
-	hc.NoteStateSync(fresh.Add(-1 * time.Hour)) // out-of-order older value
+	hc.NoteStateSync(fresh, 0)
+	hc.NoteStateSync(fresh.Add(-1*time.Hour), 0) // out-of-order older value
+
 	if got := hc.LastKnownHeartbeat(nil); !got.Equal(fresh) {
 		t.Fatalf("older sync must not regress stored heartbeat: got %v want %v", got, fresh)
 	}
@@ -370,7 +372,7 @@ func TestFreshSyncReArmsStaleVetoBudget(t *testing.T) {
 		t.Fatalf("expected first stale verdict to be vetoed")
 	}
 	// Agent heartbeats (sync arrives) → staleness clears AND veto budget re-arms.
-	hc.NoteStateSync(time.Now())
+	hc.NoteStateSync(time.Now(), 0)
 	if d, _ := hc.EvaluateStaleHeartbeat(stale, true); d != HeartbeatOK {
 		t.Fatalf("fresh sync must clear staleness")
 	}
@@ -384,12 +386,115 @@ func TestLastKnownHeartbeatPicksFreshest(t *testing.T) {
 	hc := NewHealthChecker(nil, nil, 3*time.Minute)
 	fileHB := time.Now().Add(-2 * time.Minute)
 	syncHB := time.Now().Add(-1 * time.Minute)
-	hc.NoteStateSync(syncHB)
+	hc.NoteStateSync(syncHB, 0)
 	s := &state.AgentState{LastHeartbeat: fileHB}
 	if got := hc.LastKnownHeartbeat(s); !got.Equal(syncHB) {
 		t.Fatalf("expected sync heartbeat (fresher), got %v", got)
 	}
 	if got := hc.LastKnownHeartbeat(nil); !got.Equal(syncHB) {
 		t.Fatalf("nil file: expected sync heartbeat, got %v", got)
+	}
+}
+
+// --- IPC veto while a backup run is in flight (D3): during a 10k-file
+// backup on Windows Server 2022 the IPC ping/pong round trip intermittently
+// exceeded IPCProbeInterval under load, so CheckIPC escalated straight to
+// CheckIPCFailed -> graceful_restart -> StopBackupHelper killed the helper
+// mid-run (9,751/10,046 files done). There was no in-flight-backup veto
+// anywhere in the watchdog before this. The veto below fires only while a
+// backup is actually running AND a recent state_sync corroborates the agent
+// is alive, and it is bounded (ipcVetoLimit) so a genuinely wedged agent
+// that keeps reporting an active run still gets restarted eventually.
+
+// TestCheckIPCVetoedWhileBackupInFlightWithFreshSync covers case (a): three
+// consecutive IPC failures with an active backup run and a fresh state_sync
+// must NOT escalate to CheckIPCFailed, and the veto must be counted.
+func TestCheckIPCVetoedWhileBackupInFlightWithFreshSync(t *testing.T) {
+	t.Parallel()
+	prober := &mockIPCProber{healthy: false}
+	hc := NewHealthChecker(nil, prober, 3*time.Minute)
+	hc.SetIPCProbeInterval(50 * time.Millisecond)
+	hc.NoteStateSync(time.Now(), 1) // backup running, sync just arrived
+
+	var last string
+	for i := 0; i < ipcFailThreshold; i++ {
+		last = hc.CheckIPC()
+	}
+	if last != CheckIPCDegraded {
+		t.Fatalf("expected veto to hold escalation at %q, got %q", CheckIPCDegraded, last)
+	}
+	if got := hc.IPCVetoCount(); got != 1 {
+		t.Fatalf("expected exactly one veto to be counted, got %d", got)
+	}
+	if !hc.LastIPCCheckVetoed() {
+		t.Fatal("expected the threshold-crossing check to be flagged as vetoed")
+	}
+}
+
+// TestCheckIPCFailsWithoutActiveBackupRun covers case (b): the same failure
+// sequence with ActiveBackupRuns=0 must reproduce the existing behaviour —
+// CheckIPCFailed on the 3rd consecutive failure, no veto.
+func TestCheckIPCFailsWithoutActiveBackupRun(t *testing.T) {
+	t.Parallel()
+	prober := &mockIPCProber{healthy: false}
+	hc := NewHealthChecker(nil, prober, 3*time.Minute)
+	hc.SetIPCProbeInterval(50 * time.Millisecond)
+	hc.NoteStateSync(time.Now(), 0) // sync fresh, but no backup running
+
+	var last string
+	for i := 0; i < ipcFailThreshold; i++ {
+		last = hc.CheckIPC()
+	}
+	if last != CheckIPCFailed {
+		t.Fatalf("expected existing behaviour (fail at threshold) with no active run, got %q", last)
+	}
+	if hc.LastIPCCheckVetoed() {
+		t.Fatal("must not report a veto when no backup run is active")
+	}
+}
+
+// TestCheckIPCVetoLimitExhausted covers case (c): once ipcVetoLimit
+// consecutive vetoes have been consumed, the next threshold-crossing failure
+// must escalate anyway, even though the backup run is still reported active
+// and the sync stays fresh — otherwise a wedged agent could dodge restarts
+// forever just by keeping ActiveBackupRuns above zero.
+func TestCheckIPCVetoLimitExhausted(t *testing.T) {
+	t.Parallel()
+	prober := &mockIPCProber{healthy: false}
+	hc := NewHealthChecker(nil, prober, 3*time.Minute)
+	hc.SetIPCProbeInterval(50 * time.Millisecond)
+
+	var last string
+	total := (ipcFailThreshold - 1) + ipcVetoLimit + 1
+	for i := 0; i < total; i++ {
+		hc.NoteStateSync(time.Now(), 1) // keep the sync fresh on every tick
+		last = hc.CheckIPC()
+	}
+	if last != CheckIPCFailed {
+		t.Fatalf("expected escalation once the veto budget (%d) is exhausted, got %q", ipcVetoLimit, last)
+	}
+}
+
+// TestCheckIPCVetoDoesNotApplyToStaleSync covers case (d): a state_sync
+// older than the recency window (ipcVetoRecencyMultiplier *
+// IPCProbeInterval) must not corroborate liveness, so the escalation must
+// proceed exactly as if no backup were reported running.
+func TestCheckIPCVetoDoesNotApplyToStaleSync(t *testing.T) {
+	t.Parallel()
+	prober := &mockIPCProber{healthy: false}
+	hc := NewHealthChecker(nil, prober, 3*time.Minute)
+	hc.SetIPCProbeInterval(10 * time.Millisecond) // recency window = 30ms
+	hc.NoteStateSync(time.Now(), 1)
+	time.Sleep(100 * time.Millisecond) // well past the 30ms recency window
+
+	var last string
+	for i := 0; i < ipcFailThreshold; i++ {
+		last = hc.CheckIPC()
+	}
+	if last != CheckIPCFailed {
+		t.Fatalf("stale sync must not veto escalation, got %q", last)
+	}
+	if hc.LastIPCCheckVetoed() {
+		t.Fatal("stale sync must not be flagged as vetoed")
 	}
 }

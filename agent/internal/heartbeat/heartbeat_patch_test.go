@@ -110,6 +110,113 @@ func TestResolvePatchInstallIDUsesPackageIDForVersionedLinuxExternalID(t *testin
 	}
 }
 
+// A Windows Update install must be selected by the identity THIS device
+// observed (patchCommandRef.ExternalID), never by the globally deduplicated
+// catalog selector (patchCommandRef.PackageID), which the API fills once from
+// whichever device created the row first — possibly in another tenant.
+//
+// Cases marked "discriminator" fail against the unfixed resolver, which took
+// PackageID first via patchLocalID. Cases marked "over-reach guard" already
+// passed before the fix; they are here to prove the new Windows-Update branch
+// does not capture refs that belong to another provider or shape.
+func TestResolvePatchInstallIDUsesDeviceObservedKBForWindowsUpdate(t *testing.T) {
+	tests := []struct {
+		name       string
+		providers  []string
+		externalID string
+		packageID  string
+		want       string
+	}{
+		{
+			// discriminator
+			name:       "global selector from another device cannot override KB",
+			externalID: "KB5034441",
+			packageID:  "windows-update:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+			want:       "windows-update:KB5034441",
+		},
+		{
+			// discriminator: driver and feature updates expose no KBArticleIDs,
+			// so the agent reports the raw WUA UpdateID as externalId. The KB
+			// guard does not fire for those, and the poisoned catalog selector
+			// used to win.
+			name:       "KB-less driver update resolves the observed UpdateID, not the catalog selector",
+			externalID: "aaaaaaaa-1111-2222-3333-444444444444",
+			packageID:  "windows-update:99999999-9999-9999-9999-999999999999",
+			want:       "windows-update:aaaaaaaa-1111-2222-3333-444444444444",
+		},
+		{
+			// discriminator: a source-qualified externalId is still the
+			// device-observed identity.
+			name:       "source-qualified KB is not diverted by the catalog selector",
+			externalID: "microsoft:KB5034441",
+			packageID:  "windows-update:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+			want:       "windows-update:KB5034441",
+		},
+		{
+			// over-reach guard (passed before the fix too)
+			name:       "qualified update without KB remains exact",
+			externalID: "windows-update:11111111-2222-3333-4444-555555555555",
+			packageID:  "windows-update:11111111-2222-3333-4444-555555555555",
+			want:       "windows-update:11111111-2222-3333-4444-555555555555",
+		},
+		{
+			// over-reach guard: a Microsoft-source row whose external identity
+			// is qualified for a real, present package manager must keep its
+			// own provider routing.
+			name:       "externalId qualified for another provider keeps that provider",
+			providers:  []string{"windows-update", "chocolatey"},
+			externalID: "chocolatey:googlechrome",
+			packageID:  "chocolatey:googlechrome",
+			want:       "chocolatey:googlechrome",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			providerIDs := tt.providers
+			if providerIDs == nil {
+				providerIDs = []string{"windows-update"}
+			}
+			providers := make([]patching.PatchProvider, 0, len(providerIDs))
+			for _, id := range providerIDs {
+				providers = append(providers, &heartbeatMockProvider{id: id})
+			}
+
+			h := &Heartbeat{patchMgr: patching.NewPatchManager(providers...)}
+			installID, err := h.resolvePatchInstallID(patchCommandRef{
+				ID:         "platform-patch-id",
+				Source:     "microsoft",
+				ExternalID: tt.externalID,
+				PackageID:  tt.packageID,
+			})
+			if err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			if installID != tt.want {
+				t.Fatalf("installID = %q, want %q", installID, tt.want)
+			}
+		})
+	}
+}
+
+// The device-observed identity is preferred, but it is not mandatory: a ref
+// with no externalId at all must still fall back to the catalog selector
+// rather than producing an unresolvable install id.
+func TestResolvePatchInstallIDFallsBackToPackageIDWhenNoObservedIdentity(t *testing.T) {
+	h := &Heartbeat{patchMgr: patching.NewPatchManager(&heartbeatMockProvider{id: "windows-update"})}
+	installID, err := h.resolvePatchInstallID(patchCommandRef{
+		ID:        "platform-patch-id",
+		Source:    "microsoft",
+		PackageID: "windows-update:11111111-2222-3333-4444-555555555555",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if installID != "windows-update:11111111-2222-3333-4444-555555555555" {
+		t.Fatalf("installID = %q, want windows-update:11111111-2222-3333-4444-555555555555", installID)
+	}
+}
+
 func TestExecutePatchInstallCommandReportsPartialFailures(t *testing.T) {
 	provider := &heartbeatMockProvider{id: "apt"}
 	h := &Heartbeat{patchMgr: patching.NewPatchManager(provider)}

@@ -24,14 +24,21 @@
  *    `key-shadowed` at preview instead of a P0001 nobody expected at commit.
  *
  * ── Where the snapshot comes from, and why it is a system read ──────────────
- * `custom_field_definitions` has NO partner-wide SELECT branch on its RLS
- * policy — it is listed in `PARTNER_WIDE_SELECT_BRANCH_EXEMPT`
- * (`rls-coverage.integration.test.ts`, TODO #4944) — so an ORGANIZATION-scoped
- * request context cannot see partner-wide rows at all. Reading the snapshot in
- * the request context would therefore annotate a shadowed key as `create` for
- * exactly the callers most likely to hit it. The snapshot is loaded in ONE
- * system context instead, bounded by `ctx.partnerId` AND `ctx.accessibleOrgIds`
- * — the same reasoning, and the same bound, as `contacts/import.ts:229`.
+ * Historically `custom_field_definitions` had NO partner-wide SELECT branch on
+ * its RLS policy (it was the last entry in
+ * `PARTNER_WIDE_SELECT_BRANCH_EXEMPT`, `rls-coverage.integration.test.ts`), so
+ * an ORGANIZATION-scoped request context could not see partner-wide rows at
+ * all and reading the snapshot in the request context would have annotated a
+ * shadowed key as `create` for exactly the callers most likely to hit it.
+ * #4944 (`custom_field_definitions_partner_wide_select`) closed that half: an
+ * org context now reads its OWN partner's partner-wide rows.
+ *
+ * The system read stays anyway, and its remaining reason is the OTHER half —
+ * this importer is a PARTNER-scoped operation that legitimately spans MANY of
+ * that partner's organizations, and no single request context can see another
+ * org's rows. The snapshot is loaded in ONE system context, bounded by
+ * `ctx.partnerId` AND `ctx.accessibleOrgIds` — the same reasoning, and the same
+ * bound, as `contacts/import.ts:229`.
  *
  * Because that read has no RLS backstop, the app-layer bound is the WHOLE
  * boundary on it: a row naming an organization absent from the snapshot is

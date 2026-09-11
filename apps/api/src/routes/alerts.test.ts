@@ -187,7 +187,7 @@ vi.mock('../middleware/auth', async () => ({
       roleId: 'role-1',
       scope: 'organization',
       allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
-    } : undefined);
+    } : {});
     return next();
   }),
   requireMfa: vi.fn(() => (c: any, next: any) => {
@@ -837,17 +837,17 @@ describe('alert routes', () => {
       vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: whereMock1
+            leftJoin: vi.fn().mockReturnValue({ where: whereMock1 })
           })
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: whereMock2
+            leftJoin: vi.fn().mockReturnValue({ where: whereMock2 })
           })
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ count: 3 }])
+            leftJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 3 }]) })
           })
         } as any);
 

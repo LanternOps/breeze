@@ -7,27 +7,37 @@
  */
 
 import { resolve as resolveLocalPath } from 'node:path';
-import { db } from '../db';
+import { db, withSystemDbAccessContext, assertOutsideHeldDbContext } from '../db';
 import {
   backupSnapshots,
   backupPolicies,
   backupJobs,
   configPolicyBackupSettings,
   backupConfigs,
+  restoreJobs,
+  backupSnapshotRetirements,
+  IN_FLIGHT_BACKUP_JOB_STATUSES,
 } from '../db/schema';
-import { eq, and, or, lt, desc, inArray, isNull } from 'drizzle-orm';
+import { recoveryTokens } from '../db/schema/recoveryTokens';
+import { eq, and, or, lt, gt, desc, inArray, isNull, sql } from 'drizzle-orm';
+import { resolveBackupRestorePinLingerMs, resolveBackupPublishMarginMs } from '../services/backupGcKnobs';
 import {
   BACKUP_SNAPSHOT_ROOT_DIR,
   BACKUP_SNAPSHOT_MANIFEST_KEY,
+  backupLayoutManifestKey,
   backupSnapshotManifestKey,
   backupSnapshotRootPrefix,
+  backupSystemStateArtifactKey,
+  backupSystemStateManifestKey,
   deleteBackupObjectKeys,
   fetchBackupObjectText,
+  isBackupObjectNotFound,
   listBackupObjectsUnderPrefix,
   type BackupObjectListing,
 } from '../services/backupSnapshotStorage';
 import { asRecord, getStringValue } from '../services/recoveryBootstrap';
 import { captureException } from '../services/sentry';
+import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 
 // ── GFS tag types ────────────────────────────────────────────────────────────
 
@@ -159,172 +169,385 @@ export type RetentionCleanupResult = {
   deleted: number;
   skippedLegalHold: number;
   skippedImmutable: number;
+  // D18 W01 (#5429/section 3.2): a row pinned by an in-flight/leased backup
+  // base, an in-flight/lingering restore, or an active/lingering recovery
+  // token.
+  skippedPinned: number;
+  // D18 W01 review fix: a row whose storage_identity is unresolved (NULL) is
+  // never retired with an invented identity -- it is retried on a later run
+  // once identity resolves (a live write stamping it, or W02's sweep
+  // self-heal). Counted separately from skippedPinned so operators can see
+  // "how many rows are stuck on identity resolution" distinctly.
+  skippedUnresolved: number;
   prunedByMaxVersions: number;
+  // D17: a row whose DELETE was rejected by the DB (most commonly a
+  // NO-ACTION FK still pointing at it from a history table -- restore_jobs,
+  // recovery_tokens, backup_chains, backup_verifications, or its own
+  // parent_snapshot_id self-reference) is counted here rather than aborting
+  // the whole pass. It is retried on the next run -- nothing here is a
+  // permanent skip.
+  failed: number;
 };
 
+type DeleteSnapshotOutcome = 'deleted' | 'pinned' | 'legalHold' | 'immutable' | 'unresolved';
+
 /**
- * Deletes a `backup_snapshots` ROW ONLY. Deliberately does NOT touch object
- * storage: under the incremental/synthetic-full manifest model, an
- * incremental snapshot's unchanged files are *references* whose backupPath
- * points into an OLDER snapshot's prefix (see design doc, "reference
- * mechanism"). Eagerly nuking this snapshot's whole storage prefix the
- * instant its row expires would delete objects a still-retained, newer
- * sibling snapshot's manifest still points at — a live-data-loss bug.
+ * Deletes a `backup_snapshots` ROW ONLY, after RE-READING legal hold /
+ * immutability under the row's own `FOR UPDATE` lock (review fix -- the
+ * caller's enumeration-pass copy of those columns can be stale by the time
+ * this row's turn comes up: a hold set or cleared in between must be honored
+ * NOW, not then), checking every pin type (D18 section 3.2: backup-job base
+ * pin via publish_lease_expires_at + margin, restore-job pin, recovery-token
+ * pin), and writing a durable retirement tombstone
+ * (backup_snapshot_retirements) in the SAME per-row system context as the
+ * delete. The caller (`tryDeleteSnapshotRow`) wraps this whole function in
+ * its own `withSystemDbAccessContext` call -- since `cleanupExpiredSnapshots`
+ * is no longer invoked from inside any ambient transaction (D18 section 3.7,
+ * jobs/backupWorker.ts), that call opens a REAL top-level Postgres
+ * transaction distinct from every other row's, so a retirement written here
+ * commits durably before the next candidate row is even considered.
  *
- * Object deletion is now the mark-and-sweep GC's exclusive job
- * (sweepUnreferencedBackupObjects, below): it only deletes an object once no
- * RETAINED manifest anywhere for the destination references it, and only
- * after a 48h grace window. Deleting this row here is what makes the
- * snapshot's objects eligible for GC to consider on a later run — GC runs as
- * a separate phase, so there's no order-of-operations gap to close here.
+ * A row whose `storage_identity` is NULL is never retired with an invented
+ * identity (review fix): a retirement's uniqueness and every lookup against
+ * it is keyed on `(storage_identity, snapshot_id)`, and a fabricated
+ * identity would let two genuinely different unresolved rows collide, or
+ * hand GC an identity it can never match against a real bucket listing.
+ * Such a row is left alone (`'unresolved'`) and retried on a later run once
+ * identity resolves.
+ *
+ * Every lookup that matches a row by the bare (agent-supplied) `snapshotId`
+ * string is additionally scoped by `storageIdentity`, since
+ * `backup_snapshots.snapshot_id` carries no uniqueness constraint
+ * (`schema/backup.ts` -- `snapshotIdIdx` is a plain, non-unique index): a
+ * bare string match alone is not guaranteed to identify the row this
+ * function is actually retiring.
+ *
+ * Deliberately does NOT touch object storage -- under the incremental/
+ * synthetic-full manifest model, an incremental snapshot's unchanged files
+ * are references whose backupPath points into an OLDER snapshot's prefix, so
+ * eagerly nuking this snapshot's whole storage prefix the instant its row
+ * expires would delete objects a still-retained sibling snapshot's manifest
+ * still points at. Object deletion is the mark-and-sweep GC's exclusive job
+ * (sweepUnreferencedBackupObjects, W02): the retirement row this function
+ * writes is what lets that sweep treat this snapshot's exclusive objects as
+ * garbage immediately, with no age-based ambiguity between "expired" and
+ * merely "orphaned".
  */
-async function deleteSnapshotRow(params: { id: string }): Promise<void> {
-  await db
-    .delete(backupSnapshots)
-    .where(eq(backupSnapshots.id, params.id));
+async function deleteSnapshotRow(params: {
+  id: string;
+  snapshotId: string;
+  orgId: string;
+  configId: string | null;
+  deviceId: string | null;
+  storageIdentity: string | null;
+  backupType: (typeof backupSnapshots.$inferSelect)['backupType'];
+  reason: 'expired' | 'max_versions';
+}): Promise<DeleteSnapshotOutcome> {
+  const now = new Date();
+  const restoreLingerMs = resolveBackupRestorePinLingerMs();
+  const restoreLingerCutoff = new Date(Date.now() - restoreLingerMs);
+  const publishMarginMs = resolveBackupPublishMarginMs();
+  const publishMarginCutoff = new Date(Date.now() - publishMarginMs);
+
+  const [locked] = await db
+    .select({
+      id: backupSnapshots.id,
+      legalHold: backupSnapshots.legalHold,
+      isImmutable: backupSnapshots.isImmutable,
+      immutableUntil: backupSnapshots.immutableUntil,
+    })
+    .from(backupSnapshots)
+    .where(eq(backupSnapshots.id, params.id))
+    .for('update');
+
+  if (!locked) {
+    // Already gone (concurrent delete/adoption) -- nothing to do.
+    return 'deleted';
+  }
+
+  // Re-read under the lock -- authoritative, not the enumeration pass's copy.
+  if (locked.legalHold) return 'legalHold';
+  if (locked.isImmutable && locked.immutableUntil && locked.immutableUntil > now) return 'immutable';
+
+  if (!params.storageIdentity) return 'unresolved';
+  const storageIdentity = params.storageIdentity;
+
+  // Backup pin (section 3.1/3.2): a backup_jobs row still building on this
+  // snapshot as its base, SCOPED BY storageIdentity (a bare snapshotId match
+  // is not enough -- see docstring). status IN (pending, running) covers an
+  // in-flight run; publish_lease_expires_at > now() - margin covers a
+  // reaped-but-still-uploading helper (the same lease+margin the helper
+  // itself enforces before publishing -- see spec section 3.1's "publish
+  // margin").
+  const [backupPin] = await db
+    .select({ id: backupJobs.id })
+    .from(backupJobs)
+    .where(
+      and(
+        eq(backupJobs.baseSnapshotId, params.snapshotId),
+        eq(backupJobs.storageIdentity, storageIdentity),
+        or(
+          inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES),
+          gt(backupJobs.publishLeaseExpiresAt, publishMarginCutoff),
+        ),
+      ),
+    )
+    .limit(1);
+  if (backupPin) return 'pinned';
+
+  // Restore pin (section 3.2, F8): scoped by the row's own uuid
+  // (backupSnapshots.id) -- unambiguous already, no storageIdentity scoping
+  // needed here. The in-flight status check only counts once a command
+  // exists (a commandless pending row is reaped by staleCommandReaper's own
+  // 1h rule instead of pinning forever); the linger separately covers both
+  // that crash window and a helper reading past the server's restore
+  // timeout.
+  const [restorePin] = await db
+    .select({ id: restoreJobs.id })
+    .from(restoreJobs)
+    .where(
+      and(
+        eq(restoreJobs.snapshotId, params.id),
+        or(
+          and(inArray(restoreJobs.status, ['pending', 'running']), sql`${restoreJobs.commandId} IS NOT NULL`),
+          gt(restoreJobs.createdAt, restoreLingerCutoff),
+        ),
+      ),
+    )
+    .limit(1);
+  if (restorePin) return 'pinned';
+
+  // Recovery pin (section 3.2): also scoped by the row's own uuid --
+  // unambiguous. Active/authenticated token, or one not yet completed and
+  // still within its expiry + the same linger (covers a BMR session
+  // mid-download).
+  const [recoveryPin] = await db
+    .select({ id: recoveryTokens.id })
+    .from(recoveryTokens)
+    .where(
+      and(
+        eq(recoveryTokens.snapshotId, params.id),
+        or(
+          inArray(recoveryTokens.status, ['active', 'authenticated']),
+          and(isNull(recoveryTokens.completedAt), gt(recoveryTokens.expiresAt, restoreLingerCutoff)),
+        ),
+      ),
+    )
+    .limit(1);
+  if (recoveryPin) return 'pinned';
+
+  await db.insert(backupSnapshotRetirements).values({
+    orgId: params.orgId,
+    configId: params.configId,
+    deviceId: params.deviceId,
+    snapshotId: params.snapshotId,
+    storageIdentity,
+    backupType: params.backupType,
+    reason: params.reason,
+  });
+
+  await db.delete(backupSnapshots).where(eq(backupSnapshots.id, params.id));
+  return 'deleted';
 }
 
 /**
- * Cleans up expired snapshots for an org, respecting legal holds and immutability.
- *
- * Snapshots are deleted when:
- *   - `expiresAt` is in the past
- *   - `legalHold` is NOT true
- *   - `isImmutable` is NOT true OR `immutableUntil` is in the past
+ * D18 section 3.7: opens ONE real top-level Postgres transaction per
+ * candidate row (`withSystemDbAccessContext`, called with no ambient context
+ * already open -- see jobs/backupWorker.ts's Task 8) so a `deleteSnapshotRow`
+ * outcome (retirement insert + row delete) for THIS row commits independently
+ * of every other row's outcome and of the D17 `failed > 0` throw at the end
+ * of `cleanupExpiredSnapshots`. An unexpected DB error (lock timeout,
+ * connection blip, an as-yet-unregistered referencing table) is caught here
+ * rather than aborting the whole cleanup pass -- logged with the PG
+ * SQLSTATE/constraint when the driver surfaces one, and the row is simply
+ * retried on the next run.
  */
+async function tryDeleteSnapshotRow(snap: {
+  id: string;
+  snapshotId: string;
+  orgId: string;
+  configId: string | null;
+  deviceId: string | null;
+  storageIdentity: string | null;
+  backupType: (typeof backupSnapshots.$inferSelect)['backupType'];
+  reason: 'expired' | 'max_versions';
+}): Promise<DeleteSnapshotOutcome | 'failed'> {
+  try {
+    return await withSystemDbAccessContext(() => deleteSnapshotRow(snap));
+  } catch (error) {
+    const code = pgErrorCode(error);
+    const constraint = pgErrorConstraint(error);
+    console.error(
+      `[BackupRetention] Failed to delete snapshot ${snap.snapshotId} (id ${snap.id})` +
+      (code ? ` -- PG ${code}` : ' -- no PG SQLSTATE on the error') +
+      (constraint ? ` (constraint ${constraint})` : '') +
+      ' -- skipping this row; will retry next run:',
+      error,
+    );
+    return 'failed';
+  }
+}
+
+/**
+ * Cleans up expired snapshots for an org, respecting legal holds,
+ * immutability, and every D18 pin type (backup base, restore, recovery
+ * token). Both passes (expiry-date and maxVersions) route every candidate
+ * row through `tryDeleteSnapshotRow`, which opens its OWN per-row system
+ * context (D18 section 3.7) -- legal hold / immutability are decided
+ * ONLY inside that call, re-read under the row's FOR UPDATE lock; the
+ * enumeration selects below no longer fetch legalHold/isImmutable/
+ * immutableUntil at all (review fix — the stale comment this replaces
+ * claimed they were still fetched "incidentally"; they are not).
+ */
+function applyDeleteOutcome(result: RetentionCleanupResult, outcome: DeleteSnapshotOutcome | 'failed'): void {
+  switch (outcome) {
+    case 'deleted': result.deleted++; break;
+    case 'pinned': result.skippedPinned++; break;
+    case 'legalHold': result.skippedLegalHold++; break;
+    case 'immutable': result.skippedImmutable++; break;
+    case 'unresolved': result.skippedUnresolved++; break;
+    case 'failed': result.failed++; break;
+  }
+}
+
 export async function cleanupExpiredSnapshots(
   orgId: string
 ): Promise<RetentionCleanupResult> {
-  const now = new Date();
+  // D18 §3.7 review fix: the whole per-row-commit contract this function
+  // exists to provide depends on being called with NO ambient DB context
+  // already held (jobs/backupWorker.ts:1069-1084's comment is the only
+  // other guard). If a future caller wraps this in `withSystemDbAccessContext`
+  // (or any `withDbAccessContext`), every "per-row transaction" below
+  // silently collapses into savepoints inside that ONE ambient transaction —
+  // exactly the D17 resurrection bug this wave fixes. Assert it explicitly
+  // rather than relying on a comment nobody re-reads.
+  assertOutsideHeldDbContext('cleanupExpiredSnapshots');
   const result: RetentionCleanupResult = {
     deleted: 0,
     skippedLegalHold: 0,
     skippedImmutable: 0,
+    skippedPinned: 0,
+    skippedUnresolved: 0,
     prunedByMaxVersions: 0,
+    failed: 0,
   };
 
-  // Find all expired snapshots for this org
-  const expired = await db
-    .select({
-      id: backupSnapshots.id,
-      snapshotId: backupSnapshots.snapshotId,
-      metadata: backupSnapshots.metadata,
-      legalHold: backupSnapshots.legalHold,
-      isImmutable: backupSnapshots.isImmutable,
-      immutableUntil: backupSnapshots.immutableUntil,
-      provider: backupConfigs.provider,
-      providerConfig: backupConfigs.providerConfig,
-    })
-    .from(backupSnapshots)
-    .leftJoin(backupConfigs, eq(backupSnapshots.configId, backupConfigs.id))
-    .where(
-      and(
-        eq(backupSnapshots.orgId, orgId),
-        lt(backupSnapshots.expiresAt, now)
+  // D18 section 3.7: this read runs with no ambient context
+  // (cleanupExpiredSnapshots is no longer called from inside one) -- a
+  // snapshot-in-time read is fine here since every candidate is
+  // independently re-verified (legal hold, immutability, storage identity,
+  // every pin) with FOR UPDATE inside its own per-row commit below.
+  const expired = await withSystemDbAccessContext(() =>
+    db
+      .select({
+        id: backupSnapshots.id,
+        snapshotId: backupSnapshots.snapshotId,
+        deviceId: backupSnapshots.deviceId,
+        configId: backupSnapshots.configId,
+        storageIdentity: backupSnapshots.storageIdentity,
+        backupType: backupSnapshots.backupType,
+      })
+      .from(backupSnapshots)
+      .where(
+        and(
+          eq(backupSnapshots.orgId, orgId),
+          lt(backupSnapshots.expiresAt, new Date())
+        )
       )
-    );
+  );
 
   for (const snap of expired) {
-    // Skip legal holds
-    if (snap.legalHold) {
-      result.skippedLegalHold++;
-      console.warn(
-        `[BackupRetention] Snapshot ${snap.snapshotId} held by legal hold — skipping deletion`
-      );
-      continue;
-    }
-
-    // Skip immutable snapshots that haven't expired yet
-    if (snap.isImmutable && snap.immutableUntil && snap.immutableUntil > now) {
-      result.skippedImmutable++;
-      console.warn(
-        `[BackupRetention] Snapshot ${snap.snapshotId} immutable until ${snap.immutableUntil.toISOString()} — skipping deletion`
-      );
-      continue;
-    }
-
-    // Safe to delete
-    await deleteSnapshotRow({ id: snap.id });
-
-    result.deleted++;
+    const outcome = await tryDeleteSnapshotRow({
+      id: snap.id,
+      snapshotId: snap.snapshotId,
+      orgId,
+      configId: snap.configId,
+      deviceId: snap.deviceId,
+      storageIdentity: snap.storageIdentity,
+      backupType: snap.backupType,
+      reason: 'expired',
+    });
+    applyDeleteOutcome(result, outcome);
   }
 
-  const versionBoundSnapshots = await db
-    .select({
-      id: backupSnapshots.id,
-      snapshotId: backupSnapshots.snapshotId,
-      timestamp: backupSnapshots.timestamp,
-      deviceId: backupSnapshots.deviceId,
-      configId: backupSnapshots.configId,
-      metadata: backupSnapshots.metadata,
-      legalHold: backupSnapshots.legalHold,
-      isImmutable: backupSnapshots.isImmutable,
-      immutableUntil: backupSnapshots.immutableUntil,
-      provider: backupConfigs.provider,
-      providerConfig: backupConfigs.providerConfig,
-      retention: configPolicyBackupSettings.retention,
-    })
-    .from(backupSnapshots)
-    .innerJoin(backupJobs, eq(backupSnapshots.jobId, backupJobs.id))
-    .leftJoin(backupConfigs, eq(backupSnapshots.configId, backupConfigs.id))
-    .leftJoin(
-      configPolicyBackupSettings,
-      eq(backupJobs.featureLinkId, configPolicyBackupSettings.featureLinkId),
-    )
-    .where(eq(backupSnapshots.orgId, orgId))
-    .orderBy(
-      backupSnapshots.deviceId,
-      backupSnapshots.configId,
-      desc(backupSnapshots.timestamp),
-    );
+  const versionBoundSnapshots = await withSystemDbAccessContext(() =>
+    db
+      .select({
+        id: backupSnapshots.id,
+        snapshotId: backupSnapshots.snapshotId,
+        timestamp: backupSnapshots.timestamp,
+        deviceId: backupSnapshots.deviceId,
+        configId: backupSnapshots.configId,
+        storageIdentity: backupSnapshots.storageIdentity,
+        backupType: backupSnapshots.backupType,
+        retention: configPolicyBackupSettings.retention,
+      })
+      .from(backupSnapshots)
+      .innerJoin(backupJobs, eq(backupSnapshots.jobId, backupJobs.id))
+      .leftJoin(
+        configPolicyBackupSettings,
+        eq(backupJobs.featureLinkId, configPolicyBackupSettings.featureLinkId),
+      )
+      .where(eq(backupSnapshots.orgId, orgId))
+      .orderBy(
+        backupSnapshots.deviceId,
+        backupSnapshots.configId,
+        desc(backupSnapshots.timestamp),
+      )
+  );
 
   const snapshotsByGroup = new Map<string, typeof versionBoundSnapshots>();
   for (const row of versionBoundSnapshots) {
     const groupKey = `${row.deviceId}:${row.configId ?? 'none'}`;
     const existing = snapshotsByGroup.get(groupKey);
-    if (existing) {
-      existing.push(row);
-    } else {
-      snapshotsByGroup.set(groupKey, [row]);
-    }
+    if (existing) existing.push(row);
+    else snapshotsByGroup.set(groupKey, [row]);
   }
 
   for (const groupRows of snapshotsByGroup.values()) {
     const retention = groupRows[0]?.retention as Record<string, unknown> | null | undefined;
     const maxVersions = typeof retention?.maxVersions === 'number' ? retention.maxVersions : null;
-    if (!maxVersions || maxVersions < 1 || groupRows.length <= maxVersions) {
-      continue;
-    }
+    if (!maxVersions || maxVersions < 1 || groupRows.length <= maxVersions) continue;
 
     for (const snap of groupRows.slice(maxVersions)) {
-      if (snap.legalHold) {
-        result.skippedLegalHold++;
-        continue;
-      }
-
-      if (snap.isImmutable && snap.immutableUntil && snap.immutableUntil > now) {
-        result.skippedImmutable++;
-        continue;
-      }
-
-      await deleteSnapshotRow({ id: snap.id });
-      result.deleted++;
-      result.prunedByMaxVersions++;
+      const outcome = await tryDeleteSnapshotRow({
+        id: snap.id,
+        snapshotId: snap.snapshotId,
+        orgId,
+        configId: snap.configId,
+        deviceId: snap.deviceId,
+        storageIdentity: snap.storageIdentity,
+        backupType: snap.backupType,
+        reason: 'max_versions',
+      });
+      if (outcome === 'deleted') result.prunedByMaxVersions++;
+      applyDeleteOutcome(result, outcome);
     }
   }
 
   if (
-    result.deleted > 0 ||
-    result.skippedLegalHold > 0 ||
-    result.skippedImmutable > 0 ||
-    result.prunedByMaxVersions > 0
+    result.deleted > 0 || result.skippedLegalHold > 0 || result.skippedImmutable > 0 ||
+    result.skippedPinned > 0 || result.skippedUnresolved > 0 || result.prunedByMaxVersions > 0 || result.failed > 0
   ) {
     console.log(
       `[BackupRetention] Org ${orgId}: deleted ${result.deleted}, ` +
-      `skipped ${result.skippedLegalHold} (legal hold), ` +
-      `${result.skippedImmutable} (immutable), ` +
-      `pruned ${result.prunedByMaxVersions} by maxVersions`
+      `skipped ${result.skippedLegalHold} (legal hold), ${result.skippedImmutable} (immutable), ` +
+      `${result.skippedPinned} (pinned), ${result.skippedUnresolved} (unresolved identity), ` +
+      `pruned ${result.prunedByMaxVersions} by maxVersions` +
+      (result.failed > 0 ? `, FAILED ${result.failed} delete(s) (see prior per-row errors -- will retry next run)` : '')
     );
+  }
+
+  // D17 summary: surfaced once per org run (not per row, which console.error
+  // in tryDeleteSnapshotRow already covers) so a run with failures is visible
+  // in Sentry beyond stdout, mirroring sweepUnreferencedBackupObjects's
+  // wedge-message convention below.
+  if (result.failed > 0) {
+    const summary =
+      `[BackupRetention] Org ${orgId}: ${result.failed} snapshot row delete(s) failed this run -- ` +
+      'see prior per-row error logs for the specific snapshot id(s) and PG error; will retry next run.';
+    console.error(summary);
+    captureException(new Error(summary));
   }
 
   return result;
@@ -435,7 +658,37 @@ export function computeExpiresAt(
 //             normalizeStorageIdentity and its belt-and-braces collision
 //             check, detectSuspiciousStorageIdentityCollisions.
 
-export const BACKUP_GC_GRACE_MS = 48 * 60 * 60 * 1000;
+const BACKUP_GC_GRACE_MS_DEFAULT = 48 * 60 * 60 * 1000;
+// Test/lab knob only (2026-09-09 assurance campaign, cell R1/R4): the grace is a
+// production safety margin and must never be lowered on a real deployment.
+// Lowest grace production will accept from the env knob. The grace window is
+// what protects objects of an in-flight upload whose manifest is not yet
+// published (see sweepUnreferencedBackupObjects); the knob exists so a lab can
+// prove reclamation in seconds, not so an operator can shave the window.
+const BACKUP_GC_GRACE_MS_PRODUCTION_FLOOR = 60 * 60 * 1000;
+
+function resolveBackupGcGraceMs(): number {
+  const raw = process.env.BACKUP_GC_GRACE_MS;
+  if (raw === undefined || raw.trim() === '') return BACKUP_GC_GRACE_MS_DEFAULT;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    console.warn(
+      `[BackupRetention] Ignoring BACKUP_GC_GRACE_MS=${JSON.stringify(raw)} (not a positive number); using default ${BACKUP_GC_GRACE_MS_DEFAULT} ms`,
+    );
+    return BACKUP_GC_GRACE_MS_DEFAULT;
+  }
+  if (process.env.NODE_ENV === 'production' && n < BACKUP_GC_GRACE_MS_PRODUCTION_FLOOR) {
+    console.warn(
+      `[BackupRetention] BACKUP_GC_GRACE_MS=${n} is below the production floor; using ${BACKUP_GC_GRACE_MS_PRODUCTION_FLOOR} ms instead`,
+    );
+    return BACKUP_GC_GRACE_MS_PRODUCTION_FLOOR;
+  }
+  console.warn(
+    `[BackupRetention] BACKUP_GC_GRACE_MS override active: ${n} ms (default ${BACKUP_GC_GRACE_MS_DEFAULT} ms)`,
+  );
+  return n;
+}
+export const BACKUP_GC_GRACE_MS = resolveBackupGcGraceMs();
 
 // Must stay STRICTLY LARGER than agent/internal/backup/journal.go's
 // journalMaxAge (7 days) — the agent trusts its checkpoint journal (and
@@ -471,7 +724,74 @@ const BACKUP_GC_SUPPORTED_PROVIDERS = new Set(['s3', 'local']);
 //     distinctly rather than letting it hide inside skippedIdentities.
 export type BackupGcResult = { deleted: number; skippedIdentities: number; blockedIdentities: number };
 
+/**
+ * backupType values whose manifest lives under the shared
+ * snapshots/<id>/manifest.json namespace the mark phase (markLiveBackupObjects)
+ * understands. Only these — plus a NULL backupType (legacy rows predating the
+ * column's 'file' default) — may safely appear in retainedSnapshotIds:
+ * markLiveBackupObjects's ordinary-manifest fetch is UNCONDITIONAL and has no
+ * not-found tolerance, so a retained row whose type writes its manifest
+ * elsewhere would 404 and fail-close the WHOLE identity (see FIX 6 below).
+ *
+ * 'system_image' was excluded here too until D15 Wave 1 gave it the SAME
+ * snapshots/<id>/manifest.json + system-state/ layout (Option A — see
+ * docs/superpowers/plans/backup/2026-09-09-bmr-system-state-contract.md):
+ * backup.go's state-only AND mixed-run publish paths now both publish a
+ * (possibly empty-files) ordinary manifest.json for EVERY system_image run,
+ * specifically so the snapshot-id group stays "manifest-bearing" for GC.
+ * Excluding system_image rows from this set left every retained
+ * system_image snapshot's bare-metal-recovery state with no DB-side
+ * protection at all — surviving only by luck, if its manifest.json also
+ * happened to still be present in the bucket LISTING (see
+ * listedManifestSnapshotIds).
+ *
+ * 'application' (hyperv) and 'database' (mssql) still write their manifests
+ * to a different key/namespace entirely and must stay excluded.
+ *
+ * `as const` (rather than `readonly string[]` directly) so the literal tuple
+ * type-checks against backupSnapshots.backupType's pgEnum column in the
+ * `inArray(...)` call below — Drizzle's enum column typing rejects a bare
+ * `string[]`. BACKUP_GC_RETAINED_MANIFEST_BACKUP_TYPES itself is exported as
+ * the widened `readonly string[]` (below) since callers like
+ * isRetainableBackupTypeForGc only need plain string membership.
+ */
+const RETAINABLE_BACKUP_TYPES_FOR_GC = ['file', 'system_image'] as const;
+export const BACKUP_GC_RETAINED_MANIFEST_BACKUP_TYPES: readonly string[] = RETAINABLE_BACKUP_TYPES_FOR_GC;
+
+/**
+ * Whether a backupSnapshots row of this backupType may safely be included in
+ * retainedSnapshotIds — see BACKUP_GC_RETAINED_MANIFEST_BACKUP_TYPES' doc
+ * comment. NULL (legacy rows predating the backupType column) is always
+ * retainable. Factored out as its own predicate (rather than inlined into
+ * the query's `or(...)` below) purely so it has an isolated unit test
+ * independent of the mocked Drizzle query builder, which cannot exercise a
+ * real `.where()` filter — see backupRetention.test.ts's own comment on that
+ * limitation.
+ */
+export function isRetainableBackupTypeForGc(backupType: string | null): boolean {
+  return backupType === null || BACKUP_GC_RETAINED_MANIFEST_BACKUP_TYPES.includes(backupType);
+}
+
 type BackupGcManifest = { files?: Array<{ backupPath?: unknown }> };
+
+// D15 bare-metal-recovery contract (Option A): a system_image snapshot
+// publishes a SEPARATE manifest under system-state/manifest.json, describing
+// artifacts under system-state/<artifact.path> — never inside the ordinary
+// manifest's `files[]`. Mirrors agent/internal/backup/systemstate/types.go's
+// SystemStateManifest/Artifact shape (only the field GC needs: path).
+type BackupGcSystemStateManifest = { artifacts?: Array<{ path?: unknown }> };
+
+function parseBackupGcSystemStateManifest(raw: string): BackupGcSystemStateManifest {
+  const parsed: unknown = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('system state manifest is not a JSON object');
+  }
+  const artifacts = (parsed as { artifacts?: unknown }).artifacts;
+  if (artifacts !== undefined && !Array.isArray(artifacts)) {
+    throw new Error('system state manifest.artifacts is not an array');
+  }
+  return parsed as BackupGcSystemStateManifest;
+}
 
 /**
  * Resolves the per-run deletion cap from env on every call (not once at
@@ -769,6 +1089,60 @@ async function markLiveBackupObjects(
         live.add(file.backupPath);
       }
     }
+
+    // D15 bare-metal-recovery contract (Option A): system-state artifacts
+    // live under their own manifest/prefix, never inside manifest.files[]
+    // above — so without this, GC would sweep them 48h after ANY
+    // system_image snapshot, live regression, not hypothetical (see the plan
+    // doc referenced on backupSystemStateManifestKey). Absence is the
+    // ROUTINE case for a file-mode snapshot (no system state ever
+    // collected) — isBackupObjectNotFound distinguishes that from "the fetch
+    // failed for some other reason", which must still fail-closed (abort
+    // this identity's whole sweep) the same as an ordinary-manifest fetch
+    // failure: an unproven system-state manifest must never be inferred as
+    // "doesn't exist" — that would open the door to sweeping objects a
+    // transient error only made unreachable, not orphaned.
+    // layout.json (W01) is a single object with nothing to enumerate, so it is
+    // marked live unconditionally — marking a key that does not exist is
+    // harmless, fetching it would only add a round-trip and a failure mode.
+    live.add(backupLayoutManifestKey(snapshotId));
+
+    const stateManifestKey = backupSystemStateManifestKey(snapshotId);
+    let stateRaw: string;
+    try {
+      stateRaw = await fetchBackupObjectText({
+        provider: identity.provider,
+        providerConfig: identity.providerConfig,
+        key: stateManifestKey,
+      });
+    } catch (error) {
+      if (isBackupObjectNotFound(error)) continue;
+      console.error(
+        `[BackupGC] System state manifest fetch failed for snapshot ${snapshotId} (key ${stateManifestKey}) — ` +
+        `aborting sweep for this identity:`,
+        error,
+      );
+      return null;
+    }
+
+    let stateManifest: BackupGcSystemStateManifest;
+    try {
+      stateManifest = parseBackupGcSystemStateManifest(stateRaw);
+    } catch (error) {
+      console.error(
+        `[BackupGC] System state manifest parse failed for snapshot ${snapshotId} (key ${stateManifestKey}) — ` +
+        `aborting sweep for this identity:`,
+        error,
+      );
+      return null;
+    }
+
+    live.add(stateManifestKey);
+    for (const artifact of stateManifest.artifacts ?? []) {
+      if (typeof artifact.path === 'string' && artifact.path.length > 0) {
+        live.add(backupSystemStateArtifactKey(snapshotId, artifact.path));
+      }
+    }
   }
 
   return live;
@@ -968,22 +1342,27 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
     }
 
     try {
-      // Only FILE-type snapshots use the snapshots/<id>/manifest.json layout
-      // the mark phase fetches. system_image / hyperv (backupType 'application')
-      // / mssql (backupType 'database') snapshots write their manifests to
-      // DIFFERENT keys and never share the snapshots/ namespace, so fetching
-      // snapshots/<id>/manifest.json for them 404s and fail-closes the WHOLE
-      // identity forever (a single such row sharing a bucket with file backups
-      // would silently wedge GC). Excluding them here confines GC to the layout
-      // it actually understands. Legacy rows with NULL backupType predate the
-      // column's 'file' default and are file backups, so include them too.
+      // Only backupTypes in BACKUP_GC_RETAINED_MANIFEST_BACKUP_TYPES (file,
+      // system_image — plus NULL, legacy rows predating the column) use the
+      // snapshots/<id>/manifest.json layout the mark phase fetches. hyperv
+      // (backupType 'application') / mssql (backupType 'database') snapshots
+      // write their manifests to DIFFERENT keys and never share the
+      // snapshots/ namespace, so fetching snapshots/<id>/manifest.json for
+      // them 404s and fail-closes the WHOLE identity forever (a single such
+      // row sharing a bucket with file backups would silently wedge GC).
+      // Excluding THOSE here confines GC to the layout it actually
+      // understands — see BACKUP_GC_RETAINED_MANIFEST_BACKUP_TYPES' doc
+      // comment for why system_image is no longer in that excluded set.
       const retainedRows = await db
         .select({ snapshotId: backupSnapshots.snapshotId })
         .from(backupSnapshots)
         .where(
           and(
             inArray(backupSnapshots.configId, identity.configIds),
-            or(eq(backupSnapshots.backupType, 'file'), isNull(backupSnapshots.backupType)),
+            or(
+              inArray(backupSnapshots.backupType, RETAINABLE_BACKUP_TYPES_FOR_GC),
+              isNull(backupSnapshots.backupType),
+            ),
           ),
         );
       const retainedSnapshotIds = retainedRows.map((row) => row.snapshotId);

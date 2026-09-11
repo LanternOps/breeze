@@ -27,6 +27,53 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+type Pax8IntegrationSnapshot = typeof pax8Integrations.$inferSelect;
+
+class Pax8IntegrationGenerationChangedError extends Error {
+  constructor() {
+    super('Pax8 integration configuration changed during sync');
+    this.name = 'Pax8IntegrationGenerationChangedError';
+  }
+}
+
+/**
+ * The encrypted credential values are deliberately part of the generation.
+ * Re-entering the same plaintext creates fresh ciphertext, so this exact tuple
+ * is ABA-safe without adding a separate schema revision.
+ */
+function integrationGenerationPredicate(integration: Pax8IntegrationSnapshot) {
+  return and(
+    eq(pax8Integrations.id, integration.id),
+    eq(pax8Integrations.partnerId, integration.partnerId),
+    eq(pax8Integrations.apiBaseUrl, integration.apiBaseUrl),
+    eq(pax8Integrations.tokenUrl, integration.tokenUrl),
+    eq(pax8Integrations.clientIdEncrypted, integration.clientIdEncrypted),
+    eq(pax8Integrations.clientSecretEncrypted, integration.clientSecretEncrypted),
+    eq(pax8Integrations.isActive, integration.isActive),
+  );
+}
+
+async function assertIntegrationGenerationCurrent(integration: Pax8IntegrationSnapshot): Promise<void> {
+  const [current] = await db
+    .select({ id: pax8Integrations.id })
+    .from(pax8Integrations)
+    .where(integrationGenerationPredicate(integration))
+    .for('update')
+    .limit(1);
+  if (!current) throw new Pax8IntegrationGenerationChangedError();
+}
+
+async function updateIntegrationIfCurrent(
+  integration: Pax8IntegrationSnapshot,
+  values: Partial<typeof pax8Integrations.$inferInsert>,
+): Promise<boolean> {
+  const updated = await db.update(pax8Integrations)
+    .set(values)
+    .where(integrationGenerationPredicate(integration))
+    .returning({ id: pax8Integrations.id });
+  return updated.length === 1;
+}
+
 /**
  * Detect a Postgres unique-violation (23505) for a specific constraint. Drizzle
  * wraps the driver error, carrying the original `{ code, constraint_name }` on
@@ -38,6 +85,7 @@ function isUniqueViolation(err: unknown, constraint: string): boolean {
   for (let depth = 0; candidate && depth < 5; depth++) {
     if (typeof candidate === 'object') {
       const e = candidate as { code?: unknown; constraint_name?: unknown; message?: unknown; cause?: unknown };
+      // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node already unwrapped by the existing cause-chain mapper.
       if (e.code === '23505' && (e.constraint_name === constraint || typeof e.constraint_name !== 'string')) {
         return true;
       }
@@ -80,14 +128,18 @@ export async function createPax8ClientForIntegration(integrationId: string, fetc
   return { integration, client };
 }
 
-async function persistTokenCache(integrationId: string, client: Pax8Client): Promise<void> {
+async function persistTokenCache(
+  integration: Pax8IntegrationSnapshot,
+  client: Pax8Client,
+): Promise<void> {
   const cached = client.cachedAccessToken;
   if (!cached.token) return;
-  await db.update(pax8Integrations).set({
+  const persisted = await updateIntegrationIfCurrent(integration, {
     accessTokenEncrypted: encryptSecret(cached.token),
     accessTokenExpiresAt: cached.expiresAt,
     updatedAt: new Date(),
-  }).where(eq(pax8Integrations.id, integrationId));
+  });
+  if (!persisted) throw new Pax8IntegrationGenerationChangedError();
 }
 
 async function upsertCompanies(integrationId: string, partnerId: string, companies: Pax8CompanyRecord[]): Promise<number> {
@@ -287,25 +339,32 @@ export interface Pax8SyncResult {
   skippedContractLines: number;
 }
 
-export async function syncPax8Integration(integrationId: string): Promise<Pax8SyncResult> {
+export async function syncPax8Integration(
+  integrationId: string,
+  fetchImpl?: typeof fetch,
+): Promise<Pax8SyncResult> {
   // Self-manages DB contexts so the Pax8 API fetch (Phase 2) holds no open
   // transaction — pinning a pooled connection across the ~20s HTTP window
   // starved the connection pool (#1697). Phases: mark-running → read+build
   // client → fetch (outside any context) → persist atomically.
-  const startedAt = new Date();
-  await withSystemDbAccessContext(() =>
-    db.update(pax8Integrations).set({
-      lastSyncStatus: 'running',
-      lastSyncError: null,
-      updatedAt: startedAt,
-    }).where(eq(pax8Integrations.id, integrationId))
-  );
+  let capturedIntegration: Pax8IntegrationSnapshot | null = null;
 
   try {
-    // Phase 1 — load the integration row and build the client (DB read only).
+    // Phase 1 — load the complete receiver tuple and build the client. Marking
+    // it running is conditional on that exact tuple, so even this status cannot
+    // be attached to a configuration that won a race after the read.
     const { integration, client } = await withSystemDbAccessContext(() =>
-      createPax8ClientForIntegration(integrationId)
+      createPax8ClientForIntegration(integrationId, fetchImpl)
     );
+    capturedIntegration = integration;
+    const markedRunning = await withSystemDbAccessContext(() =>
+      updateIntegrationIfCurrent(integration, {
+        lastSyncStatus: 'running',
+        lastSyncError: null,
+        updatedAt: new Date(),
+      })
+    );
+    if (!markedRunning) throw new Pax8IntegrationGenerationChangedError();
 
     // Phase 2 — fetch from Pax8 with NO DB context held. The OAuth token
     // refresh also runs here, outside any transaction (#1105/#1697).
@@ -316,9 +375,15 @@ export async function syncPax8Integration(integrationId: string): Promise<Pax8Sy
       ])
     );
 
-    // Phase 3 — persist token cache + upserts + success status atomically.
+    // Phase 3 — lock and revalidate the complete receiver generation before
+    // ANY provider-derived write. The row lock is held only for this database
+    // transaction, never across Phase 2 network I/O. It serializes a later
+    // config edit after the coherent old-generation result; an edit that
+    // committed first makes this transaction abort before mappings, snapshots,
+    // observations, token cache or status are touched.
     return await withSystemDbAccessContext(async () => {
-      await persistTokenCache(integration.id, client);
+      await assertIntegrationGenerationCurrent(integration);
+      await persistTokenCache(integration, client);
       const companyCount = await upsertCompanies(integration.id, integration.partnerId, companies);
       const mappedCompanies = await loadMappedCompanies(integration.id);
       const subscriptionCount = await upsertSubscriptions({
@@ -330,12 +395,13 @@ export async function syncPax8Integration(integrationId: string): Promise<Pax8Sy
       const productCount = await upsertProductMappings(integration.id, integration.partnerId, subscriptions);
       const observations = await recordPax8SubscriptionObservations(integration.id);
 
-      await db.update(pax8Integrations).set({
+      const markedSuccess = await updateIntegrationIfCurrent(integration, {
         lastSyncAt: new Date(),
         lastSyncStatus: 'success',
         lastSyncError: null,
         updatedAt: new Date(),
-      }).where(eq(pax8Integrations.id, integration.id));
+      });
+      if (!markedSuccess) throw new Pax8IntegrationGenerationChangedError();
 
       return {
         integrationId: integration.id,
@@ -351,16 +417,23 @@ export async function syncPax8Integration(integrationId: string): Promise<Pax8Sy
     // Guard the bookkeeping write itself: if it throws (e.g. pool exhaustion),
     // log + capture it but re-throw the ORIGINAL sync error, never the DB error.
     try {
-      await runOutsideDbContext(() =>
-        withSystemDbAccessContext(() =>
-          db.update(pax8Integrations).set({
-            lastSyncAt: new Date(),
-            lastSyncStatus: 'failed',
-            lastSyncError: errorMessage(err).slice(0, 2000),
-            updatedAt: new Date(),
-          }).where(eq(pax8Integrations.id, integrationId))
-        )
-      );
+      // A provider/config error may arrive after the receiver is reconfigured.
+      // Never let an old worker overwrite the new generation's status. If
+      // Phase 1 failed before a complete tuple was captured, there is no safe
+      // generation to which failure bookkeeping can be attached.
+      if (capturedIntegration) {
+        const failureGeneration = capturedIntegration;
+        await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            updateIntegrationIfCurrent(failureGeneration, {
+              lastSyncAt: new Date(),
+              lastSyncStatus: 'failed',
+              lastSyncError: errorMessage(err).slice(0, 2000),
+              updatedAt: new Date(),
+            })
+          )
+        );
+      }
     } catch (dbErr) {
       console.error(`[Pax8Sync] Failed to record sync error for integration ${integrationId}:`, dbErr);
       captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)));

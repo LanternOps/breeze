@@ -1910,6 +1910,7 @@ describe('voidPayment -> QuickBooks delete hook', () => {
       queueResult(mappingRows);                                                          // payment mapping origin probe
       if (connectionRows) queueResult(connectionRows);                                   // QuickBooks connection probe
     }
+    queueResult([]);                                                                     // no Stripe mapping
     queueResult([]);                                                                     // delete invoice_payments
     queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1', total: '100.00', invoiceNumber: 'INV-1', dueDate: null, paidAt: null, markedOverdueAt: null }]); // recompute: getOwnedInvoiceOr404
     queueResult([]);                                                                     // recompute: payment sum
@@ -2283,6 +2284,11 @@ describe('voidInvoice clears paid_at (#4542)', () => {
       currencyCode: 'USD', total: '100.00', amountPaid: '100.00', balance: '0.00', dueDate: null,
       voidedAt: null, paidAt: new Date('2026-09-01T00:00:00Z'), markedOverdueAt: null,
     }]); // invoice FOR UPDATE
+    // No invoice_payments rows: the operator removed the payment first, as the
+    // #5180 guard below now requires. `paid_at` survives that removal (the
+    // recompute never clears it — see its sibling test above), which is exactly
+    // why the void still has to null it.
+    queueResult([]); // invoice_payments sum (#5180)
     queueResult([]); // invoice_lines FOR UPDATE (no source-backed lines)
     queueResult([]); // the void update itself
     queueResult([{ id: 'i1', orgId: 'org1', partnerId: 'p1', status: 'void', currencyCode: 'USD' }]); // getInvoice re-read
@@ -2291,5 +2297,63 @@ describe('voidInvoice clears paid_at (#4542)', () => {
 
     const voidPatch = setCalls.calls.find((p) => p.status === 'void')!;
     expect(voidPatch).toMatchObject({ voidedAt: expect.any(Date), voidReason: 'duplicate', paidAt: null });
+  });
+});
+
+describe('voidInvoice refuses an invoice with applied payments (#5180)', () => {
+  beforeEach(() => { results.length = 0; setCalls.calls.length = 0; vi.clearAllMocks(); });
+
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+  const sentInvoice = (overrides: Record<string, unknown> = {}) => ({
+    id: 'i1', orgId: 'org1', partnerId: 'p1', siteId: null, status: 'sent', invoiceNumber: 'INV-0001',
+    currencyCode: 'USD', total: '100.00', amountPaid: '0.00', balance: '100.00', dueDate: null,
+    voidedAt: null, paidAt: null, markedOverdueAt: null, ...overrides,
+  });
+
+  it('throws 409 INVOICE_HAS_PAYMENTS and writes NOTHING when a payment is applied', async () => {
+    // The production failure (#5180): the local void succeeded, QuickBooks
+    // refused it five times, and the payment pull then flagged the mapping —
+    // Breeze said void, QuickBooks said paid. It is wrong locally too: the void
+    // releases the source rows for re-invoicing while collected money stays
+    // recorded against them.
+    queueResult([sentInvoice({ status: 'partially_paid', amountPaid: '40.00', balance: '60.00' })]); // invoice FOR UPDATE
+    queueResult([{ amount: '40.00' }]); // invoice_payments
+
+    await expect(svc.voidInvoice('i1', 'duplicate', {}, actor))
+      .rejects.toMatchObject({ status: 409, code: 'INVOICE_HAS_PAYMENTS' });
+
+    // No status flip, and — the dangerous half — no source-row release.
+    expect(setCalls.calls).toEqual([]);
+  });
+
+  it('names the amount, the currency and the remedy, so the operator knows the next step', async () => {
+    queueResult([sentInvoice({ status: 'paid', currencyCode: 'EUR', amountPaid: '100.00', balance: '0.00' })]);
+    queueResult([{ amount: '60.00' }, { amount: '40.00' }]); // two partial payments
+
+    await expect(svc.voidInvoice('i1', 'duplicate', {}, actor)).rejects.toThrow(
+      /100\.00 EUR of payments applied.*Remove those payments first.*QuickBooks/s,
+    );
+  });
+
+  it('still voids an unpaid invoice — the guard is on applied payments, not on status', async () => {
+    queueResult([sentInvoice()]); // invoice FOR UPDATE
+    queueResult([]); // invoice_payments: none
+    queueResult([]); // invoice_lines FOR UPDATE
+    queueResult([]); // the void update
+    queueResult([{ id: 'i1', orgId: 'org1', partnerId: 'p1', status: 'void', currencyCode: 'USD' }]); // getInvoice re-read
+
+    await svc.voidInvoice('i1', 'duplicate', {}, actor);
+
+    expect(setCalls.calls.find((p) => p.status === 'void')).toBeTruthy();
+  });
+
+  it('refuses a fully-refunded-looking row too: any non-zero applied total blocks it', async () => {
+    // Guards the boundary the reduce() makes easy to get wrong — a single cent
+    // applied is still money against the document.
+    queueResult([sentInvoice({ status: 'partially_paid' })]);
+    queueResult([{ amount: '0.01' }]);
+
+    await expect(svc.voidInvoice('i1', 'duplicate', {}, actor))
+      .rejects.toMatchObject({ code: 'INVOICE_HAS_PAYMENTS' });
   });
 });

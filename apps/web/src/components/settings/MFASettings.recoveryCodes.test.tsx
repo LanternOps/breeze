@@ -35,6 +35,10 @@ function fillPassword(value = 'hunter2-pw') {
   fireEvent.change(input, { target: { value } });
 }
 
+function fillFactorCode(value = '123456') {
+  fireEvent.change(screen.getByTestId('mfa-recovery-factor-code'), { target: { value } });
+}
+
 describe('MFASettings — recovery codes are regenerate-only (#4414)', () => {
   it('offers no read-shaped affordance: the status card action says Regenerate', async () => {
     render(<MFASettings {...baseProps} onGenerateRecoveryCodes={vi.fn()} />);
@@ -49,6 +53,7 @@ describe('MFASettings — recovery codes are regenerate-only (#4414)', () => {
     render(<MFASettings {...baseProps} onGenerateRecoveryCodes={onGenerateRecoveryCodes} />);
 
     await openRecoveryPanel();
+    fillFactorCode();
     fillPassword();
 
     fireEvent.click(screen.getByTestId('mfa-recovery-regenerate'));
@@ -62,7 +67,7 @@ describe('MFASettings — recovery codes are regenerate-only (#4414)', () => {
     ).toBeTruthy();
 
     fireEvent.click(confirm);
-    await waitFor(() => expect(onGenerateRecoveryCodes).toHaveBeenCalledWith('hunter2-pw'));
+    await waitFor(() => expect(onGenerateRecoveryCodes).toHaveBeenCalledWith('hunter2-pw', '123456'));
   });
 
   it('dismissing the confirm leaves the existing codes untouched', async () => {
@@ -70,6 +75,7 @@ describe('MFASettings — recovery codes are regenerate-only (#4414)', () => {
     render(<MFASettings {...baseProps} onGenerateRecoveryCodes={onGenerateRecoveryCodes} />);
 
     await openRecoveryPanel();
+    fillFactorCode();
     fillPassword();
     fireEvent.click(screen.getByTestId('mfa-recovery-regenerate'));
     await screen.findByTestId('confirm-regenerate-recovery-codes');
@@ -94,6 +100,7 @@ describe('MFASettings — recovery codes are regenerate-only (#4414)', () => {
     );
 
     await openRecoveryPanel();
+    fillFactorCode();
     fillPassword('wrong-pw');
     fireEvent.click(screen.getByTestId('mfa-recovery-regenerate'));
     fireEvent.click(await screen.findByTestId('confirm-regenerate-recovery-codes'));
@@ -133,6 +140,7 @@ describe('MFASettings — recovery codes are regenerate-only (#4414)', () => {
     expect(await screen.findByText('SMS-0001')).toBeTruthy();
 
     fillPassword();
+    fillFactorCode();
     fireEvent.click(screen.getByTestId('mfa-recovery-regenerate'));
     fireEvent.click(await screen.findByTestId('confirm-regenerate-recovery-codes'));
 
@@ -182,6 +190,7 @@ describe('MFASettings — recovery codes are regenerate-only (#4414)', () => {
     );
 
     await openRecoveryPanel();
+    fillFactorCode();
     fillPassword();
     fireEvent.click(screen.getByTestId('mfa-recovery-regenerate'));
     fireEvent.click(await screen.findByTestId('confirm-regenerate-recovery-codes'));

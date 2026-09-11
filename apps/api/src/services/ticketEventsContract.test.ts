@@ -160,6 +160,7 @@ vi.mock('./ticketPush', () => ({
   loadTicketPushPrefs: hoisted.loadTicketPushPrefsMock,
   listAnySlaSubscribers: hoisted.listAnySlaSubscribersMock,
   isAuthorisedForTicket: hoisted.isAuthorisedForTicketMock,
+  isEligibleTicketRecipient: vi.fn(async () => true),
   admitPush: hoisted.admitPushMock,
   resolvePushJobs: hoisted.resolvePushJobsMock,
   assertSamePartner: (c: { partnerId: string }, eventPartnerId: string | null) =>
@@ -212,8 +213,12 @@ describe('ticket-events producer→consumer contract', () => {
   // ── createTicket with assignee → ticket.created ──────────────────────────
 
   it('createTicket with assignee: emitted event feeds handleTicketEvent → in-app insert + email', async () => {
-    // Service selects: org lookup, then assignee lookup (users table)
+    // Service selects, in call order: org lookup, then the #5075 W04 Service
+    // Management mode read on partners, then the assignee lookup (users table).
+    // The mode row must be seeded explicitly — this queue is positional, and an
+    // unseeded read would hand the assignee lookup the wrong row.
     hoisted.selectQueue.push([{ id: 'o-1', partnerId: 'p-1' }]);
+    hoisted.selectQueue.push([{ serviceManagementMode: 'native' }]);
     hoisted.selectQueue.push([{ id: 'u-assignee', partnerId: 'p-1' }]);
     // Service insert: ticket insert returning
     hoisted.insertReturningQueue.push([{ id: 't-c1', orgId: 'o-1', internalNumber: 'T-2026-C001', status: 'open' }]);

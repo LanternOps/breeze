@@ -31,11 +31,27 @@
       "devices": "Cihazlar",
       "tickets": "Biletler",
       "billing": "Sözleşmeler ve Faturalandırma",
+      "service": "Hizmet",
       "activity": "Etkinlik"
     },
     "comingSoon": {
       "title": "Yakında geliyor",
       "description": "Bu sekme, kuruluş kaydının bir sonraki güncellemesinde eklenecek."
+    },
+    "devices": {
+      "loadError": "Bu kuruluşun cihazları yüklenemedi.",
+      "searchPlaceholder": "Cihazlarda ara",
+      "allStatuses": "Tüm durumlar",
+      "allSites": "Tüm siteler",
+      "status": {
+        "online": "Çevrimiçi",
+        "offline": "Çevrimdışı",
+        "maintenance": "Bakım",
+        "decommissioned": "Çıkarıldı",
+        "quarantined": "Karantinaya alındı",
+        "updating": "Güncelleniyor",
+        "pending": "Beklemede"
+      }
     },
     "overview": {
       "tiles": {

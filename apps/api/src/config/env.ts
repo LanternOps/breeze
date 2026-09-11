@@ -112,6 +112,32 @@ export function policyDecideEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
 }
 
+// AI Operator durable tasks (#5205 W06, spec §11.2 "Feature controls").
+//
+// Two INDEPENDENT flags, both default OFF, both read at CALL time so a test
+// (and an operator) can flip one without a module reload:
+//
+//  - `AI_OPERATOR_TASKS_ENABLED` gates task ADMISSION and continuation-run
+//    admission. It does NOT gate the reconciler: spec §11.2 is explicit that
+//    turning admission off must still let late results land and in-flight
+//    effects settle, otherwise disabling the feature would strand every live
+//    task with an unobserved external side effect. "Off" means "start nothing
+//    new", never "stop watching what already happened".
+//  - `AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED` gates the one recipe, per
+//    spec §13's "each recipe ships behind its own flag". Task infrastructure
+//    and each executable recipe are separately controlled on purpose.
+//
+// The pre-existing AI kill switches (`AI_AGENTS_ENABLED` and the DB kill
+// switch) remain OVERRIDING gates above both of these — they fence admission
+// AND dispatch claims, and they too leave the reconciler running.
+export function aiOperatorTasksEnabled(): boolean {
+  return envFlag('AI_OPERATOR_TASKS_ENABLED', false);
+}
+
+export function aiOperatorServiceRecoveryEnabled(): boolean {
+  return envFlag('AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED', false);
+}
+
 // Microsoft 365 identity tools. Defaults OFF everywhere; an org must also have
 // an explicit m365_connections row before any tool is usable. Gates tool
 // registration (aiAgentSdkTools.ts) and the connect routes.
@@ -470,12 +496,17 @@ export const OAUTH_JWKS_PUBLIC_JWK = process.env.OAUTH_JWKS_PUBLIC_JWK ?? '';
 export const OAUTH_COOKIE_SECRET = process.env.OAUTH_COOKIE_SECRET ?? '';
 
 // Kill-switch for the role-level MFA gate (Task 8 of the launch-readiness
-// sprint). Defaults ON so the secure-by-default posture holds; ops can
-// flip it OFF without a code change to relieve an enrollment outage that
-// locks legitimate partner-admins out. Read at call time so tests and
-// runtime overrides don't need module re-evaluation.
+// sprint). Defaults OFF for this release (#4491): the reconcile migration
+// (2026-10-11-170000-partner-admin-force-mfa-reconcile.sql) flips
+// force_mfa on every EXISTING Partner Admin role, and enforcing on upgrade
+// with no warning would lock those admins into enrolment unexpectedly.
+// Enforcement returns to default ON once the notification-period feature
+// (#5306 — grace window, banner, deadline before force_mfa takes effect)
+// ships. Set MFA_FORCE_FOR_PARTNER_ADMIN=true to opt in and enforce now.
+// Read at call time so tests and runtime overrides don't need module
+// re-evaluation.
 export function mfaForcePartnerAdmin(): boolean {
-  return envFlag('MFA_FORCE_FOR_PARTNER_ADMIN', true);
+  return envFlag('MFA_FORCE_FOR_PARTNER_ADMIN', false);
 }
 
 /**
@@ -604,13 +635,9 @@ export function cfAccessTrustsMfa(): boolean {
   return envFlag('CF_ACCESS_TRUSTS_MFA');
 }
 
-// Browser authentication transition rollout. Both switches are deliberately
-// read at call time and default off; validation prevents terminal preparation
-// from being enabled before transition enforcement.
-export function authBrowserTransitionsEnforced(): boolean {
-  return envFlag('AUTH_BROWSER_TRANSITIONS_ENFORCED', false);
-}
-
+// Browser authentication transition enforcement is unconditional. Terminal
+// logout preparation remains independently staged until every supported
+// client has adopted that separate completion protocol.
 export function authBrowserTerminalPreparationEnabled(): boolean {
   return envFlag('AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED', false);
 }

@@ -22,6 +22,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import {
   resolvePeripheralPolicyDeviceIds,
   schedulePeripheralPolicyDevices,
@@ -224,6 +225,9 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      if (!canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
       const action = String(input.action ?? '');
       const policyId = typeof input.policy_id === 'string' ? input.policy_id : undefined;
       const requestedPriority = input.priority;

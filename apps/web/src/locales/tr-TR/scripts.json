@@ -154,8 +154,18 @@
       "severity": "Önem",
       "message": "Mesaj",
       "command": "Komut",
+      "whenOffline": "Cihaz çevrimdışıysa",
       "software": "Yazılım",
       "failureNotificationChannel": "Arıza Bildirim Kanalı"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "Kuyruğa al (varsayılan)",
+        "skip": "Atla"
+      }
+    },
+    "hints": {
+      "whenOffline": "Kuyruğa alınan iş cihazı bekler ve bir sonraki bağlantısında çalışır ya da 7 gün sonra sona erer. Atla adımı hemen başarısız kılar."
     },
     "placeholders": {
       "name": "Günlük bakım kontrolü",
@@ -690,7 +700,8 @@
       "completedCancelTooLate": "Tamamlandı — durdurma isteğiniz çok geç geldi",
       "failedCancelTooLate": "Başarısız — durdurma isteğiniz çok geç geldi",
       "timeoutCancelTooLate": "Zaman aşımına uğradı — durdurma isteğiniz çok geç geldi",
-      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı"
+      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı",
+      "queuedOffline": "Sırada — cihaz çevrimdışı"
     }
   },
   "executionHistory": {
@@ -718,7 +729,8 @@
       "completedCancelTooLate": "Tamamlandı — durdurma isteğiniz çok geç geldi",
       "failedCancelTooLate": "Başarısız — durdurma isteğiniz çok geç geldi",
       "timeoutCancelTooLate": "Zaman aşımına uğradı — durdurma isteğiniz çok geç geldi",
-      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı"
+      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı",
+      "queuedOffline": "Sırada — cihaz çevrimdışı"
     },
     "summary": "{{shown}} / {{total}}",
     "headers": {
@@ -927,6 +939,9 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "toasts": {
+      "runsWhenOnline": "Cihaz çevrimiçi olduğunda çalışır"
     }
   },
   "secretParameters": {
@@ -1038,7 +1053,7 @@
       "variablePlaceholder": "ör. vendor_token",
       "fieldLabel": "Özel alan anahtarı",
       "fieldPlaceholder": "ör. asset_tag",
-      "fieldHelp": "Ayarlar → Özel Alanlar bölümünde gösterilen Alan Anahtarını girin (büyük/küçük harfe duyarlıdır). Okuma: bağlandıktan sonra, çözümlenen değer normal bir parametre gibi betiğe iletilir — herhangi bir istem gösterilmez. Yazma: yeni bir değeri geri kaydetmek için betiğin, bir API anahtarıyla birlikte PATCH isteği kullanarak cihazın özel alan API'sini çağırmasını sağlayın.",
+      "fieldHelp": "Ayarlar → Özel Alanlar bölümünde gösterilen Alan Anahtarını girin (büyük/küçük harfe duyarlıdır). Okuma: çözümlenen değer betiğe BREEZE_PARAM_<KEY> ortam değişkeni (parametre adı büyük harf ve alt çizgiyle) ve {{paramName}} yer tutucusu olarak iletilir — herhangi bir istem gösterilmez. Yazma: \"Betiklerin bu alanı yazmasına izin ver\" etkin olan bir alan için stdout’a ::breeze:custom-fields:: {\"key\": \"value\"} yazdırın. Örnek için düzenleyicinin altındaki \"Özel alanları okuma ve yazma\" bölümüne bakın.",
       "fieldHelpAriaLabel": "Cihaz özel alan bağlaması hakkında",
       "builtinLabel": "Özellik",
       "chooseTitle": "Bir değişken seçin",
@@ -1047,6 +1062,14 @@
       "notSecretRow": "Gizli değil — \"Bir değişkenden\" kullanın",
       "secretHint": "Yalnızca {{env}} ortam değişkeni olarak iletilir; komut dosyasına asla yazılmaz. Sistem bağlamında çalıştırma ve güvenli gizli bilgi iletimini destekleyen bir aracı gerektirir.",
       "hint": "Komut dosyası çalıştığında her hedef cihaz için çözülür; kimseden istenmez."
+    },
+    "securityReview": {
+      "title": "Güvenlik incelemesi",
+      "blockedHint_one": "Bu komut dosyası, aracının onay olmadan çalıştırmayı reddettiği 1 desenle eşleşiyor.",
+      "blockedHint_other": "Bu komut dosyası, aracının onay olmadan çalıştırmayı reddettiği {{count}} desenle eşleşiyor. Kabul etmek istediğiniz her birini onaylayın.",
+      "clearedHint": "Algılanan tüm desenler onaylandı.",
+      "willBlock": "Onaylanmadı — aracı bu komut dosyasını çalıştırmayı reddedecek.",
+      "footnote": "Bir onay yalnızca bu komut dosyası için geçerlidir ve yalnızca burada listelenen desenleri kapsar. Daha sonra farklı riskli bir işlem eklerseniz, onu da onaylayana kadar engellenir."
     },
     "parameterSources": {
       "runtime": "Çalışma anında sorulur",
@@ -1111,6 +1134,18 @@
       "empty": "Henüz değişken yok.",
       "secretUnavailable": "Gizli — kaynağı \"Gizli bir değişkenden\" olan bir parametre üzerinden bağlayın.",
       "unknown": "{{keys}} için değişken yok — hedeflenen cihazlar siz onu oluşturana kadar başarısız olacaktır."
+    },
+    "customFieldHelp": {
+      "title": "Özel alanları okuma ve yazma",
+      "readLabel": "Okuma:",
+      "read": "bir parametreyi özel bir alana bağlayın (kaynak \"Cihaz özel alanından\"). Değer şu ortam değişkeni olarak gelir:",
+      "readPlaceholders": "ve şu yer tutucu olarak:",
+      "writeLabel": "Yazma:",
+      "write": "stdout’a şu biçimde bir satır yazdırın:",
+      "writeGate": "Alanın Ayarlar → Özel Alanlar bölümünde \"Betiklerin bu alanı yazmasına izin ver\" seçeneği etkin olmalıdır. Değerler alan türüne göre doğrulanır; reddedilen anahtarlar çalıştırma ayrıntılarında listelenir.",
+      "secretCaveat": "Yazılan değer betiğin kaydedilen çıktısında da görünür — bu yolla asla bir gizli değer yazmayın. Bunun yerine gizli bir değişken kullanın.",
+      "insertExample": "Örnek ekle",
+      "docsLink": "Özel alanlar belgeleri"
     }
   },
   "scriptList": {

@@ -154,8 +154,18 @@
       "severity": "Schweregrad",
       "message": "Nachricht",
       "command": "Befehl",
+      "whenOffline": "Wenn das Gerät offline ist",
       "software": "Software",
       "failureNotificationChannel": "Fehlerbenachrichtigungskanal"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "In die Warteschlange (Standard)",
+        "skip": "Überspringen"
+      }
+    },
+    "hints": {
+      "whenOffline": "Eingereihte Aufgaben warten auf das Gerät und werden bei der nächsten Verbindung ausgeführt oder verfallen nach 7 Tagen. Überspringen lässt den Schritt sofort fehlschlagen."
     },
     "placeholders": {
       "name": "Tägliche Wartungskontrolle",
@@ -690,7 +700,8 @@
       "completedCancelTooLate": "Abgeschlossen — Ihre Abbruchanfrage kam zu spät",
       "failedCancelTooLate": "Fehlgeschlagen — Ihre Abbruchanfrage kam zu spät",
       "timeoutCancelTooLate": "Zeitüberschreitung — Ihre Abbruchanfrage kam zu spät",
-      "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen"
+      "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen",
+      "queuedOffline": "In Warteschlange — Gerät offline"
     }
   },
   "executionHistory": {
@@ -718,7 +729,8 @@
       "completedCancelTooLate": "Abgeschlossen — Ihre Abbruchanfrage kam zu spät",
       "failedCancelTooLate": "Fehlgeschlagen — Ihre Abbruchanfrage kam zu spät",
       "timeoutCancelTooLate": "Zeitüberschreitung — Ihre Abbruchanfrage kam zu spät",
-      "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen"
+      "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen",
+      "queuedOffline": "In Warteschlange — Gerät offline"
     },
     "summary": "{{shown}} von {{total}}",
     "headers": {
@@ -927,6 +939,9 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "toasts": {
+      "runsWhenOnline": "Wird ausgeführt, sobald das Gerät online ist"
     }
   },
   "secretParameters": {
@@ -1102,7 +1117,7 @@
       "variablePlaceholder": "z.B. vendor_token",
       "fieldLabel": "Schlüssel des benutzerdefinierten Felds",
       "fieldPlaceholder": "z.B. asset_tag",
-      "fieldHelp": "Geben Sie den Feldschlüssel ein, der unter Einstellungen → Benutzerdefinierte Felder angezeigt wird (Groß-/Kleinschreibung beachten). Lesen: Sobald die Bindung besteht, wird der aufgelöste Wert wie ein normaler Parameter an das Skript übergeben — es erscheint keine Eingabeaufforderung. Schreiben: Um einen neuen Wert zurückzuschreiben, lassen Sie das Skript die Custom-Fields-API des Geräts mit einer PATCH-Anfrage und einem API-Schlüssel aufrufen.",
+      "fieldHelp": "Geben Sie den Feldschlüssel ein, der unter Einstellungen → Benutzerdefinierte Felder angezeigt wird (Groß-/Kleinschreibung beachten). Lesen: Der aufgelöste Wert wird dem Skript als Umgebungsvariable BREEZE_PARAM_<KEY> (Parametername in Großbuchstaben mit Unterstrichen) und als Platzhalter {{paramName}} übergeben — es erscheint keine Eingabeaufforderung. Schreiben: Geben Sie ::breeze:custom-fields:: {\"key\": \"value\"} auf stdout aus, für ein Feld mit aktivierter Option „Skripte dürfen dieses Feld schreiben“. Ein Beispiel finden Sie unter „Benutzerdefinierte Felder lesen und schreiben“ unterhalb des Editors.",
       "fieldHelpAriaLabel": "Über die Bindung des benutzerdefinierten Gerätefelds",
       "builtinLabel": "Eigenschaft",
       "chooseTitle": "Variable auswählen",
@@ -1111,6 +1126,26 @@
       "notSecretRow": "Nicht geheim – „Aus einer Variablen“ verwenden",
       "secretHint": "Wird ausschließlich als Umgebungsvariable {{env}} übergeben – niemals in das Skript geschrieben. Erfordert die Ausführung im Systemkontext und einen Agenten, der die sichere Übergabe von Geheimnissen unterstützt.",
       "hint": "Wird bei der Ausführung für jedes Zielgerät aufgelöst – niemand wird danach gefragt."
+    },
+    "securityReview": {
+      "title": "Sicherheitsprüfung",
+      "blockedHint_one": "Dieses Skript entspricht 1 Muster, das der Agent ohne Bestätigung nicht ausführen wird.",
+      "blockedHint_other": "Dieses Skript entspricht {{count}} Mustern, die der Agent ohne Bestätigung nicht ausführen wird. Bestätigen Sie jedes Muster, das Sie zulassen möchten.",
+      "clearedHint": "Alle erkannten Muster wurden bestätigt.",
+      "willBlock": "Nicht bestätigt — der Agent wird die Ausführung dieses Skripts verweigern.",
+      "footnote": "Eine Bestätigung gilt nur für dieses Skript und deckt nur die hier aufgeführten Muster ab. Wenn Sie später einen anderen riskanten Vorgang hinzufügen, wird dieser blockiert, bis Sie auch ihn bestätigen."
+    },
+    "customFieldHelp": {
+      "title": "Benutzerdefinierte Felder lesen und schreiben",
+      "readLabel": "Lesen:",
+      "read": "Binden Sie einen Parameter an ein benutzerdefiniertes Feld (Quelle „Aus einem Gerätefeld“). Der Wert kommt als Umgebungsvariable an",
+      "readPlaceholders": "und als Platzhalter",
+      "writeLabel": "Schreiben:",
+      "write": "Geben Sie eine Zeile auf stdout in der Form aus",
+      "writeGate": "Für das Feld muss unter Einstellungen → Benutzerdefinierte Felder „Skripte dürfen dieses Feld schreiben“ aktiviert sein. Werte werden gegen den Feldtyp geprüft; abgelehnte Schlüssel erscheinen in den Ausführungsdetails.",
+      "secretCaveat": "Der geschriebene Wert erscheint auch in der gespeicherten Skriptausgabe — schreiben Sie so niemals ein Geheimnis. Verwenden Sie stattdessen eine geheime Variable.",
+      "insertExample": "Beispiel einfügen",
+      "docsLink": "Dokumentation zu benutzerdefinierten Feldern"
     }
   },
   "scriptList": {

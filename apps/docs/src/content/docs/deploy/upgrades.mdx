@@ -20,7 +20,9 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
    Database migrations are forward-only. Rolling the container tag back does not roll the schema back. See [Backup & Restore](/security/backup/).
 
-2. **Update the version in `.env`**
+2. **Diff your Compose files against the tagged release** and merge the required changes before pulling images; follow [Compose file changes](#compose-file-changes), preserving your local configuration. Back up `.env`, the active Compose files, and overrides alongside the database backup.
+
+3. **Update the version in `.env`**
 
    ```bash
    # Set to the version you want (e.g. 0.11.3)
@@ -29,7 +31,7 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
    This also selects the agent release your fleet is offered, so set it to a version that is **published** on GitHub, not one that has only been tagged. See [Binary Distribution](/deploy/binaries/#github-mode-default).
 
-3. **Pull and restart**
+4. **Pull and restart**
 
    ```bash
    docker compose pull
@@ -41,15 +43,20 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
    **Expected downtime**: Typically **5--15 seconds** while containers restart. If the new version includes database migrations, the API container will take additional time to apply them before accepting traffic -- usually under 60 seconds for routine schema changes, but potentially several minutes for large data migrations. Agents continue running independently during this window and reconnect automatically.
 
-4. **Verify**
+5. **Verify**
 
    ```bash
    # Check API health
    curl -s https://breeze.yourdomain.com/health | jq .version
 
+   # Check all running image versions
+   docker compose images
+
    # Check agent version (on the device)
    breeze-agent version
    ```
+
+   Also sign in through your public URL and confirm agents resume checking in. `/health` bypasses the HTTPS redirect and can stay healthy while a stale proxy address sends other requests into a redirect loop.
 
 </Steps>
 
@@ -57,7 +64,436 @@ import { Steps, Aside } from '@astrojs/starlight/components';
   The `binaries-init` container uses `pull_policy: always`, so `docker compose up -d` automatically pulls the latest binaries image and refreshes the volume — no manual steps needed.
 </Aside>
 
+## Compose file changes
+
+`docker compose pull` updates images; it does **not** download a new `docker-compose.yml`, override file, or `.env.example`. Current images can therefore run with old network settings or missing environment mappings. Review the configuration shipped with **every target release**, including when skipping versions; the entries below highlight changes that need operator action, not a complete Compose changelog.
+
+Fetch a separate copy of the target release's Compose file and compare it with the one you actually deploy. Replace the placeholder with the published release tag matching your intended `BREEZE_VERSION`:
+
+```bash
+release_tag="v<target-version>"
+release_compose=$(mktemp)
+curl --fail --show-error --location \
+  "https://raw.githubusercontent.com/LanternOps/breeze/${release_tag}/docker-compose.yml" \
+  --output "$release_compose" && diff -u docker-compose.yml "$release_compose"
+```
+
+`diff` exits with status 1 when differences exist; a failed download must be resolved before continuing. If you deploy `deploy/docker-compose.prod.yml` or additional override files, compare those same paths at the same tag too. Review the tagged `.env.example` and any configuration files referenced by changed services.
+
+Merge the required changes into your backed-up local files, preserving custom services, domains, mounts, secrets, and proxy topology. Do not overwrite `.env` with `.env.example`. Add required variables to both `.env` and the appropriate service's `environment:` mapping; setting `.env` alone does not pass a variable to the container. For digest-pinned deployments, update the image references to the target release as well as `BREEZE_VERSION`.
+
+Validate the merged configuration before the pull/restart step:
+
+```bash
+docker compose config --quiet
+```
+
+Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
+
+### v0.95.0 — stable Caddy address and proxy trust
+
+The [v0.95.0 Compose file](https://github.com/LanternOps/breeze/blob/v0.95.0/docker-compose.yml) introduced these coupled settings. If your deployed file predates them, apply all three even if your images are already newer:
+
+| Compose setting | Required action |
+|---|---|
+| `networks.breeze.ipam.config.subnet` uses `BREEZE_DOCKER_SUBNET` | Merge the IPAM configuration. If the shipped subnet overlaps another Docker network, host route, or VPN, choose a non-overlapping subnet in `.env`. |
+| `services.caddy.networks.breeze.ipv4_address` uses `BREEZE_CADDY_IP` | Merge the static address pin. If you customize the subnet, choose an unused Caddy address inside it and set `BREEZE_CADDY_IP` alongside `BREEZE_DOCKER_SUBNET`. |
+| `services.api.environment.TRUSTED_PROXY_CIDRS` defaults to `BREEZE_CADDY_IP` with a `/32` mask | Merge the derived default. An explicit `TRUSTED_PROXY_CIDRS` in `.env` or an override takes precedence: remove a stale override when using bundled Caddy, or set it to the actual immediate proxy's stable address for a custom topology. |
+
+Keep `TRUST_PROXY_HEADERS=true` when using the bundled proxy. Do not widen trust to an entire private network to work around an address mismatch. A proxy's dynamically assigned address can move after a container recreation or host reboot.
+
+Changing an existing network's IPAM/subnet requires recreating that network during a maintenance window; `docker compose restart` cannot apply it. For a standalone stack whose network is used only by that stack, stop/remove its containers and network with `docker compose down`, then recreate them with `docker compose up -d` after pulling the target images. **Do not use `down -v`**, which deletes named data volumes. If other containers share the network, coordinate their migration before recreating it. This network migration takes longer than the routine image-only restart described above.
+
+Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify that `TRUSTED_PROXY_CIDRS` matches the proxy that directly connects to the API. That release's TRANSPORT-001 enforcement only honors forwarded HTTPS headers from trusted peers; a stale address can cause repeated `308` redirects for the UI and agents while `/health` still returns `200`. After restarting, check public sign-in and agent check-ins as well as API logs for `[proxy-trust]` or `[force-https]` warnings (available from v0.104.0).
+
 ## Version-specific notes
+
+### v0.112.0 — Windows MSI fix, security remediations, bare-metal recovery
+
+**No breaking API changes and no new *required* environment variables**, but
+this release **removes implicit access and pauses some scheduled work** the
+moment the migrations run. Read [Action required](#action-required-in-v01120)
+before you pull.
+
+<Aside type="danger" title="If you enroll Windows devices with the MSI, take this release now">
+  The agent MSI published with v0.110.0 through v0.111.1 refused **every fresh
+  install** on Windows 10, 11 and Server 2016+ with "Breeze Agent requires
+  Windows 10 or Windows Server 2016 or later". Already-enrolled agents were
+  unaffected (self-update never runs the MSI); only new MSI enrollments were
+  blocked. v0.112.0 reads the Windows version from the registry instead of the
+  value Windows Installer reports. Replace any installer links or MSIs you handed
+  out from those releases. See [Supported Windows versions](/agents/installation/#supported-windows-versions).
+</Aside>
+
+**Pull `api`, `web` and `portal` together, in one pass** (plus `worker` if you
+run the [worker split](/deploy/worker-split/)). Two changes in this release have
+no flag-level rollback: session-binding enforcement (below) and the remote
+desktop lease, which expects every replica on the new protocol. **Sequence the
+API restart as stop-then-start rather than rolling:** stop the old API
+replicas, let the migrations apply, then start only the new ones — an older
+API must not resume serving after the installer-token cutover (item 6 below).
+Afterwards assert version parity on every `ghcr.io/lanternops/breeze/*`
+container rather than trusting the service list.
+
+#### Action required in v0.112.0
+
+1. **PAM auto-approve rules are suspended.** Every rule with verdict
+   **Auto-approve** is switched to **Require approval** and badged
+   "Auto-approve suspended". Matching elevations wait for a human
+   until an admin holding the new `pam:manage_policy` permission clicks
+   **Re-approve** on the rule (MFA). See [PAM → Rules](/features/pam/#rules).
+2. **New permissions replace implicit access.** `pam:approve`,
+   `pam:manage_policy`, `accounting:read`, `accounting:manage`,
+   `workspace:read|write|credentials|execute` and
+   `connected_apps:read|manage` are granted to the built-in **Org Admin** only
+   (Partner Admin holds `*:*`). **Every other built-in role and every custom
+   role loses** QuickBooks, Workspace, connected-apps and PAM-approval access
+   until you grant the keys in **Settings → Roles**. A Partner Technician or
+   Partner Billing user who could browse or sync QuickBooks yesterday gets a
+   403 today. See [Built-in permissions](/reference/users-and-roles/#built-in-permissions).
+3. **Recurring sensitive-data scan policies are switched off** and any queued
+   or running scheduled scan is failed. There is no badge: each affected policy
+   simply shows as inactive on the **Scan Policies** tab. A user who holds
+   `devices:write` **and** `devices:execute`, with MFA satisfied, re-approves it
+   by turning **Active** back on (or re-saving it), which binds the schedule to
+   that user's authority. Manual scans are unaffected. See
+   [Sensitive Data](/features/sensitive-data/#recurring-scans-need-re-approval-after-upgrade).
+4. **Recurring network-baseline scans are paused** with the banner "Recurring
+   scan paused: re-approval required". Re-saving the schedule arms it under the
+   saving user; **Scan Now** still works. Newly auto-created baselines now start
+   with recurrence **off**. See [Network Baselines](/features/network-baselines/#recurring-scans-need-re-approval-after-upgrade).
+5. **Office add-in technician bindings are revoked.** Every technician who
+   uses the Outlook/Office add-in technician pane repeats the one-time sign-in;
+   the account must now have an authenticator-app (TOTP) factor. See
+   [AI for Office](/features/ai-for-office/).
+6. **Outstanding installer bootstrap tokens are invalidated.** Unused
+   bootstrap-derived enrollment keys are deleted. Regenerate any installer
+   links or copies you handed out before the upgrade.
+7. **Remote desktop needs an updated agent and is capped at 12 hours.** Only
+   an agent that reports lease support can start a desktop session; older
+   agents show "Remote desktop needs an agent update on this device" (HTTP
+   `503 agent_upgrade_required`). Expect up to one heartbeat interval (about a
+   minute) per device while agents self-update; **if you pin agent versions,
+   desktop sessions are unavailable until you move the pin.** `Max session
+   duration` is clamped to 1–12 hours (`0` no longer means unlimited), a
+   membership/role/site-scope/MFA change ends a live session within about 25 s,
+   and a Redis outage longer than 90 s ends live desktop sessions. Terminal,
+   Files and VNC are unaffected. See [Session lease and revocation](/features/remote-access/#session-lease-and-revocation).
+8. **`AUTH_BROWSER_TRANSITIONS_ENFORCED` is removed.** Session binding is
+   enforced on every issuance path (password, SSO, Cloudflare Access, MFA,
+   passkey, refresh, registration, invitation) with no opt-out. Delete the line
+   from `.env`; the safety net is an image rollback, not a flag. Existing browser
+   sessions self-heal on their next refresh. **Mobile app builds older than
+   v0.109.0 cannot sign in** until updated.
+9. **Legacy policy execution routes are gone.** `POST /policies/:id/evaluate`,
+   `/remediate` and `/activate` are retired; use `POST /automations/:id/trigger`.
+   `/deactivate` is unchanged.
+10. **Site-restricted technicians** can no longer create or edit organization-wide
+    governance objects (webhooks, notification channels, software and peripheral
+    policies, configuration policies, PAM config, backup destinations and
+    profiles) or manage PSA and DNS-security connections. They can still assign
+    an existing policy to their own site.
+11. **Check `TRUSTED_PROXY_CIDRS`.** With proxy trust unset, client-IP
+    attribution now records the raw socket peer instead of `unknown`. Behind a
+    real proxy that peer is the proxy, so make sure the variable is set on every
+    deployment that fronts Breeze with one.
+
+#### Database migrations in v0.112.0
+
+**20 migrations. Take a database backup first.** All are idempotent, none abort
+on pre-existing data, and all apply automatically on API startup unless you
+have set `AUTO_MIGRATE=false`. The ones with operator-visible effects:
+
+| Migration | Effect |
+|---|---|
+| `2026-10-15-150200-pam-dedicated-permissions.sql` | Suspends every `auto_approve` PAM rule (original verdict kept for re-approval); seeds `pam:approve` / `pam:manage_policy` and grants them to each built-in Org Admin. |
+| `2026-10-15-150051-office-addin-binding-mfa-epoch.sql` | Revokes every existing Office add-in technician binding. |
+| `2026-10-15-140001` / `140002` / `140003-sensitive-data-*.sql` | Deactivate every recurring sensitive-data policy and fail queued/running scheduled scans. |
+| `2026-10-15-141001-installer-bootstrap-credential-generation.sql` | Deletes unused bootstrap-derived enrollment keys and bumps the generation on their parents. |
+| `2026-10-15-150030` / `150031` / `150032` and `150500-accounting-dedicated-permissions.sql` | Seed `workspace:*`, `connected_apps:*`, `accounting:read`, `accounting:manage`; grant them to the built-in Org Admin only. |
+| `2026-10-15-140004-backup-snapshot-lineage-fk-set-null.sql` | Makes `restore_jobs.snapshot_id` and `recovery_tokens.snapshot_id` nullable and moves five foreign keys onto `backup_snapshots` to `ON DELETE SET NULL`, so retention can finally delete a snapshot that was ever restored, verified or tokened. |
+| `2026-10-15-150600-network-baseline-recurring-authority.sql` | Pauses every enabled recurring baseline scan (`reapproval_required`) until an authorized user re-saves the schedule. |
+| `2026-10-15-150001-bound-webhook-retries.sql` | Normalizes legacy webhook `retryCount` values into 0–2; the count is logged as a Postgres `WARNING`. |
+| `2026-10-15-150050-mobile-refresh-family-binding.sql` | Adds a partial index on `refresh_token_families` **in-transaction** (not `CONCURRENTLY`). Instant at typical sizes; run off-peak if yours is very large. |
+
+The rest (`150010`, `150020`, `150040`, `150100`, `150300`, `160010`) are
+additive column adds with no data change. A non-superuser migrating role is
+sufficient, as before.
+
+#### New optional settings in v0.112.0
+
+None are required. Full descriptions are in [Environment Variables](/deploy/environment/).
+
+| Variable | Why you might set it |
+|---|---|
+| `LENOVO_WARRANTY_ENABLED=true` and/or `LENOVO_API_KEY` | Lenovo warranty lookup works for the first time — credential-free via Lenovo's public lookup endpoint, or through the official Warranty API. `DELL_CLIENT_ID` / `DELL_CLIENT_SECRET` and both Lenovo knobs are now mapped through every shipped Compose file, so a value in `.env` is enough. See [Warranty lookups](/deploy/environment/#warranty-lookups). |
+| `RECOVERY_MEDIA_WORK_DIR` | Already defaulted to `/data/recovery-work` by the shipped Compose files; moves bare-metal recovery media builds off the container's 64 MB `/tmp`. Override only to relocate it. |
+| `BACKUP_GC_GRACE_MS` | Lab/test only. Production enforces a one-hour floor; the 48 h default is unchanged. |
+
+**Removed:** `AUTH_BROWSER_TRANSITIONS_ENFORCED` (see item 8 above).
+
+#### Fresh installs and image pinning in v0.112.0
+
+`.env.example` and `deploy/docker-compose.prod.yml` now expect **signed,
+digest-pinned image references** (`ghcr.io/lanternops/breeze/api@sha256:…`)
+resolved from the release's signed image inventory. The guided installer
+resolves and verifies them itself for 0.112.0 and later (fail-closed), and
+falls back to tag-tracking refs for older releases. **Existing installs whose
+`.env` still carries `…/api:${BREEZE_VERSION}` refs keep working with the
+upgrade steps at the top of this page.** If you have already switched to digest
+pins, update the four `BREEZE_*_IMAGE_REF` lines from the new release's
+inventory on every upgrade — bumping `BREEZE_VERSION` alone changes nothing.
+See [Signed, digest-pinned image references](/deploy/production/#signed-digest-pinned-image-references-v01120-and-later).
+
+Rotating `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` is a fleet re-enrollment:
+agents pin the key they enrolled under and there is no remote revocation. See
+[Binary Distribution](/deploy/binaries/).
+
+#### Rolling back v0.112.0
+
+Prefer roll-forward. If you must roll back, **downgrade agents before the
+API**: a v0.112.0 agent talking to an older API gets no lease answer and ends
+its desktop session after about 150 s. The added columns are additive and need
+no schema rollback. Rolling back the network-baseline change resumes every
+paused recurring baseline **under no authority** — clear each affected
+baseline's schedule first.
+
+#### Other behaviour changes in v0.112.0
+
+- **Bare-metal recovery now restores system state on Linux**, every
+  `system_image` backup records a disk-layout manifest with a restorability
+  verdict, and a `breeze-backup rebuild` command can provision a disk from a
+  snapshot. See [Bare Metal Recovery](/backup/bare-metal-recovery/).
+- **Backup exclude patterns with a leading `/` are root-anchored** (gitignore
+  semantics) instead of matching at any depth. File backups now capture
+  symlinks, directories, ownership and setuid/setgid/sticky bits; manifests
+  carrying them use a new format that **older agents cannot read**, so restore
+  with a v0.112.0 agent. See [Backup Policies](/backup/policies/#file-backup).
+- **Retention GC no longer stops** on the first snapshot that was ever
+  restored, verified or tokened. Bucket usage still does not shrink — storage
+  reclamation lands in a later release.
+- **Webhooks make one HTTP attempt per invocation**; the queue owns retries,
+  `retryCount` is capped at 2, and permanent failures (bad configuration,
+  SSRF-blocked URL, ordinary 4xx) dead-letter immediately. `/test` and `/retry`
+  on a paused webhook return `409`.
+- **Org-scoped sessions are now evaluated against the partner IP allowlist.**
+- **MCP tool `get_fleet_status` is renamed `get_invite_funnel`.** The old name
+  dispatches for one more release but no longer appears in `tools/list`.
+- **HP warranty lookup is de-registered** — HP's API is not available to RMM
+  vendors, so HP devices stay at `unknown`.
+
+### v0.111.1 — hotfix for a v0.111.0 upgrade-blocking migration
+
+<Aside type="danger" title="Install v0.111.1, not v0.111.0">
+  If you have not yet upgraded to v0.111.0, install **v0.111.1** instead — it
+  contains everything in v0.111.0 plus this fix, and skips straight past the
+  problem below. If you are already on v0.111.0 and it started up normally,
+  your database was not affected and you can upgrade to v0.111.1 at your
+  leisure. Everything else in this guide's [v0.111.0 section](#v01110--offline-work-queue-script-cancellation-organization-record-page)
+  still applies.
+</Aside>
+
+One of the migrations that shipped in v0.111.0,
+`2026-10-14-100100-discovered-assets-manual-source.sql`, backfills a new
+provenance column on discovered network assets. On a database where those
+`discovered_assets` rows span **more than one organization or partner**, the
+backfill's two update statements can request the partner-export lock
+hierarchy out of order, which Postgres rejects. The migration transaction
+rolls back, `autoMigrate` retries it on the next boot, and **the API never
+finishes starting** — a crash loop, not a degraded mode. A single-partner or
+empty install is not affected.
+
+v0.111.1 adds a new migration,
+`2026-10-14-100050-discovered-assets-source-backfill-prelock.sql`, which sorts
+immediately before the failing one. It acquires every partner and
+organization lock the backfill will need, up front and in the correct order,
+so that by the time the original migration replays, it has nothing left to
+do and completes normally.
+
+**If your API is already crash-looping on v0.111.0**, you have two ways out:
+
+1. **Upgrade to v0.111.1** (recommended). The failed migration's transaction
+   rolled back cleanly, so nothing is half-applied — pulling v0.111.1 and
+   restarting is sufficient on its own.
+2. **Apply the fix-forward SQL below by hand** against your database, using
+   the same role your migrations run as, then restart the API on v0.111.0
+   before upgrading further:
+
+   ```sql
+   BEGIN;
+
+   -- The failed migration rolled back its own CREATE TYPE / ADD COLUMN, so in the
+   -- crash-loop state the `source` column does NOT exist yet: create it first
+   -- (guarded, so this is also safe where it already exists).
+   DO $$ BEGIN
+     CREATE TYPE public.discovered_asset_source AS ENUM ('scan', 'unifi', 'manual');
+   EXCEPTION WHEN duplicate_object THEN NULL;
+   END $$;
+   ALTER TABLE public.discovered_assets ADD COLUMN IF NOT EXISTS source public.discovered_asset_source;
+   ALTER TABLE public.discovered_assets ADD COLUMN IF NOT EXISTS url text;
+
+   -- Required: the lock helpers read organizations, and discovered_assets is
+   -- FORCE ROW LEVEL SECURITY. Without this the discovery SELECTs return no rows
+   -- and the UPDATEs match nothing, silently.
+   SELECT set_config('breeze.scope', 'system', true);
+
+   -- Acquire every affected partner (shared) and organization (exclusive) export
+   -- lock in ascending order BEFORE the backfill, so the per-row triggers find
+   -- them already held.
+   SELECT public.breeze_partner_export_lock_partners_shared(ARRAY(
+     SELECT DISTINCT o.partner_id
+       FROM public.discovered_assets d
+       JOIN public.organizations o ON o.id = d.org_id
+      WHERE d.source IS NULL AND o.partner_id IS NOT NULL
+      ORDER BY 1));
+
+   SELECT public.breeze_partner_export_lock_orgs_exclusive(ARRAY(
+     SELECT DISTINCT d.org_id
+       FROM public.discovered_assets d
+      WHERE d.source IS NULL AND d.org_id IS NOT NULL
+      ORDER BY 1));
+
+   UPDATE public.discovered_assets a
+      SET source = 'unifi'
+    WHERE a.source IS NULL
+      AND (a.detected_type_source = 'unifi_controller'
+           OR EXISTS (SELECT 1 FROM public.unifi_devices u
+                       WHERE u.discovered_asset_id = a.id));
+
+   UPDATE public.discovered_assets SET source = 'scan' WHERE source IS NULL;
+
+   COMMIT;
+   ```
+
+   This is idempotent: on a database where the migration already succeeded,
+   every statement is a no-op.
+
+**Recovery for a deployment that is already stuck in the crash loop:**
+
+1. Set `BREEZE_VERSION=0.111.1` in `.env` (or apply the fix-forward SQL above
+   against v0.111.0 first, if you cannot upgrade immediately).
+2. `docker compose pull api web portal && docker compose up -d binaries-init api`.
+3. Wait for the API to report healthy (`curl -sf https://yourdomain/health`).
+4. Once the API is healthy, bring the rest of the stack back up:
+   `docker compose up -d web portal`.
+
+No schema shape changes beyond v0.111.0: the same enum, the same two columns,
+the same constraints. The new migration only moves the backfill earlier and
+wraps it in the correct lock order.
+
+### v0.111.0 — offline work queue, script cancellation, organization record page
+
+**No breaking API changes and no new *required* environment variables.** But
+**five defaults change on upgrade**, and two of them will alter what your
+customers and your technicians see the moment the API restarts. Read
+[Behaviour changes](#behaviour-changes-in-v01110) before you pull.
+
+**Pull the `portal` container too**, alongside `api` and `web` — and `worker` if
+you have opted into the [worker split](/deploy/worker-split/).
+
+<Aside type="danger" title="Do these two things before you pull">
+  1. **If you have QuickBooks connected and are not ready for Breeze to write payments into a customer's books**, turn **Payment push** off first (Integrations → QuickBooks). It ships **on**. See [Payment push](/features/accounting-integrations/#payment-push).
+  2. **If you run network monitors with alert rules**, review those rules, your notification channels and your escalation policies. Monitor alerts now notify and fire automations where before they only sat in the inbox. See [Network Monitors](/features/network-monitors/#what-a-monitor-alert-now-does).
+</Aside>
+
+#### Database migrations in v0.111.0
+
+**35 migrations. Take a database backup first.** All are idempotent and apply
+automatically on API startup unless you have set `AUTO_MIGRATE=false`.
+
+<Aside type="caution" title="Two migrations deliberately abort the deploy on bad pre-existing data">
+  Both concern custom fields, and both are intentional — the alternative is
+  silently picking a winner among rows that are supposed to be unique. Each ships
+  with a **preflight** query so you can find out before you pull rather than
+  during:
+
+  | Migration | Aborts on | Preflight |
+  |---|---|---|
+  | `2026-10-10-100300-custom-field-definition-integrity.sql` | Duplicate or ownerless custom-field definitions | `apps/api/migrations/preflight/2026-10-10-100300-custom-field-definition-integrity-preflight.sql` |
+  | `2026-10-11-141000-custom-field-no-cross-axis-shadowing.sql` | A custom-field key defined at both the organization and the partner level for the same device | `apps/api/migrations/preflight/2026-10-11-141000-custom-field-shadowing-preflight.sql` |
+
+  Run both against your database **before** you upgrade and reconcile anything
+  they report. See [Custom Fields → Uniqueness and shadowing](/features/custom-fields/#uniqueness-and-shadowing).
+</Aside>
+
+Six indexes are built **concurrently**, so writes are not blocked while they run —
+on a large `audit_logs` or process-sample history they are the long pole and the
+API does not serve until they finish. An interrupted build leaves an invalid index
+that the next boot reports loudly; recover with `DROP INDEX CONCURRENTLY <name>`
+and restart.
+
+Three migrations touch existing rows and record what they did as a Postgres
+`WARNING`. Read these in the API log after the first boot:
+
+| Log line | What it means |
+|---|---|
+| `device_custom_field_values backfill: copied N value(s)`, `minted N definition(s) for previously undefined keys`, `N stored key(s) do not match the enforced key pattern` | Custom-field values move into a table of their own. Sized by devices × custom-field keys. Keys written before the naming rules were enforced are deliberately kept in the old projection only, so nothing is lost or renamed under you. |
+| `backfilled N discovered_assets rows to source=unifi` / `source=scan` | Every discovered asset gains a provenance column. Sized by your **discovery** inventory, not your device count — on a large scanned estate this is the longest single statement in the set. |
+| The Partner Admin forced-MFA stamp | Records the reconcile described under [Behaviour changes](#behaviour-changes-in-v01110). **Enforcement is off this release**, so nothing changes for your admins at upgrade time. |
+
+<Aside type="note" title="One hot-table lock worth planning around">
+  The offline-work-queue migration adds a foreign key and a partial index to the
+  agent command table **without** the concurrent/deferred options, so it holds an
+  exclusive lock on the agent command path for one sequential scan. At ordinary
+  sizes that is seconds. If you retain **millions** of device commands, build both
+  by hand before you pull — add the constraint `NOT VALID` then `VALIDATE`, and
+  create the index `CONCURRENTLY` under the name the migration uses
+  (`idx_device_commands_deliver_by`) — and the migration's guards will no-op at
+  boot.
+</Aside>
+
+A non-superuser migrating role is sufficient, as in every previous release: the
+range creates no roles, extensions, or schema-level grants.
+
+#### New optional settings in v0.111.0
+
+None are required and none fail boot when missing — except `PLAY_INTEGRITY_SERVICE_ACCOUNT`,
+which is validated when set. Full descriptions are in
+[Environment Variables](/deploy/environment/).
+
+| Variable | Why you might set it |
+|---|---|
+| `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED` | Already **on**. Set `false` only to restore the old hard-failure behaviour while you adjust your automations — this escape hatch is removed in a later release. |
+| `DEVICE_COMMAND_QUEUE_TTL_HOURS`, `DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS`, `DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS` | Shorten or lengthen how long queued work waits for an offline device (7 days / 24 hours / 24 hours). |
+| `MFA_FORCE_FOR_PARTNER_ADMIN` | **Now defaults to `false`.** Set `true` to enforce forced MFA for Partner Admins immediately. |
+| `AI_OPERATOR_TASKS_ENABLED`, `AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED` | Turn on the opt-in [AI Operator](/features/ai-agents/#ai-operator-preview) preview. Both ship off. |
+| `READINESS_CACHE_TTL_MS`, `READINESS_PROBE_TIMEOUT_MS` | Tune the new readiness contract. Defaults suit every deployment we know of. |
+| `OFFLINE_DETECTOR_WORKER_CONCURRENCY` | Raise offline-sweep concurrency on a very large fleet. |
+| `PLAY_INTEGRITY_SERVICE_ACCOUNT` | Verify Android approver devices with Play Integrity as well as hardware Key Attestation. **A malformed value stops the boot** rather than silently reporting "not configured" forever. |
+
+#### Readiness versus liveness
+
+`/health` is unchanged and remains **liveness** — it answers 200 before the
+instance can actually serve. `/ready` and `/health/ready` now answer a real
+aggregate readiness question, and API admission is gated on the consumers the
+process role requires. **If your load balancer or Compose healthcheck should hold
+traffic until Postgres, Redis and the background consumers are genuinely up, point
+it at `/ready`.** See [Health Monitoring](/monitoring/health/).
+
+#### Behaviour changes in v0.111.0
+
+- **⚠️ QuickBooks starts pushing payments into every connected realm.** The Payment push switch ships **on**, so a connected realm in automatic push mode begins creating QuickBooks Payments as soon as the API restarts — no operator action. Only payments recorded *after* the switch became active are pushed, and a payment **deletion** always propagates regardless of the switches. Turn it off first if you are not ready. See [Payment push](/features/accounting-integrations/#payment-push).
+- **⚠️ Network-monitor alerts now notify, escalate and automate.** ICMP/TCP/HTTP/DNS monitor alerts previously landed in the Alerts inbox only. Expect a step change in notification and automation volume if you run monitors with alert rules. The five-minute cooldown, the deduplication and the auto-resolve on recovery all still apply. See [Network Monitors](/features/network-monitors/#what-a-monitor-alert-now-does).
+- **Work aimed at an offline device queues instead of failing.** Patch jobs, automation **Run script** / **Run command** actions and scan/rollback commands are persisted with a delivery deadline and claimed on the device's next heartbeat. A waiting step reads *"Queued — device offline"* instead of Failed. The other side of that coin: **work you previously saw fail fast now sits pending for up to a week.** Existing automations have no stored offline preference and therefore queue — set a step to **Skip** if it is only meaningful against a live device. See [Devices → Queued actions](/features/devices/#queued-actions).
+- **⚠️ On Linux and macOS, `breeze-agent service stop` is now temporary while the watchdog is installed.** The watchdog restarts the agent after its standby grace period. For a durable stop, stop or uninstall the watchdog too. See [Agent Watchdog](/features/watchdog/).
+- **`service install` now restarts the service on an already-enrolled host** instead of leaving it stopped — the old behaviour stranded a host Offline until someone started it by hand. See [Agent Installation](/agents/installation/). The Windows equivalent is fixed too, including installing over an existing service, which previously failed while reporting the service as running when it was not.
+- **"Remove device" now uninstalls the agent by default.** The removal flow asks about the agent and defaults to uninstalling it; previously the uninstall was effectively never sent and agents were left running on removed devices. A **permanent** delete now refuses until that uninstall has been collected.
+- **Forced MFA for Partner Admins is reconciled but NOT enforced.** A migration marks every existing system Partner Admin role as requiring MFA — reconciling installs that predate the rule — but `MFA_FORCE_FOR_PARTNER_ADMIN` now defaults to **`false`**, because acting on it at upgrade time would lock existing Partner Admins into enrolment with no warning. Set it to `true` to enforce now. A notification-period rollout — grace window, banner, deadline — ships next release, at which point enforcement returns to on by default. Separately, an MFA policy change that *would* lock out already-enrolled users is now refused outright with the number of users affected.
+- **Maintenance windows suppress every script path.** A device inside a window with **Suppress scripts** is now skipped by the AI assistant, automation **Run script** / **Run command**, fleet-fix remediation and edition auto-migration — not just a manual Run Script. Each is recorded as a **skip**, not a failure, so an automation run stays green and its trailing actions still run. A window that cannot be *evaluated* deliberately keeps the ordinary failure treatment, so a maintenance-config outage can never render as a fleet of green runs. See [Maintenance Windows](/features/maintenance-windows/).
+- **Script cancellation kills the whole process tree.** Cancel and timeout now terminate descendants on Windows and Unix. A script that intentionally detaches a child will now have that child killed too — worth a canary group if you rely on that pattern. See [Stopping a running script](/scripts/stopping-a-running-script/).
+- **Configuration-policy inheritance changes what a "linked" policy delivers.** A policy marked as inheriting could previously deliver *nothing* to its devices; every reader now resolves the real inherited settings. If you have such a policy, devices under it will start receiving configuration they were not receiving before. See [Configuration Policies](/features/configuration-policies/).
+- **Service Management is a partner-level module.** `native` is the default and existing partners are unchanged. Turning it **off** hides the Service Desk and Billing sections and refuses new ticket creation everywhere. See [Service Management mode](/reference/partner-management/#service-management-mode).
+- **The unified device list is on by default.** `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST` now defaults to `true`. It is a build-time variable baked into the web image, so the published image ships with the All / Agent / Network / Manual segments on and there is nothing to change in `.env` or Compose. Build the web image yourself and pass `false` to keep the agent-only list.
+- **Metric-anomaly detection looks back 15 minutes instead of 30**, with a statement timeout, so overlapping runs stop piling up on the rollup tables. The trade-off: **a skipped tick no longer self-heals** and a gap needs a manual backfill.
+- **Cross-organization device moves may now drop custom-field values** that are not visible in the target organization. Previously they were kept silently; now they are dropped and logged.
+- **Still off by default:** AI agents and the AI Operator preview, reboot deferral (per policy), and the removed-device purge retention policy.
+
+<Aside type="note" title="Known wrinkle on Linux">
+  `systemctl stop breeze-agent` runs its full 30-second stop timeout and ends in a
+  kill, so each `service install` takes roughly 32 seconds and the unit is briefly
+  reported as `failed` before it comes back. This is pre-existing and cosmetic —
+  the agent ends up running.
+</Aside>
 
 ### v0.110.0 — reboot deferral, device-set billing, QuickBooks payments, portal visibility
 
@@ -71,7 +507,7 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
 #### Database migrations
 
-**53 migrations. Take a database backup first.** All are idempotent and apply automatically on API startup (unless you have set `AUTO_MIGRATE=false`). Every index on a table that can be large is built **concurrently**, so writes are not blocked while they run — the trade-off is that an interrupted build leaves an invalid index behind. If that happens the next boot reports it loudly; recover with `DROP INDEX CONCURRENTLY <name>` and restart.
+**54 migrations. Take a database backup first.** All are idempotent and apply automatically on API startup (unless you have set `AUTO_MIGRATE=false`). Every index on a table that can be large is built **concurrently**, so writes are not blocked while they run — the trade-off is that an interrupted build leaves an invalid index behind. If that happens the next boot reports it loudly; recover with `DROP INDEX CONCURRENTLY <name>` and restart.
 
 Three migrations clean up or stamp existing rows and record what they touched as a Postgres `WARNING`. Read these in the API log after the first boot:
 
@@ -187,16 +623,18 @@ See [Binary Distribution](/deploy/binaries/) for details.
 
 Some devices — production database servers, devices in a change-controlled window — should not self-update on the normal heartbeat cadence. Toggle auto-update per device without editing config on the machine:
 
+This endpoint requires a signed-in user session with MFA satisfied, not an API key — `$TOKEN` below is a Breeze access token, not a partner API key.
+
 ```bash
 # Disable auto-update for one device
 curl -X POST "https://breeze.example.com/api/v1/devices/<device-id>/auto-update" \
-  -H "Authorization: Bearer <api-key>" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"enabled": false}'
 
 # Re-enable later
 curl -X POST "https://breeze.example.com/api/v1/devices/<device-id>/auto-update" \
-  -H "Authorization: Bearer <api-key>" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"enabled": true}'
 ```
@@ -219,7 +657,7 @@ By default (`AGENT_AUTO_PROMOTE=true`), syncing a new agent release immediately 
 
    ```bash
    curl -X POST "https://breeze.example.com/api/v1/agent-versions/promote" \
-     -H "Authorization: Bearer <platform-admin-api-key>" \
+     -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/json" \
      -d '{"version": "0.84.0"}'
    ```
@@ -260,7 +698,7 @@ Agent update maintenance windows are set in **Settings → Org Defaults** (and o
 
 | Field | Description |
 |-------|-------------|
-| **Days** | Which days of the week updates are permitted (e.g., Tuesday and Thursday) |
+| **Day** | A single day of the week the window applies to, or left unset to apply the window every day — you cannot select more than one specific day |
 | **Start time** | Window start time in UTC |
 | **End time** | Window end time in UTC |
 
@@ -449,11 +887,11 @@ You can test a release candidate before making it available to users:
    docker compose up -d
    ```
 
-3. **Sync agents to the RC** using the `sync-github` endpoint. This fetches the release assets from GitHub and registers them in the Breeze database so agents know a new version is available.
+3. **Sync agents to the RC** using the `sync-github` endpoint. This fetches the release assets from GitHub and registers them in the Breeze database so agents know a new version is available. It requires a signed-in admin session with MFA satisfied — `$TOKEN` is a Breeze access token, not an API key.
 
    ```bash
    curl -X POST "https://your-domain/api/v1/agent-versions/sync-github?version=v0.11.3-rc.1" \
-     -H "Authorization: Bearer <api-key>"
+     -H "Authorization: Bearer $TOKEN"
    ```
 
    The response includes the version that was synced and the list of platform/architecture targets that were registered:

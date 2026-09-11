@@ -14,11 +14,12 @@ import {
   playbookExecutions,
   users,
 } from '../db/schema';
-import { eq, and, desc, sql, SQL } from 'drizzle-orm';
+import { eq, and, desc, inArray, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { checkPlaybookRequiredPermissions } from './playbookPermissions';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -36,7 +37,10 @@ async function verifyDeviceAccess(
   if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
     return { error: 'Device not found or access denied' };
   }
-  if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
+  if (requireOnline && device.status !== 'online')
+    return {
+      error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
+    };
   return { device };
 }
 
@@ -289,6 +293,15 @@ registerTool({
   },
   handler: async (input, auth) => {
     try {
+      // The site axis is not enforced by RLS. History is attributable to the
+      // execution's current device, so restrict the joined device in SQL
+      // before ordering/LIMIT. `undefined` means unrestricted; a defined-empty
+      // ceiling denies every device and therefore every execution.
+      const allowedSiteIds = auth.allowedSiteIds;
+      if (allowedSiteIds?.length === 0) {
+        return JSON.stringify({ executions: [], count: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
+      }
+
       const conditions: SQL[] = [];
       const orgCond = auth.orgCondition(playbookExecutions.orgId);
       if (orgCond) conditions.push(orgCond);
@@ -302,6 +315,7 @@ registerTool({
       if (typeof input.status === 'string') {
         conditions.push(eq(playbookExecutions.status, input.status as typeof playbookExecutions.status.enumValues[number]));
       }
+      if (allowedSiteIds) conditions.push(inArray(devices.siteId, allowedSiteIds));
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 20), 100);
 

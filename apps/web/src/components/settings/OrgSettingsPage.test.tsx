@@ -29,7 +29,11 @@ vi.mock('@/lib/navigation', () => ({
 vi.mock('./OrgBrandingEditor', () => ({ default: () => <div data-testid="branding-editor" /> }));
 vi.mock('./OrgDefaultsEditor', () => ({ default: () => <div data-testid="defaults-editor" /> }));
 vi.mock('./OrgNotificationSettings', () => ({ default: () => <div data-testid="notifications" /> }));
-vi.mock('./OrgSecuritySettings', () => ({ default: () => <div data-testid="security" /> }));
+vi.mock('./OrgSecuritySettings', () => ({ default: ({ onDirty, onSave }: {
+  onDirty: () => void; onSave: (value: unknown) => void;
+}) => <button data-testid="security" onClick={() => {
+  onDirty(); onSave({ allowedMethods: { totp: false, sms: false } });
+}}>Save security</button> }));
 vi.mock('./OrgEventLogSettings', () => ({ default: () => <div data-testid="event-logs" /> }));
 // Capture the props the Remote Access tab is mounted with. #3432: the parent
 // used to hand it `onDirty`, which it fired AFTER already persisting a rule —
@@ -324,6 +328,27 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     });
   });
 
+  it('surfaces the MFA activation rejection and preserves unsaved settings', async () => {
+    const message = 'Enroll an allowed MFA method for affected users before changing this policy.';
+    window.location.hash = '#security';
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+      if (init?.method === 'PATCH') return Promise.resolve(makeJsonResponse({
+        code: 'mfa_policy_would_lock_out_users', error: message, count: 1, countCapped: false,
+      }, false, 409));
+      return Promise.resolve(makeJsonResponse(orgDetails));
+    });
+    render(<OrgSettingsPage orgId="org-1" />);
+    await userEvent.click(await screen.findByTestId('security'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message })));
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(screen.queryByText(/saved at/i)).toBeNull();
+    expect(screen.getByText(/^unsaved changes$/i)).not.toBeNull();
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/organizations/org-1', expect.objectContaining({
+      method: 'PATCH', body: JSON.stringify({ settings: { security: { allowedMethods: { totp: false, sms: false } } } }),
+    }));
+  });
+
   it('never shows a fabricated "Saved at" timestamp on load', async () => {
     render(<OrgSettingsPage orgId="org-1" />);
 
@@ -427,16 +452,29 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     expect(Object.keys(props.context).sort()).toEqual(['contractVersion', 'organizationId'].sort());
   });
 
-  it('deep-links #contacts to the Contacts tab and hands it the tab organization (#3258 W04)', async () => {
+  it('deep-links #contacts to the organization record instead of rendering it here (#5075 W02)', async () => {
     window.location.hash = '#contacts';
     render(<OrgSettingsPage orgId="org-1" />);
 
+    // The nav entry is still there and still marks itself active...
     const link = await screen.findByRole('link', { name: /^contacts$/i });
     expect(link.getAttribute('aria-current')).toBe('page');
-    // The card fetches for the org whose settings are open, NOT the globally
-    // selected one — the two differ whenever an admin opens one tenant while
-    // another is selected in the header.
-    expect(screen.getByTestId('contacts-card')).toHaveTextContent('org-1');
+    // ...but activating it hands off to the record for the org whose
+    // settings are open, NOT the globally selected one — the two differ
+    // whenever an admin opens one tenant while another is selected in the
+    // header — and ContactsCard never mounts on this page anymore.
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-1#contacts', { replace: true }));
+    expect(screen.queryByTestId('contacts-card')).not.toBeInTheDocument();
+  });
+
+  it('redirects a Contacts nav click the same way as the #contacts deep link (#5075 W02)', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    await screen.findByTestId('org-name-input');
+    await userEvent.click(screen.getByRole('link', { name: /^contacts$/i }));
+
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-1#contacts', { replace: true }));
+    expect(screen.queryByTestId('contacts-card')).not.toBeInTheDocument();
   });
 
   it('offers the compact section select for narrow viewports', async () => {

@@ -29,7 +29,6 @@ import {
   createConfigPolicy,
   deleteConfigPolicy,
   getConfigPolicy,
-  getParentLinkFeatureTypes,
   listEligibleParentPolicies,
   InvalidParentPolicyError,
   PolicyHasChildrenError,
@@ -416,16 +415,5 @@ describe('listEligibleParentPolicies', () => {
   it('partner scope with no partner on the token returns nothing and queries nothing', async () => {
     await expect(listEligibleParentPolicies(partnerAuth(null), { ownerScope: 'partner' })).resolves.toEqual([]);
     expect(db.select).not.toHaveBeenCalled();
-  });
-});
-
-describe('getParentLinkFeatureTypes', () => {
-  it('returns the parent\'s linked feature types', async () => {
-    vi.mocked(db.select).mockReturnValueOnce(selectWhere([
-      { featureType: 'maintenance' },
-      { featureType: 'event_log' },
-    ]) as never);
-
-    await expect(getParentLinkFeatureTypes(PARENT)).resolves.toEqual(['maintenance', 'event_log']);
   });
 });

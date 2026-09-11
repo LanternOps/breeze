@@ -1,3 +1,9 @@
+import { countMfaPolicyLockouts, lockMfaPolicySettings } from '../services/mfaPolicyActivation';
+vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/mfaPolicyActivation')>()),
+  lockMfaPolicySettings: vi.fn().mockResolvedValue(undefined),
+  countMfaPolicyLockouts: vi.fn().mockResolvedValue(0),
+}));
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { orgRoutes, createOrganizationSchema, updateOrganizationSchema } from './orgs';
@@ -7,6 +13,16 @@ vi.mock('../services', () => ({}));
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
   isSentryEnabled: vi.fn().mockReturnValue(false)
+}));
+
+vi.mock('../services/auditEvents', () => ({
+  writeAuditEvent: vi.fn(),
+  writeRouteAudit: vi.fn(),
+}));
+
+vi.mock('../oauth/partnerScopePolicy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../oauth/partnerScopePolicy')>()),
+  clearPartnerScopePolicyCache: vi.fn(),
 }));
 
 vi.mock('../services/clientIp', () => ({
@@ -223,7 +239,17 @@ vi.mock('../db/schema', () => ({
   // inArray was called against the sites.id column specifically.
   sites: { id: { __column: 'sites.id' }, orgId: { __column: 'sites.orgId' } },
   // GET /orgs/sites enriches each site with a grouped device count (#1790).
-  devices: { siteId: { __column: 'devices.siteId' } },
+  // #5315 — `status` and `orgId` are sentinels (same pattern as sites.id /
+  // organizations.status) so the device-count tests can prove the
+  // decommissioned filter is applied to devices.status and not to some other
+  // column: an unrecognized chunk compiles to an opaque bound parameter, so
+  // the sentinel OBJECT itself shows up in `params` and identifies the column.
+  devices: {
+    siteId: { __column: 'devices.siteId' },
+    orgId: { __column: 'devices.orgId' },
+    status: { __column: 'devices.status' },
+    isEphemeral: { __column: 'devices.isEphemeral' },
+  },
   // Agent version pins (issue #2124) validate against this table at save time.
   agentVersions: { id: {}, component: {}, version: {} }
 }));
@@ -244,7 +270,14 @@ vi.mock('drizzle-orm', async (importActual) => {
     // suspended-org lifecycle override re-asserts its WHERE predicates
     // (eq(organizations.status,'suspended') / eq(organizations.partnerId,...))
     // without changing any behavior for the rest of the file.
-    eq: vi.fn(actual.eq)
+    eq: vi.fn(actual.eq),
+    // #5075 W04 — same rationale as `eq` above: spy with the REAL
+    // implementation so the PATCH /partners/me external-mode test can assert
+    // that the PSA-connection probe really carries `isNull(psaConnections.orgId)`.
+    // Without it the mocked `.where()` returns its canned row whatever it is
+    // handed, so dropping the partner-wide half of the ownership filter would
+    // not fail a single test.
+    isNull: vi.fn(actual.isNull)
   };
 });
 
@@ -287,7 +320,11 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
-import { eq, inArray, type SQL } from 'drizzle-orm';
+import { eq, inArray, isNull, type SQL } from 'drizzle-orm';
+// Real table object (this module is NOT part of the '../db/schema' barrel mock),
+// so the ownership assertions below compare against the actual columns the
+// route uses rather than a sentinel that could drift.
+import { psaConnections } from '../db/schema/integrations';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { db, withSystemDbAccessContext } from '../db';
 import { organizations, sites } from '../db/schema';
@@ -311,6 +348,9 @@ import {
 import { captureException } from '../services/sentry';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { enqueueAiBudgetEvaluationForPartner } from '../jobs/aiBudgetAlertDelivery';
+import { writeRouteAudit } from '../services/auditEvents';
+import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 
 describe('org routes', () => {
   let app: Hono;
@@ -363,12 +403,63 @@ describe('org routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(countMfaPolicyLockouts).mockReset().mockResolvedValue(0);
     permissionMockState.granted = true;
     permissionMockState.denied.clear();
     selectedOrgIds.current = [];
     setAuthContext();
     app = new Hono();
     app.route('/orgs', orgRoutes);
+  });
+
+  describe('MFA policy activation safety', () => {
+    const id = '00000000-0000-4000-8000-000000000167';
+    const settings = { security: { allowedMethods: { totp: false, sms: false } } };
+
+    it.each([
+      ['PATCH', '/partners/me', 'partner'],
+      ['PATCH', `/partners/${id}`, 'partner'],
+      ['PATCH', `/organizations/${id}`, 'organization'],
+      ['PUT', `/organizations/${id}`, 'organization'],
+    ])('%s %s rejects newly stranded users before any write', async (method, path, kind) => {
+      if (path === '/partners/me') setAuthContext({ scope: 'partner', partnerId: id });
+      vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue(Object.assign(Promise.resolve([{ id, partnerId: id, settings: {} }]), { limit: vi.fn().mockResolvedValue([{ id, settings: {} }]) })),
+      }) } as any);
+      vi.mocked(countMfaPolicyLockouts).mockResolvedValueOnce(2);
+      const response = await app.request(`/orgs${path}`, { method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings, force: true }),
+      });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'mfa_policy_would_lock_out_users', count: 2, countCapped: false });
+      expect(lockMfaPolicySettings).toHaveBeenCalledWith({ kind, id });
+      expect(countMfaPolicyLockouts).toHaveBeenCalledWith({ kind, id }, settings);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('inventory read failure fails closed before persistence', async () => {
+      vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id, settings: {} }]) }),
+      }) } as any);
+      vi.mocked(countMfaPolicyLockouts).mockRejectedValueOnce(new Error('inventory unavailable'));
+      const response = await app.request(`/orgs/partners/${id}`, { method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings }),
+      });
+      expect(response.status).toBe(500);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('denied organization never reaches inventory or settings locks', async () => {
+      setAuthContext({ scope: 'partner', partnerId: id, canAccessOrg: () => false });
+      const response = await app.request(`/orgs/organizations/${id}`, { method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings }),
+      });
+      expect(response.status).toBe(404);
+      expect(countMfaPolicyLockouts).not.toHaveBeenCalled();
+      expect(lockMfaPolicySettings).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /orgs/partners', () => {
@@ -1930,6 +2021,57 @@ describe('org routes', () => {
       const body = await res.json();
       expect(body.data.find((o: { id: string }) => o.id === 'org-1').deviceCount).toBe(12);
       expect(body.data.find((o: { id: string }) => o.id === 'org-2').deviceCount).toBe(0);
+    });
+
+    // #5315 — the org card counted decommissioned devices while every other
+    // device surface (fleet list, org record Overview tile and Devices tab)
+    // hides them, so a removed device made this card read one higher than the
+    // record it links to. Assert on the bound parameter: this suite mocks the
+    // schema module, so column names render blank in the compiled statement,
+    // and a JSON dump of the condition would match `devices.status`'s own
+    // `enumValues` and pass against unfixed code.
+    it('excludes decommissioned devices from the per-organization device count', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1'] });
+      let countWhere: SQL | undefined;
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce(mockPartnerOrderSettings())
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockResolvedValue([{ id: 'org-1' }])
+                })
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation((condition: SQL) => {
+              countWhere = condition;
+              return { groupBy: vi.fn().mockResolvedValue([{ orgId: 'org-1', count: 12 }]) };
+            })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/organizations?page=1&limit=10');
+
+      expect(res.status).toBe(200);
+      expect(countWhere).toBeDefined();
+      // This suite mocks the schema module, so column names render blank in the
+      // compiled statement — assert on the bound parameters instead, which
+      // carry BOTH the sentinel identifying the column and the excluded value.
+      // Pairing them is what rules out the filter landing on the wrong column.
+      const compiled = new PgDialect().sqlToQuery(countWhere as SQL);
+      expect(compiled.sql).toContain('<>');
+      expect(compiled.params).toContain('decommissioned');
+      expect(compiled.params).toContainEqual({ __column: 'devices.status' });
     });
 
     // ── includeArchived (Wave 4 Task 3) ────────────────────────────────────
@@ -4337,6 +4479,55 @@ describe('org routes', () => {
   };
 
   describe('GET /orgs/sites', () => {
+    // #5315 — the per-site deviceCount filtered only `isEphemeral`, so a
+    // decommissioned device still inflated the Sites table while the record's
+    // Devices tab (GET /devices) excluded it. Assert on the COMPILED predicate:
+    // a JSON dump of the Drizzle condition embeds `devices.status`'s
+    // `enumValues`, which contains the literal 'decommissioned' and would make
+    // this pass against unfixed code.
+    it('excludes decommissioned devices from the per-site device count', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      let countWhere: SQL | undefined;
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+                })
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation((condition: SQL) => {
+              countWhere = condition;
+              return { groupBy: vi.fn().mockResolvedValue([{ siteId: 'site-1', count: 4 }]) };
+            })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/sites?orgId=11111111-1111-1111-1111-111111111111');
+
+      expect(res.status).toBe(200);
+      expect(countWhere).toBeDefined();
+      // This suite mocks the schema module, so column names render blank in the
+      // compiled statement — assert on the bound parameters instead, which
+      // carry BOTH the sentinel identifying the column and the excluded value.
+      // Pairing them is what rules out the filter landing on the wrong column.
+      const compiled = new PgDialect().sqlToQuery(countWhere as SQL);
+      expect(compiled.sql).toContain('<>');
+      expect(compiled.params).toContain('decommissioned');
+      expect(compiled.params).toContainEqual({ __column: 'devices.status' });
+    });
+
     it('should return sites with pagination', async () => {
       setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
       vi.mocked(db.select)
@@ -5212,6 +5403,39 @@ describe('org routes', () => {
         expect(keys).not.toContain(internal);
       }
     });
+
+    // #5075 W04 — Service Management mode surfaces on the partner settings
+    // read so the web settings card can render the current mode + bound PSA
+    // connection.
+    it('includes serviceManagementMode and serviceManagementPsaConnectionId', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      // mockReturnValueOnce (not the persistent mockReturnValue the two tests
+      // above use): this describe's siblings prove that a persistent stub set
+      // here bleeds into later, unrelated db.select() calls in this file —
+      // vi.clearAllMocks() (beforeEach) clears call history but NOT a
+      // programmed mockReturnValue — and flipped an unrelated, otherwise-
+      // unmocked test 400 waiting on Postgres returning no rows into a 200.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'partner-123',
+              name: 'Acme MSP',
+              settings: {},
+              serviceManagementMode: 'native',
+              serviceManagementPsaConnectionId: null,
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.serviceManagementMode).toBe('native');
+      expect(body.serviceManagementPsaConnectionId).toBeNull();
+    });
   });
 
   describe('GET /partners/me/ip-allowlist/status', () => {
@@ -5246,6 +5470,90 @@ describe('org routes', () => {
   });
 
   describe('PATCH /orgs/partners/me', () => {
+    it.each([
+      ['selected', ['org-1']],
+      ['none', []],
+      [null, []],
+      [undefined, []],
+    ] as const)(
+      'rejects partnerOrgAccess=%s before any partner-global side effect',
+      async (partnerOrgAccess, accessibleOrgIds) => {
+        setAuthContext({
+          scope: 'partner',
+          partnerOrgAccess,
+          accessibleOrgIds: [...accessibleOrgIds],
+        });
+
+        const res = await app.request('/orgs/partners/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: { security: { requireMfa: false } } }),
+        });
+
+        expect(res.status).toBe(403);
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+        expect(clearPartnerScopePolicyCache).not.toHaveBeenCalled();
+        expect(clearPartnerAllowlistCache).not.toHaveBeenCalled();
+        expect(enqueueAiBudgetEvaluationForPartner).not.toHaveBeenCalled();
+        expect(writeRouteAudit).not.toHaveBeenCalled();
+      },
+    );
+
+    it('allows full-partner authority to update a partner-global security control', async () => {
+      setAuthContext({ scope: 'partner', partnerOrgAccess: 'all' });
+      const currentPartner = {
+        id: 'partner-123',
+        name: 'Acme MSP',
+        settings: { security: { requireMfa: true, maxSessions: 4 } },
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([currentPartner]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ id: 'org-1' }]),
+              }),
+            }),
+          }),
+        } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              ...currentPartner,
+              settings: { security: { requireMfa: false, maxSessions: 4 } },
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { security: { requireMfa: false } } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        settings: { security: { requireMfa: false, maxSessions: 4 } },
+      });
+      expect(db.update).toHaveBeenCalledTimes(1);
+      expect(clearPartnerScopePolicyCache).toHaveBeenCalledWith('partner-123');
+      expect(clearPartnerAllowlistCache).toHaveBeenCalledWith('partner-123');
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'partner.settings.update',
+        resourceId: 'partner-123',
+      }));
+    });
+
     it.each(['pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT', 'tr-TR'] as const)(
       'accepts %s as the partner default language',
       async (language) => {
@@ -6167,6 +6475,166 @@ describe('org routes', () => {
     });
   });
 
+  // #5075 W04 — Service Management mode. `native`/`off` force the PSA
+  // connection id to null; `external` requires a partner-wide (org_id IS
+  // NULL) psa_connections row owned by THIS partner.
+  describe('PATCH /orgs/partners/me — serviceManagementMode (#5075 W04)', () => {
+    const validConnectionId = '11111111-1111-4111-8111-111111111111';
+    const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+
+    function mockCurrentPartnerSelect() {
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any;
+    }
+
+    function mockPsaConnectionSelect(rows: Array<{ id: string }>) {
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(rows),
+          }),
+        }),
+      } as any;
+    }
+
+    it('sets mode to off and forces the connection id to null', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select).mockReturnValueOnce(mockCurrentPartnerSelect());
+      let setData: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+          setData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{
+                ...currentPartner,
+                serviceManagementMode: 'off',
+                serviceManagementPsaConnectionId: null,
+              }]),
+            }),
+          };
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serviceManagementMode: 'off' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(setData).toBeDefined();
+      expect(setData!.serviceManagementMode).toBe('off');
+      expect(setData!.serviceManagementPsaConnectionId).toBeNull();
+    });
+
+    it('rejects external mode with no connection id', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select).mockReturnValueOnce(mockCurrentPartnerSelect());
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serviceManagementMode: 'external' }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/partner-wide PSA connections/);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects external mode when the connection lookup finds no row (cross-partner or org-scoped)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockCurrentPartnerSelect())
+        .mockReturnValueOnce(mockPsaConnectionSelect([]));
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serviceManagementMode: 'external',
+          serviceManagementPsaConnectionId: validConnectionId,
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/partner-wide PSA connections/);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('accepts external mode with a matching partner-wide connection', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockCurrentPartnerSelect())
+        .mockReturnValueOnce(mockPsaConnectionSelect([{ id: validConnectionId }]));
+      let setData: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+          setData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{
+                ...currentPartner,
+                serviceManagementMode: 'external',
+                serviceManagementPsaConnectionId: validConnectionId,
+              }]),
+            }),
+          };
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serviceManagementMode: 'external',
+          serviceManagementPsaConnectionId: validConnectionId,
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(setData).toBeDefined();
+      expect(setData!.serviceManagementMode).toBe('external');
+      expect(setData!.serviceManagementPsaConnectionId).toBe(validConnectionId);
+
+      // The mocked `.where()` answers with its canned row whatever predicate it
+      // is handed, so a 200 here proves only that SOME row came back — it does
+      // NOT prove the probe asked for the right one. Assert the three ownership
+      // conditions on the spies instead. Dropping any of them is a real
+      // cross-tenant defect: without the partner_id equality a partner could
+      // bind ANOTHER partner's PSA credentials, and without `org_id IS NULL` an
+      // org-scoped connection would be bound as if it were partner-wide and
+      // then serve every org under the partner from one org's credentials.
+      expect(vi.mocked(eq)).toHaveBeenCalledWith(psaConnections.id, validConnectionId);
+      expect(vi.mocked(eq)).toHaveBeenCalledWith(psaConnections.partnerId, 'partner-123');
+      expect(vi.mocked(isNull)).toHaveBeenCalledWith(psaConnections.orgId);
+    });
+
+    it('rejects a connection id with no mode alongside it', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select).mockReturnValueOnce(mockCurrentPartnerSelect());
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serviceManagementPsaConnectionId: validConnectionId }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/requires serviceManagementMode/);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+  });
+
   describe('scope enforcement on /partners/me routes', () => {
     it('returns 403 when a system-scoped token hits GET /partners/me', async () => {
       setAuthContext({ scope: 'system' });
@@ -6355,6 +6823,8 @@ describe('org routes', () => {
       expect(writtenArg.settings.timezone).toBe('America/Chicago');
       expect(writtenArg.settings.branding).toEqual({ theme: 'dark' });
       expect(writtenArg.settings.organizationOrder).toEqual([id2, id1]);
+      expect(lockMfaPolicySettings).toHaveBeenCalledWith({ kind: 'partner', id: 'partner-123' });
+      expect(vi.mocked(lockMfaPolicySettings).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(db.select).mock.invocationCallOrder[1]!);
     });
 
     it('rejects a system-scoped caller', async () => {
@@ -6462,6 +6932,33 @@ describe('org routes', () => {
 
   describe('POST /orgs/import/preview and /orgs/import (#3242)', () => {
     const previewBody = { rows: [{ organization: 'Acme', site: 'HQ' }] };
+
+    it.each([
+      ['selected', '/orgs/import/preview', 'preview'],
+      ['none', '/orgs/import/preview', 'preview'],
+      ['selected', '/orgs/import', 'commit'],
+      ['none', '/orgs/import', 'commit'],
+    ] as const)(
+      'rejects partnerOrgAccess=%s on %s before entering the system-context %s seam',
+      async (partnerOrgAccess, path, seam) => {
+        setAuthContext({
+          scope: 'partner',
+          partnerOrgAccess,
+          accessibleOrgIds: partnerOrgAccess === 'selected' ? ['org-1'] : [],
+        });
+
+        const res = await app.request(path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(previewBody),
+        });
+
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+        expect(orgImportMocks.previewOrgImport).not.toHaveBeenCalled();
+        expect(orgImportMocks.commitOrgImport).not.toHaveBeenCalled();
+      },
+    );
 
     it('preview returns the annotated rows for the partner scope caller', async () => {
       setAuthContext({ scope: 'partner' });

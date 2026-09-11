@@ -95,7 +95,21 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- known gaps, tracked; listed so the count cannot silently grow ---------
   'routes/alertTemplates/rules.ts': 'alert RULES are org-owned in practice; partner-wide rule ownership is not exposed by this route',
   'routes/softwareInstallMethods.ts': 'software_catalog rows here are catalog metadata, gated by the software permission set',
-  'routes/softwareInventory.ts': 'read-oriented inventory surface; its policy writes delegate to softwarePolicies routes',
+  // Corrected 2026-09 (site-ceiling gate review): this entry previously read
+  // "read-oriented inventory surface; its policy writes delegate to
+  // softwarePolicies routes" — false. POST /approve, /deny, /clear DIRECTLY
+  // insert/update software_policies (Default Allowlist/Blocklist) and, via
+  // ensureDefaultConfigPolicyLink, configurationPolicies/
+  // configPolicyFeatureLinks/configPolicyAssignments (lines ~180-235,
+  // 397-480, 518-635). It stays exempt from THIS gate for a real reason: both
+  // resolveOrgId (writes) and every write call site pass a concrete orgId —
+  // resolveOrgId never returns an org-less result, so this route can never
+  // create or modify a partner-wide (org_id NULL) row. The write-authority gap
+  // this route actually had — a site-restricted org user could still silently
+  // mutate org-wide default policies — is closed by the ORTHOGONAL
+  // site-ceiling gate (canMutateOrgWideGovernance) added directly to
+  // /approve, /deny, /clear.
+  'routes/softwareInventory.ts': 'software_policies/configurationPolicies writes here are always org-scoped — resolveOrgId always resolves a concrete org id, so this route can never create or modify a partner-wide (org_id NULL) row; the site-restricted-user gap is closed separately by canMutateOrgWideGovernance',
 
   // ==========================================================================
   // services/** (walk extended 2026-08-23 — the aiProvider/stripeConnect gate
@@ -115,6 +129,8 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/platformAdminBootstrap.ts': 'startup-only platform-admin bootstrap (index.ts boot path); no tenant route calls it',
   'services/policyAlertBridge.ts': 'startup event subscriber creating derived alert artifacts in system context',
   'services/stripeConnectService.ts': 'Stripe-signed webhook records provider-side disconnect status; no tenant caller',
+  'services/stripeFinancialEventPoller.ts': 'system reconciliation worker persists provider cursor/error state; no tenant caller',
+  'services/stripeReversalState.ts': 'system poller and verified Stripe webhook own the provider-authoritative reversal inbox',
   'services/systemScriptLibrary.ts': 'startup-only system script library seed (index.ts boot path); writes is_system rows with org_id/partner_id NULL; no tenant route calls it',
   'services/tenantOffboarding.ts': 'offboarding/erasure lifecycle — the documented system-context exemption class',
   'services/unifi/unifiSyncService.ts': 'UniFi worker sync-run telemetry (jobs/unifiWorker); no tenant route calls the mutator',
@@ -147,6 +163,8 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // reasoning already recorded for timeSuggestionService.ts and orgArchive.ts.
   'services/mfaFactorReset.ts':
     "clears ONE target user's factor columns and user_passkeys rows; routes/users.ts gates reset with USERS_WRITE + requireMfa + tenant-scoped getScopedUser, and tombstone reinvite with USERS_INVITE + requireMfa + tenant-scoped email visibility. Neutralization callers enforce membership-removal authority. Never writes partner-wide config; gating here would block organization admins from resetting their own users",
+  'services/mfaAssurance.ts':
+    "revokes Office bindings for exactly ONE factor-changing user id in the same transaction as that user's MFA epoch advance; the binding partner_id is only the RLS axis, never caller-selected partner-wide configuration. Self-service and scoped admin factor authority is established by each caller before this primitive",
   'services/userNeutralization.ts':
     "disables ONE orphaned user (status, disabled_reason, password_hash) after their LAST membership is removed, then delegates the factor wipe to mfaFactorReset; both callers are gated one layer up — routes/users.ts DELETE /:id by USERS_DELETE + requireMfa(), routes/accessReviews.ts by canManagePartnerWidePolicies itself. Per-user account lifecycle, never partner-wide config",
 
@@ -154,7 +172,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/contacts/compat.ts': 'updates one org\'s legacy billing-contact blob by org id',
   'services/invoiceService.ts': 'org billing settings + time-entry billing status, org-axis authority',
   'services/orgCurrencyService.ts': 'updates the selected organization\'s currency by org id',
-  'services/orgImport/index.ts': 'org import creates org-axis rows; gated by organizations:write on the route',
+  'services/orgImport/index.ts': 'org import creates org-axis rows across the resolved partner under system context; every HTTP entry point requires canManagePartnerWidePolicies, while mutating and CSV/PSA preview routes additionally require organizations:write and sites:write',
   'services/quickSupportOrg.ts': 'quick-support provisioning creates an org-axis container',
   'services/softwareDownloadPolicy.ts': 'writes one org\'s encrypted settings by org id',
   'services/softwarePolicyService.ts': 'flagged table is append-only policy audit evidence, not config',
@@ -220,7 +238,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/pax8CatalogService.ts': 'pax8 catalog-item import on the catalog permission set; credentials live behind /pax8\'s global gate',
 
   // --- org lifecycle (org lifecycle wave 2, #4074) --------------------------
-  'services/orgMerge.ts': 'org_merge_events writes run under system context from the merge engine; the HTTP surface is gated by routes/orgMerge.ts\'s requireScope(partner,system) + requireOrgWrite + MFA with per-org partner checks (authorizeMergePair, including auth.canAccessOrg(survivor.id) for \'selected\'-access partner members) — not a partner-wide policy table. Every write is already scoped to orgs the caller could act on individually; gating on canManagePartnerWidePolicies would incorrectly block partner members with plain org-write access from merging orgs they already manage.',
+  'services/orgMerge.ts': 'org_merge_events writes run under system context from the merge engine; the HTTP surface is gated by routes/orgMerge.ts\'s requireScope(partner,system) + requireOrgWrite + MFA with partner ownership and a fresh raw partner-member selection check for both merge participants — not a partner-wide policy table. Every write is already scoped to orgs the caller could act on individually; gating on canManagePartnerWidePolicies would incorrectly block partner members with plain org-write access from merging orgs they already manage.',
   'services/orgArchive.ts': 'archive/restore writes run under system context from the org-lifecycle service; the HTTP surface is gated by routes/orgArchive.ts\'s requireScope(partner,system) + requireOrgWrite + MFA, partner ownership of the target, AND the caller\'s own partner_users.org_ids selection (partnerMemberMayReachOrg, fail-closed for org_access=none) — organizations is not a partner-wide policy table. Every write is scoped to one org the caller may manage; gating on canManagePartnerWidePolicies would incorrectly block partner members with plain org-write access from archiving or restoring an org they already manage.',
 };
 

@@ -14,9 +14,11 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   canManagePartnerWidePolicies,
 } from '../../services/partnerWideAccess';
+import { canAccessTemplateDependents } from './siteScope';
 
 export const templateRoutes = new Hono();
 
+const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
 
 // Partner-wide means `partner_id = X AND org_id IS NULL` — NEVER a bare
@@ -106,6 +108,7 @@ export function canWriteTemplate(
 templateRoutes.get(
   '/templates',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   zValidator('query', listTemplatesSchema),
   async (c) => {
     try {
@@ -164,6 +167,7 @@ templateRoutes.get(
 templateRoutes.get(
   '/templates/built-in',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   zValidator('query', listTemplatesSchema),
   async (c) => {
     try {
@@ -317,6 +321,7 @@ templateRoutes.post(
 templateRoutes.get(
   '/templates/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   async (c) => {
     try {
       const auth = c.get('auth');
@@ -369,6 +374,13 @@ templateRoutes.patch(
       const writable = canWriteTemplate(auth, existing);
       if (!writable.ok) {
         return c.json({ error: writable.error }, writable.status);
+      }
+
+      if (auth.allowedSiteIds !== undefined && (
+        existing.orgId === null
+        || !await canAccessTemplateDependents(auth, existing.id, existing.orgId)
+      )) {
+        return c.json({ error: 'Access to one or more dependent alert rule targets denied' }, 403);
       }
 
       const updateConditionTypeError = retiredConditionTypeError(updates.conditions);
@@ -433,6 +445,13 @@ templateRoutes.delete(
       const writable = canWriteTemplate(auth, existing);
       if (!writable.ok) {
         return c.json({ error: writable.error }, writable.status);
+      }
+
+      if (auth.allowedSiteIds !== undefined && (
+        existing.orgId === null
+        || !await canAccessTemplateDependents(auth, existing.id, existing.orgId)
+      )) {
+        return c.json({ error: 'Access to one or more dependent alert rule targets denied' }, 403);
       }
 
       await db

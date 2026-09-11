@@ -53,4 +53,34 @@ describe('aiToolLabel', () => {
     expect(titleCaseToolName('mcp__breeze__manage_alerts')).toBe('Manage alerts');
     expect(titleCaseToolName('')).toBe('Tool');
   });
+
+  it('reads as a check, not a mutation, when input.action is read-only (#5170)', () => {
+    // "Updated automations · DONE" when the assistant only listed automations
+    // reads as a change the tech never asked for. A read-only `action` on the
+    // call forces the `get` verb forms regardless of the leading verb.
+    expect(aiToolLabel('manage_automations', 'completed', { action: 'list' })).toBe(
+      'Checked automations',
+    );
+    expect(aiToolLabel('manage_automations', 'running', { action: 'list' })).toBe(
+      'Checking automations',
+    );
+    for (const action of ['list', 'get', 'search', 'status', 'show', 'read', 'query', 'describe', 'check', 'preview', 'view']) {
+      expect(aiToolLabel('manage_services', 'completed', { action })).toBe('Checked services');
+    }
+    // Case-insensitive.
+    expect(aiToolLabel('manage_automations', 'completed', { action: 'LIST' })).toBe(
+      'Checked automations',
+    );
+  });
+
+  it('leaves the verb alone when input.action is a mutation or absent', () => {
+    expect(aiToolLabel('manage_automations', 'completed', { action: 'create' })).toBe(
+      'Updated automations',
+    );
+    expect(aiToolLabel('manage_automations', 'completed')).toBe('Updated automations');
+    expect(aiToolLabel('manage_automations', 'completed', {})).toBe('Updated automations');
+    expect(aiToolLabel('manage_automations', 'completed', { action: 42 })).toBe(
+      'Updated automations',
+    );
+  });
 });

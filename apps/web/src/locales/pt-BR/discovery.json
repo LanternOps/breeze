@@ -479,6 +479,7 @@
       "selectSite": "Selecione o local"
     },
     "paused": "Pausado",
+    "scheduleBlocked": "Verificação recorrente pausada: nova aprovação necessária",
     "permissionManage": "As ações de alteração foram desabilitadas após uma falha na verificação de permissão. Requer `devices:write`.",
     "placeholders": {
       "subnet": "192.168.1.0/24"
@@ -707,6 +708,8 @@
     "iot": "IoT",
     "camera": "Câmera",
     "nas": "NAS",
+    "website": "Site",
+    "service": "Serviço",
     "unknown": "Desconhecido",
     "patchPanel": "Painel de conexão",
     "other": "Outro"

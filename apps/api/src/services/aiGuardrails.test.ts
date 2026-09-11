@@ -63,6 +63,7 @@ vi.mock('./redis', () => ({
 
 import {
   checkGuardrails,
+  checkAgentGuardrails,
   checkToolPermission,
   checkPermissionRequirement,
   checkPermissionRequirements,
@@ -278,6 +279,231 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       });
       expect(result.tier).toBe(3);
       expect(result.requiresApproval).toBe(true);
+    });
+  });
+
+  // --- execute_command: command-type-aware headline + impact text (#5173) ---
+  //
+  // Before this, buildApprovalDescription emitted the raw call signature for
+  // EVERY execute_command call ('Execute "kill_process" command on device
+  // 74e15ef8...'), and the "High impact" box fell through to the tool's
+  // catalog description ("Execute a system command on a device.") — true of
+  // every call, not what THIS call does. These builders produce a
+  // call-specific headline from the actual commandType + payload; a
+  // commandType this map doesn't recognise, or a payload missing the field a
+  // recognised commandType needs, falls back to the pre-existing generic
+  // wording so nothing regresses.
+  describe('execute_command command-type-aware description (#5173)', () => {
+    const DEVICE_ID = '74e15ef8-1234-5678-9abc-def012345678';
+
+    it('kill_process names the process and PID from payload', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'kill_process',
+        payload: { pid: 2920, processName: 'SupportAssistAgent.exe' },
+      });
+      expect(result.description).toBe(
+        'Kill process "SupportAssistAgent.exe" (PID 2920) on device 74e15ef8...'
+      );
+    });
+
+    it('kill_process falls back to PID alone when no process name is given', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'kill_process',
+        payload: { pid: 2920 },
+      });
+      expect(result.description).toBe('Kill process PID 2920 on device 74e15ef8...');
+    });
+
+    it('kill_process names the process alone when no PID is given', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'kill_process',
+        payload: { processName: 'SupportAssistAgent.exe' },
+      });
+      expect(result.description).toBe('Kill process "SupportAssistAgent.exe" on device 74e15ef8...');
+    });
+
+    it('kill_process falls back to the generic signature when payload has neither field (no regression)', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'kill_process',
+      });
+      expect(result.description).toBe('Execute "kill_process" command on device 74e15ef8...');
+    });
+
+    it.each([
+      ['start_service', 'Start service "Spooler" on device 74e15ef8...'],
+      ['stop_service', 'Stop service "Spooler" on device 74e15ef8...'],
+      ['restart_service', 'Restart service "Spooler" on device 74e15ef8...'],
+    ])('%s names the service from payload.name', (commandType, expected) => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType,
+        payload: { name: 'Spooler' },
+      });
+      expect(result.description).toBe(expected);
+    });
+
+    it.each(['start_service', 'stop_service', 'restart_service'])(
+      '%s falls back to the generic signature without a service name (no regression)',
+      (commandType) => {
+        const result = checkGuardrails('execute_command', {
+          deviceId: DEVICE_ID,
+          commandType,
+        });
+        expect(result.description).toBe(`Execute "${commandType}" command on device 74e15ef8...`);
+      }
+    );
+
+    // sweep 2026-09-08 row 19: models calling execute_command directly send
+    // `payload.serviceName` (the field name manage_services exposes on ITS
+    // OWN input schema) rather than `payload.name` (what manage_services
+    // internally normalizes it to before calling into commandQueue). The
+    // persisted action_arguments for a real approval looked like
+    // `{ commandType: 'restart_service', payload: { serviceName: 'Spooler' } }`
+    // — the builder read only `payload.name`, got null, and fell back to the
+    // generic "Execute \"restart_service\" command" wording.
+    it.each([
+      ['start_service', 'Start service "Spooler" on device 74e15ef8...'],
+      ['stop_service', 'Stop service "Spooler" on device 74e15ef8...'],
+      ['restart_service', 'Restart service "Spooler" on device 74e15ef8...'],
+    ])('%s names the service from payload.serviceName (row 19)', (commandType, expected) => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType,
+        payload: { serviceName: 'Spooler' },
+      });
+      expect(result.description).toBe(expected);
+    });
+
+    it('prefers the dispatch-selected payload.name when both names are present', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'restart_service',
+        payload: { serviceName: 'Spooler', name: 'selected-service' },
+      });
+      expect(result.description).toBe('Restart service "selected-service" on device 74e15ef8...');
+    });
+
+    it('keeps every raw service alias subject to protected-resource denial', () => {
+      vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+      try {
+        const policy = {
+          enabled: true, mode: 'act' as const, toolAllowlist: ['execute_command'],
+          protectedResources: { services: ['Protected'], paths: [], registryKeys: [], deviceTags: [] },
+          deviceSiteId: 'site-a', deviceId: DEVICE_ID,
+        };
+        for (const payload of [
+          { name: 'Chosen', serviceName: 'Protected' },
+          { name: 'Protected', serviceName: 'Alternate' },
+          { name: 'Chosen', service: 'Protected' },
+        ]) {
+          const result = checkAgentGuardrails('execute_command', { deviceId: DEVICE_ID, commandType: 'restart_service', payload }, policy);
+          expect(result.allowed).toBe(false);
+          expect(result.reason).toContain('service "Protected" is protected');
+        }
+        const positive = checkAgentGuardrails('execute_command', {
+          deviceId: DEVICE_ID, commandType: 'restart_service', payload: { name: 'Chosen', serviceName: 'Alternate' },
+        }, policy);
+        expect(positive.disposition).toBe('propose');
+        expect(positive.allowed).toBe(false);
+        expect(positive.requiresApproval).toBe(false);
+        expect(positive.reason).toBe('Tool "execute_command" is not act-eligible; recorded as a proposal');
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    const serviceSelectionCases: Array<{ label: string; payload: Record<string, unknown>; display: string | null }> = [
+      { label: 'both strings', payload: { name: 'Chosen', serviceName: 'Alternate' }, display: 'Chosen' },
+      { label: 'name only', payload: { name: 'Chosen' }, display: 'Chosen' },
+      { label: 'alias only', payload: { serviceName: 'Alternate' }, display: 'Alternate' },
+      { label: 'undefined name', payload: { name: undefined, serviceName: 'Alternate' }, display: 'Alternate' },
+      { label: 'empty name', payload: { name: '', serviceName: 'Alternate' }, display: null },
+      { label: 'blank name', payload: { name: '   ', serviceName: 'Alternate' }, display: null },
+      { label: 'null name', payload: { name: null, serviceName: 'Alternate' }, display: null },
+      { label: 'false name', payload: { name: false, serviceName: 'Alternate' }, display: null },
+      { label: 'object name', payload: { name: { nested: 'Chosen' }, serviceName: 'Alternate' }, display: null },
+      { label: 'array name', payload: { name: ['Chosen'], serviceName: 'Alternate' }, display: null },
+      { label: 'zero name is display only', payload: { name: 0, serviceName: 'Alternate' }, display: '0' },
+      { label: 'finite name is display only', payload: { name: 42, serviceName: 'Alternate' }, display: '42' },
+      { label: 'padded display', payload: { name: ' Chosen ', serviceName: 'Alternate' }, display: 'Chosen' },
+      { label: 'nonfinite inert helper value', payload: { name: Infinity, serviceName: 'Alternate' }, display: null },
+      { label: 'NaN inert helper value', payload: { name: NaN, serviceName: 'Alternate' }, display: null },
+      { label: 'absent names', payload: {}, display: null },
+      { label: 'unsupported fallback', payload: { serviceName: false }, display: null },
+    ];
+    for (const [commandType, verb] of [['start_service', 'Start'], ['stop_service', 'Stop'], ['restart_service', 'Restart']]) {
+      it.each(serviceSelectionCases)(`${commandType}: $label preserves selected-value display and input`, ({ payload, display }) => {
+        const original = structuredClone(payload);
+        const input = Object.freeze({ deviceId: DEVICE_ID, commandType, payload: Object.freeze(payload) });
+        const result = checkGuardrails('execute_command', input);
+        expect(result.description).toBe(display === null
+          ? `Execute "${commandType}" command on device 74e15ef8...`
+          : `${verb} service "${display}" on device 74e15ef8...`);
+        expect(input.payload).toEqual(original);
+      });
+    }
+
+    it('file_read names the target path', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'file_read',
+        payload: { path: 'C:\\Windows\\System32\\drivers\\etc\\hosts' },
+      });
+      expect(result.description).toBe(
+        'Read file "C:\\Windows\\System32\\drivers\\etc\\hosts" on device 74e15ef8...'
+      );
+    });
+
+    it('file_list falls back to a plain "List files" headline without a path', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'file_list',
+      });
+      expect(result.description).toBe('List files on device 74e15ef8...');
+    });
+
+    it('event_logs_query names the log', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'event_logs_query',
+        payload: { logName: 'Security' },
+      });
+      expect(result.description).toBe('Query "Security" event log on device 74e15ef8...');
+    });
+
+    it('event_logs_query falls back to a plain "Query event log" headline without a logName', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'event_logs_query',
+      });
+      expect(result.description).toBe('Query event log on device 74e15ef8...');
+    });
+
+    it('list_processes, list_services, event_logs_list, file_list get plain-English headlines', () => {
+      expect(
+        checkGuardrails('execute_command', { deviceId: DEVICE_ID, commandType: 'list_processes' }).description
+      ).toBe('List running processes on device 74e15ef8...');
+      expect(
+        checkGuardrails('execute_command', { deviceId: DEVICE_ID, commandType: 'list_services' }).description
+      ).toBe('List services on device 74e15ef8...');
+      expect(
+        checkGuardrails('execute_command', { deviceId: DEVICE_ID, commandType: 'event_logs_list' }).description
+      ).toBe('List event logs on device 74e15ef8...');
+      expect(
+        checkGuardrails('execute_command', { deviceId: DEVICE_ID, commandType: 'file_list', payload: { path: 'C:\\Users' } }).description
+      ).toBe('List files in "C:\\Users" on device 74e15ef8...');
+    });
+
+    it('an unrecognised commandType keeps the pre-existing generic shape (no regression)', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'definitely_not_a_command',
+      });
+      expect(result.description).toBe('Execute "definitely_not_a_command" command on device 74e15ef8...');
     });
   });
 
@@ -1040,5 +1266,54 @@ describe('manage_policy_feature_link maintenance escalation (RMM-QA-176 D9)', ()
       action: 'add', configPolicyId: 'p1', featureType: 'maintenance',
     });
     expect(check.description).toContain('maintenance');
+  });
+});
+
+describe('checkToolPermission — revoke_elevation requires pam.approve (fix/pam-dedicated-permissions)', () => {
+  const auth = {
+    user: { id: 'user-1' },
+    token: { roleId: 'technician', scope: 'organization' },
+    orgId: 'org-1',
+    partnerId: null,
+  } as any;
+
+  it('denies revoke_elevation for a caller with devices.execute but no pam.approve', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'technician' } as any);
+    vi.mocked(hasPermission).mockImplementation((_perms, resource, action) => {
+      // Org Technician shape: devices:execute granted, pam:approve NOT.
+      return resource === 'devices' && action === 'execute';
+    });
+
+    const result = await checkToolPermission(
+      'revoke_elevation',
+      { elevationRequestId: '11111111-1111-1111-1111-111111111111', reason: 'no longer needed' },
+      auth,
+    );
+
+    expect(result).not.toBeNull();
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'pam', 'approve');
+  });
+
+  it('allows revoke_elevation for a caller holding pam.approve', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'admin' } as any);
+    vi.mocked(hasPermission).mockImplementation((_perms, resource, action) => resource === 'pam' && action === 'approve');
+
+    const result = await checkToolPermission(
+      'revoke_elevation',
+      { elevationRequestId: '11111111-1111-1111-1111-111111111111', reason: 'no longer needed' },
+      auth,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it('leaves request_elevation and get_elevation_history on their unchanged permissions', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'technician' } as any);
+    vi.mocked(hasPermission).mockImplementation((_perms, resource, action) => {
+      return (resource === 'devices' && (action === 'execute' || action === 'read'));
+    });
+
+    expect(await checkToolPermission('request_elevation', {}, auth)).toBeNull();
+    expect(await checkToolPermission('get_elevation_history', {}, auth)).toBeNull();
   });
 });

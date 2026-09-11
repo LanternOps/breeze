@@ -23,6 +23,7 @@ import {
 } from '@breeze/shared';
 import { db } from '../db';
 import { scripts } from '../db/schema';
+import { clearedScriptSecurityAcknowledgementColumns } from './scriptSecurityAcknowledgement';
 
 export type SystemLibraryScriptDefinition = {
   name: string;
@@ -326,6 +327,14 @@ export async function ensureSystemLibraryScripts(): Promise<{
       continue;
     }
 
+    // #5129 — tracked separately from `unchanged` below, which is a
+    // conjunction over eight fields. The acknowledgement must be revoked when
+    // the BODY is replaced, not merely when some tracked field differs: a
+    // release that only bumps `timeoutSeconds` leaves the reviewed content
+    // byte-identical, and wiping the approval there would break the script for
+    // no reason on the next API boot.
+    const contentChanged = existing.content !== def.content;
+
     const unchanged =
       existing.content === def.content &&
       existing.description === def.description &&
@@ -352,6 +361,18 @@ export async function ensureSystemLibraryScripts(): Promise<{
         parameters,
         timeoutSeconds: def.timeoutSeconds,
         runAs: def.runAs,
+        // #5129 — when the library sync replaces `content` from a shipped
+        // definition there is no human in the loop, so any acknowledgement the
+        // row carried is revoked rather than inherited by the new body. Only a
+        // system-scope PUT can put one on a system script in the first place,
+        // so this is rarely non-empty — but the invariant "a wholesale content
+        // replacement never inherits an approval" has to hold on every path,
+        // not just the ones that are easy to reach.
+        //
+        // Gated on `contentChanged`, NOT on reaching this branch: the branch
+        // also fires for a metadata-only diff (a timeout or description tweak)
+        // where the reviewed body is untouched and the approval must stand.
+        ...(contentChanged ? clearedScriptSecurityAcknowledgementColumns() : {}),
         version: existing.version + 1,
         updatedAt: new Date(),
       })

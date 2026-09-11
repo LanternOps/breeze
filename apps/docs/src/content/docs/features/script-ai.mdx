@@ -120,7 +120,7 @@ If the AI is generating a long response or executing a chain of tool calls, you 
 
 ## AI Tools
 
-The Script Builder has access to 10 tools organized by function and safety tier.
+The Script Builder has access to 11 tools organized by function and safety tier.
 
 ### Apply Tools (Tier 1)
 
@@ -144,6 +144,7 @@ These read-only tools give the AI awareness of your environment.
 | `get_script_details` | Get full script details including code, parameters, and execution settings. |
 | `list_script_templates` | Browse available script templates for common tasks. |
 | `get_script_execution_history` | View past execution results for a script to understand success rates. |
+| `get_script_execution` | Fetch one script execution by ID, including status, exit code, stdout, and stderr -- for runs started outside the current tool call (the editor's Test Run button, or an execution ID from `get_script_execution_history`). |
 
 ### Execution Tool (Tier 3 -- Requires Approval)
 

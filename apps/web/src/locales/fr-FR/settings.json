@@ -582,7 +582,18 @@
     "selfSaving": "Cette section conserve ses propres modifications.",
     "saveSettings": "Enregistrer les paramètres",
     "enforcedDescription": "Les valeurs que vous fixez ici sont appliquées dans toutes les organisations. Laissez les champs vides pour permettre à chaque organisation de configurer individuellement.",
-    "ticketingDescription": "Configurez les statuts des tickets, les priorités SLA par défaut, les catégories et les exportations de facturation. Ces éléments s’appliquent à toutes vos organisations."
+    "ticketingDescription": "Configurez les statuts des tickets, les priorités SLA par défaut, les catégories et les exportations de facturation. Ces éléments s’appliquent à toutes vos organisations.",
+    "modules": {
+      "title": "Modules du produit",
+      "description": "Choisissez les parties de Breeze utilisées par ce MSP. Désactiver la gestion des services masque partout le centre de services et la facturation client et empêche la création de nouveaux tickets.",
+      "nativeLabel": "Centre de services et facturation Breeze",
+      "nativeDescription": "Les tickets, les feuilles de temps, les devis, les factures et les contrats sont gérés dans Breeze. C’est l’option par défaut.",
+      "offLabel": "Désactivé — RMM uniquement",
+      "offDescription": "Masque les sections Centre de services et Facturation ainsi que les onglets Tickets et Facturation de la fiche client. Les tickets existants restent consultables ; aucun nouveau ne peut être créé.",
+      "externalNote": "Ce partenaire utilise un PSA externe. Ce choix ne peut pas encore être modifié ici.",
+      "saved": "Modules mis à jour",
+      "saveFailed": "Échec de la mise à jour des modules"
+    }
   },
   "loginBranding": {
     "saved": "Enregistrement de la marque enregistrée",
@@ -1186,6 +1197,7 @@
     "toasts": {
       "inviteSent": "Invitation envoyée",
       "inviteSentAmbiguousContact": "Invitation envoyée, mais aucun contact n'a pu être lié — plusieurs contacts partagent cette adresse e-mail. Cet utilisateur ne verra pas les tickets reçus par e-mail tant qu'un contact ne sera pas lié.",
+      "inviteEmailFailed": "L'utilisateur du portail a été créé, mais l'e-mail d'invitation n'a pas pu être envoyé.",
       "pendingInvited": "Invité {{count}} utilisateur(s) en attente",
       "inviteResent": "Invitation résignée",
       "reactivated": "Utilisateur réactivé",
@@ -1617,7 +1629,14 @@
       "invalidSupervisedActionKeys": "Une ou plusieurs actions sélectionnées ne peuvent pas être autorisées par la politique.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Cet agent est déjà actif.",
-      "actRecipientsUnreachable": "Les rôles de notification sélectionnés n'ont aucun membre actif, personne ne pourrait donc être sollicité. Choisissez un rôle comptant des membres avant d'activer le mode Agir."
+      "actRecipientsUnreachable": "Les rôles de notification sélectionnés n'ont aucun membre actif, personne ne pourrait donc être sollicité. Choisissez un rôle comptant des membres avant d'activer le mode Agir.",
+      "invalidScriptIds": "Un ou plusieurs scripts ne peuvent pas être autorisés pour cet agent.",
+      "scriptRejected": "Script {{id}} : {{reason}}",
+      "scriptReject": {
+        "not_found": "pas un script visible par le propriétaire de cet agent",
+        "not_in_partner_baseline": "absent du référentiel du partenaire",
+        "run_script_not_allowed": "« Exécuter un script » n'est pas autorisé pour cet agent"
+      }
     },
     "actions": {
       "add": "Nouvel agent",
@@ -2294,9 +2313,9 @@
         "get_effective_configuration": "Configuration effective",
         "get_fleet_findings": "Constats du parc",
         "get_fleet_health": "Santé du parc",
-        "get_fleet_status": "État du parc",
         "get_huntress_incidents": "Incidents Huntress",
         "get_huntress_status": "État de Huntress",
+        "get_invite_funnel": "Entonnoir d'invitations de déploiement",
         "get_invoice": "Détails de la facture",
         "get_log_trends": "Tendances des journaux",
         "get_playbook_history": "Historique d'exécution du playbook",
@@ -2718,7 +2737,9 @@
       "approvers_other": "{{roles}} sont sollicités, par boîte de réception, messagerie et notification push mobile. La première décision l'emporte.",
       "approversCount_one": "{{count}} rôle est sollicité, par boîte de réception, messagerie et notification push mobile. La première décision l'emporte.",
       "approversCount_other": "{{count}} rôles sont sollicités, par boîte de réception, messagerie et notification push mobile. La première décision l'emporte.",
-      "scriptGateNote": "{{list}} ne s'exécutera sans intervention qu'une fois un script autorisé pour cet agent ; d'ici là, une demande d'approbation est déclenchée."
+      "scriptGateNote": "{{list}} ne s'exécutera sans intervention qu'une fois un script autorisé pour cet agent ; d'ici là, une demande d'approbation est déclenchée.",
+      "scriptsAuthorized_one": "{{count}} script est autorisé à s'exécuter sans intervention.",
+      "scriptsAuthorized_other": "{{count}} scripts sont autorisés à s'exécuter sans intervention."
     },
     "flow": {
       "title": "Nouvel agent",
@@ -2772,6 +2793,21 @@
         "recommendedPrefix": "Recommandé :",
         "taken": "Déjà utilisé pour ce propriétaire"
       }
+    },
+    "scripts": {
+      "legend": "Scripts autorisés à s'exécuter sans intervention",
+      "hint": "En mode Agir, « Exécuter un script » s'exécute sans approbation uniquement pour les scripts cochés ici. Tout le reste reste une demande d'approbation.",
+      "ceilingHint": "Les scripts au niveau du partenaire sont un plafond : l'agent d'une organisation ne peut choisir que dans cette liste.",
+      "runScriptRequired": "Ajoutez « Exécuter un script » dans « Ce qu'il fait » avant d'autoriser des scripts.",
+      "runScriptNotInBaseline": "Le référentiel du partenaire n'autorise pas « Exécuter un script » pour ce type d'agent : aucun script ne peut donc s'exécuter sans intervention.",
+      "ceilingUnavailable": "Impossible de charger le référentiel du partenaire : aucun script ne peut être autorisé pour le moment.",
+      "ceilingLoading": "Vérification du référentiel du partenaire…",
+      "loading": "Chargement des scripts…",
+      "failed": "Impossible de charger les scripts ; l'autorisation de scripts sans intervention ne peut pas être modifiée pour le moment.",
+      "empty": "Aucun script disponible.",
+      "searchPlaceholder": "Rechercher des scripts…",
+      "selectedCount_one": "{{count}} script autorisé",
+      "selectedCount_other": "{{count}} scripts autorisés"
     }
   },
   "apiKeyForm": {
@@ -3179,6 +3215,10 @@
     "enterYourPhoneNumberInE164FormatToReceiveAVerificationCo": "Saisissez votre numéro de téléphone au format E.164 pour recevoir un code de vérification.",
     "phoneNumber": "Numéro de téléphone",
     "currentPassword": "Mot de passe actuel",
+    "currentMfaCode": "Code MFA actuel",
+    "currentMfaCodeRequired": "Un code MFA actuel est requis",
+    "currentPasskeyRequired": "Votre clé d’accès actuelle sera demandée",
+    "sendVerificationCode": "Envoyer le code de vérification",
     "verificationCode": "Code de vérification",
     "enterThe6DigitCodeSentToYourPhone": "Saisissez le code à 6 chiffres envoyé sur votre téléphone.",
     "cancel": "Annuler",
@@ -3209,6 +3249,12 @@
     "scanThisQRCodeWithYourAuthenticatorAppThenEnterThe6Digit": "Scannez ce code QR avec votre application d’authentification, puis entrez le code à 6 chiffres.",
     "authenticatorQRCode": "Code QR de l’authentificateur",
     "qRCodeUnavailable": "Code QR indisponible",
+    "cantScanTheCode": "Impossible de scanner le code ?",
+    "enterThisSetupKeyInYourAuthenticatorAppInstead": "Saisissez plutôt cette clé de configuration dans votre application d'authentification.",
+    "setupKey": "Clé de configuration",
+    "copySetupKey": "Copier la clé de configuration",
+    "copiedSetupKey": "Copiée",
+    "copySetupKeyFailed": "Impossible de copier la clé de configuration. Sélectionnez-la et copiez-la manuellement.",
     "enterThe6DigitCodeGeneratedByYourAuthenticatorApp": "Saisissez le code à 6 chiffres généré par votre application d’authentification.",
     "disableMFA": "Désactiver MFA",
     "reEnterYourAccountPasswordToConfirmThisChange": "Saisissez à nouveau votre mot de passe de compte pour confirmer ce changement.",
@@ -3296,6 +3342,7 @@
     "passkeyRenamed": "Passkey renommé",
     "currentPasswordIsRequiredToDeleteAPasskey": "Un mot de passe actuel est nécessaire pour supprimer une clé d’accès",
     "passkeyDeleted": "Clé d’accès supprimée",
+    "signInAgainToContinue": "Reconnectez-vous pour continuer.",
     "failedToLoadPasskeys": "Impossible de charger les clés d’accès",
     "failedToUpdateProfile": "Impossible de mettre à jour le profil",
     "failedToUploadAvatar": "Impossible de télécharger l’avatar",
@@ -3305,6 +3352,9 @@
     "failedToEnableMFA": "Impossible d’activer MFA",
     "failedToDisableMFA": "Impossible de désactiver MFA",
     "failedToGenerateRecoveryCodes": "Impossible de générer des codes de récupération",
+    "failedToSendVerificationCode": "Impossible d’envoyer le code de vérification",
+    "failedToVerifyCurrentFactor": "Impossible de vérifier le facteur MFA actuel",
+    "verificationCodeSent": "Code de vérification envoyé",
     "failedToAddPasskey": "Impossible d’ajouter une clé d’accès",
     "failedToRenamePasskey": "Impossible de renommer la clé d’accès",
     "failedToDeletePasskey": "Impossible de supprimer la clé d’accès",
@@ -3344,7 +3394,15 @@
     "verifyWithYourIdentityProvider": "Vérifier auprès de votre fournisseur d'identité",
     "passkeyIdpVerificationRequired": "Vérifiez auprès de votre fournisseur d'identité avant d'ajouter une clé d'accès.",
     "ssoReauthFailed": "Impossible de vérifier avec votre fournisseur d'identité. Veuillez réessayer.",
-    "couldNotStartIdentityProviderVerification": "Impossible de démarrer la vérification par le fournisseur d'identité."
+    "couldNotStartIdentityProviderVerification": "Impossible de démarrer la vérification par le fournisseur d'identité.",
+    "deletePasskeyConfirmTitle": "Supprimer cette clé d'accès ?",
+    "deletePasskeyConfirmMessage": "Cette action supprime définitivement la clé d'accès « {{name}} », qui ne pourra plus servir à se connecter. Comme il s'agit d'une méthode multifacteur, sa suppression déconnecte aussi vos autres sessions sur tous les appareils. Action irréversible.",
+    "passkeyStepUpHeading": "Vérifiez votre facteur de connexion existant",
+    "passkeyStepUpIntro": "L'authentification multifacteur est déjà activée pour ce compte. Confirmez-la avant d'ajouter une autre clé d'accès.",
+    "passkeyStepUpNoUsableFactor": "Le facteur actuel de votre compte ne peut pas être confirmé ici. Contactez un administrateur pour ajouter une clé d'accès.",
+    "passkeyStepUpIncorrectCode": "Code incorrect. Veuillez réessayer.",
+    "passkeyStepUpTooManyAttempts": "Trop de tentatives. Veuillez réessayer dans quelques minutes.",
+    "passkeyStepUpVerificationExpired": "La vérification a expiré. Veuillez vérifier à nouveau."
   },
   "roleManager": {
     "roles": "Rôles",
@@ -4418,7 +4476,8 @@
       "saveOrder": "Impossible d’enregistrer l’ordre organisationnel",
       "saveOrganization": "Impossible d’enregistrer l’organisation",
       "saveSite": "Impossible d’enregistrer le site ({{status}})",
-      "deleteSite": "Impossible de supprimer le site"
+      "deleteSite": "Impossible de supprimer le site",
+      "loadSites": "Impossible de charger les sites de cette organisation."
     },
     "status": {
       "active": "Active",

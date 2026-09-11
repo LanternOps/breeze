@@ -275,6 +275,9 @@ cd apps/api && npx vitest run src/routes/auth.test.ts
 # NOTE: `pnpm test` does NOT run the RLS/integration contract suites
 # (separate vitest configs: vitest.config.rls.ts, vitest.integration.config.ts).
 # Local green ≠ CI green — run those explicitly when touching tenancy/cascade code.
+# They need real Postgres+Redis. Per-worktree copy (safe alongside other sessions):
+pnpm test-stack up       # private pg+redis for this worktree (docker-compose.test.yml under -p)
+pnpm test-stack down     # tear it down when finished — nothing does this for you
 
 # Go agent (with race detection)
 cd agent && go test -race ./...
@@ -376,12 +379,26 @@ ln -sf docker-compose.override.yml.dev docker-compose.override.yml
 docker compose up --build -d
 ```
 
+**Tear down when you're done — nothing reaps a local stack for you.** Every `up` (these modes, `pnpm wt-stack up`, `pnpm test-stack up`, an ad-hoc `docker run` Postgres) stays up until torn down, and each agent session tends to leave its own behind — five Breeze projects were found running on 2026-09-01. `pnpm wt-stack ls` and `pnpm test-stack ls` each see only their own prefix; the engine-wide truth is:
+
+```bash
+docker compose ls -a --format json | jq -r '.[] | select(.ConfigFiles|test("breeze")) | "\(.Name)\t\(.Status)"'   # every Breeze project, all worktrees
+docker compose -f docker-compose.yml -f docker-compose.override.yml.dev down -v --remove-orphans   # this checkout (same -f files as up)
+pnpm wt-stack down            # a wt-stack, from the worktree+branch that created it
+pnpm test-stack down          # a per-worktree integration stack, from the same worktree (reads the project it recorded in .env.test)
+docker compose -p <name> down -v --remove-orphans   # anything else the first command listed (no -f needed)
+```
+
+Before ending a session, tear down what you brought up and say what you left running. Full checklist (bare containers, orphaned projects, the everything-Breeze reset): `.claude/skills/worktree-stack/SKILL.md` → "Tear down when done".
+
 **Deleting a config file? Sweep the Compose mounts in the same PR.** Docker creates a missing bind-mount source as an empty **directory** on the host, which then gets `COPY`d into dev images where Vite/PostCSS discovery dies on it (`EISDIR`) — `breeze-web` comes up permanently unhealthy on a fresh clone. `apps/api/src/config/composeBindMounts.test.ts` (required **Test API** job) parses every tracked compose file and fails when a file-shaped, repo-relative bind-mount source doesn't exist — or has already become a phantom directory. Extensionless sources (`./agent/bin`) are exempt as intended build outputs; out-of-repo sources (`../breeze-billing/…`) can't be asserted and are skipped. Shipped three times before the guard existed: #1999 (postcss), #2208 (partial tailwind), #2012 (the mounts #2208 missed).
 
-### PR Merge Process
-- Branch protection requires status checks, but the repo owner uses `--admin` to bypass when CI is green
-- Use `gh pr merge --squash --admin` (merge commits are disabled on this repo)
-- This is the normal workflow — do not wait for branch protection rules to be satisfied
+### PR Merge Process — merge queue (since 2026-09-07)
+- `main` uses GitHub's **merge queue**. Merge with `gh pr merge <N>` (no strategy flag, no `--admin`): the PR is enqueued, the queue rebuilds it on top of whatever is ahead of it, runs the full `CI Success` gate on that merge ref, and lands it serially. The queue owns the strategy (squash); passing `--squash` only prints a warning.
+- **Never `--admin`.** Admin bypass skips the queue and lands the commit directly, which is exactly what produced the 09-06/09-07 pile-ups: concurrent sessions each admin-merging cancelled 59 of 80 main CI runs in 48h, so main's true state was never evaluated, and sibling PRs went CONFLICTING mid-sweep. Reserve `--admin` for a genuine emergency (main red and the fix itself cannot pass the queue), say so in the PR, and immediately run `gh workflow run CI --ref main` — `ci.yml` no longer runs on pushes to main (queue landings were already evaluated on their merge-group ref), so a bypass merge is untested until you dispatch it.
+- No reviewer approval is required by the ruleset any more; the review round is the `/pr-review-toolkit:review-pr` pass recorded on the PR, not a GitHub approval. Required check is `CI Success` only. `ci.yml` runs on every PR; its `changes` job classifies the diff and a docs-only PR (`docs/**`, `apps/docs/**`, `*.md`, `*.mdx`) skips the code jobs, runs only the `docs-check` job (astro check + build, formerly `docs-ci.yml`), and still gets a passing `CI Success` so it can enter the queue (the queue then runs the full suite on the merge ref). Only `ci.yml` ever reports `CI Success` — never add a second workflow with that check name, two reporters race for the required-check slot.
+- Queue semantics to know: a PR must be green on its own head to be enqueued; the queue then runs `ci.yml` under the `merge_group` event with **no path filters** and with the smoke jobs blocking (they are non-blocking on `pull_request` only). If the queue run fails, the PR is dequeued with a comment — fix and re-enqueue, do not bypass.
+- Any session may enqueue its own reviewed, green PR. Serialisation is the queue's job now, not a single-merger rule.
 
 ### Production Deploy (EU + US droplets)
 

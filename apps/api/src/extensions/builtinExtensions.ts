@@ -27,6 +27,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import postgres from 'postgres';
+import { SHARED_TABLE_ALLOWLIST } from '@breeze/extension-sdk';
 import type {
   BreezeExtensionV1,
   ExtensionManifestV1,
@@ -49,7 +50,7 @@ import {
   type MigratableExtension,
 } from './migrator';
 import { registerRuntimeExtensionTenancy } from './tenancyRegistry';
-import { assertExtensionTenancyRls } from './tenancyTripwire';
+import { assertExtensionTenancyRls, assertNoUnaccountedPublicTables } from './tenancyTripwire';
 import { registerExtensionWebAsset, type RegisterableExtensionWebAsset } from './webAssets';
 import { registerGlobalRateLimitSkipPrefix } from '../middleware/globalRateLimit';
 import { MIGRATION_TABLE } from '../db/autoMigrate';
@@ -149,7 +150,7 @@ export function isBuiltinEnabled(builtin: BuiltinExtension): boolean {
  * it), the opt-out list has to be probed and filtered alongside the four tenant
  * lists or a partially-migrated database would abort boot on it.
  */
-function declaredTenancyTables(manifest: ExtensionManifestV1): string[] {
+function declaredTenancyTables(manifest: Pick<ExtensionManifestV1, 'tenancy'>): string[] {
   const { tenancy } = manifest;
   // `deviceOrgMoveDeleteTables` and `nonTenantTables` are optional in the v1
   // schema; the other three are not.
@@ -314,6 +315,8 @@ export interface BuiltinPorts {
     extensionName: string,
     tenancy: ExtensionTenancyDeclaration,
   ): Promise<void>;
+  /** Final catalog sweep, after every enabled or persisted disabled declaration is known. */
+  validatePublicTables(tenancies: readonly ExtensionTenancyDeclaration[]): Promise<void>;
   registerRateLimitSkip(prefix: string): void;
   /** Is `<root>/dist/web` present? An I/O seam, hence a port (see registerBuiltinWebAsset). */
   webDistExists(root: string): boolean;
@@ -475,6 +478,7 @@ function buildDefaultPorts(args: LoadBuiltinExtensionsArgs): BuiltinPorts {
     existingDeclaredTables: defaultExistingDeclaredTables,
     stageExtension: (module, manifest, opts) =>
       defaultStageExtension(module, manifest, args.registry, opts),
+    validatePublicTables: assertNoUnaccountedPublicTables,
     validateTenancyDeclaration: (extensionName, tenancy) =>
       assertExtensionTenancyRls(extensionName, tenancy),
     registerRateLimitSkip: registerGlobalRateLimitSkipPrefix,
@@ -644,7 +648,7 @@ async function handleUnavailableDisabledManifest(
 async function skipDisabledBuiltin(
   builtin: BuiltinExtension,
   ports: BuiltinPorts,
-): Promise<void> {
+): Promise<ExtensionTenancyDeclaration | undefined> {
   const raw = process.env[builtin.enableEnvVar];
   console.warn(
     `[extensions] ${JSON.stringify({
@@ -712,6 +716,7 @@ async function skipDisabledBuiltin(
   const filteredTenancy = filterTenancyDeclaration(manifest.tenancy, presentSet);
   ports.publishTenancy({ ...manifest, tenancy: filteredTenancy });
   await ports.validateTenancyDeclaration(manifest.name, filteredTenancy);
+  return filteredTenancy;
 }
 
 /**
@@ -736,14 +741,28 @@ export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Pr
   const { registry, stateStore } = args;
   if (ports.builtins.length === 0) return;
 
+  const tenancies: ExtensionTenancyDeclaration[] = [];
   const enabled: BuiltinExtension[] = [];
   for (const builtin of ports.builtins) {
     if (isBuiltinEnabled(builtin)) enabled.push(builtin);
-    else await skipDisabledBuiltin(builtin, ports);
+    else {
+      const tenancy = await skipDisabledBuiltin(builtin, ports);
+      if (tenancy) tenancies.push(tenancy);
+    }
   }
   // Nothing to load: return BEFORE createMigrationSql, which both demands
   // DATABASE_URL and opens a privileged connection.
-  if (enabled.length === 0) return;
+  if (enabled.length === 0) {
+    // Previously enabled built-ins still own tables, even when none is active.
+    // A stock install with no extension tables retains its no-sweep behavior.
+    // Shared core tables (e.g. memory_blocks) exist even when workspace has
+    // never run, so those alone are not evidence of a persisted extension.
+    const hasExtensionTables = tenancies.some((tenancy) =>
+      declaredTenancyTables({ tenancy }).some((table) => !SHARED_TABLE_ALLOWLIST.has(table)),
+    );
+    if (hasExtensionTables) await ports.validatePublicTables(tenancies);
+    return;
+  }
 
   const sql = ports.createMigrationSql();
   try {
@@ -764,6 +783,7 @@ export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Pr
       // device-move handling for the tables that now exist survives a later
       // failure or a disable.
       ports.publishTenancy(manifest);
+      tenancies.push(manifest.tenancy);
 
       const staged = await ports.stageExtension(builtin.module, manifest, {
         helperRoutes: builtin.helperRoutes,
@@ -817,6 +837,10 @@ export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Pr
         `[extensions] loaded built-in "${name}" ${manifest.version}${mode === 'worker' ? ' (worker mode)' : ''}`,
       );
     }
+    // This is the only extension loader. Sweep once every declaration is known,
+    // before API/worker startup can continue; scanning per built-in would blame
+    // a later built-in's existing tables on the one loaded first.
+    await ports.validatePublicTables(tenancies);
   } finally {
     // Closing the privileged pool must never REPLACE the error that got us
     // here: an exception out of a `finally` discards the in-flight one, so a

@@ -16,7 +16,6 @@ const OAUTH_ENV_KEYS = [
   'MFA_FORCE_FOR_PARTNER_ADMIN',
   'M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED',
   'M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED',
-  'AUTH_BROWSER_TRANSITIONS_ENFORCED',
   'AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED',
 ] as const;
 
@@ -39,21 +38,16 @@ describe('config env', () => {
     expect(mod.MCP_OAUTH_ENABLED).toBe(false);
   });
 
-  it('keeps browser transition enforcement and terminal preparation disabled by default', async () => {
+  it('keeps terminal preparation disabled by default', async () => {
     const mod = await loadEnv();
-    expect(mod.authBrowserTransitionsEnforced()).toBe(false);
     expect(mod.authBrowserTerminalPreparationEnabled()).toBe(false);
   });
 
-  it('reads browser transition rollout flags at call time', async () => {
+  it('reads the terminal preparation rollout flag at call time', async () => {
     const mod = await loadEnv();
-    process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED = 'true';
     process.env.AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED = 'true';
-    expect(mod.authBrowserTransitionsEnforced()).toBe(true);
     expect(mod.authBrowserTerminalPreparationEnabled()).toBe(true);
-    process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED = 'false';
     process.env.AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED = 'false';
-    expect(mod.authBrowserTransitionsEnforced()).toBe(false);
     expect(mod.authBrowserTerminalPreparationEnabled()).toBe(false);
   });
 
@@ -145,12 +139,16 @@ describe('config env', () => {
   });
 
   // mfaForcePartnerAdmin is the kill-switch for the role-level MFA gate
-  // introduced in Task 8 of the launch-readiness sprint. Defaults ON so
-  // the secure-by-default posture holds, but ops can flip it OFF without
-  // a code change when an enrollment outage locks legitimate users out.
-  it('defaults mfaForcePartnerAdmin to true when unset', async () => {
+  // introduced in Task 8 of the launch-readiness sprint. Defaults OFF for
+  // this release (#4491): the reconcile migration
+  // (2026-10-11-170000-partner-admin-force-mfa-reconcile.sql) flips
+  // force_mfa on every EXISTING Partner Admin role, so enforcing on
+  // upgrade with no warning would lock admins into enrolment with zero
+  // notice. Enforcement returns to default ON once the notification-period
+  // feature (#5306) ships; MFA_FORCE_FOR_PARTNER_ADMIN=true opts in now.
+  it('defaults mfaForcePartnerAdmin to false when unset', async () => {
     const mod = await loadEnv();
-    expect(mod.mfaForcePartnerAdmin()).toBe(true);
+    expect(mod.mfaForcePartnerAdmin()).toBe(false);
   });
 
   it('returns false when MFA_FORCE_FOR_PARTNER_ADMIN is explicitly disabled', async () => {

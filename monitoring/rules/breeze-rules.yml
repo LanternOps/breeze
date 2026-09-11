@@ -252,6 +252,45 @@ groups:
           description: "{{ $value }} commands dispatched in 5m for tenant {{ $labels.tenant }} — possible compromised account fanning out commands"
           runbook_url: "https://docs.breeze.local/runbooks/command-dispatch-spike"
 
+  - name: breeze-backup-alerts
+    interval: 60s
+    rules:
+      # Emitted by internal/ops/restore-test-encrypted.sh via node_exporter's
+      # textfile collector after every weekly restore drill. A 0 means the last
+      # drill could not prove the off-region backup restorable. Before this rule
+      # existed a failed drill on 2026-08-30 sat unnoticed for four days.
+      - alert: BackupRestoreTestFailed
+        expr: breeze_db_restore_test_success == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Off-region backup restore drill failed ({{ $labels.region }})"
+          description: "The last restore test for bucket {{ $labels.bucket }} failed. The backup is not proven restorable. See /var/log/breeze-restore-test.log on the region host."
+
+      # Dead-man: the drill runs weekly. If the last *successful* drill is more
+      # than 8 days old — or the metric is absent because the cron, the host, or
+      # the textfile collector died — nobody is proving restorability.
+      - alert: BackupRestoreTestStale
+        expr: |
+          (time() - breeze_db_restore_test_last_success_timestamp_seconds) > 8 * 86400
+          or breeze_db_restore_test_last_success_timestamp_seconds == 0
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No successful backup restore drill in 8+ days ({{ $labels.region }})"
+          description: "Last successful restore drill for {{ $labels.bucket }} is older than 8 days. Check the Sunday cron and the restore-test log."
+
+      - alert: BackupRestoreTestMetricsMissing
+        expr: absent(breeze_db_restore_test_success)
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "breeze_db_restore_test_success metric is absent"
+          description: "No region host is publishing restore-drill metrics. Either the textfile collector directory is missing or node_exporter is not scraped."
+
   - name: breeze-recording-rules
     interval: 30s
     rules:

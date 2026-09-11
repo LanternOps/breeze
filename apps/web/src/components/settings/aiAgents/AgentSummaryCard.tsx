@@ -316,6 +316,11 @@ export default function AgentSummaryCard({
           editLabel={editLabel}
         >
           <p>{executesUnattendedText}</p>
+          {preview.mode === 'act' && preview.authorizedScriptCount > 0 && (
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="agent-summary-scripts">
+              {t('aiAgentsPage.summary.scriptsAuthorized', { count: preview.authorizedScriptCount })}
+            </p>
+          )}
           {scriptGatedOps.length > 0 && (
             <p className="mt-1 text-xs text-muted-foreground" data-testid="agent-summary-script-gate">
               {t('aiAgentsPage.summary.scriptGateNote', { list: listFormat(scriptGatedOps.map((op) => opLabel(op.key))) })}

@@ -711,7 +711,11 @@
       "featureTabShell": {
         "override": "Geçersiz kıl",
         "revertToParent": "Ebeveyne Geri Dön",
-        "saving": "Kaydediliyor..."
+        "saving": "Kaydediliyor...",
+        "revertConfirmTitle": "Üst ilkeye geri dönülsün mü?",
+        "revertConfirmMessage": "Bu işlem bu ilkedeki {{feature}} geçersiz kılmasını siler. Ayarları kaybolur ve bu ilkeyi kullanan tüm cihazlarda üst ilkenin ayarları geçerli olur. Bu işlem geri alınamaz.",
+        "removeConfirmTitle": "Bu yapılandırma kaldırılsın mı?",
+        "removeConfirmMessage": "Bu işlem {{feature}} yapılandırmasını bu ilkeden siler. Ayarları kaybolur ve özellik bu ilkeyi kullanan tüm cihazlara uygulanmayı bırakır. Bu işlem geri alınamaz."
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Cihazlara Breeze Assist'i dağıtın",
@@ -900,6 +904,11 @@
         "time": "Zaman",
         "dayOfWeek": "Haftanın günü",
         "dayOfMonth": "Ayın günü",
+        "offlineDevices": "Çevrimdışı cihazlar",
+        "offlineBehaviorQueue": "Çevrimdışı cihazlar için kuyruğa al",
+        "offlineBehaviorQueueDescription": "Bir sonraki bağlantıda, planlanan sonraki çalıştırmadan önce çalışır.",
+        "offlineBehaviorSkip": "Çevrimdışı cihazları atla",
+        "offlineBehaviorSkipDescription": "İş çalıştığında çevrimdışı olan cihazlar atlandı olarak kaydedilir.",
         "rebootPolicy": "Yeniden Başlatma Politikası",
         "rebootDelayMinutes": "Yeniden başlatma gecikmesi (dakika)",
         "rebootDelayMinutesDescription": "Oturum açmış kullanıcının yama sonrası yeniden başlatmadan önce ne kadar süreyle uyarılacağı.",

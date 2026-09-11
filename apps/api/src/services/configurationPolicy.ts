@@ -493,21 +493,6 @@ export async function listEligibleParentPolicies(
   }));
 }
 
-/**
- * Feature types linked on a prospective parent, read under the caller's own RLS
- * context (no access condition — same read-only rationale as the parent embed).
- *
- * Feeds the MFA-by-effectiveness gate: creating a child of a parent that carries
- * a gated link makes that link effective on the new policy.
- */
-export async function getParentLinkFeatureTypes(parentId: string): Promise<string[]> {
-  const rows = await db
-    .select({ featureType: configPolicyFeatureLinks.featureType })
-    .from(configPolicyFeatureLinks)
-    .where(eq(configPolicyFeatureLinks.configPolicyId, parentId));
-  return rows.map((r) => r.featureType);
-}
-
 export async function listConfigPolicies(
   auth: AuthContext,
   filters: { status?: string; search?: string; orgId?: string },
@@ -799,6 +784,7 @@ async function decomposeInlineSettings(
         scheduleTime: parsed.scheduleTime,
         scheduleDayOfWeek: parsed.scheduleDayOfWeek,
         scheduleDayOfMonth: parsed.scheduleDayOfMonth,
+        offlineBehavior: parsed.offlineBehavior,
         rebootPolicy: parsed.rebootPolicy,
         rebootDelayMinutes: parsed.rebootDelayMinutes,
         rebootAllowDeferral: parsed.rebootAllowDeferral,
@@ -1272,6 +1258,7 @@ async function assembleInlineSettings(
         scheduleTime: row.scheduleTime,
         scheduleDayOfWeek: row.scheduleDayOfWeek,
         scheduleDayOfMonth: row.scheduleDayOfMonth,
+        offlineBehavior: row.offlineBehavior,
         rebootPolicy: row.rebootPolicy,
         rebootDelayMinutes: row.rebootDelayMinutes,
         rebootAllowDeferral: row.rebootAllowDeferral,

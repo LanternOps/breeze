@@ -133,6 +133,8 @@ export interface ProcessInboundEmailDependencies {
    * (rather than in mutable module state) makes concurrent workers independent.
    */
   afterMailboxGenerationLock?: () => Promise<void>;
+  /** Test-only observation point after a subject-token matcher pins the ticket. */
+  afterTicketMatchLock?: (ticketId: string) => Promise<void>;
 }
 
 export async function processInboundEmail(
@@ -333,6 +335,7 @@ export async function processInboundEmail(
     const senderResolver = createSenderResolver(n.from, partnerId);
     const matched = await findTicketInPartner(n, partnerId, senderResolver);
     if (matched) {
+      await dependencies.afterTicketMatchLock?.(matched.id);
       // GUARD (spec §6 layer 2): never act across partners. A partner-scoped match query
       // should already make this impossible, but re-assert before ANY write and throw
       // (-> failed) rather than risk a silent cross-tenant append. `findTicketInPartner`
@@ -384,6 +387,7 @@ export async function processInboundEmail(
     // which is what prevents a thread from forking into N tickets (FIX 2).
     const closedOriginal = await findClosedTicketInPartner(n, partnerId, senderResolver);
     if (closedOriginal) {
+      await dependencies.afterTicketMatchLock?.(closedOriginal.id);
       // No requester and NO acknowledgement: a reply to a closed ticket spawns a
       // linked ticket, it is not a fresh submission (spec §5).
       const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false);
@@ -779,6 +783,13 @@ async function appendInboundComment(
     authorName,
     content: n.text
   });
+  // This stamp is also the optimistic move fence. The subject-token matcher
+  // holds the ticket row lock through this write; a concurrent cross-org move
+  // that observed the pre-comment ticket must fail its exact row-version CAS
+  // instead of carrying a newly authorized source-org reply into the target.
+  await db.update(tickets)
+    .set({ updatedAt: new Date() })
+    .where(and(eq(tickets.id, ticketId), eq(tickets.partnerId, partnerId)));
   return commentId;
 }
 

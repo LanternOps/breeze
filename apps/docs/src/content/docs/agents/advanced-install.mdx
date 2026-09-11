@@ -42,10 +42,11 @@ This is also the format you get if you call the underlying `buildWindowsInstalle
 
 <FileTree>
 - breeze-agent-macos.zip
-  - breeze-agent.pkg      The notarized agent PKG
   - enrollment.json       Server URL + enrollment key + secret + site ID
-  - install.sh            Calls `installer -pkg`, then `breeze-agent enroll`
+  - install.sh            Downloads the arch-matched, notarized PKG, verifies it with Gatekeeper, then calls `installer -pkg` and `breeze-agent enroll`
 </FileTree>
+
+The PKG itself is no longer bundled in the zip — `install.sh` downloads the architecture-matched package (Intel or Apple Silicon) at install time, so one zip works on both.
 
 ### Running the bundle
 
@@ -75,10 +76,12 @@ This is also the format you get if you call the underlying `buildWindowsInstalle
 
     The script will:
 
-    1. `sudo installer -pkg breeze-agent.pkg -target /`
-    2. Read `enrollment.json` via `plutil -extract`
-    3. Invoke `sudo /usr/local/bin/breeze-agent enroll <key> --server <url> [--enrollment-secret <secret>] [--site-id <id>]`
-    4. Delete `enrollment.json`
+    1. Detect the Mac's CPU architecture (Intel or Apple Silicon) and download the matching, notarized `breeze-agent.pkg` from the server
+    2. Verify the download passes Gatekeeper's notarization assessment (`spctl --assess`) before installing it as root
+    3. `sudo installer -pkg breeze-agent.pkg -target /`
+    4. Read `enrollment.json` via `plutil -extract`
+    5. Invoke `sudo /usr/local/bin/breeze-agent enroll <key> --server <url> [--enrollment-secret <secret>] [--site-id <id>]`
+    6. Delete `enrollment.json` and the downloaded pkg
   </TabItem>
 </Tabs>
 
@@ -213,9 +216,13 @@ The agent refuses to enroll with an empty hostname — if your provisioning pipe
 | `--no-watchdog` | all | Skip auto-fetching and registering the watchdog. Use for air-gapped hosts where the agent cannot reach GitHub releases. |
 | `--with-user-helper` | Linux, macOS | Also install the per-user desktop helper unit (systemd user unit / LaunchAgent). Not needed on Windows — the helper is spawned per-session by the service. |
 
-`service install` is safe to re-run — it overwrites the binary at the install path, restarts the agent service, and registers any missing watchdog. Use this to add the watchdog to a previously agent-only install. To install only the watchdog without touching the agent, run `breeze-watchdog service install` directly.
+`service install` is safe to re-run — it overwrites the binary at the install path, records whether the agent service was running beforehand, and rewrites and re-enables the unit. It starts the service again if it was running before the install or the host is already enrolled; a fresh, unenrolled host is left stopped until you enroll it. If the service was stopped for the install and can't be started again, the command now fails with recovery instructions rather than exiting successfully. It also registers any missing watchdog, which is always restarted so a newly staged binary takes over. Use this to add the watchdog to a previously agent-only install. To install only the watchdog without touching the agent, run `breeze-watchdog service install` directly.
 
-`service uninstall` stops and removes both the agent and the watchdog services, but does **not** remove `agent.yaml` or `secrets.yaml` — wipe `/etc/breeze`, `/Library/Application Support/Breeze`, or `C:\ProgramData\Breeze` manually if you want a clean uninstall.
+<Aside type="note">
+On agent v0.110.0 and earlier, `service install` stopped the service and did not start it again. On those versions, follow it with `sudo systemctl restart breeze-agent breeze-watchdog` (Linux), or prefer the in-band auto-update instead.
+</Aside>
+
+On **Linux and macOS**, `service uninstall` stops and removes both the agent and watchdog services (and the installed agent binary), but does **not** remove `agent.yaml` or `secrets.yaml` — wipe `/etc/breeze` or `/Library/Application Support/Breeze` manually if you want a clean uninstall. On **Windows**, `service uninstall` only deletes the agent's own SCM service registration — it does **not** touch the watchdog service, the installed binaries, or `C:\ProgramData\Breeze`. Run `breeze-watchdog service uninstall` separately for the watchdog, and remove the binaries/config directory by hand.
 
 ---
 
@@ -224,8 +231,8 @@ The agent refuses to enroll with an empty hostname — if your provisioning pipe
 You can install the agent binary and service on an image **without** enrolling, then enroll on first boot. This is the standard pattern for VM templates and golden images.
 
 1. Install the agent binary (or run the MSI/PKG with no `ENROLLMENT_KEY`).
-2. Install the service: `breeze-agent service install`. The service starts in a "waiting for enrollment" state and will not contact the server.
-3. On first boot of a cloned VM, run `breeze-agent enroll <key> --server <url>` from a startup script. The service auto-detects the new config and connects.
+2. Install the service: `breeze-agent service install`. Because the host isn't enrolled yet, the installer enables the unit but leaves it **stopped** rather than starting it — there is nothing to talk to a server about until enrollment happens. It comes up automatically the next time the machine reboots (since the unit is enabled), or you can start it manually.
+3. On first boot of a cloned VM, run `breeze-agent enroll <key> --server <url>` from a startup script. Once the agent process is actually running and unenrolled, it polls for `agent.yaml`/`secrets.yaml` on an interval and connects automatically as soon as `enroll` writes them — no restart needed.
 
 If you skip step 2 and run `enroll` after `service install`, the service picks up the new credentials within a few seconds without needing a restart.
 

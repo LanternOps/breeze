@@ -270,7 +270,11 @@ export async function listArchivedOrgs(input: {
       const counts = await db
         .select({ orgId: devices.orgId, count: sql<number>`count(*)` })
         .from(devices)
-        .where(inArray(devices.orgId, ids))
+        // Removed devices are excluded here for the same reason as the live
+        // org rows in `GET /orgs/organizations` (#5315) — archived orgs ride
+        // along in THAT response, so a different rule here would make one
+        // payload count two ways.
+        .where(and(inArray(devices.orgId, ids), ne(devices.status, 'decommissioned')))
         .groupBy(devices.orgId);
       return { rows: orgRows, deviceCounts: counts };
     }),

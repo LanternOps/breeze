@@ -11,10 +11,17 @@ import { ScrollView } from 'react-native-gesture-handler';
 
 import { useAppDispatch, useAppSelector } from '../../store';
 import { approve, deny, markExpired, reportSuspicious } from '../../store/approvalsSlice';
+import { selectFocusedApproval } from '../../navigation/approvalTakeover';
 import { useApprovalTheme, type, spacing, palette } from '../../theme';
 import { duration, ease, haptic } from '../../lib/motion';
 import { track } from '../../lib/analytics';
 
+import {
+  APPROVAL_TOAST_OWNER,
+  decisionToastFor,
+  isDecisionToastVisible,
+  shouldShowEmptyApprovalState,
+} from './approvalDecidedTransition';
 import { CountdownRing } from './components/CountdownRing';
 import { RequesterAvatar } from './components/RequesterAvatar';
 import { RequesterRow } from './components/RequesterRow';
@@ -28,16 +35,16 @@ import { resolveApprovalFlowType } from './approvalFlow';
 import { getApprovalCopy } from './approvalCopy';
 import { decisionTarget, type CapturedRequestId } from './decisionTarget';
 import { SuspiciousReportSheet } from './components/SuspiciousReportSheet';
-import { Toast } from '../../components/Toast';
+import { ToastOutlet, useToast } from '../../components/toast/ToastHost';
 
 export function ApprovalScreen() {
   const insets = useSafeAreaInsets();
   const theme = useApprovalTheme('dark');
   const dispatch = useAppDispatch();
 
-  const focused = useAppSelector((s) =>
-    s.approvals.pending.find((a) => a.id === s.approvals.focusId && a.status === 'pending')
-  );
+  // #5172: shared with ApprovalGate so the takeover Modal's visibility and
+  // this screen's content branch can never drift apart — see approvalTakeover.ts.
+  const focused = useAppSelector((s) => selectFocusedApproval(s.approvals));
   const inFlight = useAppSelector((s) =>
     focused ? (s.approvals.decisionInFlight[focused.id] ?? null) : null
   );
@@ -46,18 +53,24 @@ export function ApprovalScreen() {
   const successWash = useSharedValue(0);
   const denyShake = useSharedValue(0);
 
-  // Keyed by approval id: ApprovalGate keeps this ONE instance mounted while
+  // Scoped by approval id: ApprovalGate keeps this ONE instance mounted while
   // focus rolls from request A to request B, and `approve.fulfilled` moves
-  // focus in the same tick the "Approved · …" toast is queued — so without
-  // the key, A's success toast renders over B's Approve/Deny buttons. The
-  // success/deny confirmations are therefore deliberately dropped once focus
-  // has moved on (the wash / shake animation is the feedback that survives);
-  // outcome ERRORS use `approvalId: null` and stay visible regardless.
-  const [toast, setToast] = useState<{
-    approvalId: string | null;
-    kind: 'success' | 'error';
-    text: string;
-  } | null>(null);
+  // focus in the same tick the "Approved · …" toast is posted — so without the
+  // scoping, A's success toast is still on screen over B's Approve/Deny
+  // buttons. The success/deny confirmations are therefore deliberately dropped
+  // once focus rolls onto a DIFFERENT pending request (the wash/shake
+  // animation is the feedback that survives that case). When focus instead
+  // rolls to NOTHING (A was the last pending row), the toast is exactly what
+  // rescues the takeover from flashing "No pending approvals" before it — see
+  // `isDecisionToastVisible` (#5172). Outcome ERRORS post no `sourceId` and
+  // stay visible regardless of focus either way.
+  //
+  // The toast itself lives in the app-wide host (#5368); `current` is read back
+  // here because this screen's empty-state branch waits on the confirmation it
+  // just posted. The host owns expiry, so the JS backstop that used to sit here
+  // (against an exit animation whose callback never fires) now covers every
+  // screen — see TOAST_BACKSTOP_MS.
+  const { current: toast, show: showToast, dismiss: dismissToast } = useToast();
   const [reportSheetOpen, setReportSheetOpen] = useState(false);
   const [reportBusy, setReportBusy] = useState(false);
   const expiredHandledRef = useRef<string | null>(null);
@@ -105,7 +118,7 @@ export function ApprovalScreen() {
       dispatch(markExpired(focused.id));
       // Screen-global: markExpired rolls focus to the next request in the
       // same tick, and the user still needs to hear that this one lapsed.
-      setToast({ approvalId: null, kind: 'error', text: 'This request expired before you could respond.' });
+      showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: 'This request expired before you could respond.' });
     }, 1000);
     return () => clearInterval(id);
   }, [focused?.id, focused?.expiresAt, focused?.status]);
@@ -130,7 +143,7 @@ export function ApprovalScreen() {
     // different action. See PR #696 Critical #3 / decisionTarget.ts.
     const target = decisionTarget(id, focused);
     if (!target) {
-      setToast({ approvalId: null, kind: 'error', text: 'This request changed before you confirmed — review it again.' });
+      showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: 'This request changed before you confirmed — review it again.' });
       return;
     }
     successWash.value = withSequence(
@@ -149,17 +162,17 @@ export function ApprovalScreen() {
           is_recursive: approvalSnap.isRecursive,
           seconds_to_decide: decideSeconds,
         });
-        setToast({ approvalId: approvalSnap.id, kind: 'success', text: `Approved · ${approvalSnap.actionLabel}` });
+        showToast({ owner: APPROVAL_TOAST_OWNER, sourceId: approvalSnap.id, kind: 'success', text: `Approved · ${approvalSnap.actionLabel}` });
       })
       .catch((err: Error) => {
-        setToast({ approvalId: null, kind: 'error', text: messageForDecisionError(err.message, 'Approve') });
+        showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: messageForDecisionError(err.message, 'Approve') });
       });
   }
 
   function handleDeny(id: CapturedRequestId, reason?: string) {
     const target = decisionTarget(id, focused);
     if (!target) {
-      setToast({ approvalId: null, kind: 'error', text: 'This request changed before you confirmed — review it again.' });
+      showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: 'This request changed before you confirmed — review it again.' });
       return;
     }
     denyShake.value = withSequence(
@@ -179,10 +192,10 @@ export function ApprovalScreen() {
           is_recursive: approvalSnap.isRecursive,
           seconds_to_decide: decideSeconds,
         });
-        setToast({ approvalId: approvalSnap.id, kind: 'error', text: 'Denied · logged' });
+        showToast({ owner: APPROVAL_TOAST_OWNER, sourceId: approvalSnap.id, kind: 'error', text: 'Denied · logged' });
       })
       .catch((err: Error) => {
-        setToast({ approvalId: null, kind: 'error', text: messageForDecisionError(err.message, 'Deny') });
+        showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: messageForDecisionError(err.message, 'Deny') });
       });
   }
 
@@ -202,11 +215,11 @@ export function ApprovalScreen() {
         track('approval_reported_suspicious');
         setReportSheetOpen(false);
         setReportBusy(false);
-        setToast({ approvalId: null, kind: 'success', text: 'Reported. Session revoked.' });
+        showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'success', text: 'Reported. Session revoked.' });
       })
       .catch(() => {
         setReportBusy(false);
-        setToast({ approvalId: null, kind: 'error', text: "Couldn't revoke. Try again." });
+        showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: "Couldn't revoke. Try again." });
       });
   }
 
@@ -217,13 +230,51 @@ export function ApprovalScreen() {
     dispatch(markExpired(focused.id));
   }
 
+  // `decisionToastFor` first drops anything this screen did not post — the
+  // host is app-wide and the navigator keeps running underneath the takeover,
+  // so background toasts arrive here too (#5368). Of what remains, a toast
+  // bound to a request that is no longer on screen is stale; one with no
+  // approval id (report outcome, focus-swap guard) is screen-global.
+  // Computed before the `!focused` branch below (#5172): the decision that
+  // just cleared `focused` is exactly what queues this toast, so the toast's
+  // liveness has to be known before deciding what "no focused row" renders.
+  const toastVisible = isDecisionToastVisible(decisionToastFor(toast), focused?.id);
+
+  // A confirmation whose row is no longer focused used to be merely un-rendered
+  // by this screen's own <Toast>. The host is shared, so it has to be taken
+  // DOWN instead — otherwise the dropped confirmation would ride along and
+  // paint over whatever surface comes next.
+  useEffect(() => {
+    if (toast !== null && toast.owner === APPROVAL_TOAST_OWNER && !toastVisible) {
+      dismissToast(toast.id);
+    }
+  }, [toast, toastVisible, dismissToast]);
+
   if (!focused) {
+    if (shouldShowEmptyApprovalState({ focused: false, decisionToastPending: toastVisible })) {
+      return (
+        <View style={{ flex: 1, backgroundColor: theme.bg0, paddingTop: insets.top + spacing[10], paddingHorizontal: spacing[6] }}>
+          <Text style={[type.title, { color: theme.textHi }]}>No pending approvals</Text>
+          <Text style={[type.body, { color: theme.textMd, marginTop: spacing[2] }]}>
+            You're all caught up.
+          </Text>
+        </View>
+      );
+    }
+    // A decision (approve/deny/report) was just confirmed on the last
+    // pending row and its outcome toast is still owed. Hold on a neutral
+    // background instead of flashing "No pending approvals" while the
+    // takeover Modal's native dismiss transition is still in flight (#5172)
+    // — the toast clears this itself via `onHidden`, at which point
+    // `shouldShowEmptyApprovalState` above takes the branch that renders
+    // the genuine empty state (or ApprovalGate has finished dismissing the
+    // Modal and this has already stopped being visible to the user).
     return (
-      <View style={{ flex: 1, backgroundColor: theme.bg0, paddingTop: insets.top + spacing[10], paddingHorizontal: spacing[6] }}>
-        <Text style={[type.title, { color: theme.textHi }]}>No pending approvals</Text>
-        <Text style={[type.body, { color: theme.textMd, marginTop: spacing[2] }]}>
-          You're all caught up.
-        </Text>
+      <View style={{ flex: 1, backgroundColor: theme.bg0 }}>
+        {/* ApprovalGate presents this screen in an RN Modal, which paints
+            above the app-wide toast host, so the takeover mounts its own
+            outlet (topmost outlet wins — see toastState.topOutletId). */}
+        {toastVisible ? <ToastOutlet /> : null}
       </View>
     );
   }
@@ -238,9 +289,6 @@ export function ApprovalScreen() {
   // other flow keeps the existing actionLabel + generic JSON details.
   const flowType = resolveApprovalFlowType(focused);
   const copy = getApprovalCopy(focused);
-  // A toast bound to a request that is no longer on screen is stale; a toast
-  // with no approval id (report outcome, focus-swap guard) is screen-global.
-  const toastVisible = !!toast && (toast.approvalId === null || toast.approvalId === focused.id);
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg0 }}>
@@ -327,12 +375,7 @@ export function ApprovalScreen() {
         onConfirm={handleReportConfirm}
       />
 
-      <Toast
-        visible={toastVisible}
-        text={toast?.text ?? ''}
-        kind={toast?.kind ?? 'success'}
-        onHidden={() => setToast(null)}
-      />
+      {toastVisible ? <ToastOutlet /> : null}
     </View>
   );
 }

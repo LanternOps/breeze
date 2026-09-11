@@ -11,8 +11,8 @@ Breeze ships two Compose configurations:
 
 | Path | Files | When to use |
 |------|-------|-------------|
-| **Simple self-host** | `docker-compose.yml` + `.env.example` (repo root) | Single-host self-hosted deploys behind your own TLS reverse proxy. Tag-pinned images by default (override with digests for higher assurance). Uses the `*_IMAGE_REF` variable schema. |
-| **Strict production** *(this doc)* | `deploy/docker-compose.prod.yml` + `deploy/.env.example` | Production rollouts with Cloudflare Tunnel, hardened ACLs, monitoring/logging, and **mandatory** digest-pinned images. Uses the `*_IMAGE_DIGEST` variable schema (Breeze images) and `*_IMAGE_REF` (third-party). The hardening check (`scripts/security/check-supply-chain-hardening.sh`) refuses to ship a release with mutable tags in this path. |
+| **Simple self-host** | `docker-compose.yml` + `.env.example` (repo root) | Single-host self-hosted deploys behind your own TLS reverse proxy. Guided setup verifies the signed release image inventory and writes digest-pinned `*_IMAGE_REF` values. |
+| **Strict production** *(this doc)* | `deploy/docker-compose.prod.yml` + `deploy/.env.example` | Production rollouts with Cloudflare Tunnel, hardened ACLs, monitoring/logging, and mandatory digest-pinned images verified against the signed release inventory. Uses the `*_IMAGE_DIGEST` variable schema (Breeze images) and `*_IMAGE_REF` (third-party). |
 
 The two paths use **different variable names** intentionally — they are not interchangeable. If you copied `.env` from one path, do not point it at the other Compose file.
 
@@ -36,6 +36,7 @@ Set at least these values in `.env.prod`:
 - `BREEZE_VERSION`
 - `BREEZE_API_IMAGE_DIGEST`
 - `BREEZE_WEB_IMAGE_DIGEST`
+- `BREEZE_PORTAL_IMAGE_DIGEST`
 - `BREEZE_BINARIES_IMAGE_DIGEST`
 - `CADDY_IMAGE_REF`
 - `CLOUDFLARED_IMAGE_REF`
@@ -60,17 +61,7 @@ Set at least these values in `.env.prod`:
 
 ### Obtaining image digests
 
-`BREEZE_*_IMAGE_DIGEST` values are `sha256:<64hex>` strings — not full image refs. The Compose file prepends `ghcr.io/lanternops/breeze/<name>@` automatically.
-
-```bash
-# Replace 0.67.1 with the release you intend to deploy.
-TAG=0.67.1
-for img in api web portal binaries; do
-  digest=$(docker buildx imagetools inspect "ghcr.io/lanternops/breeze/$img:$TAG" \
-    --format '{{json .Manifest}}' | jq -r .digest)
-  echo "BREEZE_${img^^}_IMAGE_DIGEST=$digest"
-done
-```
+`BREEZE_*_IMAGE_DIGEST` values are `sha256:<64hex>` strings — not full image refs. Copy API, Web, Portal, and binaries together from `release-artifact-manifest.json` on the matching GitHub Release. Do not derive an authorized digest from a mutable GHCR tag or package page. `scripts/prod/deploy.sh` downloads that manifest and its Ed25519 signature, verifies the configured release key and complete image set, and rejects any configured digest mismatch before Compose pulls or starts a service.
 
 Third-party `*_IMAGE_REF` values are full digest-pinned refs (`name@sha256:<64hex>`):
 
@@ -129,9 +120,6 @@ You can also run:
   and the Caddyfile carve-out + `PUBLIC_PORTAL_URL` must stay in sync. `PUBLIC_PORTAL_URL`
   (default `https://<BREEZE_DOMAIN>/portal`) is what the API uses to mint customer-facing links
   (e.g. quote acceptance emails). Per-org custom portal domains are not served yet.
-- **Manual droplet rollout note:** a `BREEZE_VERSION` bump only swaps the `api`/`web` images. To
-  light up the portal on an existing droplet you must also: add `BREEZE_PORTAL_IMAGE_REF` (or
-  `BREEZE_PORTAL_IMAGE_DIGEST` for the digest-pinned prod compose) and `PUBLIC_PORTAL_URL` to
-  `/opt/breeze/.env`, ensure the `portal` service + the `/portal` carve-out are present in the deployed
-  `docker-compose.yml`/`Caddyfile.prod`, then `docker compose up -d portal && docker compose
-  restart caddy`.
+- **Existing deployments:** add `BREEZE_PORTAL_IMAGE_DIGEST` and `PUBLIC_PORTAL_URL` before the
+  first portal-enabled rollout, then use `scripts/prod/deploy.sh`. A direct `docker compose up`
+  bypasses signed image-inventory verification and is not a supported release rollout procedure.

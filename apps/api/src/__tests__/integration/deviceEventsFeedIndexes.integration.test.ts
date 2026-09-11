@@ -22,6 +22,13 @@
  * the regression this guards against. It also proves the functional contract
  * that the two arms together still return the details-only rows
  * (device.command.queue) while the deliberate feed drops agent telemetry.
+ *
+ * The EXPLAIN-as-`breeze_app` mechanics (context setup, `enable_seqscan =
+ * off`, plan-text extraction) live in `./explainAsBreezeApp` — this file is
+ * the precedent that helper's header comment cites as "confirmed reusable"
+ * (AI Operator #5205, W02 #5207). Refactored only to call through the shared
+ * helper; the seeded skew, the WHERE clauses under test, and every assertion
+ * below are unchanged.
  */
 import './setup';
 
@@ -29,16 +36,12 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { and, eq, or, sql } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { db, withDbAccessContext } from '../../db';
-import { getTestDb } from './setup';
 import { auditLogs } from '../../db/schema';
 import { DETAILS_HAS_DEVICE_ID, NON_AGENT_ACTOR, buildActionConditions } from '../../routes/devices/events';
 import { createPartner, createOrganization } from './db-utils';
+import { explainAsBreezeApp, seedSkewedRows, analyzeTable } from './explainAsBreezeApp';
 
 const SYSTEM_ACTOR = '00000000-0000-0000-0000-000000000000';
-
-function planText(rows: unknown[]): string {
-  return rows.map((r) => Object.values(r as Record<string, unknown>).join(' ')).join('\n');
-}
 
 describe('device events feed — partial indexes are usable under RLS (breeze_app)', () => {
   let orgId: string;
@@ -82,17 +85,13 @@ describe('device events feed — partial indexes are usable under RLS (breeze_ap
       details: { field: 'displayName' },
       result: 'success' as const,
     });
-    await getTestDb()
-      .insert(auditLogs)
-      .values([
-        ...Array.from({ length: 600 }, () => telemetry(deviceId)),
-        ...Array.from({ length: 3000 }, (_, i) => telemetry(otherDevice(i))),
-        ...Array.from({ length: 200 }, (_, i) => humanNoise(i)),
-      ]);
+    await seedSkewedRows(auditLogs, [
+      ...Array.from({ length: 600 }, () => telemetry(deviceId)),
+      ...Array.from({ length: 3000 }, (_, i) => telemetry(otherDevice(i))),
+      ...Array.from({ length: 200 }, (_, i) => humanNoise(i)),
+    ]);
 
-    await getTestDb()
-      .insert(auditLogs)
-      .values([
+    await seedSkewedRows(auditLogs, [
         // Deliberate route audit: resource = device.
         {
           orgId,
@@ -138,7 +137,7 @@ describe('device events feed — partial indexes are usable under RLS (breeze_ap
           result: 'success',
         },
       ]);
-    await getTestDb().execute(sql`ANALYZE audit_logs`);
+    await analyzeTable(auditLogs);
   });
 
   function inOrgContext<T>(fn: () => Promise<T>): Promise<T> {
@@ -167,22 +166,23 @@ describe('device events feed — partial indexes are usable under RLS (breeze_ap
       sql`${auditLogs.resourceId} IS DISTINCT FROM ${deviceId}::uuid`
     )!;
 
-  async function explain(where: ReturnType<typeof and>): Promise<string> {
-    return inOrgContext(async () => {
-      await db.execute(sql`SET LOCAL enable_seqscan = off`);
-      const q = db
+  // Delegates to the shared harness (./explainAsBreezeApp): same org-context
+  // setup, same `enable_seqscan = off`, same plan-text extraction as before
+  // this file was refactored to call through it — see the module header.
+  async function explain(where: ReturnType<typeof and>) {
+    return explainAsBreezeApp({
+      orgId,
+      sql: db
         .select({ id: auditLogs.id })
         .from(auditLogs)
         .where(where)
         .orderBy(sql`${auditLogs.timestamp} DESC, ${auditLogs.id} DESC`)
-        .limit(10);
-      const rows = await db.execute(sql`EXPLAIN ${q.getSQL()}`);
-      return planText(Array.from(rows as Iterable<unknown>));
+        .limit(10),
     });
   }
 
   it('deliberate resource arm uses the actor-partial index, not a scan of the org', async () => {
-    const plan = await explain(resourceArm(true));
+    const { plan } = await explain(resourceArm(true));
     expect(plan).toContain('audit_logs_device_feed_resource_idx');
     expect(plan).not.toContain('Seq Scan on audit_logs');
     expect(plan).not.toContain('audit_logs_org_timestamp_idx');
@@ -190,14 +190,14 @@ describe('device events feed — partial indexes are usable under RLS (breeze_ap
 
   it('details arm uses the details-partial org index (deliberate and unfiltered)', async () => {
     for (const guard of [true, false]) {
-      const plan = await explain(detailsArm(guard));
+      const { plan } = await explain(detailsArm(guard));
       expect(plan).toContain('audit_logs_device_feed_details_idx');
       expect(plan).not.toContain('Seq Scan on audit_logs');
     }
   });
 
   it('unfiltered resource arm (Activities tab) is served by a resource_id index', async () => {
-    const plan = await explain(resourceArm(false));
+    const { plan } = await explain(resourceArm(false));
     expect(plan).toMatch(/audit_logs_resource_(type_)?id_timestamp_idx/);
     expect(plan).not.toContain('Seq Scan on audit_logs');
   });

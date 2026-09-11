@@ -16,9 +16,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { portalUserRow, activeOrgResult } = vi.hoisted(() => ({
+const { portalUserRow, activeOrgResult, portalUserLookupError } = vi.hoisted(() => ({
   portalUserRow: { current: null as Record<string, unknown> | null },
   activeOrgResult: { current: null as { orgId: string; partnerId: string } | null },
+  portalUserLookupError: { current: null as Error | null },
 }));
 
 const resolveOrgTimezone = vi.hoisted(() =>
@@ -36,6 +37,7 @@ vi.mock('../../services/portal/timezone', () => ({
 // (verified: the naive echo mock kept these tests green through exactly that
 // mutation).
 function project(columns: Record<string, unknown>): Array<Record<string, unknown>> {
+  if (portalUserLookupError.current) throw portalUserLookupError.current;
   const row = portalUserRow.current;
   if (!row) return [];
   const out: Record<string, unknown> = {};
@@ -64,7 +66,9 @@ vi.mock('../../db/schema', () => ({
     name: 'name',
     contactId: 'contactId',
     receiveNotifications: 'receiveNotifications',
+    authMethod: 'authMethod',
     status: 'status',
+    authEpoch: 'authEpoch',
   },
   portalBranding: { orgId: 'orgId', enablePasswordReset: 'enablePasswordReset' },
 }));
@@ -79,7 +83,7 @@ vi.mock('../../services/tenantStatus', () => ({
   invalidateAgentTenantCache: vi.fn(async () => undefined),
 }));
 
-import { portalAuthMiddleware } from './auth';
+import { authRoutes, portalAuthMiddleware } from './auth';
 import { portalSessions } from './helpers';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 
@@ -114,7 +118,8 @@ function seedSession() {
     orgId: ORG_ID,
     createdAt: new Date(),
     expiresAt: new Date(Date.now() + 60 * 60 * 1000),
-  });
+    authEpoch: 1,
+  } as any);
 }
 
 beforeEach(() => {
@@ -127,12 +132,49 @@ beforeEach(() => {
     name: 'Cust',
     contactId: CONTACT_ID,
     receiveNotifications: true,
+    authMethod: 'password',
     status: 'active',
+    authEpoch: 1,
   };
   activeOrgResult.current = { orgId: ORG_ID, partnerId: 'partner-1' };
+  portalUserLookupError.current = null;
 });
 
 describe('portalAuthMiddleware org-status gate', () => {
+  it('fails closed without running downstream when the durable epoch lookup is uncertain', async () => {
+    seedSession();
+    portalUserLookupError.current = new Error('synthetic database uncertainty');
+
+    const res = await call();
+
+    expect(res.status).toBe(500);
+    expect(getActiveOrgTenant).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for a legacy session that has no durable epoch snapshot', async () => {
+    seedSession();
+    const legacy = portalSessions.get(TOKEN)!;
+    delete (legacy as Partial<typeof legacy>).authEpoch;
+
+    const res = await call();
+
+    expect(res.status).toBe(401);
+    expect(portalSessions.has(TOKEN)).toBe(false);
+    expect(getActiveOrgTenant).not.toHaveBeenCalled();
+    expect(resolveOrgTimezone).not.toHaveBeenCalled();
+  });
+
+  it('rejects a session minted before the durable portal auth epoch advanced', async () => {
+    seedSession();
+    portalUserRow.current = { ...portalUserRow.current, authEpoch: 2 };
+
+    const res = await call();
+
+    expect(res.status).toBe(401);
+    expect(portalSessions.has(TOKEN)).toBe(false);
+    expect(getActiveOrgTenant).not.toHaveBeenCalled();
+  });
+
   it('admits an active portal user whose org is usable', async () => {
     seedSession();
     const res = await call();
@@ -187,7 +229,13 @@ describe('portalAuthMiddleware org-status gate', () => {
     portalUserRow.current = { ...portalUserRow.current, status: 'disabled' };
     const res = await call();
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Account is not active' });
+    // `code` (sweep 2026-09-08 G5-6) lets the portal app distinguish this
+    // deliberate account-disable from a generic load failure and render its
+    // own "access disabled" page instead of the outage copy.
+    expect(await res.json()).toEqual({
+      error: 'Account is not active',
+      code: 'PORTAL_ACCOUNT_INACTIVE',
+    });
     expect(getActiveOrgTenant).not.toHaveBeenCalled();
   });
   // ---- #3258 W03: the contact link is HYDRATED onto portalAuth ----
@@ -210,5 +258,31 @@ describe('portalAuthMiddleware org-status gate', () => {
     // sneaks past a required field.
     expect(Object.prototype.hasOwnProperty.call(body.user, 'contactId')).toBe(true);
     expect(body.user.contactId).toBeNull();
+  });
+});
+
+describe('portal logout session scope', () => {
+  it('continues to revoke only the presented session, not every session for the user', async () => {
+    seedSession();
+    portalSessions.set('other-current-session', {
+      token: 'other-current-session',
+      portalUserId: USER_ID,
+      orgId: ORG_ID,
+      authEpoch: 1,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    const app = new Hono();
+    app.route('/', authRoutes);
+
+    const res = await app.request('/auth/logout', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(200);
+    expect(portalSessions.has(TOKEN)).toBe(false);
+    expect(portalSessions.has('other-current-session')).toBe(true);
+    expect(portalUserRow.current?.authEpoch).toBe(1);
   });
 });

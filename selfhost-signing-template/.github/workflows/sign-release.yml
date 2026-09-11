@@ -726,6 +726,8 @@ jobs:
       - name: Verify and attest macOS signing state
         env:
           DRY_RUN: ${{ inputs.dry-run }}
+          APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
           expected=(
@@ -771,9 +773,14 @@ jobs:
             fi
             case "$name" in
               *.pkg)
-                pkgutil --check-signature "$path"
+                scripts/attest-macos-pkg.sh \
+                  "$path" "$name" \
+                  "$APPLE_INSTALLER_IDENTITY" "$APPLE_TEAM_ID" \
+                  >> attest/macos.tsv
                 xcrun stapler validate "$path"
                 spctl -a -vv -t install "$path"
+                echo "Verified: $name"
+                continue
                 ;;
               *.app.zip)
                 # Assess the bundle this zip was made from — Gatekeeper cannot
@@ -932,6 +939,7 @@ jobs:
           import hashlib
           import json
           import os
+          import re
           from pathlib import Path
 
           release_dir = Path("release-assets")
@@ -974,16 +982,37 @@ jobs:
               for line in tsv.read_text(encoding="utf8").splitlines():
                   if not line.strip():
                       continue
-                  name, tab, trust = line.partition("\t")
-                  if not tab or not trust:
+                  fields = line.split("\t")
+                  if len(fields) not in (2, 4):
                       raise SystemExit(f"malformed attestation line in {tsv}: {line!r}")
-                  attested[name] = trust
+                  name, trust = fields[:2]
+                  if not name or not trust or name in attested:
+                      raise SystemExit(f"malformed or duplicate attestation line in {tsv}: {line!r}")
+                  publisher = None
+                  if len(fields) == 4:
+                      if platform != "macos" or not name.endswith(".pkg"):
+                          raise SystemExit(
+                              f"publisher identity is only valid for macOS packages: {line!r}"
+                          )
+                      signing_identity, signing_team_id = fields[2:]
+                      if not signing_identity or not signing_team_id:
+                          raise SystemExit(f"empty package publisher attestation in {tsv}: {line!r}")
+                      if not re.fullmatch(r"[A-Z0-9]{10}", signing_team_id):
+                          raise SystemExit(f"invalid macOS package signing team ID for {name}")
+                      if not signing_identity.startswith("Developer ID Installer: ") or not signing_identity.endswith(
+                          f" ({signing_team_id})"
+                      ):
+                          raise SystemExit(f"invalid macOS package signing identity for {name}")
+                      publisher = (signing_identity, signing_team_id)
+                  elif platform == "macos" and name.endswith(".pkg") and trust != "unsigned-dry-run":
+                      raise SystemExit(f"macOS package lacks publisher attestation: {name}")
+                  attested[name] = {"trust": trust, "publisher": publisher}
 
-          if dry_run and any(t != "unsigned-dry-run" for t in attested.values()):
+          if dry_run and any(a["trust"] != "unsigned-dry-run" for a in attested.values()):
               raise SystemExit(
                   "dry run produced a signed-artifact attestation — refusing to publish"
               )
-          if not dry_run and "unsigned-dry-run" in attested.values():
+          if not dry_run and any(a["trust"] == "unsigned-dry-run" for a in attested.values()):
               raise SystemExit(
                   "real run produced an unsigned-dry-run attestation — refusing to publish"
               )
@@ -1026,7 +1055,7 @@ jobs:
                       "unsigned inputs must never reach a distributable release"
                   )
               if name in attested:
-                  trust = attested[name]
+                  trust = attested[name]["trust"]
                   # A dry run publishes nothing, but the bundle is downloadable;
                   # it must never describe unsigned bytes as signed.
                   if trust == "unsigned-dry-run":
@@ -1038,12 +1067,21 @@ jobs:
                           f"mirrored asset {name} has no platformTrust in the verified "
                           "official manifest — refusing to invent one"
                       )
-              assets.append({
+              entry = {
                   "name": name,
                   "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                   "size": path.stat().st_size,
                   "platformTrust": trust,
-              })
+                  # This template only builds the self-host agent edition and
+                  # mirrors assets from the official self-host release. Keep
+                  # the edition bound inside the signed manifest for both real
+                  # runs and unsigned dry-run evidence bundles.
+                  "edition": "self-host",
+              }
+              publisher = attested.get(name, {}).get("publisher")
+              if publisher is not None:
+                  entry["signingIdentity"], entry["signingTeamId"] = publisher
+              assets.append(entry)
 
           manifest = {
               "schemaVersion": 1,

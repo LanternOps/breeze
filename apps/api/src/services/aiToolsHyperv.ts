@@ -15,6 +15,11 @@ import { CommandTypes, queueCommandForExecution } from './commandQueue';
 import { resolveBackupConfigForDevice } from './featureConfigResolver';
 import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
+import {
+  resolveBackupWriteCommandDestination,
+  resolveBackupProviderConfig,
+  resolveBackupDestinationError,
+} from './backupProviderConfig';
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
@@ -302,6 +307,18 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'A provider-backed backup configuration is required on this device' });
       }
 
+      // D20b follow-up: the helper only builds a manager from the command
+      // payload when it has no agent.yaml backup config (mgr == nil — the
+      // normal state for every policy-managed device); without
+      // provider/providerConfig here the helper fails every AI-dispatched
+      // hyperv_backup with "backup not configured on this device", exactly
+      // like the REST route did before D20b item A.
+      const destinationResult = await resolveBackupWriteCommandDestination(resolvedConfig.configId, vm.orgId);
+      if (!destinationResult.ok) {
+        return JSON.stringify({ error: destinationResult.message });
+      }
+      const { destination } = destinationResult;
+
       const [backupJob] = await db
         .insert(backupJobs)
         .values({
@@ -322,6 +339,10 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         CommandTypes.HYPERV_BACKUP,
         {
           backupJobId: backupJob?.id,
+          configId: resolvedConfig.configId,
+          provider: destination.provider,
+          providerConfig: destination.providerConfig,
+          storageEncryption: destination.storageEncryption,
           vmName: vm.vmName,
           consistencyType,
         },
@@ -407,6 +428,19 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Snapshot is not a Hyper-V export artifact' });
       }
 
+      // D20b follow-up: the helper builds its read provider from THIS
+      // command's own payload (restoreProviderForCommand), the same way the
+      // REST /hyperv/restore route does — mirroring the destination the
+      // BACKUP command wrote this snapshot to, not whatever the device's
+      // CURRENT config happens to be.
+      const backupProviderConfig = snapshot.configId
+        ? await resolveBackupProviderConfig(snapshot.configId, snapshot.orgId)
+        : null;
+      if (!backupProviderConfig) {
+        const { message } = resolveBackupDestinationError(snapshot.configId);
+        return JSON.stringify({ error: message });
+      }
+
       const { command, error } = await queueCommandForExecution(
         deviceId,
         CommandTypes.HYPERV_RESTORE,
@@ -417,6 +451,8 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
             typeof input.generateNewId === 'boolean'
               ? input.generateNewId
               : true,
+          provider: backupProviderConfig.provider,
+          providerConfig: backupProviderConfig.providerConfig,
         },
         { userId: auth.user?.id }
       );

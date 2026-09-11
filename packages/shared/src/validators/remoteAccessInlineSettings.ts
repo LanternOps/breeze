@@ -14,7 +14,22 @@ import { z } from 'zod';
 //
 // Ranges:
 //   idleTimeoutMinutes     0..1440  (0 = idle timeout disabled, max 24h)
-//   maxSessionDurationHours 0..168  (0 = no max duration, max 7 days)
+//   maxSessionDurationHours 0..168  (DELIBERATELY PERMISSIVE — see below)
+//
+// `maxSessionDurationHours` is NOT narrowed to the supported [1, 12] range here
+// on purpose. This schema is all-or-nothing: a single out-of-range field fails
+// the parse and the WHOLE settings blob is discarded — `remoteAccessPolicy.ts`
+// falls back to DEFAULTS (re-enabling clipboard and every other gate the policy
+// meant to close), `configurationPolicy.ts` throws, and the feature-link routes
+// 400. Policies written before the 12 h hard cap legitimately hold `0`
+// ("unlimited") or values up to 168, so tightening the bound here would be a
+// security regression, not a hardening.
+//
+// The real [1, 12] enforcement lives in two places:
+//   - read path: `clampSettings` in `apps/api/src/services/remoteAccessPolicy.ts`
+//     resolves `0` or `>12` to the 12 h cap (logged once per policy);
+//   - write path: the policy-editor / feature-link routes reject an
+//     out-of-range value with a 400 so no NEW policy can store one.
 export const remoteAccessInlineSettingsSchema = z
   .object({
     webrtcDesktop: z.boolean(),

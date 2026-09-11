@@ -314,7 +314,7 @@ describe('AiAgentForm — org-owned supervised keys are grant-only (#5049)', () 
     );
   });
 
-  it('omits actAssets entirely from an org agent\'s save payload', async () => {
+  it('sends only scriptIds in an org agent\'s actAssets — never its supervised keys (#5049, #5065)', async () => {
     mockEndpoints(REGISTRY);
     renderForm({
       agent: makeAgent({ mode: 'act', actAssets: { supervisedActionKeys: ['manage_services:restart'] } }),
@@ -326,7 +326,7 @@ describe('AiAgentForm — org-owned supervised keys are grant-only (#5049)', () 
       expect(fetchMock.mock.calls.some(([, init]) =>
         (init as RequestInit | undefined)?.method === 'PATCH')).toBe(true));
 
-    expect(writeBody()).not.toHaveProperty('actAssets');
+    expect(writeBody().actAssets).toEqual({ scriptIds: [] });
   });
 
   it('leaves a partner-owned agent\'s checkboxes enabled and still sends actAssets', async () => {

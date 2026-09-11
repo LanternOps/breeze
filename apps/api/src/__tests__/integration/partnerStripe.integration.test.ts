@@ -9,15 +9,20 @@ import './setup';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, withDbAccessContext, type DbAccessContext } from '../../db';
-import { stripeConnectAccounts } from '../../db/schema/stripePayments';
-import { createPartner } from './db-utils';
+import { invoiceStripePayments, stripeConnectAccounts } from '../../db/schema/stripePayments';
+import { invoices } from '../../db/schema/invoices';
+import { createOrganization, createPartner } from './db-utils';
 import { isEncryptedSecret } from '../../services/secretCrypto';
 
-const { accountsRetrieveMock } = vi.hoisted(() => ({ accountsRetrieveMock: vi.fn() }));
+const { accountsRetrieveMock, eventsListMock } = vi.hoisted(() => ({
+  accountsRetrieveMock: vi.fn(),
+  eventsListMock: vi.fn().mockResolvedValue({ data: [], has_more: false }),
+}));
 vi.mock('stripe', () => ({
   default: class MockStripe {
     public _key: string;
     accounts = { retrieve: accountsRetrieveMock };
+    events = { list: eventsListMock };
     constructor(key: string) { this._key = key; }
   },
 }));
@@ -42,6 +47,7 @@ describe('partner Stripe API-key credentials (breeze_app, real DB)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     accountsRetrieveMock.mockResolvedValue({ id: 'acct_partnerOwn', charges_enabled: true });
+    eventsListMock.mockResolvedValue({ data: [], has_more: false });
   });
 
   runDb('save validates the key, stores it encrypted with last4, and marks connected', async () => {
@@ -110,6 +116,31 @@ describe('partner Stripe API-key credentials (breeze_app, real DB)', () => {
     expect(rows[0]!.keyLast4).toBe('2222');
     const client = await withSystemDbAccessContext(() => getPartnerStripe(partner.id)) as unknown as { _key: string };
     expect(client._key).toBe(keyB); // the new key, not the old one
+  });
+
+  runDb('rejects a different account while historical payment mappings need the old event stream', async () => {
+    const partner = await withSystemDbAccessContext(() => createPartner());
+    const org = await withSystemDbAccessContext(() => createOrganization({ partnerId: partner.id }));
+    accountsRetrieveMock.mockResolvedValue({ id: 'acct_old', charges_enabled: true });
+    await withSystemDbAccessContext(() => savePartnerStripeKey({ partnerId: partner.id, apiKey: TEST_KEY, userId: null }));
+    await withSystemDbAccessContext(async () => {
+      const [invoice] = await db.insert(invoices).values({
+        partnerId: partner.id, orgId: org.id, status: 'draft', currencyCode: 'USD',
+      }).returning({ id: invoices.id });
+      await db.insert(invoiceStripePayments).values({
+        orgId: org.id, invoiceId: invoice!.id, stripeAccountId: 'acct_old',
+        stripeObjectType: 'checkout_session', stripeObjectId: 'cs_historical_account',
+        amount: '100.00', currency: 'USD', status: 'pending',
+      });
+    });
+
+    accountsRetrieveMock.mockResolvedValue({ id: 'acct_new', charges_enabled: true });
+    await expect(withSystemDbAccessContext(() => savePartnerStripeKey({
+      partnerId: partner.id, apiKey: ['sk', 'test', '51NEWaccount2222'].join('_'), userId: null,
+    }))).rejects.toMatchObject({ code: 'STRIPE_ACCOUNT_CHANGE_BLOCKED', status: 409 });
+    const [connection] = await withSystemDbAccessContext(() => db.select().from(stripeConnectAccounts)
+      .where(eq(stripeConnectAccounts.partnerId, partner.id)));
+    expect(connection!.stripeAccountId).toBe('acct_old');
   });
 
   // Two partners cannot both claim the same Stripe account (acct_uq). The second

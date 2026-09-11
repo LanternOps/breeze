@@ -35,7 +35,7 @@ import {
   getPagination,
   getDeviceWithOrgAndSiteCheck,
   SITE_ACCESS_DENIED,
-  stripSensitiveDeviceFields,
+  projectPublicDevice,
 } from './helpers';
 import { listDevicesSchema, updateDeviceSchema, decommissionDeviceSchema } from './schemas';
 import {
@@ -69,7 +69,11 @@ import { readPartnerRemoteAccessSettings } from '../../services/remoteAccessProv
 import { captureException } from '../../services/sentry';
 import type { InheritableRemoteAccessSettings } from '@breeze/shared';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
-import { disconnectAgent } from '../agentWs';
+import {
+  disconnectAgent,
+  disconnectAgentCredentialGeneration,
+  publishAgentCredentialRevocation,
+} from '../agentWs';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { queueDeviceUninstall } from '../../services/deviceUninstallDrain';
 import { getDeviceUninstallStatus } from '../../services/deviceUninstallState';
@@ -94,6 +98,16 @@ import { requireCapability } from '../../services/partnerTrust';
 export const DEVICE_LINKED_DEVICE_ID_TABLES = [
   'network_change_events',
   'discovered_assets',
+  // #4622 — a manual asset points at the device an agent was later installed
+  // on. DETACHED, never deleted: the row is hand-entered inventory (serial,
+  // asset tag, assigned contact, notes) that must outlive the device row.
+  // No DEVICE_LINK_DEPENDENT_COLUMNS entry: manual_assets declares no
+  // link-conditional CHECK constraint, so nothing else needs clearing.
+  // Deliberately absent from CORE_DEVICE_ORG_DENORMALIZED_TABLES too — it has
+  // no device_id column, so it is link-only rather than device-managed, and
+  // moveOrg.coverage.test.ts reports a listed non-device-managed table as an
+  // orphan. Its cross-org detach is hand-written in moveOrg.ts instead.
+  'manual_assets',
 ] as const;
 
 /**
@@ -164,8 +178,15 @@ export const DEVICE_LINK_DEPENDENT_COLUMNS: Readonly<Record<string, readonly str
 // devices it charged for, by hostname, after a hard delete. Its device_id FK is
 // declared ON DELETE SET NULL to match, and the table is deliberately NOT
 // append-only so this generic UPDATE loop can run as breeze_app.
+// ai_operator_tasks (#5205 W03, #5208) also detaches: an AI Operator task is
+// durable remediation history — what was attempted, on what, with what result —
+// and must outlive the device it targeted, exactly like an agent run. Its
+// device_id FK is ON DELETE SET NULL to match. Two callers stamp the reason
+// beyond the generic device_id = NULL this list drives: deviceDeletion.ts
+// ('device_deleted') and moveOrg.ts ('device_moved'); both also fence any live
+// task, because a task whose target has vanished must not keep executing.
 export const DEVICE_DETACH_DEVICE_ID_TABLES = [
-  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'invoice_line_devices', 'support_sessions', 'tickets',
+  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'ai_operator_tasks', 'invoice_line_devices', 'support_sessions', 'tickets',
 ] as const;
 
 /**
@@ -191,6 +212,14 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * detaches device_id instead. It is listed in INTENTIONALLY_NO_ORG_ID in
  * moveOrg.coverage.test.ts. Its org_id is trigger-immutable
  * (2026-09-06-a-agent-runs-org-immutable.sql).
+ *
+ * ai_operator_tasks is deliberately ABSENT for the same reason (#5205 W03,
+ * #5208): AI Operator task history stays in the org that delegated the work.
+ * `org_id` is the task's immutable tenant and anchors four composite
+ * (x, org_id) FKs, so a restamp here would 23503 the moment the task has an
+ * operation, an outbox wake, a linked run or a linked intent. moveOrg detaches instead —
+ * device_id = NULL plus target_detached_at/reason and a fence of any live
+ * task. It is listed in INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
  *
  * ai_unattended_exposure is deliberately ABSENT too (wave 5a, #3827): it has
  * an org_id column but is cascade-deleted, not moved. (a) Exposure history
@@ -233,8 +262,8 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
-  'backup_chains', 'backup_jobs', 'backup_sla_events',
-  'backup_snapshots', 'backup_verifications',
+  'backup_chains', 'backup_jobs', 'backup_sla_events', 'backup_snapshot_retirements',
+  'backup_snapshots', 'backup_verifications', 'bare_metal_recoveries',
   'brain_device_context', 'browser_extensions', 'browser_policy_violations',
   'capacity_predictions',
   'cis_baseline_results', 'cis_remediation_actions',
@@ -446,11 +475,12 @@ export const DEVICE_SITE_DENORMALIZED_TABLES = [
  * The test in cascadeDelete.test.ts will fail CI if you forget.
  */
 const CORE_DEVICE_CASCADE_DELETE_TABLES = [
+  'bare_metal_recoveries',
   'offline_transition_effects',
   // recovery_tokens & backup_chains FK to backup_snapshots (no cascade),
   // so delete them first, then restore_jobs → backup_snapshots → backup_jobs
   'recovery_tokens', 'backup_chains',
-  'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs',
+  'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs', 'backup_snapshot_retirements',
   // Application backup & DR
   'sql_instances', 'local_vaults', 'hyperv_vms',
   // Deployment invites (FK device_id → devices.id; no cascade)
@@ -597,7 +627,14 @@ coreRoutes.post(
   optionalJsonValidator(onboardingTokenSchema),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const requestedOrgId = c.req.query('orgId');
+
+    // `requirePermission` is the sole producer of the live site ceiling. Do
+    // not silently interpret a missing middleware result as unrestricted.
+    if (!permissions) {
+      return c.json({ error: 'Permission context unavailable' }, 500);
+    }
 
     let orgId = auth.orgId ?? null;
 
@@ -617,6 +654,13 @@ coreRoutes.post(
 
     if (!orgId) {
       return c.json({ error: 'Organization ID required. Provide orgId query parameter.' }, 400);
+    }
+
+    // This convenience route chooses a site on the caller's behalf. An empty
+    // allowlist is therefore an explicit denial, not permission to fall back
+    // to an arbitrary site in the organization.
+    if (permissions.allowedSiteIds?.length === 0) {
+      return c.json({ error: 'No accessible site is available for onboarding.' }, 403);
     }
 
     // Optional caller-supplied multi-use / TTL controls (#1108). A copied CLI
@@ -645,14 +689,24 @@ coreRoutes.post(
     const capError = await assertTtlWithinCap(orgId, explicitTtlMinutes);
     if (capError) return c.json({ error: capError }, 400);
 
-    // Pick the first site in the org for the enrollment key
+    // Pick a site in the org for the enrollment key, intersecting the
+    // automatic choice with the caller's site ceiling. Partner/system callers
+    // and unrestricted organization callers have `allowedSiteIds` undefined.
     const [site] = await db
       .select({ id: sites.id })
       .from(sites)
-      .where(eq(sites.orgId, orgId))
+      .where(and(
+        eq(sites.orgId, orgId),
+        permissions.allowedSiteIds
+          ? inArray(sites.id, permissions.allowedSiteIds)
+          : undefined,
+      ))
       .limit(1);
 
     if (!site) {
+      if (permissions.allowedSiteIds) {
+        return c.json({ error: 'No accessible site is available for onboarding.' }, 403);
+      }
       return c.json({ error: 'No site found for this organization. Create a site first.' }, 400);
     }
 
@@ -1321,7 +1375,7 @@ coreRoutes.get(
     }
 
     return c.json({
-      ...stripSensitiveDeviceFields(device),
+      ...projectPublicDevice(device),
       hardware: hardware || null,
       networkInterfaces,
       recentMetrics,
@@ -1712,7 +1766,7 @@ coreRoutes.patch(
     // SR-008: never return agent/helper/watchdog token hashes or mTLS cert
     // material to the client (these are credential verifiers / lifecycle
     // metadata that belong only inside the API).
-    return c.json(updated ? stripSensitiveDeviceFields(updated) : updated);
+    return c.json(updated ? projectPublicDevice(updated) : updated);
   }
 );
 
@@ -1740,6 +1794,11 @@ coreRoutes.post(
 
     const newToken = `brz_${randomBytes(32).toString('hex')}`;
     const tokenHash = createHash('sha256').update(newToken).digest('hex');
+    const revokedTokenHashes = [
+      device.agentTokenHash,
+      device.previousTokenHash,
+      device.pendingTokenHash,
+    ].filter((hash): hash is string => typeof hash === 'string');
 
     const [updated] = await db
       .update(devices)
@@ -1761,12 +1820,29 @@ coreRoutes.post(
       .where(eq(devices.id, deviceId))
       .returning();
 
+    // The DB generation check in agentWs is cluster-authoritative; this local
+    // close is the low-latency path for a socket owned by this API instance.
+    const agentWsDisconnect = device.agentId
+      ? disconnectAgentCredentialGeneration(
+          device.agentId,
+          revokedTokenHashes,
+          'Agent credentials rotated',
+        )
+      : 'not-connected';
+    if (device.agentId && revokedTokenHashes.length > 0) {
+      void publishAgentCredentialRevocation({
+        agentId: device.agentId,
+        revokedTokenHashes,
+      });
+    }
+
     writeRouteAudit(c, {
       orgId: device.orgId,
       action: 'device.agent_token.rotate',
       resourceType: 'device',
       resourceId: updated?.id ?? deviceId,
-      resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname
+      resourceName: updated?.hostname ?? updated?.displayName ?? device.hostname,
+      details: { agentWsDisconnect },
     });
 
     return c.json({
@@ -1949,7 +2025,7 @@ coreRoutes.delete(
 
     return c.json({
       success: true,
-      device: updated ? stripSensitiveDeviceFields(updated) : updated,
+      device: updated ? projectPublicDevice(updated) : updated,
       uninstallQueued,
     });
   }
@@ -2022,7 +2098,7 @@ coreRoutes.post(
 
     return c.json({
       success: true,
-      device: result.device ? stripSensitiveDeviceFields(result.device) : result.device,
+      device: result.device ? projectPublicDevice(result.device) : result.device,
       uninstallAlreadyDispatched: result.uninstallAlreadyDispatched,
     });
   }
@@ -2116,7 +2192,7 @@ coreRoutes.delete(
     try {
       const purge = await runOutsideDbContext(() =>
         withSystemDbAccessContext(
-          () => db.transaction((tx) => purgeRemovedDevice(tx, deviceId)),
+          () => db.transaction((tx) => purgeRemovedDevice(tx, deviceId, auth.allowedSiteIds)),
           'devices.permanentDelete',
         ),
       );

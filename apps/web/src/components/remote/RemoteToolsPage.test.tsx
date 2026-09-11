@@ -377,3 +377,111 @@ describe('RemoteToolsPage Services tab surfaces failed commands (#5088)', () => 
     },
   );
 });
+
+// Sweep 2026-09-08 (row 11, Group 1): fetchServices caught the fetch error
+// into console.error and never told ServicesManager, so an offline device's
+// 503 read as "0 of 0 services / No Services Available" — the exact #4935
+// symptom, just on a different tab. ServicesManager now takes a `loadError`
+// prop, mirroring ProcessManager.
+describe('RemoteToolsPage Services tab surfaces an unavailable device (sweep 2026-09-08 row 11)', () => {
+  const OFFLINE_BODY = { error: 'The device is offline.', code: 'device_offline' };
+
+  const makeStatusResponse = (payload: unknown, ok: boolean, status: number): Response =>
+    ({
+      ok,
+      status,
+      json: vi.fn().mockResolvedValue(payload),
+    } as unknown as Response);
+
+  const mockServiceListResponse = (response: Response) => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url.includes('/system-tools/devices/device-1/services')
+        ? response
+        : makeResponse(),
+    );
+  };
+
+  it('renders the offline reason instead of "No Services Available" when the API answers 503', async () => {
+    window.location.hash = '#services';
+    mockServiceListResponse(makeStatusResponse(OFFLINE_BODY, false, 503));
+
+    renderPage();
+
+    expect(await screen.findByText('The device is offline.')).toBeInTheDocument();
+    expect(screen.queryByText('No Services Available')).not.toBeInTheDocument();
+  });
+
+  it('offers a retry that re-requests the service list', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#services';
+    mockServiceListResponse(makeStatusResponse(OFFLINE_BODY, false, 503));
+
+    renderPage();
+    await screen.findByText('The device is offline.');
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.filter(
+        ([url]) => typeof url === 'string' && url.includes('/system-tools/devices/device-1/services'),
+      );
+      expect(calls.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it('keeps the "No Services Available" empty state for a genuine 200 with zero rows', async () => {
+    window.location.hash = '#services';
+    mockServiceListResponse(makeStatusResponse({ data: [] }, true, 200));
+
+    renderPage();
+
+    expect(await screen.findByText('No Services Available')).toBeInTheDocument();
+    expect(screen.queryByText('The device is offline.')).not.toBeInTheDocument();
+  });
+});
+
+// Same swallow pattern, same fix, applied to the Scheduled Tasks tab
+// (sweep 2026-09-08 row 11): fetchTasks discarded the error and ScheduledTasks
+// had no loadError prop at all.
+describe('RemoteToolsPage Scheduled Tasks tab surfaces an unavailable device (sweep 2026-09-08 row 11)', () => {
+  const OFFLINE_BODY = { error: 'The device is offline.', code: 'device_offline' };
+
+  const makeStatusResponse = (payload: unknown, ok: boolean, status: number): Response =>
+    ({
+      ok,
+      status,
+      json: vi.fn().mockResolvedValue(payload),
+    } as unknown as Response);
+
+  const mockTaskListResponse = (response: Response) => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url.includes('/system-tools/devices/device-1/tasks')
+        ? response
+        : makeResponse(),
+    );
+  };
+
+  it('renders the offline reason instead of the "not loaded" empty state when the API answers 503', async () => {
+    window.location.hash = '#tasks';
+    mockTaskListResponse(makeStatusResponse(OFFLINE_BODY, false, 503));
+
+    renderPage();
+
+    expect(await screen.findByText('The device is offline.')).toBeInTheDocument();
+    expect(
+      screen.queryByText('No scheduled tasks have been loaded for this device'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('keeps the "not loaded" empty state for a genuine 200 with zero rows', async () => {
+    window.location.hash = '#tasks';
+    mockTaskListResponse(makeStatusResponse({ data: [] }, true, 200));
+
+    renderPage();
+
+    expect(
+      await screen.findByText('No scheduled tasks have been loaded for this device'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('The device is offline.')).not.toBeInTheDocument();
+  });
+});

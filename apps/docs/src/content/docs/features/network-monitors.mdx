@@ -13,6 +13,15 @@ Network Monitors let you define recurring checks against IP addresses, hostnames
 
 All monitor operations require authentication and one of the `organization`, `partner`, or `system` scopes. Organization-scoped users are automatically restricted to monitors within their own organization.
 
+## In the console
+
+Network Monitors are managed from **Network Monitor** in the sidebar (`/monitoring`), under the **Network Checks** tab.
+
+- The tab lists every monitor for the current organization with its type, target, last status, and last response time, and refreshes automatically.
+- **Add Monitor** opens a form to pick a monitor type (ICMP Ping, TCP Port, HTTP/Endpoint, or DNS), enter the name, target, polling interval, and timeout, and set the type-specific options (e.g. expected HTTP status, DNS record type).
+- Each row has actions to run an on-demand check now, open the monitor's detail view, or delete it.
+- The detail view shows recent check results and response times, and lets you edit the monitor's name, polling interval, timeout, and active status.
+
 ## Monitor Types
 
 Breeze supports four monitor types, stored in the `monitor_type` PostgreSQL enum:
@@ -199,6 +208,41 @@ The response includes:
 ## Alert Rules on Monitors
 
 Each monitor can have one or more alert rules. Alert rules are evaluated against check results to trigger alerts at the configured severity level.
+
+### What a monitor alert now does
+
+<Aside type="caution" title="Monitor alerts notify and automate as of v0.111">
+  Monitor alerts used to appear **only** in the Alerts inbox. They now travel the
+  same path as every other alert, so a firing monitor rule also:
+
+  - sends notifications on your configured channels (email, Teams, Slack, webhook, PagerDuty, SMS, Pushover),
+  - starts any matching escalation policy,
+  - fires automations triggered on **Alert triggered**, and
+  - receives an AI verdict where that is enabled.
+
+  **If you already run network monitors with alert rules, expect a step change
+  in notification and automation volume the first time you upgrade.** Review
+  those rules, their severities, your notification channels, and your escalation
+  policies before deploying.
+</Aside>
+
+Monitor alerts carry `source: network_monitor` along with the monitor id, the
+alert-rule id, the monitor type and the target, so an automation or notification
+filter can be narrowed to exactly the monitors you want rather than catching all
+of them. These alerts have no underlying alert-rule record in the alerts system,
+so an automation matching on a device alert rule id will not see them.
+
+Two limits keep the volume sane, and both were already in place before alerts
+started notifying:
+
+- **A five-minute cooldown per rule and target.** A monitor that flaps produces
+  at most one alert every five minutes for a given rule.
+- **Deduplication while an alert is open.** A rule that keeps failing updates its
+  existing active or acknowledged alert instead of stacking new ones.
+
+**Recovery resolves the alert automatically.** When the condition stops matching,
+Breeze resolves the open alert with a note naming the monitor and the condition
+it recovered from -- there is nothing to clear by hand.
 
 ### Alert Rule Conditions
 

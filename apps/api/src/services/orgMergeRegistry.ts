@@ -31,8 +31,7 @@ export type OrgMergePolicy =
   | { kind: 'blocks-merge'; note: string }; // rows FORBID the merge outright; engine refuses pre-walk — see specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md
 
 // device_commands / user_sso_identities / sso_sessions / psa_ticket_mappings /
-// deployment_results / software_versions / report_runs have no org_id column
-// of their own:
+// deployment_results / report_runs have no org_id column of their own:
 // tenancy is inferred by joining to a parent row, so once the parent's
 // org_id is repointed these rows travel along for free — the merge engine
 // does nothing to them directly. (Exception: `report_runs` rows under a
@@ -52,13 +51,22 @@ export type OrgMergePolicy =
 // keeping it in sync. Classifying it follows-parent would mean the merge
 // engine never touches its org_id, silently pinning those rows to the dead
 // loser org forever — CORRECTED to a plain repoint in REPOINT_TABLES below.
+//
+// `software_versions` is deliberately NOT derived from
+// ASSOCIATED_SYSTEM_SCOPED_TABLES even though it has the same no-own-org_id
+// shape: the dependency-pinning fix (#5473) replaced its generic `clearSql`
+// pre-clear entry there with `deleteSoftwareCatalogsAndObjects` (it now also
+// has to delete the version's uploaded S3 artifact, which a bare DELETE
+// statement can't do), so it dropped out of that list. Its merge tenancy
+// shape hasn't changed — it's still catalog_id-keyed with no org_id column —
+// so it's classified by hand directly in SPECIAL below instead of relying on
+// derivation.
 const FOLLOWS_PARENT_NOTES: Readonly<Record<string, string>> = {
   device_commands: 'device-keyed',
   user_sso_identities: 'user-keyed',
   sso_sessions: 'provider-keyed',
   psa_ticket_mappings: 'connection/alert/device-keyed',
   deployment_results: 'deployment-keyed',
-  software_versions: 'parent-keyed (software_catalog)',
   report_runs: 'parent-keyed (reports)',
 };
 const FOLLOWS_PARENT_OWN_ORG_ID_EXCEPTIONS = new Set(['software_deployments']);
@@ -77,11 +85,27 @@ const FOLLOWS_PARENT_OWN_ORG_ID_EXCEPTIONS = new Set(['software_deployments']);
  */
 const POST_PASS_FIXUP_TABLES = new Set(['accounting_entity_mappings']);
 
+/**
+ * ASSOCIATED_SYSTEM_SCOPED_TABLES entries a merge never needs to touch at all.
+ *
+ * `partners` (#5075 W04) is there only because org ERASURE must un-wire
+ * `partners.service_management_psa_connection_id` before deleting a bound
+ * `psa_connections` row (ON DELETE RESTRICT). A merge deletes nothing:
+ * `psa_connections` is a plain repoint (REPOINT_TABLES below), so the
+ * connection keeps its id and the partner's binding stays valid with no
+ * write to `partners`. The table has no org_id, is not FK-reachable from the
+ * cascade walk, and lives on the partner axis, so a policy entry here would
+ * be a dead entry that reads as coverage — same reasoning as
+ * POST_PASS_FIXUP_TABLES, minus the fixup.
+ */
+const MERGE_NOOP_PARTNER_AXIS_TABLES = new Set(['partners']);
+
 function buildFollowsParentEntries(): Record<string, OrgMergePolicy> {
   const entries: Record<string, OrgMergePolicy> = {};
   for (const { table } of tenantCascadeTestOnly.ASSOCIATED_SYSTEM_SCOPED_TABLES) {
     if (FOLLOWS_PARENT_OWN_ORG_ID_EXCEPTIONS.has(table)) continue;
     if (POST_PASS_FIXUP_TABLES.has(table)) continue;
+    if (MERGE_NOOP_PARTNER_AXIS_TABLES.has(table)) continue;
     const note = FOLLOWS_PARENT_NOTES[table];
     if (!note) {
       // tenantCascade.ts gained a new ASSOCIATED_SYSTEM_SCOPED_TABLES entry
@@ -191,6 +215,24 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // ai_alert_verdicts (Phase 2 wave P2-1, #4187): hangs off a run that
   // itself stays with the source org (ai_agent_runs disposition above) —
   // same reasoning, not a separate immutability trigger.
+  // AI Operator thin slice (#5205 W03, #5208). Task/operation/outbox history
+  // is immutable, source-org history for exactly the reason ai_agent_runs is:
+  // a task's evidence (its runs, its intents, its device command) all stays
+  // with the loser, so repointing the task alone would split one remediation's
+  // story across two orgs. `ai_operator_tasks.org_id` is also the anchor of
+  // four composite (x, org_id) FKs, so a bare repoint would 23503 anyway.
+  //
+  // `ai_operator_tasks` is `custom`, not plain `leave-for-erasure`, because
+  // leaving it alone is not sufficient: `mergeAiAgents` REPOINTS every
+  // loser-org ai_agents row to the survivor, so a task still in a live state
+  // would keep coordinating under a dead tenant against an agent that now
+  // belongs to someone else. The executor fences those tasks first (see
+  // fenceAiOperatorTasks in orgMergeCustomExecutors.ts). It moves and drops
+  // nothing — the fence IS the whole disposition, and the rows are then
+  // erased with the loser shell like their siblings below.
+  ai_operator_tasks: { kind: 'custom', note: 'live tasks are fenced to state=stopping BEFORE ai_agents repoints (resolve phase), then left for erasure with the loser shell — task history never follows a merge, same rule as ai_agent_runs' },
+  ai_operator_operations: { kind: 'leave-for-erasure', note: 'operations hang off a task that stays with the source org (ai_operator_tasks disposition) via a composite (task_id, org_id) FK; they are erased with it' },
+  ai_operator_task_outbox: { kind: 'leave-for-erasure', note: 'coordinator wake rows for a task that stays with the source org; a fenced task has nothing left to wake, and the rows cascade with the task on erasure' },
   ai_alert_verdicts: { kind: 'leave-for-erasure', note: 'verdicts hang off ai_agent_runs (leave-for-erasure) and cascade with them; alert/group FKs cascade too' },
   // ai_agent_schedules (Phase 2 wave P2-2, #4189): dual-owner (org_id XOR
   // partner_id) config, same "not a normal org_id table" shape as ai_agents
@@ -329,6 +371,16 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // No org_id column — tenancy via parent rows, which we re-point:
   ...buildFollowsParentEntries(),
 
+  // Not derived from ASSOCIATED_SYSTEM_SCOPED_TABLES (see the comment above
+  // FOLLOWS_PARENT_NOTES) — classified by hand instead. Same shape as the
+  // derived entries: no org_id column, tenancy inferred via catalog_id ->
+  // software_catalog. A merge repoints software_catalog.org_id (REPOINT_TABLES
+  // below); since a version's org is never read directly, only joined through
+  // its catalog row, every version pinned by the loser org re-homes to the
+  // surviving org for free the moment its parent catalog repoints — the merge
+  // engine does nothing to software_versions directly.
+  software_versions: { kind: 'follows-parent', note: 'parent-keyed (software_catalog)' },
+
   // Singleton config rows (UNIQUE(org_id)) — survivor's config wins:
   audit_retention_policies: { kind: 'keep-survivor' }, // verified: audit_retention_policies.org_id UNIQUE (audit.ts) — every org now gets one seeded by breeze_seed_org_audit_retention (#4824), so both sides of a merge always collide on a plain repoint
   ai_budgets: { kind: 'keep-survivor' }, // verified: ai_budgets.org_id UNIQUE (ai.ts)
@@ -350,10 +402,17 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   alert_correlation_groups: { kind: 'repoint-dedupe', key: ['group_key'] }, // verified: alert_correlation_groups_org_key_uq (org_id, group_key)
   ai_cost_usage: { kind: 'repoint-dedupe', key: ['period', 'period_key'] }, // verified: ai_cost_usage_org_period_idx (org_id, period, period_key)
   ai_budget_alert_events: { kind: 'repoint-dedupe', key: ['period', 'period_key', 'threshold_pct'] }, // verified: ai_budget_alert_events_org_period_rung_uidx (org_id, period, period_key, threshold_pct)
+  ai_budget_reservations: { kind: 'repoint-dedupe', key: ['idempotency_key'] }, // verified: ai_budget_reservations_org_idempotency_uidx (org_id, idempotency_key). Its composite (session_id, org_id) FK to ai_sessions is DEFERRABLE INITIALLY IMMEDIATE so the merge can re-point ai_sessions and this table in separate statements.
   client_ai_usage: { kind: 'repoint-dedupe', key: ['client_user_id', 'period', 'period_key'] }, // verified: client_ai_usage_bucket_uniq (org_id, client_user_id, period, period_key)
   contact_external_links: { kind: 'repoint-dedupe', key: ['system', 'external_id'] }, // verified: contact_external_links_uniq (org_id, system, external_id)
   delegant_m365_connections: { kind: 'repoint-dedupe', key: ['customer_label'] }, // verified: delegant_m365_org_customer_uniq (org_id, customer_label)
   remediation_suggestions: { kind: 'repoint-dedupe', key: ['source_type', 'source_id'] }, // superset of its four partial uniques (org_id, source_type, source_id, {script_id|script_template_id|playbook_id|target_type}); derived rows, over-dropping is safe
+  // service_deliverables_org_contract_name_uq (org_id, COALESCE(contract_id, nil), name)
+  // — 2026-10-15-170000. NOT repoint-dedupe: the loser's row carries its
+  // occurrences and evidence via ON DELETE CASCADE, i.e. the delivered/waived
+  // history the customer portal (#5573) shows. Rename on collision instead,
+  // exactly as audit_baselines does, then repoint everything.
+  service_deliverables: { kind: 'custom', note: "rename colliding loser deliverables (same COALESCE(contract_id), name under the survivor) with a ' (merged <org8>)' suffix, then repoint all rows; NEVER delete — service_deliverable_occurrences/evidence are ON DELETE CASCADE and are the delivery history" },
   tunnel_allowlists: { kind: 'repoint-dedupe', key: ['direction', 'pattern', "COALESCE({site_id}, '00000000-0000-0000-0000-000000000000'::uuid)"] }, // verified: tunnel_allowlists_org_direction_pattern_site_idx (2026-08-08-proxy-session-lifetime.sql)
   // action_intents used to be classified here as a `repoint-dedupe` keyed on
   // action_intents_org_idem_uniq. It is now `leave-for-erasure` above: the
@@ -510,8 +569,10 @@ const REPOINT_TABLES: readonly string[] = [
   "backup_profiles",
   "backup_sla_configs",
   "backup_sla_events",
+  "backup_snapshot_retirements",
   "backup_snapshots",
   "backup_verifications",
+  "bare_metal_recoveries",
   "brain_device_context",
   "browser_extensions",
   "browser_policies",
@@ -627,6 +688,11 @@ const REPOINT_TABLES: readonly string[] = [
   "log_search_queries",
   "m365_consent_sessions",
   "maintenance_windows",
+  // #4622 — plain repoint, NOT repoint-dedupe: there is no org-unique key on
+  // manual_assets by design (serial is deliberately non-unique), so merging two
+  // orgs that each hold the same physical asset yields two rows. That is the
+  // honest outcome and is resolvable by hand.
+  "manual_assets",
   "metric_anomalies",
   "metric_anomaly_candidates",
   "metric_anomaly_incidents",
@@ -643,6 +709,7 @@ const REPOINT_TABLES: readonly string[] = [
   "oauth_refresh_tokens",
   "onedrive_device_state",
   "organization_external_links",
+  "organization_key_dates",
   "pam_rules",
   "partner_enrollment_key_idempotency",
   "patch_compliance_reports",
@@ -701,6 +768,8 @@ const REPOINT_TABLES: readonly string[] = [
   "sensitive_data_findings",
   "sensitive_data_policies",
   "sensitive_data_scans",
+  "service_deliverable_evidence",
+  "service_deliverable_occurrences",
   "service_principals",
   "service_process_check_results",
   "sites",

@@ -18,16 +18,18 @@ import {
   cancelAuthIssuance,
   bindIssuedUserSession,
   completeInitialMfaEnrollment,
+  completeMfaFactorReplacement,
   AuthBindingRotationRequiredError,
   AuthBindingUnavailableError,
   AuthIssuanceConflictError,
   AuthIssuanceCapabilityError,
   type AuthIssuanceCapability,
+  type AuthorizedUserSession,
 } from '../../services';
-import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
+import { carryForwardBinding } from '../../services/mobileDeviceBinding';
 import { getTwilioService } from '../../services/twilio';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
-import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
+import { captureException } from '../../services/sentry';
 import { EpochAdvancePreconditionError } from '../../services/authLifecycle';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { authMiddleware } from '../../middleware/auth';
@@ -83,6 +85,109 @@ function authIssuanceAdmissionError(c: Context, error: unknown): Response | null
   }
   return null;
 }
+
+/**
+ * POST-COMMIT session install for the factor write that replaces the caller's
+ * session (#5198). The phone write is already committed and every OTHER session
+ * is already dead by the time this runs, so a failure here must NOT become an
+ * error the user retries: `mfa_epoch` has already advanced, so the retry would
+ * answer 409 while the number really did change. Report it, step over, and
+ * withhold the tokens we would otherwise return — the refresh JTI was never
+ * bound, so the access token would die at its first refresh anyway. Same rule
+ * /mfa/disable, /mfa/recovery-codes and the passkey writes (#5038) follow.
+ *
+ * Returns whether the replacement is safe to hand back.
+ */
+async function installReplacementSession(
+  c: Context,
+  issued: AuthorizedUserSession,
+  userId: string,
+  factorChange: string,
+): Promise<boolean> {
+  try {
+    await bindIssuedUserSession(issued);
+    installAuthorizedUserSessionCookies(c, issued);
+    return true;
+  } catch (error) {
+    captureException(error, c, { factorChange });
+    console.error('[auth] phone factor write committed but the replacement session could not be installed', {
+      userId,
+      factorChange,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
+// Send a code to the authenticated user's LIVE SMS factor for a purpose-bound
+// MFA step-up. This is distinct from /mfa/sms/send, whose tempToken authorizes
+// a pre-login challenge. Never accept a caller-supplied phone number here.
+phoneRoutes.post('/mfa/step-up/sms/send', authMiddleware, async (c) => {
+  if (!ENABLE_2FA) return mfaDisabledResponse(c);
+
+  const auth = c.get('auth');
+  const redis = getRedis();
+  if (!redis) return c.json({ error: 'Service temporarily unavailable' }, 503);
+
+  const [user] = await db
+    .select({
+      mfaEnabled: users.mfaEnabled,
+      mfaMethod: users.mfaMethod,
+      phoneVerified: users.phoneVerified,
+      phoneNumber: users.phoneNumber,
+    })
+    .from(users)
+    .where(eq(users.id, auth.user.id))
+    .limit(1);
+
+  const policy = await getEffectiveMfaPolicy({
+    scope: auth.scope,
+    userId: auth.user.id,
+    orgId: auth.orgId ?? null,
+    partnerId: auth.partnerId ?? null,
+  }, { failClosed: true, failClosedMethods: true });
+  if (
+    !user?.mfaEnabled
+    || user.mfaMethod !== 'sms'
+    || user.phoneVerified !== true
+    || !user.phoneNumber
+    || !policy.allowedMethods.sms
+  ) {
+    return rejectProof(c, 'Invalid credentials', MFA_CODE_INVALID, MFA_PROOF_REJECTION_STATUS);
+  }
+
+  const userRate = await rateLimiter(
+    redis,
+    `sms:stepup-send:${auth.user.id}`,
+    smsLoginSendLimiter.limit,
+    smsLoginSendLimiter.windowSeconds,
+  );
+  if (!userRate.allowed) return c.json({ error: 'Too many SMS requests. Try again later.' }, 429);
+
+  const phoneRate = await rateLimiter(
+    redis,
+    `sms:stepup-global:${user.phoneNumber}`,
+    smsLoginGlobalLimiter.limit,
+    smsLoginGlobalLimiter.windowSeconds,
+  );
+  if (!phoneRate.allowed) return c.json({ error: 'Too many SMS requests. Try again later.' }, 429);
+
+  const twilio = getTwilioService();
+  if (!twilio) return c.json({ error: 'SMS service not configured' }, 501);
+  const result = await twilio.sendVerificationCode(user.phoneNumber);
+  if (!result.success) return c.json({ error: 'Failed to send SMS code' }, 500);
+
+  const orgId = await resolveUserAuditOrgId(auth.user.id);
+  writeAuthAudit(c, {
+    orgId: orgId ?? undefined,
+    action: 'auth.mfa.stepup.sms.sent',
+    result: 'success',
+    userId: auth.user.id,
+    email: auth.user.email,
+    details: { phoneLast4: user.phoneNumber.slice(-4) },
+  });
+  return c.json({ success: true, message: 'SMS code sent' });
+});
 
 // Phone verification - send code (authenticated)
 phoneRoutes.post('/phone/verify', authMiddleware, zValidator('json', phoneVerifySchema), async (c) => {
@@ -268,16 +373,71 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
     .limit(1);
   const isSmsFactorReplacement = cur?.mfaEnabled === true && cur.mfaMethod === 'sms';
 
-  let assuranceResult: Awaited<ReturnType<typeof invalidateMfaAssuranceAfterFactorChange>> | null = null;
-  try {
-    if (isSmsFactorReplacement) {
-      assuranceResult = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'phone-replacement', async (tx) => {
-        await tx
-          .update(users)
-          .set({ phoneNumber, phoneVerified: true, updatedAt: new Date() })
-          .where(eq(users.id, auth.user.id));
-      }, { authEpoch, mfaEpoch, status: 'active' });
-    } else {
+  // #5198: a REPLACEMENT still advances mfa_epoch and revokes every refresh
+  // family — the number being swapped out must stop authorizing sessions minted
+  // before the swap (SR2-19) — but it must not evict the ACTOR. The old path
+  // bumped the epoch without re-issuing, so changing your own phone number
+  // bounced you to /login?reason=session-expired. Same primitive #4934/#5008
+  // gave /mfa/disable and #5038 gave the passkey writes: every other session
+  // dies, the caller's is replaced in the same response. The account's existing
+  // recovery-code set is untouched — a phone swap reveals no new one-time
+  // secret, so none is rotated.
+  let replacement: Awaited<ReturnType<typeof completeMfaFactorReplacement<undefined>>> | null = null;
+  let sessionInstalled = false;
+  if (isSmsFactorReplacement) {
+    let capability: AuthIssuanceCapability;
+    try {
+      capability = await beginAuthIssuance(requestAuthBinding(c));
+    } catch (error) {
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      return response;
+    }
+    try {
+      replacement = await completeMfaFactorReplacement({
+        userId: auth.user.id,
+        identity: {
+          userId: auth.user.id,
+          email: auth.user.email,
+          roleId: auth.token?.roleId ?? null,
+          orgId: auth.orgId ?? null,
+          partnerId: auth.partnerId ?? null,
+          scope: auth.scope,
+          // Carry the caller's OWN assurance forward, never elevate it: this
+          // endpoint's step-up gate proves an existing factor and the current
+          // password, not that the session itself was MFA-assured.
+          mfa: auth.token?.mfa === true,
+          // SR-001: a RE-MINT takes its device binding from the previously
+          // signed `mdid` claim, never the forgeable request header.
+          mobileDeviceId: carryForwardBinding(auth.token ?? {}),
+        },
+        capability,
+        expectedAuthEpoch: authEpoch as number,
+        expectedMfaEpoch: mfaEpoch as number,
+        revokeReason: 'phone-replacement',
+        persistFactor: async (tx) => {
+          const rows = await tx
+            .update(users)
+            .set({ phoneNumber, phoneVerified: true, updatedAt: new Date() })
+            .where(eq(users.id, auth.user.id))
+            .returning({ id: users.id });
+          if (rows.length !== 1) throw new Error('Phone replacement user disappeared');
+          return undefined;
+        },
+      });
+    } catch (error) {
+      await cancelAuthIssuance(capability).catch(() => undefined);
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      return response;
+    }
+    sessionInstalled = await installReplacementSession(c, replacement.issued, auth.user.id, 'phone-replacement');
+  } else {
+    // Initial phone verification (no ACTIVE SMS factor yet): nothing about the
+    // account's factor set changed, so no epoch bump and no session
+    // replacement — signing the user out here would strand them mid-enrollment
+    // before /mfa/sms/enable ever runs.
+    try {
       const updated = await db
         .update(users)
         .set({ phoneNumber, phoneVerified: true, updatedAt: new Date() })
@@ -285,12 +445,12 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
           eq(users.mfaEpoch, mfaEpoch!), eq(users.status, 'active')))
         .returning({ id: users.id });
       if (updated.length !== 1) throw new EpochAdvancePreconditionError();
+    } catch (error) {
+      if (error instanceof EpochAdvancePreconditionError) {
+        return c.json({ error: 'Authentication state changed. Please sign in again.' }, 409);
+      }
+      throw error;
     }
-  } catch (error) {
-    if (error instanceof EpochAdvancePreconditionError) {
-      return c.json({ error: 'Authentication state changed. Please sign in again.' }, 409);
-    }
-    throw error;
   }
 
   writeAuthAudit(c, {
@@ -301,17 +461,29 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
     email: auth.user.email,
     details: {
       phoneLast4: phoneNumber.slice(-4),
-      ...(assuranceResult
+      ...(replacement
         ? {
             smsFactorReplacement: true,
-            mfaEpoch: assuranceResult.mfaEpoch,
-            teardownFailed: assuranceResult.remoteSessionsTerminated === TEARDOWN_FAILED
+            mfaEpoch: replacement.mfaEpoch,
+            teardownFailed: replacement.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED,
+            sessionInstalled
           }
         : {})
     }
   });
 
-  return c.json({ success: true, message: 'Phone number verified' });
+  return c.json({
+    success: true,
+    message: 'Phone number verified',
+    // Present only on the REPLACEMENT branch, and true regardless of whether
+    // the post-commit install succeeded: it tells the client that every session
+    // it held before this call — including this one — was revoked. Absent on
+    // initial verification, where nothing was revoked.
+    ...(replacement ? { sessionReplaced: true } : {}),
+    // Withheld when the post-commit install failed: the refresh JTI was never
+    // bound, so the access token would die at its first refresh.
+    ...(replacement && sessionInstalled ? { tokens: toPublicTokens(replacement.issued) } : {}),
+  });
 });
 
 // SMS MFA enable (authenticated, requires verified phone)
@@ -405,7 +577,11 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
         partnerId: auth.partnerId ?? null,
         scope: auth.scope,
         mfa: true,
-        mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+        // SR-001: a RE-MINT for an already-authenticated caller takes its
+        // device binding from the previously signed `mdid` claim, never the
+        // forgeable request header — otherwise a bound mobile session could be
+        // silently un-bound by omitting the header on this call.
+        mobileDeviceId: carryForwardBinding(auth.token ?? {}),
       },
       capability,
       expectedAuthEpoch: auth.token?.aep as number,
@@ -448,6 +624,7 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
     details: { method: 'sms', mfaEpoch: result.mfaEpoch, teardownFailed: result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED }
   });
 
+  c.header('Cache-Control', 'no-store');
   return c.json({
     success: true,
     recoveryCodes: result.recoveryCodes,

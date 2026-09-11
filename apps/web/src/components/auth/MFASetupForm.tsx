@@ -6,6 +6,12 @@ const DIGIT_COUNT = 6;
 
 type MFASetupFormProps = {
   qrCodeDataUrl?: string;
+  /**
+   * #5319: the base32 TOTP secret returned alongside the QR image. Forced MFA
+   * enrollment is mandatory, so a QR-only screen locks out anyone enrolling on
+   * this same device or using a screen reader.
+   */
+  totpSecret?: string;
   onSubmit?: (code: string) => void | Promise<void>;
   errorMessage?: string;
   submitLabel?: string;
@@ -14,6 +20,7 @@ type MFASetupFormProps = {
 
 export default function MFASetupForm({
   qrCodeDataUrl,
+  totpSecret,
   onSubmit,
   errorMessage,
   submitLabel,
@@ -22,9 +29,29 @@ export default function MFASetupForm({
   const { t } = useTranslation('auth');
   const [digits, setDigits] = useState<string[]>(Array(DIGIT_COUNT).fill(''));
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [secretCopyState, setSecretCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
+  // Authenticator apps take the key unspaced; humans read it in groups of four.
+  const normalizedSecret = totpSecret?.replace(/\s+/g, '').toUpperCase() || undefined;
+  const groupedSecret = normalizedSecret
+    ? (normalizedSecret.match(/.{1,4}/g) ?? []).join(' ')
+    : undefined;
+
+  // A denied clipboard (insecure context, permissions policy, missing gesture)
+  // must say so — this is the only place the key is ever shown.
+  const handleCopySecret = async () => {
+    if (!normalizedSecret) return;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(normalizedSecret);
+      setSecretCopyState('copied');
+      window.setTimeout(() => setSecretCopyState(state => (state === 'copied' ? 'idle' : state)), 2000);
+    } catch {
+      setSecretCopyState('failed');
+    }
+  };
   const code = digits.join('');
 
   const focusIndex = (index: number) => {
@@ -105,6 +132,54 @@ export default function MFASetupForm({
             </div>
           )}
         </div>
+        {groupedSecret && (
+          <div className="space-y-2 rounded-md border bg-muted/30 p-4">
+            <p className="text-sm font-medium">
+              {t('mfaSetup.manualKeyPrompt', { defaultValue: "Can't scan the code?" })}
+            </p>
+            <p className="text-sm text-muted-foreground">
+              {t('mfaSetup.manualKeyHelp', {
+                defaultValue: 'Enter this setup key in your authenticator app instead.',
+              })}
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              {/* sr-only SIBLING, not an aria-label: an accessible name would
+                  replace the key's text for a screen reader. */}
+              <span>
+                <span className="sr-only">
+                  {t('mfaSetup.manualKeyLabel', { defaultValue: 'Setup key' })}
+                </span>
+                <code
+                  data-testid="mfa-totp-secret"
+                  className="rounded-sm bg-background px-2 py-1 font-mono text-sm tracking-wider break-all select-all"
+                >
+                  {groupedSecret}
+                </code>
+              </span>
+              <button
+                type="button"
+                data-testid="mfa-copy-totp-secret"
+                onClick={handleCopySecret}
+                className="inline-flex h-9 items-center justify-center rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+              >
+                {secretCopyState === 'copied'
+                  ? t('mfaSetup.manualKeyCopied', { defaultValue: 'Copied' })
+                  : t('mfaSetup.manualKeyCopy', { defaultValue: 'Copy setup key' })}
+              </button>
+            </div>
+            {secretCopyState === 'failed' && (
+              <p
+                data-testid="mfa-copy-totp-secret-error"
+                role="alert"
+                className="text-sm text-destructive"
+              >
+                {t('mfaSetup.manualKeyCopyFailed', {
+                  defaultValue: "Couldn't copy the setup key. Select it and copy it manually.",
+                })}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="space-y-2">

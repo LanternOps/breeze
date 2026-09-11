@@ -154,8 +154,18 @@
       "severity": "Gravidade",
       "message": "Mensagem",
       "command": "Comando",
+      "whenOffline": "Se o dispositivo estiver offline",
       "software": "Software",
       "failureNotificationChannel": "Canal de notificação de falha"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "Enfileirar (padrão)",
+        "skip": "Ignorar"
+      }
+    },
+    "hints": {
+      "whenOffline": "O trabalho na fila aguarda o dispositivo e é executado na próxima conexão, ou expira após 7 dias. Ignorar faz a etapa falhar imediatamente."
     },
     "placeholders": {
       "name": "Verificação diária de manutenção",
@@ -690,7 +700,8 @@
       "completedCancelTooLate": "Concluído — sua solicitação de interrupção chegou tarde demais",
       "failedCancelTooLate": "Falha — sua solicitação de interrupção chegou tarde demais",
       "timeoutCancelTooLate": "Tempo limite — sua solicitação de interrupção chegou tarde demais",
-      "cancelFailed": "Falha ao interromper — o dispositivo não conseguiu interromper o processo"
+      "cancelFailed": "Falha ao interromper — o dispositivo não conseguiu interromper o processo",
+      "queuedOffline": "Na fila — dispositivo offline"
     }
   },
   "executionHistory": {
@@ -718,7 +729,8 @@
       "completedCancelTooLate": "Concluído — sua solicitação de interrupção chegou tarde demais",
       "failedCancelTooLate": "Falha — sua solicitação de interrupção chegou tarde demais",
       "timeoutCancelTooLate": "Tempo limite — sua solicitação de interrupção chegou tarde demais",
-      "cancelFailed": "Falha ao interromper — o dispositivo não conseguiu interromper o processo"
+      "cancelFailed": "Falha ao interromper — o dispositivo não conseguiu interromper o processo",
+      "queuedOffline": "Na fila — dispositivo offline"
     },
     "summary": "{{shown}} de {{total}}",
     "headers": {
@@ -927,6 +939,9 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "toasts": {
+      "runsWhenOnline": "Executa quando o dispositivo estiver online"
     }
   },
   "secretParameters": {
@@ -1102,7 +1117,7 @@
       "variablePlaceholder": "ex.: vendor_token",
       "fieldLabel": "Chave do campo personalizado",
       "fieldPlaceholder": "ex.: asset_tag",
-      "fieldHelp": "Digite a Chave do Campo exibida em Configurações → Campos Personalizados (diferencia maiúsculas de minúsculas). Leitura: uma vez vinculado, o valor resolvido é entregue ao script como qualquer parâmetro normal — nenhum prompt é exibido. Gravação: para salvar um novo valor, faça o script chamar a API de campos personalizados do dispositivo com uma requisição PATCH e uma chave de API.",
+      "fieldHelp": "Digite a Chave do Campo exibida em Configurações → Campos Personalizados (diferencia maiúsculas de minúsculas). Leitura: o valor resolvido é entregue ao script como a variável de ambiente BREEZE_PARAM_<KEY> (nome do parâmetro em maiúsculas com sublinhados) e como o marcador {{paramName}} — nenhum prompt é exibido. Gravação: imprima ::breeze:custom-fields:: {\"key\": \"value\"} no stdout para um campo com \"Permitir que scripts gravem este campo\" habilitado. Veja \"Ler e gravar campos personalizados\" abaixo do editor para um exemplo.",
       "fieldHelpAriaLabel": "Sobre a vinculação de campo personalizado do dispositivo",
       "builtinLabel": "Propriedade",
       "chooseTitle": "Escolher uma variável",
@@ -1111,6 +1126,26 @@
       "notSecretRow": "Não é secreta — use \"De uma variável\"",
       "secretHint": "Entregue apenas como a variável de ambiente {{env}} — nunca escrita no script. Exige execução no contexto do sistema e um agente compatível com a entrega segura de segredos.",
       "hint": "Resolvido para cada dispositivo de destino quando o script é executado — ninguém precisa informar."
+    },
+    "securityReview": {
+      "title": "Revisão de segurança",
+      "blockedHint_one": "Este script corresponde a 1 padrão que o agente se recusa a executar sem um reconhecimento.",
+      "blockedHint_other": "Este script corresponde a {{count}} padrões que o agente se recusa a executar sem um reconhecimento. Reconheça cada um que você pretende permitir.",
+      "clearedHint": "Todos os padrões detectados foram reconhecidos.",
+      "willBlock": "Não reconhecido — o agente se recusará a executar este script.",
+      "footnote": "Um reconhecimento se aplica somente a este script e cobre apenas os padrões listados aqui. Se você adicionar depois uma operação arriscada diferente, ela será bloqueada até que você também a reconheça."
+    },
+    "customFieldHelp": {
+      "title": "Ler e gravar campos personalizados",
+      "readLabel": "Leitura:",
+      "read": "vincule um parâmetro a um campo personalizado (origem \"De um campo personalizado do dispositivo\"). O valor chega como a variável de ambiente",
+      "readPlaceholders": "e como o marcador",
+      "writeLabel": "Gravação:",
+      "write": "imprima uma linha no stdout no formato",
+      "writeGate": "O campo precisa ter \"Permitir que scripts gravem este campo\" habilitado em Configurações → Campos Personalizados. Os valores são validados contra o tipo do campo; chaves rejeitadas são listadas nos detalhes da execução.",
+      "secretCaveat": "O valor gravado também aparece na saída salva do script — nunca grave um segredo dessa forma. Use uma variável secreta.",
+      "insertExample": "Inserir exemplo",
+      "docsLink": "Documentação de campos personalizados"
     }
   },
   "scriptList": {

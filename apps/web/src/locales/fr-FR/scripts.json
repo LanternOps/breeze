@@ -154,8 +154,18 @@
       "severity": "Gravité",
       "message": "Message",
       "command": "Commande",
+      "whenOffline": "Si l'appareil est hors ligne",
       "software": "Logiciel",
       "failureNotificationChannel": "Canal de notification d’échec"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "Mettre en file d'attente (par défaut)",
+        "skip": "Ignorer"
+      }
+    },
+    "hints": {
+      "whenOffline": "Le travail en file d'attente attend l'appareil et s'exécute à sa prochaine connexion, ou expire après 7 jours. Ignorer fait échouer l'étape immédiatement."
     },
     "placeholders": {
       "name": "Contrôle de maintenance quotidien",
@@ -690,7 +700,8 @@
       "completedCancelTooLate": "Terminée — votre demande d'arrêt est arrivée trop tard",
       "failedCancelTooLate": "Échec — votre demande d'arrêt est arrivée trop tard",
       "timeoutCancelTooLate": "Délai dépassé — votre demande d'arrêt est arrivée trop tard",
-      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus"
+      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus",
+      "queuedOffline": "En file d'attente — appareil hors ligne"
     }
   },
   "executionHistory": {
@@ -718,7 +729,8 @@
       "completedCancelTooLate": "Terminée — votre demande d'arrêt est arrivée trop tard",
       "failedCancelTooLate": "Échec — votre demande d'arrêt est arrivée trop tard",
       "timeoutCancelTooLate": "Délai dépassé — votre demande d'arrêt est arrivée trop tard",
-      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus"
+      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus",
+      "queuedOffline": "En file d'attente — appareil hors ligne"
     },
     "summary": "{{shown}} sur {{total}}",
     "headers": {
@@ -927,6 +939,9 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "toasts": {
+      "runsWhenOnline": "S'exécute quand l'appareil est en ligne"
     }
   },
   "secretParameters": {
@@ -1102,7 +1117,7 @@
       "variablePlaceholder": "p. ex. vendor_token",
       "fieldLabel": "Clé du champ personnalisé",
       "fieldPlaceholder": "p. ex. asset_tag",
-      "fieldHelp": "Saisissez la Clé du champ affichée dans Paramètres → Champs personnalisés (sensible à la casse). Lecture : une fois liée, la valeur résolue est transmise au script comme un paramètre normal — aucune invite n’est affichée. Écriture : pour enregistrer une nouvelle valeur, faites appeler par le script l’API des champs personnalisés de l’appareil avec une requête PATCH et une clé API.",
+      "fieldHelp": "Saisissez la Clé du champ affichée dans Paramètres → Champs personnalisés (sensible à la casse). Lecture : la valeur résolue est transmise au script sous forme de variable d’environnement BREEZE_PARAM_<KEY> (nom du paramètre en majuscules avec des tirets bas) et de l’espace réservé {{paramName}} — aucune invite n’est affichée. Écriture : affichez ::breeze:custom-fields:: {\"key\": \"value\"} sur stdout pour un champ dont l’option « Autoriser les scripts à écrire ce champ » est activée. Voir « Lire et écrire les champs personnalisés » sous l’éditeur pour un exemple.",
       "fieldHelpAriaLabel": "À propos de la liaison du champ personnalisé de l’appareil",
       "builtinLabel": "Propriété",
       "chooseTitle": "Choisir une variable",
@@ -1111,6 +1126,26 @@
       "notSecretRow": "Pas un secret — utilisez « À partir d’une variable »",
       "secretHint": "Transmise uniquement comme variable d’environnement {{env}} — jamais écrite dans le script. Nécessite une exécution dans le contexte système et un agent prenant en charge la transmission sécurisée des secrets.",
       "hint": "Résolu pour chaque appareil ciblé au moment de l’exécution — personne n’a à le saisir."
+    },
+    "securityReview": {
+      "title": "Revue de sécurité",
+      "blockedHint_one": "Ce script correspond à 1 motif que l'agent refuse d'exécuter sans confirmation.",
+      "blockedHint_other": "Ce script correspond à {{count}} motifs que l'agent refuse d'exécuter sans confirmation. Confirmez chacun de ceux que vous souhaitez autoriser.",
+      "clearedHint": "Tous les motifs détectés ont été confirmés.",
+      "willBlock": "Non confirmé — l'agent refusera d'exécuter ce script.",
+      "footnote": "Une confirmation s'applique uniquement à ce script et ne couvre que les motifs listés ici. Si vous ajoutez plus tard une autre opération à risque, elle sera bloquée jusqu'à ce que vous la confirmiez aussi."
+    },
+    "customFieldHelp": {
+      "title": "Lire et écrire les champs personnalisés",
+      "readLabel": "Lecture :",
+      "read": "liez un paramètre à un champ personnalisé (source « Depuis un champ personnalisé de l’appareil »). La valeur arrive sous forme de variable d’environnement",
+      "readPlaceholders": "et d’espace réservé",
+      "writeLabel": "Écriture :",
+      "write": "affichez une ligne sur stdout sous la forme",
+      "writeGate": "Le champ doit avoir l’option « Autoriser les scripts à écrire ce champ » activée dans Paramètres → Champs personnalisés. Les valeurs sont validées selon le type du champ ; les clés rejetées sont listées dans les détails de l’exécution.",
+      "secretCaveat": "La valeur écrite apparaît aussi dans la sortie enregistrée du script — n’écrivez jamais un secret de cette façon. Utilisez plutôt une variable secrète.",
+      "insertExample": "Insérer un exemple",
+      "docsLink": "Documentation des champs personnalisés"
     }
   },
   "scriptList": {

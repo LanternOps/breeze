@@ -70,11 +70,13 @@ async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly strin
   ));
 }
 import type { AiTool } from './aiTools';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import type { UserPermissions } from './permissions';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { filterWindowsToSiteScope, scopeWindowForRead } from './maintenanceSiteScope';
 import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { checkAutomationTargetsWithinSiteScope } from './automationRuntime';
+import { scanProjectedAutomationRuns } from './automationReadProjection';
 import { assertReportExecutionPreflight } from './reportGenerationService';
 import { deleteDeviceGroup, DeviceGroupDeleteError } from './deviceGroupDelete';
 import {
@@ -967,6 +969,15 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'setup_auto_approval') {
+        // NOTE: this whole action is currently unreachable (see the disabled
+        // early-return above) — defense-in-depth, kept correct so the block is
+        // not a trap if the gate is ever lifted (same convention as the
+        // canManagePartnerWidePolicies check a few lines below). This path
+        // inserts an org configuration_policies row + feature link, which is
+        // exactly the org-wide governance object this contract protects.
+        if (!canMutateOrgWideGovernance(auth)) {
+          return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+        }
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
         const patchSettings = {
@@ -1670,7 +1681,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         }
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
-        const rows = await db.select({
+        const selectRows = () => db.select({
           id: automations.id,
           name: automations.name,
           description: automations.description,
@@ -1685,18 +1696,37 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           partnerId: automations.partnerId,
           conditions: automations.conditions,
         }).from(automations)
-          .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(desc(automations.createdAt))
-          .limit(limit);
+          .where(conditions.length > 0 ? and(...conditions) : undefined);
 
         // Site axis: omit automations whose resolvable target set escapes the
         // caller's site allowlist (only queries the DB for restricted callers).
-        let visible = rows;
-        if (auth.allowedSiteIds) {
-          const checks = await Promise.all(
-            rows.map((r) => checkAutomationTargetsWithinSiteScope(r as any, siteScopePerms(auth))),
-          );
-          visible = rows.filter((_, i) => checks[i]!.ok);
+        let visible: any[];
+        if (auth.allowedSiteIds !== undefined) {
+          visible = [];
+          const scanSize = 100;
+          let databaseOffset = 0;
+          while (visible.length < limit) {
+            const batch = await selectRows()
+              .orderBy(desc(automations.createdAt), desc(automations.id))
+              .limit(scanSize).offset(databaseOffset);
+            if (batch.length === 0) break;
+            for (const row of batch) {
+              if ((await checkAutomationTargetsWithinSiteScope(row as any, siteScopePerms(auth))).ok) {
+                visible.push(row);
+                if (visible.length === limit) break;
+              }
+            }
+            databaseOffset += batch.length;
+            if (batch.length < scanSize) break;
+          }
+          visible = visible.map((automation: any) => {
+            const { lastRunAt: _lastRunAt, runCount: _runCount, ...row } = automation;
+            return row;
+          });
+        } else {
+          visible = await selectRows()
+            .orderBy(desc(automations.createdAt), desc(automations.id))
+            .limit(limit);
         }
 
         return JSON.stringify({ automations: visible, showing: visible.length });
@@ -1714,6 +1744,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const getDenied = await automationSiteDenied(auto);
         if (getDenied) return JSON.stringify({ error: getDenied });
 
+        if (auth.allowedSiteIds !== undefined) {
+          const { lastRunAt: _lastRunAt, runCount: _runCount, ...restricted } = auto;
+          return JSON.stringify({ automation: restricted });
+        }
         return JSON.stringify({ automation: auto });
       }
 
@@ -1730,13 +1764,19 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (historyDenied) return JSON.stringify({ error: historyDenied });
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
-        const runs = await db.select()
-          .from(automationRuns)
-          .where(eq(automationRuns.automationId, auto.id))
-          .orderBy(desc(automationRuns.startedAt))
-          .limit(limit);
+        const page = auth.allowedSiteIds === undefined
+          ? await db.select()
+            .from(automationRuns)
+            .where(eq(automationRuns.automationId, auto.id))
+            .orderBy(desc(automationRuns.startedAt))
+            .limit(limit)
+          : (await scanProjectedAutomationRuns({
+            automationId: auto.id,
+            allowedSiteIds: auth.allowedSiteIds,
+            limit,
+          })).rows;
 
-        return JSON.stringify({ automationId: auto.id, runs, showing: runs.length });
+        return JSON.stringify({ automationId: auto.id, runs: page, showing: page.length });
       }
 
       if (action === 'create') {

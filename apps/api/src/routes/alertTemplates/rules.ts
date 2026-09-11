@@ -11,9 +11,15 @@ import { getPagination } from '../../utils/pagination';
 import { PERMISSIONS } from '../../services/permissions';
 import { retiredConditionTypeError } from '../../services/alertConditions';
 import { retiredConditionReactivationError } from '../alerts/helpers';
+import {
+  canAccessAlertRuleTargets,
+  legacyRuleTarget,
+  persistedRuleTargets,
+} from './siteScope';
 
 export const ruleRoutes = new Hono();
 
+const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
 
 // Dual-axis rule condition for this legacy org-pinned route (#2128): the org's
@@ -41,6 +47,7 @@ const PARTNER_WIDE_RULE_READONLY_HERE =
 ruleRoutes.get(
   '/rules',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   zValidator('query', listRulesSchema),
   async (c) => {
     try {
@@ -143,6 +150,19 @@ ruleRoutes.post(
         return c.json({ error: createConditionTypeError }, 400);
       }
 
+      const requestedTarget = legacyRuleTarget(data.targets, orgId);
+      if (!await canAccessAlertRuleTargets(
+        auth,
+        orgId,
+        requestedTarget.targetType,
+        requestedTarget.targetType === 'all' || requestedTarget.targetType === 'org'
+          ? []
+          : [requestedTarget.targetId],
+        true,
+      )) {
+        return c.json({ error: 'Access to alert rule target denied' }, 403);
+      }
+
       // Verify template exists and is accessible
       const [template] = await db
         .select()
@@ -169,32 +189,14 @@ ruleRoutes.post(
       if (data.conditions) overrideSettings.conditions = data.conditions;
       if (data.cooldownMinutes !== undefined) overrideSettings.cooldownMinutes = data.cooldownMinutes;
 
-      // Determine target type and ID from targets object
-      const targets = data.targets as Record<string, unknown> | undefined;
-      let targetType = 'all';
-      let targetId = orgId; // default to org
-
-      if (targets) {
-        if (targets.deviceIds && Array.isArray(targets.deviceIds) && targets.deviceIds.length > 0) {
-          targetType = 'device';
-          targetId = targets.deviceIds[0];
-        } else if (targets.siteIds && Array.isArray(targets.siteIds) && targets.siteIds.length > 0) {
-          targetType = 'site';
-          targetId = targets.siteIds[0];
-        } else if (targets.scope === 'organization') {
-          targetType = 'org';
-          targetId = orgId;
-        }
-      }
-
       const [rule] = await db
         .insert(alertRules)
         .values({
           orgId,
           templateId: template.id,
           name: data.name.trim(),
-          targetType,
-          targetId,
+          targetType: requestedTarget.targetType,
+          targetId: requestedTarget.targetId,
           overrideSettings: Object.keys(overrideSettings).length > 0 ? overrideSettings : null,
           isActive: data.enabled ?? true,
         })
@@ -226,6 +228,7 @@ ruleRoutes.post(
 ruleRoutes.get(
   '/rules/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   async (c) => {
     try {
       const auth = c.get('auth');
@@ -283,6 +286,13 @@ ruleRoutes.patch(
 
       if (existing.orgId === null) {
         return c.json({ error: PARTNER_WIDE_RULE_READONLY_HERE }, 403);
+      }
+
+      const existingTarget = persistedRuleTargets(existing);
+      if (!await canAccessAlertRuleTargets(
+        auth, orgId, existingTarget.targetType, existingTarget.targetIds, true,
+      )) {
+        return c.json({ error: 'Access to alert rule target denied' }, 403);
       }
 
       if (Object.keys(updates).length === 0) {
@@ -369,6 +379,13 @@ ruleRoutes.delete(
         return c.json({ error: PARTNER_WIDE_RULE_READONLY_HERE }, 403);
       }
 
+      const existingTarget = persistedRuleTargets(existing);
+      if (!await canAccessAlertRuleTargets(
+        auth, orgId, existingTarget.targetType, existingTarget.targetIds, true,
+      )) {
+        return c.json({ error: 'Access to alert rule target denied' }, 403);
+      }
+
       await db.delete(alertRules).where(eq(alertRules.id, ruleId));
 
       writeRouteAudit(c, {
@@ -415,6 +432,13 @@ ruleRoutes.post(
 
       if (existing.orgId === null) {
         return c.json({ error: PARTNER_WIDE_RULE_READONLY_HERE }, 403);
+      }
+
+      const existingTarget = persistedRuleTargets(existing);
+      if (!await canAccessAlertRuleTargets(
+        auth, orgId, existingTarget.targetType, existingTarget.targetIds, true,
+      )) {
+        return c.json({ error: 'Access to alert rule target denied' }, 403);
       }
 
       // #2948 — same gate as PUT /alerts/rules. Without it this is the one-click

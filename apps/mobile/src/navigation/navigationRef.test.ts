@@ -102,3 +102,67 @@ describe('navigateToTicket (#4336)', () => {
     });
   });
 });
+
+describe('navigateToTicket composer params (#5366)', () => {
+  beforeEach(() => {
+    ref.ready = false;
+    ref.navigate.mockClear();
+    __resetPendingForTests();
+  });
+
+  it('threads composeMode and focusComposer onto the route params', () => {
+    ref.ready = true;
+
+    navigateToTicket('t-1', { composeMode: 'internal', focusComposer: true });
+
+    expect(ref.navigate).toHaveBeenCalledWith('TicketsTab', {
+      screen: 'TicketDetail',
+      params: { ticketId: 't-1', composeMode: 'internal', focusComposer: true },
+    });
+  });
+
+  it('carries the extras through the pending buffer', () => {
+    // The stop that opens the composer can land during a cold start too (a
+    // background timer stopped from a notification action, an app resumed onto
+    // the bar). Dropping the extras there would open the ticket with the
+    // keyboard down and the wrong tab selected — the exact state this feature
+    // exists to skip past.
+    navigateToTicket('t-2', { composeMode: 'internal', focusComposer: true });
+
+    expect(ref.navigate).not.toHaveBeenCalled();
+
+    ref.ready = true;
+    flushPendingNavigation();
+
+    expect(ref.navigate).toHaveBeenCalledTimes(1);
+    expect(ref.navigate).toHaveBeenCalledWith('TicketsTab', {
+      screen: 'TicketDetail',
+      params: { ticketId: 't-2', composeMode: 'internal', focusComposer: true },
+    });
+  });
+
+  it('replaces the buffered extras when a later tap wants a plain open', () => {
+    // One slot, and the LAST intent wins — a buffered composer-open must not
+    // leak its focus onto a push tap that arrived after it.
+    navigateToTicket('t-3', { composeMode: 'internal', focusComposer: true });
+    navigateToTicket('t-4');
+
+    ref.ready = true;
+    flushPendingNavigation();
+
+    expect(ref.navigate).toHaveBeenCalledTimes(1);
+    expect(ref.navigate).toHaveBeenCalledWith('TicketsTab', {
+      screen: 'TicketDetail',
+      params: { ticketId: 't-4' },
+    });
+  });
+
+  it('omits the composer params entirely for a plain open (push taps unchanged)', () => {
+    ref.ready = true;
+
+    navigateToTicket('t-5');
+
+    const params = ref.navigate.mock.calls[0]?.[1]?.params as Record<string, unknown>;
+    expect(Object.keys(params).sort()).toEqual(['ticketId']);
+  });
+});

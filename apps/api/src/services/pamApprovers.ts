@@ -4,115 +4,42 @@
  * Given an org, returns the distinct set of user ids who may approve a
  * uac_intercept elevation on their phone: a user is eligible iff
  *   1. their account is active (users.status = 'active'), AND
- *   2. their role in (or covering) the org grants DEVICES_EXECUTE, AND
+ *   2. their role in (or covering) the org grants PAM_APPROVE
+ *      (pam:approve — fix/pam-dedicated-permissions; previously
+ *      DEVICES_EXECUTE, which let any device-executing technician approve
+ *      elevations with no dedicated PAM grant), AND
  *   3. they have at least one active mobile device with notifications enabled
  *      (mobile_devices.status = 'active' AND notifications_enabled = true).
  *
- * Org membership mirrors how permissions.ts resolves access:
- *   - organization_users rows for the org itself (direct membership), AND
- *   - partner_users of the org's owning partner whose org_access covers the org
- *     (org_access='all', or org_access='selected' with the org id in org_ids).
+ * Permission/membership resolution (criteria 1-2) is delegated to
+ * `resolveUsersWithPermissionForOrg` (services/usersWithPermission.ts), which
+ * mirrors what this file used to hand-roll: role ids granting the permission
+ * (wildcard-aware), org members, and partner members of the owning partner
+ * whose org_access covers the org — all gated on status='active'. Keeping ONE
+ * implementation of that resolution means a future permission-model change
+ * (a new tenancy shape, a fix to the wildcard match) only has to happen once.
  *
- * Runs under a system DB access context — the agent ingest route has no Breeze
- * user, so without an elevated context the unprivileged breeze_app role would
- * RLS-filter these membership/role reads to zero rows.
+ * This function's own remaining job is criterion 3 — the mobile-device
+ * narrowing — which is specific to the PAM mobile-push bridge and has no
+ * equivalent in the generic resolver.
  */
 
 import { eq, and, inArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
-import {
-  organizations,
-  organizationUsers,
-  partnerUsers,
-  rolePermissions,
-  permissions,
-  mobileDevices,
-  users,
-} from '../db/schema';
+import { mobileDevices } from '../db/schema';
 import { PERMISSIONS } from './permissions';
+import { resolveUsersWithPermissionForOrg } from './usersWithPermission';
 
 /**
  * Resolve the distinct user ids eligible to approve an elevation for `orgId`.
- * Empty array when none qualify. Pure-read; opens its own system DB context.
+ * Empty array when none qualify. Pure-read; opens its own system DB context
+ * (a no-op passthrough when the caller already has one open, matching
+ * `withSystemDbAccessContext`'s documented behavior).
  */
 export async function resolveElevationApprovers(orgId: string): Promise<string[]> {
   return withSystemDbAccessContext(async () => {
-    // Role ids that grant devices:execute. One join from role_permissions →
-    // permissions; we match the resource/action pair AND the wildcard grants
-    // (resource='*' / action='*') so this resolver mirrors hasPermission()
-    // (permissions.ts), which treats resource==='*' / action==='*' as covering
-    // any concrete pair. Without this a role granting devices:* or *:*
-    // (superadmin) passes the web PAM-approve gate but would get no mobile push.
-    const grantingRoles = await db
-      .select({ roleId: rolePermissions.roleId })
-      .from(rolePermissions)
-      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-      .where(
-        and(
-          inArray(permissions.resource, [PERMISSIONS.DEVICES_EXECUTE.resource, '*']),
-          inArray(permissions.action, [PERMISSIONS.DEVICES_EXECUTE.action, '*']),
-        ),
-      );
-
-    const grantingRoleIds = [...new Set(grantingRoles.map((r) => r.roleId))];
-    if (grantingRoleIds.length === 0) return [];
-
-    // The org's owning partner — needed to resolve partner-scope membership.
-    const [org] = await db
-      .select({ partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, orgId))
-      .limit(1);
-
-    const candidateUserIds = new Set<string>();
-
-    // 1. Direct org members holding a devices:execute role. Joined against
-    // `users` and gated on status='active' (#3174) so a disabled or still-
-    // invited account is never counted as an eligible approver: memberships
-    // are retained when an account is disabled, so without this the approver
-    // set is inflated with people who can never respond, and any logic keyed
-    // on the approver count is skewed by those ghosts.
-    const orgMembers = await db
-      .select({ userId: organizationUsers.userId })
-      .from(organizationUsers)
-      .innerJoin(users, eq(users.id, organizationUsers.userId))
-      .where(
-        and(
-          eq(organizationUsers.orgId, orgId),
-          inArray(organizationUsers.roleId, grantingRoleIds),
-          eq(users.status, 'active'),
-        ),
-      );
-    for (const m of orgMembers) candidateUserIds.add(m.userId);
-
-    // 2. Partner members of the org's partner whose org_access covers this org.
-    // Same `users` join + status='active' gate as above (#3174).
-    if (org?.partnerId) {
-      const partnerMembers = await db
-        .select({
-          userId: partnerUsers.userId,
-          orgAccess: partnerUsers.orgAccess,
-          orgIds: partnerUsers.orgIds,
-        })
-        .from(partnerUsers)
-        .innerJoin(users, eq(users.id, partnerUsers.userId))
-        .where(
-          and(
-            eq(partnerUsers.partnerId, org.partnerId),
-            inArray(partnerUsers.roleId, grantingRoleIds),
-            eq(users.status, 'active'),
-          ),
-        );
-      for (const m of partnerMembers) {
-        if (m.orgAccess === 'all') {
-          candidateUserIds.add(m.userId);
-        } else if (m.orgAccess === 'selected' && m.orgIds?.includes(orgId)) {
-          candidateUserIds.add(m.userId);
-        }
-      }
-    }
-
-    if (candidateUserIds.size === 0) return [];
+    const candidateUserIds = await resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.PAM_APPROVE);
+    if (candidateUserIds.length === 0) return [];
 
     // Narrow to users with an active, notifications-enabled mobile device.
     const withDevices = await db
@@ -120,7 +47,7 @@ export async function resolveElevationApprovers(orgId: string): Promise<string[]
       .from(mobileDevices)
       .where(
         and(
-          inArray(mobileDevices.userId, [...candidateUserIds]),
+          inArray(mobileDevices.userId, candidateUserIds),
           eq(mobileDevices.status, 'active'),
           eq(mobileDevices.notificationsEnabled, true),
         ),

@@ -2,6 +2,7 @@ package backup
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -26,7 +27,13 @@ type VerifyResult struct {
 	SizeBytes     int64    `json:"sizeBytes"`
 	DurationMs    int64    `json:"durationMs"`
 	FailedFiles   []string `json:"failedFiles,omitempty"`
-	Error         string   `json:"error,omitempty"`
+	// Warnings carries advisory notes that did not fail a file — currently
+	// only a size/checksum mismatch on a Volatile entry (#5581): the source
+	// kept changing while it was backed up, so the manifest describes the
+	// last pre-upload measurement rather than any single instant, and a
+	// mismatch against it is expected rather than corruption.
+	Warnings []string `json:"warnings,omitempty"`
+	Error    string   `json:"error,omitempty"`
 }
 
 // TestRestoreResult holds the outcome of a test restore operation.
@@ -40,7 +47,10 @@ type TestRestoreResult struct {
 	RestorePath        string   `json:"restorePath"`
 	CleanedUp          bool     `json:"cleanedUp"`
 	FailedFiles        []string `json:"failedFiles,omitempty"`
-	Error              string   `json:"error,omitempty"`
+	// Warnings carries advisory notes that did not fail a file — see
+	// VerifyResult.Warnings.
+	Warnings []string `json:"warnings,omitempty"`
+	Error    string   `json:"error,omitempty"`
 }
 
 // VerifyIntegrity checks a snapshot's manifest and validates each file
@@ -87,6 +97,11 @@ func VerifyIntegrity(provider providers.BackupProvider, snapshotID string) (*Ver
 
 	// Verify each file by downloading through the provider
 	for _, file := range snapshot.Files {
+		if !file.HasContent() {
+			// Content-less entry (symlink/directory): no uploaded object to
+			// verify — see SnapshotFile.HasContent's doc comment.
+			continue
+		}
 		tempFile, err := os.CreateTemp("", "verify-file-*")
 		if err != nil {
 			result.FilesFailed++
@@ -124,21 +139,39 @@ func VerifyIntegrity(provider providers.BackupProvider, snapshotID string) (*Ver
 			continue
 		}
 		if info.Size() != file.Size {
-			os.Remove(tempPath)
-			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
-			log.Warn("size mismatch", "phase", "verify", "backupPath", file.BackupPath,
-				"expectedBytes", file.Size, "actualBytes", info.Size())
-			continue
-		}
-		if file.Checksum != "" {
-			if !checksumMatches(tempPath, file.Checksum) {
+			if file.Volatile {
+				// The source kept changing while it was backed up (#5581):
+				// the manifest's Size describes the last pre-upload
+				// measurement, not necessarily the object's current state.
+				// Advisory only — count the file verified, don't fail it.
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("%s: size differs from manifest (manifest %d, actual %d) — file was volatile during backup", file.BackupPath, file.Size, info.Size()))
+				log.Warn("volatile file size mismatch (advisory, not a failure)", "phase", "verify", "backupPath", file.BackupPath,
+					"expectedBytes", file.Size, "actualBytes", info.Size())
+			} else {
 				os.Remove(tempPath)
 				result.FilesFailed++
 				result.FailedFiles = append(result.FailedFiles, file.BackupPath)
-				log.Warn("checksum mismatch", "phase", "verify", "backupPath", file.BackupPath,
-					"expected", file.Checksum)
+				log.Warn("size mismatch", "phase", "verify", "backupPath", file.BackupPath,
+					"expectedBytes", file.Size, "actualBytes", info.Size())
 				continue
+			}
+		}
+		if file.Checksum != "" {
+			if !checksumMatches(tempPath, file.Checksum) {
+				if file.Volatile {
+					result.Warnings = append(result.Warnings,
+						fmt.Sprintf("%s: checksum differs from manifest (manifest %s) — file was volatile during backup", file.BackupPath, file.Checksum))
+					log.Warn("volatile file checksum mismatch (advisory, not a failure)", "phase", "verify", "backupPath", file.BackupPath,
+						"expected", file.Checksum)
+				} else {
+					_ = os.Remove(tempPath)
+					result.FilesFailed++
+					result.FailedFiles = append(result.FailedFiles, file.BackupPath)
+					log.Warn("checksum mismatch", "phase", "verify", "backupPath", file.BackupPath,
+						"expected", file.Checksum)
+					continue
+				}
 			}
 		} else {
 			result.FilesSizeOnly++
@@ -179,15 +212,26 @@ func errString(err error) string {
 
 const restoreTestPrefix = "breeze-restore-test"
 
-// TestRestore downloads a snapshot to a temp directory and verifies each file.
+// TestRestore downloads a snapshot to a private directory beneath workRoot and
+// verifies each file. workRoot must be the privileged agent data directory.
 // progressFn is called after each file with (current, total) counts. Can be nil.
-func TestRestore(provider providers.BackupProvider, snapshotID string, progressFn func(current, total int)) (*TestRestoreResult, error) {
+func TestRestore(provider providers.BackupProvider, snapshotID, workRoot string, progressFn func(current, total int)) (*TestRestoreResult, error) {
 	start := time.Now()
 	result := &TestRestoreResult{SnapshotID: snapshotID}
+	if err := validateSnapshotID(snapshotID); err != nil {
+		return nil, err
+	}
+	operationRoot, ephemeral, err := prepareRestoreWorkRoot(workRoot)
+	if err != nil {
+		return nil, fmt.Errorf("prepare test-restore work root: %w", err)
+	}
+	if ephemeral {
+		defer func() { _ = os.RemoveAll(operationRoot) }()
+	}
 
 	// Download and parse manifest
 	manifestKey := path.Join(snapshotRootDir, snapshotID, snapshotManifestKey)
-	tempManifest, err := os.CreateTemp("", "restore-manifest-*.json")
+	tempManifest, err := os.CreateTemp(operationRoot, "restore-manifest-*.json")
 	if err != nil {
 		result.Status = "failed"
 		result.Error = fmt.Sprintf("failed to create temp file: %v", err)
@@ -217,19 +261,44 @@ func TestRestore(provider providers.BackupProvider, snapshotID string, progressF
 		return result, nil
 	}
 
-	// Create isolated restore directory
-	restoreDir := filepath.Join(os.TempDir(), restoreTestPrefix, snapshotID)
-	if err := os.MkdirAll(restoreDir, 0o755); err != nil {
+	// Create a fresh, unguessable directory for every run. The parent is
+	// restricted to the privileged agent account by prepareRestoreWorkRoot.
+	restoreDir, err := os.MkdirTemp(operationRoot, restoreTestPrefix+"-")
+	if err != nil {
 		result.Status = "failed"
 		result.Error = fmt.Sprintf("failed to create restore dir: %v", err)
 		return result, nil
+	}
+	if err := os.Chmod(restoreDir, 0o700); err != nil {
+		_ = os.RemoveAll(restoreDir)
+		return nil, fmt.Errorf("restrict test-restore directory: %w", err)
 	}
 	result.RestorePath = restoreDir
 
 	// Restore each file
 	total := len(snapshot.Files)
 	for i, file := range snapshot.Files {
-		destPath := resolveTargetPath(restoreDir, file.SourcePath)
+		if !file.HasContent() {
+			// Content-less entry (symlink/directory): no uploaded object to
+			// restore — see SnapshotFile.HasContent's doc comment. The real
+			// restore path (restore.go) recreates these directly; a test
+			// restore's job is only to prove the uploaded OBJECTS round-trip.
+			if progressFn != nil {
+				progressFn(i+1, total)
+			}
+			continue
+		}
+		relative, pathErr := restoreRelativePath(restoreSourcePath(file))
+		if pathErr != nil {
+			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
+			log.Warn("invalid restore path", "phase", "restore", "sourcePath", restoreSourcePath(file), "error", pathErr.Error())
+			if progressFn != nil {
+				progressFn(i+1, total)
+			}
+			continue
+		}
+		destPath := filepath.Join(restoreDir, relative)
 		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
@@ -251,19 +320,24 @@ func TestRestore(provider providers.BackupProvider, snapshotID string, progressF
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
 			log.Warn("stat failed", "phase", "restore", "backupPath", file.BackupPath, "error", errString(statErr))
-		case info.Size() != file.Size:
+		case info.Size() != file.Size && !file.Volatile:
 			// A real test-restore must confirm the bytes came back intact, not
 			// just that a file appeared (same blind spot as VerifyIntegrity).
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
 			log.Warn("size mismatch", "phase", "restore", "backupPath", file.BackupPath,
 				"expectedBytes", file.Size, "actualBytes", info.Size())
-		case file.Checksum != "" && !checksumMatches(destPath, file.Checksum):
+		case file.Checksum != "" && !file.Volatile && !checksumMatches(destPath, file.Checksum):
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
 			log.Warn("checksum mismatch", "phase", "restore", "backupPath", file.BackupPath,
 				"expected", file.Checksum)
 		default:
+			if file.Volatile && (info.Size() != file.Size || (file.Checksum != "" && !checksumMatches(destPath, file.Checksum))) {
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("%s: differs from manifest — file was volatile during backup", file.BackupPath))
+				log.Warn("volatile file mismatch (advisory, not a failure)", "phase", "restore", "backupPath", file.BackupPath)
+			}
 			result.FilesVerified++
 			result.SizeBytes += info.Size()
 		}
@@ -301,10 +375,18 @@ func TestRestore(provider providers.BackupProvider, snapshotID string, progressF
 
 // CleanupRestoreDir removes a test restore directory after validating the path
 // is within the expected prefix to prevent path traversal.
-func CleanupRestoreDir(dirPath string) error {
-	expectedPrefix := filepath.Join(os.TempDir(), restoreTestPrefix) + string(filepath.Separator)
-	if !strings.HasPrefix(dirPath, expectedPrefix) {
-		return fmt.Errorf("path %q is outside allowed restore prefix %q", dirPath, expectedPrefix)
+func CleanupRestoreDir(dirPath, workRoot string) error {
+	operationRoot, ephemeral, err := prepareRestoreWorkRoot(workRoot)
+	if err != nil {
+		return err
+	}
+	if ephemeral {
+		defer func() { _ = os.RemoveAll(operationRoot) }()
+		return errors.New("cleanup requires a configured restore work root")
+	}
+	relative, err := filepath.Rel(operationRoot, filepath.Clean(dirPath))
+	if err != nil || filepath.Dir(relative) != "." || !strings.HasPrefix(filepath.Base(relative), restoreTestPrefix+"-") {
+		return fmt.Errorf("path %q is outside the configured test-restore root", dirPath)
 	}
 	return os.RemoveAll(dirPath)
 }

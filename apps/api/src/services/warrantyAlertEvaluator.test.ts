@@ -5,12 +5,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const selectMock = vi.fn();
 const insertMock = vi.fn();
 const updateMock = vi.fn();
+const deleteMock = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
 
 vi.mock('../db', () => ({
   db: {
     select: (...args: unknown[]) => selectMock(...args),
     insert: (...args: unknown[]) => insertMock(...args),
     update: (...args: unknown[]) => updateMock(...args),
+    delete: (...args: unknown[]) => deleteMock(...(args as [])),
   },
 }));
 
@@ -23,6 +25,12 @@ vi.mock('../db/schema', () => ({
   configPolicyAssignments: { configPolicyId: 'configPolicyAssignments.configPolicyId', targetId: 'configPolicyAssignments.targetId', level: 'configPolicyAssignments.level', priority: 'configPolicyAssignments.priority' },
   configurationPolicies: { id: 'configurationPolicies.id', status: 'configurationPolicies.status', orgId: 'configurationPolicies.orgId', partnerId: 'configurationPolicies.partnerId' },
   deviceGroupMemberships: { deviceId: 'deviceGroupMemberships.deviceId', groupId: 'deviceGroupMemberships.groupId' },
+}));
+
+const captureExceptionMock = vi.fn();
+vi.mock('./sentry', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  captureException: (...args: unknown[]) => captureExceptionMock(...args),
 }));
 
 const publishEventMock = vi.fn().mockResolvedValue(undefined);
@@ -207,8 +215,41 @@ describe('evaluateWarrantyAlerts gating', () => {
       'alert.triggered',
       ORG_ID,
       expect.objectContaining({ source: 'warranty_evaluator' }),
-      expect.any(String)
+      'warranty-alert-evaluator',
+      expect.objectContaining({}),
     );
+  });
+
+  it('rolls the warranty alert row back when publishing alert.triggered throws (#5325)', async () => {
+    stubAutoResolve();
+    captureInsert();
+    publishEventMock.mockRejectedValueOnce(new Error('redis down'));
+    // 1: warranty row (expiring, fixed-term)
+    selectMock.mockReturnValueOnce(queueSelect([baseWarranty]));
+    // 2: device row (evaluate)
+    selectMock.mockReturnValueOnce(queueSelect([baseDevice]));
+    // 3: device row (resolveWarrantySettings)
+    selectMock.mockReturnValueOnce(queueSelect([baseDevice]));
+    // 4: org row
+    selectMock.mockReturnValueOnce(queueSelect([{ id: ORG_ID, partnerId: null }]));
+    // 5: device group memberships
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    // 6: warranty feature link, enabled at org level
+    selectMock.mockReturnValueOnce(
+      queueSelect([{ inlineSettings: { enabled: true, warnDays: 90, criticalDays: 30 }, level: 'organization', priority: 0 }])
+    );
+    // 7: existing open warranty alert check → none
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    // 8: dismissed warranty alert check → none
+    selectMock.mockReturnValueOnce(queueSelect([]));
+
+    const result = await evaluateWarrantyAlerts(DEVICE_ID);
+
+    // An unpublished `active` row would satisfy check 7 forever, so the device
+    // would never alert on this warranty again.
+    expect(result).toBeNull();
+    expect(deleteMock).toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalled();
   });
 
   it('does NOT fire for fixed-term coverage when the assigned policy disables warranty alerts', async () => {

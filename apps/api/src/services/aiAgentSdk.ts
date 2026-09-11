@@ -16,7 +16,7 @@ import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
-import { checkBudget, checkAiRateLimit, getRemainingBudgetUsd } from './aiCostTracker';
+import { checkBudget, checkAiRateLimit } from './aiCostTracker';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
@@ -33,7 +33,14 @@ import { dispatchApprovalPushToTokens, getUserPushTokens } from './expoPush';
 import { decideHelperToolAction } from './pamToolActionGovernance';
 import { loadSession, loadConnection } from './m365Helpers';
 import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
-import { createActionIntent, waitForIntentDecision, transitionIntent } from './actionIntents/intentService';
+import {
+  createActionIntent,
+  waitForIntentDecision,
+  transitionIntent,
+  type ActionIntentTransitionPatch,
+} from './actionIntents/intentService';
+import { buildActionLabel } from './actionIntents/actionLabel';
+import { publishIntentTerminalOutbox } from './aiOperator/taskOutbox';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
 import { requiresDurableRelease } from './actionIntents/durableRelease';
 import { approvedExecutingDenial } from './aiToolHandoff';
@@ -47,6 +54,7 @@ import {
 } from './actionIntents/secretBearingTools';
 import { TEMP_PASSWORD_ENC_KEY } from './actionIntents/resultSecrets';
 import { captureException } from './sentry';
+import { recordActionIntentMetric } from './actionIntents/metrics';
 import { resolveLlmConfigForOrg, type UsableLlmConfig } from './llm/llmConfigResolver';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -468,17 +476,182 @@ export async function runPreFlightChecks(
     ? await buildSystemPrompt(auth, sanitizedPageContext)
     : (session.systemPrompt ?? await buildSystemPrompt(auth));
 
-  // Remaining budget
-  let maxBudgetUsd: number | undefined;
-  try {
-    const remaining = await getRemainingBudgetUsd(orgId);
-    if (remaining !== null) maxBudgetUsd = remaining;
-  } catch (err) {
-    console.error('[AI-SDK] Failed to get remaining budget:', err);
-    return { ok: false, error: 'Unable to verify spending budget. Please try again later.' };
+  // A durable reservation is acquired immediately before provider dispatch by
+  // the route. Returning an advisory remaining-budget snapshot here would
+  // recreate the check-then-spend race this preflight must not authorize.
+  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd: undefined, resolved };
+}
+
+/**
+ * #5205 W05 (#5210), spec §6.3: wraps a `transitionIntent` CAS to a terminal
+ * status with its `intent_outbox` publication in ONE atomic system-scoped
+ * transaction — `transitionIntent` opens its own `withSystemDbAccessContext`,
+ * which JOINS this already-open one (db/index.ts's "refuses to nest"), so
+ * both writes commit together. Only fires when the CAS actually wins,
+ * matching every other terminal writer's posture (a lost race means some
+ * other writer already terminalized this intent and owns its outbox row).
+ *
+ * `taskId` is always `null` here by construction: every intent this file
+ * transitions was created by THIS session's own
+ * `createActionIntent(session.auth, {...})` call above, which never threads a
+ * `task` context through — task-linked admission is a durable-worker-only
+ * path in the thin slice (spec P3-1: "supervised mode only... no direct
+ * act"). `publishIntentTerminalOutbox` is still the call site (not a bare
+ * `intentOutbox` insert) because it is the ONE helper every terminal writer
+ * in baseline §3.2's inventory uses, and the contract test enumerates that
+ * inventory by call site, not by whether task-linkage happens to be reachable
+ * today.
+ */
+async function transitionIntentAndPublish(
+  intentId: string,
+  to: 'completed' | 'failed',
+  patch: ActionIntentTransitionPatch,
+  orgId: string,
+  event: 'intent_completed' | 'intent_failed',
+): Promise<boolean> {
+  return withSystemDbAccessContext(async () => {
+    const won = await transitionIntent(intentId, 'executing', to, patch);
+    if (won) {
+      await publishIntentTerminalOutbox(db, { id: intentId, orgId, taskId: null }, event);
+    }
+    return won;
+  });
+}
+
+/**
+ * #5232: `transitionIntent` returns `false` on a lost compare-and-swap and
+ * never throws, so every `transitionIntentAndPublish` call site has to decide
+ * what a LOST race means for it. Two cases, and the difference is whether the
+ * tool already ran:
+ *
+ * - `executed: false` — the CAS is attempted BEFORE the tool runs (a
+ *   revalidation stop, an effect-digest mismatch, or the tier-3 catch's
+ *   self-heal). Losing means some other writer (the stale-executing reaper,
+ *   the durable release worker, or a duplicate delivery) already terminalized
+ *   this intent. There is no side effect to reconcile and no result to lose —
+ *   the intent is terminal either way. Mirrors `intentReleaseWorker.ts`'s
+ *   `failIntent`, which returns quietly on the same race rather than writing
+ *   a duplicate audit row for an event that already happened once. A warn
+ *   line, because "which writer won" is still worth being able to grep, plus
+ *   (#5326) a `breeze_action_intents_total{outcome="cas_lost"}` bump so the
+ *   contention rate is countable — the warn alone left this path invisible to
+ *   Prometheus. Still no Sentry event and no audit row: expected contention
+ *   with no side effect to reconcile is not an error.
+ *
+ * - `executed: true` — the CAS is attempted AFTER the tool had its real-world
+ *   side effect. The effect happened and cannot be undone, but the intent now
+ *   carries the winner's terminal state, so the result THIS execution produced
+ *   is recorded nowhere. That is the hole this helper exists to close: log,
+ *   `captureException`, and write an `action_intent.executed` /
+ *   `result: 'failure'` audit row carrying an explicit `execution_cas_lost`
+ *   marker.
+ *
+ *   The log + `captureException` half is taken straight from
+ *   `intentReleaseWorker.ts`'s own `executing -> completed` loss. The durable
+ *   record is NOT: the worker re-persists the outcome on the intent's TASK
+ *   OPERATION row (`persistTaskOperationOutcome`, #5209), which is a channel
+ *   this file does not have — every intent it transitions is created without a
+ *   task context, so `taskId` is null by construction (see
+ *   `transitionIntentAndPublish` above). The audit row is this path's
+ *   equivalent durable record, not a claim of parity. The worker's own three
+ *   lost-CAS branches still write no audit row of their own; backporting one
+ *   is a separate change, deliberately not made here.
+ *
+ * Never retries the tool: a lost CAS means another writer owns the intent, and
+ * re-running would double-execute a real side effect — the precise thing the
+ * `approved -> executing` CAS exists to prevent.
+ *
+ * Written as a direct `writeAuditEvent` rather than `recordActionIntentEvent`
+ * for the same reason `intentReleaseWorker.ts`'s `auditReleaseFailure` is:
+ * `ActionIntentOutcome` has no "outcome executed, but it failed" member, so
+ * routing through that helper would file this as `result: 'success'`. The
+ * Prometheus counter is bumped separately so `executed` totals still include
+ * this path.
+ *
+ * `actionName`/`source` are supplied by the caller rather than re-read from the
+ * intent row: every intent this file transitions was created by its own
+ * `createActionIntent(session.auth, { toolName, source: 'chat', ... })` call
+ * above, so both are known by construction and a DB read on an error path
+ * would only add a second way to fail.
+ */
+const INLINE_CAS_LOST_ERROR_CODE = 'execution_cas_lost';
+
+function reportLostTerminalCas(opts: {
+  intentId: string;
+  orgId: string;
+  toolName: string;
+  intendedStatus: 'completed' | 'failed';
+  /** Hardcoded string literal per call site; allowlisted Sentry tag. */
+  casLabel: string;
+  executed: boolean;
+}): void {
+  const { intentId, orgId, toolName, intendedStatus, casLabel, executed } = opts;
+
+  if (!executed) {
+    console.warn(
+      `[AI-SDK] Lost the executing->${intendedStatus} CAS for intent ${intentId} (${casLabel}) — `
+      + 'another writer already terminalized it; the tool never ran',
+    );
+    // #5326: metric only — no Sentry, no audit marker. The tool never ran, so
+    // nothing was lost but the transition itself, and losing it to a reaper or
+    // the durable worker is expected under contention. It still has to be
+    // COUNTABLE: a rising cas_lost rate means the pre-execution paths are
+    // racing something, and a console.warn cannot carry that signal.
+    try {
+      recordActionIntentMetric('chat', toolName, 'cas_lost');
+    } catch (err) {
+      // Mirrors the `executed: true` branch's guard below, for the same
+      // reason: every caller of this helper is reporting SOME other failure
+      // (a revalidation stop, a digest mismatch, the tier-3 catch), and a
+      // throw out of the metrics layer here would unwind into that caller's
+      // outer catch — replacing the specific reason it had already computed
+      // with a generic `execution_error`. Observability must never be able
+      // to overwrite the diagnosis it exists to support.
+      console.error(`[AI-SDK] Failed to record the cas_lost metric for intent ${intentId}:`, err);
+    }
+    return;
   }
 
-  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd, resolved };
+  console.error(
+    `[AI-SDK] Lost the executing->${intendedStatus} CAS for intent ${intentId} (${casLabel}) — `
+    + 'a reaper or duplicate delivery likely already terminalized it; the tool DID execute',
+  );
+  captureException(
+    new Error(`intent ${intentId} executed but lost the executing->${intendedStatus} CAS`),
+    undefined,
+    { cas_label: casLabel },
+  );
+
+  try {
+    writeAuditEvent(requestLikeFromSnapshot({}), {
+      orgId,
+      action: 'action_intent.executed',
+      resourceType: 'action_intent',
+      resourceId: intentId,
+      actorType: 'system',
+      actorId: null,
+      result: 'failure',
+      details: {
+        actionName: toolName,
+        source: 'chat',
+        errorCode: INLINE_CAS_LOST_ERROR_CODE,
+        intendedStatus,
+        casLabel,
+        executed: true,
+      },
+    });
+    recordActionIntentMetric('chat', toolName, 'executed');
+  } catch (err) {
+    // Only a SYNCHRONOUS throw reaches here (a bug in the payload sanitiser,
+    // say): `writeAuditEvent` is a fire-and-forget `void writeAuditEventAsync`
+    // (auditEvents.ts) and the underlying `createAuditLogAsync` never rejects —
+    // it catches internally and routes a real DB-write failure to its own retry
+    // queue plus `captureException`. So this catch is not what makes a failed
+    // marker write observable; it exists so that the one failure mode the audit
+    // layer canNOT absorb doesn't take the rest of postToolUse down with it.
+    console.error(`[AI-SDK] Failed to write the CAS-lost audit marker for intent ${intentId}:`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
 }
 
 // ============================================
@@ -1001,15 +1174,13 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             }
           } catch { /* non-fatal: fall back to default description */ }
           const riskSummary = m365Summary ?? (description.length > 500 ? `${description.slice(0, 497)}...` : description);
-          // The guardrail description names the device by an id stub
-          // ("on device 6eae0f70..." — buildApprovalDescription in
-          // aiGuardrails.ts); the approver reads the hostname. Matched on
-          // THIS call's id prefix, literally, so nothing user-supplied that
-          // happens to look like a stub gets rewritten.
-          const deviceStub = deviceId ? `on device ${deviceId.slice(0, 8)}...` : null;
-          const approvalLabel = deviceStub && deviceContext?.hostname
-            ? riskSummary.split(deviceStub).join(`on ${deviceContext.hostname}`)
-            : riskSummary;
+          // #5363: the "on device 6eae0f70..." → "on KIT" substitution that
+          // used to live here is now `createActionIntent`'s, for every intent
+          // path rather than only a chat with a resolvable deviceContext (see
+          // actionIntents/approvalDeviceName.ts). `riskSummary` is passed as
+          // the label unchanged so an M365 risk summary still wins over the
+          // guardrail description — the intent service rewrites the stub
+          // inside whichever string it receives.
 
           // Create the durable intent. This fans out to eligible org approvers
           // (or the sole-operator self-approval row), dispatches mobile push, and
@@ -1024,7 +1195,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               input: input as Record<string, unknown>,
               source: 'chat',
               reason: riskSummary,
-              actionLabel: approvalLabel,
+              actionLabel: riskSummary,
               orgId: session.orgId,
             });
           } catch (err) {
@@ -1276,7 +1447,23 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
           const revalidation = await revalidateApprovedIntentForRelease(intentRow, winningApproval);
           if (!revalidation.ok) {
-            await transitionIntent(intent.id, 'executing', 'failed', { errorCode: revalidation.errorCode });
+            const revalidationCasWon = await transitionIntentAndPublish(
+              intent.id,
+              'failed',
+              { errorCode: revalidation.errorCode },
+              session.orgId,
+              'intent_failed',
+            );
+            if (!revalidationCasWon) {
+              reportLostTerminalCas({
+                intentId: intent.id,
+                orgId: session.orgId,
+                toolName,
+                intendedStatus: 'failed',
+                casLabel: 'ai_sdk_inline_revalidation_failed',
+                executed: false,
+              });
+            }
             console.error(
               `[AI-SDK] inline release revalidation failed for intent ${intent.id}: ${revalidation.errorCode}`,
             );
@@ -1321,9 +1508,23 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               ),
             );
             if (recomputed.digest !== intentRow.effectDigest) {
-              await transitionIntent(intent.id, 'executing', 'failed', {
-                errorCode: 'content_changed',
-              });
+              const digestCasWon = await transitionIntentAndPublish(
+                intent.id,
+                'failed',
+                { errorCode: 'content_changed' },
+                session.orgId,
+                'intent_failed',
+              );
+              if (!digestCasWon) {
+                reportLostTerminalCas({
+                  intentId: intent.id,
+                  orgId: session.orgId,
+                  toolName,
+                  intendedStatus: 'failed',
+                  casLabel: 'ai_sdk_inline_content_changed',
+                  executed: false,
+                });
+              }
               console.error(
                 `[AI-SDK] inline release effect-digest mismatch for intent ${intent.id}: content_changed`,
               );
@@ -1384,13 +1585,40 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // original error being handled.
           if (wonIntentId) {
             try {
-              await transitionIntent(wonIntentId, 'executing', 'failed', { errorCode: 'execution_error' });
+              const selfHealCasWon = await transitionIntentAndPublish(
+                wonIntentId,
+                'failed',
+                { errorCode: 'execution_error' },
+                session.orgId,
+                'intent_failed',
+              );
+              if (!selfHealCasWon) {
+                reportLostTerminalCas({
+                  intentId: wonIntentId,
+                  orgId: session.orgId,
+                  toolName,
+                  intendedStatus: 'failed',
+                  casLabel: 'ai_sdk_inline_self_heal',
+                  // This catch wraps the tier-3 admission flow inside
+                  // preToolUse — it can only be reached BEFORE the handler
+                  // runs the tool, which is exactly why the self-heal is safe
+                  // to attempt at all.
+                  executed: false,
+                });
+              }
             } catch (transitionErr) {
+              // #5205 W05 (#5210): transitionIntentAndPublish now couples the
+              // CAS to a constraint-guarded intentOutbox insert in the SAME
+              // transaction — a failure here rolls back the self-heal CAS
+              // too, exactly the case this code exists to prevent (a stranded
+              // `executing` row). Must not be console-only: this is the same
+              // "silent for weeks" risk class as the wiring-error check above.
               console.error(
                 '[AI-SDK] Failed to CAS action intent to failed after unexpected tier-3 error:',
                 wonIntentId,
                 transitionErr,
               );
+              captureException(transitionErr instanceof Error ? transitionErr : new Error(String(transitionErr)));
             }
           }
           return await failMatchedPlanStep({
@@ -1418,7 +1646,20 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         // Tier → riskTier mapping (documented in the spec): Tier 2 → 'medium'.
         const riskTier: 'medium' | 'high' | 'critical' =
           guardrailCheck.tier >= 4 ? 'critical' : guardrailCheck.tier >= 3 ? 'high' : 'medium';
-        const actionLabel = description;
+        // #5363: this row is rendered by the SAME mobile takeover headline as
+        // a tier-3 intent's, so it gets the same builder — the id stub
+        // ("on device 6eae0f70...") becomes the device's name and a shouted
+        // verb is softened. No extra read: `deviceContext` was already
+        // resolved above from this call's own `deviceId` argument. This path
+        // inserts its approval_requests row directly (it must NOT call
+        // createActionIntent — see the comment block above), so the intent
+        // service's own resolution never reaches it.
+        const actionLabel = buildActionLabel({
+          toolName,
+          input: input as Record<string, unknown>,
+          reason: description,
+          deviceHostname: deviceContext?.displayName ?? deviceContext?.hostname ?? null,
+        });
         // For M365 mutation tools, enrich the approval card with the customer
         // tenant + target user + reason. Non-fatal: any DB hiccup falls back to
         // the default description rather than throwing into the approval path.
@@ -1900,32 +2141,82 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
           captureException(err instanceof Error ? err : new Error(String(err)));
           plaintextGuardTripped = true;
           try {
-            await transitionIntent(pendingIntentId, 'executing', 'failed', {
-              executedAt: new Date(),
-              errorCode: SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE,
-            });
+            const guardCasWon = await transitionIntentAndPublish(
+              pendingIntentId,
+              'failed',
+              { executedAt: new Date(), errorCode: SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE },
+              session.orgId,
+              'intent_failed',
+            );
+            if (!guardCasWon) {
+              // The tool ALREADY ran (this is postToolUse) and the credential
+              // it produced is being refused persistence — losing the CAS on
+              // top of that means the intent records neither the execution nor
+              // the guard trip. Loudest possible case for the marker.
+              reportLostTerminalCas({
+                intentId: pendingIntentId,
+                orgId: session.orgId,
+                toolName,
+                intendedStatus: 'failed',
+                casLabel: 'ai_sdk_inline_plaintext_guard',
+                executed: true,
+              });
+            }
           } catch (transitionErr) {
+            // #5205 W05 (#5210): the CAS is now coupled to a constraint-
+            // guarded intentOutbox insert in the SAME transaction — a
+            // failure here rolls the CAS back too, stranding the intent
+            // `executing`. Report, don't just log.
             console.error(
               `[AI-SDK] Failed to CAS action intent to failed after plaintext-secret guard for ${toolName}:`,
               pendingIntentId,
               transitionErr,
             );
+            captureException(transitionErr instanceof Error ? transitionErr : new Error(String(transitionErr)));
           }
         }
 
         if (!plaintextGuardTripped) {
           try {
-            await transitionIntent(pendingIntentId, 'executing', isError ? 'failed' : 'completed', {
-              executedAt: new Date(),
-              // error_code is always the stable short code (matches the
-              // release worker's vocabulary); the raw tool error text is
-              // unbounded free-form and belongs in `result`, not `error_code`.
-              ...(isError
-                ? { errorCode: INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE, result: sizedResult }
-                : { result: sizedResult }),
-            });
+            const completionCasWon = await transitionIntentAndPublish(
+              pendingIntentId,
+              isError ? 'failed' : 'completed',
+              {
+                executedAt: new Date(),
+                // error_code is always the stable short code (matches the
+                // release worker's vocabulary); the raw tool error text is
+                // unbounded free-form and belongs in `result`, not `error_code`.
+                ...(isError
+                  ? { errorCode: INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE, result: sizedResult }
+                  : { result: sizedResult }),
+              },
+              session.orgId,
+              isError ? 'intent_failed' : 'intent_completed',
+            );
+            if (!completionCasWon) {
+              // #5232: the primary inline-execution completion write. The tool
+              // ran and had its real-world side effect; losing this CAS means
+              // the result it produced is recorded nowhere on the intent.
+              // Never retried — the winner owns the intent, and re-running
+              // would double-execute the side effect.
+              reportLostTerminalCas({
+                intentId: pendingIntentId,
+                orgId: session.orgId,
+                toolName,
+                intendedStatus: isError ? 'failed' : 'completed',
+                casLabel: 'ai_sdk_inline_completion',
+                executed: true,
+              });
+            }
           } catch (err) {
+            // #5205 W05 (#5210): this is the primary inline-execution
+            // completion write — every non-durable-release tier-3 tool call
+            // ends here. The CAS is now coupled to a constraint-guarded
+            // intentOutbox insert in the SAME transaction, so a failure here
+            // rolls the CAS back too and would otherwise strand the intent
+            // `executing` with no signal beyond a console line.
             console.error(`[AI-SDK] Failed to CAS action intent to ${isError ? 'failed' : 'completed'} for ${toolName}:`, pendingIntentId, err);
+            captureException(err instanceof Error ? err : new Error(String(err)));
           }
         }
       }

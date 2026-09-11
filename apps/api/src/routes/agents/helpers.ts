@@ -68,7 +68,11 @@ import {
   normalizeAgentUpdatePolicy,
   type AgentUpdateSettings,
 } from './agentUpdatePolicy';
-import { isAlwaysMaintenanceWindow, parseMaintenanceWindow, normalizeVersionPin } from '@breeze/shared';
+import {
+  isAlwaysMaintenanceWindow,
+  parseMaintenanceWindow,
+  resolveInheritedAgentVersionPins,
+} from '@breeze/shared';
 import {
   type SecurityProviderValue,
   type SecurityStatusPayload,
@@ -2300,20 +2304,13 @@ export async function getOrgAgentUpdateConfig(orgId: string): Promise<AgentUpdat
     'maintenanceWindow' in partnerDefaults
       ? partnerDefaults.maintenanceWindow
       : orgDefaults.maintenanceWindow;
-  // Version pins: inherit-with-override, per component (issue #2124). An org-set
-  // component wins for that org; where the org has NOT set a component the partner
-  // default is inherited; unset at both levels → global promoted latest. Keyed by
-  // PRESENCE ('agent' in orgPins), NOT truthiness, so an org can store 'latest' to
-  // deliberately override a partner pin back to the global latest. Agent and
-  // watchdog are independent.
-  const orgPins = isObject(orgDefaults.agentVersionPins) ? orgDefaults.agentVersionPins : {};
-  const partnerPins = isObject(partnerDefaults.agentVersionPins)
-    ? partnerDefaults.agentVersionPins
-    : {};
-  const pins: AgentVersionPins = {
-    agent: normalizeVersionPin('agent' in orgPins ? orgPins.agent : partnerPins.agent),
-    watchdog: normalizeVersionPin('watchdog' in orgPins ? orgPins.watchdog : partnerPins.watchdog),
-  };
+  // Version pins: inherit-with-override, per component (issue #2124). Resolved
+  // via the shared `resolveInheritedAgentVersionPins` (packages/shared) — the
+  // SAME function `getOrgAgentVersionPinsBatch`
+  // (services/orgAgentVersionPins.ts, issue #5285) calls, so the two resolvers
+  // can never silently drift apart. See that function's docstring for the
+  // full precedence contract.
+  const pins: AgentVersionPins = resolveInheritedAgentVersionPins(orgDefaults, partnerDefaults);
 
   const policy = normalizeAgentUpdatePolicy(effectivePolicy);
   const rawWindow = typeof effectiveWindow === 'string' ? effectiveWindow.trim() : '';

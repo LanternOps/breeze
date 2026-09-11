@@ -17,7 +17,7 @@ import {
   organizations,
 } from '../db/schema';
 import { eq, and, inArray, isNotNull, or, sql, type SQL } from 'drizzle-orm';
-import { buildResolveAlertCas } from './alertService';
+import { buildResolveAlertCas, createSourcedAlert } from './alertService';
 import { policyOwnershipCondition } from './configPolicyOwnership';
 import { publishEvent } from './eventBus';
 import { captureException } from './sentry';
@@ -310,47 +310,29 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
     return null;
   }
 
-  // Create alert
-  const [newAlert] = await db
-    .insert(alerts)
-    .values({
-      ruleId: null,
-      deviceId,
-      orgId: device.orgId,
-      configPolicyId: null,
-      configItemName: 'warranty_expiry',
-      severity,
-      title,
-      message,
-      context: {
-        warrantyEndDate: warranty.warrantyEndDate,
-        daysRemaining,
-        manufacturer: warranty.manufacturer,
-        serialNumber: warranty.serialNumber,
-        source: 'warranty_evaluator',
-      },
-      status: 'active',
-      triggeredAt: new Date(),
-    })
-    .returning();
+  // Create alert. Routed through createSourcedAlert so a failed publish rolls
+  // the row back instead of leaving a silent alert the dedupe above would then
+  // treat as "already open" forever (#5325).
+  const alertId = await createSourcedAlert({
+    deviceId,
+    orgId: device.orgId,
+    severity,
+    title,
+    message,
+    context: {
+      warrantyEndDate: warranty.warrantyEndDate,
+      daysRemaining,
+      manufacturer: warranty.manufacturer,
+      serialNumber: warranty.serialNumber,
+      source: 'warranty_evaluator',
+    },
+    configItemName: 'warranty_expiry',
+    publisher: 'warranty-alert-evaluator',
+  });
 
-  if (newAlert) {
-    await publishEvent(
-      'alert.triggered',
-      device.orgId,
-      {
-        alertId: newAlert.id,
-        deviceId,
-        severity,
-        title,
-        message,
-        source: 'warranty_evaluator',
-      },
-      'warranty-alert-evaluator'
-    );
-
-    console.log(`[WarrantyAlertEvaluator] Created warranty alert ${newAlert.id} for device ${deviceId}`);
-    return newAlert.id;
+  if (alertId) {
+    console.log(`[WarrantyAlertEvaluator] Created warranty alert ${alertId} for device ${deviceId}`);
+    return alertId;
   }
 
   return null;

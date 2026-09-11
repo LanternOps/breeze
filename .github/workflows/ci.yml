@@ -1,21 +1,28 @@
 name: CI
 
 on:
+  # Emergency lane. `main` is behind the merge queue, so every landing has
+  # already run this whole suite on its merge-group ref; a `push` trigger on
+  # main would only rerun the same suite and cancel itself on the next landing
+  # (observed 2026-09-07: 59 of 80 main runs cancelled). The one way untested
+  # code reaches main is an admin bypass merge — whoever does that MUST run
+  # `gh workflow run CI --ref main` so main-red-alert can evaluate it.
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - 'apps/docs/**'
-      - '**/*.md'
-      - '**/*.mdx'
+  # Merge queue: the queue builds a temporary merge ref and needs the same
+  # `CI Success` check as a PR. No path filters here on purpose — the queue is
+  # the last gate before main and always runs the full suite.
+  merge_group:
+  # No `paths-ignore` here on purpose. The merge queue requires `CI Success`
+  # on every PR, including docs-only ones, and a path-filtered workflow simply
+  # never reports for a PR outside its paths. The old answer was other
+  # workflows (`ci-docs-only.yml`, `docs-ci.yml`) reporting their own
+  # `CI Success`, but several workflows sharing one check name is a race: a
+  # mixed docs+code PR got all of them, and whichever finished last won the
+  # required-check slot. Now this workflow runs on every PR, the `changes` job
+  # classifies the diff, code jobs are skipped on a docs-only PR, and
+  # `ci-success` is the only reporter.
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - 'apps/docs/**'
-      - '**/*.md'
-      - '**/*.mdx'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -31,9 +38,101 @@ permissions:
   contents: read
 
 jobs:
+  # ─── Docs-only detection ─────────────────────────────────────────────
+  # Classifies the PR diff so a docs-only PR (docs/**, apps/docs/**, *.md,
+  # *.mdx — the set `ci-docs-only.yml` and `docs-ci.yml` used to own) skips
+  # every code job, runs only `docs-check`, and still gets a `CI Success`,
+  # which the merge queue requires before it will enqueue anything. Only
+  # `pull_request` is classified: a merge-group ref and a manual dispatch run
+  # everything, exactly as before.
+  #
+  # Fail-closed by construction: `ci-success` only honours the bypass when this
+  # output is the literal string `false`. If this job fails, is skipped, or
+  # emits nothing, the code jobs are skipped (their `if:` sees an empty output)
+  # AND `ci-success` still asserts on them — so the PR goes red, never green.
+  changes:
+    name: Detect Code Changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      docs: ${{ steps.classify.outputs.docs }}
+    steps:
+      - name: Checkout (classifier script only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Classify changed files
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
+            echo "Event ${EVENT_NAME}: not a PR, running the full suite."
+            echo "code=true" >> "${GITHUB_OUTPUT}"
+            echo "docs=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          # The PR files API needs no checkout and sees renames/deletes too.
+          # Any failure here aborts the job (set -e), which fails closed above.
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' \
+            | bash .github/scripts/classify-pr-paths.sh \
+            | tee -a "${GITHUB_OUTPUT}"
+
+  # ─── Docs check ─────────────────────────────────────────────────────
+  # Was `docs-ci.yml`, whose job was ALSO named `CI Success` — the third
+  # reporter of that check name. It is now a plain job here, gated on the
+  # classifier's `docs` output and asserted by ci-success, which also means it
+  # finally runs in the merge queue (docs-ci.yml had no merge_group trigger).
+  # `docs-automation-retirement.test.mjs` pins the deterministic steps.
+  docs-check:
+    name: Docs Check
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.docs == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Also runs in `lint`, but lint is skipped on a docs-only PR.
+      - name: Guard retired AI documentation automation
+        run: pnpm test:docs-automation
+
+      - name: Check documentation
+        run: pnpm --filter @breeze/docs check
+
+      - name: Build documentation
+        run: pnpm --filter @breeze/docs build
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -56,6 +155,7 @@ jobs:
           bash scripts/check-guided-setup-local-certs-backfill.sh
           bash scripts/check-guided-setup-placeholders.sh
           bash scripts/check-guided-setup-systemd-unit.sh
+          bash scripts/check-guided-setup-signed-image-floor.sh
 
       # docker/Caddyfile.prod is shared by hosted production and every
       # self-hosted install, so the CADDY_LOCAL_CERTS opt-in must be a strict
@@ -74,7 +174,7 @@ jobs:
         run: bash scripts/security/check-env-example-version-pin.sh
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -86,6 +186,15 @@ jobs:
 
       - name: Test community README automation
         run: pnpm test:community-readme
+
+      - name: Test mobile native CI contract
+        run: node --test .github/scripts/mobile-native-ci.test.mjs
+
+      - name: Test docs-only CI contract
+        run: node --test .github/scripts/classify-pr-paths.test.mjs
+
+      - name: Verify temporary CI apt source isolation
+        run: node --test .github/scripts/prepare-ci-apt-sources.test.mjs
 
       - name: Guard retired AI documentation automation
         run: pnpm test:docs-automation
@@ -110,6 +219,8 @@ jobs:
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     env:
       # tsc on the full apps/api project (dense Drizzle types) + astro check
       # exceed Node's default heap on the type-heaviest branches. Give the
@@ -122,7 +233,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -145,6 +256,8 @@ jobs:
   test-api:
     name: Test API
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -152,7 +265,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -259,6 +372,8 @@ jobs:
   test-m365-graph-read-executor:
     name: Test M365 Graph Read Executor
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -266,7 +381,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -285,6 +400,8 @@ jobs:
   test-m365-graph-actions-executor:
     name: Test M365 Graph Actions Executor
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -292,7 +409,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -311,6 +428,8 @@ jobs:
   test-m365-communications-executor:
     name: Test M365 Communications Executor
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     services:
       postgres:
         image: postgres:16-alpine
@@ -332,7 +451,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -358,6 +477,8 @@ jobs:
   check-migrations:
     name: Check Migrations
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     services:
       postgres:
         image: postgres:16
@@ -390,7 +511,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -431,6 +552,8 @@ jobs:
   check-migrations-nonsuperuser:
     name: Check Migrations (non-superuser)
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     services:
       postgres:
         image: postgres:16
@@ -471,7 +594,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -490,6 +613,8 @@ jobs:
   test-web:
     name: Test Web
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -497,7 +622,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -518,6 +643,8 @@ jobs:
   test-mobile:
     name: Test Mobile
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -525,7 +652,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -545,9 +672,58 @@ jobs:
         working-directory: apps/mobile
         run: pnpm exec tsc --noEmit
 
-  test-portal:
-    name: Test Portal
+  # Native compilation catches incompatible RN/Expo modules that JS tests miss.
+  # Resolve paths on Linux so unrelated PRs never allocate a macOS runner.
+  mobile-native-changes:
+    name: Detect Mobile Native Changes
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      mobile: ${{ github.event_name == 'workflow_dispatch' || steps.changes.outputs.mobile == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Detect mobile build inputs
+        id: changes
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          # PRs and merge groups compare against main; a manual dispatch on main
+          # has no `before`, so it falls through to the default branch (mobile: true).
+          base: ${{ github.event.repository.default_branch }}
+          filters: |
+            mobile:
+              - 'apps/mobile/**'
+              - 'packages/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - '.npmrc'
+              - '.node-version'
+              - '.nvmrc'
+              - 'patches/**'
+              - '.github/workflows/ci.yml'
+              - '.github/scripts/mobile-native-ci.test.mjs'
+
+  build-mobile-ios:
+    name: Build Mobile iOS (Simulator)
+    needs: [mobile-native-changes]
+    # Docs-only gating is inherited: when `changes` reports no code change,
+    # `mobile-native-changes` is skipped, its output is empty, and this
+    # condition is false. `mobile-native-ci.test.mjs` pins these two lines.
+    if: needs.mobile-native-changes.outputs.mobile == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      CI: '1'
+      # Debug simulator compilation needs neither release config nor uploads.
+      SENTRY_DISABLE_AUTO_UPLOAD: 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -555,7 +731,69 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Install mobile dependencies
+        run: pnpm install --filter breeze-mobile... --frozen-lockfile
+
+      - name: Show native toolchain
+        run: |
+          xcodebuild -version
+          pod --version
+
+      - name: Generate iOS project
+        working-directory: apps/mobile
+        run: pnpm exec expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods
+        working-directory: apps/mobile/ios
+        run: pod install
+
+      - name: Compile unsigned iOS simulator app
+        working-directory: apps/mobile/ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace BreezeRMM.xcworkspace \
+            -scheme BreezeRMM \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/breeze-ios-derived-data" \
+            -jobs 2 \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee "$RUNNER_TEMP/breeze-ios-build.log"
+
+      - name: Upload native build log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: mobile-ios-build-log
+          path: ${{ runner.temp }}/breeze-ios-build.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  test-portal:
+    name: Test Portal
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -580,6 +818,8 @@ jobs:
   test-viewer:
     name: Test Viewer
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -587,7 +827,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -610,6 +850,8 @@ jobs:
   test-office-addin-core:
     name: Test Office Add-in Core
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -617,7 +859,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -639,6 +881,8 @@ jobs:
   test-excel-addin:
     name: Test Excel Add-in
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -646,7 +890,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -665,6 +909,8 @@ jobs:
   test-word-addin:
     name: Test Word Add-in
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -672,7 +918,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -694,6 +940,8 @@ jobs:
   test-powerpoint-addin:
     name: Test PowerPoint Add-in
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -701,7 +949,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -732,6 +980,8 @@ jobs:
   test-outlook-addin:
     name: Test Outlook Add-in
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -739,7 +989,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -761,6 +1011,8 @@ jobs:
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -768,7 +1020,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -793,12 +1045,12 @@ jobs:
       # resolved that, and the tree is now clean at every severity, so the scan
       # covers dev dependencies too.
       #
-      # Follow-up: tighten AUDIT_THRESHOLD to HIGH once we're comfortable that a
-      # new dev-only advisory blocking PRs is an acceptable trade.
+      # Gate is HIGH+CRITICAL as of 2026-09-03 (SOC 2 CC7.1). A new dev-only
+      # HIGH advisory blocks PRs until patched or an exception is recorded.
       - name: Install osv-scanner
         run: bash scripts/security/install-osv-scanner.sh
 
-      - name: Run dependency audit (critical gate)
+      - name: Run dependency audit (high+critical gate)
         run: bash scripts/security/check-npm-audit.sh
 
       - name: Run supply-chain hardening guard
@@ -854,7 +1106,8 @@ jobs:
   build-api:
     name: Build API
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -862,7 +1115,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -898,7 +1151,8 @@ jobs:
   build-m365-graph-read-executor:
     name: Build M365 Graph Read Executor
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -906,7 +1160,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -931,7 +1185,8 @@ jobs:
   build-m365-graph-actions-executor:
     name: Build M365 Graph Actions Executor
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -939,7 +1194,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -966,7 +1221,8 @@ jobs:
   build-m365-communications-executor:
     name: Build M365 Communications Executor
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -974,7 +1230,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1001,7 +1257,8 @@ jobs:
   build-web:
     name: Build Web
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1009,7 +1266,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1043,7 +1300,8 @@ jobs:
   build-portal:
     name: Build Portal
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1051,7 +1309,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1081,7 +1339,8 @@ jobs:
   build-agent:
     name: Build Agent (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ${{ matrix.runner }}
-    needs: [lint]
+    needs: [lint, changes]
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -1122,6 +1381,11 @@ jobs:
       - name: Download Go dependencies
         working-directory: agent
         run: go mod download
+
+      - name: Test macOS installer
+        if: matrix.goos == 'darwin' && matrix.goarch == 'arm64'
+        working-directory: agent/installer/macos-app
+        run: swift test
 
       - name: Build Agent
         shell: bash
@@ -1194,6 +1458,8 @@ jobs:
   agent-windows-manifest-guard:
     name: Agent Windows manifest guard
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1228,6 +1494,8 @@ jobs:
   test-agent:
     name: Test Agent
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1248,6 +1516,23 @@ jobs:
         working-directory: agent
         run: CGO_ENABLED=0 go test -v -coverprofile=coverage.out ./...
 
+      - name: Rebuild engine loopback test (root)
+        if: runner.os == 'Linux'
+        run: |
+          set -o pipefail
+          sudo apt-get install -y --no-install-recommends gdisk dosfstools e2fsprogs xfsprogs parted util-linux udev
+          sudo udevadm settle || true
+          cd agent
+          sudo -E env "PATH=$PATH" BREEZE_REBUILD_LOOP_TEST=1 go test -count=1 -run TestRun_LoopbackRealSystem ./internal/backup/rebuild/ -v 2>&1 | tee /tmp/rebuild-loopback.log
+          # A t.Skip (missing root, missing BREEZE_REBUILD_LOOP_TEST, or a
+          # missing tool) must never read as a pass here — the whole point
+          # of this step is to prove provisioning against a real loop
+          # device, not merely that `go test` exited 0.
+          if grep -q -- '--- SKIP' /tmp/rebuild-loopback.log; then
+            echo "::error::TestRun_LoopbackRealSystem was SKIPPED, not proven — see the skip reason logged above. Fix the environment (root/BREEZE_REBUILD_LOOP_TEST/missing tool), don't let this step go green on a skip."
+            exit 1
+          fi
+
       - name: Test build-edition.sh (edition fail-closed matrix + real build)
         run: agent/scripts/build-edition_test.sh
 
@@ -1261,7 +1546,8 @@ jobs:
   test-agent-windows:
     name: Test Agent (Windows)
     runs-on: windows-latest
-    needs: [lint]
+    needs: [lint, changes]
+    if: needs.changes.outputs.code == 'true'
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -1367,11 +1653,25 @@ jobs:
       # privilege -> remote/tools — which is harmless here (CGO_ENABLED=0 is
       # exactly the configuration remote/desktop's !cgo files are written for)
       # but is why it must stay out of the race step below.
+      # ./internal/winsvcinstall is the SCM half of `service install` for both the
+      # agent and the watchdog, extracted in #5299. Its package IS listed here
+      # rather than relying on internal/agentapp, which is NOT on this list (its
+      # inherited Windows reds are tracked in #2523) — a //go:build windows test
+      # left next to the installer would therefore have run on no job at all,
+      # which is the exact vacuous-gate failure the steps below guard against.
+      # Most of the package is deliberately untagged so the install sequence
+      # (sample before stop, stop before staging the binary, confirm RUNNING
+      # before claiming it) also executes in the Linux `test-agent` job; the
+      # windows-tagged half is the mgr adapter plus its command-line quoting and
+      # SCM-state mapping tests, which can only run here. Verified like logging
+      # and ipc: with GOOS=windows GOARCH=amd64 CGO_ENABLED=0 the package vets,
+      # its test binary compiles, and its Windows dependency graph contains no
+      # remote/desktop, no cgo, and no other first-party package.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/executor ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/executor ./internal/securefs ./internal/winsvcinstall ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two
@@ -1396,6 +1696,30 @@ jobs:
           $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the absent-account tests SKIPPED - the runner could not reach the never-provisioned state they assert against, so the #4587 netapi32 fix has no live coverage here" }
           if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # securefs's Windows implementation is the SEC-121 privileged-staging
+      # boundary: handle-relative NtCreateFile walks, reparse-point rejection at
+      # every component, the atomic FILE_RENAME_INFO publish, and symlink entry
+      # restore. Its reparse-point cases plant a junction with `mklink /J` and
+      # its symlink cases need SeCreateSymbolicLinkPrivilege; if either stops
+      # working on the runner the assertions would silently evaporate, so —
+      # like the elevaccount step above — assert PASS counts and zero skips
+      # rather than trusting a bare exit code. The symlink helper is written to
+      # FAIL rather than skip for the same reason.
+      - name: Run Windows secure-staging reparse-point tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/securefs -run '^Test(InstallFileRejectsReparsePointAtEveryDepth|InstallFileResistsConcurrentComponentSwap|RenameRelativePublishesUnderThePinnedParent|InstallDirOnWindows|InstallSymlinkOnWindows|InstallSymlinkRefusesToReplaceAJunction|BuildSymlinkReparseBufferLayout|TargetIsDirectoryRefusesToProbeRemoteShapes|VerifyPrivateDirRejectsAReparsePoint|EnsurePrivateDirRepairsAnExistingInheritedDACL|EnsurePrivateDirTightensAPermissiveProtectedDACL|VerifyPrivateDirRejectsAnInheritedDACL)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the secure-staging boundary tests SKIPPED - the SEC-121 Windows reparse-point/DACL boundary has no live coverage here" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 12) { throw "expected exactly 12 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # The policy-state registry collector decides whether a batch uploads with
       # `replace: true` — which deletes every prior row for the device. That
@@ -1432,6 +1756,19 @@ jobs:
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 3) { throw "expected exactly 3 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
+      # internal/collectors as a whole is not on the list above (it has never
+      # been vetted for Windows reds), but its command runners set WaitDelay so
+      # a descendant that inherits PowerShell's stdout handle cannot hang a
+      # collector forever — and handle inheritance is the one behaviour with no
+      # cross-platform equivalent. Run just the self-exec subprocess tests that
+      # cover capture bounds, cancellation, and inherited pipes on the OS they
+      # were written for.
+      - name: Run Windows collector command-runner tests
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./internal/collectors -run '^TestCollectorCommand|^TestCappedBuffer' -v
+
       # internal/backup is the third instance of the same gap: its
       # upload_error_class_codes_windows_test.go pins the Win32 permanent-error
       # codes (#2997) against golang.org/x/sys/windows, and those codes drive
@@ -1467,7 +1804,7 @@ jobs:
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
-          if ($passes -ne 14) { throw "expected exactly 14 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 13) { throw "expected exactly 13 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # -race requires cgo, which remote/desktop cannot satisfy on Windows, so
       # this covers only packages that do not import it (heartbeat, agentapp and
@@ -1499,6 +1836,8 @@ jobs:
   lint-agent:
     name: Lint Agent (Go)
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     # CGO off (matches test-agent): the agent's only cgo files are the linux
     # X11/pcap capture backends, whose C headers are not on the runner. vet +
     # lint cover the CGO-off build; the cgo backends are compiled by build-agent.
@@ -1540,6 +1879,8 @@ jobs:
   test-agent-race:
     name: Test Agent (race)
     runs-on: macos-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -1589,7 +1930,8 @@ jobs:
   windows-runtime-smoke:
     name: Windows Runtime Smoke
     runs-on: windows-latest
-    needs: [lint]
+    needs: [lint, changes]
+    if: needs.changes.outputs.code == 'true'
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -1735,6 +2077,8 @@ jobs:
   rust-check:
     name: Rust Check (Tauri apps)
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     timeout-minutes: 35
 
     steps:
@@ -1789,10 +2133,15 @@ jobs:
             /etc/apt/sources.list \
             /etc/apt/sources.list.d/*.list \
             /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          CI_APT_DIR=$(mktemp -d)
+          trap 'rm -rf -- "$CI_APT_DIR"' EXIT
+          node .github/scripts/prepare-ci-apt-sources.mjs /etc/apt "$CI_APT_DIR"
+          APT_SOURCES=(-o "Dir::Etc::sourcelist=$CI_APT_DIR/sources.list"
+                       -o "Dir::Etc::sourceparts=$CI_APT_DIR/sources.list.d")
           install_deps() {
-            sudo timeout --kill-after=30s 2m apt-get update \
+            sudo timeout --kill-after=30s 2m apt-get update "${APT_SOURCES[@]}" \
               -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 && \
-            sudo timeout --kill-after=30s 5m apt-get install -y --no-install-recommends \
+            sudo timeout --kill-after=30s 5m apt-get install -y --no-install-recommends "${APT_SOURCES[@]}" \
               -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 \
               libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
           }
@@ -1859,6 +2208,8 @@ jobs:
   rust-check-windows:
     name: Rust Check (Windows)
     runs-on: windows-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     timeout-minutes: 30
     permissions:
       contents: read
@@ -1924,7 +2275,8 @@ jobs:
   integration-test:
     name: Integration Tests (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     strategy:
       # Report every shard's result — a red shard must not cancel the others
       # (same rationale as the no-bail rule inside the suite: masking stacked
@@ -1945,7 +2297,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -2152,7 +2504,8 @@ jobs:
   smoke-test:
     name: Smoke Test
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     timeout-minutes: 15
 
@@ -2272,7 +2625,22 @@ jobs:
       - name: Login and export token
         id: login
         run: |
+          # Every session-issuance route now requires a durable browser
+          # binding cookie (breeze_auth_binding) and 428s
+          # auth_binding_rotation_required without one — see
+          # routes/auth/binding.ts and services/authBrowserTransition.ts.
+          # Bootstrap one first, the way a real browser client does, and
+          # carry it through the login call via a cookie jar.
+          COOKIE_JAR=$(mktemp)
+          BOOTSTRAP_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -c "${COOKIE_JAR}" \
+            -X POST http://localhost:3001/api/v1/auth/browser-binding/bootstrap)
+          echo "auth binding bootstrap -> ${BOOTSTRAP_STATUS}"
+          if [ "${BOOTSTRAP_STATUS}" != "204" ]; then
+            echo "ERROR: auth binding bootstrap failed with ${BOOTSTRAP_STATUS} (expected 204)"
+            exit 1
+          fi
           RESPONSE=$(curl -sf -X POST http://localhost:3001/api/v1/auth/login \
+            -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" \
             -H 'Content-Type: application/json' \
             -d '{"email":"ci-admin@breeze.local","password":"ci-smoke-bootstrap-credential-32-chars"}')
           TOKEN=$(echo "${RESPONSE}" | jq -r '.tokens.accessToken // .token // .accessToken // empty')
@@ -2282,9 +2650,23 @@ jobs:
           fi
           echo "::add-mask::${TOKEN}"
           echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
-          # RMM-QA-164: with MFA_FORCE_FOR_PARTNER_ADMIN=false in this stack's
-          # .env the role-force component must be suppressed end to end
-          # (proves the root compose actually threads the valve, D6).
+          # RMM-QA-164 (D6): the behavioural mfaEnrollmentRequired assertion
+          # below only discriminates a compose-wiring regression when the
+          # container's resolved value actually differs from the code
+          # default. mfaForcePartnerAdmin() now defaults to false (#4491),
+          # matching this stack's .env, so an UNMAPPED variable would produce
+          # the identical container-resolved value and this assertion would
+          # pass on a broken mapping too. Read the container's own env
+          # directly first so a dropped mapping is still caught regardless of
+          # which way the code default points.
+          RESOLVED=$(docker compose -f docker-compose.yml -f docker-compose.override.yml.ci \
+            exec -T api printenv MFA_FORCE_FOR_PARTNER_ADMIN || true)
+          echo "api container MFA_FORCE_FOR_PARTNER_ADMIN='${RESOLVED}' (expected 'false': set in .env)"
+          if [ "${RESOLVED}" != "false" ]; then
+            echo "ERROR: docker-compose.yml did not thread MFA_FORCE_FOR_PARTNER_ADMIN from .env into the api container"
+            exit 1
+          fi
+          # ...and then confirm it's actually honoured end to end.
           ENROLL=$(echo "${RESPONSE}" | jq -r '.mfaEnrollmentRequired')
           echo "mfaEnrollmentRequired=${ENROLL} (expected false: relief valve set in .env)"
           if [ "${ENROLL}" != "false" ]; then
@@ -2448,7 +2830,8 @@ jobs:
   guided-setup-smoke:
     name: Guided Setup Smoke (self-host installer)
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     timeout-minutes: 30
 
@@ -2460,29 +2843,38 @@ jobs:
 
       - name: Install socat (stands in for the quickstart's `ssh -L 8443:127.0.0.1:443`)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq socat
+          CI_APT_DIR=$(mktemp -d)
+          trap 'rm -rf -- "$CI_APT_DIR"' EXIT
+          node .github/scripts/prepare-ci-apt-sources.mjs /etc/apt "$CI_APT_DIR"
+          APT_SOURCES=(-o "Dir::Etc::sourcelist=$CI_APT_DIR/sources.list"
+                       -o "Dir::Etc::sourceparts=$CI_APT_DIR/sources.list.d")
+          sudo apt-get update -qq "${APT_SOURCES[@]}"
+          sudo apt-get install -y -qq socat "${APT_SOURCES[@]}"
 
       # The installer pins images by BREEZE_VERSION; build this checkout's
       # api/web/portal under that tag so `docker compose up` uses them
       # (the pull for these local-only tags fails, which the installer treats
-      # as non-fatal — the documented bring-your-own-images path). The agent
-      # binaries image is pulled from GHCR like the Smoke Test job does.
-      - name: Build api/web/portal images under the ci-smoke tag
+      # as non-fatal — the documented bring-your-own-images path). Unlike the
+      # Smoke Test / dev-stack jobs, this job runs guided-setup.sh unmodified
+      # against the unmodified docker-compose.yml (no CI override stubbing
+      # binaries-init), so the agent binaries image is a real published
+      # artifact — scripts/smoke-guided-setup.sh's own preflight pulls it
+      # from GHCR before staging.
+      - name: Build api/web/portal images under the synthetic semver tag
         run: |
           set -euo pipefail
           mkdir -p /tmp/guided-smoke-build
-          docker build -f docker/Dockerfile.api -t ghcr.io/lanternops/breeze/api:ci-smoke .             > /tmp/guided-smoke-build/api.log 2>&1 &
+          docker build -f docker/Dockerfile.api -t ghcr.io/lanternops/breeze/api:0.112.0-ci-smoke .             > /tmp/guided-smoke-build/api.log 2>&1 &
           API_PID=$!
-          docker build -f docker/Dockerfile.web --build-arg PUBLIC_API_URL=             -t ghcr.io/lanternops/breeze/web:ci-smoke .             > /tmp/guided-smoke-build/web.log 2>&1 &
+          docker build -f docker/Dockerfile.web --build-arg PUBLIC_API_URL=             -t ghcr.io/lanternops/breeze/web:0.112.0-ci-smoke .             > /tmp/guided-smoke-build/web.log 2>&1 &
           WEB_PID=$!
-          docker build -f apps/portal/Dockerfile --build-arg PORTAL_BASE_PATH=/portal --build-arg PUBLIC_API_URL=             -t ghcr.io/lanternops/breeze/portal:ci-smoke .             > /tmp/guided-smoke-build/portal.log 2>&1 &
+          docker build -f apps/portal/Dockerfile --build-arg PORTAL_BASE_PATH=/portal --build-arg PUBLIC_API_URL=             -t ghcr.io/lanternops/breeze/portal:0.112.0-ci-smoke .             > /tmp/guided-smoke-build/portal.log 2>&1 &
           PORTAL_PID=$!
           FAIL=0
           for pair in "api:${API_PID}" "web:${WEB_PID}" "portal:${PORTAL_PID}"; do
             name="${pair%%:*}"; pid="${pair##*:}"
             if wait "${pid}"; then
-              echo "built ghcr.io/lanternops/breeze/${name}:ci-smoke"
+              echo "built ghcr.io/lanternops/breeze/${name}:0.112.0-ci-smoke"
             else
               echo "::error::docker build failed for ${name}"
               tail -60 "/tmp/guided-smoke-build/${name}.log"
@@ -2516,7 +2908,19 @@ jobs:
           if [ -z "${SEEDED_DEVICE}" ]; then
             DEVICE_ID=00000000-0000-4000-8000-000000000000
           fi
+          # Session issuance requires the durable browser binding; bootstrap one
+          # first (as the guided smoke's own login() helper does) and carry it
+          # through the login via a cookie jar.
+          COOKIE_JAR=$(mktemp)
+          BOOTSTRAP_STATUS=$(curl -sk -o /dev/null -w '%{http_code}' -c "${COOKIE_JAR}" \
+            -H 'Origin: https://localhost' \
+            -X POST https://localhost/api/v1/auth/browser-binding/bootstrap)
+          if [ "${BOOTSTRAP_STATUS}" != "204" ]; then
+            echo "ERROR: auth binding bootstrap failed with ${BOOTSTRAP_STATUS} (expected 204)"
+            exit 1
+          fi
           LOGIN_BODY=$(curl -skf -X POST https://localhost/api/v1/auth/login \
+            -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" \
             -H 'Content-Type: application/json' \
             -H 'Origin: https://localhost' \
             --data '{"email":"ci-admin@breeze.local","password":"ci-smoke-bootstrap-credential-32-chars"}')
@@ -2552,7 +2956,8 @@ jobs:
   auth-browser-transition-browser-contract:
     name: Auth Browser Transition (Chromium)
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     timeout-minutes: 20
     services:
       postgres:
@@ -2591,7 +2996,6 @@ jobs:
       AUTO_MIGRATE: 'false'
       API_PORT: '3005'
       FORCE_HTTPS: 'false'
-      AUTH_BROWSER_TRANSITIONS_ENFORCED: 'true'
       AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: 'true'
       CF_ACCESS_TRUST_ENABLED: 'true'
       CF_ACCESS_TEAM_DOMAIN: ci-browser-contract.cloudflareaccess.com
@@ -2608,7 +3012,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -2678,7 +3082,8 @@ jobs:
   portal-dev-e2e:
     name: Portal Dev E2E (hydration, non-blocking)
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     continue-on-error: true
     timeout-minutes: 45
 
@@ -2689,7 +3094,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -2745,6 +3150,9 @@ jobs:
           # The built-in Workspace extension defaults ON in the dev override; its
           # migrations are pure cost for a portal hydration run, so keep it off.
           BREEZE_WORKSPACE_ENABLED=false
+          # tests/ai-agents.spec.ts (#5048) needs the AI agents page enabled;
+          # the spec skips itself when GET /ai/agents/tool-catalog is not 200.
+          BREEZE_AI_AGENTS_ENABLED=true
           # This job tests portal hydration and billing UI, not MFA enrollment.
           # Keep the stored forced-MFA flag; suppress only its role component.
           MFA_FORCE_FOR_PARTNER_ADMIN=false
@@ -2792,7 +3200,17 @@ jobs:
       - name: Verify hydration fixture MFA posture
         run: |
           BASE=$(jq -er '.baseUrl' .breeze-stack.json)
+          # Session issuance requires the durable browser binding; bootstrap
+          # one first and carry it through the login via a cookie jar.
+          COOKIE_JAR=$(mktemp)
+          BOOTSTRAP_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -c "${COOKIE_JAR}" \
+            -X POST "${BASE}/api/v1/auth/browser-binding/bootstrap")
+          if [ "${BOOTSTRAP_STATUS}" != "204" ]; then
+            echo "ERROR: auth binding bootstrap failed with ${BOOTSTRAP_STATUS} (expected 204)"
+            exit 1
+          fi
           LOGIN=$(curl -fsS -X POST "${BASE}/api/v1/auth/login" \
+            -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" \
             -H 'Content-Type: application/json' \
             --data "$(jq -c '.admin' .breeze-stack.json)")
           jq -e '.mfaEnrollmentRequired == false' <<<"${LOGIN}" >/dev/null || {
@@ -2821,7 +3239,7 @@ jobs:
       # exercised at all. It depends on the portal rows in
       # e2e-tests/seed-fixtures.sql.
       - name: Run the portal hydration specs
-        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts tests/portal-visibility.spec.ts
+        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts tests/portal-visibility.spec.ts tests/ai-agents.spec.ts
 
       - name: Upload Playwright report
         if: failure()
@@ -2858,11 +3276,15 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
+    needs: [changes, docs-check, lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
         env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CODE_CHANGED: ${{ needs.changes.outputs.code }}
+          DOCS_CHANGED: ${{ needs.changes.outputs.docs }}
+          DOCS_CHECK_RESULT: ${{ needs.docs-check.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           TYPECHECK_RESULT: ${{ needs.typecheck.result }}
           TEST_API_RESULT: ${{ needs.test-api.result }}
@@ -2871,6 +3293,9 @@ jobs:
           TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT: ${{ needs.test-m365-communications-executor.result }}
           TEST_WEB_RESULT: ${{ needs.test-web.result }}
           TEST_MOBILE_RESULT: ${{ needs.test-mobile.result }}
+          MOBILE_NATIVE_CHANGES_RESULT: ${{ needs.mobile-native-changes.result }}
+          MOBILE_NATIVE_REQUIRED: ${{ needs.mobile-native-changes.outputs.mobile }}
+          BUILD_MOBILE_IOS_RESULT: ${{ needs.build-mobile-ios.result }}
           TEST_PORTAL_RESULT: ${{ needs.test-portal.result }}
           TEST_VIEWER_RESULT: ${{ needs.test-viewer.result }}
           TEST_OFFICE_ADDIN_CORE_RESULT: ${{ needs.test-office-addin-core.result }}
@@ -2897,7 +3322,21 @@ jobs:
           AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT: ${{ needs.auth-browser-transition-browser-contract.result }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
-          if [[ "${LINT_RESULT}" != "success" ]] || \
+          # Fail closed: only a successful path check may skip native compilation. The
+          # mobile-native-changes/build-mobile-ios checks are folded into this single
+          # unconditional blocking condition (rather than a separate leading if statement)
+          # because the ci-success gating contract test only recognizes one such block and
+          # asserts every required job's result is checked inside it.
+          # Docs-only bypass, fail-closed: the code-job assertions are skipped ONLY
+          # when the classifier succeeded AND reported the literal `false`. An
+          # empty output (classifier failed, skipped, or printed nothing) falls
+          # through to the assertions, where every skipped code job fails them.
+          # docs-check is the mirror image: required unless `docs` is literally
+          # `false`, so an empty output demands a docs-check that never ran.
+          if [[ "${CHANGES_RESULT}" != "success" ]] || \
+             { [[ "${DOCS_CHANGED}" != "false" ]] && [[ "${DOCS_CHECK_RESULT}" != "success" ]]; } || \
+             { [[ "${CODE_CHANGED}" != "false" ]] && { \
+             [[ "${LINT_RESULT}" != "success" ]] || \
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \
              [[ "${TEST_API_RESULT}" != "success" ]] || \
              [[ "${TEST_M365_GRAPH_READ_EXECUTOR_RESULT}" != "success" ]] || \
@@ -2905,6 +3344,10 @@ jobs:
              [[ "${TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "success" ]] || \
              [[ "${TEST_WEB_RESULT}" != "success" ]] || \
              [[ "${TEST_MOBILE_RESULT}" != "success" ]] || \
+             [[ "${MOBILE_NATIVE_CHANGES_RESULT}" != "success" ]] || \
+             { [[ "${MOBILE_NATIVE_REQUIRED}" == "true" ]] && [[ "${BUILD_MOBILE_IOS_RESULT}" != "success" ]]; } || \
+             { [[ "${MOBILE_NATIVE_REQUIRED}" != "true" ]] && [[ "${MOBILE_NATIVE_REQUIRED}" != "false" ]]; } || \
+             { [[ "${MOBILE_NATIVE_REQUIRED}" == "false" ]] && [[ "${BUILD_MOBILE_IOS_RESULT}" != "skipped" ]]; } || \
              [[ "${TEST_PORTAL_RESULT}" != "success" ]] || \
              [[ "${TEST_VIEWER_RESULT}" != "success" ]] || \
              [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "success" ]] || \
@@ -2926,9 +3369,13 @@ jobs:
              [[ "${INTEGRATION_TEST_RESULT}" != "success" ]] || \
              [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "success" ]] || \
              [[ "${AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT}" != "success" ]] || \
-             [[ "${RUST_CHECK_RESULT}" != "success" ]]; then
+             [[ "${RUST_CHECK_RESULT}" != "success" ]]; }; }; then
             echo "One or more required jobs failed"
             exit 1
+          fi
+          if [[ "${CODE_CHANGED}" == "false" ]]; then
+            echo "Docs-only PR: code jobs skipped, docs-check passed; the merge queue runs the full suite before merge."
+            exit 0
           fi
           # Smoke test: non-blocking on PRs, required on main
           if [[ "${IS_PR}" != "true" ]] && [[ "${SMOKE_TEST_RESULT}" != "success" ]]; then
@@ -2953,7 +3400,9 @@ jobs:
     name: Main Red Alert
     runs-on: ubuntu-latest
     needs: [ci-success]
-    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Fires on the emergency lane only (manual dispatch on main after an admin
+    # bypass merge). Queue landings were evaluated before they merged.
+    if: always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     permissions:
       issues: write
     steps:

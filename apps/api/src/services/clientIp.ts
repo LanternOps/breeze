@@ -279,7 +279,13 @@ function warnForwardedHeadersWithTrustDisabled(peerIp: string | undefined): void
 
 export function getTrustedClientIp(c: RequestLike, fallback = 'unknown'): string {
   if (!shouldTrustProxyHeaders()) {
-    return fallback;
+    // Direct exposure has no trusted forwarding layer, but the TCP peer is
+    // still transport-authentic metadata supplied by Node rather than by an
+    // HTTP header. Preserve that exact address for audit attribution, ticket
+    // binding, allowlists, and limiter identity while continuing to ignore
+    // every client-controlled forwarded header. Non-Node/test shims without
+    // socket metadata retain the caller's explicit fallback.
+    return getImmediatePeerIp(c, fallback) ?? fallback;
   }
 
   const peerIp = getImmediatePeerIp(c, fallback);

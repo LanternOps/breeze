@@ -6,7 +6,12 @@ import DeviceScriptHistory from './DeviceScriptHistory';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+// importOriginal keeps useAuthStore real — DeviceScriptHistory reads it via
+// usePermissions() to gate the Stop affordance (#5318).
+vi.mock('../../stores/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../stores/auth')>();
+  return { ...actual, fetchWithAuth: vi.fn() };
+});
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 type MockExecuteModalProps = {

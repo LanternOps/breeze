@@ -479,6 +479,7 @@
       "selectSite": "Site sélectionné"
     },
     "paused": "En pause",
+    "scheduleBlocked": "Analyse récurrente en pause : nouvelle approbation requise",
     "permissionManage": "Les actions de mutation sont désactivées après l’échec de la vérification des permissions. Nécessite `devices:write`.",
     "placeholders": {
       "subnet": "192.168.1.0/24"
@@ -707,6 +708,8 @@
     "iot": "IoT",
     "camera": "Caméra",
     "nas": "NAS",
+    "website": "Site Web",
+    "service": "Service",
     "unknown": "Inconnu",
     "patchPanel": "Panneau de brassage",
     "other": "Autres"

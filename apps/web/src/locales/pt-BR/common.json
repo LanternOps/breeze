@@ -1,5 +1,7 @@
 {
-  "lists": { "separator": ", " },
+  "lists": {
+    "separator": ", "
+  },
   "nav": {
     "fleetPosture": "Postura da frota",
     "dashboard": "Painel",
@@ -76,7 +78,9 @@
     "software": "Software",
     "securityOverview": "Visão Geral",
     "aiRisk": "Risco de IA",
-    "deviceBackup": "Backup de Dispositivos"
+    "deviceBackup": "Backup de Dispositivos",
+    "sectionServiceDesk": "Central de serviços",
+    "serviceManagement": "Gestão de serviços"
   },
   "documentTitles": {
     "dashboard": "Painel",
@@ -2042,7 +2046,8 @@
           "notMember": "Não é mais afetado por esta constatação",
           "decommissioned": "O dispositivo foi removido",
           "timeout": "Expirou após 30 minutos",
-          "dispatchEnqueueFailed": "Nunca despachado — falha ao enfileirar"
+          "dispatchEnqueueFailed": "Nunca despachado — falha ao enfileirar",
+          "maintenanceWindow": "Dispositivo em uma janela de manutenção"
         },
         "viewProgress": "Ver progresso",
         "errors": {

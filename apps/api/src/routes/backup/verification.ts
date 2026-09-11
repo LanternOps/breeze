@@ -21,7 +21,8 @@ import {
   listBackupVerifications,
   listRecoveryReadiness,
   recalculateReadinessScores,
-  runBackupVerification
+  runBackupVerification,
+  toVerificationListItem
 } from './verificationService';
 
 export const backupVerificationRoutes = new Hono();
@@ -36,6 +37,35 @@ async function isDeviceSiteDenied(orgId: string, deviceId: string, permissions: 
   return !device || typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId);
 }
 
+/**
+ * The caller's site ceiling. `auth.allowedSiteIds` is the primary source: the
+ * auth middleware always populates it, while `c.get('permissions')` is only
+ * set by `requirePermission`. The `permissions` fallback is kept so a route
+ * mounted without `requirePermission` still finds a ceiling if one is present
+ * — reading both can only ever make this stricter, never looser.
+ */
+function allowedSiteIds(
+  auth: { allowedSiteIds?: string[] } | undefined,
+  c: { get(key: 'permissions'): unknown },
+): string[] | undefined {
+  return auth?.allowedSiteIds ?? (c.get('permissions') as UserPermissions | undefined)?.allowedSiteIds;
+}
+
+/**
+ * Payload for a caller whose site ceiling is defined but empty: they can see
+ * no device, so there is nothing to summarize. `coveragePercent` and `status`
+ * are deliberately `null`/`'unknown'` rather than `100`/`'healthy'` — a reader
+ * who can see nothing has not observed a healthy fleet, and reporting full
+ * coverage off zero devices is an affirmative false assurance.
+ */
+function emptyHealthSummary() {
+  return {
+    verification: { total: 0, passedLast24h: 0, failedLast24h: 0, partialLast24h: 0, coveragePercent: null },
+    readiness: { averageScore: 0, lowReadinessCount: 0, criticalDevicesAtRisk: 0 },
+    escalations: { verificationFailures: 0, criticalVerificationFailures: 0 },
+  };
+}
+
 backupVerificationRoutes.get('/health', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('query', backupHealthQuerySchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
@@ -44,10 +74,14 @@ backupVerificationRoutes.get('/health', requirePermission(PERMISSIONS.ORGS_READ.
   }
 
   const query = c.req.valid('query');
-  if (query.refresh === true) {
-    await recalculateReadinessScores(orgId);
+  const siteIds = allowedSiteIds(auth, c);
+  if (siteIds?.length === 0) {
+    return c.json({ data: { status: 'unknown', ...emptyHealthSummary() } });
   }
-  const summary = await getBackupHealthSummary(orgId);
+  if (query.refresh === true) {
+    await recalculateReadinessScores(orgId, siteIds);
+  }
+  const summary = await getBackupHealthSummary(orgId, siteIds);
 
   return c.json({
     data: {
@@ -136,6 +170,8 @@ backupVerificationRoutes.get('/verifications', requirePermission(PERMISSIONS.ORG
   }
 
   const query = c.req.valid('query');
+  const siteIds = allowedSiteIds(auth, c);
+  if (siteIds?.length === 0) return c.json({ data: [] });
   const rows = await listBackupVerifications(orgId, {
     deviceId: query.deviceId,
     backupJobId: query.backupJobId,
@@ -143,11 +179,14 @@ backupVerificationRoutes.get('/verifications', requirePermission(PERMISSIONS.ORG
     status: query.status,
     from: toDateOrNull(query.from),
     to: toDateOrNull(query.to),
-    limit: query.limit ?? 100
+    limit: query.limit ?? 100,
+    allowedSiteIds: siteIds,
   });
 
   return c.json({
-    data: rows
+    // Keep the HTTP serialization boundary explicit even though the shared
+    // list service also projects for its internal callers.
+    data: rows.map(toVerificationListItem)
   });
 });
 
@@ -159,10 +198,14 @@ backupVerificationRoutes.get('/recovery-readiness', requirePermission(PERMISSION
   }
 
   const query = c.req.valid('query');
-  if (query.refresh === true) {
-    await recalculateReadinessScores(orgId);
+  const siteIds = allowedSiteIds(auth, c);
+  if (siteIds?.length === 0) {
+    return c.json({ data: { summary: { devices: 0, averageScore: 0, lowReadiness: 0, highReadiness: 0 }, devices: [] } });
   }
-  let rows = await listRecoveryReadiness(orgId);
+  if (query.refresh === true) {
+    await recalculateReadinessScores(orgId, siteIds);
+  }
+  let rows = await listRecoveryReadiness(orgId, siteIds);
   if (query.deviceId) {
     rows = rows.filter((row) => row.deviceId === query.deviceId);
   }

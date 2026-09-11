@@ -281,7 +281,10 @@ vi.mock('./policyDecide', () => ({
 // logic (already covered by actionLabel.test.ts).
 vi.mock('./actionLabel', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./actionLabel')>();
-  return { buildActionLabel: vi.fn(actual.buildActionLabel) };
+  // Spread the real module: intentService also imports `hasDeviceIdStub`
+  // (#5363), and a mock that returns only `buildActionLabel` would hand it
+  // `undefined` at call time.
+  return { ...actual, buildActionLabel: vi.fn(actual.buildActionLabel) };
 });
 
 vi.mock('drizzle-orm', () => ({
@@ -1181,8 +1184,15 @@ describe('createActionIntent — approver fan-out', () => {
       status: 'cancelled',
       errorCode: 'no_eligible_approvers',
     });
-    // Outbox row is still written (creation itself still happened).
-    expect(dbState.insertedOutboxValues).toHaveLength(1);
+    // Outbox rows: creation itself still happened, and #5205 W05 (#5210) now
+    // also publishes the terminal cancel — the fail-closed "no eligible
+    // approvers" path was one of the terminal writers that published nothing.
+    expect(dbState.insertedOutboxValues).toHaveLength(2);
+    // runHumanFanout's fail-closed cancel writes its intent_cancelled row
+    // BEFORE createActionIntent's own unconditional intent_created insert
+    // that follows it — so cancelled is [0], created is [1].
+    expect(dbState.insertedOutboxValues[0]).toMatchObject({ eventType: 'intent_cancelled' });
+    expect(dbState.insertedOutboxValues[1]).toMatchObject({ eventType: 'intent_created' });
     // No push for a cancelled intent.
     expect(pushState.dispatchApprovalPushToTokens).not.toHaveBeenCalled();
     expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
@@ -1580,6 +1590,102 @@ describe('runDeferredHumanFanout', () => {
     for (const [args] of calls) {
       expect(args.deviceHostname).toBeNull();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5363 — the approval HEADLINE names the device, on every intent path
+//
+// #5106 only populated `deviceHostname` inside the ai_agent branch's scoped
+// device read, so every human-originated intent (chat, mcp_api) — and an
+// agent intent with no explicit scope — persisted the raw
+// "on device 6eae0f70..." stub that buildApprovalDescription emits. These
+// tests assert the value the MOBILE takeover actually renders: the
+// `action_label` column of the fanned-out approval_requests rows.
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — approval headline device name (#5363)', () => {
+  /** Exactly what aiGuardrails.buildApprovalDescription emits for this call. */
+  const RESTART_DESCRIPTION = `RESTART service "Spooler" on device ${DEVICE_ID.slice(0, 8)}...`;
+
+  function restartInput(overrides?: Partial<CreateActionIntentInput>): CreateActionIntentInput {
+    return baseInput({
+      toolName: 'manage_services',
+      input: { deviceId: DEVICE_ID, action: 'restart', serviceName: 'Spooler' },
+      ...overrides,
+    });
+  }
+
+  /** One eligible approver + the insert results a successful fan-out needs. */
+  function queueFanout(id: string) {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id }));
+    dbState.insertApprovalRequestsResults.push([{ id: `approval-${id}` }]);
+  }
+
+  function persistedApprovalLabels(): string[] {
+    const rows = dbState.insertedApprovalRequestsValues[0] as Array<{ actionLabel: string }> | undefined;
+    return (rows ?? []).map((r) => r.actionLabel);
+  }
+
+  beforeEach(() => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: RESTART_DESCRIPTION,
+    });
+  });
+
+  it('resolves the argument device name into the headline of a user-principal intent', async () => {
+    // displayName wins over hostname, matching the scoped-agent read #5106 added.
+    dbState.selectDevicesResults.push([{ hostname: 'kit', displayName: 'KIT' }]);
+    queueFanout('intent-5363-named');
+
+    await createActionIntent(makeAuth(), restartInput());
+
+    const labels = persistedApprovalLabels();
+    expect(labels).toHaveLength(1);
+    expect(labels[0]).toContain('on KIT');
+    expect(labels[0]).not.toContain('on device');
+  });
+
+  it('falls back to the hostname when the device has no display name', async () => {
+    dbState.selectDevicesResults.push([{ hostname: 'kit-01', displayName: null }]);
+    queueFanout('intent-5363-hostname');
+
+    await createActionIntent(makeAuth(), restartInput());
+
+    expect(persistedApprovalLabels()[0]).toContain('on kit-01');
+  });
+
+  it('leaves the stub intact (and does not throw) when the device cannot be resolved', async () => {
+    // Deleted, or an id from another tenant — the org-pinned read returns
+    // nothing and the headline degrades to exactly what it says today.
+    dbState.selectDevicesResults.push([]);
+    queueFanout('intent-5363-missing');
+
+    await createActionIntent(makeAuth(), restartInput());
+
+    expect(persistedApprovalLabels()[0]).toBe(
+      `Restart service "Spooler" on device ${DEVICE_ID.slice(0, 8)}...`,
+    );
+  });
+
+  it('never rewrites a stub that names a DIFFERENT device than this call', async () => {
+    // A caller-supplied label mentioning some other device's id prefix must
+    // not be relabelled with THIS call's device name.
+    dbState.selectDevicesResults.push([{ hostname: 'kit', displayName: 'KIT' }]);
+    queueFanout('intent-5363-other');
+
+    await createActionIntent(
+      makeAuth(),
+      restartInput({ actionLabel: `Restart service "Spooler" on device ${OTHER_ORG_ID.slice(0, 8)}...` }),
+    );
+
+    const label = persistedApprovalLabels()[0];
+    expect(label).toContain(`on device ${OTHER_ORG_ID.slice(0, 8)}...`);
+    expect(label).not.toContain('KIT');
   });
 });
 
@@ -2499,6 +2605,118 @@ describe('buildImpactSummary (#5106)', () => {
       toolName: 'shutdown',
       input: { deviceId: 'd1' },
       expected: 'Shutting down the device will power it off; it will stay unreachable until someone turns it back on.',
+    },
+    // #5173: execute_command's impact box used to always fall back to the
+    // tool's catalog description ("Execute a system command on a device.")
+    // regardless of commandType — these assert a call-specific sentence per
+    // commandType, built from `input.payload` (never validated against a
+    // strict schema, so these builders defensively fall back to the catalog
+    // text — see the last two cases — when the expected field is absent).
+    {
+      name: 'execute_command kill_process names the immediate, unsaved-work-lost effect',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'kill_process', payload: { pid: 2920, processName: 'SupportAssistAgent.exe' } },
+      expected: 'Terminates the process immediately. Unsaved work in it is lost.',
+    },
+    {
+      name: 'execute_command start_service names the service',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'start_service', payload: { name: 'Spooler' } },
+      expected: 'Starting "Spooler".',
+    },
+    {
+      name: 'execute_command stop_service names the service and its blast radius',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'stop_service', payload: { name: 'Spooler' } },
+      expected: 'Stopping "Spooler" will make it — and anything that depends on it — unavailable until it is started again.',
+    },
+    {
+      name: 'execute_command restart_service names the service and its blast radius',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'restart_service', payload: { name: 'Spooler' } },
+      expected: 'Restarting "Spooler" will briefly interrupt it and anything that depends on it.',
+    },
+    {
+      name: 'execute_command file_read names the path and states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'file_read', payload: { path: 'C:\\secrets.txt' } },
+      expected: 'Reads "C:\\secrets.txt"; does not modify it.',
+    },
+    {
+      name: 'execute_command file_read with no path still states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'file_read' },
+      expected: "Reads a file's contents; does not modify it.",
+    },
+    {
+      name: 'execute_command file_list names the path and states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'file_list', payload: { path: 'C:\\Users' } },
+      expected: 'Lists files in "C:\\Users"; does not change anything.',
+    },
+    {
+      name: 'execute_command file_list with no path still states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'file_list' },
+      expected: 'Lists files in a directory; does not change anything.',
+    },
+    {
+      name: 'execute_command event_logs_query names the log and states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'event_logs_query', payload: { logName: 'Security' } },
+      expected: 'Reads matching entries from the "Security" event log; does not change anything.',
+    },
+    {
+      name: 'execute_command event_logs_query with no logName still states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'event_logs_query' },
+      expected: 'Reads matching event log entries; does not change anything.',
+    },
+    {
+      name: 'execute_command event_logs_list states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'event_logs_list' },
+      expected: 'Lists available event logs; does not change anything.',
+    },
+    {
+      name: 'execute_command list_services states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'list_services' },
+      expected: 'Lists services on the device; does not change anything.',
+    },
+    {
+      name: 'execute_command list_processes states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'list_processes' },
+      expected: 'Lists running processes on the device; does not change anything.',
+    },
+    {
+      name: 'execute_command start_service with no service name falls back to the catalog text (no regression)',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'start_service' },
+      guardrailDescription: 'Execute a system command on a device.',
+      expected: 'Execute a system command on a device.',
+    },
+    {
+      name: 'execute_command stop_service with no service name falls back to the catalog text (no regression)',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'stop_service' },
+      guardrailDescription: 'Execute a system command on a device.',
+      expected: 'Execute a system command on a device.',
+    },
+    {
+      name: 'execute_command restart_service with no service name falls back to the catalog text (no regression)',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'restart_service' },
+      guardrailDescription: 'Execute a system command on a device.',
+      expected: 'Execute a system command on a device.',
+    },
+    {
+      name: 'execute_command with an unrecognized commandType falls back to the catalog text (no regression)',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'definitely_not_a_command' },
+      guardrailDescription: 'Execute a system command on a device.',
+      expected: 'Execute a system command on a device.',
     },
     {
       name: 'an unrecognized tool falls back to the guardrail description',

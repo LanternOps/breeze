@@ -479,6 +479,7 @@
       "selectSite": "Select site"
     },
     "paused": "Paused",
+    "scheduleBlocked": "Recurring scan paused: re-approval required",
     "permissionManage": "Mutating actions are disabled after permission check failure. Requires `devices:write`.",
     "placeholders": {
       "subnet": "192.168.1.0/24"
@@ -707,6 +708,8 @@
     "iot": "IoT",
     "camera": "Camera",
     "nas": "NAS",
+    "website": "Website",
+    "service": "Service",
     "unknown": "Unknown",
     "patchPanel": "Patch Panel",
     "other": "Other"

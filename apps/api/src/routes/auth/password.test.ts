@@ -93,6 +93,7 @@ vi.mock('../../middleware/auth', () => ({
       scope: 'partner',
       partnerId: 'p-1',
       orgId: null,
+      token: { aep: 1 },
       user: { id: 'u-1', email: 'user@example.test', name: 'Sample User' },
     });
     return next();
@@ -164,7 +165,7 @@ const DEFAULT_EPOCH_ROW: EpochRow = { authEpoch: 1, mfaEpoch: 1, emailEpoch: 1, 
 // `epochRow` from their `.returning(...)` call. Every update issued inside
 // the transaction (main password write, epoch advance, family revoke) is
 // captured so tests can assert all three land in the SAME transaction.
-function stubTransaction(epochRow: EpochRow = DEFAULT_EPOCH_ROW): Array<Record<string, unknown>> {
+function stubTransaction(epochRow: EpochRow | null = DEFAULT_EPOCH_ROW): Array<Record<string, unknown>> {
   const capturedUpdates: Array<Record<string, unknown>> = [];
   const txUpdate = vi.fn((_table: unknown) => ({
     set: (values: Record<string, unknown>) => {
@@ -172,7 +173,7 @@ function stubTransaction(epochRow: EpochRow = DEFAULT_EPOCH_ROW): Array<Record<s
       return {
         where: (..._args: unknown[]) => {
           const result = Promise.resolve(undefined) as Promise<undefined> & { returning?: (sel?: unknown) => Promise<EpochRow[]> };
-          result.returning = (_sel?: unknown) => Promise.resolve([epochRow]);
+          result.returning = (_sel?: unknown) => Promise.resolve(epochRow ? [epochRow] : []);
           return result;
         },
       };
@@ -259,16 +260,31 @@ describe('password reset eligibility (#719)', () => {
 
     it('enqueues for a known and an unknown address indistinguishably (structural + duration)', async () => {
       const ITER = 40;
-      const timeMany = async (email: string): Promise<number> => {
-        const start = performance.now();
-        for (let i = 0; i < ITER; i++) {
-          // eslint-disable-next-line no-await-in-loop
-          await postForgot({ email });
-        }
-        return performance.now() - start;
-      };
-      const knownMs = await timeMany('admin@msp.com');
-      const unknownMs = await timeMany('nobody@nowhere.test');
+      const KNOWN = 'admin@msp.com';
+      const UNKNOWN = 'nobody@nowhere.test';
+
+      // Untimed warm-up so neither timed batch pays JIT/module/mock start-up.
+      // Without it the FIRST batch ran ~6x slower than the second on a loaded
+      // CI runner and tripped the ratio bound below (merge-group run for
+      // #5302), which is an oracle for warm-up, not for address existence.
+      await postForgot({ email: KNOWN });
+      await postForgot({ email: UNKNOWN });
+      vi.mocked(enqueuePasswordResetRequest).mockClear();
+
+      // Interleave the two addresses so any drift during the run (GC, runner
+      // load) lands on both equally instead of on whichever batch went first.
+      let knownMs = 0;
+      let unknownMs = 0;
+      for (let i = 0; i < ITER; i++) {
+        let start = performance.now();
+        // eslint-disable-next-line no-await-in-loop
+        await postForgot({ email: KNOWN });
+        knownMs += performance.now() - start;
+        start = performance.now();
+        // eslint-disable-next-line no-await-in-loop
+        await postForgot({ email: UNKNOWN });
+        unknownMs += performance.now() - start;
+      }
 
       // Structural indistinguishability: identical enqueue count, and NONE of
       // the existence-dependent calls fired for either address.
@@ -434,6 +450,34 @@ describe('password reset eligibility (#719)', () => {
   });
 
   describe('POST /reset-password', () => {
+    it('rejects a reset whose generation changes while the replacement password is being hashed', async () => {
+      const envelope = JSON.stringify({ userId: 'u-1', passwordResetEpoch: 5, email: 'user@example.test' });
+      getdelMock.mockResolvedValue(envelope);
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ passwordResetEpoch: 5, email: 'user@example.test' }]) as any,
+      );
+      getEligibilityForUserMock.mockResolvedValue({
+        allowed: true,
+        userId: 'u-1',
+        email: 'user@example.test',
+      });
+      stubTransaction(null);
+
+      const res = await postJson('/reset-password', {
+        token: 'reset-token',
+        password: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid or expired reset token' });
+      expect(invalidateAllUserSessions).not.toHaveBeenCalled();
+      expect(runPostCommitCleanupMock).not.toHaveBeenCalled();
+      expect(writeAuthAudit).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'user.password.reset', result: 'success' }),
+      );
+    });
+
     it('allows reset completion for users in pending partners (#719)', async () => {
       const envelope = JSON.stringify({ userId: 'u-pending', passwordResetEpoch: 1, email: 'pending2@x.com' });
       getdelMock.mockResolvedValue(envelope);
@@ -648,6 +692,28 @@ describe('password reset eligibility (#719)', () => {
   describe('POST /change-password', () => {
     beforeEach(() => {
       vi.mocked(db.select).mockReturnValue(selectChain([{ passwordHash: 'existing-hash' }]) as any);
+    });
+
+    it('rejects a password change when a newer credential transition wins before commit', async () => {
+      stubTransaction(null);
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'old-strong-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Current password is incorrect',
+        message: 'Current password is incorrect',
+        code: 'invalid_credentials',
+      });
+      expect(invalidateAllUserSessions).not.toHaveBeenCalled();
+      expect(runPostCommitCleanupMock).not.toHaveBeenCalled();
+      expect(writeAuthAudit).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'user.password.change', result: 'success' }),
+      );
     });
 
     it('advances auth_epoch + password_reset_epoch and revokes refresh families in one transaction, then runs post-commit cleanup', async () => {

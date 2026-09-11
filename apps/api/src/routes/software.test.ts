@@ -4,6 +4,7 @@ import { softwareRoutes, computeSoftwareDeploymentAggregateStatus } from './soft
 import { db } from '../db';
 import {
   uploadBinary,
+  deleteObjects,
   isS3Configured,
   S3ConfigError,
   S3OperationError,
@@ -15,6 +16,10 @@ import { authMiddleware } from '../middleware/auth';
 import { inArray, eq, isNull } from 'drizzle-orm';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
 import { createSoftwareDeployment } from '../services/softwareDeployment';
+import {
+  fingerprintSoftwareInstallMethodDependency,
+  fingerprintSoftwareVersionDependency,
+} from '../services/softwareDependencyIdentity';
 import { writeRouteAudit } from '../services/auditEvents';
 import {
   getOrganizationSoftwareDownloadPolicy,
@@ -80,6 +85,7 @@ vi.mock('../db', () => ({
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
+    execute: vi.fn(async () => [{ id: 'locked' }]),
     select: vi.fn(() => chainMock([])),
     insert: vi.fn(() => chainMock([])),
     update: vi.fn(() => chainMock(undefined)),
@@ -94,7 +100,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   softwareCatalog: { id: 'id', orgId: 'org_id', partnerId: 'partner_id', integrationProvider: 'integration_provider', name: 'name', vendor: 'vendor', description: 'description', category: 'category' },
   softwareVersions: { id: 'id', catalogId: 'catalog_id', isLatest: 'is_latest' },
-  softwareDeployments: { id: 'id', orgId: 'org_id', softwareVersionId: 'software_version_id', createdAt: 'created_at', dispatchedAt: 'dispatched_at' },
+  softwareDeployments: { id: 'id', orgId: 'org_id', softwareVersionId: 'software_version_id', dependencyFingerprint: 'dependency_fingerprint', createdAt: 'created_at', dispatchedAt: 'dispatched_at' },
   deploymentResults: { id: 'dr_id', deploymentId: 'deployment_id', deviceId: 'device_id', status: 'status', startedAt: 'started_at', completedAt: 'completed_at', exitCode: 'exit_code', output: 'output', errorMessage: 'error_message', retryCount: 'retry_count', deviceCommandId: 'device_command_id' },
   softwareInventory: { deviceId: 'device_id', name: 'name' },
   devices: {
@@ -128,10 +134,17 @@ vi.mock('../db/schema', () => ({
 // middleware is what's actually wired into the router. The inner middleware
 // below reads these gates live on every call, matching the pattern used by
 // routes/alerts.test.ts.
-const { permissionGate, mfaGate, siteAccessGate } = vi.hoisted(() => ({
+const { permissionGate, mfaGate, siteAccessGate, authState } = vi.hoisted(() => ({
   permissionGate: { deny: false },
   mfaGate: { deny: false },
   siteAccessGate: { deny: false },
+  authState: {
+    scope: 'organization' as 'organization' | 'partner' | 'system',
+    orgId: 'org-123' as string | null,
+    partnerId: null as string | null,
+    accessibleOrgIds: ['org-123'] as string[] | null,
+    allowedSiteIds: undefined as string[] | null | undefined,
+  },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -139,9 +152,11 @@ vi.mock('../middleware/auth', () => ({
     c.set('auth', {
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       userId: 'user-123',
-      scope: 'organization',
-      orgId: 'org-123',
-      partnerId: null,
+      scope: authState.scope,
+      orgId: authState.orgId,
+      partnerId: authState.partnerId,
+      accessibleOrgIds: authState.accessibleOrgIds,
+      allowedSiteIds: authState.allowedSiteIds,
       canAccessOrg: (orgId: string) => orgId === 'org-123'
     });
     return next();
@@ -183,6 +198,7 @@ vi.mock('../services/s3Storage', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/s3Storage')>();
   return {
     uploadBinary: vi.fn(),
+    deleteObjects: vi.fn(async () => undefined),
     getPresignedUrl: vi.fn(() => Promise.resolve('https://s3.example.com/presigned')),
     isS3Configured: vi.fn(() => false),
     // Real classes, not stubs: the upload route branches on `instanceof` to
@@ -220,6 +236,11 @@ describe('software routes', () => {
     permissionGate.deny = false;
     mfaGate.deny = false;
     siteAccessGate.deny = false;
+    authState.scope = 'organization';
+    authState.orgId = 'org-123';
+    authState.partnerId = null;
+    authState.accessibleOrgIds = ['org-123'];
+    authState.allowedSiteIds = undefined;
     app = new Hono();
     app.route('/software', softwareRoutes);
   });
@@ -791,6 +812,27 @@ describe('software routes', () => {
       const call = vi.mocked(uploadBinary).mock.calls[0]!;
       expect(call[2]).toBe(expectedChecksum); // checksum from the streamed hash
       expect(typeof call[0]).toBe('string');  // temp file path, not an in-memory buffer
+    });
+
+    it('compensates the uploaded object when the version insert loses a catalog-delete race', async () => {
+      vi.mocked(isS3Configured).mockReturnValueOnce(true);
+      vi.mocked(db.select).mockReturnValueOnce(
+        selectResult([{ id: catalogId, orgId: 'org-123', name: 'Acme Tool' }]),
+      );
+      vi.mocked(db.transaction).mockRejectedValueOnce(new Error('catalog parent deleted'));
+
+      const fd = new FormData();
+      fd.append('version', '1.0.0');
+      fd.append('file', new File(['payload'], 'pkg.msi', { type: 'application/octet-stream' }));
+      const res = await app.request(`/software/catalog/${catalogId}/versions/upload`, {
+        method: 'POST', headers: { Authorization: 'Bearer token' }, body: fd,
+      });
+
+      expect(res.status).toBe(500);
+      expect(uploadBinary).toHaveBeenCalledTimes(1);
+      const uploadedKey = vi.mocked(uploadBinary).mock.calls[0]![1];
+      expect(deleteObjects).toHaveBeenCalledWith([uploadedKey]);
+      expect(captureException).toHaveBeenCalledWith(expect.any(Error), expect.anything());
     });
 
     // #2794: object-storage faults used to reach the global error handler as an
@@ -1771,6 +1813,9 @@ describe('software routes', () => {
       scheduleType: 'immediate',
       dispatchedAt: new Date('2026-07-27T00:00:00Z'),
       options: null,
+      get dependencyFingerprint() {
+        return fingerprintSoftwareVersionDependency(versionRow, catalogRow);
+      },
     };
     const versionRow = {
       id: VERSION_ID,
@@ -1872,6 +1917,85 @@ describe('software routes', () => {
         markDispatched: false,
         deviceRetryCounts: { [DEVICE_A]: 1 },
       }));
+    });
+
+    it('fails a retry closed when the approved version dependency changed', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([deploymentRow]))
+        .mockReturnValueOnce(selectResult([{
+          ...versionRow,
+          downloadUrl: 'https://substituted.example.test/pkg.exe',
+        }]))
+        .mockReturnValueOnce(selectResult([catalogRow]));
+      const flip = updateChain([{ deviceId: DEVICE_A, retryCount: 1 }]);
+      vi.mocked(db.update).mockReturnValueOnce({ set: flip.set } as any);
+
+      const res = await retry();
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        retriedDeviceIds: [DEVICE_A],
+        skippedDeviceIds: [],
+        message: expect.stringMatching(/dependency changed/i),
+      });
+      expect(buildDispatchMock).not.toHaveBeenCalled();
+    });
+
+    it('fails a retry closed when the legacy deployment has no approved fingerprint', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([{ ...deploymentRow, dependencyFingerprint: null }]))
+        .mockReturnValueOnce(selectResult([versionRow]))
+        .mockReturnValueOnce(selectResult([catalogRow]));
+      const flip = updateChain([{ deviceId: DEVICE_A, retryCount: 1 }]);
+      vi.mocked(db.update).mockReturnValueOnce({ set: flip.set } as any);
+
+      const res = await retry();
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        retriedDeviceIds: [DEVICE_A],
+        skippedDeviceIds: [],
+        message: expect.stringMatching(/predates dependency pinning/i),
+      });
+      expect(buildDispatchMock).not.toHaveBeenCalled();
+    });
+
+    it('fails a manager retry closed when the approved package ID changed', async () => {
+      const approvedMethod = {
+        id: 'method-1',
+        catalogId: catalogRow.id,
+        platform: 'windows',
+        kind: 'winget',
+        packageId: 'Approved.Package',
+      };
+      const managerDeployment = {
+        ...deploymentRow,
+        softwareVersionId: null,
+        installMethodId: approvedMethod.id,
+        dependencyFingerprint: fingerprintSoftwareInstallMethodDependency(
+          approvedMethod,
+          catalogRow,
+        ),
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([managerDeployment]))
+        .mockReturnValueOnce(selectResult([{
+          ...approvedMethod,
+          packageId: 'Substituted.Package',
+        }]))
+        .mockReturnValueOnce(selectResult([catalogRow]));
+      const flip = updateChain([{ deviceId: DEVICE_A, retryCount: 1 }]);
+      vi.mocked(db.update).mockReturnValueOnce({ set: flip.set } as any);
+
+      const res = await retry();
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        retriedDeviceIds: [DEVICE_A],
+        skippedDeviceIds: [],
+        message: expect.stringMatching(/dependency changed/i),
+      });
+      expect(buildDispatchMock).not.toHaveBeenCalled();
     });
 
     it('narrows the retry to the caller\'s site-allowed devices; out-of-scope devices are skipped', async () => {
@@ -2583,6 +2707,42 @@ describe('software routes', () => {
         expect(getOrganizationSoftwareDownloadPolicy).toHaveBeenCalledWith('org-123');
       });
 
+      it.each([
+        ['selected sites', [SITE_ID]],
+        ['an empty site ceiling', []],
+        ['a defensive null site ceiling', null],
+      ])('denies organization scope with %s before policy or database access', async (_label, allowedSiteIds) => {
+        authState.allowedSiteIds = allowedSiteIds;
+
+        const res = await app.request('/software/download-policy', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' },
+        });
+
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: 'Forbidden' });
+        expect(getOrganizationSoftwareDownloadPolicy).not.toHaveBeenCalled();
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+        expect(writeRouteAudit).not.toHaveBeenCalled();
+      });
+
+      it.each(['partner', 'system'] as const)('preserves %s access to an accessible organization', async (scope) => {
+        authState.scope = scope;
+        authState.orgId = null;
+        authState.partnerId = scope === 'partner' ? 'partner-123' : null;
+        authState.allowedSiteIds = [];
+        vi.mocked(getOrganizationSoftwareDownloadPolicy).mockResolvedValueOnce(VALID_POLICY);
+
+        const res = await app.request('/software/download-policy?orgId=org-123', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' },
+        });
+
+        expect(res.status).toBe(200);
+        expect(getOrganizationSoftwareDownloadPolicy).toHaveBeenCalledWith('org-123');
+      });
+
       it('denies a cross-organization request before touching the service', async () => {
         const res = await app.request('/software/download-policy?orgId=99999999-9999-4999-8999-999999999999', {
           method: 'GET',
@@ -2646,6 +2806,48 @@ describe('software routes', () => {
         expect(serialized).not.toContain('orgId=org-123');
         expect(auditArg).not.toHaveProperty('url');
         expect(auditArg).not.toHaveProperty('query');
+      });
+
+      it.each([
+        ['selected sites', [SITE_ID]],
+        ['an empty site ceiling', []],
+        ['a defensive null site ceiling', null],
+      ])('denies organization scope with %s before body validation or side effects', async (_label, allowedSiteIds) => {
+        authState.allowedSiteIds = allowedSiteIds;
+
+        const res = await app.request('/software/download-policy', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ invalid: 'body must not be parsed first' }),
+        });
+
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: 'Forbidden' });
+        expect(setOrganizationSoftwareDownloadPolicy).not.toHaveBeenCalled();
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+        expect(writeRouteAudit).not.toHaveBeenCalled();
+      });
+
+      it.each(['partner', 'system'] as const)('preserves %s updates for an accessible organization', async (scope) => {
+        authState.scope = scope;
+        authState.orgId = null;
+        authState.partnerId = scope === 'partner' ? 'partner-123' : null;
+        authState.allowedSiteIds = [];
+        vi.mocked(setOrganizationSoftwareDownloadPolicy).mockResolvedValueOnce({
+          ok: true,
+          policy: VALID_POLICY,
+        });
+
+        const res = await app.request('/software/download-policy?orgId=org-123', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify(VALID_POLICY),
+        });
+
+        expect(res.status).toBe(200);
+        expect(setOrganizationSoftwareDownloadPolicy).toHaveBeenCalledWith('org-123', VALID_POLICY);
+        expect(writeRouteAudit).toHaveBeenCalledTimes(1);
       });
 
       it('rejects an invalid policy body (bad origin) with 400 before touching the service', async () => {

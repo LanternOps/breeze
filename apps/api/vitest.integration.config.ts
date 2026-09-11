@@ -10,6 +10,7 @@ export default defineConfig({
     environment: 'node',
     include: [
       'src/__tests__/integration/**/*.test.ts',
+      'src/routes/integrationConnectionScope.integration.test.ts',
       'src/db/auditRetentionDefault.integration.test.ts',
       // Co-located real-driver integration test for the inbound email pipeline
       // (placed alongside the code it exercises, per the repo's test-placement
@@ -199,6 +200,10 @@ export default defineConfig({
       // mocked route suite can only assert the predicate's shape and cannot
       // see the ON DELETE CASCADE at all.
       'src/routes/enrollmentKeysPurgeExpired.integration.test.ts',
+      // Real-Postgres rotation/redeem revocation boundary.
+      'src/routes/installerRotationRevocation.integration.test.ts',
+      // One-time legacy token/child cutover and replay proof.
+      'src/db/installerBootstrapCredentialGeneration.migration.integration.test.ts',
       // Co-located real-DB end-to-end coverage for the tier3-supervised-four-eyes
       // split (Task 10): four_eyes fan-out ownership (both admins, never the
       // requester), a t+30min approve/release proving the new 60-minute
@@ -239,6 +244,7 @@ export default defineConfig({
       // The mocked list suite returns whatever rows it is handed regardless
       // of the predicate and cannot test this at all.
       'src/routes/enrollmentKeysExpiredFilter.integration.test.ts',
+      'src/routes/enrollmentKeysSiteScope.integration.test.ts',
       // Co-located real-DB integration test for the fleet posture report
       // (#3244): the mixed never-scanned/stale/clean/detected fixture that
       // guards the two-query split — a mocked unit test cannot catch the

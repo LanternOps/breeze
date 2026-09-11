@@ -93,7 +93,9 @@ describe('verifyActExecution — manage_services.restart (service_running)', () 
     });
     expect(result).toEqual({ execution: 'succeeded', verification: 'passed' });
     expect(executeCommandWithSystemPrecheck).toHaveBeenCalledWith('device-1', 'list_services', { search: 'Spooler' }, {
-      userId: AGENT_USER_ID, timeoutMs: 8_000,
+      // #5264: the run's org travels with the dispatch so a device that has
+      // moved tenants since the run started is refused by the precheck.
+      userId: AGENT_USER_ID, timeoutMs: 8_000, expectedOrgId: RUN.orgId,
     });
   });
 
@@ -173,7 +175,9 @@ describe('verifyActExecution — process_absent (manage_processes.kill is deferr
     });
     expect(result).toEqual({ execution: 'succeeded', verification: 'failed', verifyDetail: 'process with the pinned pid is still present' });
     expect(executeCommandWithSystemPrecheck).toHaveBeenCalledWith('device-1', 'list_processes', { search: 'notepad.exe', limit: 200 }, {
-      userId: AGENT_USER_ID, timeoutMs: 8_000,
+      // #5264: the run's org travels with the dispatch so a device that has
+      // moved tenants since the run started is refused by the precheck.
+      userId: AGENT_USER_ID, timeoutMs: 8_000, expectedOrgId: RUN.orgId,
     });
   });
 

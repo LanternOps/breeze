@@ -27,9 +27,12 @@ export const recoveryTokens = pgTable(
     deviceId: uuid('device_id')
       .notNull()
       .references(() => devices.id),
-    snapshotId: uuid('snapshot_id')
-      .notNull()
-      .references(() => backupSnapshots.id),
+    // Nullable + ON DELETE SET NULL (2026-10-15-140004): a recovery token is
+    // history and must survive its snapshot's retention deletion — see D17 /
+    // deleteSnapshotRow's comment on backup_snapshots.
+    snapshotId: uuid('snapshot_id').references(() => backupSnapshots.id, {
+      onDelete: 'set null',
+    }),
     tokenHash: varchar('token_hash', { length: 64 }).notNull(),
     restoreType: varchar('restore_type', { length: 30 }).notNull(),
     targetConfig: jsonb('target_config'),

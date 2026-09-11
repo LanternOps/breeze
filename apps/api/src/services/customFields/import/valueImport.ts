@@ -27,12 +27,14 @@
  *     the whole of it, and this module never widens the scope it is handed.
  *  2. **Visible definitions** — W04's `loadVisibleCustomFieldDefinitions`,
  *     called once per resolved organization below. It escalates for an
- *     unrelated reason: `custom_field_definitions` has no partner-wide RLS
- *     SELECT branch (it is in `PARTNER_WIDE_SELECT_BRANCH_EXEMPT`, TODO #4944),
- *     so an org-scoped request context cannot see a partner-wide definition at
- *     all and every value naming one would be annotated `no-definition`. That
- *     rationale belongs to THAT function and would stop applying the day #4944
- *     lands; it says nothing about (1).
+ *     unrelated reason, and that reason has now EXPIRED:
+ *     `custom_field_definitions` used to have no partner-wide RLS SELECT branch
+ *     (it was the last entry in `PARTNER_WIDE_SELECT_BRANCH_EXEMPT`), so an
+ *     org-scoped request context could not see a partner-wide definition at all
+ *     and every value naming one would be annotated `no-definition`. #4944
+ *     added that branch, so the escalation inside that function is now
+ *     redundant and is retained only pending a separate follow-up. Either way
+ *     it says nothing about (1) — do not read (1)'s scope out of it.
  *
  * Everything else — the already-stored values, the existing warranty rows — is
  * read in the REQUEST's own context, deliberately. Those reads are bounded to

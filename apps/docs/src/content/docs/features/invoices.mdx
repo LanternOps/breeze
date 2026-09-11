@@ -11,6 +11,8 @@ Breeze's invoice engine turns the work you already track -- catalog items, time 
 
 Invoices are **partner-scoped**: you can invoice any of your customer organizations from one place.
 
+The Billing section, including Invoices, is only available when the **Service Management** module is enabled for your account; see [Service Management mode](/reference/partner-management/#service-management-mode).
+
 ## The Invoice List
 
 The list shows every invoice with its number, organization, status, issue and due dates, total, and outstanding balance. An **Outstanding** summary strip at the top totals what's still owed across all invoices. Search by number or organization, filter by status, organization, or date, and sort by issued date, due date, total, or balance.
@@ -105,6 +107,8 @@ Setting these once per customer means invoices carry the right tax and address w
 ## Voiding and Reissuing
 
 If an issued invoice needs to be cancelled, **void** it with a reason. You can optionally **reissue** at the same time, which creates a fresh draft you can correct and issue anew -- keeping the original on record for audit purposes.
+
+**An invoice with payments applied to it cannot be voided.** Breeze refuses the void and tells you how much is applied, rather than silently un-applying the payments and leaving the money unaccounted for: *"This invoice has &lt;amount&gt; of payments applied to it. Remove those payments first (and in QuickBooks, if it is synced there), then void the invoice."* Remove the payments, then void. This applies to every invoice, whether or not it is synced to an accounting integration -- see [Accounting Integrations](/features/accounting-integrations/#payment-push).
 
 ## Billed devices
 

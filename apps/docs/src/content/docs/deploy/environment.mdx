@@ -88,7 +88,12 @@ pointing at a database the api container can actually reach.
 | `ENROLLMENT_KEY_CLEANUP_ENABLED` | `true` | | Set to `false` to disable the daily sweep that purges expired enrollment keys |
 | `ENROLLMENT_KEY_PURGE_AFTER_DAYS` | `7` | | Grace period (days past expiry) before an expired enrollment key is purged |
 | `SESSION_SECRET` | — | Yes | Session signing secret |
+| `BREEZE_BOOTSTRAP_ADMIN_EMAIL` | — | Yes (prod, first boot) | Email for the initial admin account, created automatically the first time the API starts against an empty `users` table. **Required in production** — without it, that first-boot auto-seed throws and the API crash-loops. Must not be the dev default (`admin@breeze.local`). |
+| `BREEZE_BOOTSTRAP_ADMIN_PASSWORD` | — | Yes (prod, first boot) | Password for the initial admin account. **Required in production**, must be at least 16 characters, and must not be the dev default or look like a placeholder (`changeme`, `password`, `change-in-production`, etc.) — the API refuses to start otherwise. Generate a one-time secret (`openssl rand -base64 24`) and rotate it after first login. |
+| `BREEZE_BOOTSTRAP_ADMIN_NAME` | `Bootstrap Admin` (prod) / `Breeze Admin` (dev) | | Display name for the initial admin account. |
 | `BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED` | `true` | | Whether an approver device must have **server-verified** platform attestation before it counts as a level-4 authenticator for the most sensitive approvals. **On by default** — leave it alone unless you have a documented reason. Set it to `false` only to accept a device's own unverified claim that it is platform-bound. This is a fail-closed gate: an unrecognized value logs a warning and keeps enforcement on, and the API refuses to boot on a malformed value rather than silently disabling it. |
+| `APPLE_APP_ATTEST_APP_ID` | `D8W6N2JYMA.com.breeze.rmm` | | Apple's `<TeamID>.<bundle id>` App Attest identifier, checked when an iPhone registers as a level-4 approver device. It's hashed into the attestation, so a wrong value rejects every genuine attestation rather than accepting a foreign one. Only override it if you build your own signed iOS app. |
+| `APPLE_APP_ATTEST_ENVIRONMENT` | `production` | | Which App Attest environment's attestations are accepted. Only the exact value `development` opts into accepting development-build attestations; anything else (a typo, a stray space) is treated as `production` and logs a warning — the wrong value can only ever reject a genuine attestation, never admit a forged one. |
 | `PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES` | `525600` (365 days) | | Ceiling on the lifetime a caller may request when creating an enrollment key through `POST /partner-api/v1/enrollment-keys` |
 | `PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT` | `10` | | Enrollment-key creations per hour per service principal on the Partner API |
 | `PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT` | `100` | | Enrollment-key creations per hour per partner, across all of that partner's service principals |
@@ -109,7 +114,7 @@ deployment env vars.
 | `BREEZE_ROLE` | `all` | | The role the process itself runs as. You normally set `BREEZE_API_ROLE` instead and let the compose file map it; the optional worker container fixes this to `worker` for you. |
 | `PUBLIC_API_URL` | `https://${BREEZE_DOMAIN}` (bundled compose only) | | Public API URL used for generated agent installers and shareable links. The bundled `docker-compose.yml` derives this from `BREEZE_DOMAIN`. If you use a custom compose file, you must set `PUBLIC_API_URL` in `.env` **and** map it into the `api` service `environment:` block, or **Generate Link** / **Download Installer** will fail with `Server URL not configured`. |
 | `API_URL` | — | | Legacy fallback for `PUBLIC_API_URL`, honored only by enrollment, installer, and MCP-invite code paths. Auto-update, dev-push, and a few other routes read `PUBLIC_API_URL` only — prefer setting `PUBLIC_API_URL`. |
-| `BREEZE_DOMAIN` | — | Yes (prod) | Domain for Caddy TLS provisioning |
+| `BREEZE_DOMAIN` | — | Yes (prod) | Domain for Caddy TLS provisioning. Also the default source for `PUBLIC_API_URL` and `PUBLIC_PORTAL_URL` in the bundled compose file, so it's required even when you front TLS yourself. |
 | `ACME_EMAIL` | — | Yes (prod) | Email for Let's Encrypt certificate notifications |
 | `CADDY_LOCAL_CERTS` | — (empty) | | Set to the literal `local_certs` when `BREEZE_DOMAIN` is a domain Let's Encrypt cannot reach — an internal name that only resolves on a LAN/VPN, or a host whose ports 80/443 are closed to the internet. Caddy then issues from its own internal CA instead of failing the ACME order and aborting the TLS handshake, which browsers report as `ERR_SSL_PROTOCOL_ERROR` with no warning to click through. Browsers warn until the root from `docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt` is trusted on each client. Leave empty for any internet-reachable deployment; not needed for `localhost` or a bare IP, which Caddy already self-signs. |
 | `CORS_ALLOWED_ORIGINS` | — | | Comma-separated allowed CORS origins. Requests the browser sends from the same origin as the API — including a browser reaching Breeze through an SSH tunnel or on a LAN address — are accepted whether or not that origin is listed, so you only need this for a genuinely cross-origin front end. |
@@ -174,6 +179,17 @@ Push notifications to the Android app go through Firebase Cloud Messaging.
 | Variable | Default | Description |
 |---|---|---|
 | `FIREBASE_SERVICE_ACCOUNT` | — | Firebase service-account credentials JSON for the project that owns the Android app. Optional — leave it unset and Android devices simply receive no push notifications; nothing else changes and the API still boots. iOS push is unaffected either way. |
+| `PLAY_INTEGRITY_SERVICE_ACCOUNT` | — | Google service-account credentials for decoding **Play Integrity** verdicts when an Android phone registers as an approver device for [high-assurance approvals](/features/approval-security/). Accepts the raw JSON or a base64-encoded copy of it. Optional: leave it unset and Android approver registration is verified by hardware **Key Attestation** alone. |
+
+<Aside type="caution" title="A mangled Play Integrity credential stops the boot">
+  `PLAY_INTEGRITY_SERVICE_ACCOUNT` is validated at startup, and a value that
+  cannot be read as a service account — bad base64, truncated JSON, a missing
+  client email or private key, a private key without its PEM header — **stops the
+  API from starting** and names the problem. That is deliberate: the alternative
+  is an install that reports "Play Integrity not configured" forever while an
+  operator believes it is on. The check is structural only, so a well-formed but
+  wrong key still boots and fails at the first verdict decode instead.
+</Aside>
 
 ## Binary Distribution
 
@@ -261,6 +277,26 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `AGENT_LOG_RETENTION_DAYS` | `7` | Days to keep uploaded agent diagnostic logs, clamped to 1–365 |
 | `AGENT_LOG_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
 | `AGENT_LOG_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
+| `CHANGE_LOG_RETENTION_DAYS` | `90` | Days to keep processed device change-log entries, clamped to 1–365 |
+| `CHANGE_LOG_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
+| `CHANGE_LOG_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
+| `IP_HISTORY_RETENTION_DAYS` | `90` | Days to keep device IP-address history, clamped to 1–365 |
+| `IP_HISTORY_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
+| `IP_HISTORY_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
+| `SNMP_METRICS_RETENTION_DAYS` | `7` | Days to keep raw SNMP-polled metrics, clamped to 1–365 |
+| `SNMP_METRICS_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
+| `SNMP_METRICS_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
+| `PROCESS_SAMPLE_RETENTION_DAYS` | `7` | Days to keep per-process monitoring samples, clamped to 1–14. Not batch/max-batches tunable — this sweep loops in fixed 10,000-row batches until caught up. |
+| `SERVICE_PROCESS_CHECK_RESULTS_RETENTION_DAYS` | `14` | Days to keep service/process watch check results, clamped to 1–365. Not batch/max-batches tunable — same fixed-batch-loop shape as the process-sample sweep above. |
+| `RELIABILITY_HISTORY_RETENTION_DAYS` | `120` | Days to keep device reliability-scoring history, floored at 30 |
+| `RELIABILITY_HISTORY_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
+| `RELIABILITY_HISTORY_RETENTION_MAX_BATCHES` | `50` | Maximum batches per nightly run |
+| `ML_OUTPUT_RETENTION_DAYS` | `365` | Days to keep stored ML model outputs, floored at 30 |
+| `ML_OUTPUT_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
+| `ML_OUTPUT_RETENTION_MAX_BATCHES` | `50` | Maximum batches per nightly run |
+| `USER_RISK_RETENTION_DAYS` | `90` | Days to keep resolved user-risk signal history, floored at 30 |
+| `USER_RISK_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
+| `USER_RISK_RETENTION_MAX_BATCHES` | `50` | Maximum batches per nightly run |
 
 Audit-log retention is **not** set here — it is a per-organization policy an operator saves in the app. See [Audit Logs → Retention](/reference/audit-logs/#retention-policies).
 
@@ -362,6 +398,26 @@ Like event-loop lag, these figures are kept off the unauthenticated
 `/health/ready` for the same reason — they describe how close the instance is to
 falling over.
 
+### Readiness probe tuning
+
+`/ready` and `/health/ready` answer a real readiness question — are Postgres,
+Redis and the background consumers this process needs actually up — as distinct
+from `/health`, which is liveness only and answers 200 well before that. Point a
+load balancer or Compose healthcheck that should hold traffic back at `/ready`.
+See [Health Monitoring](/monitoring/health/) for the response shapes and for the
+worker container's own variant of the endpoint.
+
+Neither of these needs setting; the defaults suit every deployment we know of.
+
+| Variable | Default | Description |
+|---|---|---|
+| `READINESS_CACHE_TTL_MS` | `5000` | How long a readiness verdict is reused before the probes run again, so a busy load balancer cannot turn a healthcheck into a database workload. Accepted range is `0`–`10000` minus the probe timeout below. |
+| `READINESS_PROBE_TIMEOUT_MS` | `3000` | Hard bound on each individual Postgres and Redis probe. Clamped to `100`–`5000` — a wedged dependency reports not-ready rather than hanging the healthcheck. |
+
+| Variable | Default | Description |
+|---|---|---|
+| `OFFLINE_DETECTOR_WORKER_CONCURRENCY` | `5` | How many offline-sweep jobs the offline detector processes at once. Clamped to `1`–`20`; anything unparseable falls back to `5`. Raise it only if offline detection visibly lags on a very large fleet. |
+
 ## Sentry
 
 Both API and web Sentry integrations are off by default. Leave the DSN variables blank to disable. See [Error Tracking & Privacy](/security/error-tracking/) for what gets collected and how scrubbing works.
@@ -378,13 +434,17 @@ Both API and web Sentry integrations are off by default. Leave the DSN variables
 
 ## Rate Limiting
 
-Per-user and per-endpoint rate limits (login, MFA, dashboard usage) are fixed in code and not configurable via environment variables. The one deployment-tunable limit is the per-org agent cap, which bounds how much traffic a single tenant's fleet can generate, even with thousands of agents.
+Most per-endpoint rate limits (MFA, dashboard usage) are fixed in code and not configurable via environment variables. A few are deployment-tunable: the per-org agent cap, which bounds how much traffic a single tenant's fleet can generate even with thousands of agents, plus the account lockout and refresh-token limits on the login path.
 
 | Variable | Default | Description |
 |---|---|---|
 | `AGENT_ORG_RATE_LIMIT_PER_MIN` | `600` | **Floor** for the per-organization sliding-window rate limit on agent-authenticated endpoints. The effective ceiling scales with the org's enrolled device count (see `AGENT_ORG_RATE_LIMIT_PER_DEVICE`), so this value only applies to small orgs. Returns `429` with a `Retry-After` derived from the window reset. Not mapped in the stock compose file — to change it, add it to the `api` service `environment:` block as well as `.env`. |
 | `AGENT_ORG_RATE_LIMIT_PER_DEVICE` | `12` | Requests per minute allowed per enrolled device when sizing the per-organization ceiling. A steady-state agent uses ~2 req/min, so the default leaves roughly 6x headroom for synchronized bursts, manual scans and command traffic. |
 | `AGENT_ORG_RATE_LIMIT_MAX` | `20000` | Hard platform ceiling for the per-organization limit, regardless of device count. Keeps the per-tenant guardrail meaningful for very large fleets. |
+| `LOGIN_ACCOUNT_LOCKOUT_MAX` | `5` | Consecutive failed password attempts (keyed per account, not per IP) before the account is locked for the window below. Set to `0` to disable lockout entirely. Not mapped in the stock compose file — add it to the `api` service `environment:` block as well as `.env`. |
+| `LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS` | `900` | Lockout duration once `LOGIN_ACCOUNT_LOCKOUT_MAX` is reached. Not mapped in the stock compose file — add it to the `api` service `environment:` block as well as `.env`. |
+| `AUTH_REFRESH_RATE_LIMIT` | `60` | Requests per window allowed on `POST /auth/refresh`, keyed per refresh-token family (roughly one browser session chain). |
+| `AUTH_REFRESH_RATE_WINDOW_SECONDS` | `60` | Window for `AUTH_REFRESH_RATE_LIMIT`. |
 
 <Aside type="note">
   Earlier `.env.example` files carried `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX_REQUESTS`, `SESSION_MAX_AGE`, and `ENABLE_API_DOCS` entries. None of these were ever read by the API — they are gone from `.env.example` as of v0.99.0 and can be safely deleted from your `.env`.
@@ -432,6 +492,11 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | `AGENT_MTLS_BINDING_MODE` | `off` | `audit` counts certificate/device binding mismatches without denying; `enforce` denies them. Requires a validating proxy. Never inferred from `NODE_ENV`/`IS_HOSTED`/`CF_MTLS_*`. |
 | `MANAGED_SOFTWARE_POLICY_MODE` | `compat` | `enforce` requires an upgraded agent for every managed-software command, public destinations included. Check your not-yet-upgraded device count first — they are denied outright. |
 | `AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID` | `false` | Requires update manifests to carry a signing key ID. Not fleet-wide: older agent builds ignore the pushed value. Only enable once the missing-ID count has been zero for 7 consecutive days. |
+| `AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED` | `false` | Enables the terminal/native logout-preparation flow described in [Cloudflare Access trust](/deploy/cloudflare-access-trust/). Validated at boot: must be a boolean (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`) when set. It no longer depends on any other flag. |
+
+<Aside type="note" title="Removed in v0.112.0: `AUTH_BROWSER_TRANSITIONS_ENFORCED`">
+  Browser-session binding — tying an issued session to a browser-generated binding value so a stolen refresh token alone cannot move a session to another browser — is now **always enforced** on every sign-in path (password, SSO, Cloudflare Access, MFA, passkey, refresh, registration, invitation). The rollout switch is gone and is ignored if still present in `.env`; delete the line. There is no configuration that restores the unguarded issuance path. See the [v0.112.0 upgrade notes](/deploy/upgrades/#v01120--windows-msi-fix-security-remediations-bare-metal-recovery).
+</Aside>
 
 ## Feature Flags
 
@@ -449,6 +514,14 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | `BREEZE_WORKSPACE_ENABLED` | `false` in the production compose files (`true` in the dev override) | Load the built-in **AI Workspace** extension. Off by default — leave it unset unless you want Workspace. **Requires a PostgreSQL image that provides the `pgvector` extension** (see the aside below). |
 | `BREEZE_AI_AGENTS_ENABLED` | `false` | Surface **AI Agents** (Settings → AI Agents). Off by default — no agent exists, runs, or appears in the UI until this is `true`. Enabling the flag does not by itself let an agent change anything: every agent starts in **Off**, and moving one to **Act** is a separate, MFA-confirmed opt-in per agent. Must also be mapped in the `api` service's `environment:` block, not just set in `.env`. |
 | `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` | `false` | Sub-flag of `BREEZE_AI_AGENTS_ENABLED` for the policy-decide capability, which is **not yet generally available** — leave it off. When enabled it lets an agent authorise a supervised-scope action on its own policy decision instead of sending it to a human approver, and it is what allows an operation to be **promoted** to that status from the Graduation panel. Automatic **demotion** is not gated by this flag and is always on. An operation only ever goes live on the organization's own agent — a partner-wide list is a ceiling, not a grant, so grant each organization explicitly before enabling this. See [AI Agents → Graduation](/features/ai-agents/#graduation-feedback-loop). An unrecognised value stops the API at boot rather than silently reading as off. |
+| `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED` | `true` | Fire-and-forget device actions (scripts, patch installs, patch scans, software installs, reboots, automations, …) issued against an offline device are queued and delivered on its next successful heartbeat, up to a per-action-type deadline. Most action types — including scripts, patch installs, and patch scans — get **7 days**; a narrower set of self-superseding actions (device inventory/config-sync commands, plus reboot/shutdown/scheduled-restart) get **24 hours** instead, since a week-old copy of one of those would be stale by the time it lands. Set `false` to go back to the pre-#5128 behavior of rejecting the action outright when the device is offline. This escape hatch is temporary and is removed in a later release, so treat `false` as a window to adjust your automations, not a permanent setting. |
+| `DEVICE_COMMAND_QUEUE_TTL_HOURS` | `168` (7 days) | How long a queued **standard** action may wait for its device before it expires undelivered. Covers scripts, patch installs, patch scans, software installs, and automation actions. |
+| `DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS` | `24` | Deadline for **self-superseding** queued work — inventory refreshes, log-level changes, agent auto-update and rollback, browser-policy application, and the audit, security, reliability, hardware and encryption-key collections. The next run of any of these replaces the last, so a week-old copy would be stale by the time it landed. |
+| `DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS` | `24` | Deadline for queued **power-state** work: reboot, shutdown, and scheduled restart. |
+
+<Aside type="note" title="Queue deadlines are per action type">
+  All three deadlines are read per queued action when it is created, in hours, and any value that is not a positive number falls back to the default. Lowering one does not shorten rows that are already queued — the deadline is stamped at queue time. A row that reaches its deadline without the device coming back expires **undelivered**, and the action reports as expired rather than sitting pending forever. See [Devices → Queued actions](/features/devices/) for what a technician sees.
+</Aside>
 
 <Aside>
   Variables prefixed with `PUBLIC_` are **web build-time flags** — they are baked into the web bundle when the image is built and cannot be changed at runtime by editing `.env`. To toggle them, set the value in your build environment and rebuild the web image.
@@ -502,6 +575,14 @@ Both variables are validated when the API starts. An invalid mode or an unknown 
 | `CF_ACCESS_TEAM_DOMAIN` | — | Required when trust is enabled. Bare hostname of your Cloudflare team domain, e.g. `example.cloudflareaccess.com`. No scheme. |
 | `CF_ACCESS_AUD` | — | Required when trust is enabled. AUD tag for the Cloudflare Access application protecting Breeze. |
 | `CF_ACCESS_TRUSTS_MFA` | `false` | Treat a valid CF Access JWT as MFA-satisfied for the minted Breeze session. Only enable if your CF Access policy actually requires step-up MFA. |
+
+## Backup (Enterprise Agent Backup)
+
+| Variable | Default | Description |
+|---|---|---|
+| `AGENT_BACKUP_SERVER_URL` | — | Instance-level backup control-plane URL, pushed to every agent through its config, enrollment response, and heartbeat reply. Lets you point the [enterprise backup](/deploy/binaries/#backup-binary) subsystem (Hyper-V, MSSQL, system image) at a separate backup control plane instead of the main API. Must be `https://` in production; `http://` is accepted only for `localhost`/`127.0.0.1`. Leave unset to keep backups pointed at the main API. |
+| `RECOVERY_MEDIA_WORK_DIR` | `/data/recovery-work` (Compose) | Scratch directory for building [bare-metal recovery](/backup/bare-metal-recovery/) bundles and ISOs (a 45–65 MB helper binary plus a tarball or ISO per build). The `api` and `worker` containers mount `/tmp` as a 64 MB tmpfs, so building under the OS temp directory fails with `ENOSPC`; the shipped Compose files default this to a directory on the persistent `api_data` volume. Override only to move it elsewhere on durable storage, and map it in the `api` service `environment:` block. |
+| `BACKUP_GC_GRACE_MS` | `172800000` (48 h) | How long an expired snapshot's storage objects are kept before the retention sweep deletes them. **Lab/test knob only.** In production the API enforces a floor of one hour and logs when a lower value is ignored. Leave unset. |
 
 ## Cloud-to-Cloud Backup (M365)
 
@@ -647,6 +728,24 @@ It uses the same isolation model as Graph-read: the Entra certificate and Key Va
 | `ANTHROPIC_AUTH_TOKEN` | — | Bearer token for the custom backend (use instead of `ANTHROPIC_API_KEY` when `ANTHROPIC_BASE_URL` is set). |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Override the default model id for a raw vLLM backend. Leave unset with a LiteLLM gateway that aliases `claude-sonnet-4-6` → your model. |
 
+### AI Operator (preview, off by default)
+
+[AI Operator](/features/ai-agents/#ai-operator-preview) hands a long-running task
+to an agent that keeps working after the browser is closed. It is gated
+separately from the rest of the AI-agent subsystem, and `BREEZE_AI_AGENTS_ENABLED`
+still has to be on above it.
+
+| Variable | Default | Description |
+|---|---|---|
+| `AI_OPERATOR_TASKS_ENABLED` | `false` | Admit AI Operator tasks and their continuation runs. With this off, the **Delegate to Operator** action does not appear and no task can be created. |
+| `AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED` | `false` | Allow the one shipped recipe, **service recovery**. Task admission needs this as well as the flag above. |
+
+With both flags off the whole subsystem is inert. Its two background workers —
+the task coordinator (15-second tick) and the task-event publisher (5-second
+tick) — are still registered so that a task already in flight when you turn the
+feature off can finish cleanly, but with no tasks being admitted neither has
+anything to do. No new queue is added.
+
 ### Self-hosted: alternative Anthropic-compatible backends
 
 A self-hosted operator can run the AI Agent against any backend that speaks the
@@ -680,6 +779,27 @@ and an **unrecognized model id is priced at conservative Opus-tier
 cheap local model, not `$0`. For accurate accounting, add the served model id to
 `MODEL_PRICING` in `aiCostTracker.ts`, or use the openai-compatible path's
 `MCP_LLM_PRICE_*` overrides.
+
+## Warranty lookups
+
+The warranty worker looks each physical device's serial number up against its manufacturer so the device page and [warranty-expiry alerts](/features/warranty-tracking/) carry real coverage dates. Every vendor is off until configured; an unconfigured vendor leaves its devices at status `unknown`. Apple coverage is reported by the macOS agent and needs no configuration.
+
+| Variable | Default | Description |
+|---|---|---|
+| `DELL_CLIENT_ID` | — | OAuth client ID from Dell's [TechDirect](https://techdirect.dell.com) Warranty API |
+| `DELL_CLIENT_SECRET` | — | Matching Dell OAuth client secret. Both are required for Dell lookups. |
+| `LENOVO_API_KEY` | — | ClientID for Lenovo's official [Warranty API](https://supportapi.lenovo.com/Documentation/Warranty.html) (`supportapi.lenovo.com`), issued through a Lenovo partner manager |
+| `LENOVO_WARRANTY_ENABLED` | — | `true` enables credential-free Lenovo lookups through the JSON endpoint behind Lenovo's public warranty-lookup page. It is not documented by Lenovo and may stop working without notice, so it is opt-in. |
+
+<Aside>
+  When both Lenovo settings are present the official API is authoritative: a definite "no warranty found" from it is final, and the public endpoint is only consulted when the official call itself fails (bad key, outage). HP has no lookup yet — HP's Warranty API is not available to MSP or RMM vendors, so HP devices stay `unknown`.
+</Aside>
+
+## Breeze AI for Office (add-ins, optional)
+
+| Variable | Default | Description |
+|---|---|---|
+| `CLIENT_AI_ENTRA_CLIENT_ID` | — | Entra application (client) ID for the multi-tenant **Breeze AI for Office** add-in app registration. The entire `/api/v1/client-ai/admin/*` admin surface (tenant mapping, org policy, usage, templates) answers `404` ("Breeze AI for Office is not enabled") until this is set. Leave unset if you don't use the Office add-ins' AI features. |
 
 ## Accounting (QuickBooks Online)
 

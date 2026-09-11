@@ -518,7 +518,8 @@ describe('partner desired-configuration material watermarks', () => {
       autoApproveDeferralDays: 7,
       apps: [{ source: 'third_party', packageId: 'Example.App', action: 'block' }],
       scheduleFrequency: 'weekly', scheduleTime: '02:00', scheduleDayOfWeek: 'sun',
-      scheduleDayOfMonth: 1, rebootPolicy: 'if_required', rebootDelayMinutes: 15,
+      scheduleDayOfMonth: 1, offlineBehavior: 'queue',
+      rebootPolicy: 'if_required', rebootDelayMinutes: 15,
       // #3207. This assertion is SUPPOSED to red on a new patch column: the
       // canonical export is a hand-enumerated jsonb_build_object, so it is the
       // only structural coverage the export has.
@@ -797,6 +798,10 @@ describe('partner desired-configuration material watermarks', () => {
     // the value pointing at the target org before the device does while the two
     // statements share a transaction.
     await expect(db.transaction(async (tx) => {
+      // This fixture uses the admin test client rather than the request app
+      // pool. Declare the system authority it is intentionally simulating;
+      // the re-home SECURITY DEFINER helper rejects missing/ambiguous context.
+      await tx.execute(sql`SELECT set_config('breeze.scope', 'system', true)`);
       await tx.execute(sql`
         SELECT public.breeze_rehome_device_custom_field_values(
           ${device.id}::uuid, ${targetOrgId}::uuid)`);

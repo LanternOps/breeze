@@ -10,7 +10,7 @@ const selectLimitMock = vi.fn();
 // C1 (final review #4191): recorder for tx.delete(ticketDrafts).where(w).
 const txDeleteWhereMock = vi.fn();
 
-const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, dbMocks, configMocks, formMocks, ctxMocks, matchContactMock } = vi.hoisted(() => {
+const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, assigneeEligibleMock, dbMocks, configMocks, formMocks, ctxMocks, matchContactMock, assertTicketCreationAllowedMock } = vi.hoisted(() => {
   const insertReturning = vi.fn();
   const updateReturning = vi.fn();
   const selectResult = vi.fn();
@@ -22,6 +22,7 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, db
     auditMock: vi.fn().mockResolvedValue(undefined),
     allocateMock: vi.fn().mockResolvedValue('T-2026-0042'),
     guardMock: vi.fn().mockResolvedValue(null),
+    assigneeEligibleMock: vi.fn().mockResolvedValue(true),
     dbMocks: { insertReturning, updateReturning, selectResult, txExecuteMock, txUpdateReturning },
     // #3258 W03 review I6: SPIES, not passthrough arrows. The system-context
     // escape opens a SECOND pooled connection that cannot see the caller's
@@ -32,6 +33,14 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, db
       withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
     },
     matchContactMock: vi.fn(),
+    // #5075 W04 — Service Management gate. `getServiceManagementMode` (called
+    // by `assertTicketCreationAllowed`) issues its OWN db.select() call, which
+    // would otherwise consume a slot in the `dbMocks.selectResult` sequence
+    // every other createTicket test queues up (org lookup, then
+    // device/assignee/category lookups, in order) — breaking every test with
+    // 2+ queued selects. Mocked at the module boundary instead, defaulting to
+    // "allowed" so the gate is a no-op for every test that doesn't opt in.
+    assertTicketCreationAllowedMock: vi.fn().mockResolvedValue(undefined),
     configMocks: {
       getOrgSlaOverride: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
       getPartnerPrioritySla: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
@@ -50,6 +59,10 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, db
 });
 
 vi.mock('./ticketEvents', () => ({ emitTicketEvent: emitMock }));
+vi.mock('./ticketPush', async () => {
+  const actual = await vi.importActual<typeof import('./ticketPush')>('./ticketPush');
+  return { ...actual, isEligibleTicketRecipient: assigneeEligibleMock };
+});
 vi.mock('./mlFeedbackEmitters', () => ({ emitTicketTriageFeedback: emitTriageFeedbackMock }));
 vi.mock('./auditService', () => ({ createAuditLogAsync: auditMock }));
 vi.mock('./ticketNumbers', () => ({ allocateInternalTicketNumber: allocateMock }));
@@ -78,6 +91,14 @@ vi.mock('./ticketFormService', async () => {
 vi.mock('./contacts/crud', async () => {
   const actual = await vi.importActual<typeof import('./contacts/crud')>('./contacts/crud');
   return { ...actual, matchContactByEmail: matchContactMock };
+});
+
+// #5075 W04 — mock only `assertTicketCreationAllowed`; keep every other export
+// (notably `ServiceManagementOffError`, which `createTicket` checks with
+// `instanceof`) real, so mocked-rejection tests can throw the ACTUAL class.
+vi.mock('./serviceManagement', async () => {
+  const actual = await vi.importActual<typeof import('./serviceManagement')>('./serviceManagement');
+  return { ...actual, assertTicketCreationAllowed: assertTicketCreationAllowedMock };
 });
 
 vi.mock('../db', () => ({
@@ -250,6 +271,7 @@ import {
   TicketServiceError, TICKET_STATUS_TRANSITIONS, SYSTEM_COMMENT_TYPES
 } from './ticketService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
+import { ServiceManagementOffError } from './serviceManagement';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 
 const actor = { userId: 'u-1', name: 'Tess Tech' };
@@ -267,6 +289,42 @@ describe('createTicket', () => {
     valuesMock.mockClear();
     setMock.mockClear();
     allocateMock.mockResolvedValue('T-2026-0042');
+    assertTicketCreationAllowedMock.mockReset().mockResolvedValue(undefined);
+    assigneeEligibleMock.mockResolvedValue(true);
+  });
+
+  // #5075 W04 — Service Management 'off' withdraws NEW ticket creation. This is
+  // the ONE gate every creation surface routes through; ticketService.ts
+  // translates the thrown ServiceManagementOffError into a TicketServiceError so
+  // every existing `instanceof TicketServiceError` handler picks it up unchanged.
+  describe('Service Management gate (#5075 W04)', () => {
+    it('translates a ServiceManagementOffError into a 409 TicketServiceError', async () => {
+      dbMocks.selectResult.mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }]);
+      assertTicketCreationAllowedMock.mockRejectedValueOnce(new ServiceManagementOffError());
+
+      const err = await createTicket(
+        { orgId: 'o-1', subject: 'Printer offline', source: 'manual' }, actor
+      ).catch(e => e);
+
+      expect(err).toBeInstanceOf(TicketServiceError);
+      expect(err.status).toBe(409);
+      expect(err.code).toBe('service_management_off');
+      expect(err.message).toBe('Service Management is turned off for this partner');
+      // Refused before number allocation and before any insert.
+      expect(allocateMock).not.toHaveBeenCalled();
+      expect(valuesMock).not.toHaveBeenCalled();
+    });
+
+    it('checks the gate with the RESOLVED org partnerId, and proceeds to create when it resolves', async () => {
+      dbMocks.selectResult.mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }]);
+      dbMocks.insertReturning.mockResolvedValue([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+      assertTicketCreationAllowedMock.mockResolvedValueOnce(undefined);
+
+      const t = await createTicket({ orgId: 'o-1', subject: 'Printer offline', source: 'manual' }, actor);
+
+      expect(assertTicketCreationAllowedMock).toHaveBeenCalledWith('p-1');
+      expect(t.internalNumber).toBe('T-2026-0042');
+    });
   });
 
   it('resolves partnerId from the org, allocates a number, inserts, emits ticket.created', async () => {
@@ -314,6 +372,26 @@ describe('createTicket', () => {
 
     const insertPayload = valuesMock.mock.calls[0]![0];
     expect(insertPayload).toMatchObject({ status: 'open', assignedTo: 'u-99' });
+  });
+
+  it('rejects an ineligible assignee before number allocation or any write', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'u-99', partnerId: 'p-1' }]);
+    assigneeEligibleMock.mockResolvedValueOnce(false);
+
+    const err = await createTicket({ orgId: 'o-1', subject: 'Secret subject', source: 'manual', assigneeId: 'u-99' }, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.code).toBe('ASSIGNEE_NOT_ELIGIBLE');
+    expect(assigneeEligibleMock).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'u-99', partnerId: 'p-1' }),
+      'p-1',
+      'o-1',
+      undefined,
+    );
+    expect(allocateMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
   });
 
   it('rejects a deviceId belonging to a different org with a 400 TicketServiceError', async () => {
@@ -1384,6 +1462,7 @@ describe('assignTicket', () => {
     vi.clearAllMocks();
     valuesMock.mockClear();
     setMock.mockClear();
+    assigneeEligibleMock.mockResolvedValue(true);
   });
 
   it('updates assignee, writes an assignment feed entry, emits ticket.assigned', async () => {
@@ -1410,6 +1489,26 @@ describe('assignTicket', () => {
       eventType: 'ticket.assignee_changed',
       dedupeKey: 'assignedTo:null:"u-2"',
     }));
+  });
+
+  it('rejects an ineligible same-partner assignee before ticket mutation or event emission', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', deviceId: 'd-hidden', status: 'new', assignedTo: null }])
+      .mockResolvedValueOnce([{ id: 'u-2', partnerId: 'p-1' }]);
+    assigneeEligibleMock.mockResolvedValueOnce(false);
+
+    const err = await assignTicket('t-1', 'u-2', actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.code).toBe('ASSIGNEE_NOT_ELIGIBLE');
+    expect(assigneeEligibleMock).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'u-2', partnerId: 'p-1' }),
+      'p-1',
+      'o-1',
+      'd-hidden',
+    );
+    expect(setMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
   });
 
   // #3828 wave-6-3 task 2: in-transaction ticket_outbox write, id-only payload.
@@ -2077,6 +2176,77 @@ describe('updateTicketFields', () => {
   //   submittedBy: null    -> a login that WAS there is gone; its derived link goes too
   //   submitterEmail changed, no login -> re-resolve by (org, lower(email))
   //   submitterName only   -> neither id is touched
+
+  // #5367: naming the CONTACT directly. The three rules above derive the link
+  // from a login or an address; an explicit `requesterContactId` states it, and
+  // wins — the same precedence createTicket gives a named contact.
+  it('sets the requester contact named explicitly and backfills the name/email snapshot', async () => {
+    // selects in order: ticket, contact
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ ...BASE_TICKET, submittedBy: null, submitterName: 'Tess Tech', submitterEmail: null, requesterContactId: null }])
+      .mockResolvedValueOnce([{ id: 'ct-1', orgId: 'o-1', name: 'Jane Doe', email: 'jane@acme.test' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, requesterContactId: 'ct-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { requesterContactId: 'ct-1' }, actor);
+
+    expect(setMock.mock.calls[0]![0]).toMatchObject({
+      requesterContactId: 'ct-1',
+      submitterName: 'Jane Doe',
+      submitterEmail: 'jane@acme.test',
+    });
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Updated requester' }));
+  });
+
+  it('rejects a requesterContactId from another org and writes nothing', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ ...BASE_TICKET, requesterContactId: null }])
+      .mockResolvedValueOnce([{ id: 'ct-x', orgId: 'o-OTHER', name: 'Intruder', email: 'x@evil.test' }]);
+
+    const err = await updateTicketFields('t-1', { requesterContactId: 'ct-x' }, actor).catch((e) => e);
+
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+    expect(err.code).toBe('REQUESTER_CONTACT_WRONG_ORG');
+    expect(setMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+  });
+
+  it('clears the contact link on requesterContactId: null without touching the snapshot', async () => {
+    dbMocks.selectResult.mockResolvedValue([
+      { ...BASE_TICKET, submittedBy: null, submitterName: 'Jane Doe', submitterEmail: 'jane@acme.test', requesterContactId: 'ct-1' },
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, requesterContactId: null }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { requesterContactId: null }, actor);
+
+    const payload = setMock.mock.calls[0]![0];
+    expect(payload).toMatchObject({ requesterContactId: null });
+    expect(payload).not.toHaveProperty('submitterName');
+    expect(payload).not.toHaveProperty('submitterEmail');
+  });
+
+  it('keeps the login-derived name/email when a contact is named alongside a portal user', async () => {
+    // selects in order: ticket, portal user, contact
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ ...BASE_TICKET, submittedBy: null, submitterName: null, submitterEmail: null, requesterContactId: null }])
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Login Name', email: 'login@acme.test', contactId: 'ct-login' }])
+      .mockResolvedValueOnce([{ id: 'ct-1', orgId: 'o-1', name: 'Jane Doe', email: 'jane@acme.test' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, requesterContactId: 'ct-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { submittedBy: 'pu-1', requesterContactId: 'ct-1' }, actor);
+
+    expect(setMock.mock.calls[0]![0]).toMatchObject({
+      submittedBy: 'pu-1',
+      // The explicit contact wins the LINK...
+      requesterContactId: 'ct-1',
+      // ...but the login still owns the snapshot, exactly as on create.
+      submitterName: 'Login Name',
+      submitterEmail: 'login@acme.test',
+    });
+  });
 
   it('leaves requesterContactId ALONE when only submitterName changes', async () => {
     dbMocks.selectResult.mockResolvedValue([
@@ -3477,6 +3647,39 @@ describe('moveTicketOrg', () => {
     }
     throw new Error('no child-table rewrite tx.execute() was issued');
   }
+
+  it.each([
+    { actor: { userId: 'human', name: 'Human' }, userId: 'human', authorType: 'internal', originPrincipalKind: 'user' },
+    { actor: { kind: 'ai_agent' as const, agentId: 'agent', name: 'Ticket Agent' }, userId: null, authorType: 'ai_agent', originPrincipalKind: 'ai_agent' },
+  ])('preserves comment and event attribution for $authorType moves', async ({ actor, userId, authorType, originPrincipalKind }) => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta', currencyCode: 'USD' },
+      ]);
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB' }]);
+    dbMocks.txExecuteMock.mockResolvedValue(undefined);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'comment' }]);
+
+    await moveTicketOrg('t1', 'oB', actor);
+
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      ticketId: 't1', userId, authorName: actor.name, authorType, originPrincipalKind,
+      agentRunId: null, commentType: 'system', isPublic: false,
+    }));
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ticket.updated', orgId: 'oB', actorUserId: userId,
+    }));
+    expect(auditMock).toHaveBeenCalledTimes(2);
+    for (const [audit] of auditMock.mock.calls) {
+      expect(audit).toMatchObject(userId === null
+        ? { actorType: 'ai_agent', actorId: 'agent', initiatedBy: 'ai' }
+        : { actorId: 'human' });
+    }
+  });
 
   it('#4596: defers the two ticket/org composite FKs BY NAME as the first statement', async () => {
     // The tickets UPDATE below changes tickets.org_id while time_entries and

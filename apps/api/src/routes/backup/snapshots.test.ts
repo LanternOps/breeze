@@ -200,6 +200,22 @@ describe('snapshot routes', () => {
     expect(selectMock).toHaveBeenCalledTimes(2);
   });
 
+  it('filters to bare-metal-restorable snapshots when requested (W04a)', async () => {
+    const chain = chainMock([makeSnapshot({ bareMetalRestorable: true })]);
+    selectMock.mockReturnValueOnce(chain);
+
+    const res = await app.request('/backup/snapshots?bareMetalRestorable=true', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toHaveLength(1);
+    // and(...conditions) is called once with every pushed condition — the
+    // bare-metal filter must be among them, not silently dropped.
+    expect(chain.where).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps unrestricted snapshot list behavior unchanged', async () => {
     selectMock.mockReturnValueOnce(chainMock([
       makeSnapshot({ deviceId: 'device-in' }),
@@ -306,6 +322,36 @@ describe('snapshot routes', () => {
     expect(selectMock).toHaveBeenCalledTimes(2);
   });
 
+  // D12: once backupResultPersistence.ts indexes the agent's stable
+  // originalPath (e.g. C:\assure\src\x) instead of the transient VSS
+  // shadow-copy device path, backup_snapshot_files.source_path for a Windows
+  // run is a normal Windows path, not \\?\GLOBALROOT\Device\
+  // HarddiskVolumeShadowCopyN\.... The browse tree must root it at the drive
+  // letter, never at "?" (which is what splitting the raw shadow path would
+  // have produced — normalizeSourcePath backslash-to-forward-slash turns
+  // `\\?\GLOBALROOT\...` into `//?/GLOBALROOT/...`, whose first non-empty
+  // segment is "?").
+  it('roots the browse tree at the drive letter for an indexed Windows path, never at "?"', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-out' })]))
+      .mockReturnValueOnce(chainMock([
+        { sourcePath: 'C:\\assure\\src\\content\\prefix\\pick.txt', size: 42, modifiedAt: null },
+      ]));
+
+    const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/browse`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]).toMatchObject({ name: 'C:', type: 'directory' });
+    expect(body.data[0].name).not.toBe('?');
+    const assure = body.data[0].children[0];
+    expect(assure).toMatchObject({ name: 'assure', type: 'directory' });
+  });
+
   it('returns protection fields in snapshot responses', async () => {
     selectMock.mockReturnValueOnce(chainMock([
       makeSnapshot({
@@ -338,6 +384,45 @@ describe('snapshot routes', () => {
       requestedImmutabilityEnforcement: null,
       immutabilityFallbackReason: null,
       retentionBlockedReason: 'legal_hold',
+    });
+  });
+
+  it('returns the bare-metal restorability verdict on snapshot responses', async () => {
+    selectMock.mockReturnValueOnce(chainMock([
+      makeSnapshot({
+        bareMetalRestorable: false,
+        bareMetalReasons: ['LVM volumes are not supported'],
+      }),
+    ]));
+
+    const res = await app.request('/backup/snapshots', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0]).toMatchObject({
+      bareMetalRestorable: false,
+      bareMetalReasons: ['LVM volumes are not supported'],
+    });
+  });
+
+  it('returns a null bare-metal verdict (never assessed) as null + empty reasons, not false', async () => {
+    selectMock.mockReturnValueOnce(chainMock([
+      makeSnapshot({ bareMetalRestorable: null, bareMetalReasons: null }),
+    ]));
+
+    const res = await app.request('/backup/snapshots', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0]).toMatchObject({
+      bareMetalRestorable: null,
+      bareMetalReasons: [],
     });
   });
 

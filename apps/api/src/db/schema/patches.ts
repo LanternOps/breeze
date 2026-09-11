@@ -78,6 +78,11 @@ export const patchJobStatusEnum = pgEnum('patch_job_status', [
 export const patchJobResultStatusEnum = pgEnum('patch_job_result_status', [
   'pending',
   'running',
+  // #5128 W3: the install_patches command is persisted with a deliver_by and is
+  // waiting for the device's next heartbeat. Non-terminal, like pending/running,
+  // but owned by the DELIVERY clock (the device_commands reaper), not by
+  // reapStalePatchJobResults' execution clock.
+  'queued',
   'completed',
   'failed',
   'skipped'
@@ -238,6 +243,11 @@ export const patchJobs = pgTable('patch_jobs', {
   devicesCompleted: integer('devices_completed').notNull().default(0),
   devicesFailed: integer('devices_failed').notNull().default(0),
   devicesPending: integer('devices_pending').notNull().default(0),
+  // #5128 W3: devices whose install_patches command is queued for an offline
+  // device. The job stays non-terminal while this is > 0 (OD-9) — the
+  // completion checker only terminalises when devicesPending AND devicesQueued
+  // are both zero, so unfinished patching is never reported as completed.
+  devicesQueued: integer('devices_queued').notNull().default(0),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
@@ -246,7 +256,12 @@ export const patchJobResults = pgTable('patch_job_results', {
   id: uuid('id').primaryKey().defaultRandom(),
   jobId: uuid('job_id').notNull().references(() => patchJobs.id),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
-  patchId: uuid('patch_id').notNull().references(() => patches.id),
+  // NULL = a WHOLE-DEVICE summary row (the device was skipped, never
+  // dispatched, or closed with no approved set), which is about the device's
+  // outcome for the job rather than about any one patch. Nullable since
+  // 2026-10-13-100200: the previous nil-UUID sentinel had no `patches` row and
+  // raised 23503 on every real database.
+  patchId: uuid('patch_id').references(() => patches.id),
   status: patchJobResultStatusEnum('status').notNull().default('pending'),
   startedAt: timestamp('started_at'),
   completedAt: timestamp('completed_at'),
@@ -305,6 +320,14 @@ export const patchComplianceReports = pgTable('patch_compliance_reports', {
   format: patchComplianceReportFormatEnum('format').notNull().default('csv'),
   source: patchSourceEnum('source'),
   severity: patchSeverityEnum('severity'),
+  executionScopeVersion: integer('execution_scope_version'),
+  executionScopeKind: varchar('execution_scope_kind', { length: 32 }),
+  executionScopeSiteIds: uuid('execution_scope_site_ids').array(),
+  executionScopeUserId: uuid('execution_scope_user_id'),
+  executionScopeFingerprint: varchar('execution_scope_fingerprint', { length: 64 }),
+  executionScopeCapturedAt: timestamp('execution_scope_captured_at', { withTimezone: true }),
+  executionScopePrincipalKind: text('execution_scope_principal_kind')
+    .$type<'user' | 'system' | 'portal_user'>(),
   summary: jsonb('summary'),
   rowCount: integer('row_count'),
   outputPath: text('output_path'),

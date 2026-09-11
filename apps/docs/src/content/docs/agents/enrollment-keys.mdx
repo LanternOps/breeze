@@ -46,12 +46,12 @@ Per-key secrets are set when creating or rotating a key. If no per-key secret is
 
 ## Installer Downloads
 
-Each enrollment key can generate pre-configured Windows MSI and macOS PKG installers. These installers are pre-loaded with the enrollment key and site assignment, so agents enroll automatically when the installer runs.
+Each enrollment key can generate a pre-configured Windows MSI installer, and — for macOS — a zip containing the **Breeze Installer.app** GUI bundle (see [macOS GUI Installer](/agents/installation/#macos-gui-installer)). Both are pre-loaded with the enrollment key and site assignment, so agents enroll automatically when the installer runs. macOS falls back to the legacy PKG + `install.sh` zip bundle (see [Advanced Install Methods](/agents/advanced-install/#zip-bundle-msi--enrollmentjson--installbat)) when the app-bundle asset isn't available or the server runs on a nonstandard host/port.
 
 When MSI signing is configured on the server, Windows installer downloads are automatically code-signed before delivery — Windows SmartScreen and antivirus tools will recognize them as trusted. See [Code Signing](/deploy/code-signing/) for setup details.
 
 <Aside type="note">
-  **Windows MSI filename token.** The Windows MSI embeds the enrollment token directly in its filename as a `[TOKEN@HOST]` block — for example `breeze-agent [ABCD1234XY@breeze.example.com].msi`. You can rename the file freely **as long as the `[TOKEN@HOST]` block is preserved**. A browser-added dedup suffix like `(1)` is harmless. If the block is removed entirely (e.g. the file is fully renamed without it), the installer falls back to requiring the enrollment key and server URL entered manually during setup.
+  **Windows MSI filename token.** The Windows MSI embeds the enrollment token directly in its filename as a `(TOKEN@HOST)` block — for example `Breeze Agent (ABCD1234XY@breeze.example.com).msi`. You can rename the file freely **as long as the `(TOKEN@HOST)` block is preserved**. A browser-added dedup suffix like `(1)` is harmless. If the block is removed entirely (e.g. the file is fully renamed without it), the installer falls back to requiring the enrollment key and server URL entered manually during setup. (Older downloads used square brackets, `[TOKEN@HOST]`; the installer still recognizes that legacy form.)
 </Aside>
 
 ### Downloading from the Dashboard
@@ -143,7 +143,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys \
 
 When neither `expiresAt` nor `ttlMinutes` is supplied, the key expires after `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` (default 43200 — 30 days). Supplying both is rejected so the resolved expiry is unambiguous.
 
-POST and PATCH on `/enrollment-keys` reject any field that isn't in the table above. A typo like `maxUses` (instead of `maxUsage`) now returns `400 Bad Request` with a precise field-name error rather than silently dropping the value — useful when scripting key creation against earlier API examples that used different field names.
+`POST /enrollment-keys` and `POST /enrollment-keys/:id/rotate` reject any field that isn't in the table above — there is no `PATCH` method on enrollment keys; use `rotate` to change `maxUsage`/`expiresAt` on an existing key. A typo like `maxUses` (instead of `maxUsage`) now returns `400 Bad Request` with a precise field-name error rather than silently dropping the value — useful when scripting key creation against earlier API examples that used different field names.
 
 <Aside>
   The default TTL is configurable via the `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` environment variable. If unset, keys expire 30 days after creation.
@@ -300,7 +300,7 @@ When an agent starts for the first time, it presents the enrollment key to the A
 ```
 
 <Aside type="caution">
-  The `authToken` is only returned once. The agent stores it in `secrets.yaml` (`/etc/breeze/secrets.yaml` on Linux, `/Library/Application Support/Breeze/secrets.yaml` on macOS, `C:\ProgramData\Breeze\secrets.yaml` on Windows) with `0600` permissions. The main config (`agent.yaml`) uses `0640` so the Helper can read it. The API stores only the SHA-256 hash.
+  The `authToken` is only returned once. The agent stores it in `secrets.yaml` (`/etc/breeze/secrets.yaml` on Linux, `/Library/Application Support/Breeze/secrets.yaml` on macOS, `C:\ProgramData\Breeze\secrets.yaml` on Windows) with `0600` permissions. The main config (`agent.yaml`) uses `0644` so the Helper can read it. The API stores only the SHA-256 hash.
 </Aside>
 
 ---
@@ -309,14 +309,9 @@ When an agent starts for the first time, it presents the enrollment key to the A
 
 ### Peppered Hashing
 
-Enrollment keys are hashed using SHA-256 with a server-side pepper before storage. The pepper is read from environment variables in this priority order:
+Enrollment keys are hashed using SHA-256 with a server-side pepper before storage. `ENROLLMENT_KEY_PEPPER` itself is required in production — the server refuses to start unless it is set, at least 32 characters, and not a known placeholder/insecure value. New keys are always hashed with `ENROLLMENT_KEY_PEPPER`; there is no acceptable substitute.
 
-1. `ENROLLMENT_KEY_PEPPER`
-2. `APP_ENCRYPTION_KEY`
-3. `SECRET_ENCRYPTION_KEY`
-4. `JWT_SECRET`
-
-In production, at least one of these must be set or the server will refuse to start.
+`APP_ENCRYPTION_KEY`, `SSO_ENCRYPTION_KEY`, `SECRET_ENCRYPTION_KEY`, `JWT_SECRET`, and `SESSION_SECRET` are consulted only as legacy fallbacks on the *read* path, so enrollment keys hashed before `ENROLLMENT_KEY_PEPPER` became mandatory still match after an upgrade — they are never used to hash a newly created or rotated key.
 
 The hash is computed as:
 
@@ -339,7 +334,7 @@ The enrollment secret can be passed as the `enrollmentSecret` field in the reque
 
 ### Re-enrollment
 
-If an agent with the same hostname already exists in the same org and site, the enrollment endpoint updates the existing device record rather than creating a duplicate. This supports scenarios like OS reinstalls or agent upgrades. However, if the existing device has been **decommissioned**, re-enrollment is blocked with a 403 error.
+If an agent with the same hostname already exists in the same org and site, the enrollment endpoint updates the existing device record rather than creating a duplicate. This supports scenarios like OS reinstalls or agent upgrades. If the existing device has been **decommissioned**, re-enrollment is still allowed — the API creates a *fresh* device record (new id, new tokens) rather than reviving the decommissioned row, so the old row's audit history stays intact and the new agent is treated as a distinct asset. The only case that's blocked is when the decommissioned row's token was also suspended for a security reason (for example, a cross-tenant access probe) — that returns a `409 Conflict` until an administrator clears the suspension. See [Reusing a hostname for a decommissioned device](/agents/enrollment/#reusing-a-hostname-for-a-decommissioned-device) for the full behavior.
 
 ### Audit Trail
 
@@ -351,6 +346,11 @@ Every enrollment key operation is recorded in the audit log:
 | `enrollment_key.rotate` | Key material regenerated. Includes previous and new `maxUsage`, `expiresAt`, and `usageCount`. |
 | `enrollment_key.delete` | Key permanently deleted. |
 | `enrollment_key.purge_expired` | Bulk deletion of expired keys. Includes the `deletedCount`. |
+| `enrollment_key.bootstrap_token_issued` | A single-use bootstrap token was minted from this key (dashboard "generate installer" flows). |
+| `enrollment_key.installer_link_created` | A public installer link or short link was generated for this key. |
+| `enrollment_key.installer_download` | A pre-configured installer (Windows MSI or macOS zip) was built and downloaded from the dashboard for this key. |
+| `enrollment_key.installer_build_failed` | Installer build failed after usage was already reserved; logged so the failure is traceable. |
+| `enrollment_key.public_download` | An anonymous download via a public or short installer link. Logged with the requester's IP and a sentinel anonymous actor id (no logged-in user). |
 | `agent.enroll` | Agent successfully enrolls using a key. Logged with `actorType: agent`. |
 
 ---
@@ -418,7 +418,7 @@ There is no option to mint a key or installer link that never expires, by design
 | `CHILD_ENROLLMENT_KEY_TTL_MINUTES` | `43200` | Fresh TTL (minutes) given to a "child" enrollment key minted at installer-download, installer-link, or short-code redemption time, measured from mint time rather than the parent key's remaining lifetime. Clamped to the partner's `maxEnrollmentLinkTtlMinutes` cap. |
 | `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` | `43200` | Base TTL (minutes) for a freshly-issued [installer bootstrap token](#installer-bootstrap-tokens) when no explicit `ttlMinutes` is supplied. The token's own expiry, not the parent enrollment key's, governs how long an installer has to complete enrollment. |
 | `INSTALLER_PARENT_MIN_REMAINING_SECONDS` | `60` | Minimum remaining lifetime (seconds) a parent enrollment key must have to be used as an installer source. Guards against building an installer from a parent that expires before the download reaches the target machine. |
-| `ENROLLMENT_KEY_PEPPER` | -- | Pepper used for SHA-256 hashing of enrollment keys. Falls back to `APP_ENCRYPTION_KEY`, `SECRET_ENCRYPTION_KEY`, or `JWT_SECRET`. |
+| `ENROLLMENT_KEY_PEPPER` | -- | Pepper used for SHA-256 hashing of enrollment keys. **Required in production** (at least 32 characters, not a placeholder value) — the server refuses to start without it. `APP_ENCRYPTION_KEY`, `SSO_ENCRYPTION_KEY`, `SECRET_ENCRYPTION_KEY`, `JWT_SECRET`, and `SESSION_SECRET` are only consulted as legacy fallbacks when matching keys hashed before this requirement took effect. |
 | `AGENT_ENROLLMENT_SECRET` | -- | Static secret that gates the enrollment endpoint in production. If empty or unset, the gate is skipped in non-production environments. |
 | `ENROLLMENT_KEY_CLEANUP_ENABLED` | `true` | Set to `false` to disable the daily sweep that purges expired keys. |
 | `ENROLLMENT_KEY_PURGE_AFTER_DAYS` | `7` | Grace period (in days past expiry) before the daily sweep hard-deletes an expired key. |
@@ -452,14 +452,18 @@ The agent enrollment endpoint is separate:
 
 ## Troubleshooting
 
-### "Invalid or expired enrollment key" (401)
+### Enrollment key rejected (401)
 
-The SHA-256 hash of the provided key did not match any active record, or the key has expired or reached its usage limit. Possible causes:
+All enrollment-key rejections share the `401` status code, but each carries a distinct `reason` field and error message so you can tell them apart without guessing:
 
-- The key was rotated and the old value is being used in the installer.
-- The `expiresAt` timestamp has passed. The default TTL is 30 days.
-- `usageCount` has reached `maxUsage`. Check the key details via `GET /enrollment-keys/:id`.
-- The server pepper changed since the key was created. Rotate or recreate the key.
+| `reason` | Error message | Cause |
+|---|---|---|
+| `enrollment_key_not_found` | "Enrollment key not recognized" | The SHA-256 hash of the provided key did not match any record — the key was rotated (an old value is still baked into an installer) or mistyped. This is also what you'll see if the server pepper changed since the key was created. |
+| `enrollment_key_expired` | "Enrollment key has expired — regenerate the key or installer link and retry" | The `expiresAt` timestamp has passed. The default TTL is 30 days. |
+| `enrollment_key_exhausted` | "Enrollment key has reached its maximum usage count — regenerate a fresh key or installer link" | `usageCount` has reached `maxUsage`. Check the key details via `GET /enrollment-keys/:id`. |
+| `enrollment_key_race_lost` | "Enrollment key was just exhausted or expired — regenerate a fresh key or installer link" | Two agents enrolled with the same key at the same instant and this request lost the race for the last remaining use. |
+
+All four stay on HTTP `401` (rather than `404`/`410`/`409`) for backward compatibility with older agents that don't parse the `reason` field.
 
 ### "Enrollment secret required" (403)
 
@@ -475,7 +479,7 @@ The enrollment key was created without a `siteId`. The enrollment endpoint requi
 
 ### "Device has been decommissioned" (403)
 
-An agent with the same hostname exists in the same org and site, but its status is `decommissioned`. Contact an administrator to either remove the decommissioned record or assign the agent to a different site.
+This is not an enrollment-key error. Enrolling a new agent on a hostname whose prior device row was decommissioned now succeeds and creates a fresh device record — see [Re-enrollment](#re-enrollment). You'll see this 403 instead if an *already-enrolled* agent tries to connect (WebSocket, heartbeat, or Helper) using a token for a device that has since been decommissioned. Re-run `breeze-agent enroll` with a valid enrollment key to get a new device record and token.
 
 ### "Organization context required" (403)
 
@@ -483,10 +487,10 @@ An organization-scoped user attempted a key management operation without a valid
 
 ### "No enrollment key pepper configured" (server startup)
 
-In production, at least one of `ENROLLMENT_KEY_PEPPER`, `APP_ENCRYPTION_KEY`, `SECRET_ENCRYPTION_KEY`, or `JWT_SECRET` must be set. Without a pepper, enrollment key hashes are vulnerable to rainbow table attacks.
+`ENROLLMENT_KEY_PEPPER` must be set in production — at least 32 characters and not a known placeholder/insecure value — or the server refuses to start. The legacy fallback variables (`APP_ENCRYPTION_KEY`, `SSO_ENCRYPTION_KEY`, `SECRET_ENCRYPTION_KEY`, `JWT_SECRET`, `SESSION_SECRET`) are only used to verify keys hashed before this requirement took effect; they do not satisfy the startup check. Without `ENROLLMENT_KEY_PEPPER`, enrollment key hashes would be vulnerable to rainbow table attacks.
 
 ### Key appears valid but agent fails to connect after enrollment
 
 - Verify the `authToken` returned by enrollment is stored correctly in the agent config file.
-- Check that `secrets.yaml` permissions are `0600` (owner read/write only) and `agent.yaml` is `0640`.
+- Check that `secrets.yaml` permissions are `0600` (owner read/write only) and `agent.yaml` is `0644`.
 - Ensure the agent is connecting to the correct WebSocket URL (`/api/v1/agents/:id/ws`) with the `Authorization: Bearer brz_...` header.

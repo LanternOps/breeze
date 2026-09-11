@@ -1,0 +1,149 @@
+{
+  "section": {
+    "title": "Entregables del servicio",
+    "empty": "Aún no hay entregables. Agregue los informes y revisiones periódicos que se le deben a este cliente."
+  },
+  "table": {
+    "name": "Entregable",
+    "cadence": "Frecuencia",
+    "nextDue": "Próximo vencimiento",
+    "lastDelivered": "Última entrega",
+    "status": "Estado",
+    "portal": "Portal"
+  },
+  "cadence": {
+    "monthly": "Mensual",
+    "quarterly": "Trimestral",
+    "semiannual": "Semestral",
+    "annual": "Anual",
+    "one_time": "Una sola vez"
+  },
+  "status": {
+    "on_track": "Al día",
+    "due_soon": "Vence pronto",
+    "late": "Atrasado",
+    "missed": "Incumplido",
+    "inactive": "Inactivo"
+  },
+  "occurrence": {
+    "status": {
+      "scheduled": "Programada",
+      "open": "Abierta",
+      "awaiting_evidence": "Esperando evidencia",
+      "delivered": "Entregada",
+      "missed": "Incumplida",
+      "waived": "Exonerada"
+    }
+  },
+  "actions": {
+    "add": "Agregar entregable",
+    "edit": "Editar",
+    "deactivate": "Desactivar",
+    "deliver": "Marcar como entregado",
+    "waive": "Exonerar",
+    "reopen": "Reabrir",
+    "reschedule": "Reprogramar",
+    "addEvidence": "Agregar evidencia",
+    "removeEvidence": "Quitar evidencia",
+    "save": "Guardar",
+    "cancel": "Cancelar"
+  },
+  "form": {
+    "name": "Nombre",
+    "description": "Descripción",
+    "contract": "Contrato",
+    "noContract": "Sin vínculo a un contrato",
+    "contractsUnavailable": "No se pudieron cargar los contratos de esta organización. Recarga la página antes de guardar.",
+    "cadence": "Frecuencia",
+    "anchorDueDate": "Primera fecha de vencimiento",
+    "effectiveFrom": "Vigente desde",
+    "effectiveUntil": "Vigente hasta",
+    "leadDays": "Anticipación (días)",
+    "graceDays": "Período de gracia (días)",
+    "artifactRequired": "Se requiere evidencia antes de marcar como entregado",
+    "completionMode": {
+      "label": "Cierre",
+      "explicit": "Marcado como entregado por un técnico",
+      "on_ticket_resolve": "Entregado cuando se resuelve el ticket vinculado"
+    },
+    "autoEvidenceReport": "Adjuntar ejecuciones de informe como evidencia",
+    "owner": "Responsable",
+    "ticketCategory": "Categoría del ticket",
+    "portalVisible": "Mostrar en el portal del cliente",
+    "sortOrder": "Orden"
+  },
+  "drawer": {
+    "title": "Ocurrencias",
+    "evidence": "Evidencia",
+    "noEvidence": "Sin evidencia adjunta",
+    "late": "Atrasada",
+    "rescheduledFrom": "Reprogramada desde {{date}}",
+    "deliveryNote": "Nota de entrega",
+    "waivedReason": "Motivo de la exoneración",
+    "newDueDate": "Nueva fecha de vencimiento"
+  },
+  "evidence": {
+    "reportRun": "Ejecución de informe",
+    "document": "Documento",
+    "reportRunId": "ID de la ejecución de informe"
+  },
+  "upcoming": {
+    "title": "Próximos 90 días",
+    "empty": "Nada vence en los próximos 90 días."
+  },
+  "group": {
+    "noContract": "Sin contrato"
+  },
+  "errors": {
+    "evidenceRequired": "Adjunte evidencia antes de marcar esta ocurrencia como entregada.",
+    "duplicateName": "Ya existe un entregable con este nombre para esta organización.",
+    "loadFailed": "No se pudieron cargar los entregables.",
+    "saveFailed": "No se pudo guardar el entregable.",
+    "actionFailed": "No se pudo actualizar la ocurrencia."
+  },
+  "confirm": {
+    "deactivate": "¿Desactivar {{name}}? Las ocurrencias abiertas se cerrarán y no se programarán nuevas.",
+    "deleteKeyDate": "¿Eliminar la fecha clave {{label}}?"
+  },
+  "keyDates": {
+    "title": "Fechas clave",
+    "empty": "No hay fechas clave registradas.",
+    "add": "Agregar fecha clave",
+    "label": "Etiqueta",
+    "kind": {
+      "label": "Tipo",
+      "insurance_renewal": "Renovación de seguro",
+      "vendor_contract_end": "Fin de contrato con proveedor",
+      "compliance_deadline": "Plazo de cumplimiento",
+      "audit": "Auditoría",
+      "other": "Otro"
+    },
+    "date": "Fecha",
+    "recursAnnually": "Se repite cada año",
+    "remindDaysBefore": "Recordar (días antes)",
+    "portalVisible": "Mostrar en el portal del cliente",
+    "contractEnd": "Fin del contrato",
+    "notes": "Notas",
+    "owner": "Responsable",
+    "edit": "Editar fecha clave",
+    "delete": "Eliminar",
+    "errors": {
+      "loadFailed": "No se pudieron cargar las fechas clave.",
+      "saveFailed": "No se pudo guardar la fecha clave."
+    },
+    "toast": {
+      "saved": "Fecha clave guardada",
+      "deleted": "Fecha clave eliminada"
+    }
+  },
+  "toast": {
+    "saved": "Entregable guardado",
+    "delivered": "Marcado como entregado",
+    "waived": "Ocurrencia exonerada",
+    "reopened": "Ocurrencia reabierta",
+    "rescheduled": "Ocurrencia reprogramada",
+    "evidenceAdded": "Evidencia agregada",
+    "evidenceRemoved": "Evidencia quitada",
+    "deactivated": "Entregable desactivado"
+  }
+}

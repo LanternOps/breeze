@@ -46,7 +46,9 @@ Returns `200 OK` only when the database and Redis are reachable **and every
 queue consumer this process is required to run is attached and connected**.
 Returns `503 Service Unavailable` otherwise. Both paths are served by the same
 cached evaluator (default 5 s cache, 3 s per-probe timeout; the two are clamped
-so a failure or recovery is visible within 10 s).
+so a failure or recovery is visible within 10 s). Both are tunable — see
+[`READINESS_CACHE_TTL_MS` and `READINESS_PROBE_TIMEOUT_MS`](/deploy/environment/#readiness-probe-tuning) —
+though the defaults suit every deployment we know of.
 
 **Healthy response (200):**
 
@@ -183,11 +185,11 @@ Every container in the Breeze production stack has a built-in health check. Dock
 
 | Container | Check Command | Interval | Start Period |
 |---|---|---|---|
-| API | `wget http://localhost:3001/health` | 30s | 10s |
+| API | `wget http://localhost:3001/health` | 30s | 40s |
 | Worker (profile `worker-split`) | `wget http://localhost:3001/health/ready` | 30s | 60s |
-| Web | `wget http://localhost:4321/` | 30s | 10s |
-| PostgreSQL | `pg_isready` | 10s | 30s |
-| Redis | `redis-cli ping` | 10s | 10s |
+| Web | `wget http://localhost:4321/` | 30s | 30s |
+| PostgreSQL | `pg_isready` | 10s | 15s |
+| Redis | `redis-cli ping` | 10s | 5s |
 | Prometheus | `wget http://localhost:9090/-/healthy` | 30s | 10s |
 | Grafana | `wget http://localhost:3000/api/health` | 30s | 30s |
 | Alertmanager | `wget http://localhost:9093/-/healthy` | 30s | 10s |

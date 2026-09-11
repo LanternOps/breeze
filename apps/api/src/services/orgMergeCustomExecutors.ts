@@ -264,6 +264,117 @@ const resolveTicketDrafts: CustomMergeExecutor = async (loser) => {
   };
 };
 
+// ---------------------------------------------------------------------------
+// ai_operator_tasks — FENCE, then leave for erasure (#5205 W03, #5208).
+//
+// This executor deliberately DEVIATES from the "every executor leaves ZERO rows
+// behind under the loser org" line in this file's header, and the deviation is
+// the point. AI Operator task history is source-org history for exactly the
+// reason ai_agent_runs is (owner decision 2026-08-23): a task's evidence — its
+// runs, its intents, its device command — all stays with the loser, so
+// repointing the task alone would split one remediation's story across two
+// orgs. `ai_operator_tasks.org_id` also anchors four composite (x, org_id)
+// FKs, so a bare repoint would 23503 regardless.
+//
+// So why is this `custom` rather than plain `leave-for-erasure`, like
+// ai_operator_operations and ai_operator_task_outbox next to it in the
+// registry? Because leaving the rows ALONE is not safe. `mergeAiAgents`
+// repoints every loser-org `ai_agents` row to the survivor, and a task still in
+// a live state holds a lease, a next_wake_at and an agent_id — it would keep
+// coordinating under a dead tenant, against an agent that now belongs to
+// someone else, and could dispatch a real device command while doing it. The
+// fence stops new work: state -> 'stopping' (spec §6.1's "cancel, expiry,
+// handoff, authority loss" edge), lease released, wake cancelled, and the
+// reason recorded in the exportable `outcome_detail` text column.
+//
+// It runs in the RESOLVE phase, which is what makes "before ai_agents
+// repoints" true. The walk order is the reverse topological cascade order —
+// parents first — and `ai_agents` is a PARENT of `ai_operator_tasks`
+// (tasks.agent_id -> ai_agents.id), so in the `move` phase ai_agents would run
+// FIRST. Resolve completes for every table before move starts for any of them,
+// which is the only ordering that gets the fence in ahead of the repoint.
+//
+// In-flight effects are deliberately NOT touched. 'stopping' is not terminal:
+// spec §6.3 requires that a late device-command result still land on its
+// operation row, and the reconciler settles the task afterwards. Terminalising
+// here would hide an effect that is still running on a real machine.
+// ---------------------------------------------------------------------------
+
+/** Live task states — the ones the fence stops. Mirrors AI_OPERATOR_TASK_LIVE_STATES. */
+const AI_OPERATOR_LIVE_TASK_STATES = sql`('queued', 'running', 'waiting', 'paused')`;
+
+const fenceAiOperatorTasks: CustomMergeExecutor = async (loser) => {
+  const fenced = await run(sql`
+    UPDATE ai_operator_tasks
+       SET state = 'stopping',
+           lease_owner = NULL,
+           lease_expires_at = NULL,
+           next_wake_at = NULL,
+           outcome_detail = left(
+             coalesce(outcome_detail || E'\n', '')
+             || 'Fenced by an organization merge: the owning organization was merged away, so the Operator stopped admitting new work on this task.',
+             4000),
+           updated_at = now()
+     WHERE org_id = ${uuid(loser)}
+       AND state IN ${AI_OPERATOR_LIVE_TASK_STATES}`);
+
+  // Detach the device target and record the REAL reason, in the resolve phase,
+  // BEFORE the move phase repoints `devices` to the survivor.
+  //
+  // Without this the reason is silently wrong. `devices` is a plain `repoint`
+  // table, so the move phase runs `UPDATE devices SET org_id = <survivor>`,
+  // which fires breeze_cascade_device_org_id() for every loser-org device —
+  // and that trigger stamps `COALESCE(target_detached_reason, 'device_moved')`.
+  // A merge-caused detachment would therefore be labelled `'device_moved'`,
+  // and `'org_merged'` — a value the CHECK constraint and the TS union both
+  // define — would never be written by any code path at all. Stamping here
+  // first means the trigger's COALESCE preserves this reason instead.
+  //
+  // Deliberately NOT restricted to live states: a terminal task's device is
+  // leaving the tenant for the same reason, and its evidence should say so.
+  // Nulling `device_id` here also makes the trigger's own UPDATE a no-op, so
+  // the two statements are convergent in either order.
+  const detached = await run(sql`
+    UPDATE ai_operator_tasks
+       SET device_id = NULL,
+           target_detached_at = COALESCE(target_detached_at, now()),
+           target_detached_reason = COALESCE(target_detached_reason, 'org_merged'),
+           updated_at = now()
+     WHERE org_id = ${uuid(loser)}
+       AND device_id IS NOT NULL`);
+
+  return {
+    moved: 0,
+    dropped: 0,
+    notes: [
+      ...(fenced > 0
+        ? [
+            `ai_operator_tasks: fenced ${fenced} live AI Operator task(s) from the merged-away org `
+            + '(state -> stopping, lease released, scheduled wake cancelled) so nothing keeps executing '
+            + 'under a dead tenant once its agents repoint to the survivor. The task records themselves '
+            + 'are NOT re-tenanted — Operator history stays with the source org, same rule as agent runs, '
+            + 'and is erased with the loser shell. Re-delegate the work under the surviving organization '
+            + 'if it still needs doing.',
+          ]
+        : []),
+      ...(detached > 0
+        ? [
+            `ai_operator_tasks: detached ${detached} AI Operator task(s) from their target device — the `
+            + 'devices move to the surviving organization while the task history stays behind, so the '
+            + 'task keeps its frozen target label as evidence but no longer points at the device.',
+          ]
+        : []),
+    ],
+  };
+};
+
+/**
+ * ai_operator_tasks, MOVE half — a no-op. The resolve half above did the whole
+ * disposition; the rows stay put on purpose (leave-for-erasure semantics),
+ * which is why there is nothing left to do here.
+ */
+const moveAiOperatorTasks: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
+
 /** ticket_drafts, MOVE half — a no-op: resolve already leaves zero rows behind. */
 const moveTicketDrafts: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
 
@@ -594,6 +705,44 @@ const mergeAuditBaselines: CustomMergeExecutor = async (loser, survivor) => {
 
   const moved = await run(buildRepoint('audit_baselines', loser, survivor));
   return { moved, dropped: 0, notes };
+};
+
+// ---------------------------------------------------------------------------
+// service_deliverables — `service_deliverables_org_contract_name_uq (org_id,
+// COALESCE(contract_id, nil), name)` (2026-10-15-170000, feature #5573). A
+// repoint-dedupe DELETE would take the loser's `service_deliverable_occurrences`
+// and `service_deliverable_evidence` with it (both ON DELETE CASCADE) — that is
+// the delivered/waived history the customer portal shows, so it is never
+// disposable. Rename on collision instead, the audit_baselines move: the
+// suffix is deterministic, fires only on an actual collision, and
+// `left(name, 182)` keeps the result inside varchar(200). Contracts keep their
+// ids across a merge, so the collision key is evaluated on the pre-repoint
+// contract_id and stays correct after the move.
+// ---------------------------------------------------------------------------
+const NIL_UUID = sql`'00000000-0000-0000-0000-000000000000'::uuid`;
+
+const mergeServiceDeliverables: CustomMergeExecutor = async (loser, survivor) => {
+  const renamed = await run(sql`
+    UPDATE service_deliverables AS t
+       SET name = left(t.name, 182) || ' (merged ' || left(${uuid(loser)}::text, 8) || ')',
+           updated_at = now()
+     WHERE t.org_id = ${uuid(loser)}
+       AND EXISTS (
+         SELECT 1 FROM service_deliverables AS s
+          WHERE s.org_id = ${uuid(survivor)}
+            AND s.name = t.name
+            AND COALESCE(s.contract_id, ${NIL_UUID}) = COALESCE(t.contract_id, ${NIL_UUID})
+       )`);
+  const moved = await run(buildRepoint('service_deliverables', loser, survivor));
+  return {
+    moved,
+    dropped: 0,
+    notes: renamed > 0
+      ? [
+        `service_deliverables: renamed ${renamed} deliverable from the merged-away org whose name already existed under the survivor for the same contract (suffixed with the merged org id; occurrences and evidence kept)`,
+      ]
+      : [],
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -1041,6 +1190,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   contacts: mergeContacts,
   backup_configs: mergeBackupConfigs,
   audit_baselines: mergeAuditBaselines,
+  service_deliverables: mergeServiceDeliverables,
   pax8_orders: mergePax8Orders,
   fleet_findings: mergeFleetFindings,
   ai_agents: mergeAiAgents,
@@ -1055,6 +1205,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   incidents: mergeIncidents,
   reports: mergeReports,
   ticket_drafts: moveTicketDrafts,
+  ai_operator_tasks: moveAiOperatorTasks,
 };
 
 /**
@@ -1074,6 +1225,9 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
 export const CUSTOM_RESOLVE_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   discovered_assets: resolveDiscoveredAssets,
   ticket_drafts: resolveTicketDrafts,
+  // Must run in resolve, not move: ai_agents is a PARENT of ai_operator_tasks
+  // and would otherwise repoint first. See fenceAiOperatorTasks' header.
+  ai_operator_tasks: fenceAiOperatorTasks,
 };
 
 /**
@@ -1097,6 +1251,13 @@ export const CUSTOM_WOULD_REVOKE_COUNTS: Readonly<Record<string, (loser: string)
     SELECT count(*)::int AS n FROM enrollment_keys
      WHERE org_id = ${uuid(loser)}
        AND (expires_at IS NULL OR expires_at > now())`,
+  // Mirrors fenceAiOperatorTasks' WHERE exactly. Fencing is neither a drop nor
+  // a repoint, but it IS an irreversible stop of live automation, so it belongs
+  // in the preview beside the other revocations rather than nowhere.
+  ai_operator_tasks: (loser) => sql`
+    SELECT count(*)::int AS n FROM ai_operator_tasks
+     WHERE org_id = ${uuid(loser)}
+       AND state IN ${AI_OPERATOR_LIVE_TASK_STATES}`,
 };
 
 /**

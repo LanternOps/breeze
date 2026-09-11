@@ -5,9 +5,25 @@ description: Detect and audit software installs, service changes, network modifi
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Change Tracking gives you a continuous audit trail of what changed on every managed device. The Breeze agent monitors six categories of system changes -- software installs and removals, Windows service modifications, startup item additions, network adapter changes, scheduled task updates, and user account mutations -- and ships them to the API in compressed batches. Every change is fingerprinted with a SHA-256 hash to prevent duplicates, then stored with before/after snapshots so you can see exactly what was modified.
+Change Tracking gives you a continuous audit trail of what changed on every managed device. The Breeze agent monitors eight categories of system changes -- software installs and removals, Windows service modifications, startup item additions, network adapter changes, scheduled task updates, user account mutations, hardware changes, and OS version changes -- and ships them to the API in compressed batches. Every change is fingerprinted with a SHA-256 hash to prevent duplicates, then stored with before/after snapshots so you can see exactly what was modified.
 
 This feature is designed for compliance auditing, troubleshooting, and drift detection. When a user reports that something stopped working, you can pull up the device's change timeline and see that a critical service was disabled 20 minutes earlier. When you need to prove to an auditor that no unauthorized software was installed, the change log provides cryptographically deduplicated evidence.
+
+---
+
+## Viewing Changes in the Console
+
+Open a device's detail page and select the **Change History** tab to browse its change timeline without querying the API directly.
+
+Each row shows:
+
+- **When** the change was detected.
+- **Type** -- a colored badge for one of the eight change categories (Software, Service, Startup, Network, Scheduled Task, User Account, Hardware, OS Version).
+- **Action** -- Added, Removed, Modified, or Updated.
+- **Subject** -- what changed (e.g. "Google Chrome 122.0.6261.69").
+- **Before -> After** -- the previous and new values side by side; an addition shows only the new value, a removal shows the old value struck through.
+
+Use the **Type** and **Action** dropdowns above the table to narrow the list, and **Load more** to page through older changes beyond the initial 100.
 
 ---
 
@@ -23,6 +39,8 @@ This feature is designed for compliance auditing, troubleshooting, and drift det
 | `network` | Network adapter configuration changed (IP, DNS, gateway) |
 | `scheduled_task` | Scheduled task or cron job added, removed, or modified |
 | `user_account` | Local user account created, deleted, or modified |
+| `hardware` | Memory, processor, storage, or BIOS/firmware version changed |
+| `os_version` | Operating system version updated |
 
 ### Change Actions
 
@@ -58,7 +76,7 @@ This feature is designed for compliance auditing, troubleshooting, and drift det
 
 1. **Agent detects a change.** The agent periodically snapshots system state (installed software, services, startup items, etc.) and compares against the previous snapshot. Differences are formatted as change records.
 
-2. **Agent ships changes in a batch.** Changes are serialized as JSON, gzip-compressed, and sent to the API via `PUT /api/v1/agents/:id/changes`. Up to 1,000 changes per request, with a 5 MB compressed body limit and 10 MB decompressed limit.
+2. **Agent ships changes in a batch.** Changes are serialized as JSON, gzip-compressed, and sent to the API via `PUT /api/v1/agents/:id/changes`. Up to 50,000 changes per request by default (configurable via `CHANGE_INGEST_MAX_ITEMS`, up to a hard ceiling of 200,000), with a 5 MB compressed body limit and 10 MB decompressed limit.
 
 3. **API deduplicates and stores.** Each change is fingerprinted by hashing the combination of timestamp, change type, action, subject, before/after values, and details. A unique constraint on `(deviceId, fingerprint)` prevents the same change from being inserted twice. Changes are inserted in batches of 200.
 
@@ -90,7 +108,7 @@ curl "/api/v1/changes?deviceId=DEVICE_UUID&changeType=software&limit=50" \
 | `deviceId` | UUID | Filter to a single device |
 | `startTime` | ISO 8601 datetime | Only changes at or after this time |
 | `endTime` | ISO 8601 datetime | Only changes at or before this time |
-| `changeType` | enum | One of: `software`, `service`, `startup`, `network`, `scheduled_task`, `user_account` |
+| `changeType` | enum | One of: `software`, `service`, `startup`, `network`, `scheduled_task`, `user_account`, `hardware`, `os_version` |
 | `changeAction` | enum | One of: `added`, `removed`, `modified`, `updated` |
 | `limit` | integer | Results per page (1 -- 500, default 100) |
 | `cursor` | string | Opaque cursor for the next page |
@@ -194,6 +212,25 @@ Every change is assigned a SHA-256 fingerprint computed from a stable concatenat
 This fingerprint is stored in a `VARCHAR(64)` column with a unique index on `(deviceId, fingerprint)`. When the agent ships the same change twice (e.g., after a retry), the database `ON CONFLICT DO NOTHING` clause silently skips the duplicate.
 
 Within a single request, the API also deduplicates by fingerprint before attempting insertion, so batch payloads with repeated entries are handled efficiently.
+
+---
+
+## AI Integration
+
+### query_change_log (Tier 1)
+
+A read-only tool the AI assistant uses to search device configuration changes -- software installs/updates, service changes, startup drift, network changes, scheduled task changes, user account changes, hardware changes, and OS version updates.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deviceId` | string (UUID) | Scope results to a single device. Optional. |
+| `startTime` | ISO 8601 datetime | Lower time bound (inclusive). Optional. |
+| `endTime` | ISO 8601 datetime | Upper time bound (inclusive). Optional. |
+| `changeType` | enum | One of the eight change types above. Optional. |
+| `changeAction` | enum | `added`, `removed`, `modified`, or `updated`. Optional. |
+| `limit` | number | Max results to return (default 100, max 500). |
+
+The AI uses this tool to answer questions like "What changed on this device in the last 24 hours?" or "Was any software installed on the finance team's laptops this week?" without you having to open the Change History tab yourself.
 
 ---
 

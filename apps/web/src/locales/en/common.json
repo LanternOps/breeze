@@ -78,7 +78,9 @@
     "software": "Software",
     "securityOverview": "Overview",
     "aiRisk": "AI Risk",
-    "deviceBackup": "Device Backup"
+    "deviceBackup": "Device Backup",
+    "sectionServiceDesk": "Service Desk",
+    "serviceManagement": "Service Management"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -2044,7 +2046,8 @@
           "notMember": "No longer affected by this finding",
           "decommissioned": "Device is removed",
           "timeout": "Timed out after 30 minutes",
-          "dispatchEnqueueFailed": "Never dispatched — queueing failed"
+          "dispatchEnqueueFailed": "Never dispatched — queueing failed",
+          "maintenanceWindow": "Device is in a maintenance window"
         },
         "viewProgress": "View progress",
         "errors": {

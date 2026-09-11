@@ -1,6 +1,7 @@
 import type { PermissionAction, PermissionResource } from '@breeze/shared';
 import { hasPermission } from '@/lib/permissions';
 import type { Permission } from '@/stores/auth';
+import type { ServiceManagementMode } from '@/stores/orgStore';
 
 /**
  * The organization record's tab registry (#5075 W01).
@@ -16,13 +17,18 @@ export const ORG_RECORD_TABS = [
   'devices',
   'tickets',
   'billing',
+  'service',
   'activity',
 ] as const;
 
 export type OrgRecordTab = (typeof ORG_RECORD_TABS)[number];
 
-/** Partner-level Service Management mode. Stored on `partners` in W04. */
-export type ServiceManagementMode = 'native' | 'off' | 'external';
+/**
+ * Partner-level Service Management mode, stored on `partners` (#5075 W04).
+ * Re-exported from the store — one definition, so the tab gate and the runtime
+ * value can never disagree about what the modes are.
+ */
+export type { ServiceManagementMode } from '@/stores/orgStore';
 
 type Grant = { resource: PermissionResource; action: PermissionAction };
 
@@ -51,6 +57,9 @@ export const TAB_PERMISSION: Record<OrgRecordTab, ReadonlyArray<Grant>> = {
     { resource: 'invoices', action: 'read' },
     { resource: 'quotes', action: 'read' },
   ],
+  // Service deliverables (#5573 W01) live under the contracts read: they are
+  // what a contract promises, so anyone who can read contracts can see them.
+  service: [{ resource: 'contracts', action: 'read' }],
   activity: [{ resource: 'audit', action: 'read' }],
 };
 

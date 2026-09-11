@@ -1,9 +1,10 @@
-import { and, desc, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import {
   backupJobs as backupJobsTable,
   backupSnapshots as backupSnapshotsTable,
   backupVerifications as backupVerificationsTable,
+  devices,
 } from '../../db/schema';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { resolveBackupProviderConfig, resolveBackupDestinationError, type BackupProviderConfig } from '../../services/backupProviderConfig';
@@ -71,6 +72,7 @@ type VerificationFilters = {
   to?: number | null;
   limit?: number;
   excludeSimulated?: boolean;
+  allowedSiteIds?: readonly string[];
 };
 
 export type RunBackupVerificationInput = {
@@ -255,15 +257,34 @@ function listBackupVerificationsFromMemory(orgId: string, filters: VerificationF
   return typeof filters.limit === 'number' ? rows.slice(0, filters.limit) : rows;
 }
 
+export function toVerificationListItem(row: BackupVerification): BackupVerification {
+  return {
+    ...row,
+    // Verification details are agent-controlled and can contain restore paths,
+    // failed-file names, command identifiers, and raw result internals. Every
+    // current list consumer only needs the simulated-evidence marker.
+    details: row.details?.simulated === true ? { simulated: true } : null,
+  };
+}
+
 async function listBackupVerificationsFromDb(
   orgId: string,
   filters: VerificationFilters = {}
 ): Promise<BackupVerification[] | null> {
   if (!supportsDbOrg(orgId)) return null;
+  if (filters.allowedSiteIds?.length === 0) return [];
   if (filters.deviceId && !isUuid(filters.deviceId)) return null;
   if (filters.backupJobId && !isUuid(filters.backupJobId)) return null;
 
   const conditions: SQL[] = [eq(backupVerificationsTable.orgId, orgId)];
+  if (filters.allowedSiteIds) {
+    conditions.push(sql`exists (
+      select 1 from ${devices}
+      where ${devices.id} = ${backupVerificationsTable.deviceId}
+        and ${devices.orgId} = ${backupVerificationsTable.orgId}
+        and ${inArray(devices.siteId, [...filters.allowedSiteIds])}
+    )`);
+  }
   if (filters.deviceId) conditions.push(eq(backupVerificationsTable.deviceId, filters.deviceId));
   if (filters.backupJobId) conditions.push(eq(backupVerificationsTable.backupJobId, filters.backupJobId));
   if (filters.verificationType === 'integrity') {
@@ -294,6 +315,7 @@ async function listBackupVerificationsFromDb(
     }));
   } catch (error) {
     console.warn('[backupVerification] DB verification read failed; falling back to memory:', error);
+    if (filters.allowedSiteIds) return [];
     return null;
   }
 }
@@ -537,8 +559,8 @@ export async function listBackupVerifications(
   filters: VerificationFilters = {}
 ): Promise<BackupVerification[]> {
   const dbRows = await listBackupVerificationsFromDb(orgId, filters);
-  if (dbRows) return dbRows;
-  return listBackupVerificationsFromMemory(orgId, filters);
+  const rows = dbRows ?? (filters.allowedSiteIds ? [] : listBackupVerificationsFromMemory(orgId, filters));
+  return rows.map(toVerificationListItem);
 }
 
 function scheduledVerificationAuth(orgId: string): AuthContext {

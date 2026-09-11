@@ -24,6 +24,10 @@ describe('cascadeDeletePartner', () => {
 
     execMock
       .mockResolvedValueOnce([{ id: 'org-1' }])
+      // Service Management un-wire (#5075 W04): the partner's own row holds an
+      // ON DELETE RESTRICT FK into a partner-wide psa_connections row that the
+      // sweep below deletes, so the binding must be released first.
+      .mockResolvedValueOnce([])
       // FK-child pre-clears, in list order: user_sso_identities and
       // sso_sessions (#2195), then psa_ticket_mappings (epic #2135 — it has no
       // partner_id column, so the sweep below cannot reach it, yet its
@@ -31,12 +35,10 @@ describe('cascadeDeletePartner', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
-      // Software chain pre-clears (#3600), in list order: deployment_results,
-      // software_deployments, software_versions. software_versions has no
-      // tenancy column and its catalog_id FK is NO ACTION, so the sweep's
-      // `DELETE FROM software_catalog WHERE partner_id = ...` aborts with
-      // 23503 without them.
-      .mockResolvedValueOnce([])
+      // Software chain pre-clears (#3600): deployment_results then
+      // software_deployments. Object/version/catalog deletion is deferred to
+      // the software_catalog sweep transaction so its parent lock is not
+      // released between inventory and deletion.
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ table_name: 'scripts' }, { table_name: 'users' }])
@@ -78,14 +80,23 @@ describe('cascadeDeletePartner', () => {
     // statements NAMES the other two tables in its subqueries.
     const resultsIdx = calls.findIndex((c) => c.includes('DELETE FROM deployment_results'));
     const deploymentsIdx = calls.findIndex((c) => c.includes('DELETE FROM software_deployments'));
-    const versionsIdx = calls.findIndex((c) => c.includes('DELETE FROM software_versions'));
     expect(resultsIdx).toBeGreaterThan(-1);
     expect(deploymentsIdx).toBeGreaterThan(resultsIdx);
-    expect(versionsIdx).toBeGreaterThan(deploymentsIdx);
-    expect(versionsIdx).toBeLessThan(firstSweepIdx);
+    expect(deploymentsIdx).toBeLessThan(firstSweepIdx);
+
+    // Service Management un-wire (#5075 W04): the partner row's RESTRICT FK
+    // into psa_connections is released BEFORE the sweep deletes the
+    // partner-wide connection it points at, and both columns move together
+    // (partners_service_management_connection_chk is a biconditional).
+    const unwireIdx = calls.findIndex((c) => c.includes('UPDATE partners'));
+    expect(unwireIdx).toBeGreaterThan(-1);
+    expect(unwireIdx).toBeLessThan(firstSweepIdx);
+    expect(calls[unwireIdx]).toContain('service_management_mode');
+    expect(calls[unwireIdx]).toContain('service_management_psa_connection_id');
 
     // exactly one partners delete, and it is the LAST execute() call
-    expect(calls.filter((c) => c.includes('partners')).length).toBe(1);
+    expect(calls.filter((c) => c.includes('DELETE FROM partners')).length).toBe(1);
+    expect(lastCall && JSON.stringify(lastCall)).toContain('DELETE FROM partners');
 
     // audit event emitted with the right action and details shape
     const { createAuditLog } = await import('./auditService');

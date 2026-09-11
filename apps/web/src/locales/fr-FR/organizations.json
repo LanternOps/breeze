@@ -31,11 +31,27 @@
       "devices": "Appareils",
       "tickets": "Tickets",
       "billing": "Contrats et facturation",
+      "service": "Prestations",
       "activity": "Activité"
     },
     "comingSoon": {
       "title": "Bientôt disponible",
       "description": "Cet onglet sera ajouté lors de la prochaine mise à jour de la fiche organisation."
+    },
+    "devices": {
+      "loadError": "Impossible de charger les appareils de cette organisation.",
+      "searchPlaceholder": "Rechercher des appareils",
+      "allStatuses": "Tous les statuts",
+      "allSites": "Tous les sites",
+      "status": {
+        "online": "En ligne",
+        "offline": "Hors ligne",
+        "maintenance": "Maintenance",
+        "decommissioned": "Retiré",
+        "quarantined": "En quarantaine",
+        "updating": "Mise à jour",
+        "pending": "En attente"
+      }
     },
     "overview": {
       "tiles": {

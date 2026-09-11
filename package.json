@@ -7,17 +7,17 @@
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
     "dev": "turbo run dev",
     "build": "turbo run build",
-    "lint": "turbo run lint",
+    "lint": "node --test scripts/eslint/no-direct-sqlstate.test.mjs && turbo run lint",
     "test": "turbo run test",
     "test:load-static": "pnpm --dir load-tests test:static",
     "test:community-readme": "node --test .github/scripts/update-community-readme.test.mjs",
     "test:docs-automation": "node --test .github/scripts/docs-automation-retirement.test.mjs",
-    "test:workflow-security": "node --test .github/scripts/check-workflow-security.test.mjs scripts/security/pin-github-actions.test.mjs && node .github/scripts/check-workflow-security.mjs",
+    "test:workflow-security": "node --test .github/scripts/check-workflow-security.test.mjs scripts/security/pin-github-actions.test.mjs scripts/release/attest-macos-pkg.test.mjs && node .github/scripts/check-workflow-security.mjs",
     "pin:github-actions": "node scripts/security/pin-github-actions.mjs",
     "test:override-floors": "node --test scripts/security/check-override-floors.test.mjs",
     "check:override-floors": "node scripts/security/check-override-floors.mjs",
     "test:release-trust-allowlist": "node --test scripts/security/check-release-trust-allowlist.test.mjs",
-    "test:release-lineage": "node --test scripts/release/check-release-lineage.test.mjs scripts/check-migration-immutability.test.mjs",
+    "test:release-lineage": "node --test scripts/release/check-release-lineage.test.mjs scripts/release/release-image-manifest.test.mjs scripts/release/verify-release-images.test.mjs scripts/release/release-image-consumers.test.mjs scripts/check-migration-immutability.test.mjs",
     "check:release-trust-allowlist": "node scripts/security/check-release-trust-allowlist.mjs",
     "check:agent-mtls-edge-policy": "bash scripts/check-agent-mtls-edge-policy.sh",
     "check:agent-binary-signatures": "bash scripts/security/check-agent-binary-signatures.sh --source",
@@ -36,7 +36,7 @@
   "devDependencies": {
     "@typescript-eslint/parser": "^8.65.0",
     "eslint": "^10.9.1",
-    "tsx": "^4.23.12",
+    "tsx": "^4.23.13",
     "turbo": "^2.10.5",
     "typescript": "^5.7.2"
   },
@@ -95,7 +95,7 @@
       "vite@<6.4.2": ">=6.4.2",
       "rollup@>=4.0.0 <4.59.0": ">=4.59.0",
       "esbuild@<0.28.1": ">=0.28.1",
-      "nodemailer@<9.0.1": ">=9.0.1",
+      "nodemailer@<9.1.0": ">=9.1.0 <10.0.0",
       "follow-redirects@<=1.15.11": ">=1.16.0",
       "uuid@<14.0.0": ">=14.0.0",
       "@astrojs/node@<10.0.5": ">=10.0.5",
@@ -104,7 +104,8 @@
       "js-yaml@>=4.0.0 <4.3.1": ">=4.3.1 <5.0.0",
       "nanoid@<3.3.18": ">=3.3.18 <4.0.0",
       "deepmerge-ts@<8.0.0": ">=8.0.1 <9.0.0",
-      "fast-uri": ">=3.1.6"
+      "fast-uri": ">=3.1.6",
+      "browserslist@<4.28.7": "4.28.9"
     },
     "patchedDependencies": {
       "postgres@3.4.9": "patches/postgres@3.4.9.patch"

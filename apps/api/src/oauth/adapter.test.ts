@@ -10,6 +10,10 @@ import {
 } from './adapter';
 import { revokeGrant, revokeJti } from './revocationCache';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
+import {
+  isOAuthGrantActiveInCurrentDbContext,
+  revokeGrantsDurablyInCurrentDbContext,
+} from './grantStatus';
 
 vi.mock('../db', () => ({
   db: { insert: vi.fn(), update: vi.fn(), select: vi.fn() },
@@ -26,6 +30,11 @@ vi.mock('./revocationCache', () => ({
 vi.mock('../services/tenantStatus', () => ({
   TenantInactiveError: class TenantInactiveError extends Error {},
   assertActiveTenantContext: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('./grantStatus', () => ({
+  isOAuthGrantActiveInCurrentDbContext: vi.fn(async () => true),
+  revokeGrantsDurablyInCurrentDbContext: vi.fn(async () => undefined),
 }));
 
 const insertMock = vi.mocked(db.insert);
@@ -49,11 +58,12 @@ function mockRetryInsertChain(userId: string) {
   return { values, onConflictDoUpdate, returning };
 }
 
-function mockUpdateChain() {
-  const where = vi.fn();
+function mockUpdateChain(rows: unknown[] = [{ id: 'updated' }]) {
+  const returning = vi.fn(async () => rows);
+  const where = vi.fn(() => ({ returning }));
   const set = vi.fn(() => ({ where }));
   updateMock.mockReturnValue({ set } as unknown as ReturnType<typeof db.update>);
-  return { set, where };
+  return { set, where, returning };
 }
 
 function collectSqlStrings(value: unknown): string {
@@ -100,6 +110,7 @@ describe('BreezeOidcAdapter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(assertActiveTenantContext).mockResolvedValue(undefined);
+    vi.mocked(isOAuthGrantActiveInCurrentDbContext).mockResolvedValue(true);
   });
 
   it('upserts Client rows with null partner, metadata payload, and hashed secret', async () => {
@@ -202,6 +213,16 @@ describe('BreezeOidcAdapter', () => {
     expect(payloadSql).toContain('jsonb_set');
     expect(payloadSql).toContain('{consumed}');
     expect(chain.where).toHaveBeenCalled();
+    expect(chain.returning).toHaveBeenCalled();
+  });
+
+  it('rejects an AuthorizationCode consume that loses the atomic single-use claim', async () => {
+    const chain = mockUpdateChain([]);
+
+    await expect(new BreezeOidcAdapter('AuthorizationCode').consume('code_abc'))
+      .rejects.toMatchObject({ error: 'invalid_grant' });
+
+    expect(chain.returning).toHaveBeenCalled();
   });
 
   it('consume() on RefreshToken only revokes (no payload.consumed stamp) — unchanged by the auth-code fix', async () => {
@@ -212,6 +233,16 @@ describe('BreezeOidcAdapter', () => {
     expect(updateMock).toHaveBeenCalledWith(oauthRefreshTokens);
     expect(chain.set).toHaveBeenCalledWith({ revokedAt: expect.any(Date) });
     expect(chain.where).toHaveBeenCalled();
+    expect(chain.returning).toHaveBeenCalled();
+  });
+
+  it('rejects a RefreshToken consume that loses the atomic single-use claim', async () => {
+    const chain = mockUpdateChain([]);
+
+    await expect(new BreezeOidcAdapter('RefreshToken').consume('refresh_abc'))
+      .rejects.toMatchObject({ error: 'invalid_grant' });
+
+    expect(chain.returning).toHaveBeenCalled();
   });
 
   it('consume() on AccessToken is a no-op DB-wise (in-memory model)', async () => {
@@ -232,16 +263,22 @@ describe('BreezeOidcAdapter', () => {
     expect(chain.where).toHaveBeenCalled();
   });
 
-  it('revokes refresh tokens by grantId with one JSON predicate update', async () => {
+  it('revokeByGrantId durably revokes the Grant, its codes and its refresh family', async () => {
+    // oidc-provider fires revokeGrant on authorization-code replay. Revoking
+    // only the refresh rows (what this used to do) left oauth_grants.revoked_at
+    // NULL, so once the 1800s Redis marker lapsed the replayed code's Grant
+    // read as live again and could restart the family.
     mockSelectRows([{ accountId: '00000000-0000-4000-8000-000000000001' }]);
-    const chain = mockUpdateChain();
 
     await new BreezeOidcAdapter('RefreshToken').revokeByGrantId('grant_abc');
 
-    expect(updateMock).toHaveBeenCalledTimes(1);
-    expect(updateMock).toHaveBeenCalledWith(oauthRefreshTokens);
-    expect(chain.set).toHaveBeenCalledWith({ revokedAt: expect.any(Date) });
-    expect(chain.where).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(revokeGrantsDurablyInCurrentDbContext)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        grantIds: ['grant_abc'],
+        reason: 'provider-revoke-grant',
+        cascadeRefreshTokens: true,
+      }),
+    );
   });
 
   it('persists Interaction rows so consent flows survive API restart', async () => {
@@ -314,6 +351,18 @@ describe('BreezeOidcAdapter', () => {
     await expect(new BreezeOidcAdapter('AuthorizationCode').find('code_abc')).resolves.toBe(payload);
   });
 
+  it('rejects a still-live AuthorizationCode after its durable Grant is revoked', async () => {
+    vi.mocked(isOAuthGrantActiveInCurrentDbContext).mockResolvedValueOnce(false);
+    mockSelectRows([{
+      payload: { accountId: 'user_abc', grantId: 'grant_revoked' },
+      consumedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+    }]);
+
+    await expect(new BreezeOidcAdapter('AuthorizationCode').find('code_abc')).resolves.toBeUndefined();
+    expect(isOAuthGrantActiveInCurrentDbContext).toHaveBeenCalledWith('grant_revoked');
+  });
+
   it('surfaces a consumed AuthorizationCode payload on replay and logs OAUTH_AUTH_CODE_REUSE', async () => {
     // On replay the adapter MUST return the (consumed-stamped) payload rather
     // than undefined: oidc-provider calls find() with ignoreExpiration:true and
@@ -373,6 +422,69 @@ describe('BreezeOidcAdapter', () => {
     // until natural expiry. See finding #5.
     expect(vi.mocked(revokeGrant)).toHaveBeenCalledWith('grant_abc', expect.any(Number));
     consoleError.mockRestore();
+  });
+
+  it('refresh-token reuse revokes the Grant durably, not just with an expiring Redis marker', async () => {
+    // The Redis grant marker lives GRANT_REVOCATION_TTL_SECONDS (1800s). If the
+    // durable half never runs, a stolen sibling refresh token starts passing
+    // the active-Grant predicate again the moment the marker lapses and the
+    // thief regains the whole family.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockSelectRows([{
+      id: 'refresh_abc',
+      userId: '00000000-0000-4000-8000-000000000001',
+      clientId: 'client_abc',
+      partnerId: '00000000-0000-4000-8000-000000000002',
+      payload: { accountId: 'user_abc', grantId: 'grant_abc' },
+      revokedAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+    }]);
+
+    await expect(new BreezeOidcAdapter('RefreshToken').find('refresh_abc')).resolves.toBeUndefined();
+
+    expect(vi.mocked(revokeGrantsDurablyInCurrentDbContext)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        grantIds: ['grant_abc'],
+        reason: 'refresh-token-reuse',
+        cascadeRefreshTokens: true,
+      }),
+    );
+    consoleError.mockRestore();
+  });
+
+  it('does not attempt a durable grant sweep when the reused token carries no grantId', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockSelectRows([{
+      id: 'refresh_abc',
+      userId: '00000000-0000-4000-8000-000000000001',
+      clientId: 'client_abc',
+      partnerId: '00000000-0000-4000-8000-000000000002',
+      payload: { accountId: 'user_abc' },
+      revokedAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+    }]);
+
+    await expect(new BreezeOidcAdapter('RefreshToken').find('refresh_abc')).resolves.toBeUndefined();
+
+    expect(vi.mocked(revokeGrantsDurablyInCurrentDbContext)).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it('rejects an otherwise-live RefreshToken after its durable Grant is revoked', async () => {
+    vi.mocked(isOAuthGrantActiveInCurrentDbContext).mockResolvedValueOnce(false);
+    mockSelectRows([{
+      id: 'refresh_abc',
+      userId: '00000000-0000-4000-8000-000000000001',
+      clientId: 'client_abc',
+      partnerId: '00000000-0000-4000-8000-000000000002',
+      orgId: null,
+      payload: { accountId: 'user_abc', grantId: 'grant_revoked' },
+      revokedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+    }]);
+
+    await expect(new BreezeOidcAdapter('RefreshToken').find('refresh_abc')).resolves.toBeUndefined();
+    expect(assertActiveTenantContext).not.toHaveBeenCalled();
   });
 
   it('durably records refresh-token replay cleanup before returning the invalid-token result', async () => {

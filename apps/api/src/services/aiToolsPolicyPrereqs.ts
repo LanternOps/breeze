@@ -16,6 +16,8 @@ import { configPolicyBackupSettings } from '../db/schema/configurationPolicies';
 import { eq, and, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
+import { bumpApprovalGeneration } from './approvalGeneration';
 import {
   ringAutoApproveSchema,
   mergeRingAutoApproveWrite,
@@ -366,6 +368,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_software_policies', async (input, auth) => {
       const action = input.action as string;
+      // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
+      if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
       const orgId = getOrgId(auth);
 
       if (action === 'list') {
@@ -476,7 +482,12 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Modifying a partner-wide software policy requires full partner org access (orgAccess must be "all")' });
         }
 
-        const updates: Record<string, unknown> = { updatedAt: new Date() };
+        const updates: Record<string, unknown> = {
+          updatedAt: new Date(),
+          // Site-ceiling gate contract §3: this AI-tool write bypasses
+          // routes/softwarePolicies.ts, so it needs its own bump.
+          approvalGeneration: bumpApprovalGeneration(softwarePolicies.approvalGeneration),
+        };
         if (typeof input.name === 'string') updates.name = input.name;
         if (typeof input.description === 'string') updates.description = input.description;
         if (typeof input.mode === 'string') updates.mode = input.mode;
@@ -497,7 +508,9 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           details: {
             // Derived from the columns actually written, not raw `input` (which
             // also carries routing keys like `action`/`policyId`).
-            updatedFields: Object.keys(updates).filter((field) => field !== 'updatedAt'),
+            updatedFields: Object.keys(updates).filter(
+              (field) => field !== 'updatedAt' && field !== 'approvalGeneration'
+            ),
             ...summarizeEnforcementChange(input),
           },
         });
@@ -535,6 +548,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_peripheral_policies', async (input, auth) => {
       const action = input.action as string;
+      // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
+      if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
       const orgId = getOrgId(auth);
 
       if (action === 'list') {
@@ -668,6 +685,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_backup_profiles', async (input, auth) => {
       const action = input.action as string;
+      // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
+      if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
 
       if (action === 'list') {
         const where = backupProfileWhere(auth);
@@ -843,6 +864,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_backup_configs', async (input, auth) => {
       const action = input.action as string;
+      // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
+      if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
       const orgId = getOrgId(auth);
 
       if (action === 'list') {
@@ -931,7 +956,12 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         const [existing] = await db.select().from(backupConfigs).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Backup config not found or access denied' });
 
-        const updates: Record<string, unknown> = { updatedAt: new Date() };
+        const updates: Record<string, unknown> = {
+          updatedAt: new Date(),
+          // Site-ceiling gate contract §3: this AI-tool write is a second
+          // (non-route) write path to backup_configs and needs its own bump.
+          approvalGeneration: bumpApprovalGeneration(backupConfigs.approvalGeneration),
+        };
         if (typeof input.name === 'string') updates.name = input.name;
         if (typeof input.type === 'string') updates.type = input.type;
         if (typeof input.provider === 'string') updates.provider = input.provider;

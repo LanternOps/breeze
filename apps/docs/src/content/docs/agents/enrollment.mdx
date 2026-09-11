@@ -14,8 +14,9 @@ import { Aside } from '@astrojs/starlight/components';
 Agent                                 API Server
   │                                      │
   │─── POST /api/v1/agents/enroll ──────►│
-  │    { hostname, os, arch,             │
-  │      enrollmentSecret, siteId }      │
+  │    { enrollmentKey, hostname,        │
+  │      osType, architecture,           │
+  │      enrollmentSecret }              │
   │                                      │
   │    Validate enrollment secret        │
   │    Create device record              │
@@ -23,7 +24,7 @@ Agent                                 API Server
   │    Hash token (SHA-256) → store      │
   │    Issue mTLS cert (if configured)   │
   │                                      │
-  │◄── 201 { agentToken, deviceId,  ─────│
+  │◄── 201 { authToken, deviceId,   ─────│
   │         orgId, siteId, mtls? }       │
   │                                      │
   │    Store config to disk              │
@@ -38,13 +39,41 @@ Agent                                 API Server
   │                                      │
 ```
 
+### Full Enrollment Response
+
+The `201` response carries more than the `authToken` shown in the diagram above. In full, it is:
+
+```json
+{
+  "agentId": "uuid",
+  "deviceId": "uuid",
+  "authToken": "brz_...",
+  "watchdogAuthToken": "brz_...",
+  "helperAuthToken": "brz_...",
+  "orgId": "uuid",
+  "siteId": "uuid",
+  "backupServerUrl": "https://backup.example.com",
+  "config": { "heartbeatIntervalSeconds": 60, "metricsCollectionIntervalSeconds": 30 },
+  "mtls": { "...": "..." },
+  "manifestTrustKeys": [ "..." ],
+  "manifestKeyDelegations": [ "..." ]
+}
+```
+
+| Field | Description |
+|---|---|
+| `watchdogAuthToken` | Separate `brz_` token for [`breeze-watchdog`](/agents/building/#other-agent-binaries) to authenticate its own restart-monitoring calls. |
+| `helperAuthToken` | Separate token for the [Helper](/agents/helper/) process -- distinct from the agent's own `authToken`. |
+| `backupServerUrl` | Present only when `AGENT_BACKUP_SERVER_URL` is configured server-side; tells `breeze-backup` where to ship vault data. |
+| `manifestTrustKeys` / `manifestKeyDelegations` | The current release-artifact signing trust keyset and any active key delegations, used to verify signed agent updates. See [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/). |
+
 ## Token Security
 
 Agent tokens follow the `brz_` prefix convention:
 
 - **Generation**: Cryptographically random, 32-byte hex string with `brz_` prefix
 - **Storage (server)**: Only the SHA-256 hash is stored in the `agentTokenHash` column
-- **Storage (agent)**: The raw token is stored in `secrets.yaml` with `0600` permissions (the main `agent.yaml` config uses `0640` so the Helper can read it)
+- **Storage (agent)**: The raw token is stored in `secrets.yaml` with `0600` permissions (the main `agent.yaml` config uses `0644` so the Helper can read it)
 - **Validation**: API hashes incoming tokens and compares against stored hash
 - **Same pattern as API keys** (`apiKeyAuth.ts`)
 
@@ -58,7 +87,7 @@ Enrollment keys are created in the dashboard and can be scoped to:
 
 - **Organization** — devices enroll into a specific org
 - **Site** — devices enroll into a specific site within an org
-- **Expiry** — keys expire after a configurable TTL (default: 60 minutes)
+- **Expiry** — keys expire after a configurable TTL (default: 30 days, via `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES`)
 - **Usage limit** — keys can be limited to a number of uses
 
 ## Bulk Enrollment

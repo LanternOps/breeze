@@ -558,26 +558,40 @@ The API sets the execution status to `cancelled` and cancels any device commands
 
 ## Security
 
-The Go agent enforces strict security validation on all script content before execution.
+The Go agent enforces security validation on all script content before execution. There is no global, partner, or organization-level setting that changes how strict this validation is — validation behaves identically everywhere, and every acknowledgement described below applies to one specific script, never to a partner, an organization, or the fleet.
 
 ### Blocked patterns
 
-The agent's security validator operates at the **Strict** level by default, scanning for two categories of dangerous patterns:
+The validator checks script content against two categories of dangerous pattern.
 
-**Basic level** -- clearly destructive operations:
+**Basic** -- clearly destructive operations, blocked unconditionally with no override of any kind, ever:
 - Recursive deletion of root or system directories (`rm -rf /`, `rd /s /q C:\Windows`)
 - Filesystem format commands (`mkfs`, `Format-Volume`, `Clear-Disk`)
 - Direct writes to block devices (`dd of=/dev/sda`)
 - Fork bomb patterns
 - Dangerous permission changes on system paths
 
-**Strict level** -- potentially risky operations:
+**Strict** -- risky-but-legitimate admin operations that can be acknowledged per script (see below):
 - Remote code execution patterns (`curl | bash`, `Invoke-WebRequest | IEX`)
 - Credential dumping tools and techniques
 - Scheduled task / persistence creation
 - Privilege escalation via setuid/setgid
 - HKLM registry modifications
 - Sudoers modifications
+
+### Acknowledging Strict patterns
+
+Saving a script in the Scripts editor shows which Strict patterns its content currently matches, each with a plain-language explanation of the risk. Anyone who can write the script body — the same permission already required to save the script, no new permission is introduced — ticks the patterns they intend the script to trigger. The acknowledged descriptions are stored on the script record, audited (who, when, which patterns), and travel with every dispatch of that script. The agent then permits exactly those Strict patterns for that script and still blocks any other match.
+
+<Aside type="caution" title="An acknowledgement names patterns, not the whole script">
+  The stored acknowledgement is the set of Strict pattern descriptions the content matched when it was approved — never a blanket "this script is trusted" flag. Editing the script later to introduce a *different* Strict pattern leaves that new pattern unacknowledged and still blocked, even though the original approval keeps working. Removing the risky line drops its acknowledgement automatically.
+</Aside>
+
+A script that matches a Strict pattern it has not been acknowledged for fails at execution time with an error naming the pattern and telling the operator to open the script in Breeze, acknowledge it under Security review, and run it again. For a one-off change on a single device, use Remote Tools (Registry or Terminal) instead of a script.
+
+<Aside type="note">
+  The patterns are line-oriented regular expressions matched against the script body after parameter substitution. They are a guard rail against accidental destructive commands, not a containment boundary — anyone who can author or edit a script can already run arbitrary code on the device they dispatch it to.
+</Aside>
 
 ### Output sanitization
 
@@ -656,10 +670,10 @@ All script endpoints require authentication and the appropriate permission scope
 The agent only supports `powershell`, `bash`, `python`, and `cmd`. Verify the `language` field matches one of these values. If using `cmd`, confirm the target device is running Windows -- `cmd` is not available on macOS or Linux.
 
 **Script times out unexpectedly.**
-The default timeout is 300 seconds (5 minutes). The maximum allowed timeout is 86,400 seconds (24 hours) at the API level, though the agent enforces a hard cap of 3,600 seconds (1 hour). Set `timeoutSeconds` when creating the script or override `runAs` at execution time. On timeout, the agent kills the entire process group to prevent orphaned children.
+The default timeout is 300 seconds (5 minutes). The maximum allowed timeout is 3,600 seconds (1 hour) — the API rejects anything higher, matching the agent's own execution cap. Set `timeoutSeconds` when creating the script or override `runAs` at execution time. On timeout, the agent kills the entire process group to prevent orphaned children.
 
 **Execution stuck in `pending` status.**
-The device may be offline or its WebSocket connection to the API may have dropped. The command is persisted in the `deviceCommands` table and transitions to `sent` only when the API successfully pushes it over the WebSocket. Check the device's connection status and ensure the agent is running.
+If the device is offline, this is expected: the command is queued and delivered automatically on the device's next successful heartbeat, up to a **7-day** delivery deadline, and it's visible and cancellable from the device's **Queued actions** list in the meantime. If the device is online but the execution is still `pending` after a few minutes, check the device's connection status and ensure the agent is running — the command is persisted in the `deviceCommands` table and transitions to `sent` only when the API successfully pushes it over the WebSocket.
 
 **Script rejected by security validation.**
 The agent's strict security validator blocks patterns that match known destructive or suspicious operations. Review the `errorMessage` field in the execution detail for the specific pattern that was detected. If the script is legitimate, consider restructuring the command to avoid matching the blocked pattern. Security validation runs after parameter substitution, so a parameter value could trigger a block.

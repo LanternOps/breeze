@@ -16,7 +16,7 @@ describe('featuresStore', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useFeaturesStore.setState({
-      features: { billing: false, support: false },
+      features: { billing: false, support: false, aiOperatorTasks: false },
       cfAccessLogin: { enabled: false },
       registration: { enabled: false },
       softwarePackages: { uploadsEnabled: true },
@@ -52,7 +52,7 @@ describe('featuresStore', () => {
       res({ features: { billing: true, support: true } })
     );
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: true, support: true });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: true, support: true, aiOperatorTasks: false });
     expect(useFeaturesStore.getState().loaded).toBe(true);
   });
 
@@ -72,7 +72,7 @@ describe('featuresStore', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchMock.mockRejectedValueOnce(new Error('network'));
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false });
     expect(useFeaturesStore.getState().loaded).toBe(true);
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
@@ -82,7 +82,7 @@ describe('featuresStore', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchMock.mockResolvedValueOnce(res({}, false, 500));
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false });
     expect(useFeaturesStore.getState().loaded).toBe(true);
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
@@ -98,6 +98,6 @@ describe('featuresStore', () => {
   it('coerces missing fields to false', async () => {
     fetchMock.mockResolvedValueOnce(res({}));
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false });
   });
 });

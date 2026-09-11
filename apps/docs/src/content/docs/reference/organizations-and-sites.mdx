@@ -29,6 +29,10 @@ Partner (MSP)
 
 Every entity in the hierarchy uses a UUID primary key and carries `createdAt` / `updatedAt` timestamps. Partners and organisations support soft deletes via a `deletedAt` column; sites are hard-deleted.
 
+<Aside type="note" title="MFA on writes">
+  Every create, update, and delete below -- partners, organisations, and sites alike -- additionally requires the caller's session to have completed an **MFA challenge**, on top of the scope and permission shown for each endpoint. This makes a plain JWT without a recent MFA step-up a poor fit for unattended scripts against these endpoints; a partner service-principal key (`brz_sp_…`) is not subject to this gate.
+</Aside>
+
 ---
 
 ## Partners
@@ -91,6 +95,14 @@ Partner-scoped users can update their own partner's settings via the `/partners/
 | `contact.website` | `string` | Partner website URL. |
 
 Settings are merged on update -- you do not need to send the entire object. Only the keys you include are overwritten.
+
+Two partner-level fields sit **outside** the `settings` blob and are sent as
+top-level properties on the same `PATCH /partners/me` request:
+
+| Field | Type | Description |
+|---|---|---|
+| `serviceManagementMode` | `enum` | `native` (default), `external`, or `off`. Decides whether this MSP runs Breeze's own service desk and customer billing at all. See [Service Management mode](/reference/partner-management/#service-management-mode). |
+| `serviceManagementPsaConnectionId` | `uuid` | The partner-wide PSA connection bound to `external` mode. Required when the mode is `external`, and must be null in every other mode -- the two are enforced as a pair. |
 
 ### Creating a Partner
 
@@ -155,7 +167,7 @@ An **Organisation** represents a customer or internal team managed by a partner.
 | `name` | `varchar(255)` | Display name. Required. |
 | `slug` | `varchar(100)` | URL-safe identifier. Required. |
 | `type` | `enum` | One of `customer`, `internal`. Defaults to `customer`. |
-| `status` | `enum` | One of `active`, `suspended`, `trial`, `churned`. Defaults to `active`. |
+| `status` | `enum` | One of `active`, `suspended`, `trial`, `churned`, `offboarding`, `merging`, `archived`, `purging` (see [Organisation Status](#organisation-status) above). Defaults to `active`. |
 | `maxDevices` | `integer` | Optional device cap for this organisation. |
 | `settings` | `jsonb` | Organisation-level settings. |
 | `ssoConfig` | `jsonb` | Organisation-specific SSO configuration. |
@@ -207,6 +219,35 @@ Partner-scoped and system-scoped users can create organisations.
 
 Returns the created organisation object with a `201` status.
 
+### The Organisation Record Page
+
+Every organisation has a single page that gathers everything about that customer
+in one place, rather than making a technician assemble it from the fleet-wide
+Devices, Tickets and Invoices lists. Open an organisation from the organisations
+list -- or follow the organisation name from a ticket, invoice or quote -- and you
+land on it.
+
+| Tab | Contents |
+|---|---|
+| **Overview** | Summary tiles for the customer: fleet, open work, and billing position. |
+| **Contacts** | The organisation's [contacts](#contacts), managed in place. |
+| **Sites** | The organisation's [sites](#sites). |
+| **Devices** | The full device list, pinned to this customer. |
+| **Tickets** | The ticket queue, pinned to this customer. |
+| **Billing** | Contracts, Invoices and Quotes, each pinned to this customer. |
+| **Activity** | The audit trail for this organisation. |
+
+Each of these tabs is the same list you already know from the sidebar, **pinned**
+to the organisation you are looking at: filters and searches are scoped to it, the
+Organisation column drops out as redundant, and a **New** action pre-selects the
+customer. Pinning wins over whatever the global organisation switcher is set to,
+so opening a customer's record never depends on remembering to switch scope first.
+
+Which tabs appear depends on the partner's
+[Service Management mode](/reference/partner-management/#service-management-mode):
+`off` hides both Tickets and Billing, and `external` hides Billing while keeping
+Tickets.
+
 ### Soft Deletes for Organisations
 
 Like partners, organisations use soft deletes. Deleting an organisation sets the `deletedAt` timestamp. All queries exclude soft-deleted records.
@@ -231,6 +272,26 @@ Restoring is the undo, available any time before the purge runs.
 | `POST` | `/orgs/organizations/:id/restore` | Restore an archived organisation to `active`. |
 
 Both require partner scope, `organizations:write`, **and a satisfied MFA challenge** — an API key or session without MFA is rejected.
+
+### Offboarding an Organisation
+
+`offboarding` is a terminal-intent **drain** state, not an instant delete. The moment an organisation enters it:
+
+- Its users, API keys, and OAuth grants are revoked **immediately** — nobody can sign in or call the API as that organisation from this point on.
+- Agents are **not** severed right away. They stay authenticated in a narrowed mode (heartbeat + claiming a queued `self_uninstall` command only; the WebSocket channel is refused) so each device gets a chance to self-uninstall cleanly.
+- A background reaper finalizes the drain once every device has uninstalled or the drain window closes (`OFFBOARDING_DRAIN_WINDOW_HOURS`, default 72h) — whichever comes first — cancelling any leftover uninstalls and severing agent credentials.
+- Where the drain lands depends on how it was started: [archiving](#archiving-an-organisation) an organisation routes it through `offboarding` and finalizes to `archived`; setting `status: "offboarding"` directly (e.g. via the API, outside the Archive flow) finalizes to `churned` instead.
+- The transition is reversible up until the reaper finalizes it — set `status` back to `active` (or `trial`) to abort the drain, cancel any un-collected uninstalls, and restore agent access.
+
+In the dashboard, the only way to reach `offboarding` is the **Archive** action described above — there is no separate "offboard" button. A churn-only drain (no archive) is only reachable directly via the API:
+
+```json
+PATCH /api/v1/orgs/organizations/:id
+
+{ "status": "offboarding" }
+```
+
+This requires partner scope, `organizations:write`, and a satisfied MFA challenge, same as archiving.
 
 ### Merging Organisations
 
@@ -434,7 +495,7 @@ These endpoints allow partner-scoped users to view and update their own partner 
 | `GET` | `/orgs/organizations/:id` | `partner`, `system` | Get an organisation by ID. Partner-scoped users can only access their own organisations. |
 | `PATCH` | `/orgs/organizations/:id` | `partner`, `system` | Update an organisation. The `partnerId` cannot be changed. Returns `400` if no fields provided. |
 | `DELETE` | `/orgs/organizations/:id` | `partner`, `system` | Soft-delete an organisation. Sets `deletedAt`. Returns `{ success: true }`. |
-| `PATCH` | `/orgs/organizations/order` | `partner` | Set the partner's preferred organisation display order. Body `{ "organizationOrder": ["<org-uuid>", ...] }`; unknown or deleted IDs are dropped, omitted orgs are appended in registration order. Persisted to partner settings and reflected by the list endpoints. Returns the sanitised `{ organizationOrder }`. |
+| `PATCH` | `/orgs/organizations/order` | `partner` | Set the partner's preferred organisation display order. Requires **full partner org access** (`orgAccess: 'all'`, or system scope) — a `partner`-scoped user with a restricted `orgAccess` gets `403`. Body `{ "orderedIds": ["<org-uuid>", ...] }`; unknown or deleted IDs are dropped, omitted orgs are appended in registration order. Persisted to partner settings and reflected by the list endpoints. Returns the sanitised `{ organizationOrder }`. |
 
 <Aside type="note">
   There are two list endpoints for organisations. `GET /orgs/` is the simpler variant used by organisation-scoped users to retrieve their own organisation. `GET /orgs/organizations` is the paginated variant for partner and system users.

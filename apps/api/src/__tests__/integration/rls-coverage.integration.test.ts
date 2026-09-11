@@ -213,6 +213,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['pax8_contract_line_links', 'partner_id'],
   ['pax8_orders', 'partner_id'],
   ['pax8_order_lines', 'partner_id'],
+  ['stripe_financial_events', 'partner_id'],
   ['accounting_connections', 'partner_id'],
   ['accounting_entity_mappings', 'partner_id'],
   ['network_known_guests', 'partner_id'],
@@ -632,9 +633,15 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
 // for UNREVIEWED_RLS_CLASSIFICATION_DEBT, added there after an independent
 // review found "documented shrink-only, nothing enforces it" let a future
 // author add an entry and go green.
-const PARTNER_WIDE_SELECT_BRANCH_EXEMPT: ReadonlyMap<string, string> = new Map<string, string>([
-  ['custom_field_definitions', 'TODO(#4944): no breeze_current_partner_id() SELECT branch yet.'],
-]);
+//
+// EMPTY as of #4944. custom_field_definitions was the last entry; its branch
+// shipped in 2026-10-13-110000-custom-field-definitions-partner-wide-select.sql
+// and the functional proof lives in
+// customFieldDefinitionsPartnerRls.integration.test.ts. With the ceiling now 0
+// this map cannot legally gain another entry: a NEW dual-axis table without the
+// branch must ship the branch in the same migration that creates the table
+// (CLAUDE.md, Partner-Wide First step 1), not take an exemption here.
+const PARTNER_WIDE_SELECT_BRANCH_EXEMPT: ReadonlyMap<string, string> = new Map<string, string>([]);
 
 // Enforced shrink-only ratchet for PARTNER_WIDE_SELECT_BRANCH_EXEMPT (mirrors
 // UNREVIEWED_RLS_CLASSIFICATION_DEBT's guard above). Fixed at the 2026-09-05
@@ -645,10 +652,8 @@ const PARTNER_WIDE_SELECT_BRANCH_EXEMPT: ReadonlyMap<string, string> = new Map<s
 // follow-up issue, not a free ride into an already-frozen exemption. Both
 // constants are asserted by 'the partner-wide SELECT branch exemption map
 // only shrinks' below.
-const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING = 1;
-const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_FROZEN_NAMES: ReadonlySet<string> = new Set<string>([
-  'custom_field_definitions',
-]);
+const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING = 0;
+const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_FROZEN_NAMES: ReadonlySet<string> = new Set<string>([]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their
 // RLS policies join through `devices` to reach the org boundary.

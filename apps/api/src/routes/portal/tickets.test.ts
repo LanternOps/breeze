@@ -126,6 +126,7 @@ vi.mock('./helpers', () => ({
 
 import { ticketRoutes, portalTicketsEnabledMiddleware } from './tickets';
 import { validatePortalCookieCsrfRequest, writePortalAudit } from './helpers';
+import { db } from '../../db';
 
 // ── Test app ──────────────────────────────────────────────────────────────────
 
@@ -795,6 +796,124 @@ describe('POST /tickets — delegates to createTicket', () => {
 
     expect(res.status).toBe(400);
     expect(createTicketMock).not.toHaveBeenCalled();
+  });
+});
+
+// ── POST /tickets/:id/comments — sweep 2026-09-08 G5-5 ───────────────────────
+
+describe('POST /tickets/:id/comments', () => {
+  let app: ReturnType<typeof buildApp>;
+
+  // What GET /tickets/:id selects per comment (see the comments query above):
+  // id, authorName, authorType, content, createdAt. The immediate POST
+  // response must carry the same shape so the reply's "Your IT team" badge
+  // (apps/portal — c.authorType !== 'portal') is correct without a reload.
+  const COMMENT_FIXTURE = {
+    id: 'cccccccc-1111-2222-3333-444455556666',
+    authorName: PORTAL_USER.name,
+    authorType: 'portal',
+    senderPortalUserId: PORTAL_USER.id,
+    content: 'Still happening',
+    createdAt: new Date('2026-09-08T00:00:00.000Z'),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = buildApp();
+
+    // Ticket ownership lookup: .select({id}).from(tickets).where().limit(1)
+    dbSelectMock.mockImplementation(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(() => Promise.resolve([{ id: TICKET_ID }]))
+        }))
+      }))
+    }));
+
+    // Projects the REAL `.returning({...})` argument against the fixture —
+    // exactly like Postgres would: a projection key the route forgot to ask
+    // for is simply ABSENT from the row, not present-with-undefined. A mock
+    // that instead always returned the full fixture object would stay green
+    // even if the route's `.returning()` selection regressed.
+    vi.mocked(db.insert).mockImplementation(() => ({
+      values: vi.fn(() => ({
+        returning: vi.fn((columns: Record<string, unknown>) => {
+          const row: Record<string, unknown> = {};
+          for (const key of Object.keys(columns)) {
+            row[key] = (COMMENT_FIXTURE as Record<string, unknown>)[key];
+          }
+          return Promise.resolve([row]);
+        })
+      }))
+    }) as never);
+  });
+
+  it('includes authorType in the immediate response', async () => {
+    // Without this, the portal UI defaulted a customer's own just-posted
+    // reply to the "Your IT team" badge until the next full reload re-fetched
+    // it from GET /tickets/:id, whose comments query DOES select authorType.
+    const res = await app.request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'Still happening' }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json() as { comment: Record<string, unknown> };
+    expect(body.comment).toHaveProperty('authorType', 'portal');
+  });
+
+  /**
+   * author_type alone cannot tell a customer's emailed reply from a
+   * technician's own reply linked through the Outlook add-in — both are stored
+   * as 'email' (services/inboundEmail/emailComments.ts hardcodes it). Only the
+   * resolved portal sender separates them, so the portal's "Customer email"
+   * badge keys on this column. Dropping it from the projection would silently
+   * relabel the IT team's reply as the customer's.
+   */
+  it('includes senderPortalUserId in the immediate response', async () => {
+    const res = await app.request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'Still happening' }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json() as { comment: Record<string, unknown> };
+    expect(body.comment).toHaveProperty('senderPortalUserId', PORTAL_USER.id);
+  });
+
+  it('still returns id, authorName, content, createdAt (no regression)', async () => {
+    const res = await app.request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'Still happening' }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json() as { comment: Record<string, unknown> };
+    expect(body.comment).toMatchObject({
+      id: COMMENT_FIXTURE.id,
+      authorName: COMMENT_FIXTURE.authorName,
+      content: COMMENT_FIXTURE.content,
+    });
+    expect(body.comment).toHaveProperty('createdAt');
+  });
+
+  it('404s when the ticket does not belong to the portal user', async () => {
+    dbSelectMock.mockImplementation(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) }))
+      }))
+    }));
+
+    const res = await app.request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'x' }),
+    });
+
+    expect(res.status).toBe(404);
   });
 });
 

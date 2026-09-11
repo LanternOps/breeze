@@ -52,6 +52,8 @@ import { orgRoutes } from './routes/orgs';
 import { orgMergeRoutes } from './routes/orgMerge';
 import { orgArchiveRoutes } from './routes/orgArchive';
 import { orgSummaryRoutes } from './routes/orgSummary';
+import { serviceDeliverableRoutes } from './routes/serviceDeliverables';
+import { orgKeyDateRoutes } from './routes/orgKeyDates';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
 import { oauthInteractionRoutes } from './routes/oauthInteraction';
@@ -139,6 +141,7 @@ import { aiRoutes } from './routes/ai';
 import { aiProviderRoutes } from './routes/aiProvider';
 import { aiAgentsRoutes } from './routes/aiAgents';
 import { aiAgentSchedulesRoutes } from './routes/aiAgentSchedules';
+import { aiOperatorTasksRoutes } from './routes/aiOperatorTasks';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
 import { mountInviteLandingRoutes } from './modules/mcpInvites';
@@ -834,6 +837,8 @@ api.route('/orgs', orgRoutes);
 api.route('/orgs', orgMergeRoutes);
 api.route('/orgs', orgArchiveRoutes);
 api.route('/orgs', orgSummaryRoutes);
+api.route('/orgs', serviceDeliverableRoutes); // /orgs/:orgId/deliverables/* (#5573 W01)
+api.route('/orgs', orgKeyDateRoutes);         // /orgs/:orgId/key-dates/* (#5573 W01)
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);
 api.route('/permissions', permissionsCatalogRoutes);
@@ -979,6 +984,9 @@ api.route('/ai/provider', aiProviderRoutes);
 // '/schedules' as an agent id (#4189).
 api.route('/ai/agents/schedules', aiAgentSchedulesRoutes);
 api.route('/ai/agents', aiAgentsRoutes);
+// Read-only Operator task surface (W07 of #5205, P3-1e) — a separate route
+// module from the already-large aiAgentsRoutes per spec §12.
+api.route('/ai/operator', aiOperatorTasksRoutes);
 api.route('/ai', aiRoutes);
 api.route('/ai/script-builder', scriptAiRoutes);
 api.route('/mcp', mcpServerRoutes);
@@ -1042,10 +1050,16 @@ app.notFound((c) => {
 app.onError((err, c) => {
   // Handle HTTPException properly (e.g., 401, 403, etc.)
   if (err instanceof HTTPException) {
+    // A typed HTTPException may carry a machine-readable `code` (e.g.
+    // `lease_unavailable`) that callers switch on. This handler builds the body
+    // itself instead of delegating to `err.getResponse()`, so the code has to
+    // be copied across explicitly or it is silently dropped.
+    const typedCode = (err as { code?: unknown }).code;
     return c.json(
       {
         error: err.message || 'Request failed',
-        message: err.message
+        message: err.message,
+        ...(typeof typedCode === 'string' && typedCode ? { code: typedCode } : {})
       },
       err.status
     );

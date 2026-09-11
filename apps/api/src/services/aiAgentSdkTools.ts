@@ -195,7 +195,7 @@ export const TOOL_TIERS = {
   // Fleet hygiene (Task 8) — read-only fleet-wide aggregation.
   get_fleet_findings: 1,
   analyze_fleet_metrics: 1,
-  get_fleet_status: 1,
+  get_invite_funnel: 1,
   delete_tenant: 3,
   get_backup_health: 1,
   run_backup_verification: 2,
@@ -1575,10 +1575,10 @@ export function createBreezeMcpServer(
     ),
 
     tool(
-      'get_fleet_status',
-      'Return the deployment-invite funnel for this tenant (total invited, clicked, enrolled, online) with recent enrollments. Poll during MCP bootstrap to track devices coming online.',
+      'get_invite_funnel',
+      'Deployment-invite funnel only (invites sent/clicked/enrolled). NOT a fleet overview: for device counts or online/offline status use query_devices or get_fleet_health. Returns total invited, clicked, enrolled and online for this tenant plus recent enrollments; a tenant enrolled without invites reports zeros here. Poll during MCP bootstrap to track devices coming online.',
       {},
-      makeHandler('get_fleet_status', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('get_invite_funnel', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -1591,6 +1591,15 @@ export function createBreezeMcpServer(
       makeHandler('delete_tenant', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    // SEC-2026-09-05-021: get_backup_health / run_backup_verification /
+    // get_recovery_readiness are declared here but have NO executeTool
+    // registration yet (asserted by helperToolFilter.test.ts and the registry
+    // parity contract). When a handler IS wired, it MUST pass the caller's
+    // `auth.allowedSiteIds` through to getBackupHealthSummary /
+    // listRecoveryReadiness / listBackupVerifications the way
+    // routes/backup/verification.ts does — those services apply the site
+    // ceiling only when it is supplied, so an omitted argument silently
+    // returns org-wide rows to a site-restricted caller.
     tool(
       'get_backup_health',
       'Get backup and verification health summary for an organization, with optional device focus.',

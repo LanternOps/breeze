@@ -5,7 +5,11 @@ description: Connect Breeze to your PSA platform to sync tickets, encrypt creden
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-PSA (Professional Services Automation) integrations connect Breeze to the ticketing platform your service desk already runs on. Once a connection is configured, Breeze can create and sync tickets, tie alerts and devices to external work items, and keep ticket status flowing in the direction you choose. PSA is the most fully featured integration type in Breeze: connections are database-backed with encrypted credential storage, per-connection sync settings, and ticket mapping.
+PSA (Professional Services Automation) integrations connect Breeze to the ticketing platform your service desk already runs on. Connections are database-backed with encrypted credential storage and configurable sync settings.
+
+<Aside type="caution">
+  Ticket syncing itself is not implemented yet -- there is no automatic or manual sync, and no ticket mappings are created. You can create, test, and configure a connection today, but no ticket data moves between Breeze and your PSA until sync ships.
+</Aside>
 
 You manage PSA connections from **Integrations → PSA**. The tab is deep-linkable at `/integrations#psa`.
 
@@ -49,7 +53,7 @@ A partner-wide connection is visible to any partner-scope user — but the ticke
 
 4. Under **Credentials**, fill in the fields your provider requires — any combination of **Username**, **Password**, **API Token**, **Client ID**, and **Client Secret**. Secret fields are masked; use the eye toggle to reveal what you typed. Only the fields relevant to your provider need values.
 
-5. Under **Sync settings**, decide how tickets sync (see [Ticket Sync & Field Mappings](#ticket-sync--field-mappings) below).
+5. Under **Sync settings**, choose your sync preferences (see [Ticket Sync Settings](#ticket-sync-settings) below) -- these are saved but not yet acted on.
 
 6. Click **Create connection**. Breeze encrypts the credentials and saves the connection.
 
@@ -57,7 +61,7 @@ A partner-wide connection is visible to any partner-scope user — but the ticke
 </Steps>
 
 <Aside type="caution">
-  In production the `APP_ENCRYPTION_KEY` environment variable must be set — the API refuses to start without it, because it is the key used to encrypt PSA credentials at rest. If credential encryption fails, connection creation returns a "Failed to encrypt credentials" error.
+  The `APP_ENCRYPTION_KEY` environment variable must always be set — the API refuses to start without it in any environment, because it is the key used to encrypt PSA credentials at rest. If credential encryption fails, connection creation returns a "Failed to encrypt credentials" error.
 </Aside>
 
 ### Credentials You May Need
@@ -93,57 +97,69 @@ The **Test connection** button is available when you edit an existing connection
 
 ## Managing Connections
 
-The PSA tab lists every connection with its provider, name, status, and last-sync time. You can search connections by name or provider and filter by status. Each row offers these actions:
+The PSA tab lists every connection with its provider, name, and status. You can search connections by name or provider and filter by status. Each row offers these actions:
 
 | Action | What it does |
 |--------|--------------|
 | **Edit** | Open the connection to change its name, credentials, or sync settings, or to test it |
-| **Sync now** | Trigger a manual data sync immediately |
-| **Pause / Resume** | Toggle the connection between `active` and `paused` — a paused connection stays configured but stops syncing |
+| **Pause / Resume** | Toggle the connection between `active` and `paused` |
 | **Delete** | Remove the connection permanently |
 
 Connection status is one of:
 
 | Status | Meaning |
 |--------|---------|
-| **Active** | The connection is enabled and syncing |
-| **Paused** | Syncing is temporarily disabled; the connection and its credentials are retained |
-| **Syncing** | A sync is currently in progress |
-| **Error** | The most recent sync or test failed |
+| **Active** | The connection is enabled |
+| **Paused** | The connection and its credentials are retained but marked inactive |
+| **Error** | The most recent test failed |
 
 <Aside type="caution">
-  Deleting a connection also removes all of its associated ticket mappings. This action cannot be undone. If the connection is currently active, Breeze warns you before deleting.
+  Deleting a connection cannot be undone. If the connection is currently active, Breeze warns you before deleting.
 </Aside>
 
 ---
 
-## Ticket Sync & Field Mappings
+## Importing Companies
 
-Each connection carries its own sync settings, configured under **Sync settings** when you create or edit it.
+Ticket sync is not implemented yet, but you can still bring a PSA's company list into Breeze as organizations, one connection at a time.
 
-| Setting | Options | Purpose |
+On the PSA tab, each connection for a provider with a company/account object shows an **Import companies** button. ConnectWise, Autotask, Freshservice, ServiceNow, and Zendesk support this; Jira does not, because it has no company object to map onto an organization, so the button is not shown for a Jira connection.
+
+<Steps>
+
+1. Click **Import companies** on the connection you want to pull from.
+
+2. Click **Fetch** to pull the company list from the PSA. This is a live request — up to 1,000 companies are fetched per import, and nothing is created yet.
+
+3. Review the preview. Each row is auto-checked to be imported unless it already matches an existing organization; uncheck any row you don't want to bring in.
+
+4. Choose what to do with a row that matches an org already imported from this connection: **Skip** it, or **Update** it with the PSA's current data.
+
+5. Click **Import** to create or update the selected organizations.
+
+</Steps>
+
+The preview calls out anything that affects the result:
+
+- **Partial company list** — if the PSA connection responded too slowly, paged too many times, or the listing hit the 1,000-company cap, the warning names which of those three happened and how many companies were actually fetched. Any company that was never read is not linked, and importing again later is the way to catch up on a company list larger than the cap.
+- **Already linked** — companies already imported from this connection are called out, not treated as an error.
+- **Malformed records** — companies the PSA returned without a usable ID or name are skipped and counted separately; this reflects a data-quality issue on the PSA's side, not a failed import.
+
+---
+
+## Ticket Sync Settings
+
+Each connection carries sync settings, configured under **Sync settings** when you create or edit it -- but syncing itself is not implemented yet (see the caution at the top of this page), so these fields have no effect today.
+
+| Setting | Options | Purpose (once sync ships) |
 |---------|---------|---------|
 | **Enable sync** | On / Off | Master switch for automatic syncing on this connection |
-| **Sync interval** | Every 15 minutes, 30 minutes, hourly, every 6 hours, daily | How often Breeze runs an automatic sync |
-| **Sync direction** | Inbound, Outbound, Bidirectional | Which way ticket data flows between Breeze and the PSA |
+| **Sync interval** | Every 15 minutes, 30 minutes, hourly, every 6 hours, daily | How often Breeze would run an automatic sync |
+| **Sync direction** | Inbound, Outbound, Bidirectional | Which way ticket data would flow between Breeze and the PSA |
 | **Auto-close / sync on close** | On / Off | Keep ticket close state in sync between the two systems |
 | **Include notes** | On / Off | Carry ticket notes across during sync |
 
 The interval, direction, auto-close, and notes controls are only editable while **Enable sync** is on.
-
-### Sync direction
-
-- **Inbound** — ticket data flows from the PSA into Breeze.
-- **Outbound** — Breeze pushes ticket data out to the PSA.
-- **Bidirectional** — changes sync both ways (the default).
-
-### Ticket mappings
-
-As tickets sync, Breeze records **ticket mappings** that tie a Breeze entity to the corresponding external ticket. A mapping tracks the external ticket ID and URL, the current ticket status, the last sync time, and — where applicable — the associated Breeze **alert** or **device**. The PSA tab surfaces recent ticket mappings below the connection list so you can see what has synced. Mappings are created during sync operations, so a brand-new connection will not show tickets until it has synced at least once.
-
-<Aside>
-  Because mappings can carry an `alertId` or a `deviceId`, a synced ticket stays linked to the alert that raised it or the device it concerns — deleting the connection removes those mappings along with it.
-</Aside>
 
 ---
 
@@ -153,16 +169,16 @@ As tickets sync, Breeze records **ticket mappings** that tie a Breeze entity to 
 Confirm the credentials are correct and that the PSA platform's API is reachable from your Breeze API server. Some providers require IP allowlisting or VPN access. Double-check the instance URL matches the provider format shown in the form, and re-check any secret fields you may have left blank on edit.
 
 **"Failed to encrypt credentials" when saving a connection.**
-The `APP_ENCRYPTION_KEY` environment variable is not set or is invalid. In production this variable is required and the API will not start without it. On Breeze-hosted accounts this is already configured.
+The `APP_ENCRYPTION_KEY` environment variable is not set or is invalid. This variable is required in every environment and the API will not start without it. On Breeze-hosted accounts this is already configured.
 
 **Editing a connection wiped my credentials.**
 Credentials are replaced as a whole, not merged. On the edit form, leave a secret field blank to keep its existing value — only type into it when you intend to rotate that credential.
 
 **No tickets are showing up.**
-Ticket mappings appear only after a sync has run. Use **Sync now** on the connection to trigger one, and make sure **Enable sync** is on. If the connection status is **Paused** or **Error**, syncing will not run until you resume it or resolve the error.
+This is expected today -- ticket syncing is not implemented yet, so no ticket mappings are ever created (see the caution at the top of this page).
 
 **A connection shows the Error status.**
-The most recent sync or test failed. Open the connection, run **Test connection** to see the provider's error message, and correct the credentials or instance URL as needed.
+The most recent connection test failed. Open the connection, run **Test connection** to see the provider's error message, and correct the credentials or instance URL as needed.
 
 ---
 

@@ -1511,6 +1511,14 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
         if (path !== '/auth/mfa/setup') {
           window.location.href = '/auth/mfa/setup?forced=1';
         }
+      } else if (body?.reason === 'auth_binding_rotation_required') {
+        // The server already installed the replacement `breeze_auth_binding`
+        // cookie on THIS response (Set-Cookie) before answering 428 — the
+        // browser's cookie jar picks it up automatically on the next fetch
+        // via `credentials: 'include'`. So the fix is a bare replay of the
+        // exact same request, once. If the replay 428s again, fall through
+        // and hand it back to the caller exactly like any other error.
+        response = await fetch(buildApiUrl(url), { ...init, headers, credentials: 'include', signal });
       }
     } catch {
       // Not JSON or parse failed — surface as a normal 428 to caller
@@ -2268,10 +2276,29 @@ export async function apiVerifyPhone(phoneNumber: string, currentPassword: strin
   }
 }
 
+/**
+ * #5198: confirming a number that REPLACES the one behind an already-active SMS
+ * factor advances `mfa_epoch` and revokes every refresh family — no other
+ * session may keep an assurance minted before the factor's material changed —
+ * and hands this caller a replacement session in the same response. Adopt it;
+ * keeping the pre-swap token means the next request 401s on a stale `mep`, its
+ * refresh fails against a revoked family, and the user is bounced to
+ * /login?reason=session-expired by the very action they just authenticated for.
+ *
+ * `reauthRequired` is the honest third state: the server revoked everything but
+ * could not install the replacement (or a logout raced us and the store refused
+ * the commit), so this session really is dead even though the phone number
+ * changed. Initial verification — no active factor yet — replaces nothing and
+ * reports neither.
+ */
 export async function apiConfirmPhone(phoneNumber: string, code: string, currentPassword: string): Promise<{
   success: boolean;
   error?: string;
+  reauthRequired?: boolean;
 }> {
+  // Captured BEFORE the request so a logout that races it is detectable when
+  // the replacement comes back.
+  const generation = useAuthStore.getState().sessionGeneration;
   try {
     const response = await fetchWithAuth('/auth/phone/confirm', {
       method: 'POST',
@@ -2284,7 +2311,12 @@ export async function apiConfirmPhone(phoneNumber: string, code: string, current
       return { success: false, error: extractApiError(data, 'Failed to verify phone') };
     }
 
-    return { success: true };
+    if (data?.sessionReplaced !== true) return { success: true };
+
+    const tokens = data.tokens as Tokens | undefined;
+    const adopted = typeof tokens?.accessToken === 'string'
+      && useAuthStore.getState().commitReissuedSessionIfCurrent(generation, tokens);
+    return { success: true, reauthRequired: !adopted };
   } catch {
     return { success: false, error: 'Network error' };
   }

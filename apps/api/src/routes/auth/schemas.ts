@@ -147,6 +147,8 @@ const stepUpAssertion = z.object({ id: z.string().min(1) }).passthrough();
 // The test stays as the readable statement of intent.
 const STEP_UP_OPERATIONS = [
   'add_factor',
+  'rotate_recovery_codes',
+  'delete_passkey',
   'register_approver_device',
   'agent_rollback',
   'device_maintenance',
@@ -181,18 +183,21 @@ export const mfaStepUpSchema = z.discriminatedUnion('method', [
     code: stepUpSixDigit,
     operation: stepUpOperation,
     resource: stepUpResource.optional(),
+    passkeyId: z.string().uuid().optional(),
   }),
   z.object({
     method: z.literal('sms'),
     code: stepUpSixDigit,
     operation: stepUpOperation,
     resource: stepUpResource.optional(),
+    passkeyId: z.string().uuid().optional(),
   }),
   z.object({
     method: z.literal('passkey'),
     credential: stepUpAssertion,
     operation: stepUpOperation,
     resource: stepUpResource.optional(),
+    passkeyId: z.string().uuid().optional(),
   }),
 ]);
 

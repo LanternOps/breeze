@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import crypto from 'node:crypto';
+import { decodeJwt } from 'jose';
 import {
   __resetPlayIntegrityForTests,
   isPlayIntegrityConfigured,
@@ -199,5 +201,49 @@ describe('parsePlayIntegrityServiceAccount', () => {
 
   it('returns null when the required fields are missing', () => {
     expect(parsePlayIntegrityServiceAccount(JSON.stringify({ project_id: 'x' }))).toBeNull();
+  });
+});
+
+describe('accessToken — service-account JWT-bearer assertion', () => {
+  const ORIGINAL = process.env.PLAY_INTEGRITY_SERVICE_ACCOUNT;
+  const rsa = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const account = {
+    ...SERVICE_ACCOUNT,
+    private_key: rsa.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+  };
+
+  beforeEach(() => {
+    __resetPlayIntegrityForTests();
+    process.env.PLAY_INTEGRITY_SERVICE_ACCOUNT = JSON.stringify(account);
+  });
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.PLAY_INTEGRITY_SERVICE_ACCOUNT;
+    else process.env.PLAY_INTEGRITY_SERVICE_ACCOUNT = ORIGINAL;
+    __resetPlayIntegrityForTests();
+    vi.unstubAllGlobals();
+  });
+
+  it('sends a plain service-account assertion: iss/aud/scope set, NO sub (delegation-only claim)', async () => {
+    // Exercised through the REAL google-managed decoder (no decodeIntegrityToken
+    // seam) so the assertion builder is actually invoked. The exchange is cut
+    // short after the token request; that is enough to capture the JWT.
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 599 });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await verifyPlayIntegrityToken('opaque-token', {
+      packageName: 'com.breeze.rmm',
+      expectedRequestHash: 'h',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, { body: URLSearchParams }];
+    expect(url).toBe('https://oauth2.googleapis.com/token');
+    expect(init.body.get('grant_type')).toBe('urn:ietf:params:oauth:grant-type:jwt-bearer');
+    const claims = decodeJwt(init.body.get('assertion')!);
+    expect(claims.iss).toBe(account.client_email);
+    expect(claims.aud).toBe('https://oauth2.googleapis.com/token');
+    expect(claims.scope).toBe('https://www.googleapis.com/auth/playintegrity');
+    expect(claims).not.toHaveProperty('sub');
   });
 });

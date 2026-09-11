@@ -134,6 +134,15 @@ describe('agent rollback RBAC', () => {
   });
 });
 
+describe('billing-role device isolation', () => {
+  it.each(['Partner Billing', 'Partner Billing Viewer'])('%s does not grant devices:read', (roleName) => {
+    const role = SYSTEM_ROLES.find((candidate) => candidate.name === roleName);
+
+    expect(role).toBeDefined();
+    expect(role?.permissions).not.toContain('devices:read');
+  });
+});
+
 describe('ticket mailbox permissions', () => {
   it('registers and seeds the ticket mailbox permissions', () => {
     expect(PERMISSION_GRANTS.TICKET_MAILBOX_READ).toEqual({ resource: 'ticket_mailbox', action: 'read' });
@@ -381,5 +390,164 @@ describe('system role MFA posture (RMM-QA-164)', () => {
 
   it('forces MFA for Partner Admin and for no other system role (D9: Org Admin stays MSP opt-in)', () => {
     expect(SYSTEM_ROLES.filter((role) => role.forceMfa).map((role) => role.name)).toEqual(['Partner Admin']);
+  });
+});
+
+describe('PAM dedicated permissions (pam:approve / pam:manage_policy)', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((r) => r.name === name);
+
+  it('defines pam:approve and pam:manage_policy in DEFAULT_PERMISSIONS', () => {
+    expect(
+      DEFAULT_PERMISSIONS.some((p) => p.resource === 'pam' && p.action === 'approve'),
+    ).toBe(true);
+    expect(
+      DEFAULT_PERMISSIONS.some((p) => p.resource === 'pam' && p.action === 'manage_policy'),
+    ).toBe(true);
+  });
+
+  it('registers pam:approve and pam:manage_policy in the shared PERMISSION_GRANTS registry', () => {
+    expect(PERMISSION_GRANTS.PAM_APPROVE).toEqual({ resource: 'pam', action: 'approve' });
+    expect(PERMISSION_GRANTS.PAM_MANAGE_POLICY).toEqual({ resource: 'pam', action: 'manage_policy' });
+  });
+
+  it('grants BOTH pam:approve and pam:manage_policy to Org Admin', () => {
+    expect(byName('Org Admin')?.permissions).toContain('pam:approve');
+    expect(byName('Org Admin')?.permissions).toContain('pam:manage_policy');
+  });
+
+  it('does NOT grant pam:approve or pam:manage_policy to Org Technician (holds devices:execute/write, but PAM authority is dedicated)', () => {
+    const perms = byName('Org Technician')?.permissions ?? [];
+    expect(perms).not.toContain('pam:approve');
+    expect(perms).not.toContain('pam:manage_policy');
+    // Sanity: the whole point is that devices:execute/write is NOT sufficient.
+    expect(perms).toContain('devices:execute');
+    expect(perms).toContain('devices:write');
+  });
+
+  it('does NOT grant PAM permissions to any other role (Partner Technician/Viewer/Billing, Org Viewer, approver roles)', () => {
+    for (const role of SYSTEM_ROLES.filter((r) => !['Partner Admin', 'Org Admin'].includes(r.name))) {
+      expect(role.permissions, `role "${role.name}"`).not.toContain('pam:approve');
+      expect(role.permissions, `role "${role.name}"`).not.toContain('pam:manage_policy');
+    }
+  });
+
+  it('Partner Admin covers PAM via the wildcard grant (does not need a redundant literal entry)', () => {
+    expect(byName('Partner Admin')?.permissions).toContain('*:*');
+  });
+});
+
+describe('Accounting dedicated permissions (accounting:read / accounting:manage)', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((r) => r.name === name);
+
+  it('defines accounting:read and accounting:manage in DEFAULT_PERMISSIONS', () => {
+    expect(
+      DEFAULT_PERMISSIONS.some((p) => p.resource === 'accounting' && p.action === 'read'),
+    ).toBe(true);
+    expect(
+      DEFAULT_PERMISSIONS.some((p) => p.resource === 'accounting' && p.action === 'manage'),
+    ).toBe(true);
+  });
+
+  it('registers accounting:read and accounting:manage in the shared PERMISSION_GRANTS registry', () => {
+    expect(PERMISSION_GRANTS.ACCOUNTING_READ).toEqual({ resource: 'accounting', action: 'read' });
+    expect(PERMISSION_GRANTS.ACCOUNTING_MANAGE).toEqual({ resource: 'accounting', action: 'manage' });
+  });
+
+  it('grants BOTH accounting permissions to Org Admin (the same built-in role the PAM 150200 migration granted)', () => {
+    expect(byName('Org Admin')?.permissions).toContain('accounting:read');
+    expect(byName('Org Admin')?.permissions).toContain('accounting:manage');
+  });
+
+  it('does NOT grant either accounting permission to any other built-in role', () => {
+    // SEC-2026-09-05-057: the finding is precisely that full-partner low-role
+    // members reached the shared QuickBooks realm. Partner Technician /
+    // Partner Billing must NOT acquire that authority automatically.
+    for (const role of SYSTEM_ROLES.filter((r) => !['Partner Admin', 'Org Admin'].includes(r.name))) {
+      expect(role.permissions, `role "${role.name}"`).not.toContain('accounting:read');
+      expect(role.permissions, `role "${role.name}"`).not.toContain('accounting:manage');
+    }
+  });
+
+  it('Partner Admin covers accounting via the wildcard grant (does not need a redundant literal entry)', () => {
+    expect(byName('Partner Admin')?.permissions).toContain('*:*');
+  });
+});
+
+describe('permission-registry consistency: every SYSTEM_ROLES literal is seeded (§6G)', () => {
+  // seedRoles() drops any permission literal it can't resolve to a seeded
+  // permissions row (a console.warn + continue) — a role definition can
+  // reference a resource:action that was never added to DEFAULT_PERMISSIONS
+  // and the grant silently never lands. This is the same invariant as the
+  // "SYSTEM_ROLES ⊆ DEFAULT_PERMISSIONS" describe block above, restated as one
+  // assertion over the full closed set so a future permission addition can't
+  // slip past by only updating one of the two lists.
+  it('every non-wildcard permission literal referenced by any SYSTEM_ROLES role exists in DEFAULT_PERMISSIONS', () => {
+    const seededKeys = new Set(DEFAULT_PERMISSIONS.map((p) => `${p.resource}:${p.action}`));
+    const missing: string[] = [];
+    for (const role of SYSTEM_ROLES) {
+      for (const permKey of role.permissions) {
+        if (permKey === '*:*') continue;
+        if (!seededKeys.has(permKey)) missing.push(`${role.name}: ${permKey}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+});
+
+describe('Workspace extension permissions', () => {
+  const workspaceKeys = ['workspace:read', 'workspace:write', 'workspace:credentials', 'workspace:execute'];
+
+  it('seeds every closed Workspace capability so custom roles can receive it', () => {
+    const seeded = new Set(DEFAULT_PERMISSIONS.map((permission) =>
+      `${permission.resource}:${permission.action}`));
+    for (const permission of workspaceKeys) expect(seeded.has(permission)).toBe(true);
+  });
+
+  it('does not grandfather accidental Workspace authority to non-admin roles', () => {
+    for (const role of SYSTEM_ROLES) {
+      if (role.name === 'Partner Admin' || role.name === 'Org Admin') continue;
+      for (const permission of workspaceKeys) {
+        expect(role.permissions, `${role.name} received ${permission}`).not.toContain(permission);
+      }
+    }
+    expect(SYSTEM_ROLES.find((role) => role.name === 'Partner Admin')?.permissions)
+      .toContain('*:*');
+  });
+});
+
+describe('Workspace and connected-app permission defaults on upgrade (fail-closed except Org Admin)', () => {
+  // Org Admin is the existing full-access-within-organization role. When the
+  // workspace:* and connected_apps:* permissions were introduced, they were
+  // granted to no built-in role except Partner Admin (via *:*) — silently
+  // dropping Workspace and connected-app access for every pre-existing Org
+  // Admin on upgrade. Org Admin must carry every new key explicitly; every
+  // other non-wildcard role stays fail-closed.
+  const newKeys = [
+    'workspace:read', 'workspace:write', 'workspace:credentials', 'workspace:execute',
+    'connected_apps:read', 'connected_apps:manage',
+  ];
+  const byName = (name: string) => SYSTEM_ROLES.find((role) => role.name === name);
+
+  it('every new key is seeded in DEFAULT_PERMISSIONS', () => {
+    const seeded = new Set(DEFAULT_PERMISSIONS.map((permission) =>
+      `${permission.resource}:${permission.action}`));
+    for (const key of newKeys) expect(seeded.has(key)).toBe(true);
+  });
+
+  it('grants Org Admin every new workspace:* and connected_apps:* permission', () => {
+    const orgAdminPermissions = byName('Org Admin')?.permissions ?? [];
+    for (const key of newKeys) {
+      expect(orgAdminPermissions, `Org Admin missing ${key}`).toContain(key);
+    }
+  });
+
+  it('does not grant the new permissions to Org Technician, Org Viewer, or partner non-admin roles', () => {
+    const roleNames = ['Org Technician', 'Org Viewer', 'Partner Technician', 'Partner Viewer', 'Partner Billing', 'Partner Billing Viewer'];
+    for (const roleName of roleNames) {
+      const permissions = byName(roleName)?.permissions ?? [];
+      for (const key of newKeys) {
+        expect(permissions, `${roleName} unexpectedly received ${key}`).not.toContain(key);
+      }
+    }
   });
 });
