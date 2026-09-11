@@ -1664,13 +1664,14 @@ export class StreamingSessionManager {
 
       if (session.budgetReservationId) {
         try {
-          await withDbAccessContext(
-            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-            () => markAiBudgetReservationIndeterminate({
-              orgId: session.orgId,
-              reservationId: session.budgetReservationId!,
-            }),
-          );
+          // N12: no context wrap. markAiBudgetReservationIndeterminate opens its
+          // own short SYSTEM transaction (runOutsideDbContext +
+          // withSystemDbAccessContext), so an org context opened here is exited
+          // immediately and only costs a pooled connection for the round trip.
+          await markAiBudgetReservationIndeterminate({
+            orgId: session.orgId,
+            reservationId: session.budgetReservationId,
+          });
         } catch (err) {
           captureException(err);
           console.error('[StreamingSessionManager] Failed to retain indeterminate budget reservation:', err);

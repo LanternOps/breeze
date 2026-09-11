@@ -68,7 +68,11 @@ vi.mock('../../services/officeAddin/aiEmailDraft', async (importOriginal) => ({
 
 import { officeAddinTicketRoutes } from '../../routes/officeAddin/tickets';
 
-const runDb = it.runIf(!!process.env.DATABASE_URL);
+// N14: a bare `it`. `it.runIf(!!process.env.DATABASE_URL)` silently SKIPPED the
+// whole file whenever the variable was unset, which in the integration project
+// means a green run that proved nothing. The integration config's global setup
+// already fails loudly without a database, so there is nothing to guard.
+const runDb = it;
 
 function app() {
   const instance = new Hono();

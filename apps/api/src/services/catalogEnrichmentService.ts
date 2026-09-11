@@ -9,7 +9,7 @@ import {
   recordUsage,
 } from './aiCostTracker';
 import { captureException, captureMessage } from './sentry';
-import { assertOutsideHeldDbContext } from '../db';
+import { assertOutsideHeldDbContext, getCurrentDbAccessContext } from '../db';
 import { getAnthropicClientForPartner, LlmUnavailableError, resolveWireModel } from './llm/llmConfigResolver';
 import {
   enrichDraftSchema,
@@ -31,7 +31,13 @@ import {
 // NB: no AI_FACT_DRIFT — a numeric drift is no longer a hard error; polish
 // returns the text with an advisory (non-null factChanges) instead (see
 // polishCatalogText).
-export type EnrichmentErrorCode = 'AI_LIMIT' | 'AI_PARSE' | 'AI_TRUNCATED' | 'AI_UNAVAILABLE';
+export type EnrichmentErrorCode =
+  | 'AI_LIMIT'
+  | 'AI_PARSE'
+  | 'AI_TRUNCATED'
+  | 'AI_UNAVAILABLE'
+  /** Refused: no organization to admit, budget, or bill the spend against. */
+  | 'AI_ORG_REQUIRED';
 
 export class EnrichmentError extends Error {
   code: EnrichmentErrorCode;
@@ -42,6 +48,35 @@ export class EnrichmentError extends Error {
     this.code = code;
     this.status = status;
   }
+}
+
+/**
+ * Refuse catalog AI work that has no organization to charge (review S6).
+ *
+ * Both catalog producers used to fall through to a per-user rate limit and a
+ * `console.warn` when `actor.orgId` was null — and then dispatch anyway, with
+ * paid Anthropic web-search turns on the platform key. A rate limit bounds the
+ * RATE of unbudgeted spend; it does not make the spend accounted. No
+ * reservation is taken on that path either, so nothing else in SEC-142's fence
+ * applies to it.
+ *
+ * Fail closed, with one deliberate exemption: a caller already running in the
+ * SYSTEM db access context is our own scheduled/platform code, not a tenant
+ * request, and platform-funded spend on that path is the separate org-less
+ * operational-spend question (a platform quota decision, tracked as a
+ * follow-up) rather than something this function can adjudicate. Everything
+ * else — every partner-scoped interactive caller — is refused before the
+ * provider client is resolved, so no token is spent deciding.
+ */
+function assertBillableOrgContext(actor: EnrichmentActor, surface: string): void {
+  if (actor.orgId) return;
+  if (getCurrentDbAccessContext()?.scope === 'system') return;
+  console.warn(`[${surface}] refused: no organization context to budget or bill AI spend against`);
+  throw new EnrichmentError(
+    'Select an organization before using catalog AI — spend must be budgeted and billed to one.',
+    'AI_ORG_REQUIRED',
+    400,
+  );
 }
 
 class EnrichmentBudgetStopError extends EnrichmentError {
@@ -213,6 +248,9 @@ function lastTextBlock(content: Array<{ type: string; text?: string }>): string 
 
 export const aiEnrichmentProvider: EnrichmentProvider = {
   async enrich(query, hint, actor, styleOverride) {
+    // BEFORE provider resolution: an org-less caller must not even reach the
+    // point where a key is chosen (S6).
+    assertBillableOrgContext(actor, 'catalog-enrich');
     const { client, resolved } = await resolveEnrichmentClient(actor.partnerId, actor.orgId);
     if (actor.orgId) {
       const rate = await checkAiRateLimit(actor.userId, actor.orgId);
@@ -223,7 +261,10 @@ export const aiEnrichmentProvider: EnrichmentProvider = {
       );
       if (budget) throw new EnrichmentError(budget, 'AI_LIMIT', 429);
     } else {
-      console.warn('[catalog-enrich] no org context — skipping budget/rate checks');
+      // Reachable only from a SYSTEM-scope caller (assertBillableOrgContext
+      // above refuses every other org-less path). Platform-funded operational
+      // spend with no billable org is a separate, tracked decision.
+      console.warn('[catalog-enrich] system-scope call with no org — spend is platform-funded and unbudgeted');
     }
 
     // `model` stays the platform-logical id (budgets, metering, provenance);
@@ -244,15 +285,16 @@ export const aiEnrichmentProvider: EnrichmentProvider = {
     let reservationId: string | undefined;
     let reservedCostCents: number | undefined;
     if (actor.orgId) {
+      // S8: no stable request identity on this surface (no client-supplied
+      // request id), so the key is random per dispatch — the unique index is a
+      // structural guarantee, not a replay guard. Contrast
+      // `ai-agent-run:${run.id}` in services/aiAgents/runLoop.ts, which has one.
       const reservation = await reserveAiBudget({
         orgId: actor.orgId,
         idempotencyKey: `catalog-enrich:${crypto.randomUUID()}`,
         billingSource,
       });
       if (reservation.kind === 'denied') throw new EnrichmentError(reservation.message, 'AI_LIMIT', 429);
-      if (reservation.status !== 'active') {
-        throw new EnrichmentError('Unable to verify AI budget admission', 'AI_UNAVAILABLE', 503);
-      }
       reservationId = reservation.reservationId;
       reservedCostCents = reservation.kind === 'reserved' ? reservation.reservedCostCents : undefined;
     }
@@ -704,6 +746,8 @@ export async function polishCatalogText(
 ): Promise<PolishTextResponse> {
   const wantName = Boolean(input.name?.trim());
   const wantDescription = Boolean(input.description?.trim());
+  // BEFORE provider resolution (S6) — see assertBillableOrgContext.
+  assertBillableOrgContext(actor, 'catalog-polish');
   const { client, resolved } = await resolveEnrichmentClient(actor.partnerId, actor.orgId);
 
   if (actor.orgId) {
@@ -715,12 +759,13 @@ export async function polishCatalogText(
     );
     if (budget) throw new EnrichmentError(budget, 'AI_LIMIT', 429);
   } else {
-    // No org to bill (e.g. partner-level catalog). We can't enforce an org budget,
-    // but this endpoint is scope-gated (no write permission), so still rate-limit
-    // per user to bound unbudgeted AI spend from a read-only caller.
+    // Reachable only from a SYSTEM-scope caller (assertBillableOrgContext above
+    // refuses every other org-less path). The per-user rate limit stays as a
+    // second bound on that platform-funded path; it is NOT what makes the spend
+    // acceptable, which is why the refusal now happens earlier.
     const userRate = await checkUserAiRateLimit(actor.userId);
     if (userRate) throw new EnrichmentError(userRate, 'AI_LIMIT', 429);
-    console.warn('[catalog-polish] no org context — per-user rate limit only, spend not recorded');
+    console.warn('[catalog-polish] system-scope call with no org — spend is platform-funded and unbudgeted');
   }
 
   // `model` stays the platform-logical id (budgets, metering, provenance);
@@ -737,15 +782,16 @@ export async function polishCatalogText(
   let reservationId: string | undefined;
   let reservedCostCents: number | undefined;
   if (actor.orgId) {
+    // S8: no stable request identity on this surface (no client-supplied
+    // request id), so the key is random per dispatch — the unique index is a
+    // structural guarantee, not a replay guard. Contrast
+    // `ai-agent-run:${run.id}` in services/aiAgents/runLoop.ts, which has one.
     const reservation = await reserveAiBudget({
       orgId: actor.orgId,
       idempotencyKey: `catalog-polish:${crypto.randomUUID()}`,
       billingSource,
     });
     if (reservation.kind === 'denied') throw new EnrichmentError(reservation.message, 'AI_LIMIT', 429);
-    if (reservation.status !== 'active') {
-      throw new EnrichmentError('Unable to verify AI budget admission', 'AI_UNAVAILABLE', 503);
-    }
     reservationId = reservation.reservationId;
     reservedCostCents = reservation.kind === 'reserved' ? reservation.reservedCostCents : undefined;
   }

@@ -14,6 +14,7 @@ import {
   type CatalogPricingSnapshot,
 } from '../../services/aiCostTracker';
 import {
+  isAiBudgetLockTimeout,
   markAiBudgetReservationIndeterminate,
   releaseUnusedAiBudgetReservation,
   reserveAiBudget,
@@ -429,16 +430,26 @@ officeAddinTicketRoutes.post(
     // and immediately BEFORE dispatch, so no sibling call can be admitted
     // against the same remaining cap. The provider gets a token ceiling derived
     // from what was actually reserved.
-    const reservation = await reserveAiBudget({
-      orgId: input.orgId,
-      idempotencyKey: `office-email-draft:${crypto.randomUUID()}`,
-      billingSource,
-    });
+    // S8: no stable request identity reaches this surface — the client sends
+    // no message/draft id — so the key is random per dispatch. The unique
+    // (org_id, idempotency_key) index is therefore a structural guarantee
+    // that two dispatches never share a reservation row, NOT a replay guard.
+    // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
+    // in services/aiAgents/runLoop.ts. Give this one a stable key only when
+    // the request schema starts carrying a client-generated id.
+    let reservation;
+    try {
+      reservation = await reserveAiBudget({
+        orgId: input.orgId,
+        idempotencyKey: `office-email-draft:${crypto.randomUUID()}`,
+        billingSource,
+      });
+    } catch (err) {
+      if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
+      throw err;
+    }
     if (reservation.kind === 'denied') {
       return c.json({ error: 'ai_budget_exceeded' }, 429);
-    }
-    if (reservation.status !== 'active') {
-      return c.json({ error: 'ai_unavailable' }, 503);
     }
     const reservationId = reservation.reservationId;
 

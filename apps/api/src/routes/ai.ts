@@ -68,6 +68,7 @@ import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
 import {
+  isAiBudgetLockTimeout,
   markAiBudgetReservationIndeterminate,
   releaseUnusedAiBudgetReservation,
   reserveAiBudget,
@@ -456,6 +457,13 @@ aiRoutes.post(
       // has no verified mapping for this session's model.
       const wire = resolveWireModel(resolved, model);
       catalogPricing = wire.catalogPricing;
+      // S8: no stable request identity reaches this surface — the client sends
+      // no message/draft id — so the key is random per dispatch. The unique
+      // (org_id, idempotency_key) index is therefore a structural guarantee
+      // that two dispatches never share a reservation row, NOT a replay guard.
+      // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
+      // in services/aiAgents/runLoop.ts. Give this one a stable key only when
+      // the request schema starts carrying a client-generated id.
       const reservation = await reserveAiBudget({
         orgId: session.orgId,
         idempotencyKey: `ticket-draft:${sessionId}:${crypto.randomUUID()}`,
@@ -463,9 +471,6 @@ aiRoutes.post(
         sessionId,
       });
       if (reservation.kind === 'denied') return c.json({ error: reservation.message }, 429);
-      if (reservation.status !== 'active') {
-        return c.json({ error: 'Unable to verify spending budget. Please try again.' }, 503);
-      }
       reservationId = reservation.reservationId;
       draft = await draftTicketFromTranscript({
         messages: messages.map((m) => ({ role: m.role, content: m.content })),
@@ -664,12 +669,25 @@ aiRoutes.post(
     }
     if (useOpenAICompatibleProvider) {
       const billingSource = resolved.source === 'partner' ? 'partner_key' : 'platform';
-      const reservation = await reserveAiBudget({
-        orgId: dbSession.orgId,
-        billingSource,
-        sessionId,
-        idempotencyKey: `chat:${sessionId}:${crypto.randomUUID()}`,
-      });
+      // S8: no stable request identity reaches this surface — the client sends
+      // no message/draft id — so the key is random per dispatch. The unique
+      // (org_id, idempotency_key) index is therefore a structural guarantee
+      // that two dispatches never share a reservation row, NOT a replay guard.
+      // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
+      // in services/aiAgents/runLoop.ts. Give this one a stable key only when
+      // the request schema starts carrying a client-generated id.
+      let reservation;
+      try {
+        reservation = await reserveAiBudget({
+          orgId: dbSession.orgId,
+          billingSource,
+          sessionId,
+          idempotencyKey: `chat:${sessionId}:${crypto.randomUUID()}`,
+        });
+      } catch (err) {
+        if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
+        throw err;
+      }
       if (reservation.kind === 'denied') {
         return c.json({ error: reservation.message }, 402);
       }
@@ -775,12 +793,25 @@ aiRoutes.post(
     }
 
     const billingSource = resolved.source === 'partner' ? 'partner_key' : 'platform';
-    const reservation = await reserveAiBudget({
-      orgId: dbSession.orgId,
-      billingSource,
-      sessionId,
-      idempotencyKey: `chat:${sessionId}:${crypto.randomUUID()}`,
-    });
+    // S8: no stable request identity reaches this surface — the client sends
+    // no message/draft id — so the key is random per dispatch. The unique
+    // (org_id, idempotency_key) index is therefore a structural guarantee
+    // that two dispatches never share a reservation row, NOT a replay guard.
+    // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
+    // in services/aiAgents/runLoop.ts. Give this one a stable key only when
+    // the request schema starts carrying a client-generated id.
+    let reservation;
+    try {
+      reservation = await reserveAiBudget({
+        orgId: dbSession.orgId,
+        billingSource,
+        sessionId,
+        idempotencyKey: `chat:${sessionId}:${crypto.randomUUID()}`,
+      });
+    } catch (err) {
+      if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
+      throw err;
+    }
     if (reservation.kind === 'denied') {
       return c.json({ error: reservation.message }, 402);
     }

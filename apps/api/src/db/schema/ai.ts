@@ -20,7 +20,7 @@ export const aiPlanStatusEnum = pgEnum('ai_plan_status', [
   'pending', 'approved', 'rejected', 'executing', 'completed', 'aborted',
 ]);
 export const aiBudgetReservationStatusEnum = pgEnum('ai_budget_reservation_status', [
-  'active', 'settled', 'indeterminate', 'released',
+  'active', 'settled', 'indeterminate', 'released', 'expired',
 ]);
 
 // ============================================
@@ -212,11 +212,23 @@ export const aiBudgetReservations = pgTable('ai_budget_reservations', {
   indeterminateAt: timestamp('indeterminate_at', { withTimezone: true }),
   settledAt: timestamp('settled_at', { withTimezone: true }),
   releasedAt: timestamp('released_at', { withTimezone: true }),
+  // A reservation holds the org's ENTIRE remaining cap, so an unsettled one is
+  // a denial of the tenant's own budget. `expires_at` bounds that: admission
+  // ignores rows past it, and `jobs/aiBudgetReservationSweep.ts` relabels them.
+  // Mirrors the column's SQL DEFAULT so an insert that omits it still gets a
+  // bounded reservation rather than failing (or, worse, an immortal one).
+  expiresAt: timestamp('expires_at', { withTimezone: true })
+    .notNull()
+    .default(sql`now() + interval '30 minutes'`),
+  expiredAt: timestamp('expired_at', { withTimezone: true }),
+  expiryReason: varchar('expiry_reason', { length: 32 }),
 }, (table) => ({
   orgIdempotencyIdx: uniqueIndex('ai_budget_reservations_org_idempotency_uidx')
     .on(table.orgId, table.idempotencyKey),
   activePeriodIdx: index('ai_budget_reservations_active_period_idx')
     .on(table.orgId, table.dailyPeriodKey, table.monthlyPeriodKey, table.status),
+  // Partial index created via SQL migration
+  // (ai_budget_reservations_expiry_sweep_idx, WHERE status IN ('active','indeterminate')).
   // Composite (session_id, org_id) FK is SQL-only because Drizzle cannot
   // express PostgreSQL's column-specific ON DELETE SET NULL (session_id).
 }));

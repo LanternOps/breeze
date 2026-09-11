@@ -204,6 +204,10 @@ export function buildExtensionAiContext(): ExtensionAiContext {
         });
       }
 
+      // S8: no stable request identity on this surface (no client-supplied
+      // request id), so the key is random per dispatch — the unique index is a
+      // structural guarantee, not a replay guard. Contrast
+      // `ai-agent-run:${run.id}` in services/aiAgents/runLoop.ts, which has one.
       const reservation = await reserveAiBudget({
         orgId: input.orgId,
         idempotencyKey: `extension-ai:${crypto.randomUUID()}`,
@@ -213,9 +217,6 @@ export function buildExtensionAiContext(): ExtensionAiContext {
         throw new ExtensionAiError('budget_exceeded', reservation.message, {
           permanent: reservation.reason === 'ai_disabled',
         });
-      }
-      if (reservation.status !== 'active') {
-        throw new ExtensionAiError('ai_unavailable', 'AI budget admission could not be verified.');
       }
       const reservationId = reservation.reservationId;
       const maxTokens = maxOutputTokensForAiBudget({

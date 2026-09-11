@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, calculateCostCents, calculateCatalogCostCents, captureException, captureMessage, getAnthropicClientForPartner, resolveWireModel, reserveAiBudget, markAiBudgetReservationIndeterminate, releaseUnusedAiBudgetReservation } = vi.hoisted(() => ({
+const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, calculateCostCents, calculateCatalogCostCents, captureException, captureMessage, getAnthropicClientForPartner, resolveWireModel, reserveAiBudget, markAiBudgetReservationIndeterminate, releaseUnusedAiBudgetReservation, getCurrentDbAccessContext } = vi.hoisted(() => ({
   create: vi.fn(),
   checkBudget: vi.fn(async (): Promise<string | null> => null),
   checkAiRateLimit: vi.fn(async (): Promise<string | null> => null),
@@ -15,6 +15,7 @@ const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage
   reserveAiBudget: vi.fn(),
   markAiBudgetReservationIndeterminate: vi.fn(),
   releaseUnusedAiBudgetReservation: vi.fn(),
+  getCurrentDbAccessContext: vi.fn<() => { scope: string } | undefined>(() => undefined),
 }));
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class { messages = { create }; },
@@ -32,6 +33,13 @@ vi.mock('./aiBudgetReservations', async (importOriginal) => ({
   releaseUnusedAiBudgetReservation,
 }));
 vi.mock('./sentry', () => ({ captureException, captureMessage }));
+// Only this ONE export is stubbed; everything else in ../db stays real (the
+// service also imports assertOutsideHeldDbContext from there). It decides the
+// S6 system-scope exemption, and a unit test has no ambient context of its own.
+vi.mock('../db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../db')>()),
+  getCurrentDbAccessContext,
+}));
 vi.mock('./llm/llmConfigResolver', () => ({
   getAnthropicClientForPartner,
   resolveWireModel,
@@ -398,13 +406,30 @@ describe('enrichCatalogItem', () => {
     expect(res.draft.description).toBeNull();
   });
 
-  it('skips org-scoped guardrails and cost when orgId is null', async () => {
+  // S6: this used to assert that an org-less caller DISPATCHED with the
+  // org-scoped guardrails simply skipped. That is the finding, not the
+  // contract — paid web-search turns on the platform key with no budget, no
+  // reservation and no usage row. The behaviour is now a refusal; the
+  // system-scope exemption below is the only way through.
+  it('refuses an org-less caller outright rather than dispatching unbudgeted', async () => {
+    await expect(enrichCatalogItem('x', undefined, { userId: 'u1', orgId: null, partnerId: 'p1' }))
+      .rejects.toMatchObject({ code: 'AI_ORG_REQUIRED', status: 400 });
+    expect(create).not.toHaveBeenCalled();
+    expect(checkBudget).not.toHaveBeenCalled();
+    expect(recordUsage).not.toHaveBeenCalled();
+  });
+
+  it('still allows an org-less call from our own SYSTEM-scoped code', async () => {
+    getCurrentDbAccessContext.mockReturnValueOnce({ scope: 'system' });
     create.mockResolvedValueOnce(aiMessage({
       name: 'N', description: null, itemType: 'service',
       unitOfMeasure: 'each', taxable: true, taxCategory: null,
       priceLow: null, priceHigh: null, currency: null, confidence: 0.5, notes: '',
     }));
     await enrichCatalogItem('x', undefined, { userId: 'u1', orgId: null, partnerId: 'p1' });
+    // Platform-funded operational spend: still unbudgeted, deliberately, and
+    // tracked separately as an org-less quota decision.
+    expect(create).toHaveBeenCalled();
     expect(checkBudget).not.toHaveBeenCalled();
     expect(recordUsage).not.toHaveBeenCalled();
   });
@@ -675,15 +700,18 @@ describe('polishCatalogText', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it('falls back to a per-user rate limit (no org budget/recordUsage) when orgId is null', async () => {
-    create.mockResolvedValueOnce(aiMessage({ name: 'Clean Name', description: null }));
-    await polishCatalogText({ name: 'clean name' }, { userId: 'u1', orgId: null, partnerId: 'p1' });
-    expect(checkUserAiRateLimit).toHaveBeenCalledWith('u1');
+  // S6: a per-user rate limit bounds the RATE of unbudgeted spend; it never
+  // made the spend accounted. An org-less tenant caller is now refused.
+  it('refuses an org-less caller instead of falling back to a per-user rate limit', async () => {
+    await expect(polishCatalogText({ name: 'clean name' }, { userId: 'u1', orgId: null, partnerId: 'p1' }))
+      .rejects.toMatchObject({ code: 'AI_ORG_REQUIRED', status: 400 });
+    expect(create).not.toHaveBeenCalled();
     expect(checkBudget).not.toHaveBeenCalled();
     expect(recordUsage).not.toHaveBeenCalled();
   });
 
-  it('rejects with AI_LIMIT when the no-org per-user rate limit is exceeded', async () => {
+  it('keeps the per-user rate limit on the SYSTEM-scoped org-less path', async () => {
+    getCurrentDbAccessContext.mockReturnValueOnce({ scope: 'system' });
     checkUserAiRateLimit.mockResolvedValueOnce('Rate limit exceeded');
     await expect(polishCatalogText({ name: 'x' }, { userId: 'u1', orgId: null, partnerId: 'p1' }))
       .rejects.toMatchObject({ code: 'AI_LIMIT', status: 429 });
@@ -821,5 +849,50 @@ describe('polishCatalogText', () => {
       undefined,
       '55555555-5555-4555-8555-555555555555',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review S6 — org-less catalog AI spend fails closed
+// ---------------------------------------------------------------------------
+
+describe('org-less catalog AI is refused before any provider work', () => {
+  const orglessActor = { userId: 'u1', orgId: null as string | null, partnerId: 'p1' };
+
+  beforeEach(() => {
+    create.mockReset();
+    reserveAiBudget.mockReset();
+    checkUserAiRateLimit.mockClear();
+    getAnthropicClientForPartner.mockClear();
+  });
+
+  it('refuses enrichCatalogItem with no organization, before resolving a provider client', async () => {
+    const thrown = await enrichCatalogItem('a widget', undefined, orglessActor)
+      .catch((err: unknown) => err);
+
+    expect(thrown).toBeInstanceOf(EnrichmentError);
+    expect(thrown).toMatchObject({ code: 'AI_ORG_REQUIRED', status: 400 });
+    // Fail CLOSED, and early: no key chosen, no reservation, no model call. The
+    // previous behaviour was a per-user rate limit plus a console warning, then
+    // a dispatch — paid web-search turns on the platform key that no ledger
+    // ever saw.
+    expect(getAnthropicClientForPartner).not.toHaveBeenCalled();
+    expect(reserveAiBudget).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    expect(recordUsage).not.toHaveBeenCalled();
+  });
+
+  it('refuses polishCatalogText with no organization, before resolving a provider client', async () => {
+    const thrown = await polishCatalogText({ name: 'a widget' }, orglessActor)
+      .catch((err: unknown) => err);
+
+    expect(thrown).toBeInstanceOf(EnrichmentError);
+    expect(thrown).toMatchObject({ code: 'AI_ORG_REQUIRED', status: 400 });
+    expect(getAnthropicClientForPartner).not.toHaveBeenCalled();
+    expect(reserveAiBudget).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    // The per-user rate limit is no longer what stands between an org-less
+    // caller and the provider, so it is not even consulted.
+    expect(checkUserAiRateLimit).not.toHaveBeenCalled();
   });
 });

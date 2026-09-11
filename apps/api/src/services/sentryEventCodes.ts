@@ -72,6 +72,15 @@ export const SENTRY_EVENT_CODES = [
   'cve_feed_high_skip_rate',
   /** The FX provider returned rows the sync could not use. */
   'exchange_rate_rows_rejected',
+  /**
+   * One or more durable AI budget reservations (SEC-142/143) reached their TTL
+   * without settling, so the expiry sweep reclaimed the capacity they were
+   * holding. A reservation takes the organization's ENTIRE remaining cap, so
+   * each of these is a window in which that tenant could not use AI at all —
+   * either dispatches are dying before they settle (`active_ttl`) or provider
+   * outcomes stayed unknown for a full day (`indeterminate_ttl`).
+   */
+  'ai_budget_reservation_expired',
 
   // --- pam ---------------------------------------------------------------
   /**

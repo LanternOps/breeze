@@ -1552,6 +1552,9 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     onlyTools ? { onlyTools } : undefined);
 
   const prompt = promptContext(ctx, effective);
+  // S8: the ONE surface with a genuinely stable request identity — the agent
+  // run's own id. Re-driving a run therefore rejoins its existing reservation
+  // instead of taking a second hold on the org's cap.
   const reservation = await reserveAiBudget({
     orgId: run.orgId,
     idempotencyKey: `ai-agent-run:${run.id}`,
@@ -1559,9 +1562,6 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   });
   if (reservation.kind === 'denied') {
     throw new AgentRunError('org_budget_exceeded', reservation.message);
-  }
-  if (reservation.status !== 'active') {
-    throw new AgentRunError('budget_admission_unavailable', 'AI budget admission could not be verified');
   }
   const reservationId = reservation.reservationId;
   const maxBudgetCents = reservation.kind === 'reserved'

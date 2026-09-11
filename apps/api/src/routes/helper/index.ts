@@ -38,6 +38,7 @@ import type { ActiveSession } from '../../services/streamingSessionManager';
 import { LlmUnavailableError, resolveLlmConfig, type UsableLlmConfig } from '../../services/llm/llmConfigResolver';
 import { captureException } from '../../services/sentry';
 import {
+  isAiBudgetLockTimeout,
   releaseUnusedAiBudgetReservation,
   reserveAiBudget,
 } from '../../services/aiBudgetReservations';
@@ -311,12 +312,25 @@ helperRoutes.post(
     }
     if (streamingSessionManager.get(sessionId)) streamingSessionManager.remove(sessionId);
 
-    const reservation = await reserveAiBudget({
-      orgId: dbSession.orgId,
-      billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
-      sessionId,
-      idempotencyKey: `helper-chat:${sessionId}:${crypto.randomUUID()}`,
-    });
+    // S8: no stable request identity reaches this surface — the client sends
+    // no message/draft id — so the key is random per dispatch. The unique
+    // (org_id, idempotency_key) index is therefore a structural guarantee
+    // that two dispatches never share a reservation row, NOT a replay guard.
+    // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
+    // in services/aiAgents/runLoop.ts. Give this one a stable key only when
+    // the request schema starts carrying a client-generated id.
+    let reservation;
+    try {
+      reservation = await reserveAiBudget({
+        orgId: dbSession.orgId,
+        billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
+        sessionId,
+        idempotencyKey: `helper-chat:${sessionId}:${crypto.randomUUID()}`,
+      });
+    } catch (err) {
+      if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
+      throw err;
+    }
     if (reservation.kind === 'denied') return c.json({ error: reservation.message }, 402);
     const budgetReservationId = reservation.reservationId;
     const reservedMaxBudgetUsd = reservation.kind === 'reserved'
