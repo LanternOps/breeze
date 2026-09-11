@@ -20,13 +20,31 @@ import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 
+/**
+ * THROWS rather than degrading, mirroring routes/auth/helpers.ts.
+ *
+ * `withSystemDbAccessContext` is what opens the transaction, so a fallback to a
+ * bare `fn()` does not merely lose the RLS context — it silently turns OFF the
+ * atomicity `processRemediationActionInContext` depends on. Its `FOR UPDATE`
+ * locks on the device and the action would each live only for the length of
+ * their own statement, releasing before the command insert and the status
+ * transition they exist to fence, which is precisely the SEC-118 window. A
+ * console.warn on the way past is not an acceptable trade for that.
+ *
+ * The `typeof` check only ever fired under a test mock of `../db` that omitted
+ * the wrapper; production always exports it. Nesting inside an existing context
+ * is unaffected — the real `withSystemDbAccessContext` short-circuits on its
+ * own and never reaches this branch.
+ */
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
-  if (typeof withSystem === 'function') {
-    return withSystem(fn);
+  if (typeof withSystem !== 'function') {
+    const message =
+      '[CisJobs] runWithSystemDbAccess: withSystemDbAccessContext is unavailable; refusing to run CIS work with no DB access context or transaction';
+    console.error(message);
+    throw new Error(message);
   }
-  console.warn('[CisJobs] withSystemDbAccessContext not available, running without system context');
-  return fn();
+  return withSystem(fn);
 };
 
 const CIS_QUEUE = 'cis-hardening';
@@ -328,19 +346,38 @@ async function processAggregateScores(): Promise<{ orgsProcessed: number }> {
   return { orgsProcessed: rows.length };
 }
 
-async function processRemediationAction(data: RemediateActionJobData): Promise<{
+async function processRemediationActionInContext(data: RemediateActionJobData): Promise<{
   actionId: string;
   queued: boolean;
   commandId: string | null;
 }> {
-  const [action] = await db
+  // Locator read only. Lock the device BEFORE locking/re-reading the action so
+  // this path uses the same order as a device org move (device -> children)
+  // and cannot deadlock while establishing current authority.
+  const [candidate] = await db
     .select()
     .from(cisRemediationActions)
     .where(eq(cisRemediationActions.id, data.actionId))
     .limit(1);
 
-  if (!action) {
+  if (!candidate) {
     console.warn(`[CisJobs] processRemediationAction: action ${data.actionId} not found`);
+    return { actionId: data.actionId, queued: false, commandId: null };
+  }
+
+  const [device] = await db
+    .select({ id: devices.id, orgId: devices.orgId })
+    .from(devices)
+    .where(eq(devices.id, candidate.deviceId))
+    .for('update');
+  const [action] = await db
+    .select()
+    .from(cisRemediationActions)
+    .where(eq(cisRemediationActions.id, data.actionId))
+    .for('update');
+
+  if (!action) {
+    console.warn(`[CisJobs] processRemediationAction: action ${data.actionId} disappeared before dispatch`);
     return { actionId: data.actionId, queued: false, commandId: null };
   }
   if (action.status !== 'queued' || action.approvalStatus !== 'approved') {
@@ -348,6 +385,26 @@ async function processRemediationAction(data: RemediateActionJobData): Promise<{
       `[CisJobs] processRemediationAction: action ${data.actionId} not eligible (status=${action.status}, approvalStatus=${action.approvalStatus})`,
     );
     return { actionId: data.actionId, queued: false, commandId: null };
+  }
+  if (!device || device.orgId !== action.orgId) {
+    console.warn(
+      `[CisJobs] processRemediationAction: action ${data.actionId} target is no longer in its admitted organization`,
+    );
+    await db
+      .update(cisRemediationActions)
+      .set({
+        status: 'cancelled',
+        details: {
+          ...(action.details ?? {}),
+          cancelledReason: 'device_org_changed_before_dispatch',
+          cancelledAt: new Date().toISOString(),
+        },
+      })
+      .where(and(
+        eq(cisRemediationActions.id, action.id),
+        eq(cisRemediationActions.status, 'queued'),
+      ));
+    return { actionId: action.id, queued: false, commandId: null };
   }
 
   let command;
@@ -364,7 +421,14 @@ async function processRemediationAction(data: RemediateActionJobData): Promise<{
         action: action.action,
         details: action.details ?? {},
       },
-      action.requestedBy ?? undefined
+      action.requestedBy ?? undefined,
+      // #5128 claim-time provenance. Without it this row lands with
+      // `submitted_org_id = NULL` AND `deliver_by = NULL`, which
+      // commandClaimEligibility reads as a pre-#5128 LEGACY row and delivers
+      // unconditionally — so the CIS lane had no post-creation move fence at
+      // all. The device lock above stops a command being CREATED after a move;
+      // this stops one created BEFORE the move from being CLAIMED after it.
+      { submittedOrgId: action.orgId },
     );
   } catch (error) {
     console.error(`[CisJobs] processRemediationAction: failed to queue command for action ${action.id}:`, error);
@@ -400,6 +464,17 @@ async function processRemediationAction(data: RemediateActionJobData): Promise<{
     queued: true,
     commandId: command.id,
   };
+}
+
+async function processRemediationAction(data: RemediateActionJobData): Promise<{
+  actionId: string;
+  queued: boolean;
+  commandId: string | null;
+}> {
+  // The worker normally already supplies this context. Keeping the transaction
+  // boundary here as well makes the lock/re-read/command insert/state change an
+  // indivisible contract for every caller (including maintenance/test hooks).
+  return runWithSystemDbAccess(() => processRemediationActionInContext(data));
 }
 
 function createCisWorker(): Worker<CisJobData> {
@@ -608,3 +683,7 @@ export async function scheduleCisRemediation(actionIds: string[]): Promise<numbe
   }
   return result.queuedActionIds.length;
 }
+
+export const __testOnly = {
+  processRemediationAction,
+};
