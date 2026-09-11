@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { errors } from 'oidc-provider';
 import { and, eq, gte, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
@@ -497,16 +498,28 @@ export class BreezeOidcAdapter {
         // the library reads `code.consumed` from that payload to fire its
         // grant-wide revoke on replay. jsonb_set keeps it a single atomic
         // write — no read-modify-write race on concurrent replays.
-        await db.update(oauthAuthorizationCodes).set({
+        const consumed = await db.update(oauthAuthorizationCodes).set({
           consumedAt: new Date(),
           payload: sql`jsonb_set(${oauthAuthorizationCodes.payload}, '{consumed}', ${epochTime()}::text::jsonb, true)`,
-        }).where(eq(oauthAuthorizationCodes.id, id));
+        }).where(and(
+          eq(oauthAuthorizationCodes.id, id),
+          isNull(oauthAuthorizationCodes.consumedAt),
+        )).returning({ id: oauthAuthorizationCodes.id });
+        if (consumed.length !== 1) {
+          throw new errors.InvalidGrant('authorization code already consumed');
+        }
       } else if (this.model === 'RefreshToken') {
         // oidc-provider rotates refresh tokens by minting a new one and
         // calling consume() on the previous. Mark it revoked so
         // `find()` (which filters on revokedAt IS NULL) returns undefined,
         // preventing replay of the old token after rotation.
-        await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(eq(oauthRefreshTokens.id, refreshTokenStorageId(id)));
+        const consumed = await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(and(
+          eq(oauthRefreshTokens.id, refreshTokenStorageId(id)),
+          isNull(oauthRefreshTokens.revokedAt),
+        )).returning({ id: oauthRefreshTokens.id });
+        if (consumed.length !== 1) {
+          throw new errors.InvalidGrant('refresh token already used');
+        }
       }
     });
   }

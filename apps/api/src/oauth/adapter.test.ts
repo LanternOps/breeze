@@ -54,11 +54,12 @@ function mockRetryInsertChain(userId: string) {
   return { values, onConflictDoUpdate, returning };
 }
 
-function mockUpdateChain() {
-  const where = vi.fn();
+function mockUpdateChain(rows: unknown[] = [{ id: 'updated' }]) {
+  const returning = vi.fn(async () => rows);
+  const where = vi.fn(() => ({ returning }));
   const set = vi.fn(() => ({ where }));
   updateMock.mockReturnValue({ set } as unknown as ReturnType<typeof db.update>);
-  return { set, where };
+  return { set, where, returning };
 }
 
 function collectSqlStrings(value: unknown): string {
@@ -208,6 +209,16 @@ describe('BreezeOidcAdapter', () => {
     expect(payloadSql).toContain('jsonb_set');
     expect(payloadSql).toContain('{consumed}');
     expect(chain.where).toHaveBeenCalled();
+    expect(chain.returning).toHaveBeenCalled();
+  });
+
+  it('rejects an AuthorizationCode consume that loses the atomic single-use claim', async () => {
+    const chain = mockUpdateChain([]);
+
+    await expect(new BreezeOidcAdapter('AuthorizationCode').consume('code_abc'))
+      .rejects.toMatchObject({ error: 'invalid_grant' });
+
+    expect(chain.returning).toHaveBeenCalled();
   });
 
   it('consume() on RefreshToken only revokes (no payload.consumed stamp) — unchanged by the auth-code fix', async () => {
@@ -218,6 +229,16 @@ describe('BreezeOidcAdapter', () => {
     expect(updateMock).toHaveBeenCalledWith(oauthRefreshTokens);
     expect(chain.set).toHaveBeenCalledWith({ revokedAt: expect.any(Date) });
     expect(chain.where).toHaveBeenCalled();
+    expect(chain.returning).toHaveBeenCalled();
+  });
+
+  it('rejects a RefreshToken consume that loses the atomic single-use claim', async () => {
+    const chain = mockUpdateChain([]);
+
+    await expect(new BreezeOidcAdapter('RefreshToken').consume('refresh_abc'))
+      .rejects.toMatchObject({ error: 'invalid_grant' });
+
+    expect(chain.returning).toHaveBeenCalled();
   });
 
   it('consume() on AccessToken is a no-op DB-wise (in-memory model)', async () => {
