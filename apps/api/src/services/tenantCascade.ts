@@ -866,10 +866,17 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
   // narrative-artifact fixture, #4190, but not caused by it: an ordinary
   // scheduled report has produced these rows since the feature shipped).
   //
-  // Safe to clear first: the only FK INTO report_runs is
-  // `ai_agent_runs.report_run_id`, which is ON DELETE SET NULL (confdeltype
-  // 'n'), so the run rows survive this statement with a null link and are
-  // then deleted by the main loop on their own org_id.
+  // Safe to clear first: two FKs point INTO report_runs and neither can raise
+  // 23503 here —
+  //   * `ai_agent_runs.report_run_id` is ON DELETE SET NULL (confdeltype 'n'):
+  //     the run rows survive this statement with a null link and are then
+  //     deleted by the main loop on their own org_id;
+  //   * `service_deliverable_evidence.sd_evidence_report_run_fk`
+  //     (report_run_id, report_id) is ON DELETE CASCADE (confdeltype 'c',
+  //     #5573 W01): the evidence rows referencing a deleted run go with it.
+  //     Those rows carry org_id and are also reached by the main loop, so a
+  //     run cleared here or an evidence row deleted there are both fine in
+  //     either order.
   //
   // No partner-axis twin is needed (unlike the SSO/PSA/software entries):
   // `reports.org_id` is NOT NULL, so every definition — and therefore every

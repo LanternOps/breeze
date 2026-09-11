@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Param, SQL } from 'drizzle-orm';
 
 // Controllable Drizzle chain mock (same pattern as contractService.test.ts):
 // every builder method returns the same chain; an awaited query consumes the
@@ -33,11 +34,32 @@ import {
   DeliverableServiceError,
 } from './serviceDeliverableService';
 
-type MockCalls = { mock: { calls: unknown[][] } };
-type ChainName = 'select' | 'insert' | 'update' | 'delete' | 'set' | 'values' | 'limit' | 'transaction';
+type MockCalls = { mock: { calls: unknown[][]; invocationCallOrder: number[] } };
+type ChainName = 'select' | 'insert' | 'update' | 'delete' | 'set' | 'values' | 'limit' | 'transaction' | 'where';
 const chain = db as unknown as Record<ChainName, MockCalls>;
 const lastSet = () => chain.set.mock.calls.at(-1)?.[0] as Record<string, unknown>;
 const lastValues = () => chain.values.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+// Bound parameter VALUES of the `.where(...)` that follows the most recent
+// `.set(...)` — i.e. the UPDATE's own WHERE, not the reload SELECT's. Asserting
+// on Params (not on column/enum metadata, which a deep `toContain` matches
+// vacuously) proves the status guard is actually bound into the UPDATE.
+function boundParams(node: unknown, out: unknown[] = []): unknown[] {
+  if (node instanceof Param) out.push(node.value);
+  else if (node instanceof SQL) for (const c of node.queryChunks) boundParams(c, out);
+  else if (Array.isArray(node)) for (const c of node) boundParams(c, out);
+  return out;
+}
+function updateWhereParams(): unknown[] {
+  const setOrder = chain.set.mock.invocationCallOrder.at(-1);
+  if (setOrder === undefined) throw new Error('no .set() call recorded');
+  const i = chain.where.mock.invocationCallOrder.findIndex((o) => o > setOrder);
+  if (i === -1) throw new Error('no .where() call after the last .set()');
+  return boundParams(chain.where.mock.calls[i]?.[0]);
+}
+const summaryRow = (over: Record<string, unknown> = {}, contractName: string | null = null) => ({
+  deliverable: { id: 'd1', orgId: 'org1', ...base, effectiveFrom: '2020-01-01', active: true, effectiveUntil: null, contractId: null, ...over },
+  contractName,
+});
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 const CONTRACT_ID = '11111111-1111-4111-8111-111111111111';
@@ -120,13 +142,22 @@ describe('serviceDeliverableService', () => {
       expect(chain.insert.mock.calls).toHaveLength(0);
     });
 
-    it('inserts with orgId + createdBy stamped and returns the row', async () => {
-      const row = { id: 'd1', orgId: 'org1', ...base };
+    it('inserts with orgId + createdBy stamped (in a savepoint) and returns the SUMMARY shape', async () => {
       queueResult([]); // name pre-check
-      queueResult([row]);
+      queueResult([{ id: 'd1', orgId: 'org1', ...base }]); // insert returning
+      queueResult([summaryRow({ contractId: CONTRACT_ID }, 'Best plan')]); // reload: deliverable + contract name
+      queueResult([{ id: 'o1', deliverableId: 'd1', status: 'open', dueAt: '2999-01-01', deliveredAt: null, deliveryNote: null }]); // reload: occurrences
       const out = await createDeliverable('org1', base, actor);
-      expect(out).toEqual(row);
+      expect(chain.transaction.mock.calls).toHaveLength(1);
       expect(lastValues()).toMatchObject({ orgId: 'org1', name: base.name, createdBy: 'u1', cadence: 'monthly' });
+      expect(out).toMatchObject({ id: 'd1', name: base.name, contractName: 'Best plan', nextDue: '2999-01-01', openCount: 1, status: 'on_track', lastDelivered: null });
+    });
+
+    it('500s RELOAD_FAILED if the row cannot be re-read after insert', async () => {
+      queueResult([]); // name pre-check
+      queueResult([{ id: 'd1', orgId: 'org1', ...base }]);
+      queueResult([]); // reload finds nothing
+      await expect(createDeliverable('org1', base, actor)).rejects.toMatchObject({ status: 500, code: 'RELOAD_FAILED' });
     });
 
     it('maps unique violation 23505 → 409 DUPLICATE_NAME (concurrent-writer backstop)', async () => {
@@ -159,11 +190,29 @@ describe('serviceDeliverableService', () => {
       queueResult([{ id: 'd1', orgId: 'org1', name: base.name, contractId: null }]); // existing
       queueResult([{ id: CONTRACT_ID }]); // contract in org
       queueResult([]); // name pre-check under the new contract
-      queueResult([{ id: 'd1', orgId: 'org1', contractId: CONTRACT_ID }]); // returning
+      queueResult([{ id: 'd1' }]); // update returning (in a savepoint)
+      queueResult([summaryRow({ contractId: CONTRACT_ID }, 'Managed Services')]); // reload
+      queueResult([{ id: 'o1', deliverableId: 'd1', status: 'missed', dueAt: '2020-01-01', deliveredAt: null, deliveryNote: null }]);
       const out = await updateDeliverable('org1', 'd1', { contractId: CONTRACT_ID }, actor);
-      expect(out.contractId).toBe(CONTRACT_ID);
+      expect(chain.transaction.mock.calls).toHaveLength(1);
       expect(lastSet()).toMatchObject({ contractId: CONTRACT_ID });
       expect(lastSet().updatedAt).toBeInstanceOf(Date);
+      expect(out).toMatchObject({ contractId: CONTRACT_ID, contractName: 'Managed Services', status: 'missed', nextDue: '2020-01-01', openCount: 1 });
+    });
+
+    it('a PATCH that deactivates still resolves the summary (includeInactive) and reports inactive', async () => {
+      queueResult([{ id: 'd1', orgId: 'org1', name: base.name, contractId: null }]); // existing
+      queueResult([{ id: 'd1' }]); // update returning
+      queueResult([summaryRow({ active: false })]); // reload with includeInactive
+      queueResult([]);
+      const out = await updateDeliverable('org1', 'd1', { active: false }, actor);
+      expect(out).toMatchObject({ active: false, status: 'inactive', contractName: null });
+    });
+
+    it('404s when the update matches no row', async () => {
+      queueResult([{ id: 'd1', orgId: 'org1', name: base.name, contractId: null }]);
+      queueResult([]); // update returning nothing
+      await expect(updateDeliverable('org1', 'd1', { description: 'x' }, actor)).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
     });
 
     it('409s a renamed deliverable colliding with a sibling from the pre-check', async () => {
@@ -215,7 +264,7 @@ describe('serviceDeliverableService', () => {
       queueResult([{ id: RUN_ID, reportId: 'r1' }]); // run lookup (joined on reports.orgId)
       queueResult([]); // evidence insert
       queueResult([{ n: 1 }]); // evidence count
-      queueResult([]); // update
+      queueResult([{ id: 'o1' }]); // update returning
       queueResult([occ({ status: 'delivered', deliveredAt: new Date('2026-10-20T00:00:00Z'), deliveredVia: 'explicit' })]); // reload
       queueResult([{ id: 'e1', kind: 'report_run', documentId: null, reportId: 'r1', reportRunId: RUN_ID, createdAt: new Date('2026-10-20T00:00:00Z') }]); // evidence list
       const view = await deliverOccurrence('org1', 'o1', { note: 'done', evidence: [{ kind: 'report_run', reportRunId: RUN_ID }] }, actor);
@@ -225,6 +274,7 @@ describe('serviceDeliverableService', () => {
       expect(set).toMatchObject({ status: 'delivered', deliveredByUserId: 'u1', deliveredVia: 'explicit', deliveryNote: 'done' });
       expect(set.deliveredAt).toBeInstanceOf(Date);
       expect(set.updatedAt).toBeInstanceOf(Date);
+      expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'org1', 'open']));
       expect(view.status).toBe('delivered');
       expect(view.late).toBe(false);
       expect(view.evidence).toEqual([{ id: 'e1', kind: 'report_run', documentId: null, reportId: 'r1', reportRunId: RUN_ID, createdAt: '2026-10-20T00:00:00.000Z' }]);
@@ -234,12 +284,21 @@ describe('serviceDeliverableService', () => {
     it('delivers without evidence when the artifact is optional', async () => {
       queueResult([occ({ status: 'missed', artifactRequired: false })]);
       queueResult([]); // count → 0
-      queueResult([]); // update
+      queueResult([{ id: 'o1' }]); // update returning
       queueResult([occ({ status: 'delivered', artifactRequired: false })]);
       queueResult([]);
       const view = await deliverOccurrence('org1', 'o1', {}, actor);
       expect(lastSet()).toMatchObject({ status: 'delivered', deliveryNote: null });
+      expect(updateWhereParams()).toContain('missed');
       expect(view.evidence).toEqual([]);
+    });
+
+    it('409s when a concurrent transition made the guarded UPDATE match zero rows', async () => {
+      queueResult([occ({ status: 'open', artifactRequired: false })]);
+      queueResult([]); // count
+      queueResult([]); // update matched nothing (status moved under us)
+      await expect(deliverOccurrence('org1', 'o1', {}, actor)).rejects.toMatchObject({ status: 409, code: 'INVALID_OCCURRENCE_TRANSITION' });
+      expect(chain.update.mock.calls).toHaveLength(1);
     });
   });
 
@@ -251,15 +310,24 @@ describe('serviceDeliverableService', () => {
 
     it('stamps waivedAt / waivedByUserId / waivedReason', async () => {
       queueResult([occ({ status: 'open' })]);
-      queueResult([]); // update
+      queueResult([{ id: 'o1' }]); // update returning
       queueResult([occ({ status: 'waived', waivedReason: 'client declined' })]);
       queueResult([]);
       const view = await waiveOccurrence('org1', 'o1', { reason: 'client declined' }, actor);
+      expect(chain.transaction.mock.calls).toHaveLength(1);
       const set = lastSet();
       expect(set).toMatchObject({ status: 'waived', waivedByUserId: 'u1', waivedReason: 'client declined' });
       expect(set.waivedAt).toBeInstanceOf(Date);
       expect(set.updatedAt).toBeInstanceOf(Date);
+      expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'org1', 'open']));
       expect(view.status).toBe('waived');
+    });
+
+    it('409s when the guarded UPDATE matches zero rows (status moved concurrently)', async () => {
+      queueResult([occ({ status: 'missed' })]);
+      queueResult([]); // update returning nothing
+      await expect(waiveOccurrence('org1', 'o1', { reason: 'x' }, actor)).rejects.toMatchObject({ status: 409, code: 'INVALID_OCCURRENCE_TRANSITION' });
+      expect(updateWhereParams()).toContain('missed');
     });
 
     it('cannot waive a delivered occurrence → 409', async () => {
@@ -272,15 +340,24 @@ describe('serviceDeliverableService', () => {
   describe('reopenOccurrence', () => {
     it('clears every delivery and waiver field and returns to open', async () => {
       queueResult([occ({ status: 'delivered', deliveredAt: new Date(), deliveredByUserId: 'u1', deliveredVia: 'explicit', deliveryNote: 'n' })]);
-      queueResult([]);
+      queueResult([{ id: 'o1' }]); // update returning
       queueResult([occ({ status: 'open' })]);
       queueResult([]);
       await reopenOccurrence('org1', 'o1', actor);
+      expect(chain.transaction.mock.calls).toHaveLength(1);
       expect(lastSet()).toMatchObject({
         status: 'open', deliveredAt: null, deliveredByUserId: null, deliveredVia: null, deliveryNote: null,
         waivedAt: null, waivedByUserId: null, waivedReason: null,
       });
       expect(lastSet().updatedAt).toBeInstanceOf(Date);
+      expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'org1', 'delivered']));
+    });
+
+    it('409s when the guarded UPDATE matches zero rows (status moved concurrently)', async () => {
+      queueResult([occ({ status: 'waived' })]);
+      queueResult([]); // update returning nothing
+      await expect(reopenOccurrence('org1', 'o1', actor)).rejects.toMatchObject({ status: 409, code: 'INVALID_OCCURRENCE_TRANSITION' });
+      expect(updateWhereParams()).toContain('waived');
     });
 
     it('cannot reopen an open occurrence → 409', async () => {
@@ -298,28 +375,38 @@ describe('serviceDeliverableService', () => {
 
     it('moves dueAt, keeps originalDueAt, and keeps an open occurrence open', async () => {
       queueResult([occ({ status: 'open' })]);
-      queueResult([]);
+      queueResult([{ id: 'o1' }]); // update returning
       queueResult([occ({ status: 'open', dueAt: '2026-11-30' })]);
       queueResult([]);
       const view = await rescheduleOccurrence('org1', 'o1', { dueAt: '2026-11-30' }, actor);
+      expect(chain.transaction.mock.calls).toHaveLength(1);
       expect(lastSet()).toMatchObject({ dueAt: '2026-11-30', status: 'open' });
       expect(lastSet()).not.toHaveProperty('originalDueAt');
+      expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'org1', 'open']));
       expect(view.originalDueAt).toBe('2026-10-31');
+    });
+
+    it('409s when the guarded UPDATE matches zero rows (status moved concurrently)', async () => {
+      queueResult([occ({ status: 'scheduled' })]);
+      queueResult([]); // update returning nothing
+      await expect(rescheduleOccurrence('org1', 'o1', { dueAt: '2026-11-30' }, actor)).rejects.toMatchObject({ status: 409, code: 'INVALID_OCCURRENCE_TRANSITION' });
+      expect(updateWhereParams()).toContain('scheduled');
     });
 
     it('a missed occurrence moved inside grace becomes open', async () => {
       const future = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
       queueResult([occ({ status: 'missed', graceDays: 14 })]);
-      queueResult([]);
+      queueResult([{ id: 'o1' }]);
       queueResult([occ({ status: 'open', dueAt: future })]);
       queueResult([]);
       await rescheduleOccurrence('org1', 'o1', { dueAt: future }, actor);
       expect(lastSet()).toMatchObject({ dueAt: future, status: 'open' });
+      expect(updateWhereParams()).toContain('missed'); // guard is the status LOADED, not the one being written
     });
 
     it('a missed occurrence moved to a date still past grace stays missed', async () => {
       queueResult([occ({ status: 'missed', graceDays: 14 })]);
-      queueResult([]);
+      queueResult([{ id: 'o1' }]);
       queueResult([occ({ status: 'missed', dueAt: '2020-01-01' })]);
       queueResult([]);
       await rescheduleOccurrence('org1', 'o1', { dueAt: '2020-01-01' }, actor);
@@ -339,7 +426,7 @@ describe('serviceDeliverableService', () => {
       queueResult([occ({ status: 'awaiting_evidence' })]);
       queueResult([{ id: RUN_ID, reportId: 'r1' }]);
       queueResult([]); // insert
-      queueResult([]); // update
+      queueResult([{ id: 'o1' }]); // update returning
       queueResult([occ({ status: 'delivered', deliveredVia: 'ticket' })]);
       queueResult([{ id: 'e1', kind: 'report_run', documentId: null, reportId: 'r1', reportRunId: RUN_ID, createdAt: new Date() }]);
       const view = await addEvidence('org1', 'o1', { kind: 'report_run', reportRunId: RUN_ID }, actor);
@@ -347,7 +434,23 @@ describe('serviceDeliverableService', () => {
       const set = lastSet();
       expect(set).toMatchObject({ status: 'delivered', deliveredVia: 'ticket', deliveredByUserId: 'u1' });
       expect(set.deliveredAt).toBeInstanceOf(Date);
+      expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'org1', 'awaiting_evidence']));
       expect(view.evidence).toHaveLength(1);
+    });
+
+    it('409s when the awaiting_evidence → delivered UPDATE matches zero rows', async () => {
+      queueResult([occ({ status: 'awaiting_evidence' })]);
+      queueResult([{ id: RUN_ID, reportId: 'r1' }]);
+      queueResult([]); // insert
+      queueResult([]); // update returning nothing
+      await expect(addEvidence('org1', 'o1', { kind: 'report_run', reportRunId: RUN_ID }, actor)).rejects.toMatchObject({ status: 409, code: 'INVALID_OCCURRENCE_TRANSITION' });
+    });
+
+    it('an evidence kind the service does not know → 500 UNSUPPORTED_EVIDENCE_KIND, nothing inserted', async () => {
+      queueResult([occ({ status: 'open' })]);
+      await expect(addEvidence('org1', 'o1', { kind: 'document', documentId: 'doc1' } as never, actor))
+        .rejects.toMatchObject({ status: 500, code: 'UNSUPPORTED_EVIDENCE_KIND' });
+      expect(chain.insert.mock.calls).toHaveLength(0);
     });
 
     it('on an open occurrence records evidence without changing status', async () => {
