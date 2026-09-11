@@ -134,6 +134,13 @@ const stepUpAssertion = z.object({ id: z.string().min(1) }).passthrough();
 // `satisfies` target links it to that union so a value here can never be one
 // that matches no grant type.
 //
+// #5601: `approval_decide` is excluded for the same structural reason. It is
+// the credential that clears the four_eyes sole-operator L3 passkey gate; it
+// may be minted ONLY by `decideApprovalRequest`, after a real approver-device
+// ceremony it verified itself. Letting a client request one here would turn an
+// ordinary TOTP/SMS step-up into a bypass of that gate — i.e. the L3 passkey
+// requirement could be satisfied without a passkey.
+//
 // #4018: `enroll_first_factor` is excluded BY THE COMPILER, not by convention.
 // That grant is the sole output of the SSO re-auth callback, which mints it
 // only after a forced IdP round-trip proves identity for a PASSWORDLESS
@@ -152,7 +159,10 @@ const STEP_UP_OPERATIONS = [
   'register_approver_device',
   'agent_rollback',
   'device_maintenance',
-] as const satisfies readonly Exclude<StepUpOperation, 'enroll_first_factor'>[];
+] as const satisfies readonly Exclude<
+  StepUpOperation,
+  'enroll_first_factor' | 'approval_decide'
+>[];
 const stepUpOperation = z
   .enum(STEP_UP_OPERATIONS)
   .default('add_factor');

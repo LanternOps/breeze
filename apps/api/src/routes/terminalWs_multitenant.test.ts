@@ -399,6 +399,7 @@ describe('terminalWs — cross-replica lease ownership', () => {
         releaseDesktopFinalizationIntent: async () => true,
         observeDesktopFinalization: async () => ({
           ownerPresent: false,
+          everOwned: false,
           finalizationId: null,
           canonicalPayload: null,
           consistent: true,
@@ -496,6 +497,7 @@ describe('terminalWs — cross-replica lease ownership', () => {
       releaseDesktopFinalizationIntent: async () => true,
       observeDesktopFinalization: async () => ({
         ownerPresent: false,
+        everOwned: false,
         finalizationId: null,
         canonicalPayload: null,
         consistent: true,
