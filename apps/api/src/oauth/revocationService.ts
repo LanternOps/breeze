@@ -1,6 +1,7 @@
-import { and, eq, gt, inArray, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { oauthAuthorizationCodes, oauthClients, oauthClientPartnerGrants, oauthGrants, oauthRefreshTokens } from '../db/schema';
+import { oauthClients, oauthClientPartnerGrants, oauthGrants, oauthRefreshTokens } from '../db/schema';
+import { revokeGrantsDurablyInCurrentDbContext } from './grantStatus';
 import { writeOAuthRevocationMarkerDurably } from './revocationRetry';
 import { ERROR_IDS, logOauthError } from './log';
 
@@ -172,33 +173,16 @@ async function revokeClientFamiliesInSystemContext(
   const grantIds = grants.map((g) => g.id);
   const refreshIds = refreshRows.map((r) => r.id);
 
-  if (grantIds.length > 0) {
-    // A pre-revocation code is itself a live capability. Mark it consumed in
-    // the same transaction as its Grant so a later code exchange cannot mint
-    // a fresh refresh family after the eager Redis marker expires. Reuse the
-    // provider's canonical consumed payload shape so any racing/sequential
-    // lookup follows the normal invalid_grant path.
-    await db
-      .update(oauthAuthorizationCodes)
-      .set({
-        consumedAt: now,
-        payload: sql`jsonb_set(${oauthAuthorizationCodes.payload}, '{consumed}', ${Math.floor(now.getTime() / 1000)}::text::jsonb, true)`,
-      })
-      .where(and(
-        inArray(sql<string>`${oauthAuthorizationCodes.payload}->>'grantId'`, grantIds),
-        isNull(oauthAuthorizationCodes.consumedAt),
-        gt(oauthAuthorizationCodes.expiresAt, now),
-      ));
-
-    await db
-      .update(oauthGrants)
-      .set({
-        revokedAt: now,
-        revokedByUserId: opts.revokedByUserId ?? null,
-        revokedReason: opts.reason ?? null,
-      })
-      .where(inArray(oauthGrants.id, grantIds));
-  }
+  // Consumes every live authorization code for these Grants, then stamps
+  // revoked_at — see revokeGrantsDurablyInCurrentDbContext for why that order.
+  // The explicit refresh rows are revoked separately below because a partner
+  // disconnect revokes only the ids its scope query selected.
+  await revokeGrantsDurablyInCurrentDbContext({
+    grantIds,
+    reason: opts.reason ?? null,
+    revokedByUserId: opts.revokedByUserId ?? null,
+    now,
+  });
 
   if (refreshIds.length > 0) {
     await db

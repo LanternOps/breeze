@@ -10,7 +10,10 @@ import {
 } from './adapter';
 import { revokeGrant, revokeJti } from './revocationCache';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
-import { isOAuthGrantActiveInCurrentDbContext } from './grantStatus';
+import {
+  isOAuthGrantActiveInCurrentDbContext,
+  revokeGrantsDurablyInCurrentDbContext,
+} from './grantStatus';
 
 vi.mock('../db', () => ({
   db: { insert: vi.fn(), update: vi.fn(), select: vi.fn() },
@@ -31,6 +34,7 @@ vi.mock('../services/tenantStatus', () => ({
 
 vi.mock('./grantStatus', () => ({
   isOAuthGrantActiveInCurrentDbContext: vi.fn(async () => true),
+  revokeGrantsDurablyInCurrentDbContext: vi.fn(async () => undefined),
 }));
 
 const insertMock = vi.mocked(db.insert);
@@ -259,16 +263,22 @@ describe('BreezeOidcAdapter', () => {
     expect(chain.where).toHaveBeenCalled();
   });
 
-  it('revokes refresh tokens by grantId with one JSON predicate update', async () => {
+  it('revokeByGrantId durably revokes the Grant, its codes and its refresh family', async () => {
+    // oidc-provider fires revokeGrant on authorization-code replay. Revoking
+    // only the refresh rows (what this used to do) left oauth_grants.revoked_at
+    // NULL, so once the 1800s Redis marker lapsed the replayed code's Grant
+    // read as live again and could restart the family.
     mockSelectRows([{ accountId: '00000000-0000-4000-8000-000000000001' }]);
-    const chain = mockUpdateChain();
 
     await new BreezeOidcAdapter('RefreshToken').revokeByGrantId('grant_abc');
 
-    expect(updateMock).toHaveBeenCalledTimes(1);
-    expect(updateMock).toHaveBeenCalledWith(oauthRefreshTokens);
-    expect(chain.set).toHaveBeenCalledWith({ revokedAt: expect.any(Date) });
-    expect(chain.where).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(revokeGrantsDurablyInCurrentDbContext)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        grantIds: ['grant_abc'],
+        reason: 'provider-revoke-grant',
+        cascadeRefreshTokens: true,
+      }),
+    );
   });
 
   it('persists Interaction rows so consent flows survive API restart', async () => {
@@ -411,6 +421,52 @@ describe('BreezeOidcAdapter', () => {
     // this, sibling access JWTs minted from the same grant would survive
     // until natural expiry. See finding #5.
     expect(vi.mocked(revokeGrant)).toHaveBeenCalledWith('grant_abc', expect.any(Number));
+    consoleError.mockRestore();
+  });
+
+  it('refresh-token reuse revokes the Grant durably, not just with an expiring Redis marker', async () => {
+    // The Redis grant marker lives GRANT_REVOCATION_TTL_SECONDS (1800s). If the
+    // durable half never runs, a stolen sibling refresh token starts passing
+    // the active-Grant predicate again the moment the marker lapses and the
+    // thief regains the whole family.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockSelectRows([{
+      id: 'refresh_abc',
+      userId: '00000000-0000-4000-8000-000000000001',
+      clientId: 'client_abc',
+      partnerId: '00000000-0000-4000-8000-000000000002',
+      payload: { accountId: 'user_abc', grantId: 'grant_abc' },
+      revokedAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+    }]);
+
+    await expect(new BreezeOidcAdapter('RefreshToken').find('refresh_abc')).resolves.toBeUndefined();
+
+    expect(vi.mocked(revokeGrantsDurablyInCurrentDbContext)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        grantIds: ['grant_abc'],
+        reason: 'refresh-token-reuse',
+        cascadeRefreshTokens: true,
+      }),
+    );
+    consoleError.mockRestore();
+  });
+
+  it('does not attempt a durable grant sweep when the reused token carries no grantId', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockSelectRows([{
+      id: 'refresh_abc',
+      userId: '00000000-0000-4000-8000-000000000001',
+      clientId: 'client_abc',
+      partnerId: '00000000-0000-4000-8000-000000000002',
+      payload: { accountId: 'user_abc' },
+      revokedAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+    }]);
+
+    await expect(new BreezeOidcAdapter('RefreshToken').find('refresh_abc')).resolves.toBeUndefined();
+
+    expect(vi.mocked(revokeGrantsDurablyInCurrentDbContext)).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });
 

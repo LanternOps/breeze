@@ -1,6 +1,6 @@
-import { and, eq, gte, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthGrants } from '../db/schema';
+import { activeGrantCondition } from './grantStatus';
 import { getPartnerScopePolicy } from './partnerScopePolicy';
 import { ERROR_IDS, logOauthError } from './log';
 
@@ -58,11 +58,7 @@ export async function resolveGrantContext(grantId: string): Promise<OAuthGrantCo
       const [r] = await db
         .select({ partnerId: oauthGrants.partnerId, orgId: oauthGrants.orgId })
         .from(oauthGrants)
-        .where(and(
-          eq(oauthGrants.id, grantId),
-          isNull(oauthGrants.revokedAt),
-          gte(oauthGrants.expiresAt, new Date()),
-        ))
+        .where(activeGrantCondition(grantId, new Date()))
         .limit(1);
       return r;
     });

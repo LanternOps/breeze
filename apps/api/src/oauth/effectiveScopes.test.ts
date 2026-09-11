@@ -12,15 +12,6 @@ vi.mock('./partnerScopePolicy', () => ({
   getPartnerScopePolicy: vi.fn(),
 }));
 
-// Deliberately still mocked even though effectiveScopes.ts no longer imports it:
-// the point of the durable-grant fix is that a WARM process-local cache must not
-// be able to answer a tenancy question. If the fast path ever comes back, this
-// primed cache is what it would read.
-vi.mock('./adapter', () => ({
-  getGrantBreezeMeta: vi.fn(),
-}));
-
-import { getGrantBreezeMeta } from './adapter';
 import { getPartnerScopePolicy } from './partnerScopePolicy';
 import {
   ALL_MCP_SCOPES,
@@ -30,17 +21,23 @@ import {
 } from './effectiveScopes';
 
 const selectMock = vi.mocked(db.select);
-const getGrantBreezeMetaMock = vi.mocked(getGrantBreezeMeta);
 const getPartnerScopePolicyMock = vi.mocked(getPartnerScopePolicy);
 
 /**
- * Collect the qualified column names a drizzle `where` clause actually
- * references. Asserting on the columns (not on a stringified predicate) keeps
- * this independent of drizzle's SQL rendering and of any enum/param values that
- * a naive deep string search would false-positive on.
+ * Walk a drizzle `where` clause and report BOTH the columns it references and
+ * the raw operator fragments it renders. Asserting on the clause's own
+ * structure (rather than on a stringified predicate, or on the stubbed query
+ * result) keeps this independent of drizzle's SQL rendering and immune to the
+ * deep-search false positive where a bound enum's `enumValues` matches a
+ * literal you were looking for.
+ *
+ * Columns alone are not enough: `expires_at <= now` references the same column
+ * as `expires_at >= now` and inverts the security meaning. The operator
+ * fragments pin the direction.
  */
-function whereColumnNames(clause: unknown): string[] {
-  const names: string[] = [];
+function inspectWhere(clause: unknown): { columns: string[]; sql: string } {
+  const columns: string[] = [];
+  const fragments: string[] = [];
   const visit = (node: unknown) => {
     if (!node || typeof node !== 'object') return;
     const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
@@ -48,11 +45,18 @@ function whereColumnNames(clause: unknown): string[] {
       chunks.forEach(visit);
       return;
     }
-    const { name, table } = node as { name?: unknown; table?: unknown };
-    if (typeof name === 'string' && table) names.push(name);
+    const { name, table, value } = node as { name?: unknown; table?: unknown; value?: unknown };
+    if (typeof name === 'string' && table) {
+      columns.push(name);
+      return;
+    }
+    // StringChunk holds the literal SQL between interpolations.
+    if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
+      fragments.push(...(value as string[]));
+    }
   };
   visit(clause);
-  return names;
+  return { columns, sql: fragments.join('').toLowerCase().replace(/\s+/g, ' ') };
 }
 
 function mockSelectRow(row: unknown) {
@@ -74,7 +78,6 @@ function mockSelectError(err: unknown) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  getGrantBreezeMetaMock.mockReturnValue(undefined);
   getPartnerScopePolicyMock.mockResolvedValue({});
 });
 
@@ -83,11 +86,10 @@ afterEach(() => {
 });
 
 describe('resolveGrantContext', () => {
-  it('ignores warm process-local tenancy metadata and answers from the durable row', async () => {
-    // A stale in-memory entry survives its Grant's revoked_at transition, so it
-    // must never short-circuit the lookup. Prime it with DIFFERENT tenancy than
-    // the DB row: whichever one comes back tells us which path ran.
-    getGrantBreezeMetaMock.mockReturnValue({ partner_id: 'stale-cached-partner', org_id: 'stale-cached-org' });
+  it('always reads the durable row — there is no process-local tenancy fast path', async () => {
+    // Any cached answer outlives its Grant's revoked_at transition, so tenancy
+    // may only come from the row. The in-memory side cache this used to consult
+    // has been deleted outright; this pins that the lookup still happens.
     mockSelectRow({ partnerId: 'partner-1', orgId: 'org-1' });
 
     const context = await resolveGrantContext('grant-1');
@@ -118,10 +120,16 @@ describe('resolveGrantContext', () => {
 
     await expect(resolveGrantContext('grant-revoked')).resolves.toBeNull();
 
-    const columns = whereColumnNames((where.mock.calls as unknown as unknown[][])[0]?.[0]);
+    const { columns, sql } = inspectWhere((where.mock.calls as unknown as unknown[][])[0]?.[0]);
     expect(columns).toContain(oauthGrants.id.name);
     expect(columns).toContain(oauthGrants.revokedAt.name);
     expect(columns).toContain(oauthGrants.expiresAt.name);
+    // Direction matters as much as the column: `revoked_at IS NOT NULL` or
+    // `expires_at <= now` would reference the same two columns and mean the
+    // opposite thing.
+    expect(sql).toContain('is null');
+    expect(sql).toContain('>=');
+    expect(sql).not.toContain('is not null');
   });
 
   it('cache miss + row exists with NULL partnerId: throws GrantTenancyError (fail closed — the -02 bug)', async () => {

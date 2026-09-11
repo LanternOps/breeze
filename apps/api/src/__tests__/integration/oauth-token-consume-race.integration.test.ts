@@ -18,7 +18,7 @@ import type { HttpBindings } from '@hono/node-server';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { oauthAuthorizationCodes, oauthRefreshTokens } from '../../db/schema';
+import { oauthAuthorizationCodes, oauthGrants, oauthRefreshTokens } from '../../db/schema';
 import { createAccessToken } from '../../services/jwt';
 import { assignUserToPartner, createPartner, createRole, createUser } from './db-utils';
 import { getTestDb } from './setup';
@@ -301,5 +301,61 @@ describe.skipIf(!SHOULD_RUN)('OAuth token consume is atomic across concurrent ex
       ));
     expect(allFamilyRows).toHaveLength(2);
     expect(activeFamilyRows).toHaveLength(1);
+  }, 30_000);
+
+  it('refresh-token reuse durably revokes the Grant and its whole family, not just a Redis marker', async () => {
+    // Steal-and-replay, sequentially (no lock needed): rotate once legitimately,
+    // then present the burned RT again. The eager Redis grant marker expires
+    // after GRANT_REVOCATION_TTL_SECONDS; if that is the only thing recording
+    // the compromise, the surviving sibling starts working again when it
+    // lapses. Assert the DURABLE half landed.
+    const issued = await issueAuthorizationCode(live.url, 'reuse');
+    const initial = await exchangeCode(live.url, issued);
+    expect(initial.status).toBe(200);
+    const first = await initial.json() as { refresh_token: string };
+
+    const rotated = await exchangeRefresh(live.url, issued.clientId, first.refresh_token);
+    expect(rotated.status).toBe(200);
+    const second = await rotated.json() as { refresh_token: string };
+
+    const rotatedRowId = createHash('sha256').update(second.refresh_token).digest('hex');
+    const [rotatedRow] = await getTestDb()
+      .select({ payload: oauthRefreshTokens.payload })
+      .from(oauthRefreshTokens)
+      .where(eq(oauthRefreshTokens.id, rotatedRowId));
+    const grantId = (rotatedRow?.payload as { grantId?: string } | null)?.grantId;
+    expect(grantId).toEqual(expect.any(String));
+
+    // Precondition: the surviving sibling is live right now.
+    const [beforeGrant] = await getTestDb()
+      .select({ revokedAt: oauthGrants.revokedAt })
+      .from(oauthGrants)
+      .where(eq(oauthGrants.id, grantId!));
+    expect(beforeGrant?.revokedAt).toBeNull();
+
+    // Replay the burned token.
+    const replay = await exchangeRefresh(live.url, issued.clientId, first.refresh_token);
+    expect(replay.status).toBe(400);
+    await expect(replay.json()).resolves.toMatchObject({ error: 'invalid_grant' });
+
+    const [afterGrant] = await getTestDb()
+      .select({ revokedAt: oauthGrants.revokedAt, revokedReason: oauthGrants.revokedReason })
+      .from(oauthGrants)
+      .where(eq(oauthGrants.id, grantId!));
+    expect(afterGrant?.revokedAt).toBeInstanceOf(Date);
+    expect(afterGrant?.revokedReason).toBe('refresh-token-reuse');
+
+    const activeSiblings = await getTestDb()
+      .select({ id: oauthRefreshTokens.id })
+      .from(oauthRefreshTokens)
+      .where(and(
+        eq(oauthRefreshTokens.clientId, issued.clientId),
+        isNull(oauthRefreshTokens.revokedAt),
+      ));
+    expect(activeSiblings).toHaveLength(0);
+
+    // And the surviving sibling is dead on the wire too, not merely flagged.
+    const siblingUse = await exchangeRefresh(live.url, issued.clientId, second.refresh_token);
+    expect(siblingUse.status).toBe(400);
   }, 30_000);
 });

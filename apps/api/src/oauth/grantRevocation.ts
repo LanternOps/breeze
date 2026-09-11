@@ -1,6 +1,7 @@
-import { and, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { oauthAuthorizationCodes, oauthGrants, oauthRefreshTokens } from '../db/schema';
+import { oauthGrants, oauthRefreshTokens } from '../db/schema';
+import { revokeGrantsDurablyInCurrentDbContext } from './grantStatus';
 import { writeOAuthRevocationMarkerDurably } from './revocationRetry';
 import { ACCESS_TOKEN_TTL_SECONDS } from './provider';
 import { ERROR_IDS, logOauthError } from './log';
@@ -103,22 +104,11 @@ async function revokeOauthArtifactsByColumn(
   // ordering as revocationService.ts): a stamped-but-unmarked grant would look
   // revoked in the DB while its in-flight access JWTs kept working.
   if (seenGrants.size > 0) {
-    const grantIds = [...seenGrants];
-    await db
-      .update(oauthAuthorizationCodes)
-      .set({
-        consumedAt: now,
-        payload: sql`jsonb_set(${oauthAuthorizationCodes.payload}, '{consumed}', ${Math.floor(now.getTime() / 1000)}::text::jsonb, true)`,
-      })
-      .where(and(
-        inArray(sql<string>`${oauthAuthorizationCodes.payload}->>'grantId'`, grantIds),
-        isNull(oauthAuthorizationCodes.consumedAt),
-        gt(oauthAuthorizationCodes.expiresAt, now),
-      ));
-    await db
-      .update(oauthGrants)
-      .set({ revokedAt: now, revokedReason: `tenant-lifecycle:${target}` })
-      .where(inArray(oauthGrants.id, grantIds));
+    await revokeGrantsDurablyInCurrentDbContext({
+      grantIds: [...seenGrants],
+      reason: `tenant-lifecycle:${target}`,
+      now,
+    });
   }
 
   return {
