@@ -27,12 +27,12 @@ func NewTerminalIO(r io.Reader, w io.Writer) IO {
 }
 
 func (t *termIO) Print(format string, args ...any) {
-	fmt.Fprintf(t.w, format, args...)
+	_, _ = fmt.Fprintf(t.w, format, args...)
 }
 
 func (t *termIO) ReadLine(prompt string) (string, error) {
 	if prompt != "" {
-		fmt.Fprint(t.w, prompt)
+		_, _ = fmt.Fprint(t.w, prompt)
 	}
 	line, err := t.r.ReadString('\n')
 	if err != nil && line == "" {

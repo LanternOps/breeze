@@ -33,7 +33,7 @@ type fakeKey struct {
 }
 
 func (f *fakeIO) Print(format string, args ...any) {
-	f.transcript.WriteString(fmt.Sprintf(format, args...))
+	fmt.Fprintf(&f.transcript, format, args...)
 }
 
 func (f *fakeIO) ReadLine(prompt string) (string, error) {

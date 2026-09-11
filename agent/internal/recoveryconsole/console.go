@@ -99,7 +99,7 @@ func (c *Console) Run(ctx context.Context) error {
 		snapshotID = bs.Snapshot.SnapshotID
 	}
 
-	var identity rebuild.IdentityMode = rebuild.IdentityNew
+	identity := rebuild.IdentityNew
 	var marker *rebuild.Marker
 	if bs.Recovery != nil {
 		identity = rebuild.IdentityMode(bs.Recovery.Identity)
@@ -130,7 +130,7 @@ func (c *Console) Run(ctx context.Context) error {
 			reason := refusalReason(plan, planErr)
 			c.postProgress(ctx, server, token, bmr.ProgressUpdate{Status: statusForFailure(plan), Reason: reason})
 			c.IO.Print("Recovery cannot proceed: %s\n", reason)
-			action, err := c.offerFailureOptions()
+			action, err := c.offerFailureOptions(ci)
 			if err != nil {
 				return err
 			}
@@ -174,7 +174,7 @@ func (c *Console) Run(ctx context.Context) error {
 			reason := refusalReason(res, runErr)
 			c.postProgress(ctx, server, token, bmr.ProgressUpdate{Status: statusForFailure(res), Reason: reason})
 			c.IO.Print("Recovery failed: %s\n", reason)
-			action, err := c.offerFailureOptions()
+			action, err := c.offerFailureOptions(ci)
 			if err != nil {
 				return err
 			}
@@ -413,7 +413,17 @@ func (c *Console) confirmDisk(ctx context.Context, ci bool, answers Answers, dis
 	}
 }
 
-func (c *Console) offerFailureOptions() (string, error) {
+// offerFailureOptions prompts for [r]etry/[s]hell/[p]oweroff on a real
+// failure. In CI mode (ci=true) it never touches IO at all — breeze.ci=1
+// exists precisely so QEMU/CI can run unattended, and a hung ReadLine on a
+// tty with nothing connected to it (exactly what a headless CI VM's
+// console is) would otherwise wedge the whole run instead of failing it:
+// poweroff immediately, matching --after=poweroff's own "don't wait"
+// contract for the success path.
+func (c *Console) offerFailureOptions(ci bool) (string, error) {
+	if ci {
+		return "poweroff", nil
+	}
 	for {
 		line, err := c.IO.ReadLine("[r]etry  [s]hell  [p]oweroff: ")
 		if err != nil {

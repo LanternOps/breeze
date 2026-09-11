@@ -138,7 +138,7 @@ func ExchangeRecoveryCode(ctx context.Context, serverURL, code string) (string, 
 	if err != nil {
 		return "", nil, fmt.Errorf("bmr: exchange request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {

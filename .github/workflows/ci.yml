@@ -1827,6 +1827,63 @@ jobs:
         working-directory: agent
         run: go test -race ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
 
+  # Bare-metal recovery media end-to-end proof (W04b Task 4): builds the
+  # recovery ISO from the current tree, seeds a real (mmdebstrap-built,
+  # bootable) Debian snapshot, boots the ISO in QEMU against a fake
+  # recovery server in CI-unattended mode (breeze.ci=1), lets the console +
+  # rebuild engine partition/restore/reboot a fresh disk image, asserts
+  # every expected progress phase was reported, then boots that disk alone
+  # and asserts it reaches a login prompt. This is the assurance gate for
+  # the whole recovery-media surface — required, not continue-on-error.
+  recovery-media-e2e:
+    name: Recovery media E2E (QEMU)
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agent/go.sum
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends live-build debootstrap squashfs-tools xorriso grub-efi-amd64-bin mtools dosfstools qemu-system-x86 ovmf mmdebstrap python3
+
+      - name: Build helper + ISO
+        run: |
+          cd agent
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o breeze-backup-linux-amd64 ./cmd/breeze-backup
+          go build -o breeze-recovery-fakeserver ./cmd/breeze-recovery-fakeserver
+          sudo ./recovery-media/build.sh --arch amd64 --breeze-backup ./breeze-backup-linux-amd64 --version ci --out out/
+          bash ./recovery-media/build_test.sh out/breeze-recovery-linux-amd64.iso
+
+      - name: Seed snapshot + boot + rebuild + reboot
+        run: |
+          cd agent
+          export BREEZE_BACKUP_BIN="$PWD/breeze-backup-linux-amd64"
+          sudo -E env "PATH=$PATH" ./recovery-media/e2e/seed-snapshot.sh e2e-store
+          sudo -E env "PATH=$PATH" ./recovery-media/e2e/run-qemu.sh out/breeze-recovery-linux-amd64.iso e2e-store e2e-out
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: recovery-media-e2e-logs
+          path: |
+            agent/e2e-out/*.log
+            agent/e2e-out/progress.json
+            agent/e2e-out/fakeserver.log
+          retention-days: 14
+
   # ─── Go agent lint ────────────────────────────────────────────────────
   # The `lint` job above is JS/TS + compose guards only; the Go agent was
   # never vet/lint-gated in CI (golangci-lint lived only in agent/Makefile).
@@ -3276,7 +3333,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [changes, docs-check, lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
+    needs: [changes, docs-check, lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -3313,6 +3370,7 @@ jobs:
           BUILD_AGENT_RESULT: ${{ needs.build-agent.result }}
           TEST_AGENT_RESULT: ${{ needs.test-agent.result }}
           TEST_AGENT_WINDOWS_RESULT: ${{ needs.test-agent-windows.result }}
+          RECOVERY_MEDIA_E2E_RESULT: ${{ needs.recovery-media-e2e.result }}
           WINDOWS_RUNTIME_SMOKE_RESULT: ${{ needs.windows-runtime-smoke.result }}
           INTEGRATION_TEST_RESULT: ${{ needs.integration-test.result }}
           CHECK_MIGRATIONS_NONSUPERUSER_RESULT: ${{ needs.check-migrations-nonsuperuser.result }}
@@ -3365,6 +3423,7 @@ jobs:
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \
              [[ "${TEST_AGENT_RESULT}" != "success" ]] || \
              [[ "${TEST_AGENT_WINDOWS_RESULT}" != "success" ]] || \
+             [[ "${RECOVERY_MEDIA_E2E_RESULT}" != "success" ]] || \
              [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]] || \
              [[ "${INTEGRATION_TEST_RESULT}" != "success" ]] || \
              [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "success" ]] || \

@@ -13,6 +13,69 @@ import (
 // to — the fake System's Exists always reports true immediately).
 var partitionDeviceWaitTimeout = 10 * time.Second
 
+// mkfsBusyRetryAttempts/mkfsBusyRetryDelay bound a short retry around an
+// mkfs/mkswap call that fails with "device or resource busy" immediately
+// after Rescan. Rescan's udevadm settle waits for the kernel's udev EVENT
+// QUEUE to drain, not for every worker process an event spawned (e.g. a
+// blkid filesystem-probe rule firing on the newly-appeared partition
+// device) to actually finish and release its fd — a narrow, genuine race,
+// not merely "wait longer for the node to exist" (waitForPartitionDevices
+// already confirms the node exists before this ever runs). Package vars so
+// a test can shrink both. Found by the W04b QEMU end-to-end proof: a fresh
+// target disk's first mkfs.vfat call reproduced this consistently (2/2)
+// against a virtio-blk target under TCG emulation, where drastically
+// slower emulated execution makes a normally sub-millisecond probe-worker
+// window wide enough to lose the race.
+var (
+	mkfsBusyRetryAttempts = 5
+	mkfsBusyRetryDelay    = 500 * time.Millisecond
+)
+
+// isDeviceBusyOutput reports whether out (an mkfs/mkswap command's
+// stdout+stderr) is the specific "something else has this device node
+// open" failure the retry above targets — never a generic non-zero exit,
+// which could mean anything from a malformed filesystem UUID to a
+// genuinely wrong device and must keep failing provision immediately.
+func isDeviceBusyOutput(out []byte) bool {
+	s := strings.ToLower(string(out))
+	return strings.Contains(s, "device or resource busy") ||
+		strings.Contains(s, "resource busy") ||
+		// e2fsprogs' own safety check (mkfs.ext4/mkfs.xfs) phrases the
+		// identical "something else still has this partition open" race
+		// differently from the kernel's EBUSY errno text — same root
+		// cause the mkfs.vfat case above was found with (a udev probe
+		// worker's fd, or the kernel's own partition-table re-read, not
+		// yet released when this runs), different tool, different words.
+		// Found immediately after the vfat fix on the very next partition
+		// in the same W04b QEMU run: mkfs.vfat on /dev/vda1 succeeded via
+		// the retry above, then mkfs.ext4 on /dev/vda2 failed with this
+		// exact message on the first attempt.
+		strings.Contains(s, "apparently in use by the system")
+}
+
+// runMkfsWithBusyRetry runs one mkfs/mkswap invocation, retrying up to
+// mkfsBusyRetryAttempts times (with mkfsBusyRetryDelay between attempts,
+// cancellable via ctx) only while the failure is isDeviceBusyOutput — see
+// that function and mkfsBusyRetryAttempts's doc comment. Any other failure,
+// or exhausting the retry budget, returns immediately on the last attempt's
+// output/error.
+func runMkfsWithBusyRetry(ctx context.Context, sys System, name string, args ...string) ([]byte, error) {
+	var out []byte
+	var err error
+	for attempt := 1; attempt <= mkfsBusyRetryAttempts; attempt++ {
+		out, err = sys.Run(ctx, name, args...)
+		if err == nil || !isDeviceBusyOutput(out) || attempt == mkfsBusyRetryAttempts {
+			return out, err
+		}
+		select {
+		case <-ctx.Done():
+			return out, ctx.Err()
+		case <-time.After(mkfsBusyRetryDelay):
+		}
+	}
+	return out, err
+}
+
 // waitForPartitionDevices polls for every planned partition's device node
 // to exist before any mkfs/mount touches it. sgdisk/partprobe tell the
 // kernel about a new partition table; the /dev entry itself is materialized
@@ -125,7 +188,7 @@ func provision(ctx context.Context, r *run) error {
 			return fmt.Errorf("unsupported filesystem %q reached provision (preflight bug)", p.Filesystem)
 		}
 		args = append(args, dev)
-		if out, err := r.sys.Run(ctx, name, args...); err != nil {
+		if out, err := runMkfsWithBusyRetry(ctx, r.sys, name, args...); err != nil {
 			return fmt.Errorf("%s %s: %s: %w", name, dev, strings.TrimSpace(string(out)), err)
 		}
 		r.progress(PhaseProvision, "formatted "+dev, int64(i+1), int64(len(plan.Partitions)))
