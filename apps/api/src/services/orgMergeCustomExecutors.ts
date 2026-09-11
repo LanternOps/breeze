@@ -708,6 +708,44 @@ const mergeAuditBaselines: CustomMergeExecutor = async (loser, survivor) => {
 };
 
 // ---------------------------------------------------------------------------
+// service_deliverables — `service_deliverables_org_contract_name_uq (org_id,
+// COALESCE(contract_id, nil), name)` (2026-10-15-170000, feature #5573). A
+// repoint-dedupe DELETE would take the loser's `service_deliverable_occurrences`
+// and `service_deliverable_evidence` with it (both ON DELETE CASCADE) — that is
+// the delivered/waived history the customer portal shows, so it is never
+// disposable. Rename on collision instead, the audit_baselines move: the
+// suffix is deterministic, fires only on an actual collision, and
+// `left(name, 182)` keeps the result inside varchar(200). Contracts keep their
+// ids across a merge, so the collision key is evaluated on the pre-repoint
+// contract_id and stays correct after the move.
+// ---------------------------------------------------------------------------
+const NIL_UUID = sql`'00000000-0000-0000-0000-000000000000'::uuid`;
+
+const mergeServiceDeliverables: CustomMergeExecutor = async (loser, survivor) => {
+  const renamed = await run(sql`
+    UPDATE service_deliverables AS t
+       SET name = left(t.name, 182) || ' (merged ' || left(${uuid(loser)}::text, 8) || ')',
+           updated_at = now()
+     WHERE t.org_id = ${uuid(loser)}
+       AND EXISTS (
+         SELECT 1 FROM service_deliverables AS s
+          WHERE s.org_id = ${uuid(survivor)}
+            AND s.name = t.name
+            AND COALESCE(s.contract_id, ${NIL_UUID}) = COALESCE(t.contract_id, ${NIL_UUID})
+       )`);
+  const moved = await run(buildRepoint('service_deliverables', loser, survivor));
+  return {
+    moved,
+    dropped: 0,
+    notes: renamed > 0
+      ? [
+        `service_deliverables: renamed ${renamed} deliverable from the merged-away org whose name already existed under the survivor for the same contract (suffixed with the merged org id; occurrences and evidence kept)`,
+      ]
+      : [],
+  };
+};
+
+// ---------------------------------------------------------------------------
 // api_keys / enrollment_keys — the design doc is explicit that the loser's
 // org-bound capabilities are "revoked, not repointed" (controller ruling R2).
 // Repointing alone would hand the survivor a live credential that the merged
@@ -1152,6 +1190,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   contacts: mergeContacts,
   backup_configs: mergeBackupConfigs,
   audit_baselines: mergeAuditBaselines,
+  service_deliverables: mergeServiceDeliverables,
   pax8_orders: mergePax8Orders,
   fleet_findings: mergeFleetFindings,
   ai_agents: mergeAiAgents,

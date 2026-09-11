@@ -1,0 +1,149 @@
+{
+  "section": {
+    "title": "Serviceleistungen",
+    "empty": "Noch keine Leistungen. Fügen Sie die wiederkehrenden Berichte und Reviews hinzu, die diesem Kunden zustehen."
+  },
+  "table": {
+    "name": "Leistung",
+    "cadence": "Turnus",
+    "nextDue": "Nächste Fälligkeit",
+    "lastDelivered": "Zuletzt geliefert",
+    "status": "Status",
+    "portal": "Portal"
+  },
+  "cadence": {
+    "monthly": "Monatlich",
+    "quarterly": "Vierteljährlich",
+    "semiannual": "Halbjährlich",
+    "annual": "Jährlich",
+    "one_time": "Einmalig"
+  },
+  "status": {
+    "on_track": "Im Plan",
+    "due_soon": "Bald fällig",
+    "late": "Verspätet",
+    "missed": "Versäumt",
+    "inactive": "Inaktiv"
+  },
+  "occurrence": {
+    "status": {
+      "scheduled": "Geplant",
+      "open": "Offen",
+      "awaiting_evidence": "Nachweis ausstehend",
+      "delivered": "Geliefert",
+      "missed": "Versäumt",
+      "waived": "Erlassen"
+    }
+  },
+  "actions": {
+    "add": "Leistung hinzufügen",
+    "edit": "Bearbeiten",
+    "deactivate": "Deaktivieren",
+    "deliver": "Als geliefert markieren",
+    "waive": "Erlassen",
+    "reopen": "Wieder öffnen",
+    "reschedule": "Neu terminieren",
+    "addEvidence": "Nachweis hinzufügen",
+    "removeEvidence": "Nachweis entfernen",
+    "save": "Speichern",
+    "cancel": "Abbrechen"
+  },
+  "form": {
+    "name": "Name",
+    "description": "Beschreibung",
+    "contract": "Vertrag",
+    "noContract": "Keinem Vertrag zugeordnet",
+    "contractsUnavailable": "Die Verträge dieser Organisation konnten nicht geladen werden. Laden Sie die Seite neu, bevor Sie speichern.",
+    "cadence": "Turnus",
+    "anchorDueDate": "Erste Fälligkeit",
+    "effectiveFrom": "Gültig ab",
+    "effectiveUntil": "Gültig bis",
+    "leadDays": "Vorlaufzeit (Tage)",
+    "graceDays": "Kulanzfrist (Tage)",
+    "artifactRequired": "Nachweis vor dem Markieren als geliefert erforderlich",
+    "completionMode": {
+      "label": "Abschluss",
+      "explicit": "Von einem Techniker als geliefert markiert",
+      "on_ticket_resolve": "Geliefert, sobald das verknüpfte Ticket gelöst wird"
+    },
+    "autoEvidenceReport": "Berichtsläufe als Nachweis anhängen",
+    "owner": "Verantwortlich",
+    "ticketCategory": "Ticket-Kategorie",
+    "portalVisible": "Im Kundenportal anzeigen",
+    "sortOrder": "Sortierreihenfolge"
+  },
+  "drawer": {
+    "title": "Vorkommen",
+    "evidence": "Nachweis",
+    "noEvidence": "Kein Nachweis angehängt",
+    "late": "Verspätet",
+    "rescheduledFrom": "Verschoben von {{date}}",
+    "deliveryNote": "Lieferhinweis",
+    "waivedReason": "Grund für den Erlass",
+    "newDueDate": "Neue Fälligkeit"
+  },
+  "evidence": {
+    "reportRun": "Berichtslauf",
+    "document": "Dokument",
+    "reportRunId": "ID des Berichtslaufs"
+  },
+  "upcoming": {
+    "title": "Nächste 90 Tage",
+    "empty": "In den nächsten 90 Tagen ist nichts fällig."
+  },
+  "group": {
+    "noContract": "Kein Vertrag"
+  },
+  "errors": {
+    "evidenceRequired": "Hängen Sie einen Nachweis an, bevor Sie dieses Vorkommen als geliefert markieren.",
+    "duplicateName": "Für diese Organisation existiert bereits eine Leistung mit diesem Namen.",
+    "loadFailed": "Leistungen konnten nicht geladen werden.",
+    "saveFailed": "Leistung konnte nicht gespeichert werden.",
+    "actionFailed": "Vorkommen konnte nicht aktualisiert werden."
+  },
+  "confirm": {
+    "deactivate": "{{name}} deaktivieren? Offene Vorkommen werden geschlossen und keine neuen mehr geplant.",
+    "deleteKeyDate": "Den Stichtag {{label}} löschen?"
+  },
+  "keyDates": {
+    "title": "Stichtage",
+    "empty": "Keine Stichtage erfasst.",
+    "add": "Stichtag hinzufügen",
+    "label": "Bezeichnung",
+    "kind": {
+      "label": "Typ",
+      "insurance_renewal": "Versicherungsverlängerung",
+      "vendor_contract_end": "Ende eines Lieferantenvertrags",
+      "compliance_deadline": "Compliance-Frist",
+      "audit": "Audit",
+      "other": "Sonstiges"
+    },
+    "date": "Datum",
+    "recursAnnually": "Wiederholt sich jährlich",
+    "remindDaysBefore": "Erinnerung (Tage vorher)",
+    "portalVisible": "Im Kundenportal anzeigen",
+    "contractEnd": "Vertragsende",
+    "notes": "Notizen",
+    "owner": "Verantwortlich",
+    "edit": "Stichtag bearbeiten",
+    "delete": "Löschen",
+    "errors": {
+      "loadFailed": "Stichtage konnten nicht geladen werden.",
+      "saveFailed": "Stichtag konnte nicht gespeichert werden."
+    },
+    "toast": {
+      "saved": "Stichtag gespeichert",
+      "deleted": "Stichtag gelöscht"
+    }
+  },
+  "toast": {
+    "saved": "Leistung gespeichert",
+    "delivered": "Als geliefert markiert",
+    "waived": "Vorkommen erlassen",
+    "reopened": "Vorkommen wieder geöffnet",
+    "rescheduled": "Vorkommen neu terminiert",
+    "evidenceAdded": "Nachweis hinzugefügt",
+    "evidenceRemoved": "Nachweis entfernt",
+    "deactivated": "Leistung deaktiviert"
+  }
+}

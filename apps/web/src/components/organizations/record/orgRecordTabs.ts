@@ -17,6 +17,7 @@ export const ORG_RECORD_TABS = [
   'devices',
   'tickets',
   'billing',
+  'service',
   'activity',
 ] as const;
 
@@ -56,6 +57,9 @@ export const TAB_PERMISSION: Record<OrgRecordTab, ReadonlyArray<Grant>> = {
     { resource: 'invoices', action: 'read' },
     { resource: 'quotes', action: 'read' },
   ],
+  // Service deliverables (#5573 W01) live under the contracts read: they are
+  // what a contract promises, so anyone who can read contracts can see them.
+  service: [{ resource: 'contracts', action: 'read' }],
   activity: [{ resource: 'audit', action: 'read' }],
 };
 
