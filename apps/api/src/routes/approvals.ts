@@ -723,6 +723,18 @@ approvalRoutes.post('/:id/approve', async (c) => {
     proof = parsed.data;
   }
 
+  // #5601: an `approval_decide` grant from an earlier approve in this window,
+  // presented instead of a fresh ceremony. Validated as a uuid here so a
+  // malformed value is a 400 rather than reaching Redis as a key fragment;
+  // everything that matters (binding, digest, age, device liveness) is decided
+  // server-side in decideApprovalRequest, which fails closed to 403.
+  let stepUpGrantId: string | undefined;
+  if (raw && raw.stepUpGrantId !== undefined) {
+    const parsed = z.string().uuid().safeParse(raw.stepUpGrantId);
+    if (!parsed.success) return c.json({ error: 'Invalid step-up grant' }, 400);
+    stepUpGrantId = parsed.data;
+  }
+
   // L4 (critical) re-auth: the client may include a fresh `reauthPassword` to
   // satisfy the critical-tier re-authentication factor (spec §5). Verified
   // server-side here — a bad/rate-limited password short-circuits with the
@@ -760,6 +772,7 @@ approvalRoutes.post('/:id/approve', async (c) => {
       status: 'approved',
       proof,
       reauthVerified,
+      stepUpGrantId,
     }),
   );
 });

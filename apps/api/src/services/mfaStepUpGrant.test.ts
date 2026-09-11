@@ -22,7 +22,7 @@ const { redisMock, redisStore, ttls, getRedisMock } = vi.hoisted(() => {
 
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, passkeyRemovalResourceDigest } from './mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, passkeyRemovalResourceDigest } from './mfaStepUpGrant';
 
 const bind = (operation: 'add_factor' | 'rotate_recovery_codes' | 'register_approver_device') => ({
   userId: 'user-1',
@@ -230,5 +230,57 @@ describe('mfaStepUpGrant operation isolation', () => {
     await expect(validateStepUpGrant(id!, bind('register_approver_device'))).resolves.toBe(true);
     // Non-consuming: the record is still present afterward.
     expect(redisStore.has(`mfa:stepup:${id}`)).toBe(true);
+  });
+});
+
+/**
+ * #5601: the server-written `context` payload that lets a multi-use
+ * `approval_decide` grant carry WHAT its original ceremony achieved across the
+ * reuse window.
+ */
+describe('readStepUpGrant', () => {
+  it('returns the stored context when the binding matches', async () => {
+    const id = await mintStepUpGrant(bind('add_factor'), { level: 3, at: 123 });
+    await expect(readStepUpGrant(id!, bind('add_factor'))).resolves.toEqual({
+      context: { level: 3, at: 123 },
+    });
+  });
+
+  it('is non-consuming, so one grant serves many redeems', async () => {
+    const id = await mintStepUpGrant(bind('add_factor'), { level: 3 });
+    await expect(readStepUpGrant(id!, bind('add_factor'))).resolves.not.toBeNull();
+    await expect(readStepUpGrant(id!, bind('add_factor'))).resolves.not.toBeNull();
+    expect(redisStore.has(`mfa:stepup:${id}`)).toBe(true);
+  });
+
+  it('refuses — and does NOT leak the context — on a binding mismatch', async () => {
+    const id = await mintStepUpGrant(bind('add_factor'), { level: 3 });
+    await expect(readStepUpGrant(id!, bind('rotate_recovery_codes'))).resolves.toBeNull();
+    await expect(
+      readStepUpGrant(id!, { ...bind('add_factor'), sid: 'sid-2' }),
+    ).resolves.toBeNull();
+    await expect(
+      readStepUpGrant(id!, { ...bind('add_factor'), authEpoch: 99 }),
+    ).resolves.toBeNull();
+  });
+
+  it('reports an absent context as undefined rather than failing', async () => {
+    // Grants minted by every pre-#5601 operation store no context at all; they
+    // must stay readable rather than being mistaken for corrupt records.
+    const id = await mintStepUpGrant(bind('add_factor'));
+    await expect(readStepUpGrant(id!, bind('add_factor'))).resolves.toEqual({
+      context: undefined,
+    });
+  });
+
+  it('returns null for an unknown id', async () => {
+    await expect(readStepUpGrant('no-such-grant', bind('add_factor'))).resolves.toBeNull();
+  });
+
+  // The context is server-written payload, NOT something a caller presents, so
+  // including it in the equality check would make a legitimate redeem fail.
+  it('does not make the context part of the binding', async () => {
+    const id = await mintStepUpGrant(bind('add_factor'), { anything: 'at all' });
+    await expect(validateStepUpGrant(id!, bind('add_factor'))).resolves.toBe(true);
   });
 });
