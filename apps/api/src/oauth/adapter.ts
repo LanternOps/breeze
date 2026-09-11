@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   oauthAuthorizationCodes,
@@ -216,6 +216,27 @@ function extraField(payload: OidcPayload, key: string): unknown {
   return extra && typeof extra === 'object' ? (extra as Record<string, unknown>)[key] : undefined;
 }
 
+// Stamp `oauth_clients.last_used_at` when the client completes a real
+// authorization (an AuthorizationCode or RefreshToken is issued for it).
+// `cleanupStaleOauthClients` (provider.ts) treats `last_used_at IS NULL` as
+// "never used" and deletes such clients after DCR_STALE_CLIENT_TTL_MS with no
+// live grant. Before this stamp the column was only written on
+// re-registration, so every actively used public DCR client (Claude.ai
+// connector, Claude Code) was GC'd as soon as its refresh token lapsed and
+// then replayed a dead client_id forever (`invalid_client`, 2026-09-10).
+// Throttled to one write per hour per client so token refreshes stay cheap.
+const CLIENT_LAST_USED_STAMP_INTERVAL_MS = 60 * 60 * 1000;
+
+async function touchClientLastUsed(clientId: string, now: Date = new Date()): Promise<void> {
+  const threshold = new Date(now.getTime() - CLIENT_LAST_USED_STAMP_INTERVAL_MS);
+  await db.update(oauthClients)
+    .set({ lastUsedAt: now })
+    .where(and(
+      eq(oauthClients.id, clientId),
+      or(isNull(oauthClients.lastUsedAt), lt(oauthClients.lastUsedAt, threshold)),
+    ));
+}
+
 export class BreezeOidcAdapter {
   constructor(private readonly model: string) {}
 
@@ -245,6 +266,7 @@ export class BreezeOidcAdapter {
           target: oauthAuthorizationCodes.id,
           set: { payload, expiresAt: expiresAt! },
         });
+        await touchClientLastUsed(stringField(payload, 'clientId'));
       } else if (this.model === 'RefreshToken') {
         const [partnerId, orgId] = await Promise.all([
           requiredPartnerId(payload),
@@ -264,6 +286,7 @@ export class BreezeOidcAdapter {
           target: oauthRefreshTokens.id,
           set: { payload: storedPayload, expiresAt: expiresAt!, lastUsedAt: new Date() },
         });
+        await touchClientLastUsed(stringField(payload, 'clientId'));
       } else if (this.model === 'Session') {
         // Session.id === Session.jti; uid is a separate, longer-lived alias
         // used by Session.findByUid during token exchange. accountId is null
