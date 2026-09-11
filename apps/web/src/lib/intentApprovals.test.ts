@@ -204,6 +204,22 @@ describe('decideIntentApproval — supervised scope skips the ceremony (#5600)',
     expect(fetchWithAuth).toHaveBeenCalledTimes(1);
   });
 
+  it('supervised: a transport failure on the optimistic POST is toasted, not silent', async () => {
+    // The optimistic attempt runs outside runAction, which is what guarantees
+    // a toast on a thrown request everywhere else in this helper. Without its
+    // own catch the user would get inline card text only — and the POST must
+    // never be retried, since the server may well have received it.
+    fetchWithAuth.mockRejectedValue(new TypeError('Failed to fetch'));
+    const rejection = await decideIntentApproval('ap-1', 'approve', undefined, 'supervised').catch(
+      (e: unknown) => e,
+    );
+    expect(rejection).toBeInstanceOf(ActionError);
+    expect((rejection as ActionError).status).toBe(0);
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+    expect(runAction).not.toHaveBeenCalled();
+  });
+
   it('supervised deny: unchanged — no ceremony, reason carried', async () => {
     await decideIntentApproval('ap-1', 'deny', ' too risky ', 'supervised');
     await invokeCapturedRequest();

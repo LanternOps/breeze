@@ -7,6 +7,7 @@ import {
 } from '../stores/authenticator';
 import { i18n } from './i18n';
 import { ActionError, runAction } from './runAction';
+import { showToast } from '../components/shared/Toast';
 
 export type IntentDecisionOutcome = 'decided' | 'needs_device' | 'not_sole_approver';
 
@@ -216,13 +217,6 @@ export async function decideIntentApproval(
     }
   };
 
-  const post = () =>
-    fetchWithAuth(`/mobile/approvals/${approvalRequestId}/${decision}`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-      skipUnauthorizedRetry: true,
-    });
-
   if (decision === 'approve' && !supervisedApprove) {
     const noDevice = await collectProof();
     if (noDevice) return noDevice;
@@ -239,7 +233,29 @@ export async function decideIntentApproval(
   // stay in exactly one place.
   let settledResponse: Response | undefined;
   if (supervisedApprove) {
-    const firstAttempt = await post();
+    let firstAttempt: Response;
+    try {
+      // runaction-exempt: the optimistic proofless attempt (#5600). runAction
+      // toasts every failure it sees, and a 403 `step_up_required` here is
+      // RETRIED with the ceremony — toasting "register a device" a beat before
+      // the approval succeeds would be a lie. Nothing is swallowed: every other
+      // response is handed to the runAction call below untouched, and the catch
+      // below reproduces runAction's own transport-error toast.
+      firstAttempt = await fetchWithAuth(`/mobile/approvals/${approvalRequestId}/approve`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        skipUnauthorizedRetry: true,
+      });
+    } catch {
+      // A THROW (network failure, a lapsed refresh in fetchWithAuth) never
+      // reaches runAction on this branch, so reproduce its own transport-error
+      // shape here rather than letting the rejection escape untoasted — the
+      // one failure mode this optimistic attempt could otherwise report only
+      // as inline card text. Never retried: the POST may have been received.
+      const message = i18n.t('ai:aiApprovalDialog.decideFailed');
+      showToast({ message, type: 'error' });
+      throw new ActionError(message, 0);
+    }
     if (firstAttempt.status === 403) {
       const token = await firstAttempt
         .clone()
@@ -265,8 +281,16 @@ export async function decideIntentApproval(
     await runAction({
       // Kept inline rather than hoisted: the no-silent-mutations guard walks
       // parents for an enclosing runAction call, so a hoisted thunk reads as an
-      // unwrapped mutation even when passed straight in.
-      request: () => (settledResponse ? Promise.resolve(settledResponse) : post()),
+      // unwrapped mutation even when passed straight in. `settledResponse` is
+      // the supervised attempt above, already made and still unread.
+      request: () =>
+        settledResponse
+          ? Promise.resolve(settledResponse)
+          : fetchWithAuth(`/mobile/approvals/${approvalRequestId}/${decision}`, {
+              method: 'POST',
+              body: JSON.stringify(body),
+              skipUnauthorizedRetry: true,
+            }),
       errorFallback: i18n.t('ai:aiApprovalDialog.decideFailed'),
       // NO onUnauthorized here, deliberately. `treatUnauthorizedAsError` makes
       // runAction skip its 401 branch entirely, so the callback would be dead
