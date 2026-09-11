@@ -360,7 +360,20 @@ func (s *Server) appendProgress(rec progressRecord) {
 // containedPath resolves key under root, refusing to escape it (the same
 // contract providers.LocalProvider's own containedPath gives — this is a
 // separate, test-only copy since that one is unexported).
+// containedPath resolves an object key under the store root. Keys are
+// always relative, slash-separated object names under snapshots/<id>/, so
+// anything absolute, empty, or containing a ".." segment is rejected
+// outright (CodeQL go/path-injection recognises this shape; the prefix
+// check that follows is belt-and-braces for symlink-free roots).
 func containedPath(root, key string) (string, error) {
+	if key == "" || strings.HasPrefix(key, "/") || filepath.IsAbs(key) {
+		return "", fmt.Errorf("fakeserver: path %q is not a relative object key", key)
+	}
+	for _, seg := range strings.Split(key, "/") {
+		if seg == ".." {
+			return "", fmt.Errorf("fakeserver: path %q contains a parent segment", key)
+		}
+	}
 	full := filepath.Join(root, filepath.FromSlash(key))
 	rootClean := filepath.Clean(root) + string(filepath.Separator)
 	if !strings.HasPrefix(filepath.Clean(full)+string(filepath.Separator), rootClean) {
