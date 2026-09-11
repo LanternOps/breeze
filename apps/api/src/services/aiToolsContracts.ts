@@ -9,10 +9,12 @@
  *  - `manage_contracts` — create/update/delete draft contracts, add/remove
  *    lines, and run lifecycle actions.
  *
- * Org-scope guarded AT THE TOOL LAYER: each tool builds a `ContractActor` from
- * the AI session's auth context (partnerId + accessibleOrgIds) and calls
- * `listContracts` / `getContract`, which already enforce `requireOrgAccess` and
- * the defense-in-depth `inArray(contracts.orgId, actor.accessibleOrgIds)` filter.
+ * Scope is guarded AT THE TOOL LAYER to match the recurring-contract HTTP
+ * surface: only partner and system sessions may enter. Each tool then builds a
+ * `ContractActor` from the AI session's auth context (partnerId +
+ * accessibleOrgIds) and calls `listContracts` / `getContract`, which enforce
+ * `requireOrgAccess` and the defense-in-depth
+ * `inArray(contracts.orgId, actor.accessibleOrgIds)` filter.
  * A thrown `ContractServiceError` (e.g. ORG_DENIED, CONTRACT_NOT_FOUND) is
  * converted to a JSON error string rather than propagated. Activate/pause/
  * resume/cancel are approval-gated Tier 3 actions.
@@ -148,7 +150,10 @@ const CONTRACT_SITE_SCOPE_NOTE =
   + 'and such a contract may still have lines you cannot see. This is a restriction on your access, not an absence of data.';
 
 function partnerScopeRefusal(auth: AuthContext): string | null {
-  if (auth.scope === 'partner' || auth.scope === 'system') return null;
+  if (auth.scope === 'system') return null;
+  // SEC-144: a partner-scoped context with no partner identity is malformed —
+  // fail closed rather than hand the contract service a null-partner actor.
+  if (auth.scope === 'partner' && auth.partnerId) return null;
   return JSON.stringify({
     error: 'Contract access requires a partner-scoped session; organization-scoped callers cannot reach the '
       + 'matching HTTP routes either',

@@ -1568,6 +1568,12 @@ export const TOOL_ACTION_EXTRA_PERMISSIONS: Record<
     // organizations grant is the real authority being exercised.
     move_org: [{ resource: 'organizations', action: 'write' }],
   },
+  manage_invoices: {
+    // SEC-145 — materializing a contract line reads the contract, so the
+    // caller needs contracts:read on top of invoices:write. Per-action so
+    // unrelated invoice edits are not raised to contract-read authority.
+    add_contract_line: [{ resource: 'contracts', action: 'read' }],
+  },
 };
 
 // Per-tool rate limits: { limit, windowSeconds }
@@ -2564,6 +2570,22 @@ export async function checkToolPermission(
   // extra permission; denials keep the same first-failure ordering as the
   // old per-requirement loop.
   return checkPermissionRequirements(auth, resolution.requirements);
+}
+
+/** Check a tool against an already-fresh permission resolution. */
+export function checkToolPermissionForResolvedUser(
+  toolName: string,
+  input: Record<string, unknown>,
+  userPerms: import('./permissions').UserPermissions,
+): string | null {
+  const resolution = resolveToolPermissionRequirements(toolName, input);
+  if (!resolution.ok) return resolution.denial;
+  for (const requirement of resolution.requirements) {
+    if (!hasPermission(userPerms, requirement.resource, requirement.action)) {
+      return `Insufficient permissions: requires ${requirement.resource}.${requirement.action}`;
+    }
+  }
+  return null;
 }
 
 /**
