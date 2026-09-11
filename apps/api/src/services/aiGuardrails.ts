@@ -168,6 +168,7 @@ export const TIER2_READONLY_TOOLS = new Set<string>([
   'get_quote',
   'list_contracts',
   'list_invoices',
+  'list_org_documents',
   'list_quotes',
   'lookup_distributor_product',
   'search_catalog',
@@ -700,6 +701,14 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     pause: { resource: 'contracts', action: 'manage' },
     resume: { resource: 'contracts', action: 'manage' },
     cancel: { resource: 'contracts', action: 'manage' },
+  },
+  // Org document library (service deliverables W03): its own resource, not
+  // `contracts` — a technician may file documents without billing authority.
+  list_org_documents: { resource: 'documents', action: 'read' },
+  manage_org_documents: {
+    update_metadata: { resource: 'documents', action: 'write' },
+    set_portal_visibility: { resource: 'documents', action: 'write' },
+    supersede: { resource: 'documents', action: 'write' },
   },
   list_quotes: { resource: 'quotes', action: 'read' },
   get_quote: { resource: 'quotes', action: 'read' },

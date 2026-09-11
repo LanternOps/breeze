@@ -285,6 +285,8 @@ export const TOOL_TIERS = {
   list_contracts: 2,
   get_contract: 2,
   manage_contracts: 2,          // activate/pause/resume/cancel escalate to 3 in guardrails
+  list_org_documents: 2,
+  manage_org_documents: 2,
   search_catalog: 2,
   get_catalog_item: 2,
   lookup_distributor_product: 2,
@@ -2550,6 +2552,31 @@ export function createBreezeMcpServer(
         contractId: uuid,
       },
       makeHandler('get_contract', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_org_documents',
+      'List the current version of every document in an organization\'s library (runbooks, baselines, policies, exports, delivery evidence). Metadata only — never the file bytes. Read-only.',
+      {
+        orgId: uuid,
+        category: z.enum(['baseline', 'runbook', 'policy', 'evidence', 'report', 'export', 'other']).optional(),
+        includeSuperseded: z.boolean().optional(),
+      },
+      makeHandler('list_org_documents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_org_documents',
+      'Manage documents already in an organization\'s library: edit metadata, show or hide a document on the customer portal, or mark one document as the newer version of another. File content cannot be added here.',
+      {
+        action: z.enum(['update_metadata', 'set_portal_visibility', 'supersede']),
+        orgId: uuid,
+        documentId: uuid.optional(),
+        supersedesDocumentId: uuid.optional(),
+        portalVisible: z.boolean().optional(),
+        patch: z.record(z.string(), z.unknown()).optional(),
+      },
+      makeHandler('manage_org_documents', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
