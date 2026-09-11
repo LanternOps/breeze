@@ -1229,6 +1229,21 @@ export {
   type EvidenceRef,
 } from './serviceDeliverables';
 export {
+  templateOwnerScopeSchema,
+  createTemplateItemSchema,
+  updateTemplateItemSchema,
+  createTemplateSetSchema,
+  updateTemplateSetSchema,
+  listTemplateSetsQuerySchema,
+  applyTemplateSetSchema,
+  type CreateTemplateItemInput,
+  type UpdateTemplateItemInput,
+  type CreateTemplateSetInput,
+  type UpdateTemplateSetInput,
+  type ApplyTemplateSetInput,
+  type TemplateOwnerScope,
+} from './deliverableTemplates';
+export {
   keyDateKindSchema,
   createKeyDateSchema,
   updateKeyDateSchema,
