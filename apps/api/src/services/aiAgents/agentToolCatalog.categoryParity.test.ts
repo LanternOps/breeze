@@ -135,6 +135,11 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'get_vulnerability_report',
   'instant_boot_vm',
   'list_contracts',
+  // Service deliverables W02 (#5573): same content gap as the contracts family
+  // above — the AI Risk page has no deliverables/key-dates copy yet, and
+  // authoring a tier + description + category for them belongs with the
+  // customer-facing deliverables UI, not this wave.
+  'list_deliverables',
   'list_invoices',
   'list_organizations',
   'list_quotes',
@@ -152,10 +157,12 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'manage_browser_policy',
   'manage_catalog',
   'manage_contracts',
+  'manage_deliverables',
   'manage_dr_plan',
   'manage_hyperv_checkpoints',
   'manage_hyperv_vm',
   'manage_invoices',
+  'manage_key_dates',
   'manage_organizations',
   'manage_peripheral_policies',
   'manage_peripheral_policy',

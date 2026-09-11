@@ -153,6 +153,10 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('ticketMailboxPollWorker'),
   consumers('invoiceWorker'),
   consumers('contractWorker'),
+  // ONE initializer constructing TWO Workers, so both stable names are declared.
+  // They must match the attachWorkerObservability strings character for
+  // character — workerReadinessCoverage.test.ts diffs the two sets.
+  consumers('deliverableWorker', ['deliverableWorker', 'deliverableContractEventsWorker']),
   // Registry entries main added after Track C's merge base (wave 3.5d-b names;
   // registry entry name == consumer name). Rows 1-3 and 10-12 already attached
   // under exactly these names on main; rows 4-9 (authBrowserTransitionCleanup
