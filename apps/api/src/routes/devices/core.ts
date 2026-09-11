@@ -263,7 +263,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
   'backup_chains', 'backup_jobs', 'backup_sla_events',
-  'backup_snapshots', 'backup_verifications',
+  'backup_snapshots', 'backup_verifications', 'bare_metal_recoveries',
   'brain_device_context', 'browser_extensions', 'browser_policy_violations',
   'capacity_predictions',
   'cis_baseline_results', 'cis_remediation_actions',
@@ -475,6 +475,7 @@ export const DEVICE_SITE_DENORMALIZED_TABLES = [
  * The test in cascadeDelete.test.ts will fail CI if you forget.
  */
 const CORE_DEVICE_CASCADE_DELETE_TABLES = [
+  'bare_metal_recoveries',
   'offline_transition_effects',
   // recovery_tokens & backup_chains FK to backup_snapshots (no cascade),
   // so delete them first, then restore_jobs → backup_snapshots → backup_jobs

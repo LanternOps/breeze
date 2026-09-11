@@ -41,6 +41,7 @@ export * from './softwarePolicies';
 export * from './deployments';
 export * from './backup';
 export * from './recoveryTokens';
+export * from './bareMetalRecoveries';
 export * from './recoveryAuthorizationSubject';
 export * from './storageEncryption';
 export * from './backupVerification';
