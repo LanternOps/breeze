@@ -502,3 +502,49 @@ func TestRunBackupContext_JournalHardExclude_MatchesVSSShadowPath(t *testing.T) 
 		}
 	}
 }
+
+// Review fix (#5493): the journal directory must never appear in the
+// manifest — not even when it ALSO happens to match a user-configured
+// exclude pattern broad enough to catch it by name (e.g. an explicit
+// "**/backup-journal/**" exclude). Before the fix, the walker's dir branch
+// checked the pattern-match branch before the journalDirs hard-exclude, so
+// a directory that was BOTH the journal dir AND pattern-excluded got
+// force-recorded as a Placeholder KindDir manifest entry — reintroducing
+// exactly what #5581 was meant to prevent. Sibling of
+// TestRunBackupContext_JournalHardExclude_MatchesVSSShadowPath above (which
+// covers the VSS-shadow-path case); no VSS involved here.
+func TestRunBackupContext_JournalHardExclude_WinsOverMatchingUserExclude(t *testing.T) {
+	srcDir := t.TempDir()
+	journalDir := filepath.Join(srcDir, "backup-journal")
+	if err := os.MkdirAll(journalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	createTempFile(t, journalDir, "backup-journal-deadbeefdeadbeef.jsonl", "{\"snapshotId\":\"stale\"}\n")
+	createTempFile(t, srcDir, "real.txt", "keep me")
+
+	provider := newMockProvider()
+	mgr := NewBackupManager(BackupConfig{
+		Provider: provider,
+		Paths:    []string{srcDir},
+		// Broad enough to ALSO match the journal dir by name — the
+		// scenario that must not force a manifest entry for it.
+		Excludes:   []string{"**/backup-journal/**"},
+		StagingDir: journalDir,
+	})
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("RunBackupContext failed: %v", err)
+	}
+	if job.Snapshot == nil {
+		t.Fatal("expected a snapshot")
+	}
+	if len(job.Snapshot.Files) != 1 || job.Snapshot.Files[0].SourcePath != filepath.Join(srcDir, "real.txt") {
+		t.Fatalf("expected only real.txt in the snapshot — the journal dir must get no entry, forced or not, got %+v", job.Snapshot.Files)
+	}
+	for _, call := range provider.uploadCalls {
+		if strings.Contains(call.localPath, "backup-journal") {
+			t.Errorf("must never upload a file from the checkpoint-journal directory, got upload of %q", call.localPath)
+		}
+	}
+}
