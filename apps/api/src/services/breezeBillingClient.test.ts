@@ -307,6 +307,25 @@ describe('breezeBillingClient', () => {
       await expect(client.getSignupRiskHold('p1')).resolves.toEqual({ status: 'none' });
     });
 
+    it.each([
+      ['empty string', ''],
+      ['whitespace', '   '],
+      ['zero', 0],
+      ['false', false],
+      ['an object', {}],
+    ])('treats a hold row whose releasedAt is %s as still open (fail closed)', async (_name, releasedAt) => {
+      const { client } = clientWith(okResponse({
+        partnerId: 'p1',
+        holds: [{ state: 'hold', releasedAt }],
+      }));
+      await expect(client.getSignupRiskHold('p1')).resolves.toEqual({ status: 'hold' });
+    });
+
+    it('treats an absent releasedAt field as still open', async () => {
+      const { client } = clientWith(okResponse({ partnerId: 'p1', holds: [{ state: 'hold' }] }));
+      await expect(client.getSignupRiskHold('p1')).resolves.toEqual({ status: 'hold' });
+    });
+
     it('reports pass when the only unreleased row is a pass', async () => {
       const { client } = clientWith(okResponse({
         partnerId: 'p1',

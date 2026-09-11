@@ -47,8 +47,19 @@ type SignupRiskHoldRow = { state?: unknown; releasedAt?: unknown };
  * rows count. An unrecognised state is treated as a hold: a state we do not
  * know the semantics of must never read as "clear".
  */
+/**
+ * A row counts as released only on an affirmative, well-formed timestamp.
+ * `releasedAt` arrives as untrusted JSON from a separate service, so anything
+ * else — `null`, absent, `''`, `0`, `false`, an object — leaves the row OPEN.
+ * Defaulting the other way would let a serialization quirk on the billing side
+ * silently clear a real hold.
+ */
+function isReleased(value: unknown): boolean {
+  return typeof value === 'string' && value.trim() !== '';
+}
+
 export function deriveSignupRiskHoldStatus(holds: SignupRiskHoldRow[]): SignupRiskHoldStatus {
-  const open = holds.filter((row) => row.releasedAt === null || row.releasedAt === undefined);
+  const open = holds.filter((row) => !isReleased(row.releasedAt));
   if (open.length === 0) return 'none';
   const states = open.map((row) => (typeof row.state === 'string' ? row.state : ''));
   if (states.some((state) => state === 'hold' || !['review_pending', 'pass', 'released'].includes(state))) {
