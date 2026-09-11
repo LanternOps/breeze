@@ -191,7 +191,12 @@
       "collision": "Estas entregas já existem no destino: {{names}}",
       "duplicateSetName": "Já existe um conjunto de modelos com este nome.",
       "duplicateItemName": "Já existe um item com este nome no conjunto.",
-      "partnerWideDenied": "Gerenciar modelos válidos para todo o parceiro exige acesso completo à organização do parceiro."
+      "partnerWideDenied": "Gerenciar modelos válidos para todo o parceiro exige acesso completo à organização do parceiro.",
+      "loadFailed": "Não foi possível carregar os conjuntos de modelos.",
+      "saveFailed": "Não foi possível salvar o conjunto de modelos.",
+      "deleteFailed": "Não foi possível excluir o conjunto de modelos.",
+      "itemSaveFailed": "Não foi possível salvar a entrega.",
+      "itemDeleteFailed": "Não foi possível remover a entrega."
     },
     "toast": {
       "setSaved": "Conjunto de modelos salvo",

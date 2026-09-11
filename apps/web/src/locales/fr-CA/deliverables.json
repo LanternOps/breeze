@@ -191,7 +191,12 @@
       "collision": "Ces livrables existent déjà sur la cible : {{names}}",
       "duplicateSetName": "Un ensemble de modèles portant ce nom existe déjà.",
       "duplicateItemName": "Un élément portant ce nom existe déjà dans l'ensemble.",
-      "partnerWideDenied": "La gestion des modèles valables pour tout le partenaire nécessite un accès complet à l'organisation partenaire."
+      "partnerWideDenied": "La gestion des modèles valables pour tout le partenaire nécessite un accès complet à l'organisation partenaire.",
+      "loadFailed": "Impossible de charger les ensembles de modèles.",
+      "saveFailed": "Impossible d'enregistrer l'ensemble de modèles.",
+      "deleteFailed": "Impossible de supprimer l'ensemble de modèles.",
+      "itemSaveFailed": "Impossible d'enregistrer le livrable.",
+      "itemDeleteFailed": "Impossible de retirer le livrable."
     },
     "toast": {
       "setSaved": "Ensemble de modèles enregistré",

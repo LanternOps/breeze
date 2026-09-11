@@ -191,7 +191,12 @@
       "collision": "Diese Leistungen existieren bereits im Ziel: {{names}}",
       "duplicateSetName": "Ein Vorlagenset mit diesem Namen existiert bereits.",
       "duplicateItemName": "Ein Eintrag mit diesem Namen existiert bereits in diesem Set.",
-      "partnerWideDenied": "Zum Verwalten partnerweiter Vorlagen ist vollständiger Zugriff auf die Partnerorganisation erforderlich."
+      "partnerWideDenied": "Zum Verwalten partnerweiter Vorlagen ist vollständiger Zugriff auf die Partnerorganisation erforderlich.",
+      "loadFailed": "Vorlagensets konnten nicht geladen werden.",
+      "saveFailed": "Vorlagenset konnte nicht gespeichert werden.",
+      "deleteFailed": "Vorlagenset konnte nicht gelöscht werden.",
+      "itemSaveFailed": "Leistung konnte nicht gespeichert werden.",
+      "itemDeleteFailed": "Leistung konnte nicht entfernt werden."
     },
     "toast": {
       "setSaved": "Vorlagenset gespeichert",

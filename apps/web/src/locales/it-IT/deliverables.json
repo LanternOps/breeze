@@ -191,7 +191,12 @@
       "collision": "Questi deliverable esistono già sulla destinazione: {{names}}",
       "duplicateSetName": "Esiste già un set di modelli con questo nome.",
       "duplicateItemName": "Esiste già un elemento con questo nome nel set.",
-      "partnerWideDenied": "La gestione dei modelli validi per tutto il partner richiede l'accesso completo all'organizzazione partner."
+      "partnerWideDenied": "La gestione dei modelli validi per tutto il partner richiede l'accesso completo all'organizzazione partner.",
+      "loadFailed": "Impossibile caricare i set di modelli.",
+      "saveFailed": "Impossibile salvare il set di modelli.",
+      "deleteFailed": "Impossibile eliminare il set di modelli.",
+      "itemSaveFailed": "Impossibile salvare il deliverable.",
+      "itemDeleteFailed": "Impossibile rimuovere il deliverable."
     },
     "toast": {
       "setSaved": "Set di modelli salvato",

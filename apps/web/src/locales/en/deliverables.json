@@ -191,7 +191,12 @@
       "collision": "These deliverables already exist on the target: {{names}}",
       "duplicateSetName": "A template set with this name already exists.",
       "duplicateItemName": "An item with this name already exists in the set.",
-      "partnerWideDenied": "Managing partner-wide templates requires full partner organization access."
+      "partnerWideDenied": "Managing partner-wide templates requires full partner organization access.",
+      "loadFailed": "Could not load template sets.",
+      "saveFailed": "Could not save the template set.",
+      "deleteFailed": "Could not delete the template set.",
+      "itemSaveFailed": "Could not save the deliverable.",
+      "itemDeleteFailed": "Could not remove the deliverable."
     },
     "toast": {
       "setSaved": "Template set saved",

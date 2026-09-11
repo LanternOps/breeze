@@ -191,7 +191,12 @@
       "collision": "Estos entregables ya existen en el destino: {{names}}",
       "duplicateSetName": "Ya existe un conjunto de plantillas con este nombre.",
       "duplicateItemName": "Ya existe un elemento con este nombre en el conjunto.",
-      "partnerWideDenied": "Administrar plantillas de todo el partner requiere acceso completo a la organización del partner."
+      "partnerWideDenied": "Administrar plantillas de todo el partner requiere acceso completo a la organización del partner.",
+      "loadFailed": "No se pudieron cargar los conjuntos de plantillas.",
+      "saveFailed": "No se pudo guardar el conjunto de plantillas.",
+      "deleteFailed": "No se pudo eliminar el conjunto de plantillas.",
+      "itemSaveFailed": "No se pudo guardar el entregable.",
+      "itemDeleteFailed": "No se pudo quitar el entregable."
     },
     "toast": {
       "setSaved": "Conjunto de plantillas guardado",
