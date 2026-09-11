@@ -16,6 +16,7 @@ import { isInMaintenance } from "../../lib/maintenanceResource";
 import type { Device, DeviceStatus, OSType } from "./DeviceList";
 import type { DeviceActionOptions } from "./DeviceActions";
 import { fetchWithAuth } from "../../stores/auth";
+import { useRecentsStore } from "../../stores/recentsStore";
 import {
   sendDeviceCommand,
   executeScript,
@@ -89,6 +90,8 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
       const response = await fetchWithAuth(`/devices/${deviceId}`);
       if (!response.ok) {
         if (response.status === 404) {
+          // Gone for good — drop it from the sidebar's recent devices.
+          useRecentsStore.getState().forgetDevice(deviceId);
           throw new Error("Device not found");
         }
         throw new Error("Failed to fetch device");
@@ -279,6 +282,18 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
     }
     return () => setPageContext(null);
   }, [device, setPageContext]);
+
+  // Remember this device for the sidebar's recent-devices rows and Cmd+K.
+  // `recentsUserId` is a dependency on purpose: on a direct page load the
+  // device fetch can resolve before GlobalShortcuts has hydrated the store for
+  // the signed-in user (recordDevice no-ops until then), so re-run once it has.
+  const recordRecentDevice = useRecentsStore((s) => s.recordDevice);
+  const recentsUserId = useRecentsStore((s) => s.userId);
+  const recentName = device ? device.displayName || device.hostname : null;
+  useEffect(() => {
+    if (!device || !recentName || !recentsUserId) return;
+    recordRecentDevice({ id: device.id, name: recentName, orgId: device.orgId });
+  }, [device?.id, device?.orgId, recentName, recentsUserId, recordRecentDevice]);
 
   const handleBack = () => {
     void navigateTo("/devices");

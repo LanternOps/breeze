@@ -31,6 +31,7 @@ vi.mock('../../lib/authScope', () => ({ getJwtClaims: () => ({ scope: 'partner' 
 vi.mock('./BrandHeader', () => ({ default: () => null }));
 
 import Sidebar, { navSections, topLevelNav } from './Sidebar';
+import { GO_TO_SHORTCUTS } from '../../lib/keyboard/goToShortcuts';
 import { i18n, loadLocale } from '../../lib/i18n';
 import en from '../../locales/en/common.json';
 import ptBR from '../../locales/pt-BR/common.json';
@@ -145,13 +146,29 @@ describe('navSections structure (#1321, #1324)', () => {
   });
 });
 
+describe('go-to keyboard chords (g then key)', () => {
+  it('every chord targets a top-level nav item and reuses its label key', () => {
+    for (const shortcut of GO_TO_SHORTCUTS) {
+      const item = topLevelNav.find((nav) => nav.href === shortcut.href);
+      expect(item, `no top-level nav item for g ${shortcut.key} → ${shortcut.href}`).toBeDefined();
+      expect(shortcut.labelKey).toBe(item!.labelKey);
+    }
+  });
+
+  it('uses each key at most once', () => {
+    const keys = GO_TO_SHORTCUTS.map((s) => s.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys.every((k) => /^[a-z]$/.test(k))).toBe(true);
+  });
+});
+
 describe('sidebar i18n seed', () => {
   it('renders pt-BR top-level labels when selected', async () => {
     await i18n.changeLanguage('pt-BR');
     render(<Sidebar currentPath="/" />);
 
     expect(await screen.findByText('Painel')).toBeInTheDocument();
-    expect(screen.getByText('Dispositivos')).toBeInTheDocument();
+    expect(screen.getByText('Dispositivos e ativos')).toBeInTheDocument();
     expect(screen.queryByText('Dashboard')).not.toBeInTheDocument();
   });
 

@@ -10,6 +10,7 @@ import AdminSessionManager from '../components/auth/AdminSessionManager';
 import AccountInactiveGuard from '../components/auth/AccountInactiveGuard';
 import AiChatSidebar from '../components/ai/AiChatSidebar';
 import HelpPanel from '../components/help/HelpPanel';
+import GlobalShortcuts from '../components/layout/GlobalShortcuts';
 import OnboardingTour from '../components/onboarding/OnboardingTour';
 import ToastContainer from '../components/shared/Toast';
 import WhatsNewSplash from '../components/whatsNew/WhatsNewSplash';
@@ -61,6 +62,9 @@ const accentClass = getAccentClass(currentPath);
   </div>
   <AiChatSidebar client:load transition:persist />
   <HelpPanel client:load transition:persist />
+  {/* Keyboard shortcuts (g-chords, /, ?, [), the recents recorder and the
+      shortcuts cheat sheet — see GlobalShortcuts.tsx. */}
+  <GlobalShortcuts client:load transition:persist />
   <ToastContainer client:load transition:persist />
   <WhatsNewSplash client:load transition:persist />
   <OnboardingTour client:idle />

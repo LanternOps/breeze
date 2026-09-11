@@ -5,7 +5,7 @@
   "nav": {
     "fleetPosture": "Flottenstatus",
     "dashboard": "Dashboard",
-    "devices": "Geräte",
+    "devices": "Geräte & Assets",
     "alerts": "Warnmeldungen",
     "approvals": "Genehmigungen",
     "pendingApprovals": "{{count}} ausstehende Genehmigungen",
@@ -713,7 +713,19 @@
         "scripts": "Skripte",
         "alerts": "Warnmeldungen",
         "users": "Benutzer",
-        "settings": "Einstellungen"
+        "settings": "Einstellungen",
+        "recent-devices": "Zuletzt geöffnete Geräte",
+        "recent-pages": "Zuletzt besucht"
+      },
+      "actions": {
+        "newDevice": "Neues Gerät",
+        "newDeviceDescription": "Gerät zur Flotte hinzufügen",
+        "runScript": "Skript ausführen",
+        "runScriptDescription": "Ein Skript auf Geräten ausführen",
+        "alertRules": "Alarmregeln",
+        "alertRulesDescription": "Alarmierung in Konfigurationsrichtlinien verwalten",
+        "keyboardShortcuts": "Tastenkürzel",
+        "keyboardShortcutsDescription": "Alle Tasten und Tastenfolgen auf einer Karte"
       }
     },
     "notifications": {
@@ -753,7 +765,10 @@
       "collapse": "Seitenleiste einklappen",
       "expand": "Seitenleiste ausklappen",
       "collapseSections": "Alle Bereiche einklappen",
-      "closeMenu": "Menü schließen"
+      "closeMenu": "Menü schließen",
+      "recentDevices": "Zuletzt geöffnete Geräte",
+      "hideRecentDevices": "Zuletzt geöffnete Geräte ausblenden",
+      "showRecentDevices": "Zuletzt geöffnete Geräte anzeigen"
     },
     "orgRequired": {
       "title": "Organisation auswählen",
@@ -764,6 +779,20 @@
       "title": "Organisationen konnten nicht geladen werden",
       "description": "Beim Laden Ihrer Organisationsliste ist ein Fehler aufgetreten. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
       "retry": "Erneut versuchen"
+    },
+    "shortcuts": {
+      "title": "Tastenkürzel",
+      "general": "Allgemein",
+      "goTo": "Gehe zu",
+      "goToHint": "g drücken, loslassen, dann die Taste.",
+      "then": "dann",
+      "search": "Breeze durchsuchen",
+      "searchSlash": "Suche (öffnet auch mit dieser Taste)",
+      "cycleSidebar": "Seitenleisten-Modus wechseln",
+      "help": "Hilfebereich öffnen",
+      "showThis": "Diese Karte anzeigen",
+      "close": "Dialog oder Menü schließen",
+      "typingNote": "Einzeltasten-Kürzel pausieren, während Sie in ein Feld tippen."
     }
   },
   "migrationBanner": {

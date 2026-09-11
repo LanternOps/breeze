@@ -1876,7 +1876,7 @@
     "refresh": "Actualiser",
     "selectedOrganization": "L’organisation sélectionnée",
     "subtitle": "Gérez et surveillez votre flotte.",
-    "title": "Dispositifs",
+    "title": "Dispositifs et actifs",
     "toasts": {
       "actionFailed": "Échec de {{action}} sur {{hostname}}",
       "advancedFilterFailed": "Échec du chargement du filtre avancé — aucun appareil affiché. Modifiez ou effacez le filtre pour réessayer.",

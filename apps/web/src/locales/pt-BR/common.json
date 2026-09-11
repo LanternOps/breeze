@@ -5,7 +5,7 @@
   "nav": {
     "fleetPosture": "Postura da frota",
     "dashboard": "Painel",
-    "devices": "Dispositivos",
+    "devices": "Dispositivos e ativos",
     "alerts": "Alertas",
     "approvals": "Aprovações",
     "pendingApprovals": "{{count}} aprovações pendentes",
@@ -713,7 +713,19 @@
         "scripts": "Scripts",
         "alerts": "Alertas",
         "users": "Usuários",
-        "settings": "Configurações"
+        "settings": "Configurações",
+        "recent-devices": "Dispositivos recentes",
+        "recent-pages": "Visitados recentemente"
+      },
+      "actions": {
+        "newDevice": "Novo dispositivo",
+        "newDeviceDescription": "Adicionar um dispositivo à sua frota",
+        "runScript": "Executar script",
+        "runScriptDescription": "Executar um script nos dispositivos",
+        "alertRules": "Regras de alerta",
+        "alertRulesDescription": "Gerenciar alertas nas Políticas de configuração",
+        "keyboardShortcuts": "Atalhos de teclado",
+        "keyboardShortcutsDescription": "Todas as teclas e sequências em um só cartão"
       }
     },
     "notifications": {
@@ -753,7 +765,10 @@
       "collapse": "Recolher barra lateral",
       "expand": "Expandir barra lateral",
       "collapseSections": "Recolher todas as seções",
-      "closeMenu": "Fechar menu"
+      "closeMenu": "Fechar menu",
+      "recentDevices": "Dispositivos recentes",
+      "hideRecentDevices": "Ocultar dispositivos recentes",
+      "showRecentDevices": "Mostrar dispositivos recentes"
     },
     "orgRequired": {
       "title": "Selecione uma organização",
@@ -764,6 +779,20 @@
       "title": "Não foi possível carregar suas organizações",
       "description": "Ocorreu um erro ao carregar a lista de organizações. Verifique sua conexão e tente novamente.",
       "retry": "Tentar novamente"
+    },
+    "shortcuts": {
+      "title": "Atalhos de teclado",
+      "general": "Geral",
+      "goTo": "Ir para",
+      "goToHint": "Pressione g, solte e depois a tecla.",
+      "then": "depois",
+      "search": "Pesquisar no Breeze",
+      "searchSlash": "Pesquisa (também abre com esta tecla)",
+      "cycleSidebar": "Alternar o modo da barra lateral",
+      "help": "Abrir o painel de ajuda",
+      "showThis": "Mostrar este cartão",
+      "close": "Fechar uma caixa de diálogo ou menu",
+      "typingNote": "Atalhos de uma tecla ficam pausados enquanto você digita em um campo."
     }
   },
   "migrationBanner": {

@@ -5,7 +5,7 @@
   "nav": {
     "fleetPosture": "Filo Duruşu",
     "dashboard": "Kontrol Paneli",
-    "devices": "Cihazlar",
+    "devices": "Cihazlar ve Varlıklar",
     "alerts": "Uyarılar",
     "approvals": "Onaylar",
     "pendingApprovals": "{{count}} bekleyen onay",
@@ -713,7 +713,19 @@
         "scripts": "Komut Dosyaları",
         "alerts": "Uyarılar",
         "users": "Kullanıcılar",
-        "settings": "Ayarlar"
+        "settings": "Ayarlar",
+        "recent-devices": "Son açılan cihazlar",
+        "recent-pages": "Son ziyaret edilenler"
+      },
+      "actions": {
+        "newDevice": "Yeni cihaz",
+        "newDeviceDescription": "Filonuza bir cihaz ekleyin",
+        "runScript": "Betik çalıştır",
+        "runScriptDescription": "Cihazlarda bir betik çalıştırın",
+        "alertRules": "Uyarı kuralları",
+        "alertRulesDescription": "Yapılandırma Politikalarında uyarıları yönetin",
+        "keyboardShortcuts": "Klavye kısayolları",
+        "keyboardShortcutsDescription": "Tüm tuşlar ve tuş dizileri tek kartta"
       }
     },
     "notifications": {
@@ -753,7 +765,10 @@
       "collapse": "Kenar çubuğunu daralt",
       "expand": "Kenar çubuğunu genişlet",
       "collapseSections": "Tüm bölümleri daralt",
-      "closeMenu": "Menüyü kapat"
+      "closeMenu": "Menüyü kapat",
+      "recentDevices": "Son açılan cihazlar",
+      "hideRecentDevices": "Son açılan cihazları gizle",
+      "showRecentDevices": "Son açılan cihazları göster"
     },
     "orgRequired": {
       "title": "Bir kuruluş seçin",
@@ -764,6 +779,20 @@
       "title": "Kuruluşlarınız yüklenemedi",
       "description": "Kuruluş listeniz yüklenirken bir şeyler ters gitti. Bağlantınızı kontrol edip tekrar deneyin.",
       "retry": "Tekrar dene"
+    },
+    "shortcuts": {
+      "title": "Klavye kısayolları",
+      "general": "Genel",
+      "goTo": "Şuraya git",
+      "goToHint": "g tuşuna basın, bırakın, sonra tuşa basın.",
+      "then": "sonra",
+      "search": "Breeze'de ara",
+      "searchSlash": "Arama (bu tuşla da açılır)",
+      "cycleSidebar": "Kenar çubuğu modunu değiştir",
+      "help": "Yardım panelini aç",
+      "showThis": "Bu kartı göster",
+      "close": "Bir iletişim kutusunu veya menüyü kapat",
+      "typingNote": "Bir alana yazarken tek tuşlu kısayollar duraklatılır."
     }
   },
   "migrationBanner": {

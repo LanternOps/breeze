@@ -5,7 +5,7 @@
   "nav": {
     "fleetPosture": "Postura della flotta",
     "dashboard": "Dashboard",
-    "devices": "Dispositivi",
+    "devices": "Dispositivi e asset",
     "alerts": "Avvisi",
     "approvals": "Approvazioni",
     "pendingApprovals": "{{count}} approvazioni in attesa",
@@ -713,7 +713,19 @@
         "scripts": "Script",
         "alerts": "Avvisi",
         "users": "Utenti",
-        "settings": "Impostazioni"
+        "settings": "Impostazioni",
+        "recent-devices": "Dispositivi recenti",
+        "recent-pages": "Visitati di recente"
+      },
+      "actions": {
+        "newDevice": "Nuovo dispositivo",
+        "newDeviceDescription": "Aggiungi un dispositivo alla flotta",
+        "runScript": "Esegui script",
+        "runScriptDescription": "Esegui uno script sui dispositivi",
+        "alertRules": "Regole di avviso",
+        "alertRulesDescription": "Gestisci gli avvisi nelle policy di configurazione",
+        "keyboardShortcuts": "Scorciatoie da tastiera",
+        "keyboardShortcutsDescription": "Tutti i tasti e le sequenze in un'unica scheda"
       }
     },
     "notifications": {
@@ -753,7 +765,10 @@
       "collapse": "Comprimi la barra laterale",
       "expand": "Espandi la barra laterale",
       "collapseSections": "Comprimi tutte le sezioni",
-      "closeMenu": "Chiudi menu"
+      "closeMenu": "Chiudi menu",
+      "recentDevices": "Dispositivi recenti",
+      "hideRecentDevices": "Nascondi dispositivi recenti",
+      "showRecentDevices": "Mostra dispositivi recenti"
     },
     "orgRequired": {
       "title": "Seleziona un'organizzazione",
@@ -764,6 +779,20 @@
       "title": "Impossibile caricare le tue organizzazioni",
       "description": "Qualcosa è andato storto durante il caricamento dell'elenco della tua organizzazione. Controlla la connessione e riprova.",
       "retry": "Riprova"
+    },
+    "shortcuts": {
+      "title": "Scorciatoie da tastiera",
+      "general": "Generali",
+      "goTo": "Vai a",
+      "goToHint": "Premi g, rilascia, poi il tasto.",
+      "then": "poi",
+      "search": "Cerca in Breeze",
+      "searchSlash": "Ricerca (si apre anche con questo tasto)",
+      "cycleSidebar": "Cambia la modalità della barra laterale",
+      "help": "Apri il pannello di aiuto",
+      "showThis": "Mostra questa scheda",
+      "close": "Chiudi una finestra di dialogo o un menu",
+      "typingNote": "Le scorciatoie a tasto singolo sono sospese mentre digiti in un campo."
     }
   },
   "migrationBanner": {

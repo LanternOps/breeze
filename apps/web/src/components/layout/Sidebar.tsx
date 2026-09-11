@@ -64,6 +64,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
+import { useRecentsStore } from '../../stores/recentsStore';
+import { SIDEBAR_CYCLE_MODE_EVENT } from '../../lib/keyboard/useGlobalShortcuts';
 import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { SERVICE_MANAGEMENT_MODES, useOrgStore, type ServiceManagementMode } from '../../stores/orgStore';
@@ -194,7 +196,10 @@ export const topLevelNav: NavItem[] = [
   // top-level rather than buried under Settings (where it used to live, and no
   // longer does: exactly one Organizations entry exists in the nav).
   { name: 'Organizations', labelKey: 'nav.organizations', href: '/settings/organizations', icon: Building2, partnerScopeOnly: true, requiredPermission: { resource: 'organizations', action: 'read' } },
-  { name: 'Devices', labelKey: 'nav.devices', href: '/devices', icon: Monitor, requiredPermission: { resource: 'devices', action: 'read' } },
+  // Unified list: agent devices + manual assets + network assets (#4622, #5228),
+  // hence the label. Recently opened devices render under this row — see
+  // `renderNavItem` and Sidebar.recents.test.tsx.
+  { name: 'Devices & Assets', labelKey: 'nav.devices', href: '/devices', icon: Monitor, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Alerts', labelKey: 'nav.alerts', href: '/alerts', icon: Bell, requiredPermission: { resource: 'alerts', action: 'read' } },
   { name: 'Approvals', labelKey: 'nav.approvals', href: '/approvals', icon: ShieldCheck, badgeKind: 'approvals' },
   { name: 'Incidents', labelKey: 'nav.incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
@@ -418,6 +423,21 @@ function saveExpandedSections(state: Record<string, boolean>) {
   try { localStorage.setItem('sidebar-sections', JSON.stringify(state)); } catch { /* Storage unavailable */ }
 }
 
+// Whether the "recent devices" rows under Devices & Assets are shown. Default
+// open; a user who wants a fully static nav collapses it once and it stays
+// collapsed. Safe to read in a useState initializer: the list itself is empty
+// on the server, so the flag cannot cause a hydration mismatch.
+export const RECENT_DEVICES_EXPANDED_KEY = 'sidebar-recent-devices';
+const RECENT_DEVICES_HREF = '/devices';
+
+function readRecentDevicesExpanded(): boolean {
+  try {
+    return localStorage.getItem(RECENT_DEVICES_EXPANDED_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Collect all nav items for active-href matching
 // ---------------------------------------------------------------------------
@@ -522,7 +542,18 @@ function usePendingApprovalsBadge(): number | undefined {
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
   const { t } = useTranslation();
   const [mode, setMode] = useState<SidebarMode>(readSavedMode);
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   const [hovered, setHovered] = useState(false);
+  const recentDevices = useRecentsStore((s) => s.devices);
+  const [recentDevicesExpanded, setRecentDevicesExpanded] = useState<boolean>(readRecentDevicesExpanded);
+  const toggleRecentDevices = useCallback(() => {
+    setRecentDevicesExpanded((prev) => {
+      const next = !prev;
+      try { localStorage.setItem(RECENT_DEVICES_EXPANDED_KEY, String(next)); } catch { /* Storage unavailable */ }
+      return next;
+    });
+  }, []);
   const currentPath = useCurrentPath(initialPath);
   const navScrollRef = useSidebarScrollPersist();
   const isPlatformAdmin = useAuthStore((s) => s.user?.isPlatformAdmin === true);
@@ -723,11 +754,19 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   }, [activeSectionId, extensionsSection]);
 
   // --- Sidebar mode cycling ------------------------------------------------
-  const cycleMode = () => {
-    const next: SidebarMode = mode === 'open' ? 'hover' : mode === 'hover' ? 'collapsed' : 'open';
+  // Reads the ref (not `mode`) so the one-time window listener below never
+  // goes stale — the `[` shortcut dispatches SIDEBAR_CYCLE_MODE_EVENT.
+  const cycleMode = useCallback(() => {
+    const current = modeRef.current;
+    const next: SidebarMode = current === 'open' ? 'hover' : current === 'hover' ? 'collapsed' : 'open';
     setMode(next);
     try { localStorage.setItem('sidebar-mode', next); } catch { /* Storage unavailable */ }
-  };
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener(SIDEBAR_CYCLE_MODE_EVENT, cycleMode);
+    return () => window.removeEventListener(SIDEBAR_CYCLE_MODE_EVENT, cycleMode);
+  }, [cycleMode]);
 
   // Determine if a section is expanded (explicit toggle OR auto-expand)
   const isSectionExpanded = useCallback((sectionId: string): boolean => {
@@ -775,14 +814,16 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           : undefined;
     const showBadge = typeof badgeCount === 'number' && badgeCount > 0;
     const label = item.labelKey ? t(/* i18n-dynamic */ item.labelKey, { defaultValue: item.name }) : item.name;
-    return (
+    const withRecents = item.href === RECENT_DEVICES_HREF && labels && recentDevices.length > 0;
+    const anchor = (
       <a
-        key={item.name}
+        key={withRecents ? undefined : item.name}
         href={item.href}
         title={narrow && !hovered ? label : undefined}
         onClick={forMobileOverlay ? () => closeMobileMenu() : undefined}
         className={cn(
           'flex items-center gap-3 rounded-md py-2 text-sm font-medium transition-colors',
+          withRecents && 'min-w-0 flex-1',
           // Icon rail: no horizontal padding, center the icon in the full row so
           // the highlight box and icon share the rail's centre line regardless
           // of the available width.
@@ -807,6 +848,67 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           </span>
         )}
       </a>
+    );
+    if (!withRecents) return anchor;
+
+    // Recently opened devices (recentsStore), newest first. The chevron sits
+    // beside the row rather than inside the <a> — nested interactive content
+    // is invalid HTML and breaks keyboard focus order.
+    const toggleLabel = recentDevicesExpanded
+      ? t('layout.sidebar.hideRecentDevices')
+      : t('layout.sidebar.showRecentDevices');
+    return (
+      <div key={item.name}>
+        <div className="flex items-center gap-1">
+          {anchor}
+          <button
+            type="button"
+            onClick={toggleRecentDevices}
+            aria-expanded={recentDevicesExpanded}
+            aria-label={toggleLabel}
+            title={toggleLabel}
+            className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <ChevronDown
+              className={cn(
+                'h-3.5 w-3.5 transition-transform duration-200',
+                recentDevicesExpanded ? 'rotate-0' : '-rotate-90'
+              )}
+            />
+          </button>
+        </div>
+        {recentDevicesExpanded && (
+          <ul
+            data-testid="sidebar-recent-devices"
+            aria-label={t('layout.sidebar.recentDevices')}
+            className="mt-0.5 space-y-0.5"
+          >
+            {recentDevices.map((device) => {
+              const href = `${RECENT_DEVICES_HREF}/${device.id}`;
+              const current = resolvedPath === href;
+              return (
+                <li key={device.id}>
+                  <a
+                    href={href}
+                    aria-current={current ? 'page' : undefined}
+                    title={device.name}
+                    onClick={forMobileOverlay ? () => closeMobileMenu() : undefined}
+                    className={cn(
+                      'flex items-center gap-2 rounded-md py-1.5 pl-9 pr-3 text-sm transition-colors',
+                      current
+                        ? 'bg-muted text-foreground'
+                        : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                    )}
+                  >
+                    <Clock className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden="true" />
+                    <span className="truncate">{device.name}</span>
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
     );
   };
 

@@ -5,7 +5,7 @@
   "nav": {
     "fleetPosture": "Posture du parc",
     "dashboard": "Tableau de bord",
-    "devices": "Dispositifs",
+    "devices": "Dispositifs et actifs",
     "alerts": "Alertes",
     "approvals": "Approbations",
     "pendingApprovals": "{{count}} approbations en attente",
@@ -713,7 +713,19 @@
         "scripts": "Scénarios",
         "alerts": "Alertes",
         "users": "Utilisateurs",
-        "settings": "Paramètres"
+        "settings": "Paramètres",
+        "recent-devices": "Dispositifs récents",
+        "recent-pages": "Consultés récemment"
+      },
+      "actions": {
+        "newDevice": "Nouveau dispositif",
+        "newDeviceDescription": "Ajouter un dispositif à votre parc",
+        "runScript": "Exécuter un script",
+        "runScriptDescription": "Exécuter un script sur des dispositifs",
+        "alertRules": "Règles d'alerte",
+        "alertRulesDescription": "Gérer les alertes dans les politiques de configuration",
+        "keyboardShortcuts": "Raccourcis clavier",
+        "keyboardShortcutsDescription": "Toutes les touches et séquences sur une seule carte"
       }
     },
     "notifications": {
@@ -753,7 +765,10 @@
       "collapse": "Réduire la barre latérale",
       "expand": "Agrandir la barre latérale",
       "collapseSections": "Réduire toutes les sections",
-      "closeMenu": "Fermer le menu"
+      "closeMenu": "Fermer le menu",
+      "recentDevices": "Dispositifs récents",
+      "hideRecentDevices": "Masquer les dispositifs récents",
+      "showRecentDevices": "Afficher les dispositifs récents"
     },
     "orgRequired": {
       "title": "Sélectionnez une organisation",
@@ -764,6 +779,20 @@
       "title": "Impossible de charger vos organisations",
       "description": "Une erreur s'est produite lors du chargement de la liste des organisations. Vérifiez votre connexion et réessayez.",
       "retry": "Réessayer"
+    },
+    "shortcuts": {
+      "title": "Raccourcis clavier",
+      "general": "Général",
+      "goTo": "Aller à",
+      "goToHint": "Appuyez sur g, relâchez, puis la touche.",
+      "then": "puis",
+      "search": "Rechercher dans Breeze",
+      "searchSlash": "Recherche (s'ouvre aussi avec cette touche)",
+      "cycleSidebar": "Changer le mode de la barre latérale",
+      "help": "Ouvrir le panneau d'aide",
+      "showThis": "Afficher cette carte",
+      "close": "Fermer une boîte de dialogue ou un menu",
+      "typingNote": "Les raccourcis à une touche sont suspendus pendant la saisie dans un champ."
     }
   },
   "migrationBanner": {
