@@ -59,7 +59,16 @@ func restoreTree(ctx context.Context, r *run) error {
 			return err
 		}
 	}
-	res, err := backup.RestoreFromSnapshotContext(ctx, r.opts.Provider, backup.RestoreConfig{SnapshotID: r.opts.SnapshotID, TargetPath: r.staging}, func(phase string, cur, total int64, msg string) {
+	// A persistent work root keeps the restore's resume state across engine
+	// runs: without it RestoreFromSnapshotContext creates an ephemeral work
+	// dir and deletes it on return, so a resumed rebuild re-restores every
+	// file instead of skipping the ones already on disk (found live on the
+	// W03 boot proof: 104k files restored twice).
+	workRoot := restoreWorkRoot(r.opts.StateDir)
+	if err := os.MkdirAll(workRoot, 0o700); err != nil {
+		return fmt.Errorf("create restore work root: %w", err)
+	}
+	res, err := backup.RestoreFromSnapshotContext(ctx, r.opts.Provider, backup.RestoreConfig{SnapshotID: r.opts.SnapshotID, TargetPath: r.staging, WorkRoot: workRoot}, func(phase string, cur, total int64, msg string) {
 		r.progress(PhaseRestore, msg, cur, total)
 	})
 	if err != nil {
@@ -73,6 +82,10 @@ func restoreTree(ctx context.Context, r *run) error {
 			return errors.New(msg)
 		}
 		r.warn("%s", msg)
+		r.failedFiles = make(map[string]bool, len(res.FailedFiles))
+		for _, f := range res.FailedFiles {
+			r.failedFiles[f] = true
+		}
 	}
 	if r.stateStaging != "" {
 		if entries, _ := os.ReadDir(r.stateStaging); len(entries) > 0 {
@@ -85,3 +98,7 @@ func restoreTree(ctx context.Context, r *run) error {
 	}
 	return nil
 }
+
+// restoreWorkRoot is where the restore keeps its resume state and manifest
+// scratch between engine runs. Removed by Run once the rebuild completes.
+func restoreWorkRoot(stateDir string) string { return filepath.Join(stateDir, "work") }
