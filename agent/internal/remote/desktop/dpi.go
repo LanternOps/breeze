@@ -9,10 +9,10 @@ const (
 	dpiModeUnaware      = "unaware"
 )
 
-// processDPIMode is the awareness mode that took effect at init on Windows
-// (empty elsewhere); logged with the display offset so a helper log shows which
-// coordinate space input and cursor calls used.
-var processDPIMode string
+// processDPIMode is the awareness mode that took effect at init on Windows;
+// logged with the display offset so a helper log shows which coordinate space
+// input and cursor calls used. Other platforms have no DPI virtualization.
+var processDPIMode = "n/a"
 
 // chooseDPIAwareness elevates the process to the strongest available DPI
 // awareness and returns the mode that took effect.
@@ -33,14 +33,20 @@ var processDPIMode string
 // first success wins: once the process mode is set, later calls fail with
 // ERROR_ACCESS_DENIED, so we must not keep trying.
 func chooseDPIAwareness(perMonitorV2, perMonitor, system func() bool) string {
-	if perMonitorV2 != nil && perMonitorV2() {
+	if perMonitorV2() {
 		return dpiModePerMonitorV2
 	}
-	if perMonitor != nil && perMonitor() {
+	if perMonitor() {
 		return dpiModePerMonitor
 	}
-	if system != nil && system() {
+	if system() {
 		return dpiModeSystem
 	}
 	return dpiModeUnaware
 }
+
+// hresultSucceeded reports SUCCEEDED(hr) for a 32-bit HRESULT that came back
+// through a uintptr. The sign bit lives in bit 31, so the value must be
+// narrowed to int32 first: on amd64 0x80070005 (E_ACCESSDENIED, "awareness
+// already set") is a positive int64 and would otherwise read as success.
+func hresultSucceeded(hr uintptr) bool { return int32(uint32(hr)) >= 0 }

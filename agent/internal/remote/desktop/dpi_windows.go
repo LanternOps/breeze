@@ -9,11 +9,10 @@ import (
 )
 
 var (
-	dpiUser32                         = windows.NewLazySystemDLL("user32.dll")
 	dpiShcore                         = windows.NewLazySystemDLL("shcore.dll")
-	procSetProcessDpiAwarenessContext = dpiUser32.NewProc("SetProcessDpiAwarenessContext")
+	procSetProcessDpiAwarenessContext = user32.NewProc("SetProcessDpiAwarenessContext")
 	procSetProcessDpiAwarenessShcore  = dpiShcore.NewProc("SetProcessDpiAwareness")
-	procSetProcessDPIAwareLegacy      = dpiUser32.NewProc("SetProcessDPIAware")
+	procSetProcessDPIAwareLegacy      = user32.NewProc("SetProcessDPIAware")
 )
 
 // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 is the pseudo-handle (HANDLE)-4.
@@ -34,8 +33,10 @@ func init() {
 	processDPIMode = chooseDPIAwareness(
 		func() bool {
 			if procSetProcessDpiAwarenessContext.Find() != nil {
-				return false // pre-1703 Windows 10
+				return false // pre-1607 Windows 10
 			}
+			// 1607 exports the API but rejects the V2 context (added in 1703);
+			// that surfaces as a FALSE return and falls through to shcore.
 			ret, _, _ := procSetProcessDpiAwarenessContext.Call(dpiAwarenessContextPerMonitorAwareV2)
 			return ret != 0
 		},
@@ -44,7 +45,7 @@ func init() {
 				return false // pre-8.1
 			}
 			hr, _, _ := procSetProcessDpiAwarenessShcore.Call(uintptr(processPerMonitorDPIAware))
-			return int32(hr) >= 0 // S_OK; E_ACCESSDENIED if already set
+			return hresultSucceeded(hr) // S_OK; E_ACCESSDENIED if already set
 		},
 		func() bool {
 			if procSetProcessDPIAwareLegacy.Find() != nil {

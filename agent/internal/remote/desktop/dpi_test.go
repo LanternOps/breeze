@@ -37,7 +37,25 @@ func TestChooseDPIAwareness(t *testing.T) {
 				if len(calls) != 2 {
 					t.Fatalf("expected 2 calls, got %v", calls)
 				}
+			default:
+				if len(calls) != 3 {
+					t.Fatalf("expected every tier attempted (3 calls), got %v", calls)
+				}
 			}
 		})
+	}
+}
+
+func TestHresultSucceeded(t *testing.T) {
+	cases := map[uintptr]bool{
+		0x00000000: true,  // S_OK
+		0x00000001: true,  // S_FALSE
+		0x80070005: false, // E_ACCESSDENIED — mode already set; int64(hr) >= 0 would wrongly pass
+		0x80070057: false, // E_INVALIDARG
+	}
+	for hr, want := range cases {
+		if got := hresultSucceeded(hr); got != want {
+			t.Errorf("0x%08x: got %v want %v", hr, got, want)
+		}
 	}
 }
