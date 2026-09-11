@@ -20,7 +20,12 @@ vi.mock('../db/schema', () => ({
 }));
 
 // ticketConfigService reads ticketStatusEnum from portal.ts directly.
-vi.mock('../db/schema/portal', () => ({
+// Spread the real module and override only the enum this suite reads: other
+// schema modules (db/schema/tickets, and through it the deliverable tables)
+// import real pgEnum builders from here at module-eval time, so a
+// replace-everything mock breaks them.
+vi.mock('../db/schema/portal', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../db/schema/portal')>()),
   ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
 }));
 
