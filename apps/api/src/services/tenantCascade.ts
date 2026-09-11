@@ -511,6 +511,16 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'oauth_grants',
   'oauth_refresh_tokens',
   'onedrive_device_state',
+  // org_documents (service deliverables W03). Alphabetical slot only: the list
+  // is STATIC and alphabetised (the contract test asserts exactly that), while
+  // the real delete order comes from topologicalCascadeOrder(), which reads FK
+  // edges from pg_catalog at run time. service_deliverable_evidence is an FK
+  // CHILD of org_documents (sd_evidence_document_org_fk), so the topological
+  // pass necessarily emits it FIRST — verified by the "topological order has all
+  // FK children appearing before their parents" case in
+  // tenantCascade.integration.test.ts. The self-FK on supersedes_document_id is
+  // ignored by that sort by design (one DELETE clears the whole org's rows).
+  'org_documents',
   'org_ticket_settings',
   // organization_external_links (#3242): external-system linkage rows. The
   // composite FK to organizations (id, partner_id) carries ON DELETE CASCADE,
