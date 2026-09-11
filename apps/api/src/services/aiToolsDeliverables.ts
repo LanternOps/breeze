@@ -52,8 +52,9 @@ import {
 } from './serviceDeliverableService';
 import { listKeyDates, createKeyDate, updateKeyDate, deleteKeyDate } from './orgKeyDateService';
 import {
-  listTemplateSets, applyTemplateSet, type TemplateActor,
+  listTemplateSets, applyTemplateSet, TemplateServiceError, type TemplateActor,
 } from './deliverableTemplateService';
+import { PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { listDocuments, supersedeDocument, updateDocument } from './orgDocumentService';
 import { missingParamsJson, validationErrorJson, zodErrorToJson } from './aiToolValidation';
 
@@ -110,8 +111,13 @@ function partnerScopeRefusal(auth: AuthContext): string | null {
 /** Service and validation errors become a tool result the model can act on;
  *  anything else is a real failure and propagates. */
 function toToolError(err: unknown): string {
-  if (err instanceof DeliverableServiceError) {
+  if (err instanceof DeliverableServiceError || err instanceof TemplateServiceError) {
     return JSON.stringify({ error: err.message, code: err.code, ...(err.details ? { details: err.details } : {}) });
+  }
+  // W05: visibility is not permission — a partner tech may SEE a partner-wide
+  // set yet not administer it. Same 403 envelope the REST routes emit.
+  if (err instanceof PartnerWideWriteDeniedError) {
+    return JSON.stringify({ error: err.message, code: 'PARTNER_WIDE_WRITE_DENIED' });
   }
   const zod = zodErrorToJson(err);
   if (zod) return zod;

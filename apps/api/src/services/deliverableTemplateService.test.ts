@@ -37,6 +37,10 @@ import {
   createTemplateSet,
   listTemplateSets,
   addTemplateItem,
+  updateTemplateSet,
+  deleteTemplateSet,
+  updateTemplateItem,
+  removeTemplateItem,
   TemplateServiceError,
 } from './deliverableTemplateService';
 import { firstAnchorAfter } from './recurrence';
@@ -168,3 +172,68 @@ describe('applyTemplateSet', () => {
       .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_IN_ORG' });
   });
 });
+
+describe('partner-wide write gate on every mutator (visibility is not permission)', () => {
+  beforeEach(() => { dbMocks.rows.length = 0; });
+  const partnerWideSet = { id: 's1', orgId: null, partnerId: 'p1', name: 'Best plan' };
+  const item = { name: 'x', cadence: 'monthly' as const, leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve' as const, sortOrder: 0 };
+
+  it('updateTemplateSet refuses a partner tech', async () => {
+    dbMocks.rows.push([partnerWideSet]);
+    await expect(updateTemplateSet('s1', { name: 'renamed' }, partnerTech)).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+  });
+
+  it('deleteTemplateSet refuses a partner tech and writes nothing', async () => {
+    dbMocks.rows.push([partnerWideSet]);
+    const { db } = await import('../db');
+    (db as any).delete.mockClear();
+    await expect(deleteTemplateSet('s1', partnerTech)).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+    expect((db as any).delete).not.toHaveBeenCalled();
+  });
+
+  it('updateTemplateItem refuses a partner tech', async () => {
+    dbMocks.rows.push([partnerWideSet]);
+    await expect(updateTemplateItem('s1', 'i1', { graceDays: 21 }, partnerTech)).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+  });
+
+  it('removeTemplateItem refuses a partner tech', async () => {
+    dbMocks.rows.push([partnerWideSet]);
+    await expect(removeTemplateItem('s1', 'i1', partnerTech)).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+  });
+
+  it('a full partner admin passes the gate on update (positive control)', async () => {
+    dbMocks.rows.push([partnerWideSet]);                 // loadSetOr404
+    dbMocks.rows.push([{ ...partnerWideSet, name: 'renamed' }]); // update returning
+    dbMocks.rows.push([]);                               // hydrate items
+    const out = await updateTemplateSet('s1', { name: 'renamed' }, partnerAdmin);
+    expect(out.name).toBe('renamed');
+    expect(out.ownerScope).toBe('partner');
+  });
+});
+
+describe('item writes are scoped to the set in the path', () => {
+  beforeEach(() => { dbMocks.rows.length = 0; });
+  const orgSet = { id: 's1', orgId: 'org1', partnerId: null, name: 'Org set' };
+
+  it('updateTemplateItem binds BOTH the item id and the set id, and 404s on zero rows', async () => {
+    dbMocks.rows.push([orgSet]);   // loadSetOr404
+    dbMocks.rows.push([]);         // update returning: item belongs to another set
+    await expect(updateTemplateItem('s1', 'i-foreign', { graceDays: 21 }, partnerAdmin))
+      .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+    const { db } = await import('../db');
+    const { sql, params } = compile((db as any).where.mock.calls.at(-1)?.[0]);
+    expect(params).toEqual(expect.arrayContaining(['i-foreign', 's1']));
+    expect(sql).toContain('"set_id"');
+  });
+
+  it('removeTemplateItem binds BOTH ids and 404s on zero rows', async () => {
+    dbMocks.rows.push([orgSet]);
+    dbMocks.rows.push([]);
+    await expect(removeTemplateItem('s1', 'i-foreign', partnerAdmin)).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+    const { db } = await import('../db');
+    const { sql, params } = compile((db as any).where.mock.calls.at(-1)?.[0]);
+    expect(params).toEqual(expect.arrayContaining(['i-foreign', 's1']));
+    expect(sql).toContain('"set_id"');
+  });
+});
+

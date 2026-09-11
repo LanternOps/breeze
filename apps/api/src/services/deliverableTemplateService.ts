@@ -381,6 +381,11 @@ function mapApplyError(err: unknown): never {
   const duplicate = isPgUniqueViolation(err)
     || (err instanceof DeliverableServiceError && err.code === 'DUPLICATE_NAME');
   if (duplicate) {
+    // The caller-facing payload cannot name the loser (the index error carries
+    // no row), so record the constraint server-side for the forensic trail.
+    console.warn('[deliverableTemplateService] applyTemplateSet lost a concurrent-apply race', {
+      constraint: isPgUniqueViolation(err) ? pgErrorConstraint(err) : 'DUPLICATE_NAME pre-check',
+    });
     throw new TemplateServiceError(
       'A deliverable with one of these names already exists on the target',
       409, 'TEMPLATE_NAME_COLLISION', { collisions: [] },
