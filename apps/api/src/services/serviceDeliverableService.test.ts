@@ -114,25 +114,35 @@ describe('serviceDeliverableService', () => {
         .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
     });
 
+    it('409s a duplicate (org, contract, name) from the pre-check without inserting', async () => {
+      queueResult([{ one: 1 }]); // name pre-check finds a row
+      await expect(createDeliverable('org1', base, actor)).rejects.toMatchObject({ status: 409, code: 'DUPLICATE_NAME' });
+      expect(chain.insert.mock.calls).toHaveLength(0);
+    });
+
     it('inserts with orgId + createdBy stamped and returns the row', async () => {
       const row = { id: 'd1', orgId: 'org1', ...base };
+      queueResult([]); // name pre-check
       queueResult([row]);
       const out = await createDeliverable('org1', base, actor);
       expect(out).toEqual(row);
       expect(lastValues()).toMatchObject({ orgId: 'org1', name: base.name, createdBy: 'u1', cadence: 'monthly' });
     });
 
-    it('maps unique violation 23505 → 409 DUPLICATE_NAME', async () => {
+    it('maps unique violation 23505 → 409 DUPLICATE_NAME (concurrent-writer backstop)', async () => {
+      queueResult([]); // name pre-check
       queueError({ code: '23505', constraint_name: 'service_deliverables_org_contract_name_uq' });
       await expect(createDeliverable('org1', base, actor)).rejects.toMatchObject({ status: 409, code: 'DUPLICATE_NAME' });
     });
 
     it('maps a Drizzle-wrapped 23505 (code on .cause) → 409 DUPLICATE_NAME', async () => {
+      queueResult([]); // name pre-check
       queueError(Object.assign(new Error('wrapped'), { cause: { code: '23505', constraint_name: 'service_deliverables_org_contract_name_uq' } }));
       await expect(createDeliverable('org1', base, actor)).rejects.toMatchObject({ status: 409, code: 'DUPLICATE_NAME' });
     });
 
     it('lets unrelated db errors propagate untouched', async () => {
+      queueResult([]); // name pre-check
       queueError({ code: '23503' });
       await expect(createDeliverable('org1', base, actor)).rejects.not.toBeInstanceOf(DeliverableServiceError);
     });
@@ -146,8 +156,9 @@ describe('serviceDeliverableService', () => {
     });
 
     it('validates a new contract and stamps updatedAt', async () => {
-      queueResult([{ id: 'd1', orgId: 'org1' }]); // existing
+      queueResult([{ id: 'd1', orgId: 'org1', name: base.name, contractId: null }]); // existing
       queueResult([{ id: CONTRACT_ID }]); // contract in org
+      queueResult([]); // name pre-check under the new contract
       queueResult([{ id: 'd1', orgId: 'org1', contractId: CONTRACT_ID }]); // returning
       const out = await updateDeliverable('org1', 'd1', { contractId: CONTRACT_ID }, actor);
       expect(out.contractId).toBe(CONTRACT_ID);
@@ -155,8 +166,16 @@ describe('serviceDeliverableService', () => {
       expect(lastSet().updatedAt).toBeInstanceOf(Date);
     });
 
-    it('maps 23505 on update → 409 DUPLICATE_NAME', async () => {
-      queueResult([{ id: 'd1', orgId: 'org1' }]);
+    it('409s a renamed deliverable colliding with a sibling from the pre-check', async () => {
+      queueResult([{ id: 'd1', orgId: 'org1', name: 'old', contractId: null }]);
+      queueResult([{ one: 1 }]); // pre-check hit
+      await expect(updateDeliverable('org1', 'd1', { name: 'dup' }, actor)).rejects.toMatchObject({ status: 409, code: 'DUPLICATE_NAME' });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('maps 23505 on update → 409 DUPLICATE_NAME (concurrent-writer backstop)', async () => {
+      queueResult([{ id: 'd1', orgId: 'org1', name: 'old', contractId: null }]);
+      queueResult([]); // pre-check clear
       queueError({ code: '23505' });
       await expect(updateDeliverable('org1', 'd1', { name: 'dup' }, actor)).rejects.toMatchObject({ status: 409, code: 'DUPLICATE_NAME' });
     });

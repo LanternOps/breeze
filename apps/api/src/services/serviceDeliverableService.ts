@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, getTableColumns, inArray } from 'drizzle-orm';
+import { and, asc, count, desc, eq, getTableColumns, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
   serviceDeliverables, serviceDeliverableOccurrences, serviceDeliverableEvidence,
@@ -166,10 +166,29 @@ async function validateReferences(orgId: string, input: RefInput): Promise<void>
   }
 }
 
+const duplicateName = () =>
+  new DeliverableServiceError('A deliverable with this name already exists for this contract', 409, 'DUPLICATE_NAME');
+
+/**
+ * Pre-check `service_deliverables_org_contract_name_uq` instead of relying on the
+ * index raising: a raised 23505 aborts the surrounding withDbAccessContext
+ * transaction and postgres.js re-throws it at commit even when caught, turning
+ * the mapped 409 into a raw 500 (same lesson as ticketConfigService /
+ * catalogService). `mapUniqueViolation` stays as the concurrent-writer backstop.
+ */
+async function assertNameAvailable(orgId: string, contractId: string | null, name: string, excludeId?: string): Promise<void> {
+  const conditions = [
+    eq(serviceDeliverables.orgId, orgId),
+    eq(serviceDeliverables.name, name),
+    contractId === null ? isNull(serviceDeliverables.contractId) : eq(serviceDeliverables.contractId, contractId),
+  ];
+  if (excludeId) conditions.push(ne(serviceDeliverables.id, excludeId));
+  const [dup] = await db.select({ one: sql<number>`1` }).from(serviceDeliverables).where(and(...conditions)).limit(1);
+  if (dup) throw duplicateName();
+}
+
 function mapUniqueViolation(err: unknown): never {
-  if (isPgUniqueViolation(err)) {
-    throw new DeliverableServiceError('A deliverable with this name already exists for this contract', 409, 'DUPLICATE_NAME');
-  }
+  if (isPgUniqueViolation(err)) throw duplicateName();
   throw err;
 }
 
@@ -194,6 +213,7 @@ export async function getDeliverable(orgId: string, id: string, actor: Deliverab
 export async function createDeliverable(orgId: string, input: CreateDeliverableInput, actor: DeliverableActor): Promise<ServiceDeliverableRow> {
   requireOrgAccess(actor, orgId);
   await validateReferences(orgId, input);
+  await assertNameAvailable(orgId, input.contractId ?? null, input.name);
   try {
     const [row] = await db.insert(serviceDeliverables).values({
       orgId,
@@ -224,10 +244,19 @@ export async function createDeliverable(orgId: string, input: CreateDeliverableI
 
 export async function updateDeliverable(orgId: string, id: string, patch: UpdateDeliverableInput, actor: DeliverableActor): Promise<ServiceDeliverableRow> {
   requireOrgAccess(actor, orgId);
-  const [existing] = await db.select({ id: serviceDeliverables.id }).from(serviceDeliverables)
+  const [existing] = await db.select({ id: serviceDeliverables.id, name: serviceDeliverables.name, contractId: serviceDeliverables.contractId })
+    .from(serviceDeliverables)
     .where(and(eq(serviceDeliverables.id, id), eq(serviceDeliverables.orgId, orgId))).limit(1);
   if (!existing) throw notFound();
   await validateReferences(orgId, patch);
+  if (patch.name !== undefined || patch.contractId !== undefined) {
+    await assertNameAvailable(
+      orgId,
+      patch.contractId === undefined ? existing.contractId : (patch.contractId ?? null),
+      patch.name ?? existing.name,
+      id,
+    );
+  }
   try {
     const [row] = await db.update(serviceDeliverables)
       .set({ ...patch, updatedAt: new Date() })
