@@ -9,7 +9,7 @@ import {
   recordUsage,
 } from './aiCostTracker';
 import { captureException, captureMessage } from './sentry';
-import { assertOutsideHeldDbContext, getCurrentDbAccessContext } from '../db';
+import { assertOutsideHeldDbContext } from '../db';
 import { getAnthropicClientForPartner, LlmUnavailableError, resolveWireModel } from './llm/llmConfigResolver';
 import {
   enrichDraftSchema,
@@ -60,17 +60,14 @@ export class EnrichmentError extends Error {
  * reservation is taken on that path either, so nothing else in SEC-142's fence
  * applies to it.
  *
- * Fail closed, with one deliberate exemption: a caller already running in the
- * SYSTEM db access context is our own scheduled/platform code, not a tenant
- * request, and platform-funded spend on that path is the separate org-less
- * operational-spend question (a platform quota decision, tracked as a
- * follow-up) rather than something this function can adjudicate. Everything
- * else — every partner-scoped interactive caller — is refused before the
- * provider client is resolved, so no token is spent deciding.
+ * Fail closed, with one deliberate exemption the caller must DECLARE (see
+ * `EnrichmentActor.systemInitiated`). Everything else — every interactive
+ * caller that resolved no organization — is refused before the provider client
+ * is resolved, so no token is spent deciding.
  */
 function assertBillableOrgContext(actor: EnrichmentActor, surface: string): void {
   if (actor.orgId) return;
-  if (getCurrentDbAccessContext()?.scope === 'system') return;
+  if (actor.systemInitiated === true) return;
   console.warn(`[${surface}] refused: no organization context to budget or bill AI spend against`);
   throw new EnrichmentError(
     'Select an organization before using catalog AI — spend must be budgeted and billed to one.',
@@ -89,6 +86,22 @@ export interface EnrichmentActor {
   userId: string;
   orgId: string | null;
   partnerId: string | null;
+  /**
+   * Declared by the CALLER, not inferred (review item 7).
+   *
+   * `true` marks a known platform-initiated path whose spend has no billable
+   * organization by design — today that is only `enrichDistributorListing`, the
+   * partner-level distributor import. An earlier revision sniffed the ambient
+   * db access scope instead; that is fragile in both directions (a system-scope
+   * request token would have silently qualified, and the distributor importers
+   * deliberately run with NO context held, so they would silently NOT have),
+   * and it hid the decision from the call site where it belongs.
+   *
+   * This does not make the spend budgeted — it is the org-less operational
+   * spend residual, tracked separately. It only says the refusal below does not
+   * apply.
+   */
+  systemInitiated?: boolean;
 }
 
 export interface EnrichmentProvider {
@@ -261,9 +274,10 @@ export const aiEnrichmentProvider: EnrichmentProvider = {
       );
       if (budget) throw new EnrichmentError(budget, 'AI_LIMIT', 429);
     } else {
-      // Reachable only from a SYSTEM-scope caller (assertBillableOrgContext
-      // above refuses every other org-less path). Platform-funded operational
-      // spend with no billable org is a separate, tracked decision.
+      // Reachable only from a caller that DECLARED systemInitiated
+      // (assertBillableOrgContext above refuses every other org-less path).
+      // Platform-funded operational spend with no billable org is a separate,
+      // tracked decision.
       console.warn('[catalog-enrich] system-scope call with no org — spend is platform-funded and unbudgeted');
     }
 
@@ -536,6 +550,12 @@ export async function enrichDistributorListing(
         userId: actor.userId ?? 'system',
         orgId: actor.orgId,
         partnerId: actor.partnerId,
+        // The ONE declared exemption (review item 7). Distributor import is a
+        // partner-level operation: it legitimately resolves no organization, so
+        // refusing it would break a shipped feature. Its spend is the org-less
+        // operational-spend residual, not something this fence closes — stated
+        // here rather than inferred from an ambient scope.
+        systemInitiated: true,
       }),
       timeoutMs,
     );
@@ -759,10 +779,11 @@ export async function polishCatalogText(
     );
     if (budget) throw new EnrichmentError(budget, 'AI_LIMIT', 429);
   } else {
-    // Reachable only from a SYSTEM-scope caller (assertBillableOrgContext above
-    // refuses every other org-less path). The per-user rate limit stays as a
-    // second bound on that platform-funded path; it is NOT what makes the spend
-    // acceptable, which is why the refusal now happens earlier.
+    // Reachable only from a caller that DECLARED systemInitiated
+    // (assertBillableOrgContext above refuses every other org-less path). The
+    // per-user rate limit stays as a second bound on that platform-funded path;
+    // it is NOT what makes the spend acceptable, which is why the refusal now
+    // happens earlier.
     const userRate = await checkUserAiRateLimit(actor.userId);
     if (userRate) throw new EnrichmentError(userRate, 'AI_LIMIT', 429);
     console.warn('[catalog-polish] system-scope call with no org — spend is platform-funded and unbudgeted');

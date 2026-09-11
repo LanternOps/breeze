@@ -17,7 +17,11 @@ vi.mock('../sentry', () => ({
 }));
 
 vi.mock('../aiBudgetReservations', () => ({
-  settleAiBudgetReservation: vi.fn(),
+  // The manager settles through the DURABLE wrapper (review item 2): it waits
+  // longer for the org lock, retries once on contention and falls back to
+  // marking the reservation indeterminate, so a lock timeout on the money path
+  // cannot silently drop the spend.
+  settleAiBudgetReservationDurably: vi.fn(),
   markAiBudgetReservationIndeterminate: vi.fn(async () => ({
     kind: 'indeterminate', reservationId: 'reservation-1',
   })),
@@ -39,7 +43,7 @@ import { OpenAISessionManager } from './openaiSessionManager';
 import { captureException } from '../sentry';
 import {
   markAiBudgetReservationIndeterminate,
-  settleAiBudgetReservation,
+  settleAiBudgetReservationDurably,
 } from '../aiBudgetReservations';
 import type { RequestLike } from '../auditEvents';
 import type { OpenAICompatibleProvider } from './openaiCompatibleProvider';
@@ -194,7 +198,7 @@ describe('OpenAISessionManager.startTurn — stream error events reach Sentry (#
 
     expect(maxOutputTokensForBudgetUsd).toHaveBeenCalledWith(expect.any(Array), 0.25);
     expect(chatStream).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ maxTokens: 37 }));
-    expect(settleAiBudgetReservation).toHaveBeenCalledWith(expect.objectContaining({
+    expect(settleAiBudgetReservationDurably).toHaveBeenCalledWith(expect.objectContaining({
       orgId: 'org-1',
       reservationId: 'reservation-1',
       inputTokens: 11,

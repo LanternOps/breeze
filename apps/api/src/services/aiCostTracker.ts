@@ -15,7 +15,7 @@ import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
 import { captureException, captureMessage } from './sentry';
 import { evaluateAiBudgetThresholds } from './aiBudgetAlerts';
 import { getCatalogEntryName } from './llmProviderCatalog';
-import { settleAiBudgetReservation } from './aiBudgetReservations';
+import { settleAiBudgetReservationDurably } from './aiBudgetReservations';
 
 export type AiBillingSource = 'platform' | 'partner_key';
 
@@ -715,7 +715,7 @@ export async function recordUsage(
   const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
 
   if (budgetReservationId) {
-    await settleAiBudgetReservation({
+    await settleAiBudgetReservationDurably({
       orgId,
       reservationId: budgetReservationId,
       actualCostCents: costCents,
@@ -911,7 +911,7 @@ export async function recordUsageFromSdkResult(
   const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
 
   if (budgetReservationId) {
-    await settleAiBudgetReservation({
+    await settleAiBudgetReservationDurably({
       orgId,
       reservationId: budgetReservationId,
       actualCostCents: costCents,
@@ -1075,7 +1075,7 @@ export async function recordSessionlessSdkUsage(
   const messageCount = result.numTurns > 0 ? result.numTurns : 1;
 
   if (budgetReservationId) {
-    await settleAiBudgetReservation({
+    await settleAiBudgetReservationDurably({
       orgId,
       reservationId: budgetReservationId,
       actualCostCents: Math.max(0, costCents),

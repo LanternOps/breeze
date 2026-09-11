@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, calculateCostCents, calculateCatalogCostCents, captureException, captureMessage, getAnthropicClientForPartner, resolveWireModel, reserveAiBudget, markAiBudgetReservationIndeterminate, releaseUnusedAiBudgetReservation, getCurrentDbAccessContext } = vi.hoisted(() => ({
+const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, calculateCostCents, calculateCatalogCostCents, captureException, captureMessage, getAnthropicClientForPartner, resolveWireModel, reserveAiBudget, markAiBudgetReservationIndeterminate, releaseUnusedAiBudgetReservation } = vi.hoisted(() => ({
   create: vi.fn(),
   checkBudget: vi.fn(async (): Promise<string | null> => null),
   checkAiRateLimit: vi.fn(async (): Promise<string | null> => null),
@@ -15,7 +15,6 @@ const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage
   reserveAiBudget: vi.fn(),
   markAiBudgetReservationIndeterminate: vi.fn(),
   releaseUnusedAiBudgetReservation: vi.fn(),
-  getCurrentDbAccessContext: vi.fn<() => { scope: string } | undefined>(() => undefined),
 }));
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class { messages = { create }; },
@@ -33,13 +32,6 @@ vi.mock('./aiBudgetReservations', async (importOriginal) => ({
   releaseUnusedAiBudgetReservation,
 }));
 vi.mock('./sentry', () => ({ captureException, captureMessage }));
-// Only this ONE export is stubbed; everything else in ../db stays real (the
-// service also imports assertOutsideHeldDbContext from there). It decides the
-// S6 system-scope exemption, and a unit test has no ambient context of its own.
-vi.mock('../db', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../db')>()),
-  getCurrentDbAccessContext,
-}));
 vi.mock('./llm/llmConfigResolver', () => ({
   getAnthropicClientForPartner,
   resolveWireModel,
@@ -419,16 +411,18 @@ describe('enrichCatalogItem', () => {
     expect(recordUsage).not.toHaveBeenCalled();
   });
 
-  it('still allows an org-less call from our own SYSTEM-scoped code', async () => {
-    getCurrentDbAccessContext.mockReturnValueOnce({ scope: 'system' });
+  it('still allows an org-less call that DECLARES itself system-initiated', async () => {
     create.mockResolvedValueOnce(aiMessage({
       name: 'N', description: null, itemType: 'service',
       unitOfMeasure: 'each', taxable: true, taxCategory: null,
       priceLow: null, priceHigh: null, currency: null, confidence: 0.5, notes: '',
     }));
-    await enrichCatalogItem('x', undefined, { userId: 'u1', orgId: null, partnerId: 'p1' });
+    await enrichCatalogItem('x', undefined, {
+      userId: 'u1', orgId: null, partnerId: 'p1', systemInitiated: true,
+    });
     // Platform-funded operational spend: still unbudgeted, deliberately, and
-    // tracked separately as an org-less quota decision.
+    // tracked separately as an org-less quota decision. The exemption is
+    // DECLARED by the caller, never inferred from an ambient db scope.
     expect(create).toHaveBeenCalled();
     expect(checkBudget).not.toHaveBeenCalled();
     expect(recordUsage).not.toHaveBeenCalled();
@@ -710,11 +704,11 @@ describe('polishCatalogText', () => {
     expect(recordUsage).not.toHaveBeenCalled();
   });
 
-  it('keeps the per-user rate limit on the SYSTEM-scoped org-less path', async () => {
-    getCurrentDbAccessContext.mockReturnValueOnce({ scope: 'system' });
+  it('keeps the per-user rate limit on the declared system-initiated org-less path', async () => {
     checkUserAiRateLimit.mockResolvedValueOnce('Rate limit exceeded');
-    await expect(polishCatalogText({ name: 'x' }, { userId: 'u1', orgId: null, partnerId: 'p1' }))
-      .rejects.toMatchObject({ code: 'AI_LIMIT', status: 429 });
+    await expect(polishCatalogText({ name: 'x' }, {
+      userId: 'u1', orgId: null, partnerId: 'p1', systemInitiated: true,
+    })).rejects.toMatchObject({ code: 'AI_LIMIT', status: 429 });
     expect(create).not.toHaveBeenCalled();
   });
 

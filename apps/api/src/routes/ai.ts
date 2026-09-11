@@ -464,12 +464,20 @@ aiRoutes.post(
       // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
       // in services/aiAgents/runLoop.ts. Give this one a stable key only when
       // the request schema starts carrying a client-generated id.
-      const reservation = await reserveAiBudget({
-        orgId: session.orgId,
-        idempotencyKey: `ticket-draft:${sessionId}:${crypto.randomUUID()}`,
-        billingSource,
-        sessionId,
-      });
+      let reservation;
+      try {
+        reservation = await reserveAiBudget({
+          orgId: session.orgId,
+          idempotencyKey: `ticket-draft:${sessionId}:${crypto.randomUUID()}`,
+          billingSource,
+          sessionId,
+        });
+      } catch (err) {
+        // Same fail-fast answer as the other admission sites: contention on the
+        // org row is a 503 the client can retry, not a 500.
+        if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
+        throw err;
+      }
       if (reservation.kind === 'denied') return c.json({ error: reservation.message }, 429);
       reservationId = reservation.reservationId;
       draft = await draftTicketFromTranscript({

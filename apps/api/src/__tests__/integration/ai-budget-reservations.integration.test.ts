@@ -706,6 +706,95 @@ describe('durable AI budget reservations', () => {
     });
   });
 
+  it('a settle racing the sweep ends settled and charges exactly once', async () => {
+    // The EvalPlanQual hazard (review item 1). Under READ COMMITTED, an UPDATE
+    // that blocks on a locked row re-checks its own qual against the NEW row
+    // version when the blocker commits — but `id IN (subselect)` re-checks only
+    // the id, because the subselect is NOT re-executed. Without the status
+    // predicate repeated on the outer WHERE, the sweep relabels a row that
+    // settlement just moved to `settled`; a settlement retry would then sail
+    // past the fingerprint guard and charge `ai_cost_usage` a second time.
+    const org = await makeOrgWithBudget(1_000, 5_000);
+    const reserved = await withDbAccessContext(orgContext(org.id), () => reserveAiBudget({
+      orgId: org.id, idempotencyKey: 'settle-vs-sweep', billingSource: 'platform',
+    }));
+    if (reserved.kind !== 'reserved') throw new Error('expected a reservation');
+
+    // Make it sweepable, so the sweep's subselect really does pick it up.
+    await withSystemDbAccessContext(() => db
+      .update(aiBudgetReservations)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(aiBudgetReservations.id, reserved.reservationId)));
+
+    // Hold the row with FOR UPDATE, exactly as settlement does, and only then
+    // let the sweep start — so the sweep is guaranteed to block on this row
+    // and take the EvalPlanQual path when we commit.
+    let releaseHolder: () => void = () => {};
+    const holderReady = new Promise<void>((resolve) => {
+      void withSystemDbAccessContext(async () => {
+        await db.execute(sql`
+          SELECT id FROM ai_budget_reservations
+          WHERE id = ${reserved.reservationId}::uuid FOR UPDATE
+        `);
+        // Mirror what settlement does while it holds the lock.
+        await db.execute(sql`
+          UPDATE ai_budget_reservations
+          SET status = 'settled', actual_cost_cents = 9.000000,
+              settlement_fingerprint = 'race-fixture',
+              settled_at = now(), updated_at = now()
+          WHERE id = ${reserved.reservationId}::uuid
+        `);
+        await db.execute(sql`
+          INSERT INTO ai_cost_usage (
+            org_id, period, period_key, input_tokens, output_tokens,
+            total_cost_cents, session_count, message_count, tool_execution_count,
+            billing_source, updated_at
+          ) VALUES (
+            ${org.id}::uuid, 'daily', ${reserved.dailyPeriodKey}, 1, 1,
+            9.000000, 0, 1, 0, 'platform', now()
+          )
+          ON CONFLICT (org_id, period, period_key) DO UPDATE SET
+            total_cost_cents = ai_cost_usage.total_cost_cents + EXCLUDED.total_cost_cents
+        `);
+        resolve();
+        await new Promise<void>((done) => { releaseHolder = done; });
+      });
+    });
+    await holderReady;
+
+    const sweepRun = withSystemDbAccessContext(() => sweepExpiredAiBudgetReservations());
+    // Give the sweep time to reach the row and block on it.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    releaseHolder();
+    const sweptCount = await sweepRun;
+
+    const [row] = await withSystemDbAccessContext(() => db
+      .select({
+        status: aiBudgetReservations.status,
+        expiryReason: aiBudgetReservations.expiryReason,
+        fingerprint: aiBudgetReservations.settlementFingerprint,
+      })
+      .from(aiBudgetReservations)
+      .where(eq(aiBudgetReservations.id, reserved.reservationId)));
+    // The settled row must survive as `settled`. Relabelled `expired`, a retry
+    // would miss the fingerprint guard and charge again.
+    expect(row).toMatchObject({ status: 'settled', expiryReason: null, fingerprint: 'race-fixture' });
+    expect(sweptCount).toBe(0);
+
+    const [usage] = await withSystemDbAccessContext(() => db
+      .select({ total: aiCostUsage.totalCostCents })
+      .from(aiCostUsage)
+      .where(and(eq(aiCostUsage.orgId, org.id), eq(aiCostUsage.period, 'daily'))));
+    expect(Number(usage?.total)).toBeCloseTo(9, 6);
+
+    // And the guard still holds afterwards: a replay with different numbers is
+    // refused rather than charged.
+    await expect(withDbAccessContext(orgContext(org.id), () => settleAiBudgetReservation({
+      orgId: org.id, reservationId: reserved.reservationId,
+      actualCostCents: 9, inputTokens: 1, outputTokens: 1,
+    }))).rejects.toThrow(/Conflicting settlement/i);
+  }, 30_000);
+
   it('the handwritten migration can be applied repeatedly', async () => {
     const url = process.env.DATABASE_URL
       ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';

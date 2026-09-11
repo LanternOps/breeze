@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { pgErrorCode } from '@breeze/shared/pgErrors';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { captureException } from './sentry';
 import { tightenLockTimeout } from '../db/lockTimeout';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import type { AiBillingSource } from './aiCostTracker';
@@ -41,11 +42,21 @@ export const AI_BUDGET_RESERVATION_INDETERMINATE_TTL_MS = 24 * 60 * 60 * 1000;
  */
 export const AI_BUDGET_LOCK_TIMEOUT_MS = 5_000;
 
+/**
+ * Settlement, marking and release get a much longer bound than admission, and
+ * the asymmetry is the point. A blocked ADMISSION should fail fast — the caller
+ * has spent nothing and a 503 costs only a retry. A blocked SETTLEMENT is on
+ * the money path: the provider has already been paid, so giving up cheaply
+ * loses the spend from `ai_cost_usage` and strands the reservation holding the
+ * organization's whole cap. Wait, then retry, and only then fall back.
+ */
+export const AI_BUDGET_SETTLEMENT_LOCK_TIMEOUT_MS = 30_000;
+
 export class AiBudgetLockTimeoutError extends Error {
   readonly code = 'AI_BUDGET_LOCK_TIMEOUT';
-  constructor(operation: string, options?: { cause?: unknown }) {
+  constructor(operation: string, boundMs: number, options?: { cause?: unknown }) {
     super(
-      `AI budget ${operation} could not acquire the organization lock within ${AI_BUDGET_LOCK_TIMEOUT_MS}ms`,
+      `AI budget ${operation} could not acquire the organization lock within ${boundMs}ms`,
       options,
     );
     this.name = 'AiBudgetLockTimeoutError';
@@ -255,18 +266,21 @@ function isLockNotAvailable(error: unknown): boolean {
  * {@link inReservationTransaction}, does nothing else, and commits within a few
  * statements, so there is no caller work left for the tighter value to govern.
  */
-async function lockOrganizationRow(orgId: string, operation: string): Promise<void> {
-  await tightenLockTimeout(
-    db as unknown as { execute(q: unknown): Promise<unknown> },
-    AI_BUDGET_LOCK_TIMEOUT_MS,
-  );
+async function lockOrganizationRow(
+  orgId: string,
+  operation: string,
+  boundMs: number,
+): Promise<void> {
+  await tightenLockTimeout(db as unknown as { execute(q: unknown): Promise<unknown> }, boundMs);
   let locked;
   try {
     locked = rows<{ id: string }>(await db.execute<{ id: string }>(sql`
       SELECT id FROM organizations WHERE id = ${orgId}::uuid FOR UPDATE
     `))[0];
   } catch (error) {
-    if (isLockNotAvailable(error)) throw new AiBudgetLockTimeoutError(operation, { cause: error });
+    if (isLockNotAvailable(error)) {
+      throw new AiBudgetLockTimeoutError(operation, boundMs, { cause: error });
+    }
     throw error;
   }
   if (!locked) throw new Error('Organization not found or not visible');
@@ -330,11 +344,16 @@ export async function reserveAiBudget(input: ReserveAiBudgetInput): Promise<Rese
   const keys = periodKeys(now);
   const sessionId = input.sessionId ?? null;
 
-  const nowIso = now.toISOString();
-  const expiresAtIso = new Date(now.getTime() + AI_BUDGET_RESERVATION_ACTIVE_TTL_MS).toISOString();
+  // ONE CLOCK, and it is Postgres's. `now` (injectable, used above for the
+  // period keys) is the API host's wall clock; `expires_at`, the sweep's
+  // `expires_at <= now()` and `expired_at` are all evaluated in the database.
+  // Mixing them means a host with even seconds of drift either frees a cap
+  // early or holds one past its window, and the two would disagree about the
+  // same row. Interval, not a literal, so the TTL constant stays the source.
+  const activeTtlSeconds = AI_BUDGET_RESERVATION_ACTIVE_TTL_MS / 1000;
 
   return inReservationTransaction('aiBudgetReservations.reserve', async () => {
-    await lockOrganizationRow(input.orgId, 'admission');
+    await lockOrganizationRow(input.orgId, 'admission', AI_BUDGET_LOCK_TIMEOUT_MS);
 
     const existing = rows<ReservationRow>(await db.execute<ReservationRow>(sql`
       SELECT id, org_id, idempotency_key, session_id, billing_source,
@@ -385,12 +404,12 @@ export async function reserveAiBudget(input: ReserveAiBudgetInput): Promise<Rese
                     WHERE org_id = ${input.orgId}::uuid
                       AND daily_period_key = ${keys.daily}
                       AND status IN ('active', 'indeterminate')
-                      AND expires_at > ${nowIso}::timestamptz), 0)::text AS daily_reserved,
+                      AND expires_at > now()), 0)::text AS daily_reserved,
           COALESCE((SELECT sum(reserved_cost_cents) FROM ai_budget_reservations
                     WHERE org_id = ${input.orgId}::uuid
                       AND monthly_period_key = ${keys.monthly}
                       AND status IN ('active', 'indeterminate')
-                      AND expires_at > ${nowIso}::timestamptz), 0)::text AS monthly_reserved
+                      AND expires_at > now()), 0)::text AS monthly_reserved
       `))[0];
       if (!usage) throw new Error('Failed to read AI budget usage');
 
@@ -434,7 +453,7 @@ export async function reserveAiBudget(input: ReserveAiBudgetInput): Promise<Rese
         ${input.orgId}::uuid, ${input.idempotencyKey}, ${sessionId}::uuid, ${input.billingSource},
         ${keys.daily}, ${keys.monthly}, ${uncapped},
         ${moneyString(reservedCostCents, 'reservedCostCents')}::numeric,
-        ${expiresAtIso}::timestamptz
+        now() + make_interval(secs => ${activeTtlSeconds})
       )
       RETURNING id, org_id, idempotency_key, session_id, billing_source,
                 daily_period_key, monthly_period_key, uncapped,
@@ -474,7 +493,7 @@ export async function settleAiBudgetReservation(
   const fingerprint = settlementFingerprint(input, cost);
 
   return inReservationTransaction('aiBudgetReservations.settle', async () => {
-    await lockOrganizationRow(input.orgId, 'settlement');
+    await lockOrganizationRow(input.orgId, 'settlement', AI_BUDGET_SETTLEMENT_LOCK_TIMEOUT_MS);
 
     const reservation = rows<ReservationRow>(await db.execute<ReservationRow>(sql`
       SELECT id, org_id, idempotency_key, session_id, billing_source,
@@ -564,6 +583,60 @@ export async function settleAiBudgetReservation(
   });
 }
 
+/**
+ * Settle, but never lose the spend to lock contention.
+ *
+ * Settlement runs AFTER the provider has been paid, so the three callers in
+ * `aiCostTracker` cannot simply propagate a failure: an unhandled
+ * {@link AiBudgetLockTimeoutError} there drops the usage from `ai_cost_usage`
+ * AND leaves the reservation `active`, holding the organization's entire cap
+ * until the active TTL closes it. That is the B3 failure re-entered through B2.
+ *
+ * So: wait longer than admission does, retry once (contention on one org row is
+ * short-lived by construction — every holder is itself a bounded reservation
+ * transaction), and if it still will not settle, mark the reservation
+ * `indeterminate` so the 24 h window applies and a later reconciliation can
+ * still settle it. The result says which of those happened; every caller treats
+ * settlement as best-effort, but none of them is left guessing.
+ *
+ * A non-lock error is rethrown unchanged — only contention is retryable, and
+ * retrying (say) a conflicting-settlement error would just raise it twice.
+ */
+export async function settleAiBudgetReservationDurably(
+  input: SettleAiBudgetReservationInput,
+): Promise<SettleAiBudgetReservationResult | { kind: 'deferred_indeterminate'; reservationId: string }> {
+  try {
+    return await settleAiBudgetReservation(input);
+  } catch (firstError) {
+    if (!isAiBudgetLockTimeout(firstError)) throw firstError;
+    try {
+      return await settleAiBudgetReservation(input);
+    } catch (retryError) {
+      if (!isAiBudgetLockTimeout(retryError)) throw retryError;
+      console.error('[AI] budget settlement blocked twice on the organization lock', {
+        orgId: input.orgId,
+        reservationId: input.reservationId,
+        actualCostCents: input.actualCostCents,
+        inputTokens: input.inputTokens,
+        outputTokens: input.outputTokens,
+      });
+      captureException(retryError instanceof Error ? retryError : new Error(String(retryError)));
+      // Best effort, and bounded either way: if THIS also cannot take the lock
+      // the row stays `active` and the 30-minute active TTL still reclaims the
+      // cap — the tenant is never locked out indefinitely, the spend is just
+      // unrecorded, which the capture above makes visible.
+      await markAiBudgetReservationIndeterminate({
+        orgId: input.orgId,
+        reservationId: input.reservationId,
+      }).catch((markError) => {
+        console.error('[AI] budget reservation could not be marked indeterminate', markError);
+        captureException(markError instanceof Error ? markError : new Error(String(markError)));
+      });
+      return { kind: 'deferred_indeterminate', reservationId: input.reservationId };
+    }
+  }
+}
+
 export async function markAiBudgetReservationIndeterminate(input: {
   orgId: string;
   reservationId: string;
@@ -573,11 +646,10 @@ export async function markAiBudgetReservationIndeterminate(input: {
   reservationId: string;
 }> {
   const markedAt = input.markedAt ?? new Date();
-  const expiresAtIso = new Date(
-    markedAt.getTime() + AI_BUDGET_RESERVATION_INDETERMINATE_TTL_MS,
-  ).toISOString();
+  // Database clock, for the same reason as admission above.
+  const indeterminateTtlSeconds = AI_BUDGET_RESERVATION_INDETERMINATE_TTL_MS / 1000;
   return inReservationTransaction('aiBudgetReservations.indeterminate', async () => {
-    await lockOrganizationRow(input.orgId, 'indeterminate marking');
+    await lockOrganizationRow(input.orgId, 'indeterminate marking', AI_BUDGET_SETTLEMENT_LOCK_TIMEOUT_MS);
     const reservation = rows<ReservationRow>(await db.execute<ReservationRow>(sql`
       SELECT id, org_id, idempotency_key, session_id, billing_source,
              daily_period_key, monthly_period_key, uncapped,
@@ -601,7 +673,7 @@ export async function markAiBudgetReservationIndeterminate(input: {
     await db.execute(sql`
       UPDATE ai_budget_reservations
       SET status = 'indeterminate', indeterminate_at = ${markedAt.toISOString()}::timestamptz,
-          expires_at = ${expiresAtIso}::timestamptz,
+          expires_at = now() + make_interval(secs => ${indeterminateTtlSeconds}),
           updated_at = ${markedAt.toISOString()}::timestamptz
       WHERE id = ${reservation.id}::uuid
     `);
@@ -617,7 +689,7 @@ export async function releaseUnusedAiBudgetReservation(input: {
 }): Promise<{ kind: 'released' | 'already_released' | 'already_expired'; reservationId: string }> {
   const releasedAt = input.releasedAt ?? new Date();
   return inReservationTransaction('aiBudgetReservations.releaseUnused', async () => {
-    await lockOrganizationRow(input.orgId, 'release');
+    await lockOrganizationRow(input.orgId, 'release', AI_BUDGET_SETTLEMENT_LOCK_TIMEOUT_MS);
     const reservation = rows<ReservationRow>(await db.execute<ReservationRow>(sql`
       SELECT id, org_id, idempotency_key, session_id, billing_source,
              daily_period_key, monthly_period_key, uncapped,
@@ -662,12 +734,23 @@ export interface ExpiredAiBudgetReservation {
  * ignores rows past `expires_at`, which is what keeps the ledger CORRECT; this
  * sweep is what makes it OBSERVABLE and keeps the table's status column honest
  * — an operator reading `status` should not have to re-derive expiry from a
- * timestamp, and Sentry should carry a breadcrumb for every cap that had to be
- * reclaimed rather than settled.
+ * timestamp, and every reclaimed cap should leave a trace.
  *
- * One statement, no row locks: the UPDATE's own predicate is the guard, and a
- * concurrent settle racing it is fine in both orders (settling an `expired` row
- * is explicitly allowed, and expiring an already-`settled` row cannot match).
+ * THE STATUS PREDICATE IS REPEATED ON THE OUTER `WHERE`, AND THAT IS LOAD-BEARING.
+ * Under READ COMMITTED, an UPDATE that blocks on a row locked by a concurrent
+ * transaction re-evaluates its own qual against the NEW row version when that
+ * transaction commits (EvalPlanQual). A qual of the form `id IN (subselect)`
+ * re-checks only the id — the subselect ran on the ORIGINAL snapshot and is not
+ * re-executed — so a row that `settleAiBudgetReservation` just moved to
+ * `settled` (while holding `FOR UPDATE`) would still match and be relabelled
+ * `expired`. That is not merely untidy: a settlement retry would then miss the
+ * `status === 'settled'` fingerprint guard, re-run the `ai_cost_usage` upserts
+ * and DOUBLE CHARGE the tenant. With the predicate on the outer WHERE too,
+ * EvalPlanQual re-checks the status on the new version and the row is skipped.
+ *
+ * No row locks are taken beyond the UPDATE's own: a concurrent settle racing it
+ * is then fine in both orders — settling an `expired` row is explicitly allowed,
+ * and expiring an already-`settled` row cannot match.
  */
 export async function expireStaleAiBudgetReservations(
   limit = 500,
@@ -687,12 +770,14 @@ export async function expireStaleAiBudgetReservations(
         updated_at = now(),
         -- SET reads the OLD row, so this names the status the row is leaving.
         expiry_reason = CASE WHEN status = 'active' THEN 'active_ttl' ELSE 'indeterminate_ttl' END
-    WHERE id IN (
-      SELECT id FROM ai_budget_reservations
-      WHERE status IN ('active', 'indeterminate') AND expires_at <= now()
-      ORDER BY expires_at ASC
-      LIMIT ${limit}
-    )
+    WHERE status IN ('active', 'indeterminate')
+      AND expires_at <= now()
+      AND id IN (
+        SELECT id FROM ai_budget_reservations
+        WHERE status IN ('active', 'indeterminate') AND expires_at <= now()
+        ORDER BY expires_at ASC
+        LIMIT ${limit}
+      )
     RETURNING id, org_id, expiry_reason, reserved_cost_cents
   `));
   return swept.map((row) => ({

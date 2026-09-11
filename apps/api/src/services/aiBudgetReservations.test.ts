@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AI_BUDGET_LOCK_TIMEOUT_MS,
+  AI_BUDGET_SETTLEMENT_LOCK_TIMEOUT_MS,
   isAiBudgetLockTimeout,
   maxOutputTokensForAiBudget,
   reserveAiBudget,
   settleAiBudgetReservation,
+  settleAiBudgetReservationDurably,
 } from './aiBudgetReservations';
 
 describe('maxOutputTokensForAiBudget', () => {
@@ -64,6 +66,7 @@ const { dbMock, hoisted } = vi.hoisted(() => ({
     getCurrentDbAccessContext: vi.fn(() => ({ scope: 'organization' as const })),
     tightenLockTimeout: vi.fn(async () => 0),
     getEffectiveAiBudget: vi.fn(),
+    captureException: vi.fn(),
   },
 }));
 
@@ -76,6 +79,7 @@ vi.mock('../db', () => ({
 }));
 vi.mock('../db/lockTimeout', () => ({ tightenLockTimeout: hoisted.tightenLockTimeout }));
 vi.mock('./effectiveSettings', () => ({ getEffectiveAiBudget: hoisted.getEffectiveAiBudget }));
+vi.mock('./sentry', () => ({ captureException: hoisted.captureException }));
 
 const ORG_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const RESERVATION_ID = '12121212-1212-4121-8121-121212121212';
@@ -213,5 +217,113 @@ describe('monetary bounds', () => {
       outputTokens: 0,
     })).rejects.toThrow(/inputTokens must be a non-negative safe integer/);
     expect(dbMock.execute).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Settlement is the money path (review item 2)
+// ---------------------------------------------------------------------------
+
+describe('settleAiBudgetReservationDurably', () => {
+  const settleInput = {
+    orgId: ORG_ID,
+    reservationId: RESERVATION_ID,
+    actualCostCents: 12.5,
+    inputTokens: 100,
+    outputTokens: 50,
+  };
+
+  function primeSettleOnce(status = 'active') {
+    // organizations FOR UPDATE -> reservation FOR UPDATE -> 2 aggregate upserts
+    // -> reservation UPDATE ... RETURNING
+    dbMock.execute
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([reservationRow({ status, uncapped: false, reserved_cost_cents: '100.000000' })])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: RESERVATION_ID }]);
+  }
+
+  function lockTimeout() {
+    return Object.assign(new Error('Failed query'), {
+      cause: Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' }),
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    hoisted.runOutsideDbContext.mockImplementation((fn: () => unknown) => fn());
+    hoisted.withSystemDbAccessContext.mockImplementation((fn: () => unknown) => fn());
+  });
+
+  it('waits longer for the settlement lock than for admission', async () => {
+    primeSettleOnce();
+    await settleAiBudgetReservationDurably(settleInput);
+    // Admission fails fast because the caller has spent nothing; settlement has
+    // already paid the provider, so giving up cheaply LOSES the spend.
+    expect(hoisted.tightenLockTimeout).toHaveBeenCalledWith(
+      dbMock, AI_BUDGET_SETTLEMENT_LOCK_TIMEOUT_MS,
+    );
+    expect(AI_BUDGET_SETTLEMENT_LOCK_TIMEOUT_MS).toBeGreaterThan(AI_BUDGET_LOCK_TIMEOUT_MS);
+  });
+
+  it('retries once when the organization lock is contended, and settles', async () => {
+    dbMock.execute.mockRejectedValueOnce(lockTimeout());
+    primeSettleOnce();
+
+    await expect(settleAiBudgetReservationDurably(settleInput))
+      .resolves.toMatchObject({ kind: 'settled' });
+    expect(hoisted.tightenLockTimeout).toHaveBeenCalledTimes(2);
+  });
+
+  it('marks the reservation indeterminate when it still cannot settle, instead of losing the cap', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Both settlement attempts time out on the org lock...
+    dbMock.execute
+      .mockRejectedValueOnce(lockTimeout())
+      .mockRejectedValueOnce(lockTimeout())
+      // ...then the indeterminate marking succeeds: org lock, reservation read,
+      // the UPDATE.
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([reservationRow({ status: 'active' })])
+      .mockResolvedValueOnce([]);
+
+    await expect(settleAiBudgetReservationDurably(settleInput))
+      .resolves.toMatchObject({ kind: 'deferred_indeterminate', reservationId: RESERVATION_ID });
+
+    // The 24h indeterminate window now applies, so a reconciliation can still
+    // settle it — and the lost spend is visible rather than silent.
+    expect(hoisted.captureException).toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      '[AI] budget settlement blocked twice on the organization lock',
+      expect.objectContaining({ orgId: ORG_ID, reservationId: RESERVATION_ID, actualCostCents: 12.5 }),
+    );
+    error.mockRestore();
+  });
+
+  it('survives the indeterminate marking ALSO failing, without throwing at the caller', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    dbMock.execute
+      .mockRejectedValueOnce(lockTimeout())
+      .mockRejectedValueOnce(lockTimeout())
+      .mockRejectedValueOnce(lockTimeout());
+
+    // Metering is best-effort at every call site; a throw here would turn a
+    // delivered AI response into a 500. The 30-minute active TTL still bounds
+    // the held cap, so the tenant is never locked out indefinitely.
+    await expect(settleAiBudgetReservationDurably(settleInput))
+      .resolves.toMatchObject({ kind: 'deferred_indeterminate' });
+    error.mockRestore();
+  });
+
+  it('rethrows a non-lock failure without retrying, because only contention is retryable', async () => {
+    dbMock.execute
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([reservationRow({ status: 'settled', settlement_fingerprint: 'different' })]);
+
+    await expect(settleAiBudgetReservationDurably(settleInput))
+      .rejects.toThrow(/Conflicting settlement/i);
+    // One attempt only: retrying a conflicting settlement just raises twice.
+    expect(hoisted.tightenLockTimeout).toHaveBeenCalledTimes(1);
   });
 });

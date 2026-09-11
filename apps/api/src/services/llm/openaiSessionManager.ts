@@ -30,7 +30,7 @@ import { deductBillingCredits } from '../aiCostTracker';
 import {
   markAiBudgetReservationIndeterminate,
   releaseUnusedAiBudgetReservation,
-  settleAiBudgetReservation,
+  settleAiBudgetReservationDurably,
 } from '../aiBudgetReservations';
 import { sanitizeErrorForClient } from '../aiAgent';
 import { getConfig } from '../../config/validate';
@@ -209,13 +209,12 @@ export class OpenAISessionManager {
     try {
       history = await buildMessagesFromHistory(breezeSessionId, orgId);
     } catch (err) {
-      await withDbAccessContext(
-        { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
-        () => releaseUnusedAiBudgetReservation({
-          orgId,
-          reservationId: budgetDispatch.reservationId,
-        }),
-      ).catch((releaseError) => {
+      // N12: aiBudgetReservations opens its own SYSTEM transaction; wrapping it
+      // here only costs an extra pooled connection for the round trip.
+      await releaseUnusedAiBudgetReservation({
+        orgId,
+        reservationId: budgetDispatch.reservationId,
+      }).catch((releaseError) => {
         captureException(releaseError);
         console.error('[OpenAISessionManager] Failed to release unused budget reservation:', releaseError);
       });
@@ -257,13 +256,11 @@ export class OpenAISessionManager {
       ? undefined
       : this.provider.maxOutputTokensForBudgetUsd(messages, budgetDispatch.maxBudgetUsd);
     if (budgetDispatch.maxBudgetUsd !== undefined && maxTokens === null) {
-      await withDbAccessContext(
-        { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
-        () => releaseUnusedAiBudgetReservation({
-          orgId,
-          reservationId: budgetDispatch.reservationId,
-        }),
-      );
+      // N12: see above — no context wrap needed.
+      await releaseUnusedAiBudgetReservation({
+        orgId,
+        reservationId: budgetDispatch.reservationId,
+      });
       session.eventBus.publish({
         type: 'error',
         message: 'The remaining AI budget cannot safely fund this request.',
@@ -348,18 +345,19 @@ export class OpenAISessionManager {
       if (inputTokens > 0 || outputTokens > 0) {
         try {
           const costUsd = this.provider.computeCostUsd(inputTokens, outputTokens);
-          await withDbAccessContext(
-            { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
-            () => settleAiBudgetReservation({
-              orgId,
-              reservationId: budgetDispatch.reservationId,
-              actualCostCents: Math.round(costUsd * 100 * 100) / 100,
-              inputTokens,
-              outputTokens,
-              messageCount: 1,
-              session: { id: breezeSessionId },
-            }),
-          );
+          // N12: no context wrap. Every aiBudgetReservations entry point opens
+          // its own short SYSTEM transaction (runOutsideDbContext +
+          // withSystemDbAccessContext), so a context opened here is exited
+          // immediately and only costs a pooled connection for the round trip.
+          await settleAiBudgetReservationDurably({
+            orgId,
+            reservationId: budgetDispatch.reservationId,
+            actualCostCents: Math.round(costUsd * 100 * 100) / 100,
+            inputTokens,
+            outputTokens,
+            messageCount: 1,
+            session: { id: breezeSessionId },
+          });
           reservationSettled = true;
           await deductBillingCredits(orgId, Math.round(costUsd * 100 * 100) / 100);
         } catch (err) {
@@ -370,13 +368,14 @@ export class OpenAISessionManager {
     } finally {
       if (providerInvoked && !reservationSettled) {
         try {
-          await withDbAccessContext(
-            { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
-            () => markAiBudgetReservationIndeterminate({
-              orgId,
-              reservationId: budgetDispatch.reservationId,
-            }),
-          );
+          // N12: no context wrap. Every aiBudgetReservations entry point opens
+          // its own short SYSTEM transaction (runOutsideDbContext +
+          // withSystemDbAccessContext), so a context opened here is exited
+          // immediately and only costs a pooled connection for the round trip.
+          await markAiBudgetReservationIndeterminate({
+            orgId,
+            reservationId: budgetDispatch.reservationId,
+          });
         } catch (err) {
           captureException(err);
           console.error('[OpenAISessionManager] Failed to retain indeterminate budget reservation:', err);
