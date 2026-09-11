@@ -48,6 +48,7 @@ import {
 } from '../services/scriptBundle';
 import { scriptBundleRoutes } from './scriptBundle';
 import { cloneScript, isScriptCloneError } from '../services/scriptClone';
+import { cutScriptVersion } from '../services/scriptVersions';
 
 import {
   MAX_GRACE_SECONDS,
@@ -560,8 +561,11 @@ scriptRoutes.post(
       return c.json({ error: describeParameterSecretMismatch(mismatches) }, 400);
     }
 
-    // Clone into the org
-    const [cloned] = await db
+    // Clone into the org — row and v1 in one transaction, same reason as
+    // insertScriptRow: a clone with no version row would be headless, and
+    // script_versions is append-only so it could not be repaired later.
+    const cloned = await db.transaction(async (tx) => {
+      const [row] = await tx
       .insert(scripts)
       .values({
         orgId,
@@ -575,7 +579,7 @@ scriptRoutes.post(
         timeoutSeconds: source.timeoutSeconds,
         runAs: source.runAs,
         isSystem: false,
-        version: 1,
+        version: 0,
         // #5129 — `acknowledgedSecurityPatterns` is DELIBERATELY not copied.
         // The column defaults to '{}', so the imported copy starts
         // unacknowledged and its first Strict match is refused until someone
@@ -587,12 +591,33 @@ scriptRoutes.post(
       })
       .returning();
 
+      if (!row) return null;
+
+      // origin 'human', not 'imported': a technician copying a shipped script
+      // into their org is a person acting, not a bundle landing. 'imported' is
+      // reserved for services/scriptBundle (spec §4.1 writers row).
+      const cut = await cutScriptVersion(tx, {
+        scriptId: row.id,
+        provenance: {
+          origin: 'human',
+          changelog: 'Imported from the system library',
+          createdBy: auth.user.id,
+        },
+      });
+
+      return { ...row, version: cut.version };
+    });
+
+    if (!cloned) {
+      return c.json({ error: 'Script could not be imported' }, 404);
+    }
+
     writeRouteAudit(c, {
       orgId,
       action: 'script.import',
       resourceType: 'script',
-      resourceId: cloned?.id,
-      resourceName: cloned?.name,
+      resourceId: cloned.id,
+      resourceName: cloned.name,
       details: {
         sourceScriptId: sourceId,
         sourceScriptName: source.name
@@ -858,21 +883,34 @@ scriptRoutes.put(
       effectiveScope = target;
     }
 
+    // The version bump covers EVERYTHING a run consumes: the content, the
+    // parameter contract (#3409 PR3), and — since
+    // 2026-10-16-100000-script-versions-immutable.sql — the language, timeout
+    // and run context. It used to track content alone, then content plus
+    // parameters, which left the three fields below able to change under a
+    // pinned version and a pinned effect digest. A version row is the
+    // definition of an execution (spec §4.1), so all five fields move it.
+    // Every branch feeds ONE bump, so a save that changes several still moves
+    // the version by exactly 1.
+    let versionChanged = false;
+
     if (data.name !== undefined) updates.name = data.name;
     if (data.description !== undefined) updates.description = data.description;
     if (data.category !== undefined) updates.category = data.category;
     if (data.osTypes !== undefined) updates.osTypes = data.osTypes;
-    if (data.language !== undefined) updates.language = data.language;
-    if (data.timeoutSeconds !== undefined) updates.timeoutSeconds = data.timeoutSeconds;
-    if (data.runAs !== undefined) updates.runAs = data.runAs;
+    if (data.language !== undefined) {
+      updates.language = data.language;
+      if (data.language !== script.language) versionChanged = true;
+    }
+    if (data.timeoutSeconds !== undefined) {
+      updates.timeoutSeconds = data.timeoutSeconds;
+      if (data.timeoutSeconds !== script.timeoutSeconds) versionChanged = true;
+    }
+    if (data.runAs !== undefined) {
+      updates.runAs = data.runAs;
+      if (data.runAs !== script.runAs) versionChanged = true;
+    }
     if (data.exitCodeSeverityMapping !== undefined) updates.exitCodeSeverityMapping = data.exitCodeSeverityMapping;
-
-    // The version bump covers BOTH halves of what a run consumes: the content
-    // and the parameter contract (#3409 PR3). It used to track content alone,
-    // so flipping a parameter to a bound source — or renaming one — left the
-    // version untouched, which PR4's effect digest pins. Both branches feed
-    // one bump so a save that changes both still moves the version by 1.
-    let versionChanged = false;
 
     if (data.parameters !== undefined) {
       updates.parameters = data.parameters;
@@ -910,10 +948,6 @@ scriptRoutes.put(
       }
     }
 
-    if (versionChanged) {
-      updates.version = script.version + 1;
-    }
-
     // #5129 — resolve the acknowledgement against the content this save
     // LEAVES BEHIND, not the content that arrived. `data.content` is absent on
     // a metadata-only edit, and the stored set must then be judged against the
@@ -947,11 +981,30 @@ scriptRoutes.put(
       Object.assign(updates, acknowledgementColumns);
     }
 
-    const [updated] = await db
-      .update(scripts)
-      .set(updates)
-      .where(eq(scripts.id, scriptId))
-      .returning();
+    const updated = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(scripts)
+        .set(updates)
+        .where(eq(scripts.id, scriptId))
+        .returning();
+
+      if (!row) return null;
+
+      // Cut AFTER the update so the version snapshots the after-image.
+      // cutScriptVersion owns scripts.version — `updates` must never carry it.
+      const cut = versionChanged
+        ? await cutScriptVersion(tx, {
+            scriptId,
+            provenance: {
+              origin: 'human',
+              changelog: null,
+              createdBy: auth.user.id
+            }
+          })
+        : null;
+
+      return { ...row, version: cut?.version ?? row.version };
+    });
 
     // The row was read+authorized above, but RLS (USING) or a concurrent
     // soft-delete can still leave the UPDATE matching 0 rows. Without this
