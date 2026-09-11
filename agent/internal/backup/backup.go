@@ -502,9 +502,20 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// is an optimization, never worth a world-writable root-owned write.
 	var journal *snapshotJournal
 	var resumedJournal bool
+	// journalDirForExclude is threaded into collectBackupFilesFromPaths below
+	// so the walker never backs up this run's own checkpoint-journal files
+	// (or another run's, sharing the same directory) as ordinary content —
+	// see collectBackupFilesFromPaths's journalDir doc comment and #5581. Set
+	// whenever a secure journal directory resolved, even if opening the
+	// journal itself failed (the directory can still hold OTHER journal
+	// files, e.g. from a concurrent run with a different destination
+	// identity); left empty only when resolveJournalDir found nowhere secure
+	// to journal at all, matching "no journal, nothing to exclude".
+	var journalDirForExclude string
 	if journalDir, ok := resolveJournalDir(m.GetStagingDir()); !ok {
 		log.Warn("no secure checkpoint journal directory available, proceeding without resume support")
 	} else {
+		journalDirForExclude = journalDir
 		var journalErr error
 		journal, resumedJournal, journalErr = openSnapshotJournal(journalDir, backupIdentity(m.config.Provider, m.config.Paths), journalMaxAge)
 		if journalErr != nil {
@@ -815,7 +826,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// timing in snapshot.go (#2790).
 	log.Info("scanning backup paths", "jobId", job.ID, "pathCount", len(backupPaths))
 	scanStart := time.Now()
-	files, scanErr := m.collectBackupFilesFromPaths(runCtx, backupPaths, newExcludeMatcher(excludes))
+	files, scanErr := m.collectBackupFilesFromPaths(runCtx, backupPaths, newExcludeMatcher(excludes), journalDirForExclude)
 	if scanErr != nil {
 		if errors.Is(scanErr, errBackupStopped) {
 			return stopBackupRun()
@@ -1121,6 +1132,17 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		failureWarning := summarizeUploadFailures(snapshot.UploadFailures, len(files))
 		appendWarning(job, failureWarning)
 		log.Warn("snapshot completed with upload failures", "warning", failureWarning, "errorCount", job.ErrorCount)
+	}
+
+	// Volatile files (#5581): kept changing while being backed up, so their
+	// manifest entry describes the last pre-upload measurement rather than
+	// any single instant an observer could point to. Not an error (the
+	// files ARE backed up, and restore/verify treat a mismatch on them as
+	// advisory) — surfaced as a Warning only, no ErrorCount contribution.
+	if snapshot != nil && snapshot.VolatileFiles > 0 {
+		volatileWarning := fmt.Sprintf("%d file(s) were modified while being backed up (recorded as volatile)", snapshot.VolatileFiles)
+		appendWarning(job, volatileWarning)
+		log.Warn("snapshot completed with volatile files", "warning", volatileWarning, "volatileFiles", snapshot.VolatileFiles)
 	}
 
 	// Collection-phase (scan) errors — permission-denied files, walk failures,
@@ -1431,10 +1453,43 @@ func dirNeedsEntry(info os.FileInfo, owner *FileOwner, empty bool) bool {
 }
 
 func (m *BackupManager) collectBackupFiles() ([]backupFile, error) {
-	return m.collectBackupFilesFromPaths(context.Background(), m.config.Paths, newExcludeMatcher(m.config.Excludes))
+	return m.collectBackupFilesFromPaths(context.Background(), m.config.Paths, newExcludeMatcher(m.config.Excludes), "")
 }
 
-func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths []string, excl *excludeMatcher) ([]backupFile, error) {
+// isWithinDir reports whether path IS dir, or lies somewhere inside it.
+// Used to hard-exclude this run's own checkpoint-journal directory from the
+// backup walk (see collectBackupFilesFromPaths's journalDir parameter)
+// independent of any user-configured exclude pattern: a live journal file
+// growing while the walker is mid-scan is exactly the #5581 failure mode,
+// and this guard must keep working even when an operator edits or removes
+// the whole-machine preset excludes that also target this directory
+// (apps/web/.../backupTabPresets.ts) by name. An unresolvable relative path
+// (different volumes on Windows, etc.) is treated as "not within" — the
+// same fail-open default filepath.Rel errors already get everywhere else in
+// this file.
+func isWithinDir(path, dir string) bool {
+	if dir == "" {
+		return false
+	}
+	path = filepath.Clean(path)
+	dir = filepath.Clean(dir)
+	if path == dir {
+		return true
+	}
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// journalDir, when non-empty, is this run's own checkpoint-journal
+// directory (see resolveJournalDir) — its subtree is skipped entirely
+// regardless of excl, so the walker never captures the very journal file
+// this run is writing to (or another run's, in the same directory) as
+// ordinary backup content. Empty for callers with no journal context (the
+// collectBackupFiles() test/legacy helper above).
+func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths []string, excl *excludeMatcher, journalDir string) ([]backupFile, error) {
 	var files []backupFile
 	var errs []error
 	seen := make(map[string]struct{})
@@ -1460,7 +1515,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				continue
 			}
 			relPath := filepath.Base(cleanRoot)
-			if excl.matches(relPath) {
+			if excl.matches(relPath) || isWithinDir(cleanRoot, journalDir) {
 				continue
 			}
 			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, relPath))
@@ -1512,8 +1567,11 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 					return nil
 				}
 				// An excluded directory is skipped entirely (fs.SkipDir), not
-				// just its immediate files (#2418).
-				if excl != nil && excl.matches(slashRel) {
+				// just its immediate files (#2418). The journal-dir check
+				// rides the same fs.SkipDir path so the whole checkpoint
+				// journal subtree — not just files that happen to match a
+				// glob — is pruned in one step (#5581).
+				if (excl != nil && excl.matches(slashRel)) || isWithinDir(path, journalDir) {
 					return fs.SkipDir
 				}
 				dirs = append(dirs, walkedDir{path: path, rel: slashRel})
@@ -1521,7 +1579,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				return nil
 			}
 			childCount[filepath.Dir(path)]++
-			if excl.matches(slashRel) {
+			if excl.matches(slashRel) || isWithinDir(path, journalDir) {
 				return nil
 			}
 			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, relPath))
