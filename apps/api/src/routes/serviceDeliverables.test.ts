@@ -154,12 +154,11 @@ describe('service deliverable routes (#5573 W01)', () => {
     expect(getDeliverable).not.toHaveBeenCalled();
   });
 
-  it('POST deliver → 400 for a document evidence kind (W03 widens the union)', async () => {
-    const res = await post(`/${ORG}/deliverables/occurrences/${OCC}/deliver`, {
-      evidence: [{ kind: 'document', documentId: RUN }],
-    });
-    expect(res.status).toBe(400);
-    expect(deliverOccurrence).not.toHaveBeenCalled();
+  it('POST deliver → 200 with a document evidence ref now that W03 widened the union', async () => {
+    const body = { evidence: [{ kind: 'document', documentId: RUN }] };
+    const res = await post(`/${ORG}/deliverables/occurrences/${OCC}/deliver`, body);
+    expect(res.status).toBe(200);
+    expect(deliverOccurrence).toHaveBeenCalledWith(ORG, OCC, body, ACTOR);
   });
 
   it('POST deliver → 409 on an invalid transition', async () => {

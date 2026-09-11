@@ -1214,6 +1214,7 @@ export {
   updateDeliverableSchema,
   listDeliverablesQuerySchema,
   reportRunEvidenceRefSchema,
+  documentEvidenceRefSchema,
   evidenceRefSchema,
   addEvidenceSchema,
   deliverOccurrenceSchema,

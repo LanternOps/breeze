@@ -8,6 +8,7 @@ import { contracts } from '../db/schema/contracts';
 import { organizations } from '../db/schema/orgs';
 import { users } from '../db/schema/users';
 import { reports, reportRuns } from '../db/schema/reports';
+import { orgDocuments } from '../db/schema/orgDocuments';
 import { ticketCategories } from '../db/schema/tickets';
 import type {
   CreateDeliverableInput, UpdateDeliverableInput, DeliverOccurrenceInput, WaiveOccurrenceInput,
@@ -383,12 +384,26 @@ async function insertEvidenceRef(orgId: string, occurrenceId: string, ref: Evide
       });
       return;
     }
+    case 'document': {
+      // 404 not 403 (spec §12): a document of another org — or a soft-deleted
+      // one — must be indistinguishable from one that does not exist. The
+      // composite FK (document_id, org_id) is the DB backstop; checking here
+      // gives the caller a clean 404 instead of a 23503. Evidence pins this
+      // exact version: a later replace creates a new id and never moves it.
+      const [doc] = await executor.select({ id: orgDocuments.id })
+        .from(orgDocuments)
+        .where(and(eq(orgDocuments.id, ref.documentId), eq(orgDocuments.orgId, orgId), isNull(orgDocuments.deletedAt)))
+        .limit(1);
+      if (!doc) throw notFound();
+      await executor.insert(serviceDeliverableEvidence).values({
+        orgId, occurrenceId, kind: 'document', documentId: doc.id, reportId: null, reportRunId: null, createdByUserId: actor.userId,
+      });
+      return;
+    }
     default: {
-      // W03 widens EvidenceRef with { kind: 'document' }; this guard turns a
-      // forgotten branch into a compile error and a loud 500, never a silent
-      // no-op. Narrow on the discriminant (not `ref`): the union is currently
-      // a single member, and a lone object type never narrows to `never`.
-      const _exhaustive: never = ref.kind;
+      // Turns a forgotten branch into a compile error and a loud 500, never a
+      // silent no-op.
+      const _exhaustive: never = ref;
       throw new DeliverableServiceError('Unsupported evidence kind', 500, 'UNSUPPORTED_EVIDENCE_KIND');
     }
   }
@@ -538,6 +553,13 @@ export async function rescheduleOccurrence(
     await updateOccurrenceFrom(tx, orgId, occurrenceId, current.status, { dueAt: input.dueAt, status: next, updatedAt: new Date() });
     return loadView(orgId, occurrenceId, tx);
   });
+}
+
+/** Load one occurrence by id, 404 NOT_FOUND on a foreign org or a missing row
+ *  (W03: the evidence-upload route needs it before it writes a document). */
+export async function getOccurrenceOr404(orgId: string, occurrenceId: string, actor: DeliverableActor): Promise<OccurrenceView> {
+  requireOrgAccess(actor, orgId);
+  return loadView(orgId, occurrenceId, db);
 }
 
 export async function addEvidence(orgId: string, occurrenceId: string, ref: EvidenceRef, actor: DeliverableActor): Promise<OccurrenceView> {
