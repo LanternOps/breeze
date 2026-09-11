@@ -41,7 +41,7 @@ import {
   resolveIntentTargetScope,
   type IntentTargetScope,
 } from './intentApprovers';
-import { computeEffectDigestOutcome, type EffectDigestOutcome } from './effectDigest';
+import { computeEffectDigestOutcome, EffectDigestUnresolvableError, type EffectDigestOutcome } from './effectDigest';
 import {
   assertArgsMatchScope,
   assertArgsMatchTicketScope,
@@ -1942,6 +1942,11 @@ export async function createActionIntent(
     // "this operation already happened" from "the database broke".
     if (err instanceof OperationReplayError) {
       throw new ActionIntentError(err.message, 'operation_replay');
+    }
+    // An unpinnable proposal is a deliberate refusal, not a database fault.
+    // Wrapping it as `fanout_failed` would tell the operator the outbox broke.
+    if (err instanceof EffectDigestUnresolvableError) {
+      throw new ActionIntentError(err.message, 'effect_digest_unresolvable');
     }
     console.error('[intentService] action intent creation transaction failed (rolled back):', err);
     throw new ActionIntentError(
