@@ -801,6 +801,7 @@
     "inUseCount_other": "Utilisé par {{count}} politiques",
     "sourceFile": "Fichiers",
     "sourceSystemState": "État du système",
+    "sourceWholeMachine": "Machine complète",
     "sourceSql": "SQL Server",
     "sourceHyperv": "Hyper-V",
     "templateTitle": "Nouveau profil de sauvegarde",

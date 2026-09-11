@@ -801,6 +801,7 @@
     "inUseCount_other": "Used by {{count}} policies",
     "sourceFile": "Files",
     "sourceSystemState": "System State",
+    "sourceWholeMachine": "Whole Machine",
     "sourceSql": "SQL Server",
     "sourceHyperv": "Hyper-V",
     "templateTitle": "New backup profile",

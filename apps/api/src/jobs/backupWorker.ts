@@ -426,8 +426,52 @@ export async function resolveBackupTargets(
       return [{ commandType: 'backup_run', payload }];
     }
 
-    case 'system_image':
-      return [{ commandType: 'backup_run', payload: { systemImage: true } }];
+    case 'system_image': {
+      const t = targets as { wholeMachine?: boolean; excludes?: string[] };
+      if (t.wholeMachine !== true) {
+        // Byte-identical to the pre-#5493 payload: no paths, so the helper
+        // builds a files-less system_image-only snapshot (layout + state).
+        return [{ commandType: 'backup_run', payload: { systemImage: true } }];
+      }
+      // #5493: whole-machine profile — walk the device's OS root alongside
+      // layout.json + system state so ONE snapshot carries everything the
+      // rebuild engine needs. Root is chosen server-side from the device's
+      // discovered osType, never trusted from the caller.
+      const [device] = await db
+        .select({ osType: devices.osType })
+        .from(devices)
+        .where(eq(devices.id, deviceId));
+      let root: string;
+      switch (device?.osType) {
+        case 'windows':
+          root = 'C:\\';
+          break;
+        case 'linux':
+          root = '/';
+          break;
+        default:
+          // osType is windows|macos|linux. macOS bare-metal recovery is out
+          // of scope (spec §12), and a missing device row means osType
+          // can't be resolved at all. Refuse loudly instead of defaulting
+          // to '/' — that would silently walk a macOS filesystem with the
+          // Linux exclude list, or dispatch a whole-machine job for a
+          // device we couldn't even identify.
+          throw new Error(
+            `whole-machine backup is not supported on ${device?.osType ?? 'unknown'}`
+          );
+      }
+      return [
+        {
+          commandType: 'backup_run',
+          payload: {
+            systemImage: true,
+            wholeMachine: true,
+            paths: [root],
+            excludes: Array.isArray(t.excludes) ? t.excludes : [],
+          },
+        },
+      ];
+    }
 
     case 'hyperv': {
       const t = targets as {
@@ -659,8 +703,20 @@ async function prepareBackupDispatchTargets(
     }
   }
 
-  // Resolve targets into typed commands based on backup mode
-  const targets = await resolveBackupTargets(backupMode, modeTargets, data.deviceId);
+  // Resolve targets into typed commands based on backup mode. A thrown error
+  // (e.g. an unsupported whole-machine device OS) means resolution refused
+  // outright rather than yielding zero targets — mark the job failed with
+  // that specific reason instead of falling through to the generic
+  // "no targets resolved" message below.
+  let targets: BackupTarget[];
+  try {
+    targets = await resolveBackupTargets(backupMode, modeTargets, data.deviceId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[BackupWorker] Backup target resolution refused for job ${data.jobId} (mode=${backupMode}, device=${data.deviceId}): ${message}`);
+    await markJobFailed(data.jobId, message);
+    return { status: 'done', result: { dispatched: false } };
+  }
 
   if (await isBackupJobCancelled(data.jobId)) {
     return { status: 'done', result: { dispatched: false } };

@@ -801,6 +801,7 @@
     "inUseCount_other": "{{count}} politikaları tarafından kullanılıyor",
     "sourceFile": "Dosyalar",
     "sourceSystemState": "Sistem Durumu",
+    "sourceWholeMachine": "Tüm Makine",
     "sourceSql": "SQL Sunucusu",
     "sourceHyperv": "Hyper-V",
     "templateTitle": "Yeni yedekleme profili",

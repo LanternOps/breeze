@@ -279,6 +279,13 @@ func (m *BackupManager) GetPaths() []string {
 	return m.config.Paths
 }
 
+// GetExcludes returns the configured file-exclusion glob patterns
+// (BackupConfig.Excludes). RunBackupContext's excludes parameter overrides
+// this per-run when non-nil (#2418); this is the config-level fallback.
+func (m *BackupManager) GetExcludes() []string {
+	return m.config.Excludes
+}
+
 // GetRetention returns the configured retention count. It is retained for
 // config-shape compatibility only: agent-side retention pruning has been
 // removed entirely (D18 §3.5) — the server is the sole retention/GC

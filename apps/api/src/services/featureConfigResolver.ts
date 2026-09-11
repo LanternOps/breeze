@@ -1535,7 +1535,14 @@ export function backupSelectionSpecs(
   if (s.system_image?.enabled === true) {
     specs.push({
       backupMode: 'system_image',
-      targets: { includeSystemState: s.system_image.includeSystemState !== false },
+      targets: {
+        includeSystemState: s.system_image.includeSystemState !== false,
+        // #5493: wholeMachine tells resolveBackupTargets to walk the device's
+        // OS root alongside layout.json + system state, so the fan-out
+        // produces one snapshot instead of a files-only + files-less pair.
+        wholeMachine: s.system_image.wholeMachine === true,
+        excludes: Array.isArray(s.system_image.excludes) ? s.system_image.excludes : [],
+      },
     });
   }
   if (s.mssql?.enabled === true) {

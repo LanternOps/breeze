@@ -85,15 +85,20 @@ type backupRunProviderConfig struct {
 }
 
 // defaultVSS decides whether VSS shadow-copy defaults on for a backup_run,
-// given the target OS and whether this is a system_image run. VSS is a
-// Windows-only feature; it stays off for system_image mode, which manages its
-// own consistency via system-state collection. Extracted as a pure function of
-// goos so the OS decision is table-testable on EVERY platform — the
-// internal/backup package (and this command's VSS-by-default flip) is excluded
-// from the Windows CI job, so a runtime.GOOS-only assertion would be vacuous on
-// the Linux runners that actually run these tests.
-func defaultVSS(goos string, systemImage bool) bool {
-	return goos == "windows" && !systemImage
+// given the target OS, whether this is a system_image run, and whether that
+// run also carries file paths to walk. VSS is a Windows-only feature; it
+// stays off for a system_image run with NO paths, which manages its own
+// consistency via system-state collection alone. A wholeMachine system_image
+// run (#5493) DOES carry paths — it walks the OS root in the same run that
+// collects system state — so it needs VSS on Windows the same as a plain
+// file-mode run; systemImage alone must not suppress it once paths are
+// present. Extracted as a pure function of goos so the OS decision is
+// table-testable on EVERY platform — the internal/backup package (and this
+// command's VSS-by-default flip) is excluded from the Windows CI job, so a
+// runtime.GOOS-only assertion would be vacuous on the Linux runners that
+// actually run these tests.
+func defaultVSS(goos string, systemImage bool, hasPaths bool) bool {
+	return goos == "windows" && (!systemImage || hasPaths)
 }
 
 // managerFromBackupRunPayload builds a BackupManager from the backup_run command
@@ -112,7 +117,14 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		Provider       string                   `json:"provider"`
 		ProviderConfig *backupRunProviderConfig `json:"providerConfig"`
 		Paths          []string                 `json:"paths"`
-		SystemImage    bool                     `json:"systemImage"`
+		// Excludes is only consumed here for the wholeMachine system_image
+		// branch below. Plain file-mode runs ignore this field on the
+		// manager config — their excludes flow through main.go's separate
+		// parseBackupRunExcludes + RunBackupContext(ctx, excludes) call,
+		// which takes precedence whenever the payload's top-level "excludes"
+		// key is present (see RunBackupContext's excludes==nil fallback).
+		Excludes    []string `json:"excludes"`
+		SystemImage bool     `json:"systemImage"`
 		// BaseSnapshotID/PublishLeaseExpiresAt implement the D18 §3.1
 		// server-owned-base protocol. BaseSnapshotID's presence in the JSON
 		// (vs. entirely absent) is the protocol switch: a *string stays nil
@@ -171,7 +183,7 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	// state collection, so it stays off there unless the payload overrides it.
 	// The server can force it either way via the optional `vss` field (not
 	// currently sent by apps/api/src/jobs/backupWorker.ts).
-	vssEnabled := defaultVSS(runtime.GOOS, p.SystemImage)
+	vssEnabled := defaultVSS(runtime.GOOS, p.SystemImage, len(p.Paths) > 0)
 	if p.Vss != nil {
 		vssEnabled = *p.Vss
 	}
@@ -196,7 +208,7 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		// server-owns-retention invariant as the file-mode path below (which
 		// sets it explicitly): the agent must never prune remote storage itself
 		// and race the server's GFS/legal-hold/immutability authority.
-		return backup.NewBackupManager(backup.BackupConfig{
+		cfg := backup.BackupConfig{
 			Provider:              provider,
 			SystemStateEnabled:    true,
 			VSSEnabled:            vssEnabled,
@@ -204,7 +216,17 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 			AgentVersion:          version,
 			BaseSnapshotID:        p.BaseSnapshotID,
 			PublishLeaseExpiresAt: publishLeaseExpiresAt,
-		}), nil
+		}
+		// #5493: a wholeMachine system_image selection fans out with Paths
+		// set (backupWorker.ts resolveBackupTargets), so this run ALSO walks
+		// the OS root — one snapshot carrying files + layout.json + system
+		// state, instead of the files-less system_image-only snapshot a
+		// plain systemImage:true payload (no paths) still produces below.
+		if len(p.Paths) > 0 {
+			cfg.Paths = p.Paths
+			cfg.Excludes = p.Excludes
+		}
+		return backup.NewBackupManager(cfg), nil
 	}
 	if len(p.Paths) == 0 {
 		return nil, fmt.Errorf("backup_run payload has no paths")

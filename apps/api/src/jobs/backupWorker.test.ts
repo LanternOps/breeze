@@ -128,6 +128,112 @@ describe('resolveBackupTargets', () => {
     ]);
   });
 
+  // #5493: wholeMachine=true fans out ONE snapshot carrying files + layout +
+  // system state instead of a files-less system_image snapshot alongside a
+  // files-only file snapshot. Root path is chosen server-side from the
+  // device's osType, never trusted from the caller.
+  it('returns a wholeMachine system_image target with OS root and excludes for linux', async () => {
+    mockDb.select.mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ osType: 'linux' }]),
+      }),
+    });
+
+    const result = await resolveBackupTargets(
+      'system_image',
+      { includeSystemState: true, wholeMachine: true, excludes: ['/proc/**', '/sys/**'] },
+      'device-id'
+    );
+
+    expect(result).toEqual([
+      {
+        commandType: 'backup_run',
+        payload: {
+          systemImage: true,
+          wholeMachine: true,
+          paths: ['/'],
+          excludes: ['/proc/**', '/sys/**'],
+        },
+      },
+    ]);
+  });
+
+  it('returns a wholeMachine system_image target with C:\\ root for windows', async () => {
+    mockDb.select.mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ osType: 'windows' }]),
+      }),
+    });
+
+    const result = await resolveBackupTargets(
+      'system_image',
+      { includeSystemState: true, wholeMachine: true, excludes: [] },
+      'device-id'
+    );
+
+    expect(result).toEqual([
+      {
+        commandType: 'backup_run',
+        payload: {
+          systemImage: true,
+          wholeMachine: true,
+          paths: ['C:\\'],
+          excludes: [],
+        },
+      },
+    ]);
+  });
+
+  it('returns the byte-identical legacy payload when wholeMachine is false', async () => {
+    const result = await resolveBackupTargets(
+      'system_image',
+      { includeSystemState: true, wholeMachine: false, excludes: [] },
+      'device-id'
+    );
+    expect(result).toEqual([
+      { commandType: 'backup_run', payload: { systemImage: true } },
+    ]);
+  });
+
+  // Review finding on #5572: osType is windows|macos|linux, but the original
+  // `device?.osType === 'windows' ? 'C:\\' : '/'` silently sent EVERY
+  // non-windows device — including macos, which is explicitly out of scope
+  // (spec §12), and a device whose row couldn't be found at all — a
+  // whole-machine job with paths:['/'] and the Linux exclude list. Both must
+  // refuse loudly instead of walking the wrong filesystem or dispatching
+  // nothing silently.
+  it('refuses a wholeMachine target for a macOS device instead of defaulting to "/"', async () => {
+    mockDb.select.mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ osType: 'macos' }]),
+      }),
+    });
+
+    await expect(
+      resolveBackupTargets(
+        'system_image',
+        { includeSystemState: true, wholeMachine: true, excludes: [] },
+        'device-id'
+      )
+    ).rejects.toThrow('whole-machine backup is not supported on macos');
+  });
+
+  it('refuses a wholeMachine target when the device row cannot be found', async () => {
+    mockDb.select.mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    });
+
+    await expect(
+      resolveBackupTargets(
+        'system_image',
+        { includeSystemState: true, wholeMachine: true, excludes: [] },
+        'device-id'
+      )
+    ).rejects.toThrow('whole-machine backup is not supported on unknown');
+  });
+
   it('returns one entry per discovered VM for hyperv minus excludes', async () => {
     // Chain: db.select({vmName}).from(hypervVms).where(eq(deviceId))
     mockDb.select.mockReturnValue({

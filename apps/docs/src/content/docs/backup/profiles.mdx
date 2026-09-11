@@ -80,7 +80,7 @@ In the **Source** group you choose between **Use a profile** — selecting one o
 
 ### Whole machine templates
 
-When you create a profile, the first two templates in the list are **Whole machine (Linux)** and **Whole machine (Windows)**. Each turns on both the **Files** and **System State** sources so a single snapshot carries everything [bare-metal recovery](/backup/bare-metal-recovery/) needs — the whole root filesystem (`/` or `C:\`), the OS state, and the disk layout — and seeds a root-anchored exclude list for the paths that must never be backed up:
+When you create a profile, the first two templates in the list are **Whole machine (Linux)** and **Whole machine (Windows)**. Each enables a single **System State** source with whole-machine backup turned on, so ONE snapshot carries everything [bare-metal recovery](/backup/bare-metal-recovery/) needs — the whole root filesystem (`/` or `C:\`), the OS state, and the disk layout — and seeds a root-anchored exclude list for the paths that must never be backed up:
 
 - **Linux:** `/proc/**`, `/sys/**`, `/dev/**`, `/run/**`, `/tmp/**`, `/var/tmp/**`, `/mnt/**`, `/media/**`, `/snap/**`, `/var/cache/apt/archives/**`, `/swapfile`, `/swap.img`, `**/lost+found/**`
 - **Windows:** `/pagefile.sys`, `/hiberfil.sys`, `/swapfile.sys`, `/$Recycle.Bin/**`, `/System Volume Information/**`, `/Windows/Temp/**`, `/Windows/SoftwareDistribution/Download/**`, `**/AppData/Local/Temp/**`
