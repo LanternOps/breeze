@@ -14,6 +14,7 @@ import {
 } from '../../db/schema/actionIntents';
 import {
   assertApprovalAssurance,
+  assertDecisionConsistent,
   resolveApprovalAssurance,
   StepUpRequiredError,
   ReauthRequiredError,
@@ -893,11 +894,20 @@ export async function decideApprovalRequest(
     assurance = input.preverifiedAssurance;
   } else if (skipAssuranceLadder) {
     assurance = resolveApprovalAssurance(existing.riskTier as RiskTier);
-  } else if (presentedGrantId !== undefined && proof === undefined) {
+  } else if (presentedGrantId !== undefined && proof === undefined && status === 'approved') {
     // #5601 REDEEM PATH. Replaces the ceremony, never the authorization: every
     // other gate in this handler (human principal, row pending/expiry, live
     // authorization, digest binding, isAgentIntentDecideAuthorized,
     // sole-operator re-derivation below, CAS) still runs per row, unchanged.
+    //
+    // `status === 'approved'` is a FAIL-SAFE, not a redundancy. Neither /deny
+    // nor the batch populates `stepUpGrantId` today, so a deny cannot reach
+    // here — but this branch's whole contract is "refuse with 403 when the
+    // credential is no good", and spec §12 says a technician must NEVER be
+    // unable to REFUSE. Without this guard, the day someone plumbs the field
+    // through the deny route, a stale grant would start blocking denials. A
+    // deny instead falls through to the ladder with no proof, i.e. today's L1
+    // session tap, which is exactly right.
     const redeemed = await redeemGrantForDecide({
       grantId: presentedGrantId,
       auth: input.auth,
@@ -917,6 +927,13 @@ export async function decideApprovalRequest(
         body: { error: 'step_up_required', requiredLevel: requiredAssurance(existing.riskTier as RiskTier) },
       };
     }
+    // Same invariant backstop the fresh-ladder path gets inside
+    // `assertApprovalAssurance`. `parseGrantContext` already enforces the same
+    // factor/level/device-id invariants independently, so this cannot fire
+    // today — but a reconstructed decision is written verbatim to the audit
+    // columns, and the two paths that build one should be guarded alike rather
+    // than relying on a reader to notice only one of them is.
+    assertDecisionConsistent(redeemed);
     assurance = redeemed;
   } else {
     try {

@@ -169,6 +169,11 @@ pamLifecycleMocks.createPamDecisionIntent.mockImplementation(async (_tx, input) 
 }));
 
 vi.mock('../services/authenticatorAssurance', () => ({
+  // Review fix (#5608): the redeem path now runs the reconstructed decision
+  // through the same invariant backstop the fresh-ladder path gets. Mocked as
+  // the REAL guard would behave for a valid decision — a no-op — so a future
+  // decision shape that genuinely violates the invariants is not hidden here.
+  assertDecisionConsistent: vi.fn(() => undefined),
   resolveApprovalAssurance: vi.fn((riskTier: string) => ({
     requiredLevel: 1,
     decidedAssuranceLevel: 1,
@@ -283,6 +288,7 @@ import {
   redeemApprovalDecideGrant,
 } from '../services/approvals/approvalDecideGrant';
 import { getUserEpochs } from '../services/authEpochs';
+import { decideApprovalRequest } from '../services/approvals/decideApprovalRequest';
 
 function buildApp() {
   const app = new Hono();
@@ -693,6 +699,33 @@ describe('#5601 approval_decide step-up grant wiring', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.stepUpGrantId).toBe('grant-xyz');
+  });
+
+  // Review fix (#5608): spec §12 — a technician must NEVER be unable to
+  // REFUSE. The redeem branch's contract is "403 when the credential is no
+  // good", so a deny must never enter it. Neither /deny nor the batch plumbs
+  // `stepUpGrantId` today, so this is exercised at the CORE, where a future
+  // route change would land: a denied decide carrying a hopeless grant must
+  // still commit, never 403.
+  it('a DENY carrying a bad grant is never blocked by it (fail-safe: the redeem branch is approve-only)', async () => {
+    mockFourEyesSelfApprove({ requestedByUserId: 'requester-1' });
+    const { approvalCasSet } = mockFanInTx('intent-1');
+    vi.mocked(redeemApprovalDecideGrant).mockResolvedValue(null);
+
+    const res = await decideApprovalRequest({
+      auth: baseAuth() as never,
+      id: 'appr-1',
+      status: 'denied',
+      stepUpGrantId: '99999999-9999-4999-8999-999999999999',
+    });
+
+    expect(res.httpStatus).toBe(200);
+    // Never consulted: the branch is gated on status === 'approved'.
+    expect(redeemApprovalDecideGrant).not.toHaveBeenCalled();
+    // Recorded as today's proofless deny, not as a grant reuse.
+    expect(approvalCasSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'denied', decidedViaStepUpGrant: false }),
+    );
   });
 
   it('POST /:id/approve 400s on a malformed stepUpGrantId (route-level validation, before the decide core runs)', async () => {
