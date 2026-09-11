@@ -12,7 +12,7 @@ Bare Metal Recovery (BMR) is a **reinstall-then-recover** flow, not disk imaging
 
 Since v0.112.0 there is also a second, Linux-only path — [`breeze-backup rebuild`](#rebuilding-a-linux-disk-from-scratch-breeze-backup-rebuild) — which partitions a blank disk from the layout recorded with the snapshot, restores a whole-machine snapshot into it, applies the system state offline and installs the bootloader. It is a command-line tool for recovery media, not a button in the console.
 
-A recovery token is scoped to **one snapshot**. A `file`-mode snapshot recovers data; a `system_image`-mode snapshot applies OS state. To recover both for one machine, generate two tokens (one per snapshot) and run `bmr-recover` twice, or back the machine up with a [Whole machine profile](/backup/profiles/#whole-machine-templates) so one snapshot carries both.
+A recovery token is scoped to **one snapshot**. A `file`-mode snapshot recovers data; a `system_image`-mode snapshot applies OS state. To recover both for one machine, generate two tokens (one per snapshot) and run `bmr-recover` twice, or back the machine up with a [Whole machine profile](/backup/profiles/#whole-machine-templates) so one snapshot carries both — a whole-machine profile is a single `system_image` selection that also walks the OS root, so it produces exactly one snapshot with files, layout, and system state together, not a separate file snapshot plus a files-less `system_image` snapshot.
 
 ---
 
