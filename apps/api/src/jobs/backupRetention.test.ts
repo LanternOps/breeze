@@ -543,13 +543,17 @@ describe('sweepUnreferencedBackupObjects', () => {
   });
 
   it('marks snapshots/<id>/layout.json live without fetching it, so the sweep never deletes a retained layout manifest', async () => {
-    selectQueue.push([]); // unattributedRows
-    selectQueue.push([destination]); // destinations
-    selectQueue.push([{ snapshotId: 'A' }]); // retained
+    pushRunLevel([destination]);
+    pushIdentity({ retained: [{ snapshotId: 'A' }] });
 
     fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
 
-    const old = new Date(Date.now() - 10 * DAY_MS);
+    // ORPHAN here has NO manifest.json at all (only a layout.json) — a
+    // manifest-less prefix, past the (default 9-day) manifest-less-prefix
+    // window, so it is reclaimed via that pre-existing rule regardless of
+    // this wave's retired/orphan-window logic (which only applies to
+    // manifest-BEARING prefixes).
+    const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
     listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
       { key: 'snapshots/A/manifest.json', lastModified: old },
       { key: 'snapshots/A/layout.json', lastModified: old },
@@ -573,7 +577,90 @@ describe('sweepUnreferencedBackupObjects', () => {
     const deletedArg = deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] };
     expect(deletedArg.keys).toEqual(['snapshots/ORPHAN/layout.json']);
     expect(deletedArg.keys).not.toContain('snapshots/A/layout.json');
-    expect(result).toEqual({ deleted: 1, skippedIdentities: 0, blockedIdentities: 0 });
+    expect(result.deleted).toBe(1);
+    expect(result.skippedIdentities).toBe(0);
+    expect(result.blockedIdentities).toBe(0);
+  });
+
+  // D18 W02 addition (rooted-and-orphan protection, per #5523 follow-up):
+  // layout.json must get the SAME unconditional-live treatment as
+  // manifest.json in every root-set case this wave adds, not just the
+  // pre-existing "retained row" case above — a rooted NULL-identity
+  // self-heal root, a young (unaged) orphan manifest, and every listed
+  // manifest under the deferred-identity algorithm.
+  it('protects layout.json for a young orphan manifest (no row) and marks it live under the deferred (legacy-helper) algorithm too', async () => {
+    // Part 1: young orphan — no DB row, no retirement, well within the
+    // orphan window — its layout.json must survive alongside its manifest.
+    pushRunLevel([destination]);
+    pushIdentity();
+
+    fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+    const recent = new Date(Date.now() - 1 * DAY_MS);
+    listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+      { key: 'snapshots/YOUNGORPHAN/manifest.json', lastModified: recent },
+      { key: 'snapshots/YOUNGORPHAN/layout.json', lastModified: recent },
+    ]);
+
+    const result1 = await sweepUnreferencedBackupObjects();
+    expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+    expect(result1.deleted).toBe(0);
+
+    // Part 2: deferred (legacy helper) — every listed manifest is a root
+    // under today's algorithm, and layout.json must stay protected there
+    // too, even though the snapshot is old enough it would otherwise be an
+    // orphan-window candidate.
+    pushRunLevel([destination]);
+    pushIdentity({ capability: [{ deviceId: 'device-legacy', backupVersion: '0.109.0' }] });
+
+    fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+    const old = new Date(Date.now() - 30 * DAY_MS);
+    listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+      { key: 'snapshots/DEFERREDOLD/manifest.json', lastModified: old },
+      { key: 'snapshots/DEFERREDOLD/layout.json', lastModified: old },
+    ]);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result2 = await sweepUnreferencedBackupObjects();
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result2.deleted).toBe(0);
+      expect(result2.deferredIdentities).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // A retired (or old-orphan) prefix's layout.json is NOT special-cased —
+  // it sweeps in the non-manifest phase exactly like any other non-manifest
+  // key, subject to the same cap/skip-set rules, with manifest.json only
+  // removed last/once nothing else remains.
+  it('sweeps layout.json for a RETIRED snapshot in the non-manifest phase, alongside its other objects', async () => {
+    pushRunLevel([destination]);
+    pushIdentity({ retirements: [{ id: 'retirement-layout', snapshotId: 'RETIREDLAYOUT' }] });
+
+    const t = new Date(Date.now() - 1000);
+    listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+      { key: 'snapshots/RETIREDLAYOUT/manifest.json', lastModified: t },
+      { key: 'snapshots/RETIREDLAYOUT/layout.json', lastModified: t },
+      { key: 'snapshots/RETIREDLAYOUT/files/x.dat', lastModified: t },
+    ]);
+    deleteBackupObjectKeysMock.mockResolvedValueOnce({
+      deletedKeys: ['snapshots/RETIREDLAYOUT/layout.json', 'snapshots/RETIREDLAYOUT/files/x.dat'],
+      failedKeys: [],
+    });
+    deleteBackupObjectKeysMock.mockResolvedValueOnce({
+      deletedKeys: ['snapshots/RETIREDLAYOUT/manifest.json'],
+      failedKeys: [],
+    });
+
+    const result = await sweepUnreferencedBackupObjects();
+
+    expect(result.deleted).toBe(3);
+    const firstCallKeys = (deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] }).keys;
+    expect(firstCallKeys).toEqual(expect.arrayContaining(['snapshots/RETIREDLAYOUT/layout.json', 'snapshots/RETIREDLAYOUT/files/x.dat']));
+    // Manifest deleted only in the SECOND (last) call, once nothing else remained.
+    const secondCallKeys = (deleteBackupObjectKeysMock.mock.calls[1]![0] as { keys: string[] }).keys;
+    expect(secondCallKeys).toEqual(['snapshots/RETIREDLAYOUT/manifest.json']);
   });
 
   it('keeps a loose unreferenced object under a manifest-bearing prefix that is still inside the 48h grace window', async () => {
