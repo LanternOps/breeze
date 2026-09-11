@@ -59,6 +59,7 @@ const ALLOWED_TAG_NAMES = new Set([
   'scope',
   'org_id',
   'partner_id',
+  'stripe_reconcile_stage',
   // BREEZE-X: a `dbWriteExpectingRows` 0-row warning is only triageable if the
   // call site (`cas_label`) and the state the row was already in
   // (`prior_status`) survive the scrubber. Both are enum-ish and bounded by

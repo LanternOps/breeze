@@ -351,8 +351,15 @@ export interface TicketCommentAttachment {
 export interface TicketComment {
   id: string;
   authorName: string;
-  /** 'portal' is the customer's own reply; anything else came from the IT team. */
+  /** 'portal' is the customer's own reply; 'email' is any email-authored comment. */
   authorType: string | null;
+  /**
+   * The portal login the inbound email resolved to, or null. `authorType` alone
+   * cannot tell a customer's emailed reply from a technician's own reply linked
+   * through the Outlook add-in — both are stored as 'email'. A non-null sender
+   * on an 'email' comment is the only signal that the CUSTOMER wrote it.
+   */
+  senderPortalUserId?: string | null;
   content: string;
   createdAt: string;
   /** Absent on a reply the customer just posted locally. */

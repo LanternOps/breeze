@@ -33,8 +33,9 @@ import {
   actionIntents, aiAgentGraduation, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
   reportRuns, reports, ticketDrafts, type AiAgentRow,
 } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { policyDecideEnabled } from '../config/env';
+import { runSiteScopeCondition } from '../services/aiAgentRunSiteScope';
 import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
@@ -115,6 +116,10 @@ const scopes = requireScope('organization', 'partner', 'system');
 // audit row, so the route must record the human actor who initiated it.
 
 const UUID = z.string().guid();
+
+// Re-exported so `routes/aiAgents.test.ts` and any future run reader can reach
+// the predicate through the route module that first applied it.
+export { runSiteScopeCondition };
 
 /**
  * A path id that is not a uuid must never reach a query. Postgres raises
@@ -310,7 +315,11 @@ async function loadLastRuns(
       queuedAt: aiAgentRuns.queuedAt,
     })
     .from(aiAgentRuns)
-    .where(and(inArray(aiAgentRuns.agentId, agentIds), auth.orgCondition(aiAgentRuns.orgId)))
+    .where(and(
+      inArray(aiAgentRuns.agentId, agentIds),
+      auth.orgCondition(aiAgentRuns.orgId),
+      runSiteScopeCondition(auth),
+    ))
     .orderBy(aiAgentRuns.agentId, desc(aiAgentRuns.queuedAt));
   return new Map(
     rows.map((row) => [
@@ -338,7 +347,9 @@ type LastRunProjection = {
 };
 
 /** Only the piece of the auth context `loadLastRuns` needs. */
-type AuthContextForRuns = { orgCondition: (column: typeof aiAgentRuns.orgId) => SQL | undefined };
+type AuthContextForRuns = Pick<AuthContext, 'allowedSiteIds'> & {
+  orgCondition: (column: typeof aiAgentRuns.orgId) => SQL | undefined;
+};
 
 aiAgentsRoutes.get(
   '/',
@@ -1107,7 +1118,10 @@ aiAgentsRoutes.get(
       return c.json({ error: 'Access to this organization denied' }, 403);
     }
 
-    const conditions: (SQL | undefined)[] = [auth.orgCondition(aiAgentRuns.orgId)];
+    const conditions: (SQL | undefined)[] = [
+      auth.orgCondition(aiAgentRuns.orgId),
+      runSiteScopeCondition(auth),
+    ];
     if (agentId) conditions.push(eq(aiAgentRuns.agentId, agentId));
     if (status) conditions.push(eq(aiAgentRuns.status, status));
     if (orgId) conditions.push(eq(aiAgentRuns.orgId, orgId));
@@ -1249,7 +1263,11 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     // 404ing (see buildRunTrace's `agent: RunTraceAgentInput | null` param).
     .leftJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
     .leftJoin(devices, eq(aiAgentRuns.deviceId, devices.id))
-    .where(and(eq(aiAgentRuns.id, runId), auth.orgCondition(aiAgentRuns.orgId)))
+    .where(and(
+      eq(aiAgentRuns.id, runId),
+      auth.orgCondition(aiAgentRuns.orgId),
+      runSiteScopeCondition(auth),
+    ))
     .limit(1);
   if (!run) return c.json({ error: 'Run not found' }, 404);
 
@@ -1684,7 +1702,11 @@ aiAgentsRoutes.get(
       })
       .from(aiAgentRuns)
       .leftJoin(organizations, eq(aiAgentRuns.orgId, organizations.id))
-      .where(and(eq(aiAgentRuns.agentId, row.id), auth.orgCondition(aiAgentRuns.orgId)))
+      .where(and(
+        eq(aiAgentRuns.agentId, row.id),
+        auth.orgCondition(aiAgentRuns.orgId),
+        runSiteScopeCondition(auth),
+      ))
       .orderBy(desc(aiAgentRuns.queuedAt))
       .limit(limit);
     // agentName comes from the already-loaded, RLS-visible `row` (this route

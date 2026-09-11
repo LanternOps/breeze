@@ -24,8 +24,10 @@ Before restoring, you can inspect what a snapshot contains:
 </Steps>
 
 <Aside type="note">
-  Non-file snapshots are badged by type in the browser — a Windows system-state snapshot shows a **System image** badge in both the snapshot selector and the detail header, so you can tell it apart from a file backup at a glance.
+  Non-file snapshots are badged by type in the browser — a system-state snapshot shows a **System image** badge in both the snapshot selector and the detail header, so you can tell it apart from a file backup at a glance.
 </Aside>
+
+A `system_image` snapshot taken by a v0.112.0 or later agent on Linux or Windows also carries a restorability verdict in the detail header: a green **Bare-metal restorable** badge, or an amber **Not bare-metal restorable** badge whose tooltip lists why (BIOS/MBR boot, LVM, LUKS, RAID, btrfs root, ZFS, multi-disk OS, or no layout captured). The verdict tells you whether [`breeze-backup rebuild`](/backup/bare-metal-recovery/#rebuilding-a-linux-disk-from-scratch-breeze-backup-rebuild) can reproduce the machine's disk from that snapshot; ordinary restores and `bmr-recover` are not affected by it. File-only and macOS snapshots show no badge.
 
 <Aside type="tip">
   Always browse a snapshot before restoring to confirm the files you need are present. This is especially useful when deciding between a full restore and a selective one.
@@ -39,7 +41,7 @@ Before restoring, you can inspect what a snapshot contains:
 |------|-----------------|-------------|
 | **Full restore** | Everything in the snapshot | Replacing a failed drive or rebuilding a system |
 | **Selective restore** | Individual files you choose (not folders — see below) | Recovering accidentally deleted files |
-| **Bare metal recovery** | System-state artifacts and/or files onto a machine that reinstalls or boots its own OS | Replacing a dead machine entirely. See [Bare Metal Recovery](/backup/bare-metal-recovery/) |
+| **Bare metal recovery** | Files and/or OS state (registry or `/etc`, services, firewall, scheduled tasks, packages) onto a machine that reinstalls or boots its own OS — or, on Linux, a full disk rebuild from a whole-machine snapshot | Replacing a dead machine entirely. See [Bare Metal Recovery](/backup/bare-metal-recovery/) |
 
 ---
 

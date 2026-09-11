@@ -348,6 +348,14 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
       id: ticketComments.id,
       authorName: ticketComments.authorName,
       authorType: ticketComments.authorType,
+      // authorType 'email' alone does NOT mean "the customer wrote this": a
+      // technician's own reply linked through the Outlook add-in is stored the
+      // same way (routes/officeAddin/tickets.ts -> insertEmailAuthoredComment,
+      // which hardcodes author_type 'email'). Only a resolved portal sender
+      // identifies a customer-authored email, so the portal needs this column
+      // to label the two apart instead of showing the IT team's reply back to
+      // the customer as their own.
+      senderPortalUserId: ticketComments.portalUserId,
       content: ticketComments.content,
       createdAt: ticketComments.createdAt
     })
@@ -472,6 +480,9 @@ ticketRoutes.post(
         // to omit it, so a customer's own reply showed that badge until the
         // next full reload re-fetched the comment from GET.
         authorType: ticketComments.authorType,
+        // Same reason as the GET projection above: the optimistic row the pane
+        // renders must carry the same author signal the next full reload will.
+        senderPortalUserId: ticketComments.portalUserId,
         content: ticketComments.content,
         createdAt: ticketComments.createdAt
       });

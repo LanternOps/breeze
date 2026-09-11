@@ -11,6 +11,7 @@
  * docker compose -f docker-compose.test.yml up -d).
  */
 import './setup';
+import { getTestDb } from './setup';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { eq } from 'drizzle-orm';
 
@@ -30,8 +31,9 @@ vi.mock('../../services/expoPush', async (orig) => ({
 vi.mock('../../services/email', () => ({ getEmailService: () => null }));
 
 import { db, withSystemDbAccessContext } from '../../db';
-import { mobileDevices, ticketPushPreferences, tickets, userNotifications } from '../../db/schema';
+import { devices, mobileDevices, organizationUsers, ticketPushPreferences, tickets, userNotifications } from '../../db/schema';
 import { handleTicketEvent } from '../../jobs/ticketNotifyWorker';
+import { clearPermissionCache } from '../../services/permissions';
 import { ANY_SUBSCRIBER_CAP, listAnySlaSubscribers } from '../../services/ticketPush';
 import {
   assignUserToOrganization,
@@ -39,6 +41,7 @@ import {
   createOrganization,
   createPartner,
   createRole,
+  createSite,
   createUser,
   grantRolePermissions,
 } from './db-utils';
@@ -223,6 +226,58 @@ describe('ticket push fan-out — tenant boundary', () => {
     expect(dispatch).not.toHaveBeenCalled();
     const rows = await rowsFor(fx.ticket.id);
     expect(rows.filter((r) => r.userId === fx.owner.id)).toHaveLength(1);
+  });
+
+  runDb('assignment fan-out follows the assignee ceiling and the device current site', async () => {
+    const fx = await seed();
+    const allowed = await createSite({ orgId: fx.orgA.id, name: uniq('allowed') });
+    const hidden = await createSite({ orgId: fx.orgA.id, name: uniq('hidden') });
+    const admin = getTestDb() as any;
+    await admin.update(organizationUsers)
+      .set({ siteIds: [allowed.id] })
+      .where(eq(organizationUsers.userId, fx.anyA.id));
+    await clearPermissionCache(fx.anyA.id);
+    const [device] = await admin.insert(devices).values({
+      orgId: fx.orgA.id,
+      siteId: hidden.id,
+      agentId: uniq('agent'),
+      hostname: 'site-bound-ticket-device',
+      osType: 'linux',
+      osVersion: 'synthetic-test',
+      architecture: 'amd64',
+      agentVersion: '0.0.0-test',
+    }).returning();
+    const [ticket] = await admin.insert(tickets).values({
+      orgId: fx.orgA.id,
+      partnerId: fx.p1.id,
+      deviceId: device.id,
+      ticketNumber: uniq('TKT'),
+      internalNumber: uniq('T'),
+      subject: 'site-bound subject',
+      status: 'open',
+      assignedTo: fx.anyA.id,
+    }).returning();
+
+    await handleTicketEvent({
+      type: 'ticket.assigned', ticketId: ticket.id, orgId: fx.orgA.id,
+      partnerId: fx.p1.id, actorUserId: fx.owner.id, eventId: 'hidden-site',
+      payload: { assigneeId: fx.anyA.id },
+    });
+    const deniedRows = await admin.select({ id: userNotifications.id })
+      .from(userNotifications).where(eq(userNotifications.userId, fx.anyA.id));
+    expect(deniedRows).toEqual([]);
+    expect(dispatch).not.toHaveBeenCalled();
+
+    await admin.update(devices).set({ siteId: allowed.id }).where(eq(devices.id, device.id));
+    await handleTicketEvent({
+      type: 'ticket.assigned', ticketId: ticket.id, orgId: fx.orgA.id,
+      partnerId: fx.p1.id, actorUserId: fx.owner.id, eventId: 'allowed-site',
+      payload: { assigneeId: fx.anyA.id },
+    });
+    const allowedRows = await admin.select({ id: userNotifications.id })
+      .from(userNotifications).where(eq(userNotifications.userId, fx.anyA.id));
+    expect(allowedRows).toHaveLength(1);
+    expect(dispatch).toHaveBeenCalledTimes(1);
   });
 
   runDb('A→B→A reassignment pushes twice; a retry of one event does not', async () => {

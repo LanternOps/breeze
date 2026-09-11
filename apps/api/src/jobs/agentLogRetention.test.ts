@@ -107,7 +107,7 @@ describe('Agent log retention worker', () => {
     );
   });
 
-  it('deletes agent_logs in bounded ctid batches on the timestamp column, inside system DB context', async () => {
+  it('deletes agent_logs in bounded ctid batches on server receipt time, inside system DB context', async () => {
     dbExecuteMock
       .mockResolvedValueOnce({ rowCount: 4 })
       .mockResolvedValueOnce({ rowCount: 4 })
@@ -131,7 +131,8 @@ describe('Agent log retention worker', () => {
     expect(sqlDump).toContain('DELETE FROM');
     expect(sqlDump).toContain('agent_logs');
     expect(sqlDump).toContain('SELECT ctid');
-    expect(sqlDump).toContain('\\"timestamp\\" <');
+    expect(sqlDump).toContain('\\"created_at\\" <');
+    expect(sqlDump).not.toContain('\\"timestamp\\" <');
     expect(sqlDump).toContain('LIMIT');
     expect(result).toMatchObject({
       deletedCount: 10,

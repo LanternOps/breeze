@@ -11,7 +11,7 @@ import './setup';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { partners, organizations, users, invoices, invoiceStripePayments } from '../../db/schema';
+import { partners, organizations, users, invoices, invoiceStripePayments, stripeConnectAccounts } from '../../db/schema';
 
 // issueInvoice enqueues a PDF render + emits events — stub the BullMQ side effects.
 vi.mock('../../services/invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
@@ -38,6 +38,11 @@ import type { InvoiceActor } from '../../services/invoiceTypes';
 
 interface Fixture { partnerId: string; orgId: string; userId: string }
 
+// createInvoicePayLink re-checks the durable stripe_connect_accounts row inside the
+// mapping transaction (SEC-151): the account the mock reports must exist for the seeded
+// partner, and stripe_account_id is globally unique, so each partner gets its own id.
+let currentAccountId = 'acct_test';
+
 async function seedFixture(): Promise<Fixture> {
   return withSystemDbAccessContext(async () => {
     const sfx = Math.random().toString(36).slice(2, 8);
@@ -50,6 +55,11 @@ async function seedFixture(): Promise<Fixture> {
     const [u] = await db.insert(users)
       .values({ partnerId: p!.id, orgId: o!.id, email: `c-${sfx}@x.io`, name: 'C', status: 'active' })
       .returning({ id: users.id });
+    currentAccountId = `acct_ichk_${sfx}`;
+    await db.insert(stripeConnectAccounts).values({
+      partnerId: p!.id, stripeAccountId: currentAccountId,
+      apiKey: 'enc:synthetic', keyLast4: 'test', livemode: false,
+    });
     return { partnerId: p!.id, orgId: o!.id, userId: u!.id };
   });
 }
@@ -68,7 +78,7 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 describe('createInvoicePayLink (breeze_app, real DB)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getClientMock.mockResolvedValue({ stripe: { checkout: { sessions: { create: sessionsCreateMock } } }, stripeAccountId: 'acct_test' });
+    getClientMock.mockImplementation(async () => ({ stripe: { checkout: { sessions: { create: sessionsCreateMock } } }, stripeAccountId: currentAccountId }));
     sessionsCreateMock.mockResolvedValue({ id: 'cs_test_123', url: 'https://checkout.stripe.com/c/pay/abc', payment_intent: null });
   });
 

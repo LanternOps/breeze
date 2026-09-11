@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { zodValidationErrorBody } from '../../lib/zodIssues';
 import type { AuthContext } from '../../middleware/auth';
-import { hasSatisfiedMfa, requirePermission, requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import {
   alertRuleInlineSettingsSchema,
   backupInlineSettingsSchema,
@@ -61,35 +61,6 @@ const requireConfigPolicyWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.res
 // under the partner. See configPolicyPatching.ts.
 const ORG_SCOPED_ONLY_FEATURES: ReadonlySet<string> = ORG_SCOPED_ONLY_FEATURE_TYPES;
 
-/**
- * Feature types whose feature link may only be authored (added or updated) by
- * a session that has satisfied MFA.
- *
- * `patch` was here from the start: a patch link arms unattended installs and
- * reboots. `maintenance` joins it (RMM-QA-176 D8) because a maintenance link
- * is the CANONICAL monitoring-suppression source — every alert, patch, script
- * and reboot consumer reads it via featureConfigResolver's
- * checkDeviceMaintenanceWindow / resolveMaintenanceConfigForDevice. Gating
- * POST /devices/:id/maintenance while leaving this open would have left the
- * same capability reachable through a second door.
- *
- * Session-claim strength on purpose, NOT the operation-bound step-up grant the
- * device route requires (RMM-QA-176 D1): a policy-level window is authored
- * CONFIGURATION, not a per-device actuation, and parity with the adjacent
- * patch gate is the shape that stays consistent as more types are added.
- *
- * REMOVAL IS MOSTLY NOT GATED: removing a maintenance link ENDS suppression —
- * the safe direction, the same reasoning that keeps maintenance EXIT un-gated on
- * the device route. Patch removal stays unconditionally gated.
- *
- * ONE EXCEPTION, added with inheritance (#5080): when the policy has a parent
- * that carries a `maintenance` link, deleting the child's own maintenance link
- * is not an exit at all — it REVERTS to the parent's window and restores
- * suppression. That transition is gated. The premise "removal ends suppression"
- * simply stops holding once a link can be inherited.
- */
-export const MFA_GATED_FEATURE_TYPES: ReadonlySet<string> = new Set(['patch', 'maintenance']);
-
 // GET /:id/features — list feature links for a policy
 featureLinkRoutes.get(
   '/:id/features',
@@ -113,6 +84,7 @@ featureLinkRoutes.post(
   '/:id/features',
   requireScope('organization', 'partner', 'system'),
   requireConfigPolicyWrite,
+  requireMfa(),
   zValidator('param', idParamSchema),
   zValidator('json', addFeatureLinkSchema),
   async (c) => {
@@ -140,10 +112,6 @@ featureLinkRoutes.post(
         { error: `The "${data.featureType}" feature is not supported on partner-wide policies; it must be configured on an organization-scoped policy.` },
         400
       );
-    }
-
-    if (MFA_GATED_FEATURE_TYPES.has(data.featureType) && !hasSatisfiedMfa(auth)) {
-      return c.json({ error: 'MFA required' }, 403);
     }
 
     // Validate the referenced feature policy exists (only when a policy ID is provided)
@@ -313,6 +281,7 @@ featureLinkRoutes.patch(
   '/:id/features/:linkId',
   requireScope('organization', 'partner', 'system'),
   requireConfigPolicyWrite,
+  requireMfa(),
   zValidator('param', linkIdParamSchema),
   zValidator('json', updateFeatureLinkSchema),
   async (c) => {
@@ -335,10 +304,6 @@ featureLinkRoutes.patch(
 
     if (!existingLink) {
       return c.json({ error: 'Feature link not found' }, 404);
-    }
-
-    if (MFA_GATED_FEATURE_TYPES.has(existingLink.featureType) && !hasSatisfiedMfa(auth)) {
-      return c.json({ error: 'MFA required' }, 403);
     }
 
     if (data.featurePolicyId !== undefined && data.featurePolicyId !== null) {
@@ -486,6 +451,7 @@ featureLinkRoutes.delete(
   '/:id/features/:linkId',
   requireScope('organization', 'partner', 'system'),
   requireConfigPolicyWrite,
+  requireMfa(),
   zValidator('param', linkIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -504,27 +470,6 @@ featureLinkRoutes.delete(
 
     const existingLink = policy.featureLinks.find((l: any) => l.id === linkId);
     if (!existingLink) return c.json({ error: 'Feature link not found' }, 404);
-
-    // Patch removal stays unconditionally gated. Maintenance removal is exempt
-    // ONLY while it genuinely ends suppression — with a parent that has its own
-    // maintenance link, this delete REVERTS to the parent's window and restores
-    // it, so that one transition is gated too (MFA follows effectiveness).
-    //
-    // FAIL CLOSED when the parent cannot be resolved. `parentPolicyId` is set but
-    // `parentPolicy` came back null means the parent row was invisible to this
-    // read — an anomaly, not a legitimate state, because the write-time trigger
-    // only ever accepts a parent the child's own tenant can see. Treating
-    // "can't tell" as "no parent" would silently drop the MFA requirement, which
-    // is exactly the fail-open shape this feature already hit once in SQL.
-    const parentUnresolved = !!policy.parentPolicyId && !policy.parentPolicy;
-    const parentHasSameType = !!policy.parentPolicy?.featureLinks?.some(
-      (l: { featureType: string }) => l.featureType === existingLink.featureType,
-    );
-    const revertRestoresParentWindow = existingLink.featureType === 'maintenance'
-      && (parentUnresolved || parentHasSameType);
-    if ((existingLink.featureType === 'patch' || revertRestoresParentWindow) && !hasSatisfiedMfa(auth)) {
-      return c.json({ error: 'MFA required' }, 403);
-    }
 
     const deleted = await removeFeatureLink(linkId, id);
     if (!deleted) return c.json({ error: 'Feature link not found' }, 404);

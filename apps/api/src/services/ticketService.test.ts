@@ -10,7 +10,7 @@ const selectLimitMock = vi.fn();
 // C1 (final review #4191): recorder for tx.delete(ticketDrafts).where(w).
 const txDeleteWhereMock = vi.fn();
 
-const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, dbMocks, configMocks, formMocks, ctxMocks, matchContactMock, assertTicketCreationAllowedMock } = vi.hoisted(() => {
+const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, assigneeEligibleMock, dbMocks, configMocks, formMocks, ctxMocks, matchContactMock, assertTicketCreationAllowedMock } = vi.hoisted(() => {
   const insertReturning = vi.fn();
   const updateReturning = vi.fn();
   const selectResult = vi.fn();
@@ -22,6 +22,7 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, db
     auditMock: vi.fn().mockResolvedValue(undefined),
     allocateMock: vi.fn().mockResolvedValue('T-2026-0042'),
     guardMock: vi.fn().mockResolvedValue(null),
+    assigneeEligibleMock: vi.fn().mockResolvedValue(true),
     dbMocks: { insertReturning, updateReturning, selectResult, txExecuteMock, txUpdateReturning },
     // #3258 W03 review I6: SPIES, not passthrough arrows. The system-context
     // escape opens a SECOND pooled connection that cannot see the caller's
@@ -58,6 +59,10 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, db
 });
 
 vi.mock('./ticketEvents', () => ({ emitTicketEvent: emitMock }));
+vi.mock('./ticketPush', async () => {
+  const actual = await vi.importActual<typeof import('./ticketPush')>('./ticketPush');
+  return { ...actual, isEligibleTicketRecipient: assigneeEligibleMock };
+});
 vi.mock('./mlFeedbackEmitters', () => ({ emitTicketTriageFeedback: emitTriageFeedbackMock }));
 vi.mock('./auditService', () => ({ createAuditLogAsync: auditMock }));
 vi.mock('./ticketNumbers', () => ({ allocateInternalTicketNumber: allocateMock }));
@@ -285,6 +290,7 @@ describe('createTicket', () => {
     setMock.mockClear();
     allocateMock.mockResolvedValue('T-2026-0042');
     assertTicketCreationAllowedMock.mockReset().mockResolvedValue(undefined);
+    assigneeEligibleMock.mockResolvedValue(true);
   });
 
   // #5075 W04 — Service Management 'off' withdraws NEW ticket creation. This is
@@ -366,6 +372,26 @@ describe('createTicket', () => {
 
     const insertPayload = valuesMock.mock.calls[0]![0];
     expect(insertPayload).toMatchObject({ status: 'open', assignedTo: 'u-99' });
+  });
+
+  it('rejects an ineligible assignee before number allocation or any write', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'u-99', partnerId: 'p-1' }]);
+    assigneeEligibleMock.mockResolvedValueOnce(false);
+
+    const err = await createTicket({ orgId: 'o-1', subject: 'Secret subject', source: 'manual', assigneeId: 'u-99' }, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.code).toBe('ASSIGNEE_NOT_ELIGIBLE');
+    expect(assigneeEligibleMock).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'u-99', partnerId: 'p-1' }),
+      'p-1',
+      'o-1',
+      undefined,
+    );
+    expect(allocateMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
   });
 
   it('rejects a deviceId belonging to a different org with a 400 TicketServiceError', async () => {
@@ -1436,6 +1462,7 @@ describe('assignTicket', () => {
     vi.clearAllMocks();
     valuesMock.mockClear();
     setMock.mockClear();
+    assigneeEligibleMock.mockResolvedValue(true);
   });
 
   it('updates assignee, writes an assignment feed entry, emits ticket.assigned', async () => {
@@ -1462,6 +1489,26 @@ describe('assignTicket', () => {
       eventType: 'ticket.assignee_changed',
       dedupeKey: 'assignedTo:null:"u-2"',
     }));
+  });
+
+  it('rejects an ineligible same-partner assignee before ticket mutation or event emission', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', deviceId: 'd-hidden', status: 'new', assignedTo: null }])
+      .mockResolvedValueOnce([{ id: 'u-2', partnerId: 'p-1' }]);
+    assigneeEligibleMock.mockResolvedValueOnce(false);
+
+    const err = await assignTicket('t-1', 'u-2', actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.code).toBe('ASSIGNEE_NOT_ELIGIBLE');
+    expect(assigneeEligibleMock).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'u-2', partnerId: 'p-1' }),
+      'p-1',
+      'o-1',
+      'd-hidden',
+    );
+    expect(setMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
   });
 
   // #3828 wave-6-3 task 2: in-transaction ticket_outbox write, id-only payload.

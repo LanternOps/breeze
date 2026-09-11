@@ -7,6 +7,7 @@ import { invoices } from '../db/schema/invoices';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { settleCheckoutSession } from '../services/stripeSettle';
+import { pollStripeFinancialEvents } from '../services/stripeFinancialEventPoller';
 import { attachWorkerObservability } from './workerObservability';
 
 /**
@@ -87,7 +88,9 @@ function createWorker(): Worker<SweepJobData> {
     QUEUE_NAME,
     async (_job: Job<SweepJobData>) => {
       try {
-        return { settled: await runWithSystemDbAccess(reconcilePendingStripePayments) };
+        const settled = await runWithSystemDbAccess(reconcilePendingStripePayments);
+        const financialEvents = await pollStripeFinancialEvents();
+        return { settled, financialEvents };
       } catch (err) {
         console.error('[StripeReconcileSweep] run failed:', err);
         captureException(err instanceof Error ? err : new Error(String(err)));

@@ -1711,6 +1711,25 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
         : !conn ? 'no_connection' : conn.status !== 'connected' ? 'not_connected' : 'pull_disabled';
     }
 
+    // Stripe is the system of record for Stripe-backed payment reversals. Keep
+    // this lookup under the already-held invoice/payment locks so a manual
+    // void cannot race durable refund/dispute reconciliation. The QuickBooks
+    // mapping checks above are deliberately preserved: a Stripe capture may
+    // also have a Breeze-origin QuickBooks outbox row.
+    const [stripeMapping] = await tx
+      .select({ id: invoiceStripePayments.id })
+      .from(invoiceStripePayments)
+      .where(eq(invoiceStripePayments.invoicePaymentId, paymentId))
+      .limit(1)
+      .for('update');
+    if (stripeMapping) {
+      throw new InvoiceServiceError(
+        'Stripe-backed payments must be refunded or disputed in Stripe and reconciled automatically.',
+        409,
+        'STRIPE_PAYMENT_MANAGED_EXTERNALLY',
+      );
+    }
+
     // Capture the destroyed row's financial details BEFORE the delete so the voided
     // payment survives in the durable audit chain even after the row is gone.
     const audit = {

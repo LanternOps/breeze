@@ -256,12 +256,57 @@ slaRoutes.get(
 
 // ── GET /dashboard — compliance dashboard ────────────────────────────────────
 
+/**
+ * Dashboard payload for a caller who can see no device. `null` rather than
+ * `100`/`0` for the derived figures: a reader with an empty site ceiling has
+ * not observed a compliant fleet, and a hard number would be a false
+ * assurance about devices they cannot see.
+ */
+function emptySlaDashboard() {
+  return {
+    activeConfigs: 0,
+    compliancePercent: null,
+    compliantConfigs: 0,
+    activeBreaches: 0,
+    totalEventsLast30d: 0,
+    avgRpoMinutes: null,
+    avgRtoMinutes: null,
+  };
+}
+
 slaRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
   }
+
+  // Site axis. Without this the device-scoped aggregates below (breach count,
+  // 30-day event count, RPO/RTO averages) report org-wide figures to a
+  // site-restricted tech — the same leak SEC-021 closed on /backup/health.
+  // `auth.allowedSiteIds` is the primary source because the auth middleware
+  // always populates it; `permissions` is only set by requirePermission.
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  const siteCeiling = auth?.allowedSiteIds ?? perms?.allowedSiteIds;
+  if (siteCeiling?.length === 0) {
+    return c.json({ data: emptySlaDashboard() });
+  }
+  const allowedDeviceIds = siteCeiling
+    ? await resolveSiteAllowedDeviceIds(orgId, { ...(perms ?? {}), allowedSiteIds: siteCeiling } as UserPermissions)
+    : null;
+  if (allowedDeviceIds && allowedDeviceIds.length === 0) {
+    return c.json({ data: emptySlaDashboard() });
+  }
+
+  // Events may be unattributed (device_id NULL); those stay visible, matching
+  // GET /events above. recovery_readiness is always per-device, so it takes a
+  // plain membership test.
+  const eventSiteCondition = allowedDeviceIds
+    ? or(isNull(backupSlaEvents.deviceId), inArray(backupSlaEvents.deviceId, allowedDeviceIds))
+    : undefined;
+  const readinessSiteCondition = allowedDeviceIds
+    ? inArray(recoveryReadiness.deviceId, allowedDeviceIds)
+    : undefined;
 
   const [configs, activeBreaches, totalEvents, avgReadiness] = await Promise.all([
     // Total active SLA configs
@@ -275,7 +320,7 @@ slaRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resource, PE
     db
       .select({ count: sql<number>`count(*)::int` })
       .from(backupSlaEvents)
-      .where(and(eq(backupSlaEvents.orgId, orgId), isNull(backupSlaEvents.resolvedAt)))
+      .where(and(eq(backupSlaEvents.orgId, orgId), isNull(backupSlaEvents.resolvedAt), eventSiteCondition))
       .then((r) => r[0]?.count ?? 0),
 
     // Total events in last 30 days
@@ -285,7 +330,8 @@ slaRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resource, PE
       .where(
         and(
           eq(backupSlaEvents.orgId, orgId),
-          gte(backupSlaEvents.detectedAt, new Date(Date.now() - 30 * 24 * 60 * 60 * 1000))
+          gte(backupSlaEvents.detectedAt, new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)),
+          eventSiteCondition
         )
       )
       .then((r) => r[0]?.count ?? 0),
@@ -297,7 +343,7 @@ slaRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resource, PE
         avgRto: sql<number>`coalesce(avg(${recoveryReadiness.estimatedRtoMinutes}), 0)::int`,
       })
       .from(recoveryReadiness)
-      .where(eq(recoveryReadiness.orgId, orgId))
+      .where(and(eq(recoveryReadiness.orgId, orgId), readinessSiteCondition))
       .then((r) => r[0] ?? { avgRpo: 0, avgRto: 0 }),
   ]);
 
@@ -306,7 +352,7 @@ slaRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resource, PE
     ? await db
         .select({ count: sql<number>`count(distinct ${backupSlaEvents.slaConfigId})::int` })
         .from(backupSlaEvents)
-        .where(and(eq(backupSlaEvents.orgId, orgId), isNull(backupSlaEvents.resolvedAt)))
+        .where(and(eq(backupSlaEvents.orgId, orgId), isNull(backupSlaEvents.resolvedAt), eventSiteCondition))
         .then((r) => r[0]?.count ?? 0)
     : 0;
 

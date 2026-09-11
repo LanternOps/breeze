@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq, ne, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { invoices, invoiceStripePayments, partners } from '../../db/schema';
+import { invoices, invoiceStripePayments, partners, stripeConnectAccounts } from '../../db/schema';
 import { portalBranding } from '../../db/schema/portal';
 import { listSchema, ticketParamSchema } from './schemas';
 import {
@@ -280,7 +280,8 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
       quantity: 1,
     }],
     // {CHECKOUT_SESSION_ID} is substituted by Stripe on redirect — the verify-on-return
-    // handler reads it to settle server-side (the API-key model has no inbound webhook).
+    // handler reads it to settle server-side. Refund/dispute observation is
+    // independent and uses the direct-account event poller.
     success_url: `${portalBaseUrl}/invoices/${inv.id}?paid=1&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${portalBaseUrl}/invoices/${inv.id}`,
     metadata: {
@@ -315,8 +316,17 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
 
   // Fresh short context so the pending-mapping write isn't a contextless 0-row
   // no-op under forced-RLS breeze_app (#1375).
-  await withSystemDbAccessContext(() =>
-    db.insert(invoiceStripePayments).values({
+  const mappingPersisted = await withSystemDbAccessContext(async () => {
+    const [currentConnection] = await db.select({ id: stripeConnectAccounts.id })
+      .from(stripeConnectAccounts).where(and(
+        eq(stripeConnectAccounts.partnerId, inv.partnerId),
+        eq(stripeConnectAccounts.stripeAccountId, stripeAccountId),
+        eq(stripeConnectAccounts.status, 'connected'),
+      )).limit(1).for('share');
+    if (!currentConnection) {
+      return false;
+    }
+    await db.insert(invoiceStripePayments).values({
       orgId: inv.orgId,
       invoiceId: inv.id,
       stripeAccountId,
@@ -326,8 +336,15 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
       amount: chargeNow.amount,
       currency: inv.currencyCode,
       status: 'pending',
-    })
-  );
+    });
+    return true;
+  });
+  if (!mappingPersisted) {
+    return c.json({
+      error: 'Online payment setup changed — please refresh and try again.',
+      code: 'STRIPE_NOT_CONNECTED',
+    }, 409);
+  }
 
   return c.json({ url: session.url });
 });
