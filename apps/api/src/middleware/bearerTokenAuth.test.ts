@@ -75,6 +75,10 @@ vi.mock('../oauth/revocationCache', () => ({
   isGrantRevoked: vi.fn().mockResolvedValue(false),
 }));
 
+vi.mock('../oauth/grantStatus', () => ({
+  isOAuthGrantDurablyActive: vi.fn().mockResolvedValue(true),
+}));
+
 vi.mock('../services/tenantStatus', () => ({
   TenantInactiveError: class TenantInactiveError extends Error {},
   assertActiveTenantContext: vi.fn().mockResolvedValue(undefined),
@@ -104,6 +108,7 @@ vi.mock('jose', async () => {
 import { importJWK, jwtVerify, type JWK } from 'jose';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { isGrantRevoked, isJtiRevoked } from '../oauth/revocationCache';
+import { isOAuthGrantDurablyActive } from '../oauth/grantStatus';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { generateTestKeypair, signTestJwt, type TestKeypair } from '../oauth/testHelpers';
 import {
@@ -140,7 +145,7 @@ function createContext(headers: Record<string, string | undefined> = {}): TestCo
 }
 
 async function mintToken(claims: Record<string, unknown>, opts: { issuer?: string; audience?: string; ttlSeconds?: number } = {}) {
-  return signTestJwt(keypair.privateJwk, keypair.kid, claims, {
+  return signTestJwt(keypair.privateJwk, keypair.kid, { grant_id: 'grant-test-default', ...claims }, {
     issuer: opts.issuer ?? issuer,
     audience: opts.audience ?? audience,
     ttlSeconds: opts.ttlSeconds,
@@ -542,6 +547,7 @@ describe('bearerTokenAuthMiddleware', () => {
     // ai:execute is NOT granted — that now requires mcp:execute.
     expect(c.get('apiKey')).toEqual({
       id: 'oauth:org-token-jti',
+      oauthGrantId: 'grant-test-default',
       orgId,
       partnerId,
       name: 'OAuth bearer',
@@ -635,6 +641,66 @@ describe('bearerTokenAuthMiddleware', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
+  it('rejects a bearer whose Redis marker expired but whose Grant is durably revoked', async () => {
+    vi.mocked(isOAuthGrantDurablyActive).mockResolvedValueOnce(false);
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      scope: 'mcp:read',
+      jti: 'durable-revocation-jti',
+      grant_id: 'durably-revoked-grant',
+    });
+    const next = vi.fn();
+
+    await expectUnauthorized(
+      createContext({ Authorization: `Bearer ${token}` }),
+      'token revoked',
+      next,
+    );
+    expect(isGrantRevoked).toHaveBeenCalledWith('durably-revoked-grant');
+    expect(isOAuthGrantDurablyActive).toHaveBeenCalledWith('durably-revoked-grant');
+  });
+
+  it('rejects a bearer without a durable Grant identifier', async () => {
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      scope: 'mcp:read',
+      jti: 'missing-grant-jti',
+      grant_id: undefined,
+    });
+    const next = vi.fn();
+
+    await expectUnauthorized(
+      createContext({ Authorization: `Bearer ${token}` }),
+      'token missing required claims',
+      next,
+    );
+  });
+
+  it('fails closed with 503 when durable Grant status cannot be read', async () => {
+    vi.mocked(isOAuthGrantDurablyActive).mockRejectedValueOnce(new Error('database unavailable'));
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      scope: 'mcp:read',
+      jti: 'grant-read-error-jti',
+      grant_id: 'grant-read-error',
+    });
+    const next = vi.fn();
+
+    await expect(
+      bearerTokenAuthMiddleware(createContext({ Authorization: `Bearer ${token}` }), next),
+    ).rejects.toMatchObject({
+      status: 503,
+      message: 'oauth authorization temporarily unavailable',
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it('sets partner-scope API key context when org_id is null and resolves the partner org allowlist (M-B1)', async () => {
     // Defense-in-depth: partner-scope tokens used to pass `accessibleOrgIds: null`
     // to withDbAccessContext, which downstream auth.orgCondition() interprets
@@ -663,6 +729,7 @@ describe('bearerTokenAuthMiddleware', () => {
 
     expect(c.get('apiKey')).toEqual({
       id: 'oauth:partner-token-jti',
+      oauthGrantId: 'grant-test-default',
       orgId: null,
       partnerId,
       name: 'OAuth bearer',

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, gte, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   oauthAuthorizationCodes,
@@ -16,6 +16,7 @@ import {
 import { revokeClientFamilies } from './revocationService';
 import { ERROR_IDS, logOauthDebug, logOauthError } from './log';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
+import { isOAuthGrantActiveInCurrentDbContext } from './grantStatus';
 
 // Grant-revocation marker TTL must outlive the longest-lived access token
 // minted under the grant. Kept in sync with `ACCESS_TOKEN_TTL_SECONDS` in
@@ -337,6 +338,10 @@ export class BreezeOidcAdapter {
       if (this.model === 'AuthorizationCode') {
         const [row] = await db.select().from(oauthAuthorizationCodes).where(eq(oauthAuthorizationCodes.id, id));
         if (!row) return undefined;
+        const grantId = typeof (row.payload as { grantId?: unknown } | null)?.grantId === 'string'
+          ? (row.payload as { grantId: string }).grantId
+          : null;
+        if (!grantId || !(await isOAuthGrantActiveInCurrentDbContext(grantId))) return undefined;
         // Truly-expired non-consumed rows stay invisible via our own
         // `expiresAt >= new Date()` filter below — and that filter is the only
         // thing rejecting them: the grant calls find() with
@@ -372,6 +377,10 @@ export class BreezeOidcAdapter {
         const storageId = refreshTokenStorageId(id);
         const [row] = await db.select().from(oauthRefreshTokens).where(eq(oauthRefreshTokens.id, storageId));
         if (!row) return undefined;
+        const grantId = typeof (row.payload as { grantId?: unknown } | null)?.grantId === 'string'
+          ? (row.payload as { grantId: string }).grantId
+          : null;
+        if (!grantId || !(await isOAuthGrantActiveInCurrentDbContext(grantId))) return undefined;
         try {
           await assertActiveTenantContext({
             scope: row.orgId ? 'organization' : 'partner',
@@ -457,8 +466,12 @@ export class BreezeOidcAdapter {
         return row && row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
       }
       if (this.model === 'Grant') {
-        const [row] = await db.select().from(oauthGrants).where(eq(oauthGrants.id, id));
-        return row && row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
+        const [row] = await db.select().from(oauthGrants).where(and(
+          eq(oauthGrants.id, id),
+          isNull(oauthGrants.revokedAt),
+          gte(oauthGrants.expiresAt, new Date()),
+        ));
+        return row ? row.payload as OidcPayload : undefined;
       }
       if (this.model === 'Interaction') {
         const [row] = await db.select().from(oauthInteractions).where(eq(oauthInteractions.id, id));

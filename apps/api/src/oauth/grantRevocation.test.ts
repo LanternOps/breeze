@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { oauthGrants, oauthRefreshTokens } from '../db/schema';
+import { oauthAuthorizationCodes, oauthGrants, oauthRefreshTokens } from '../db/schema';
 import { revokeGrant, revokeJti } from './revocationCache';
 import { revokeAllOrgOauthArtifacts, revokeAllPartnerOauthArtifacts, revokeAllUserOauthArtifacts } from './grantRevocation';
 
@@ -77,6 +77,7 @@ describe('revokeAllUserOauthArtifacts', () => {
     expect(grantCalls.sort()).toEqual(['grant-A', 'grant-B', 'grant-C']);
 
     expect(updateMock).toHaveBeenCalledWith(oauthRefreshTokens);
+    expect(updateMock).toHaveBeenCalledWith(oauthAuthorizationCodes);
     // Durability: revoked_at is also stamped on the grant rows themselves so
     // revocation survives Redis-marker expiry (parity with revocationService).
     expect(updateMock).toHaveBeenCalledWith(oauthGrants);

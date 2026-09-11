@@ -8,12 +8,16 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
 }));
 
-vi.mock('./adapter', () => ({
-  getGrantBreezeMeta: vi.fn(),
-}));
-
 vi.mock('./partnerScopePolicy', () => ({
   getPartnerScopePolicy: vi.fn(),
+}));
+
+// Deliberately still mocked even though effectiveScopes.ts no longer imports it:
+// the point of the durable-grant fix is that a WARM process-local cache must not
+// be able to answer a tenancy question. If the fast path ever comes back, this
+// primed cache is what it would read.
+vi.mock('./adapter', () => ({
+  getGrantBreezeMeta: vi.fn(),
 }));
 
 import { getGrantBreezeMeta } from './adapter';
@@ -28,6 +32,28 @@ import {
 const selectMock = vi.mocked(db.select);
 const getGrantBreezeMetaMock = vi.mocked(getGrantBreezeMeta);
 const getPartnerScopePolicyMock = vi.mocked(getPartnerScopePolicy);
+
+/**
+ * Collect the qualified column names a drizzle `where` clause actually
+ * references. Asserting on the columns (not on a stringified predicate) keeps
+ * this independent of drizzle's SQL rendering and of any enum/param values that
+ * a naive deep string search would false-positive on.
+ */
+function whereColumnNames(clause: unknown): string[] {
+  const names: string[] = [];
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== 'object') return;
+    const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+    if (Array.isArray(chunks)) {
+      chunks.forEach(visit);
+      return;
+    }
+    const { name, table } = node as { name?: unknown; table?: unknown };
+    if (typeof name === 'string' && table) names.push(name);
+  };
+  visit(clause);
+  return names;
+}
 
 function mockSelectRow(row: unknown) {
   const limit = vi.fn(async () => (row === undefined ? [] : [row]));
@@ -57,17 +83,20 @@ afterEach(() => {
 });
 
 describe('resolveGrantContext', () => {
-  it('returns context from the in-memory cache without touching the DB (fast path)', async () => {
-    getGrantBreezeMetaMock.mockReturnValue({ partner_id: 'partner-1', org_id: 'org-1' });
+  it('ignores warm process-local tenancy metadata and answers from the durable row', async () => {
+    // A stale in-memory entry survives its Grant's revoked_at transition, so it
+    // must never short-circuit the lookup. Prime it with DIFFERENT tenancy than
+    // the DB row: whichever one comes back tells us which path ran.
+    getGrantBreezeMetaMock.mockReturnValue({ partner_id: 'stale-cached-partner', org_id: 'stale-cached-org' });
+    mockSelectRow({ partnerId: 'partner-1', orgId: 'org-1' });
 
     const context = await resolveGrantContext('grant-1');
 
     expect(context).toEqual({ grantId: 'grant-1', partnerId: 'partner-1', orgId: 'org-1' });
-    expect(selectMock).not.toHaveBeenCalled();
+    expect(selectMock).toHaveBeenCalledOnce();
   });
 
   it('cache miss: loads the oauth_grants row and returns its durable tenancy', async () => {
-    getGrantBreezeMetaMock.mockReturnValue(undefined);
     mockSelectRow({ partnerId: 'partner-2', orgId: null });
 
     const context = await resolveGrantContext('grant-2');
@@ -77,7 +106,6 @@ describe('resolveGrantContext', () => {
   });
 
   it('cache miss + grant row does not exist: returns null (not a tenancy failure)', async () => {
-    getGrantBreezeMetaMock.mockReturnValue(undefined);
     mockSelectRow(undefined);
 
     const context = await resolveGrantContext('grant-missing');
@@ -85,15 +113,24 @@ describe('resolveGrantContext', () => {
     expect(context).toBeNull();
   });
 
+  it('constrains the lookup to unrevoked, unexpired Grants (revoked rows never match)', async () => {
+    const { where } = mockSelectRow(undefined);
+
+    await expect(resolveGrantContext('grant-revoked')).resolves.toBeNull();
+
+    const columns = whereColumnNames((where.mock.calls as unknown as unknown[][])[0]?.[0]);
+    expect(columns).toContain(oauthGrants.id.name);
+    expect(columns).toContain(oauthGrants.revokedAt.name);
+    expect(columns).toContain(oauthGrants.expiresAt.name);
+  });
+
   it('cache miss + row exists with NULL partnerId: throws GrantTenancyError (fail closed — the -02 bug)', async () => {
-    getGrantBreezeMetaMock.mockReturnValue(undefined);
     mockSelectRow({ partnerId: null, orgId: null });
 
     await expect(resolveGrantContext('grant-orphaned')).rejects.toThrow(GrantTenancyError);
   });
 
   it('propagates a DB lookup failure rather than falling back to null (fail closed)', async () => {
-    getGrantBreezeMetaMock.mockReturnValue(undefined);
     const dbErr = new Error('connection refused');
     mockSelectError(dbErr);
 
@@ -101,7 +138,6 @@ describe('resolveGrantContext', () => {
   });
 
   it('exits request DB context before opening system DB context (mirrors adapter.ts convention)', async () => {
-    getGrantBreezeMetaMock.mockReturnValue(undefined);
     mockSelectRow({ partnerId: 'partner-4', orgId: null });
 
     await resolveGrantContext('grant-4');

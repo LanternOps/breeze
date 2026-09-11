@@ -1,6 +1,6 @@
-import { and, eq, inArray, isNull, type SQL } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { oauthClients, oauthClientPartnerGrants, oauthGrants, oauthRefreshTokens } from '../db/schema';
+import { oauthAuthorizationCodes, oauthClients, oauthClientPartnerGrants, oauthGrants, oauthRefreshTokens } from '../db/schema';
 import { writeOAuthRevocationMarkerDurably } from './revocationRetry';
 import { ERROR_IDS, logOauthError } from './log';
 
@@ -173,6 +173,23 @@ async function revokeClientFamiliesInSystemContext(
   const refreshIds = refreshRows.map((r) => r.id);
 
   if (grantIds.length > 0) {
+    // A pre-revocation code is itself a live capability. Mark it consumed in
+    // the same transaction as its Grant so a later code exchange cannot mint
+    // a fresh refresh family after the eager Redis marker expires. Reuse the
+    // provider's canonical consumed payload shape so any racing/sequential
+    // lookup follows the normal invalid_grant path.
+    await db
+      .update(oauthAuthorizationCodes)
+      .set({
+        consumedAt: now,
+        payload: sql`jsonb_set(${oauthAuthorizationCodes.payload}, '{consumed}', ${Math.floor(now.getTime() / 1000)}::text::jsonb, true)`,
+      })
+      .where(and(
+        inArray(sql<string>`${oauthAuthorizationCodes.payload}->>'grantId'`, grantIds),
+        isNull(oauthAuthorizationCodes.consumedAt),
+        gt(oauthAuthorizationCodes.expiresAt, now),
+      ));
+
     await db
       .update(oauthGrants)
       .set({

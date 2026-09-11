@@ -16,6 +16,7 @@ import {
 } from '../db';
 import { oauthClientBlocks, organizations, partnerUsers, users } from '../db/schema';
 import { isGrantRevoked, isJtiRevoked } from '../oauth/revocationCache';
+import { isOAuthGrantDurablyActive } from '../oauth/grantStatus';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 
 interface OAuthApiKeyContext {
@@ -376,7 +377,19 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   // Grant-wide revocation: when a refresh token is revoked or a connected app
   // is deleted, every access JWT minted from the same Grant must die. The
   // grant_id claim is set by buildExtraTokenClaims (see oauth/provider.ts).
-  if (typeof payload.grant_id === 'string' && await isGrantRevoked(payload.grant_id)) {
+  if (typeof payload.grant_id !== 'string' || payload.grant_id.length === 0) {
+    throw new HTTPException(401, { message: 'token missing required claims' });
+  }
+  if (await isGrantRevoked(payload.grant_id)) {
+    throw new HTTPException(401, { message: 'token revoked' });
+  }
+  let durablyActive: boolean;
+  try {
+    durablyActive = await isOAuthGrantDurablyActive(payload.grant_id);
+  } catch {
+    throw new HTTPException(503, { message: 'oauth authorization temporarily unavailable' });
+  }
+  if (!durablyActive) {
     throw new HTTPException(401, { message: 'token revoked' });
   }
   const clientIdClaim = typeof (payload as { client_id?: unknown }).client_id === 'string'

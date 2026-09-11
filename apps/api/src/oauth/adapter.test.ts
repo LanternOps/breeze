@@ -10,6 +10,7 @@ import {
 } from './adapter';
 import { revokeGrant, revokeJti } from './revocationCache';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
+import { isOAuthGrantActiveInCurrentDbContext } from './grantStatus';
 
 vi.mock('../db', () => ({
   db: { insert: vi.fn(), update: vi.fn(), select: vi.fn() },
@@ -26,6 +27,10 @@ vi.mock('./revocationCache', () => ({
 vi.mock('../services/tenantStatus', () => ({
   TenantInactiveError: class TenantInactiveError extends Error {},
   assertActiveTenantContext: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('./grantStatus', () => ({
+  isOAuthGrantActiveInCurrentDbContext: vi.fn(async () => true),
 }));
 
 const insertMock = vi.mocked(db.insert);
@@ -100,6 +105,7 @@ describe('BreezeOidcAdapter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(assertActiveTenantContext).mockResolvedValue(undefined);
+    vi.mocked(isOAuthGrantActiveInCurrentDbContext).mockResolvedValue(true);
   });
 
   it('upserts Client rows with null partner, metadata payload, and hashed secret', async () => {
@@ -314,6 +320,18 @@ describe('BreezeOidcAdapter', () => {
     await expect(new BreezeOidcAdapter('AuthorizationCode').find('code_abc')).resolves.toBe(payload);
   });
 
+  it('rejects a still-live AuthorizationCode after its durable Grant is revoked', async () => {
+    vi.mocked(isOAuthGrantActiveInCurrentDbContext).mockResolvedValueOnce(false);
+    mockSelectRows([{
+      payload: { accountId: 'user_abc', grantId: 'grant_revoked' },
+      consumedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+    }]);
+
+    await expect(new BreezeOidcAdapter('AuthorizationCode').find('code_abc')).resolves.toBeUndefined();
+    expect(isOAuthGrantActiveInCurrentDbContext).toHaveBeenCalledWith('grant_revoked');
+  });
+
   it('surfaces a consumed AuthorizationCode payload on replay and logs OAUTH_AUTH_CODE_REUSE', async () => {
     // On replay the adapter MUST return the (consumed-stamped) payload rather
     // than undefined: oidc-provider calls find() with ignoreExpiration:true and
@@ -373,6 +391,23 @@ describe('BreezeOidcAdapter', () => {
     // until natural expiry. See finding #5.
     expect(vi.mocked(revokeGrant)).toHaveBeenCalledWith('grant_abc', expect.any(Number));
     consoleError.mockRestore();
+  });
+
+  it('rejects an otherwise-live RefreshToken after its durable Grant is revoked', async () => {
+    vi.mocked(isOAuthGrantActiveInCurrentDbContext).mockResolvedValueOnce(false);
+    mockSelectRows([{
+      id: 'refresh_abc',
+      userId: '00000000-0000-4000-8000-000000000001',
+      clientId: 'client_abc',
+      partnerId: '00000000-0000-4000-8000-000000000002',
+      orgId: null,
+      payload: { accountId: 'user_abc', grantId: 'grant_revoked' },
+      revokedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+    }]);
+
+    await expect(new BreezeOidcAdapter('RefreshToken').find('refresh_abc')).resolves.toBeUndefined();
+    expect(assertActiveTenantContext).not.toHaveBeenCalled();
   });
 
   it('durably records refresh-token replay cleanup before returning the invalid-token result', async () => {
