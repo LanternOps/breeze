@@ -8,11 +8,18 @@
 
 import { db } from '../db';
 import { drExecutions, drPlanGroups, drPlans } from '../db/schema';
-import { eq, and, asc, desc, inArray, sql, SQL } from 'drizzle-orm';
+import { eq, and, asc, desc, lt, or, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { createDrExecutionAndEnqueue } from './drExecutionService';
 import { resolveSiteDevicePartition } from './aiToolsSiteScope';
+import {
+  collectReadableDrRows,
+  drGroupsReadable,
+  drReadSiteCeiling,
+  filterReadableDrExecutions,
+  filterReadableDrPlans,
+} from './drReadAuthorization';
 
 /**
  * Deny a group mutation whose STORED membership reaches outside the caller's
@@ -150,72 +157,50 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
       if (typeof input.status === 'string') conditions.push(eq(drPlans.status, input.status));
 
       const limit = clampLimit(input.limit);
-      const rows = await db
-        .select({
-          id: drPlans.id,
-          name: drPlans.name,
-          description: drPlans.description,
-          status: drPlans.status,
-          rpoTargetMinutes: drPlans.rpoTargetMinutes,
-          rtoTargetMinutes: drPlans.rtoTargetMinutes,
-          createdBy: drPlans.createdBy,
-          createdAt: drPlans.createdAt,
-          updatedAt: drPlans.updatedAt,
-          groupCount: sql<number>`count(${drPlanGroups.id})::int`,
-        })
-        .from(drPlans)
-        .leftJoin(
-          drPlanGroups,
-          and(eq(drPlanGroups.planId, drPlans.id), eq(drPlanGroups.orgId, drPlans.orgId))
-        )
-        .where(conditions.length > 0 ? and(...conditions) : undefined)
-        .groupBy(
-          drPlans.id,
-          drPlans.name,
-          drPlans.description,
-          drPlans.status,
-          drPlans.rpoTargetMinutes,
-          drPlans.rtoTargetMinutes,
-          drPlans.createdBy,
-          drPlans.createdAt,
-          drPlans.updatedAt
-        )
-        .orderBy(desc(drPlans.createdAt))
-        .limit(limit);
-
-      // Site axis (app-layer only; RLS enforces org, NOT site). Hide plans that
-      // are ENTIRELY outside a site-restricted caller's scope so they cannot
-      // enumerate foreign plans/devices. No-op for unrestricted callers.
-      const orgId = getOrgId(auth);
-      const partition = orgId ? await resolveSiteDevicePartition(orgId, auth) : null;
-      if (partition && rows.length > 0) {
-        const allowed = new Set(partition.allowed);
-        const planIds = rows.map((row) => row.id);
-        const groupRows = await db
-          .select({ planId: drPlanGroups.planId, devices: drPlanGroups.devices })
-          .from(drPlanGroups)
-          .where(inArray(drPlanGroups.planId, planIds));
-        const deviceIdsByPlan = new Map<string, string[]>();
-        for (const group of groupRows) {
-          const list = deviceIdsByPlan.get(group.planId) ?? [];
-          if (Array.isArray(group.devices)) {
-            for (const deviceId of group.devices) {
-              if (typeof deviceId === 'string') list.push(deviceId);
-            }
-          }
-          deviceIdsByPlan.set(group.planId, list);
+      // Site axis (app-layer only; RLS enforces org, NOT site). Hide any plan
+      // a site-restricted caller cannot see in full, so they cannot enumerate
+      // foreign plans/devices. No-op for unrestricted callers.
+      const siteCeiling = drReadSiteCeiling(auth);
+      if (siteCeiling?.length === 0) return JSON.stringify({ plans: [], showing: 0 });
+      const load = (cursor: { createdAt: Date; id: string } | undefined, pageSize: number) => {
+        const pageConditions = [...conditions];
+        if (cursor) {
+          pageConditions.push(or(
+            lt(drPlans.createdAt, cursor.createdAt),
+            and(eq(drPlans.createdAt, cursor.createdAt), lt(drPlans.id, cursor.id)),
+          )!);
         }
-        const visible = rows.filter((row) => {
-          const ids = deviceIdsByPlan.get(row.id) ?? [];
-          // A plan with no assigned devices carries nothing site-sensitive.
-          if (ids.length === 0) return true;
-          // Otherwise require at least one device in an accessible site.
-          return ids.some((id) => allowed.has(id));
-        });
-        return JSON.stringify({ plans: visible, showing: visible.length });
+        return db.select({
+          id: drPlans.id, name: drPlans.name, description: drPlans.description,
+          status: drPlans.status, rpoTargetMinutes: drPlans.rpoTargetMinutes,
+          rtoTargetMinutes: drPlans.rtoTargetMinutes, createdBy: drPlans.createdBy,
+          createdAt: drPlans.createdAt, updatedAt: drPlans.updatedAt,
+          groupCount: sql<number>`count(${drPlanGroups.id})::int`,
+        }).from(drPlans).leftJoin(
+          drPlanGroups,
+          and(eq(drPlanGroups.planId, drPlans.id), eq(drPlanGroups.orgId, drPlans.orgId)),
+        ).where(pageConditions.length > 0 ? and(...pageConditions) : undefined)
+          .groupBy(
+            drPlans.id, drPlans.name, drPlans.description, drPlans.status,
+            drPlans.rpoTargetMinutes, drPlans.rtoTargetMinutes, drPlans.createdBy,
+            drPlans.createdAt, drPlans.updatedAt,
+          ).orderBy(desc(drPlans.createdAt), desc(drPlans.id)).limit(pageSize);
+      };
+      // Unrestricted and system callers keep the original single-query path.
+      // Only the restricted branch needs a concrete org to resolve device
+      // sites; a restricted caller whose org cannot be resolved fails CLOSED.
+      if (siteCeiling === null) {
+        const rows = await load(undefined, limit);
+        return JSON.stringify({ plans: rows, showing: rows.length });
       }
-
-      return JSON.stringify({ plans: rows, showing: rows.length });
+      const orgId = getOrgId(auth);
+      if (!orgId) return JSON.stringify({ plans: [], showing: 0 });
+      const visible = await collectReadableDrRows({
+        limit,
+        load,
+        filter: (rows) => filterReadableDrPlans(rows, auth, orgId),
+      });
+      return JSON.stringify({ plans: visible, showing: visible.length });
     }),
   });
 
@@ -251,6 +236,10 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         .from(drPlanGroups)
         .where(and(...groupConditions))
         .orderBy(asc(drPlanGroups.sequence));
+
+      if (!await drGroupsReadable(groups, auth, plan.orgId)) {
+        return JSON.stringify({ error: 'Plan not found or access denied' });
+      }
 
       return JSON.stringify({
         ...plan,
@@ -303,9 +292,19 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
               .orderBy(asc(drPlanGroups.sequence))
           : [];
 
+        // Authorize against the execution's OWN org: it is already org-gated by
+        // `orgWhere` above, and unlike `getOrgId(auth)` it resolves for a
+        // system-scope session too. Both helpers no-op for an unrestricted
+        // ceiling, so this costs such a caller nothing.
+        const [visible] = await filterReadableDrExecutions([execution], auth, execution.orgId);
+        if (!visible || !await drGroupsReadable(groups, auth, plan?.orgId ?? execution.orgId)) {
+          return JSON.stringify({ error: 'Execution not found or access denied' });
+        }
+        // A missing plan is a dangling reference, not an authorization failure —
+        // mirrors the HTTP twin in routes/dr.ts, which returns `plan: null`.
         return JSON.stringify({
           ...execution,
-          plan,
+          plan: plan ?? null,
           groups,
         });
       }
@@ -317,26 +316,41 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
       if (typeof input.status === 'string') conditions.push(eq(drExecutions.status, input.status));
 
       const limit = clampLimit(input.limit);
-      const executions = await db
-        .select({
-          id: drExecutions.id,
-          planId: drExecutions.planId,
-          planName: drPlans.name,
-          executionType: drExecutions.executionType,
-          status: drExecutions.status,
-          startedAt: drExecutions.startedAt,
-          completedAt: drExecutions.completedAt,
-          initiatedBy: drExecutions.initiatedBy,
-          results: drExecutions.results,
+      const siteCeiling = drReadSiteCeiling(auth);
+      if (siteCeiling?.length === 0) return JSON.stringify({ executions: [], showing: 0 });
+      const load = (cursor: { createdAt: Date; id: string } | undefined, pageSize: number) => {
+        const pageConditions = [...conditions];
+        if (cursor) {
+          pageConditions.push(or(
+            lt(drExecutions.createdAt, cursor.createdAt),
+            and(eq(drExecutions.createdAt, cursor.createdAt), lt(drExecutions.id, cursor.id)),
+          )!);
+        }
+        return db.select({
+          id: drExecutions.id, planId: drExecutions.planId, planName: drPlans.name,
+          executionType: drExecutions.executionType, status: drExecutions.status,
+          startedAt: drExecutions.startedAt, completedAt: drExecutions.completedAt,
+          initiatedBy: drExecutions.initiatedBy, results: drExecutions.results,
           createdAt: drExecutions.createdAt,
-        })
-        .from(drExecutions)
-        .leftJoin(drPlans, eq(drExecutions.planId, drPlans.id))
-        .where(conditions.length > 0 ? and(...conditions) : undefined)
-        .orderBy(desc(drExecutions.createdAt))
-        .limit(limit);
-
-      return JSON.stringify({ executions, showing: executions.length });
+        }).from(drExecutions).leftJoin(drPlans, eq(drExecutions.planId, drPlans.id))
+          .where(pageConditions.length > 0 ? and(...pageConditions) : undefined)
+          .orderBy(desc(drExecutions.createdAt), desc(drExecutions.id)).limit(pageSize);
+      };
+      // See query_dr_plans: unrestricted/system keeps the single-query path;
+      // only the restricted branch needs a concrete org, and fails closed
+      // without one.
+      if (siteCeiling === null) {
+        const rows = await load(undefined, limit);
+        return JSON.stringify({ executions: rows, showing: rows.length });
+      }
+      const orgId = getOrgId(auth);
+      if (!orgId) return JSON.stringify({ executions: [], showing: 0 });
+      const visible = await collectReadableDrRows({
+        limit,
+        load,
+        filter: (rows) => filterReadableDrExecutions(rows, auth, orgId),
+      });
+      return JSON.stringify({ executions: visible, showing: visible.length });
     }),
   });
 
