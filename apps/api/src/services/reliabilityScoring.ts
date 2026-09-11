@@ -1813,8 +1813,8 @@ export async function evaluateReliabilityScores(input: ReliabilityEvaluationInpu
   }
   if (input.siteId) {
     conditions.push(eq(devices.siteId, input.siteId));
-  } else if (input.siteIds && input.siteIds.length > 0) {
-    conditions.push(inArray(devices.siteId, input.siteIds));
+  } else if (input.siteIds) {
+    conditions.push(input.siteIds.length > 0 ? inArray(devices.siteId, input.siteIds) : sql`false`);
   }
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 

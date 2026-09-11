@@ -18,7 +18,14 @@ import { Hono } from 'hono';
 import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { partnerLoginBranding, partners } from '../../db/schema';
-import { createOrganization, createPartner, createRole, createUser, assignUserToPartner } from './db-utils';
+import {
+  assignUserToPartner,
+  createOrganization,
+  createPartner,
+  createRole,
+  createUser,
+  grantRolePermissions
+} from './db-utils';
 import { createAccessToken } from '../../services/jwt';
 import { partnerLoginBrandingRoutes } from '../../routes/partnerLoginBranding';
 
@@ -175,6 +182,76 @@ describe('partner_login_branding RLS — partner-axis (2026-07-03 migration)', (
     expect(stillIntact?.headline).toBe('Acme MSP');
   });
 
+  it('PUT rejects a full-org read-only partner before validation and persistence', async () => {
+    const app = new Hono();
+    app.route('/partners', partnerLoginBrandingRoutes);
+
+    const partner = await createPartner();
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    const user = await createUser({ partnerId: partner.id, withMembership: false });
+    await assignUserToPartner(user.id, partner.id, role.id, 'all');
+    const token = await createAccessToken({
+      sub: user.id,
+      email: user.email,
+      roleId: role.id,
+      orgId: null,
+      partnerId: partner.id,
+      scope: 'partner',
+      mfa: true,
+      aep: 1,
+      mep: 1,
+      sid: 'read-only-branding-denial',
+    });
+
+    const res = await app.request('/partners/me/login-branding', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ accentColor: 'invalid-before-validation' }),
+    });
+    expect(res.status).toBe(403);
+
+    const persisted = await withDbAccessContext(systemContext, () =>
+      db.select().from(partnerLoginBranding).where(eq(partnerLoginBranding.partnerId, partner.id)),
+    );
+    expect(persisted).toEqual([]);
+  });
+
+  it('PUT rejects an authorized partner without MFA before validation and persistence', async () => {
+    const app = new Hono();
+    app.route('/partners', partnerLoginBrandingRoutes);
+
+    const partner = await createPartner();
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    const user = await createUser({ partnerId: partner.id, withMembership: false });
+    await grantRolePermissions(role.id, [{ resource: 'organizations', action: 'write' }]);
+    await assignUserToPartner(user.id, partner.id, role.id, 'all');
+    const token = await createAccessToken({
+      sub: user.id,
+      email: user.email,
+      roleId: role.id,
+      orgId: null,
+      partnerId: partner.id,
+      scope: 'partner',
+      mfa: false,
+      aep: 1,
+      mep: 1,
+      sid: 'missing-mfa-branding-denial',
+    });
+
+    const res = await app.request('/partners/me/login-branding', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ accentColor: 'invalid-before-validation' }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+
+    const persisted = await withDbAccessContext(systemContext, () =>
+      db.select().from(partnerLoginBranding).where(eq(partnerLoginBranding.partnerId, partner.id)),
+    );
+    expect(persisted).toEqual([]);
+  });
+
   it('PUT /partners/me/login-branding is full-replace: a partial PUT null-clears fields omitted from the request body (real route + real DB)', async () => {
     const app = new Hono();
     app.route('/partners', partnerLoginBrandingRoutes);
@@ -182,6 +259,7 @@ describe('partner_login_branding RLS — partner-axis (2026-07-03 migration)', (
     const partner = await createPartner();
     const role = await createRole({ scope: 'partner', partnerId: partner.id });
     const user = await createUser({ partnerId: partner.id, withMembership: false });
+    await grantRolePermissions(role.id, [{ resource: 'organizations', action: 'write' }]);
     // 'all' org_access is required by canManagePartnerWidePolicies for the
     // PUT to be authorized at all (services/partnerWideAccess.ts).
     await assignUserToPartner(user.id, partner.id, role.id, 'all');
@@ -192,7 +270,7 @@ describe('partner_login_branding RLS — partner-axis (2026-07-03 migration)', (
       orgId: null,
       partnerId: partner.id,
       scope: 'partner',
-      mfa: false,
+      mfa: true,
       // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
       // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
       aep: 1,

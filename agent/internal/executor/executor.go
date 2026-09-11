@@ -554,6 +554,13 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 			result.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 			return result, err
 		}
+		if err := prepareScriptForRunAs(scriptPath, script.RunAs); err != nil {
+			log.Error("failed to prepare script ownership", "executionId", script.ID, "user", script.RunAs, "error", err)
+			result.ExitCode = -1
+			result.Error = fmt.Sprintf("failed to prepare script for runAs: %v", err)
+			result.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+			return result, err
+		}
 	}
 
 	// Publish the command on the reservation made at the top of Execute. If a

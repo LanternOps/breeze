@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 /**
  * #3826 Wave 4A Task 3: `playbook_executions.triggered_by_user_id` FK-
@@ -19,6 +21,7 @@ import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { registerPlaybookTools } from './aiToolsPlaybooks';
+import { SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 function toolMap(): Map<string, AiTool> {
   const map = new Map<string, AiTool>();
@@ -87,6 +90,22 @@ function insertedValues(): Record<string, unknown> {
   return vi.mocked(db.insert).mock.results[0]!.value.values.mock.calls[0]![0];
 }
 
+function mockHistoryQuery(rows: unknown[] = []) {
+  let capturedWhere: unknown;
+  const chain: Record<string, any> = {};
+  for (const method of ['from', 'leftJoin', 'orderBy', 'limit']) {
+    chain[method] = vi.fn(() => chain);
+  }
+  chain.where = vi.fn((condition: unknown) => {
+    capturedWhere = condition;
+    return chain;
+  });
+  chain.then = (onFulfilled?: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) =>
+    Promise.resolve(rows).then(onFulfilled, onRejected);
+  vi.mocked(db.select).mockReturnValueOnce(chain as any);
+  return { capturedWhere: () => capturedWhere };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -152,5 +171,43 @@ describe('execute_playbook — users-FK probe-and-degrade (#3826)', () => {
     await execute.handler({ playbookId: PLAYBOOK_ID, deviceId: DEVICE_ID }, makeAuth());
 
     expect(db.select).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('get_playbook_history — site narrowing', () => {
+  it('returns no history and makes no query for a defined-empty site ceiling', async () => {
+    const history = toolMap().get('get_playbook_history')!;
+    const parsed = JSON.parse(await history.handler({}, makeAuth({
+      allowedSiteIds: [],
+      canAccessSite: () => false,
+    })));
+
+    // The note is what lets the model distinguish "no executions" from
+    // "executions exist but none are in your sites" — every sibling
+    // site-scoped tool returns it.
+    expect(parsed).toEqual({ executions: [], count: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('applies the current device site predicate in SQL before ordering and limiting', async () => {
+    const query = mockHistoryQuery([]);
+    const history = toolMap().get('get_playbook_history')!;
+
+    await history.handler({ limit: 1 }, makeAuth({
+      allowedSiteIds: ['site-A'],
+      canAccessSite: (siteId) => siteId === 'site-A',
+    }));
+
+    const rendered = new PgDialect().sqlToQuery(query.capturedWhere() as SQL);
+    expect(rendered.params).toContain('site-A');
+  });
+
+  it('preserves unrestricted history behavior', async () => {
+    mockHistoryQuery([{ id: 'execution-1', deviceHostname: 'hidden-host' }]);
+    const history = toolMap().get('get_playbook_history')!;
+
+    const parsed = JSON.parse(await history.handler({ limit: 1 }, makeAuth()));
+
+    expect(parsed).toMatchObject({ count: 1, executions: [{ id: 'execution-1' }] });
   });
 });

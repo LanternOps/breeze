@@ -265,6 +265,7 @@ ticketsRoutes.get(
 
     const summary = await evaluateTicketTriage({
       orgIds,
+      ...(auth.allowedSiteIds !== undefined ? { allowedSiteIds: auth.allowedSiteIds } : {}),
       labelWindowDays: query.labelWindowDays,
     });
 

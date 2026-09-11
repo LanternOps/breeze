@@ -18,6 +18,7 @@ import {
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from './backupDashboardHelpers';
+import BareMetalRecoveryPanel from './BareMetalRecoveryPanel';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 
@@ -1086,6 +1087,8 @@ export default function RecoveryBootstrapTab() {
           {tokenMessage}
         </div>
       )}
+
+      <BareMetalRecoveryPanel />
 
       <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
         <div className="space-y-6">

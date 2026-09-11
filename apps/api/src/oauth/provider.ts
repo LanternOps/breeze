@@ -8,7 +8,7 @@ import {
   OAUTH_ISSUER,
   OAUTH_RESOURCE_URL,
 } from '../config/env';
-import { BreezeOidcAdapter, getGrantBreezeMeta, getGrantBreezeMetaAsync } from './adapter';
+import { BreezeOidcAdapter } from './adapter';
 import { findAccount } from './findAccount';
 import { loadJwks } from './keys';
 import {
@@ -220,8 +220,10 @@ export async function buildExtraTokenClaims(
     throw new Error('OAuth Grant and access token account mismatch');
   }
 
-  const cached = getGrantBreezeMeta(grantId);
-  const meta = cached ?? grant.breeze ?? (await getGrantBreezeMetaAsync(grantId));
+  const durableGrant = grantId ? await resolveGrantContext(grantId) : null;
+  const meta = durableGrant
+    ? { partner_id: durableGrant.partnerId, org_id: durableGrant.orgId }
+    : undefined;
   // Invariant: no null-claim JWT EVER leaves the server. If a grant_id is
   // present (the only case that produces a real access token), we must be
   // able to resolve its tenancy — otherwise bearer middleware would later

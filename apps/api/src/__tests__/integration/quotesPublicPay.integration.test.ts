@@ -17,6 +17,7 @@ import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, hasDbAccessContext } from '../../db';
 import { quotes, quoteLines } from '../../db/schema/quotes';
 import { invoices } from '../../db/schema/invoices';
+import { stripeConnectAccounts } from '../../db/schema/stripePayments';
 import { createPartner, createOrganization } from './db-utils';
 import { createQuoteAcceptToken } from '../../services/quoteAcceptToken';
 
@@ -38,6 +39,9 @@ vi.mock('../../services/partnerStripe', () => ({
   getPartnerStripeClient: getPartnerStripeClientMock,
   PartnerStripeError,
 }));
+
+/** The account id the mocked client reports; seeded per partner (see seedSentQuote). */
+let currentAccountId = 'acct_test';
 
 // Flip-able mint failure so the payDeferred edge is testable without touching
 // the real (deterministic) link service in the other cases.
@@ -71,6 +75,15 @@ async function seedSentQuote(opts: { recurringOnly?: boolean } = {}) {
   return withSystemDbAccessContext(async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
+    // createInvoicePayLink / the quote checkout producer re-check the durable
+    // stripe_connect_accounts row inside the mapping transaction (SEC-151):
+    // the account the mock reports must exist for this partner, and
+    // stripe_account_id is globally unique, so each seeded partner gets its own.
+    currentAccountId = `acct_qpub_${Math.random().toString(36).slice(2, 10)}`;
+    await db.insert(stripeConnectAccounts).values({
+      partnerId: partner.id, stripeAccountId: currentAccountId,
+      apiKey: 'enc:synthetic', keyLast4: 'test', livemode: false,
+    });
     const [q] = await db.insert(quotes).values({ partnerId: partner.id, orgId: org.id, currencyCode: 'USD', status: 'sent', quoteNumber: 'Q-2026-0009' }).returning({ id: quotes.id });
     await db.insert(quoteLines).values(opts.recurringOnly
       ? { quoteId: q!.id, orgId: org.id, sourceType: 'manual', description: 'Managed seat', quantity: '1', unitPrice: '99.00', lineTotal: '99.00', recurrence: 'monthly', taxable: false, customerVisible: true, sortOrder: 0 }
@@ -86,7 +99,7 @@ describe('public accept → durable invoice link → pay', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mintFailMock.fail = false;
-    getPartnerStripeClientMock.mockResolvedValue({ stripe: { checkout: { sessions: { create: sessionsCreateMock } } }, stripeAccountId: 'acct_test' });
+    getPartnerStripeClientMock.mockImplementation(async () => ({ stripe: { checkout: { sessions: { create: sessionsCreateMock } } }, stripeAccountId: currentAccountId }));
     sessionsCreateMock.mockResolvedValue({ id: 'cs_pub_1', url: 'https://checkout.stripe.com/c/pay/pub', payment_intent: null });
   });
 

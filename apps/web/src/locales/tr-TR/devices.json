@@ -1877,6 +1877,7 @@
       "disablingMaintenance": "Bakım modunun devre dışı bırakılması",
       "enablingMaintenance": "Bakım modunu etkinleştirme"
     },
+    "refresh": "Yenile",
     "selectedOrganization": "seçilen kuruluş",
     "subtitle": "Filonuzu yönetin ve izleyin.",
     "title": "Cihazlar",
@@ -1931,6 +1932,7 @@
       "permanentDeleteCancelled": "Kalıcı Silme İptal Edildi",
       "permanentDeleting": "{{hostname}} kalıcı olarak siliniyor…",
       "permanentlyDeleted": "{{hostname}} kalıcı olarak silindi",
+      "refreshFailed": "Cihazlar yenilenemedi. Gösterilen liste güncel olmayabilir.",
       "restored": "Yenilendi",
       "scriptQueueFailed": "Komut Dosyası Sırası Başarısız",
       "scriptQueuedMany": "Komut Dosyası Çok Sayıda Sıraya Alındı",

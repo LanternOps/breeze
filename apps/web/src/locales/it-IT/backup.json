@@ -871,5 +871,31 @@
     "deleteConfirmBody": "Eliminare \"{{name}}\"? Questa operazione non può essere annullata.",
     "deleteInUse_one": "Questo profilo è usato da {{count}} criterio di configurazione. Scollegalo prima da lì.",
     "deleteInUse_other": "Questo profilo è usato da {{count}} criteri di configurazione. Scollegalo prima da lì."
+  },
+  "bareMetalRecovery": {
+    "title": "Ripristino bare-metal",
+    "description": "Crea un codice di ripristino monouso per ricostruire un'intera macchina da uno snapshot su hardware nuovo o riparato.",
+    "snapshotLabel": "Snapshot",
+    "selectSnapshotPlaceholder": "Seleziona uno snapshot…",
+    "selectSnapshotFirst": "Seleziona prima uno snapshot.",
+    "identityLabel": "Identità del dispositivo",
+    "identityOriginal": "Dispositivo originale (mantieni l'identità di questo dispositivo)",
+    "identityNew": "Nuovo dispositivo (registra come nuovo dispositivo)",
+    "createButton": "Crea codice di ripristino",
+    "createFailed": "Impossibile creare il ripristino.",
+    "codeInstructions": "Inserisci questo codice quando richiesto dal supporto di ripristino Breeze. Scade tra 15 minuti e può essere usato una sola volta.",
+    "codeExpires": "Scade alle {{time}}",
+    "overdueNotice": "Nessun check-in ancora — controlla la console di ripristino.",
+    "statusFailed": "Ripristino non riuscito",
+    "statusRefused": "Ripristino rifiutato",
+    "status": {
+      "created": "Creato",
+      "media_booted": "Supporto avviato",
+      "planned": "Pianificato",
+      "restoring": "Ripristino in corso",
+      "validated": "Convalidato",
+      "rebooted": "Riavviato",
+      "checked_in": "Check-in effettuato"
+    }
   }
 }

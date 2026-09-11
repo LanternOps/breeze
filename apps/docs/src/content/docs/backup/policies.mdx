@@ -76,6 +76,18 @@ The default mode. Specify which paths to include and exclude:
 
 On Windows, file backups automatically use Volume Shadow Copy (VSS) to capture application-consistent snapshots of open files.
 
+**Exclude patterns** follow gitignore-style rules (Windows `\` separators are accepted and treated as `/`):
+
+| Pattern shape | Matches |
+|---|---|
+| No slash — `*.tmp`, `Thumbs.db` | The **name** of any file or folder at any depth. |
+| Contains a slash, no leading `/` — `node_modules/**`, `AppData/Local/Temp/**` | That relative path **at any depth** below the backup root. |
+| Leading `/` — `/proc/**`, `/swapfile` | **Only** that path directly under the backup root (root-anchored). Since v0.112.0; previously a leading `/` was ignored and the pattern matched at any depth. |
+
+`**` matches zero or more path segments, a pattern that matches a folder skips the whole subtree, and matching is case-insensitive on Windows only. A trailing `/` carries no special meaning (`foo/` is the same as `foo`). Invalid patterns are logged and ignored rather than failing the backup.
+
+**What a file backup preserves** (agent v0.112.0 and later): regular files, symbolic links (as links, never followed), empty and specially-permissioned directories, owner and group, and the full permission bits including setuid/setgid/sticky. Sockets, FIFOs and device nodes are skipped. Ownership and the special bits are reapplied on restore only when the restore runs as root (never on Windows); otherwise the restore prints one summary warning and keeps the files. A snapshot that records any of these extras is written in a newer manifest format that **older agents cannot restore correctly** — restore it with a v0.112.0 or later agent. Snapshots containing only plain files are unchanged.
+
 ### Hyper-V Backup
 
 Targets Hyper-V virtual machines. Uses **all-by-default targeting** — newly discovered VMs are automatically included on the next scheduled run. You can configure exclude lists to skip specific VMs.
@@ -93,7 +105,7 @@ Targets SQL Server databases. Like Hyper-V, new databases are automatically incl
 
 ### System Image
 
-Full system state capture including OS configuration, boot files, drivers, and registry (Windows). Used for bare metal recovery scenarios.
+Captures the OS state needed to rebuild a machine's configuration — registry hives, boot configuration, certificate store, drivers, services and firewall policy on Windows; `/etc`, the package list, enabled services, firewall rules and crontabs on Linux; preferences, launch items and network configuration on macOS — plus, on Linux and Windows, the disk layout used to judge whether the snapshot is [bare-metal restorable](/backup/restoring/#browsing-snapshots). Used for [bare metal recovery](/backup/bare-metal-recovery/); combine it with a file backup of the root filesystem (the **Whole machine** [profile templates](/backup/profiles/#whole-machine-templates) do this) for a full rebuild.
 
 ---
 

@@ -1,4 +1,4 @@
--- apps/api/migrations/2026-10-15-160012-backup-snapshot-retirements.sql
+-- apps/api/migrations/2026-10-15-160202-backup-snapshot-retirements.sql
 -- D18 W01 (#5429/§3.3): backup_snapshot_retirements — durable tombstone
 -- written by retention the instant it deletes an expired/pruned
 -- backup_snapshots row (see backupRetention.ts's cleanupExpiredSnapshots).

@@ -158,6 +158,11 @@ type HeartbeatPayload struct {
 	// is never empty from this build.
 	AgentEdition      string `json:"agentEdition,omitempty"`
 	MigrationRequired bool   `json:"migrationRequired,omitempty"`
+	// RecoveryMarker (W04a) mirrors <dataDir>/recovery-marker.json: the
+	// bare-metal rebuild engine leaves it on the restored disk, and the agent
+	// sends it every heartbeat until the server acks the check-in. Nil
+	// (omitted) once acked or when no marker was ever found.
+	RecoveryMarker *RecoveryMarker `json:"recoveryMarker,omitempty"`
 }
 
 // migrationSignal reports the agent's build edition and whether it is a
@@ -257,6 +262,9 @@ type HeartbeatResponse struct {
 	// against the currently-pinned key it names.
 	ManifestKeyDelegations            []api.ManifestKeyDelegation `json:"manifestKeyDelegations,omitempty"`
 	AcknowledgedRollbackObservationID string                      `json:"acknowledgedRollbackObservationId,omitempty"`
+	// RecoveryMarkerAck (W04a) is true only when this beat's recoveryMarker
+	// matched — its absence means no ack yet (or no marker was sent).
+	RecoveryMarkerAck bool `json:"recoveryMarkerAck,omitempty"`
 }
 
 type HelperSettings struct {
@@ -353,6 +361,10 @@ type Heartbeat struct {
 	backupBinaryPath   string
 	rollbackController rollbackController
 	rebootMgr          *patching.RebootManager
+	// recoveryMarkerVal (W04a) is guarded by mu like the other single-value
+	// fields above (see lifecycleMode()); read every beat by
+	// recoveryMarker() and cleared once the server acks it.
+	recoveryMarkerVal *RecoveryMarker
 	securityScanner    *security.SecurityScanner
 	wsClient           *websocket.Client
 	// backupOutbox persists terminal backup results that failed to send over
@@ -1256,6 +1268,22 @@ func (h *Heartbeat) flushBackupResultOutbox() {
 // SetAuthMonitor sets the shared auth-failure monitor.
 func (h *Heartbeat) SetAuthMonitor(m *authstate.Monitor) {
 	h.authMon = m
+}
+
+// SetRecoveryMarker sets (or, passed nil, clears) the bare-metal recovery
+// marker sent on every heartbeat until the server acks it. See
+// recovery_marker.go for LoadRecoveryMarker/AcknowledgeRecoveryMarker.
+func (h *Heartbeat) SetRecoveryMarker(m *RecoveryMarker) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.recoveryMarkerVal = m
+}
+
+// recoveryMarker returns the currently-set recovery marker, or nil.
+func (h *Heartbeat) recoveryMarker() *RecoveryMarker {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.recoveryMarkerVal
 }
 
 // SetStatePath sets the path to the agent state file for heartbeat updates.
@@ -4432,6 +4460,10 @@ func (h *Heartbeat) sendHeartbeat() {
 		payload.DesktopAccess = h.computeDesktopAccess(sysInfo)
 	}
 
+	// Bare-metal recovery W04a: send until the server acks (see
+	// processHeartbeatResponse, which clears it on RecoveryMarkerAck).
+	payload.RecoveryMarker = h.recoveryMarker()
+
 	if h.postHeartbeat(h.serverURL(), &payload) {
 		h.resetHeartbeatFailures()
 		return
@@ -4699,6 +4731,14 @@ func (h *Heartbeat) acknowledgeRollbackObservation(id string) {
 }
 
 func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
+	// Bare-metal recovery W04a: only clear the marker once the server has
+	// actually acked it — a failed/lost beat must resend it next time.
+	if response.RecoveryMarkerAck && h.recoveryMarker() != nil {
+		if err := AcknowledgeRecoveryMarker(recoveryMarkerDataDir()); err != nil {
+			log.Warn("failed to acknowledge bare-metal recovery marker on disk; will keep resending it", "error", err.Error())
+		}
+		h.SetRecoveryMarker(nil)
+	}
 	h.acknowledgeRollbackObservation(response.AcknowledgedRollbackObservationID)
 	if len(response.ConfigUpdate) > 0 {
 		h.applyConfigUpdate(response.ConfigUpdate)
@@ -6577,6 +6617,21 @@ func (h *Heartbeat) resolvePatchInstallID(ref patchCommandRef) (string, error) {
 	if provider, local, ok := splitPatchID(ref.ID); ok && h.patchMgr.HasProvider(provider) {
 		return provider + ":" + local, nil
 	}
+	// Windows Update identities are device-observed: externalID is what THIS
+	// endpoint's own scan reported — the KB article when Windows exposes one,
+	// and the raw WUA UpdateID when it does not (driver and feature updates
+	// carry no KBArticleIDs). packageID is global catalog metadata that the API
+	// fills once and never rewrites, so it can carry a selector written by a
+	// different device, in a different tenant, for a different revision. Resolve
+	// the observed identity and fall back to packageID only when this device
+	// reported no external identity at all. WUA findUpdate matches both an exact
+	// UpdateID and a KB article against this device's currently applicable
+	// updates, so either form resolves against what is installable here.
+	if strings.EqualFold(strings.TrimSpace(ref.Source), "microsoft") && h.patchMgr.HasProvider("windows-update") {
+		if local := windowsUpdateLocalID(ref.ExternalID); local != "" {
+			return "windows-update:" + local, nil
+		}
+	}
 	if provider, local, ok := splitPatchID(ref.ExternalID); ok {
 		switch provider {
 		case "microsoft", "apple", "linux", "third_party", "custom":
@@ -6608,6 +6663,50 @@ func (h *Heartbeat) resolvePatchInstallID(ref patchCommandRef) (string, error) {
 	}
 
 	return providerID + ":" + localID, nil
+}
+
+// windowsUpdateLocalID normalizes the device-observed Windows Update selector
+// carried in a patch ref's externalID. It returns "" when externalID is empty
+// or is qualified for some other provider (e.g. "chocolatey:googlechrome") so
+// that those refs keep their existing provider routing below.
+func windowsUpdateLocalID(externalID string) string {
+	value := strings.TrimSpace(externalID)
+	if value == "" {
+		return ""
+	}
+	if provider, local, ok := splitPatchID(value); ok {
+		switch strings.ToLower(strings.TrimSpace(provider)) {
+		case "microsoft", "windows-update":
+			// A three-part "source:local:extra" externalID keeps only the local
+			// identity, matching patchLocalID's existing handling of that shape.
+			value = strings.TrimSpace(local)
+			if head, _, found := strings.Cut(value, ":"); found {
+				value = strings.TrimSpace(head)
+			}
+		default:
+			return ""
+		}
+	}
+	if value == "" {
+		return ""
+	}
+	if isWindowsKBID(value) {
+		return strings.ToUpper(value)
+	}
+	return value
+}
+
+func isWindowsKBID(value string) bool {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if !strings.HasPrefix(value, "KB") || len(value) == 2 {
+		return false
+	}
+	for _, r := range value[2:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Heartbeat) providerForPatchRef(ref patchCommandRef) string {

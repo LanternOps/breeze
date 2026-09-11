@@ -976,6 +976,12 @@ const MCP_APPROVAL_REQUIRED_ERROR = {
   code: 'MCP_APPROVAL_REQUIRED',
 } as const;
 
+// Bootstrap auth tools are destructive tenant mutations (send invites /
+// configure defaults). They live outside the main aiTools registry, so they
+// do not have a getToolTier entry, but their shared execution ledger has
+// always classified them as Tier 3.
+const BOOTSTRAP_TOOL_TIER = 3;
+
 /**
  * True when `tools/call` must deny this tool/action over MCP instead of
  * executing it: effective tier 3 (see the constant's block comment for why
@@ -1097,21 +1103,13 @@ async function handleToolsList(
     };
   });
 
-  // Surface bootstrap auth tools (send_deployment_invites, configure_defaults)
-  // to authenticated callers with the matching scope. These tools live outside
-  // the main aiTools registry but flow through the authed dispatch path below.
-  if (bootstrapModule) {
-    const authToolsEligible = hasExecute && (!requireExecuteAdmin || hasExecuteAdmin);
-    if (authToolsEligible) {
-      for (const tool of bootstrapModule.authTools) {
-        result.push({
-          name: tool.definition.name,
-          description: tool.definition.description,
-          inputSchema: zodToJsonSchema(tool.definition.inputSchema) as typeof result[number]['inputSchema'],
-        });
-      }
-    }
-  }
+  // Bootstrap auth tools (send_deployment_invites, configure_defaults) live
+  // outside the main registry and carry a FIXED Tier 3 classification, so
+  // `isMcpApprovalRequired(name, 3)` is unconditionally true for every one of
+  // them: they are NEVER advertised over MCP while this transport has no
+  // interactive approval surface. Deliberately not a filtered loop — a loop
+  // that can never push reads as if some bootstrap tool might be listed.
+  // `handleToolsCall` denies them with MCP_APPROVAL_REQUIRED to match.
 
   return jsonRpcResult(id, { tools: result });
 }
@@ -1155,6 +1153,12 @@ async function handleToolsCall(
     (t) => t.definition.name === toolName,
   );
   if (bootstrapAuthTool) {
+    if (isMcpApprovalRequired(toolName, BOOTSTRAP_TOOL_TIER)) {
+      return jsonRpcResult(id, {
+        content: [{ type: 'text', text: JSON.stringify(MCP_APPROVAL_REQUIRED_ERROR) }],
+        isError: true,
+      });
+    }
     return dispatchBootstrapAuthTool(
       id,
       bootstrapAuthTool,
@@ -1359,6 +1363,17 @@ async function handleToolsCall(
 export const __handleToolsListForTests = handleToolsList;
 export const __handleToolsCallForTests = handleToolsCall;
 /**
+ * Test-only direct access to the bootstrap authTool dispatcher. `tools/call`
+ * now returns MCP_APPROVAL_REQUIRED before reaching it (bootstrap tools are
+ * fixed Tier 3 and this transport has no interactive approval surface), so the
+ * dispatcher is unreachable over HTTP. Its RBAC-before-ledger ordering,
+ * fail-closed ledger and uniform-audit behaviour are still contracts worth
+ * pinning — both because the code is still shipped and because it is what an
+ * approval surface would re-attach to — so the lifecycle suite drives it here
+ * instead of through a request that can never arrive.
+ */
+export const __dispatchBootstrapAuthToolForTests = dispatchBootstrapAuthTool;
+/**
  * Test-only direct access to `handleJsonRpc` itself (rather than a single
  * handler) — needed to observe its top-level try/catch, which is what turns
  * an org-install reader's rejection into the -32000 JSON-RPC envelope a real
@@ -1428,10 +1443,6 @@ function writeMcpToolAuditEvent(
 // ============================================
 // Shared Tier 3 execution lifecycle (MCP-OAUTH-12)
 // ============================================
-
-// Bootstrap tools are destructive tenant mutations (send invites / configure
-// defaults) and always run through the Tier 3 ledger + uniform audit.
-const BOOTSTRAP_TOOL_TIER = 3;
 
 interface Tier3LifecycleContext {
   id: string | number;

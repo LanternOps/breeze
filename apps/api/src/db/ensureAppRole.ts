@@ -308,6 +308,10 @@ export async function ensureAppRole(): Promise<boolean> {
           REVOKE TRUNCATE ON TABLE device_software_inventory_state FROM breeze_app;
           REVOKE TRUNCATE ON TABLE device_software_inventory_state FROM PUBLIC;
         END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='ai_budget_reservations') THEN
+          REVOKE TRUNCATE ON TABLE ai_budget_reservations FROM breeze_app;
+          REVOKE TRUNCATE ON TABLE ai_budget_reservations FROM PUBLIC;
+        END IF;
       END $$;
     `);
 

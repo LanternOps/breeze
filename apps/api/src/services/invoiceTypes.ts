@@ -39,6 +39,7 @@ export type InvoiceServiceErrorCode =
   | 'INVOICE_HAS_PAYMENTS'
   | 'INVALID_CURSOR'
   | 'CURRENCY_MISMATCH'
+  | 'STRIPE_PAYMENT_MANAGED_EXTERNALLY'
   // Draft currency immutability (#3774): the change-currency op refused because
   // monetary lines exist and the caller didn't opt into clearLines.
   | 'CURRENCY_LOCKED'

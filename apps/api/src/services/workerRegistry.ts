@@ -1255,6 +1255,22 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return { init: m.initializeAiAgentGraduationWorker, shutdown: m.shutdownAiAgentGraduationWorker };
     },
   },
+  {
+    // SEC-142/143 (review B3): reclaims durable AI budget reservations whose
+    // TTL passed without settling. `global` — the sweep is one UPDATE with no
+    // socket-local state, and leaving it to the socket owner would mean a
+    // worker-only deployment never reclaims a held cap. Its module closure
+    // reaches only `db`, `services/redis` and `services/sentry`.
+    name: 'aiBudgetReservationSweep',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiBudgetReservationSweep');
+      return {
+        init: m.initializeAiBudgetReservationSweep,
+        shutdown: m.shutdownAiBudgetReservationSweep,
+      };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {

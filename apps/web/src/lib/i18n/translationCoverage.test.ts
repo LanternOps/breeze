@@ -27,7 +27,10 @@ const namespaceDuplicateBaselines = {
     // slash — no wording to translate.
     'approvals.json': 1,
     'auth.json': 14,
-    'backup.json': 52,
+    // +1 W04a bareMetalRecovery.snapshotLabel — "Snapshot" is the standard
+    // retained loanword in pt-BR IT contexts, matching how other backup.json
+    // strings already use it unchanged.
+    'backup.json': 53,
     // +4: contract-template format strings + Portuguese cognate ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Status")
     // legitimately identical to English.
@@ -455,7 +458,10 @@ const namespaceDuplicateBaselines = {
     // slash — no wording to translate.
     'approvals.json': 1,
     'auth.json': 15,
-    'backup.json': 63,
+    // +1 W04a bareMetalRecovery.snapshotLabel — "Snapshot" is the standard
+    // retained loanword in German IT contexts, matching how other backup.json
+    // strings already use it unchanged.
+    'backup.json': 64,
     // +6: contract-template format strings + German cognates ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Name", "Status")
     // that are legitimately identical to English in de-DE.

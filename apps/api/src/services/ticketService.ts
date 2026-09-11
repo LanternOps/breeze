@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { matchContactByEmail } from './contacts/crud';
@@ -14,6 +14,7 @@ import { applyIntakeForm, getTicketFormForOrg, TicketFormError } from './ticketF
 import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } from './ticketMoveCurrencyGuard';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
+import { isEligibleTicketRecipient } from './ticketPush';
 import type { AddinTicketSummary } from '@breeze/shared';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
@@ -38,6 +39,7 @@ export type TicketServiceErrorStatus = 400 | 403 | 404 | 409 | 500;
 export type TicketServiceErrorCode =
   | 'ASSIGNEE_NOT_FOUND'
   | 'ASSIGNEE_WRONG_PARTNER'
+  | 'ASSIGNEE_NOT_ELIGIBLE'
   | 'REQUESTER_NOT_FOUND'
   | 'REQUESTER_WRONG_ORG'
   // #3258 W03: the requester CONTACT (the canonical person), distinct from the
@@ -163,11 +165,11 @@ async function resolveTicketPartnerId(ticket: { partnerId: string | null; orgId:
  *
  * Exported for the bulk route's request-level pre-validation.
  */
-export async function getAssigneeForValidation(assigneeId: string): Promise<{ id: string; partnerId: string } | null> {
+export async function getAssigneeForValidation(assigneeId: string): Promise<{ id: string; partnerId: string; status?: string; email?: string | null } | null> {
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
-        .select({ id: users.id, partnerId: users.partnerId })
+        .select({ id: users.id, partnerId: users.partnerId, status: users.status, email: users.email })
         .from(users)
         .where(eq(users.id, assigneeId))
         .limit(1)
@@ -184,15 +186,35 @@ function throwIfPartnerUnresolvable(partnerId: string | null): asserts partnerId
 
 /**
  * Tenant guard: an assignee must be a user of the same partner as the ticket.
- * users.partner_id is NOT NULL (every user belongs to exactly one MSP), so a
- * same-partner equality check is the complete cross-tenant boundary.
+ * users.partner_id is NOT NULL (every user belongs to exactly one MSP). The
+ * explicit partner comparison preserves the cross-tenant boundary before the
+ * active/read/org/current-site eligibility check below.
  */
-async function assertAssigneeInPartner(assigneeId: string, partnerId: string | null) {
+async function assertAssigneeEligible(
+  assigneeId: string,
+  partnerId: string | null,
+  orgId: string,
+  deviceId?: string | null
+) {
   const assignee = await getAssigneeForValidation(assigneeId);
   if (!assignee) throw new TicketServiceError('Assignee not found', 404, 'ASSIGNEE_NOT_FOUND');
   throwIfPartnerUnresolvable(partnerId);
   if (assignee.partnerId !== partnerId) {
     throw new TicketServiceError('Assignee must belong to the same partner as the ticket', 400, 'ASSIGNEE_WRONG_PARTNER');
+  }
+  const eligible = await isEligibleTicketRecipient(
+    {
+      userId: assignee.id,
+      partnerId: assignee.partnerId,
+      status: assignee.status ?? '',
+      email: assignee.email ?? null,
+    },
+    partnerId,
+    orgId,
+    deviceId
+  );
+  if (!eligible) {
+    throw new TicketServiceError('Assignee is not eligible for this ticket', 400, 'ASSIGNEE_NOT_ELIGIBLE');
   }
 }
 
@@ -561,7 +583,7 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
   }
 
   if (input.assigneeId) {
-    await assertAssigneeInPartner(input.assigneeId, org.partnerId);
+    await assertAssigneeEligible(input.assigneeId, org.partnerId, input.orgId, input.deviceId);
   }
 
   const effectiveCategoryId = input.categoryId ?? intake?.categoryId ?? undefined;
@@ -1361,7 +1383,7 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
   const prevAssignedTo = ticket.assignedTo;
 
   if (assigneeId) {
-    await assertAssigneeInPartner(assigneeId, await resolveTicketPartnerId(ticket));
+    await assertAssigneeEligible(assigneeId, await resolveTicketPartnerId(ticket), ticket.orgId, ticket.deviceId);
   }
 
   const patch: Partial<typeof tickets.$inferInsert> = { assignedTo: assigneeId, updatedAt: new Date() };
@@ -2268,7 +2290,20 @@ export async function moveTicketOrg(
   const auditActor = isAgent
     ? { actorType: 'ai_agent' as const, actorId: actor.agentId, initiatedBy: 'ai' as const }
     : { actorId: actor.userId };
-  const ticket = await getTicketOrThrow(ticketId);
+  const snapshots = await db
+    .select({ ...getTableColumns(tickets), rowVersion: sql<string>`${tickets}.xmin::text` })
+    .from(tickets)
+    .where(eq(tickets.id, ticketId))
+    .limit(1);
+  const snapshot = snapshots[0];
+  if (!snapshot) throw new TicketServiceError('Ticket not found', 404);
+  const rowVersion = snapshot.rowVersion;
+  // Keep the service's historical no-op contract: callers receive the exact
+  // ticket object produced by Drizzle.  The xmin value is an internal CAS
+  // token, not part of the public ticket shape, so remove only that projected
+  // helper field instead of cloning every selected column.
+  delete (snapshot as Partial<typeof snapshot>).rowVersion;
+  const ticket = snapshot as typeof tickets.$inferSelect;
   if (ticket.orgId === targetOrgId) return ticket;
 
   let updated: typeof tickets.$inferSelect | undefined;
@@ -2474,8 +2509,15 @@ export async function moveTicketOrg(
     const [row] = await tx
       .update(tickets)
       .set({ orgId: targetOrgId, deviceId: null, requesterContactId: null, updatedAt: new Date() })
-      .where(eq(tickets.id, ticketId))
+      .where(and(
+        eq(tickets.id, ticketId),
+        eq(tickets.orgId, ticket.orgId),
+        sql`${tickets}.xmin::text = ${rowVersion}`,
+      ))
       .returning();
+    if (!row) {
+      throw new TicketServiceError('Ticket changed while the organization move was in progress', 409);
+    }
     updated = row;
     // #4524, reverse direction: ticket_comments has no org_id (child-via-parent
     // tenancy — see the TICKET_ORG_DENORMALIZED_TABLES comment above), so every

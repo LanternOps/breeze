@@ -79,6 +79,7 @@ function mockSelectError(error: unknown) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resolveGrantContextMock.mockResolvedValue({ grantId: 'grant-default', partnerId: 'p1', orgId: null });
 });
 
 afterEach(() => {
@@ -127,7 +128,18 @@ describe('buildExtraTokenClaims', () => {
     expect(selectMock).not.toHaveBeenCalled();
   });
 
+  it('denies minting when the durable Grant is revoked or expired', async () => {
+    resolveGrantContextMock.mockResolvedValueOnce(null);
+
+    await expect(buildExtraTokenClaims(
+      { oidc: { entities: { Grant: { jti: 'grant-revoked', accountId: 'user-1' } } } },
+      { accountId: 'user-1' },
+    )).rejects.toThrow(/grant meta missing/i);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
   it('includes the active user auth epoch and preserves partner, org, and grant claims', async () => {
+    resolveGrantContextMock.mockResolvedValue({ grantId: 'grant-1', partnerId: 'p1', orgId: 'o1' });
     const query = mockSelectRows([{ id: 'user-1', status: 'active', authEpoch: 7 }]);
 
     await expect(
@@ -162,6 +174,7 @@ describe('buildExtraTokenClaims', () => {
   });
 
   it('preserves a null organization claim for a partner-scoped grant', async () => {
+    resolveGrantContextMock.mockResolvedValue({ grantId: 'grant-2', partnerId: 'p1', orgId: null });
     mockSelectRows([{ id: 'user-1', status: 'active', authEpoch: 3 }]);
 
     await expect(
@@ -255,6 +268,7 @@ describe('buildExtraTokenClaims', () => {
   });
 
   it('does not project any other grant fields beyond the canonical access claims', async () => {
+    resolveGrantContextMock.mockResolvedValue({ grantId: 'grant-3', partnerId: 'p1', orgId: 'o1' });
     // grant_id is now also surfaced (added 2026-04-24 so bearer middleware can
     // check the grant-revocation cache and reject every access JWT minted
     // under a revoked grant). Aside from that the projection stays narrow.

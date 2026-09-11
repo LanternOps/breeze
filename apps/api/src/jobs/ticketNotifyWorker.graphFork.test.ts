@@ -49,7 +49,18 @@ const gfPush = vi.hoisted(() => ({
   loadUserCandidate: vi.fn(async (id: string) => ({ userId: id, partnerId: 'p-1', status: 'active', email: 'tech@msp.example' })),
   loadTicketPushPrefs: vi.fn(async () => ({ assignedEnabled: false, slaScope: 'off' as const })),
   listAnySlaSubscribers: vi.fn(async () => ({ users: [] as unknown[], truncated: false })),
-  isAuthorisedForTicket: vi.fn(async () => false),
+  isAuthorisedForTicket: vi.fn(async (_userId: string, _partnerId: string, _orgId: string, _deviceId?: string | null) => false),
+  // The worker gates every subject-bearing channel on the canonical
+  // isEligibleTicketRecipient; delegate it to the isAuthorisedForTicket stub
+  // this file already steers so the fork stays the only thing under test.
+  isEligibleTicketRecipient: vi.fn(async (
+    c: { userId: string; partnerId: string; status: string },
+    partnerId: string,
+    orgId: string,
+    deviceId?: string | null
+  ) => c.status === 'active'
+    && c.partnerId === partnerId
+    && await gfPush.isAuthorisedForTicket(c.userId, partnerId, orgId, deviceId)),
   admitPush: vi.fn(async () => []),
   resolvePushJobs: vi.fn(async () => []),
 }));
@@ -60,6 +71,7 @@ vi.mock('../services/ticketPush', async (orig) => ({
   loadTicketPushPrefs: gfPush.loadTicketPushPrefs,
   listAnySlaSubscribers: gfPush.listAnySlaSubscribers,
   isAuthorisedForTicket: gfPush.isAuthorisedForTicket,
+  isEligibleTicketRecipient: gfPush.isEligibleTicketRecipient,
   admitPush: gfPush.admitPush,
   resolvePushJobs: gfPush.resolvePushJobs,
 }));
@@ -134,6 +146,7 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
   });
 
   it('NEVER routes assignee/tech notifications through Graph (ticket.assigned uses EmailService)', async () => {
+    gfPush.isAuthorisedForTicket.mockResolvedValue(true);
     selectMock
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-1', subject: 'Printer', submitterEmail: 'cust@x.com' }]) // getTicket
       .mockResolvedValueOnce([{ name: 'Acme' }]); // org name (assignee now via loadUserCandidate)

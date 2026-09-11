@@ -1874,6 +1874,7 @@
       "disablingMaintenance": "Wartungsmodus deaktivieren",
       "enablingMaintenance": "Wartungsmodus aktivieren"
     },
+    "refresh": "Aktualisieren",
     "selectedOrganization": "die ausgewählte Organisation",
     "subtitle": "Verwalten und überwachen Sie Ihre Flotte.",
     "title": "Geräte",
@@ -1928,6 +1929,7 @@
       "permanentDeleteCancelled": "Endgültiges Löschen abgebrochen",
       "permanentDeleting": "{{hostname}} wird endgültig gelöscht…",
       "permanentlyDeleted": "{{hostname}} endgültig gelöscht",
+      "refreshFailed": "Geräte konnten nicht aktualisiert werden. Die angezeigte Liste ist möglicherweise veraltet.",
       "restored": "Wiederhergestellt",
       "scriptQueueFailed": "Skriptwarteschlange fehlgeschlagen",
       "scriptQueuedMany": "Skriptausführungen in die Warteschlange gestellt",

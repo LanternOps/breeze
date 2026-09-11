@@ -198,6 +198,9 @@ vi.mock('../streamingSessionManager', () => ({ buildClaudeSdkChildEnv }));
 const recordSessionlessSdkUsage = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined));
 const calculateCostCents = vi.hoisted(() => vi.fn<(...args: unknown[]) => number>(() => 0));
 vi.mock('../aiCostTracker', () => ({ recordSessionlessSdkUsage, calculateCostCents }));
+const reserveAiBudget = vi.hoisted(() => vi.fn());
+const markAiBudgetReservationIndeterminate = vi.hoisted(() => vi.fn());
+vi.mock('../aiBudgetReservations', () => ({ reserveAiBudget, markAiBudgetReservationIndeterminate }));
 
 import { classifyIntentAwaitingApproval, executeAgentRun } from './runLoop';
 
@@ -318,6 +321,13 @@ const VALID_PROPOSAL = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  reserveAiBudget.mockResolvedValue({
+    kind: 'unlimited', reservationId: '00000000-0000-4000-8000-0000000000e1',
+    dailyPeriodKey: '2026-09-06', monthlyPeriodKey: '2026-09-01', status: 'active',
+  });
+  markAiBudgetReservationIndeterminate.mockResolvedValue({
+    kind: 'indeterminate', reservationId: '00000000-0000-4000-8000-0000000000e1',
+  });
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
   dbMockState.rowQueues = {};
   dbMockState.lastRow = {};

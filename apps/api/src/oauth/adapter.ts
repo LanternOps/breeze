@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { eq, sql } from 'drizzle-orm';
+import { errors } from 'oidc-provider';
+import { and, eq, gte, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   oauthAuthorizationCodes,
@@ -16,6 +17,7 @@ import {
 import { revokeClientFamilies } from './revocationService';
 import { ERROR_IDS, logOauthDebug, logOauthError } from './log';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
+import { isOAuthGrantActiveInCurrentDbContext, revokeGrantsDurablyInCurrentDbContext } from './grantStatus';
 
 // Grant-revocation marker TTL must outlive the longest-lived access token
 // minted under the grant. Kept in sync with `ACCESS_TOKEN_TTL_SECONDS` in
@@ -33,26 +35,21 @@ type StoredPayload = { payload: OidcPayload; expiresAt: Date | null };
 
 const inMemory = new Map<string, Map<string, StoredPayload>>();
 
-// Side cache for Breeze tenancy metadata attached to a Grant. oidc-provider's
+// Breeze tenancy metadata attached to a Grant. oidc-provider's
 // Grant.IN_PAYLOAD allowlist (lib/models/grant.js) drops unknown fields on
-// save, so we can't simply set `grant.breeze = ...`. Historically this map
-// was the only store; now that Grants are persisted to `oauth_grants`, the
-// map is just a fast process-local cache and `setGrantBreezeMeta` ALSO
-// writes the metadata to the DB row so it survives restart.
+// save, so we can't simply set `grant.breeze = ...`; it lives in the
+// `oauth_grants` row instead.
+//
+// There is deliberately NO process-local cache of this any more. A cached
+// entry outlives its Grant's `revoked_at` transition, which made stale
+// in-memory state answerable as tenancy — and therefore as authority — on
+// paths that should have re-read the row. The DB row is the only store.
 type GrantBreezeMeta = { partner_id: string; org_id: string | null };
-type StoredBreezeMeta = { meta: GrantBreezeMeta; expiresAt: Date | null };
-
-const grantBreezeMeta = new Map<string, StoredBreezeMeta>();
 
 export async function setGrantBreezeMeta(
   grantId: string,
   meta: GrantBreezeMeta,
-  ttlSeconds?: number,
 ): Promise<void> {
-  grantBreezeMeta.set(grantId, {
-    meta,
-    expiresAt: ttlSeconds === undefined ? null : new Date(Date.now() + ttlSeconds * 1000),
-  });
   // Persist to DB so a process restart between consent and the first
   // refresh-token grant doesn't orphan the partner_id. The Grant row is
   // INSERTed by `BreezeOidcAdapter.upsert` during `grant.save()`, which the
@@ -88,16 +85,13 @@ export async function getGrantBreezeMetaAsync(
   grantId: string | undefined | null,
 ): Promise<GrantBreezeMeta | undefined> {
   if (!grantId) return undefined;
-  const cached = getGrantBreezeMeta(grantId);
-  if (cached) return cached;
-  // Cache miss — possibly a different process / post-restart. Fall back to
-  // the DB row, populated by the consent route. We deliberately do NOT
-  // catch DB errors here: callers (`requiredPartnerId`, `buildExtraTokenClaims`)
+  // Always the DB row, populated by the consent route. We deliberately do NOT
+  // catch DB errors here: callers (`requiredPartnerId`, `resolvedOrgId`)
   // need to distinguish "no row" (DB returned undefined → grant has no
   // tenancy) from "lookup failed" (Postgres unavailable → we don't know).
-  // Silently degrading to "missing partner_id" would mint a JWT with
-  // `partner_id: null` that bearer middleware rejects with a confusing 401,
-  // and worse, mask infrastructure failures behind auth errors.
+  // Silently degrading to "missing partner_id" would persist a token row with
+  // a null tenant column, and worse, mask infrastructure failures behind
+  // auth errors.
   let row;
   try {
     row = await asSystem(async () => {
@@ -117,17 +111,6 @@ export async function getGrantBreezeMetaAsync(
   }
   if (!row || !row.partnerId) return undefined;
   return { partner_id: row.partnerId, org_id: row.orgId };
-}
-
-export function getGrantBreezeMeta(grantId: string | undefined | null): GrantBreezeMeta | undefined {
-  if (!grantId) return undefined;
-  const stored = grantBreezeMeta.get(grantId);
-  if (!stored) return undefined;
-  if (stored.expiresAt && stored.expiresAt < new Date()) {
-    grantBreezeMeta.delete(grantId);
-    return undefined;
-  }
-  return stored.meta;
 }
 
 function sha256(s: string): string {
@@ -177,18 +160,18 @@ function epochTime(): number {
 
 async function requiredPartnerId(payload: OidcPayload): Promise<string> {
   // First try extra.partner_id (kept for backward compatibility / tests). If
-  // not present, fall back to deriving it from the Grant via the cache, then
-  // the DB — the RefreshToken model's IN_PAYLOAD allowlist drops `extra`
+  // not present, derive it from the Grant's durable row — the RefreshToken
+  // model's IN_PAYLOAD allowlist drops `extra`
   // (only AccessToken/ClientCredentials carry it), so for tokens minted via
   // the authorization_code grant the only thing we have to key on is
-  // `grantId`. The DB fallback is critical post-restart: a refresh-token
-  // exchange a few minutes after an API redeploy lost the in-memory cache.
+  // `grantId`. Reaching here means find() already proved that Grant durably
+  // active, so the row exists.
   const partnerId = extraField(payload, 'partner_id');
   if (typeof partnerId === 'string' && partnerId.length > 0) {
     return partnerId;
   }
   const grantId = typeof payload.grantId === 'string' ? payload.grantId : undefined;
-  const meta = getGrantBreezeMeta(grantId) ?? (await getGrantBreezeMetaAsync(grantId));
+  const meta = await getGrantBreezeMetaAsync(grantId);
   if (meta && meta.partner_id) {
     return meta.partner_id;
   }
@@ -199,7 +182,7 @@ async function resolvedOrgId(payload: OidcPayload): Promise<string | null> {
   const fromExtra = extraField(payload, 'org_id');
   if (typeof fromExtra === 'string' && fromExtra.length > 0) return fromExtra;
   const grantId = typeof payload.grantId === 'string' ? payload.grantId : undefined;
-  const meta = getGrantBreezeMeta(grantId) ?? (await getGrantBreezeMetaAsync(grantId));
+  const meta = await getGrantBreezeMetaAsync(grantId);
   return meta?.org_id ?? null;
 }
 
@@ -337,6 +320,10 @@ export class BreezeOidcAdapter {
       if (this.model === 'AuthorizationCode') {
         const [row] = await db.select().from(oauthAuthorizationCodes).where(eq(oauthAuthorizationCodes.id, id));
         if (!row) return undefined;
+        const grantId = typeof (row.payload as { grantId?: unknown } | null)?.grantId === 'string'
+          ? (row.payload as { grantId: string }).grantId
+          : null;
+        if (!grantId || !(await isOAuthGrantActiveInCurrentDbContext(grantId))) return undefined;
         // Truly-expired non-consumed rows stay invisible via our own
         // `expiresAt >= new Date()` filter below — and that filter is the only
         // thing rejecting them: the grant calls find() with
@@ -372,6 +359,10 @@ export class BreezeOidcAdapter {
         const storageId = refreshTokenStorageId(id);
         const [row] = await db.select().from(oauthRefreshTokens).where(eq(oauthRefreshTokens.id, storageId));
         if (!row) return undefined;
+        const grantId = typeof (row.payload as { grantId?: unknown } | null)?.grantId === 'string'
+          ? (row.payload as { grantId: string }).grantId
+          : null;
+        if (!grantId || !(await isOAuthGrantActiveInCurrentDbContext(grantId))) return undefined;
         try {
           await assertActiveTenantContext({
             scope: row.orgId ? 'organization' : 'partner',
@@ -406,11 +397,26 @@ export class BreezeOidcAdapter {
           // nukes the whole grant family. We deliberately KEEP the
           // grant-family revocation — genuine rotation replay is the
           // canonical token-theft signal and must stay fatal — and instead
-          // fix the known innocent trigger upstream (resource-alias
-          // normalization in routes/oauth.ts). The revoked_at / revoked_ms_ago
-          // context below lets on-call distinguish the two: an innocent
-          // post-failure retry presents within seconds of revocation, while
-          // theft replay typically surfaces much later.
+          // fix the known innocent trigger upstream: resource-alias
+          // normalization (`normalizeResourceParams` in
+          // oauth/resourceIndicators.ts, applied by routes/oauth.ts) stops an
+          // alias-only `resource` mismatch from failing the exchange in the
+          // first place.
+          //
+          // SUPPORT-VISIBLE CONSEQUENCE: that revocation is now DURABLE and
+          // IRREVERSIBLE. It used to be recorded only in the Redis grant
+          // marker, so a family effectively "recovered" once the marker
+          // expired (GRANT_REVOCATION_TTL_SECONDS). It now stamps
+          // oauth_grants.revoked_at and revokes every sibling refresh token,
+          // which is the whole point — a thief must not be able to wait the
+          // marker out — but it means an affected client CANNOT recover by
+          // retrying later. The user must re-consent. Runbooks should expect
+          // "re-authorize the connected app", not "wait and retry".
+          //
+          // The revoked_at / revoked_ms_ago context below lets on-call
+          // distinguish the two cases: an innocent post-failure retry presents
+          // within seconds of revocation, while theft replay typically
+          // surfaces much later.
           logOauthError({
             errorId: ERROR_IDS.OAUTH_REFRESH_TOKEN_REUSE,
             message: 'Revoked refresh token lookup detected',
@@ -429,6 +435,11 @@ export class BreezeOidcAdapter {
           // (all sibling access JWTs and refresh tokens) immediately —
           // logging alone leaves a window where the attacker continues
           // to use already-minted access tokens until natural expiry.
+          //
+          // The Redis marker is the EAGER half and it expires
+          // (GRANT_REVOCATION_TTL_SECONDS). It must be paired with the durable
+          // half, or a stolen sibling refresh token starts working again the
+          // moment the marker lapses and the thief regains the whole family.
           if (grantId) {
             const result = await writeOAuthRevocationMarkerDurably(db, {
               userId: row.userId,
@@ -443,6 +454,11 @@ export class BreezeOidcAdapter {
                 context: { markerType: 'grant', errorCode: result.errorCode },
               });
             }
+            await revokeGrantsDurablyInCurrentDbContext({
+              grantIds: [grantId],
+              reason: 'refresh-token-reuse',
+              cascadeRefreshTokens: true,
+            });
           }
           return undefined;
         }
@@ -457,8 +473,12 @@ export class BreezeOidcAdapter {
         return row && row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
       }
       if (this.model === 'Grant') {
-        const [row] = await db.select().from(oauthGrants).where(eq(oauthGrants.id, id));
-        return row && row.expiresAt >= new Date() ? row.payload as OidcPayload : undefined;
+        const [row] = await db.select().from(oauthGrants).where(and(
+          eq(oauthGrants.id, id),
+          isNull(oauthGrants.revokedAt),
+          gte(oauthGrants.expiresAt, new Date()),
+        ));
+        return row ? row.payload as OidcPayload : undefined;
       }
       if (this.model === 'Interaction') {
         const [row] = await db.select().from(oauthInteractions).where(eq(oauthInteractions.id, id));
@@ -484,16 +504,34 @@ export class BreezeOidcAdapter {
         // the library reads `code.consumed` from that payload to fire its
         // grant-wide revoke on replay. jsonb_set keeps it a single atomic
         // write — no read-modify-write race on concurrent replays.
-        await db.update(oauthAuthorizationCodes).set({
+        const consumed = await db.update(oauthAuthorizationCodes).set({
           consumedAt: new Date(),
           payload: sql`jsonb_set(${oauthAuthorizationCodes.payload}, '{consumed}', ${epochTime()}::text::jsonb, true)`,
-        }).where(eq(oauthAuthorizationCodes.id, id));
+        }).where(and(
+          eq(oauthAuthorizationCodes.id, id),
+          isNull(oauthAuthorizationCodes.consumedAt),
+        )).returning({ id: oauthAuthorizationCodes.id });
+        if (consumed.length !== 1) {
+          // Losing the CAS aborts before oidc-provider's consumed-replay
+          // handler (which would call revokeGrant) can run. That is correct
+          // ONLY for the true-concurrent case this guards: the winner is a
+          // legitimate first use, not a replay. A genuine later replay still
+          // reaches find(), sees payload.consumed and fires revokeGrant
+          // normally.
+          throw new errors.InvalidGrant('authorization code already consumed');
+        }
       } else if (this.model === 'RefreshToken') {
         // oidc-provider rotates refresh tokens by minting a new one and
         // calling consume() on the previous. Mark it revoked so
         // `find()` (which filters on revokedAt IS NULL) returns undefined,
         // preventing replay of the old token after rotation.
-        await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(eq(oauthRefreshTokens.id, refreshTokenStorageId(id)));
+        const consumed = await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(and(
+          eq(oauthRefreshTokens.id, refreshTokenStorageId(id)),
+          isNull(oauthRefreshTokens.revokedAt),
+        )).returning({ id: oauthRefreshTokens.id });
+        if (consumed.length !== 1) {
+          throw new errors.InvalidGrant('refresh token already used');
+        }
       }
     });
   }
@@ -649,10 +687,14 @@ export class BreezeOidcAdapter {
   }
 
   async revokeByGrantId(grantId: string): Promise<void> {
+    // oidc-provider calls this from its own replay handling (a re-presented
+    // authorization code) as well as from RP-initiated revocation.
+    //
     // Mark the grant revoked in the cache FIRST so any in-flight bearer
-    // checks immediately reject. Then mark every refresh token revoked in
-    // the DB (so the next refresh-token grant exchange fails with
-    // "invalid_grant" rather than minting a fresh access token).
+    // checks immediately reject, then do the durable sweep: consume every
+    // live authorization code, revoke every sibling refresh token and stamp
+    // `oauth_grants.revoked_at`. The cache marker alone expires, so without
+    // the durable half a replayed code could restart the family later.
     const retryQueued = await asSystem(async () => {
       const [grant] = await db
         .select({ accountId: oauthGrants.accountId })
@@ -667,7 +709,11 @@ export class BreezeOidcAdapter {
         markerId: grantId,
         expiresAt: new Date(Date.now() + GRANT_REVOCATION_TTL_SECONDS * 1000),
       });
-      await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(sql`payload->>'grantId' = ${grantId}`);
+      await revokeGrantsDurablyInCurrentDbContext({
+        grantIds: [grantId],
+        reason: 'provider-revoke-grant',
+        cascadeRefreshTokens: true,
+      });
       return marker.status === 'retry_queued';
     });
     if (retryQueued) {

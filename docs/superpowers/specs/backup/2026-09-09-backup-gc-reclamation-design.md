@@ -318,8 +318,8 @@ object is deleted only for a snapshot whose retirement is already durable.
 
 | Migration (slots after newest shipped `2026-10-15-140004`) | Content |
 |---|---|
-| `2026-10-15-160011-backup-jobs-base-pin-and-storage-identity.sql` | `backup_jobs.base_snapshot_id`, `publish_lease_expires_at`, `storage_identity`, partial index; `backup_snapshots.storage_identity` (nullable, no backfill — §3.6 self-heal); DDL only, no `breeze.scope` needed |
-| `2026-10-15-160012-backup-snapshot-retirements.sql` | table + RLS (shape 1, enable+force, four policies) + indexes |
+| `2026-10-15-160201-backup-jobs-base-pin-and-storage-identity.sql` | `backup_jobs.base_snapshot_id`, `publish_lease_expires_at`, `storage_identity`, partial index; `backup_snapshots.storage_identity` (nullable, no backfill — §3.6 self-heal); DDL only, no `breeze.scope` needed |
+| `2026-10-15-160202-backup-snapshot-retirements.sql` | table + RLS (shape 1, enable+force, four policies) + indexes |
 
 Registries: `tenantExportPolicyRegistry.ts` (`backup_jobs` + 3 cols, `backup_snapshots` + 1
 col, new table), `tenantCascade.ts` `CORE_ORG_CASCADE_DELETE_ORDER` (alphabetical: after
