@@ -148,7 +148,11 @@ export const jobListSchema = z.object({
 
 export const snapshotListSchema = z.object({
   deviceId: z.string().optional(),
-  configId: z.string().optional()
+  configId: z.string().optional(),
+  // Bare-metal recovery W04a: the recovery-creation panel needs "which
+  // snapshots CAN start a bare-metal recovery" without pulling every
+  // snapshot and filtering client-side.
+  bareMetalRestorable: z.coerce.boolean().optional(),
 });
 
 export const snapshotProtectionReasonSchema = z.object({
@@ -291,6 +295,35 @@ export const bmrAuthenticateSchema = z.object({
 export const bmrRecoveryDownloadSchema = z.object({
   token: z.string().min(1),
   path: z.string().min(1).max(4096),
+});
+
+// ── Bare-metal recovery schemas (W04a) ──────────────────────────────
+
+export const bmrRecoveryCreateSchema = z.object({
+  snapshotId: z.string().guid(),
+  identity: z.enum(['original', 'new']).default('original'),
+});
+
+export const bmrRecoveryListSchema = z.object({
+  deviceId: z.string().guid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+// Deliberately generous bound (1..32): the code is normalized/validated by
+// normalizeRecoveryCode() regardless of exact input shape (dashes, spaces,
+// case), so this schema only needs to keep the request body itself small.
+export const bmrExchangeSchema = z.object({
+  code: z.string().min(1).max(32),
+});
+
+export const bmrProgressSchema = z.object({
+  token: z.string().min(1),
+  status: z.enum(['media_booted', 'planned', 'restoring', 'validated', 'rebooted', 'failed', 'refused']),
+  target: z.record(z.string(), z.any()).optional(),
+  plan: z.any().optional(),
+  result: z.any().optional(),
+  reason: z.string().max(2000).optional(),
+  warnings: z.array(z.string().max(2000)).max(64).optional(),
 });
 
 export const bmrTokenListSchema = z.object({

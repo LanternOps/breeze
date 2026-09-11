@@ -116,6 +116,28 @@ func authenticateRecoverySession(serverURL, token string) (*BootstrapResponse, e
 	return authenticateRecoverySessionContext(context.Background(), serverURL, token)
 }
 
+// AuthenticateRecoverySession is the exported wrapper of
+// authenticateRecoverySessionContext for token-driven bare-metal recovery
+// (W04a): breeze-backup rebuild --token calls this to fetch a fresh
+// bootstrap (device/snapshot/provider access + the Recovery binding) for an
+// already-minted recovery token.
+func AuthenticateRecoverySession(ctx context.Context, serverURL, token string) (*BootstrapResponse, error) {
+	return authenticateRecoverySessionContext(ctx, serverURL, token)
+}
+
+// NewRecoveryProvider builds the backup provider that downloads snapshot
+// content through the server's authenticated recovery-download proxy,
+// exactly like RunRecoveryWithTokenContext's own bootstrap.Download branch
+// above. Returns an error when the bootstrap carries no download descriptor
+// (a token authenticated against a provider config the helper must build
+// itself instead — not the bare-metal recovery path).
+func NewRecoveryProvider(ctx context.Context, serverURL, token string, bs *BootstrapResponse) (providers.BackupProvider, error) {
+	if bs == nil || bs.Download == nil {
+		return nil, fmt.Errorf("bmr: bootstrap has no download descriptor")
+	}
+	return newRecoveryDownloadProvider(ctx, serverURL, token, bs.Download), nil
+}
+
 func authenticateRecoverySessionContext(ctx context.Context, serverURL, token string) (*BootstrapResponse, error) {
 	payload, err := json.Marshal(map[string]string{"token": token})
 	if err != nil {

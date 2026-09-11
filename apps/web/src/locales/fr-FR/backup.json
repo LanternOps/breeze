@@ -871,5 +871,31 @@
     "deleteConfirmBody": "Supprimer « {{name}} » ? Cette action est irréversible.",
     "deleteInUse_one": "Ce profil est utilisé par {{count}} politique de configuration. Dissociez-le d'abord à cet endroit.",
     "deleteInUse_other": "Ce profil est utilisé par {{count}} politiques de configuration. Dissociez-le d'abord à cet endroit."
+  },
+  "bareMetalRecovery": {
+    "title": "Récupération sur métal nu",
+    "description": "Créez un code de récupération à usage unique pour reconstruire une machine entière à partir d'un instantané sur du matériel neuf ou réparé.",
+    "snapshotLabel": "Instantané",
+    "selectSnapshotPlaceholder": "Sélectionnez un instantané…",
+    "selectSnapshotFirst": "Sélectionnez d'abord un instantané.",
+    "identityLabel": "Identité de l'appareil",
+    "identityOriginal": "Appareil d'origine (conserver l'identité de cet appareil)",
+    "identityNew": "Nouvel appareil (inscrire comme nouvel appareil)",
+    "createButton": "Créer un code de récupération",
+    "createFailed": "Échec de la création de la récupération.",
+    "codeInstructions": "Saisissez ce code lorsque le support de récupération Breeze vous le demande. Il expire dans 15 minutes et ne peut être utilisé qu'une seule fois.",
+    "codeExpires": "Expire à {{time}}",
+    "overdueNotice": "Aucune confirmation pour l'instant — consultez la console de récupération.",
+    "statusFailed": "Échec de la récupération",
+    "statusRefused": "Récupération refusée",
+    "status": {
+      "created": "Créée",
+      "media_booted": "Support démarré",
+      "planned": "Planifiée",
+      "restoring": "Restauration en cours",
+      "validated": "Validée",
+      "rebooted": "Redémarrée",
+      "checked_in": "Confirmée"
+    }
   }
 }

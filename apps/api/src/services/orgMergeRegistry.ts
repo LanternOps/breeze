@@ -565,6 +565,7 @@ const REPOINT_TABLES: readonly string[] = [
   "backup_sla_events",
   "backup_snapshots",
   "backup_verifications",
+  "bare_metal_recoveries",
   "brain_device_context",
   "browser_extensions",
   "browser_policies",
