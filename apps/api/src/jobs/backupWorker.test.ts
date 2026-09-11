@@ -870,12 +870,25 @@ describe('processDispatchBackup — approval_generation mismatch (site-ceiling g
         rows = [{ agentId: 'agent-1' }];
       } else if (keys.includes('featureLinkId')) {
         rows = [{ featureLinkId: null, backupMode: 'file', modeTargets: { paths: ['/data'] } }];
+      } else if (keys.length === 2 && keys.includes('id') && keys.includes('snapshotId')) {
+        // D18 W01: stampDispatchPinAndIdentity's base-candidate lookup —
+        // no eligible base for these generation-gate tests (irrelevant to
+        // what this describe block asserts).
+        rows = [];
+      } else if (keys.length === 1 && keys[0] === 'id') {
+        rows = [];
       } else {
         throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
       }
+      const limitFn = vi.fn().mockResolvedValue(rows);
       return {
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+          innerJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: limitFn }) }),
+            }),
+          }),
+          where: vi.fn().mockReturnValue({ limit: limitFn, for: limitFn }),
         }),
       };
     }) as never);
