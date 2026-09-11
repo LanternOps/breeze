@@ -8,15 +8,10 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
 }));
 
-vi.mock('./adapter', () => ({
-  getGrantBreezeMeta: vi.fn(),
-}));
-
 vi.mock('./partnerScopePolicy', () => ({
   getPartnerScopePolicy: vi.fn(),
 }));
 
-import { getGrantBreezeMeta } from './adapter';
 import { getPartnerScopePolicy } from './partnerScopePolicy';
 import {
   ALL_MCP_SCOPES,
@@ -26,8 +21,43 @@ import {
 } from './effectiveScopes';
 
 const selectMock = vi.mocked(db.select);
-const getGrantBreezeMetaMock = vi.mocked(getGrantBreezeMeta);
 const getPartnerScopePolicyMock = vi.mocked(getPartnerScopePolicy);
+
+/**
+ * Walk a drizzle `where` clause and report BOTH the columns it references and
+ * the raw operator fragments it renders. Asserting on the clause's own
+ * structure (rather than on a stringified predicate, or on the stubbed query
+ * result) keeps this independent of drizzle's SQL rendering and immune to the
+ * deep-search false positive where a bound enum's `enumValues` matches a
+ * literal you were looking for.
+ *
+ * Columns alone are not enough: `expires_at <= now` references the same column
+ * as `expires_at >= now` and inverts the security meaning. The operator
+ * fragments pin the direction.
+ */
+function inspectWhere(clause: unknown): { columns: string[]; sql: string } {
+  const columns: string[] = [];
+  const fragments: string[] = [];
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== 'object') return;
+    const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+    if (Array.isArray(chunks)) {
+      chunks.forEach(visit);
+      return;
+    }
+    const { name, table, value } = node as { name?: unknown; table?: unknown; value?: unknown };
+    if (typeof name === 'string' && table) {
+      columns.push(name);
+      return;
+    }
+    // StringChunk holds the literal SQL between interpolations.
+    if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
+      fragments.push(...(value as string[]));
+    }
+  };
+  visit(clause);
+  return { columns, sql: fragments.join('').toLowerCase().replace(/\s+/g, ' ') };
+}
 
 function mockSelectRow(row: unknown) {
   const limit = vi.fn(async () => (row === undefined ? [] : [row]));
@@ -48,7 +78,6 @@ function mockSelectError(err: unknown) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  getGrantBreezeMetaMock.mockReturnValue(undefined);
   getPartnerScopePolicyMock.mockResolvedValue({});
 });
 
@@ -57,17 +86,19 @@ afterEach(() => {
 });
 
 describe('resolveGrantContext', () => {
-  it('returns context from the in-memory cache without touching the DB (fast path)', async () => {
-    getGrantBreezeMetaMock.mockReturnValue({ partner_id: 'partner-1', org_id: 'org-1' });
+  it('always reads the durable row — there is no process-local tenancy fast path', async () => {
+    // Any cached answer outlives its Grant's revoked_at transition, so tenancy
+    // may only come from the row. The in-memory side cache this used to consult
+    // has been deleted outright; this pins that the lookup still happens.
+    mockSelectRow({ partnerId: 'partner-1', orgId: 'org-1' });
 
     const context = await resolveGrantContext('grant-1');
 
     expect(context).toEqual({ grantId: 'grant-1', partnerId: 'partner-1', orgId: 'org-1' });
-    expect(selectMock).not.toHaveBeenCalled();
+    expect(selectMock).toHaveBeenCalledOnce();
   });
 
   it('cache miss: loads the oauth_grants row and returns its durable tenancy', async () => {
-    getGrantBreezeMetaMock.mockReturnValue(undefined);
     mockSelectRow({ partnerId: 'partner-2', orgId: null });
 
     const context = await resolveGrantContext('grant-2');
@@ -77,7 +108,6 @@ describe('resolveGrantContext', () => {
   });
 
   it('cache miss + grant row does not exist: returns null (not a tenancy failure)', async () => {
-    getGrantBreezeMetaMock.mockReturnValue(undefined);
     mockSelectRow(undefined);
 
     const context = await resolveGrantContext('grant-missing');
@@ -85,15 +115,30 @@ describe('resolveGrantContext', () => {
     expect(context).toBeNull();
   });
 
+  it('constrains the lookup to unrevoked, unexpired Grants (revoked rows never match)', async () => {
+    const { where } = mockSelectRow(undefined);
+
+    await expect(resolveGrantContext('grant-revoked')).resolves.toBeNull();
+
+    const { columns, sql } = inspectWhere((where.mock.calls as unknown as unknown[][])[0]?.[0]);
+    expect(columns).toContain(oauthGrants.id.name);
+    expect(columns).toContain(oauthGrants.revokedAt.name);
+    expect(columns).toContain(oauthGrants.expiresAt.name);
+    // Direction matters as much as the column: `revoked_at IS NOT NULL` or
+    // `expires_at <= now` would reference the same two columns and mean the
+    // opposite thing.
+    expect(sql).toContain('is null');
+    expect(sql).toContain('>=');
+    expect(sql).not.toContain('is not null');
+  });
+
   it('cache miss + row exists with NULL partnerId: throws GrantTenancyError (fail closed — the -02 bug)', async () => {
-    getGrantBreezeMetaMock.mockReturnValue(undefined);
     mockSelectRow({ partnerId: null, orgId: null });
 
     await expect(resolveGrantContext('grant-orphaned')).rejects.toThrow(GrantTenancyError);
   });
 
   it('propagates a DB lookup failure rather than falling back to null (fail closed)', async () => {
-    getGrantBreezeMetaMock.mockReturnValue(undefined);
     const dbErr = new Error('connection refused');
     mockSelectError(dbErr);
 
@@ -101,7 +146,6 @@ describe('resolveGrantContext', () => {
   });
 
   it('exits request DB context before opening system DB context (mirrors adapter.ts convention)', async () => {
-    getGrantBreezeMetaMock.mockReturnValue(undefined);
     mockSelectRow({ partnerId: 'partner-4', orgId: null });
 
     await resolveGrantContext('grant-4');

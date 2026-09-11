@@ -1,7 +1,6 @@
-import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthGrants } from '../db/schema';
-import { getGrantBreezeMeta } from './adapter';
+import { activeGrantCondition } from './grantStatus';
 import { getPartnerScopePolicy } from './partnerScopePolicy';
 import { ERROR_IDS, logOauthError } from './log';
 
@@ -39,12 +38,10 @@ export class GrantTenancyError extends Error {
 /**
  * The single authoritative source of a Grant's durable tenancy.
  *
- * Fast path: the in-memory `grantBreezeMeta` cache populated by the consent
- * route (same-process, warm). On a cache miss (e.g. a different process, or
- * an API restart between consent and the next token/refresh exchange) this
- * loads the `oauth_grants` row directly — that row is written durably by
- * `setGrantBreezeMeta` before the consent route ever resumes the
- * interaction, so it is authoritative regardless of process lifetime.
+ * Always loads `oauth_grants` durably. Process-local tenancy metadata is not
+ * an authorization source: it can outlive a Grant's revoked_at transition.
+ * The row is written by `setGrantBreezeMeta` before the consent route resumes
+ * and the query also requires the Grant to be unrevoked and unexpired.
  *
  * Returns `null` only when the grant row itself does not exist (e.g. it was
  * cleaned up / never created — not a tenancy failure). Throws
@@ -55,18 +52,13 @@ export class GrantTenancyError extends Error {
  * MCP scope after a restart cleared the process-local cache).
  */
 export async function resolveGrantContext(grantId: string): Promise<OAuthGrantContext | null> {
-  const cached = getGrantBreezeMeta(grantId);
-  if (cached) {
-    return { grantId, partnerId: cached.partner_id, orgId: cached.org_id };
-  }
-
   let row: { partnerId: string | null; orgId: string | null } | undefined;
   try {
     row = await asSystem(async () => {
       const [r] = await db
         .select({ partnerId: oauthGrants.partnerId, orgId: oauthGrants.orgId })
         .from(oauthGrants)
-        .where(eq(oauthGrants.id, grantId))
+        .where(activeGrantCondition(grantId, new Date()))
         .limit(1);
       return r;
     });
