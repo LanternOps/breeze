@@ -326,6 +326,7 @@ export default function AiChatMessages({
           onReject={() => onReject(pendingApproval.executionId)}
           intentBacked={pendingApproval.intentBacked}
           selfApprovalRequestId={pendingApproval.selfApprovalRequestId}
+          approvalScope={pendingApproval.approvalScope}
           intentExpiresAt={pendingApproval.intentExpiresAt}
           scriptRunContext={pendingApproval.scriptRunContext}
           onIntentDecided={onIntentDecided}

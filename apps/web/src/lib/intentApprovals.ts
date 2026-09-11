@@ -1,3 +1,4 @@
+import type { AiApprovalScope } from '@breeze/shared';
 import { fetchWithAuth } from '../stores/auth';
 import {
   AssertionChallengeError,
@@ -6,6 +7,7 @@ import {
 } from '../stores/authenticator';
 import { i18n } from './i18n';
 import { ActionError, runAction } from './runAction';
+import { showToast } from '../components/shared/Toast';
 
 export type IntentDecisionOutcome = 'decided' | 'needs_device' | 'not_sole_approver';
 
@@ -150,11 +152,23 @@ export function batchDecideErrorCopy(token: string): string | undefined {
 
 /**
  * Decide the viewer's own fanned-out approval row for a Tier-3 action intent
- * (the inline chat self-approve, sole-operator case). Approve runs the
- * WebAuthn (Touch ID / Windows Hello) ceremony first — the server's L3
- * self-approve gate refuses a proofless approve — then POSTs the proof to the
- * existing decide endpoint. Deny needs no proof, skips the ceremony, and may
- * carry the optional reason collected by the approvals inbox.
+ * (the inline chat self-approve, sole-operator case).
+ *
+ * Approve runs the WebAuthn (Touch ID / Windows Hello) ceremony first and
+ * POSTs the proof — EXCEPT when `approvalScope` is `'supervised'` (#5600). The
+ * 2026-08-05 supervised/four-eyes split moved the L3 sole-operator requirement
+ * to `four_eyes` only: `decideApprovalRequest.ts` skips the assurance ladder
+ * for a supervised self-decide under a non-enforcing partner policy, but ONLY
+ * when no proof is presented (a presented proof is always verified, never
+ * discarded). So a client that always attaches a proof makes the server always
+ * run the ladder — which is why every supervised chat approve was still paying
+ * a passkey ceremony. Supervised therefore POSTs prooflessly first; an
+ * enforcing partner policy answers 403 `step_up_required`, and that — and only
+ * that — triggers exactly ONE retry with the ceremony. `four_eyes` and any
+ * unknown/absent scope keep the always-ceremony behaviour.
+ *
+ * Deny needs no proof under any scope, skips the ceremony, and may carry the
+ * optional reason collected by the approvals inbox.
  *
  * Returns 'needs_device' when no approver device is registered (before any
  * network write) or when the server answers `step_up_required` — the caller
@@ -181,34 +195,102 @@ export async function decideIntentApproval(
   approvalRequestId: string,
   decision: 'approve' | 'deny',
   reason?: string,
+  approvalScope?: AiApprovalScope | null,
 ): Promise<IntentDecisionOutcome> {
   const body: Record<string, unknown> = {};
+  // Only an APPROVE of a supervised row may go prooflessly; deny never carries
+  // a proof anyway, and an unknown scope must fall back to the strict path.
+  const supervisedApprove = decision === 'approve' && approvalScope === 'supervised';
 
-  if (decision === 'approve') {
+  /** Runs the ceremony into `body.proof`. Returns a terminal outcome when the
+   *  viewer has no approver device; throws CeremonyError on a real failure. */
+  const collectProof = async (): Promise<'needs_device' | null> => {
     try {
       body.proof = await getApprovalAssertion('/mobile/approvals', approvalRequestId);
+      return null;
     } catch (err) {
       // No registered approver device → return the CTA signal instead of
       // POSTing. Unlike PamRespondModal, we do NOT submit without a proof:
-      // the self-approve gate requires L3.
+      // the four_eyes self-approve gate requires L3.
       if (isNoApproverDeviceError(err)) return 'needs_device';
       throw new CeremonyError(err);
     }
-  } else if (reason?.trim()) {
+  };
+
+  if (decision === 'approve' && !supervisedApprove) {
+    const noDevice = await collectProof();
+    if (noDevice) return noDevice;
+  } else if (decision === 'deny' && reason?.trim()) {
     body.reason = reason.trim();
+  }
+
+  // The supervised optimistic attempt runs OUTSIDE runAction so a 403
+  // `step_up_required` can be retried silently: runAction toasts every failure
+  // it sees, and telling the user "register a device" a beat before the
+  // approval succeeds would be a lie. Whatever response survives this block is
+  // handed to runAction untouched (the token is read off a clone, so the body
+  // is still unconsumed) — success toast, error toast and outcome mapping all
+  // stay in exactly one place.
+  let settledResponse: Response | undefined;
+  if (supervisedApprove) {
+    let firstAttempt: Response;
+    try {
+      // runaction-exempt: the optimistic proofless attempt (#5600). runAction
+      // toasts every failure it sees, and a 403 `step_up_required` here is
+      // RETRIED with the ceremony — toasting "register a device" a beat before
+      // the approval succeeds would be a lie. Nothing is swallowed: every other
+      // response is handed to the runAction call below untouched, and the catch
+      // below reproduces runAction's own transport-error toast.
+      firstAttempt = await fetchWithAuth(`/mobile/approvals/${approvalRequestId}/approve`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        skipUnauthorizedRetry: true,
+      });
+    } catch {
+      // A THROW (network failure, a lapsed refresh in fetchWithAuth) never
+      // reaches runAction on this branch, so reproduce its own transport-error
+      // shape here rather than letting the rejection escape untoasted — the
+      // one failure mode this optimistic attempt could otherwise report only
+      // as inline card text. Never retried: the POST may have been received.
+      const message = i18n.t('ai:aiApprovalDialog.decideFailed');
+      showToast({ message, type: 'error' });
+      throw new ActionError(message, 0);
+    }
+    if (firstAttempt.status === 403) {
+      const token = await firstAttempt
+        .clone()
+        .json()
+        .then((data: unknown) =>
+          data && typeof data === 'object' ? (data as { error?: unknown }).error : undefined,
+        )
+        .catch(() => undefined);
+      if (token === 'step_up_required') {
+        // Enforcing partner authenticator policy: the step-up floor stands and
+        // the viewer can satisfy it. Exactly one retry, with the ceremony.
+        const noDevice = await collectProof();
+        if (noDevice) return noDevice;
+      } else {
+        settledResponse = firstAttempt;
+      }
+    } else {
+      settledResponse = firstAttempt;
+    }
   }
 
   try {
     await runAction({
       // Kept inline rather than hoisted: the no-silent-mutations guard walks
       // parents for an enclosing runAction call, so a hoisted thunk reads as an
-      // unwrapped mutation even when passed straight in.
+      // unwrapped mutation even when passed straight in. `settledResponse` is
+      // the supervised attempt above, already made and still unread.
       request: () =>
-        fetchWithAuth(`/mobile/approvals/${approvalRequestId}/${decision}`, {
-          method: 'POST',
-          body: JSON.stringify(body),
-          skipUnauthorizedRetry: true,
-        }),
+        settledResponse
+          ? Promise.resolve(settledResponse)
+          : fetchWithAuth(`/mobile/approvals/${approvalRequestId}/${decision}`, {
+              method: 'POST',
+              body: JSON.stringify(body),
+              skipUnauthorizedRetry: true,
+            }),
       errorFallback: i18n.t('ai:aiApprovalDialog.decideFailed'),
       // NO onUnauthorized here, deliberately. `treatUnauthorizedAsError` makes
       // runAction skip its 401 branch entirely, so the callback would be dead

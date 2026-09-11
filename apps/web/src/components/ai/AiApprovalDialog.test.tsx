@@ -120,7 +120,7 @@ describe('intent-backed self-approve (sole operator)', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: /approve/i }));
     await waitFor(() => expect(onIntentDecided).toHaveBeenCalled());
-    expect(decideIntentApproval).toHaveBeenCalledWith('ap-1', 'approve');
+    expect(decideIntentApproval).toHaveBeenCalledWith('ap-1', 'approve', undefined, undefined);
     // Does not sit frozen on a disabled "Waiting for verification…" button if
     // the parent's pendingApproval clear lags or never lands.
     expect(screen.queryByText(/waiting for verification/i)).toBeNull();
@@ -168,7 +168,7 @@ describe('intent-backed self-approve (sole operator)', () => {
     decideIntentApproval.mockResolvedValueOnce('decided');
     fireEvent.click(screen.getByRole('button', { name: /deny/i }));
     await waitFor(() => expect(onIntentDecided).toHaveBeenCalled());
-    expect(decideIntentApproval).toHaveBeenLastCalledWith('ap-1', 'deny');
+    expect(decideIntentApproval).toHaveBeenLastCalledWith('ap-1', 'deny', undefined, undefined);
   });
 
   it('deny → terminal confirmation reads "Action denied", not "Action approved"', async () => {
@@ -329,7 +329,27 @@ describe('intent-backed self-approve (sole operator)', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: /deny/i }));
     await waitFor(() => expect(onIntentDecided).toHaveBeenCalled());
-    expect(decideIntentApproval).toHaveBeenCalledWith('ap-1', 'deny');
+    expect(decideIntentApproval).toHaveBeenCalledWith('ap-1', 'deny', undefined, undefined);
+  });
+
+  // #5600 — the scope is what tells the decide helper whether a passkey
+  // ceremony is required at all. A card that forwards nothing makes every
+  // supervised self-approve pay a ceremony the server stopped asking for.
+  it('forwards approvalScope to decideIntentApproval', async () => {
+    decideIntentApproval.mockResolvedValue('decided');
+    const onIntentDecided = vi.fn();
+    render(
+      <AiApprovalDialog
+        {...selfProps}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        approvalScope="supervised"
+        onIntentDecided={onIntentDecided}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }));
+    await waitFor(() => expect(onIntentDecided).toHaveBeenCalled());
+    expect(decideIntentApproval).toHaveBeenCalledWith('ap-1', 'approve', undefined, 'supervised');
   });
 
   it('disables both buttons while the ceremony is in flight', async () => {

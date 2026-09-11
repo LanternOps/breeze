@@ -1,4 +1,4 @@
-import type { AiStreamEvent, AiApprovalMode, ActionPlanStep, AiScriptRunContext } from '@breeze/shared';
+import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext } from '@breeze/shared';
 
 export interface AiMessage {
   id: string;
@@ -38,6 +38,16 @@ export interface PendingApproval {
   intentBacked?: boolean;
   /** Set when the viewer (requester) holds the fanned-out approval row — enables inline L3 self-approve. */
   selfApprovalRequestId?: string;
+  /**
+   * The intent's approval scope as classified server-side (#5600). `'supervised'`
+   * means the viewer's self-approve IS the whole authorization, and the server
+   * no longer requires an L3 proof for it — so the card decides prooflessly and
+   * only runs the passkey ceremony if an enforcing partner policy asks for it.
+   * `'four_eyes'` (and an absent scope, on older servers) keeps the always-L3
+   * behaviour. Never defaulted here: inventing a value would drop the proof
+   * from a four_eyes self-approve.
+   */
+  approvalScope?: AiApprovalScope;
   /** The intent's real server-side expiry (ISO), so the self-approve countdown reflects actual deadline. */
   intentExpiresAt?: string;
   /**
@@ -179,6 +189,7 @@ export function processStreamEvent(
           deviceContext: event.deviceContext,
           intentBacked: event.intentBacked,
           selfApprovalRequestId: event.selfApprovalRequestId,
+          approvalScope: event.approvalScope,
           intentExpiresAt: event.intentExpiresAt,
           scriptRunContext: event.scriptRunContext ?? null,
         }
