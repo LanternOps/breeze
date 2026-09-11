@@ -167,6 +167,8 @@ export const TIER2_READONLY_TOOLS = new Set<string>([
   'get_invoice',
   'get_quote',
   'list_contracts',
+  // Deliverable template sets W05 (#5573): a pure read, like list_contracts.
+  'list_deliverable_templates',
   'list_invoices',
   'list_quotes',
   'lookup_distributor_product',
@@ -190,6 +192,10 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // `list` was deliberately downgraded to Tier 2 (2026-07-20) — recon-only.
   file_operations: ['read', 'write', 'delete', 'mkdir', 'rename'],
   manage_services: ['start', 'stop', 'restart'],
+  // Applying a deliverable template set arms unattended ticket creation for
+  // every future period of every applied item — same class as
+  // manage_software_policies create/update (#3552). W05 (#5573).
+  manage_deliverables: ['apply_template'],
   security_scan: ['quarantine', 'remove', 'restore'],
   disk_cleanup: ['execute'],
   manage_startup_items: ['disable', 'enable'],
@@ -434,6 +440,11 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_startup_items: ['disable', 'enable'],
   manage_scheduled_tasks: ['run', 'disable', 'enable'],
   manage_configuration_policy: ['create', 'update', 'delete'],
+  // W05 (#5573). `supervised`, not four_eyes: applying a template set creates
+  // ordinary org config (a recurring obligation schedule) that a tech can
+  // deactivate afterwards. Nothing here is externally binding, financial, or
+  // state-destroying — the four_eyes classes above.
+  manage_deliverables: ['apply_template'],
   manage_deployments: ['create', 'start', 'cancel'],
   manage_patches: ['install', 'setup_auto_approval'],
   manage_groups: ['create', 'update', 'delete'],
@@ -705,6 +716,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // the REST routes for deliverables AND key dates gate on contracts:read /
   // contracts:write, and the AI door must not disagree with the HTTP door.
   list_deliverables: { resource: 'contracts', action: 'read' },
+  list_deliverable_templates: { resource: 'contracts', action: 'read' },
   manage_deliverables: {
     create: { resource: 'contracts', action: 'write' },
     update: { resource: 'contracts', action: 'write' },
@@ -714,6 +726,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     reopen: { resource: 'contracts', action: 'write' },
     reschedule: { resource: 'contracts', action: 'write' },
     link_evidence: { resource: 'contracts', action: 'write' },
+    // `manage`, not `write`: applying a template stands up a whole schedule at
+    // once, matching the contracts lifecycle actions above.
+    apply_template: { resource: 'contracts', action: 'manage' },
   },
   manage_key_dates: {
     list: { resource: 'contracts', action: 'read' },

@@ -264,6 +264,9 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   // contract promises, and the org key dates beside them — same commercial
   // capability as the contracts they hang off.
   list_deliverables: 'business',
+  // Deliverable template sets W05 (#5573): the reusable service tier behind
+  // those deliverables - same commercial capability.
+  list_deliverable_templates: 'business',
   manage_deliverables: 'business',
   manage_key_dates: 'business',
   manage_catalog: 'business',

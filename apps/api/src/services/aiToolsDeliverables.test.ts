@@ -50,18 +50,22 @@ describe('deliverable AI tools — registration (#5573 spec §10)', () => {
     }
   });
 
-  it('exposes every manage action and NOT apply_template (that is W05)', () => {
-    expect(toolInputSchemas.manage_deliverables!.safeParse({ action: 'apply_template' }).success).toBe(false);
+  it('exposes every manage action, including W05 apply_template', () => {
+    expect(toolInputSchemas.manage_deliverables!.safeParse({ action: 'apply_template' }).success).toBe(true);
     const perms = TOOL_PERMISSIONS.manage_deliverables as Record<string, unknown>;
     for (const a of MANAGE_ACTIONS) expect(perms[a], `no permission for ${a}`).toEqual({ resource: 'contracts', action: 'write' });
-    expect(perms.apply_template).toBeUndefined();
+    // W05: a whole schedule at once, so `manage` rather than `write`.
+    expect(perms.apply_template).toEqual({ resource: 'contracts', action: 'manage' });
     const keyDatePerms = TOOL_PERMISSIONS.manage_key_dates as Record<string, unknown>;
     for (const a of KEY_DATE_ACTIONS) expect(keyDatePerms[a], `no permission for ${a}`).toBeDefined();
     expect(TOOL_PERMISSIONS.list_deliverables).toEqual({ resource: 'contracts', action: 'read' });
   });
 
-  it('is not approval-gated', () => {
-    for (const n of NAMES) expect((TIER3_ACTIONS as Record<string, unknown>)[n]).toBeUndefined();
+  it('only apply_template is approval-gated (W05)', () => {
+    for (const n of NAMES) {
+      const gated = (TIER3_ACTIONS as Record<string, string[] | undefined>)[n] ?? [];
+      expect(gated, `unexpected tier-3 actions on ${n}`).toEqual(n === 'manage_deliverables' ? ['apply_template'] : []);
+    }
   });
 });
 

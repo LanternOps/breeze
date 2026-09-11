@@ -215,6 +215,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'google_security_drift',
   'list_configuration_policies',
   'list_contracts',
+  'list_deliverable_templates',
   'list_invoices',
   'list_organizations',
   'list_playbooks',

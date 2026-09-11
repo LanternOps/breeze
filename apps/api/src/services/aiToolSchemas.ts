@@ -478,11 +478,18 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     occurrencesFor: uuid.optional(),
   }),
 
+  // Deliverable template sets W05 (#5573 spec 4.6/10).
+  list_deliverable_templates: z.object({ orgId: uuid.optional() }),
+
   manage_deliverables: z.object({
-    action: z.enum(['create', 'update', 'deactivate', 'deliver', 'waive', 'reopen', 'reschedule', 'link_evidence']),
+    action: z.enum(['create', 'update', 'deactivate', 'deliver', 'waive', 'reopen', 'reschedule', 'link_evidence', 'apply_template']),
     orgId: uuid.optional(),
     deliverableId: uuid.optional(),
     occurrenceId: uuid.optional(),
+    setId: uuid.optional(),
+    contractId: uuid.optional(),
+    effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    ownerUserId: uuid.optional(),
     input: z.record(z.string(), z.unknown()).optional(),
     patch: z.record(z.string(), z.unknown()).optional(),
     note: z.string().max(4000).optional(),
