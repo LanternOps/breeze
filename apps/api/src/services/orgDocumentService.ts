@@ -334,11 +334,18 @@ export async function deleteDocument(orgId: string, id: string, actor: Deliverab
     .returning({ id: orgDocuments.id });
 }
 
-export async function streamDocument(orgId: string, id: string, actor: DeliverableActor): Promise<{
+/** Strong ETag for a document version: its content digest, quoted. */
+export const documentEtag = (sha256: string): string => `"${sha256}"`;
+
+export async function streamDocument(
+  orgId: string, id: string, actor: DeliverableActor, opts: { ifNoneMatch?: string | null } = {},
+): Promise<{
   view: OrgDocumentView;
   contentType: string;
   originalFilename: string;
   sha256: string;
+  /** True when `opts.ifNoneMatch` matched: `body` is null and nothing was read. */
+  notModified: boolean;
   body: Readable | Buffer | null;
   contentLength: number | null;
 }> {
@@ -351,6 +358,13 @@ export async function streamDocument(orgId: string, id: string, actor: Deliverab
   if (!row) throw notFound();
   const { storageBackend, storageKey, ...meta } = row;
   const view = toView(meta, await successorOf(orgId, id));
+  const base = { view, contentType: meta.contentType, originalFilename: meta.originalFilename, sha256: meta.sha256 };
+
+  // Short-circuit BEFORE opening the bytes — a 304 that still fetched from the
+  // object store is a silent egress bill.
+  if (opts.ifNoneMatch && opts.ifNoneMatch === documentEtag(meta.sha256)) {
+    return { ...base, notModified: true, body: null, contentLength: null };
+  }
 
   // An s3 row never pulls the bytea column; a db row reads it on this path only.
   let data: Buffer | null = null;
@@ -360,7 +374,7 @@ export async function streamDocument(orgId: string, id: string, actor: Deliverab
   }
   try {
     const { body, contentLength } = await getBlobStream({ storageBackend, storageKey: storageBackend === 's3' ? storageKey : null, data });
-    return { view, contentType: meta.contentType, originalFilename: meta.originalFilename, sha256: meta.sha256, body, contentLength };
+    return { ...base, notModified: false, body, contentLength };
   } catch (err) {
     if (err instanceof BlobStorageError) throw storageUnavailable();
     throw err;

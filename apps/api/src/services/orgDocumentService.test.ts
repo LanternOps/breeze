@@ -370,6 +370,24 @@ describe('orgDocumentService (service deliverables W03)', () => {
       expect(res).toMatchObject({ contentType: 'application/pdf', originalFilename: 'runbook.pdf', sha256: 'a'.repeat(64) });
     });
 
+    it('a matching If-None-Match short-circuits BEFORE the bytes are opened (no bucket egress)', async () => {
+      queueResult([{ ...docRow(), storageBackend: 's3', storageKey: 'org-documents/d1' }]);
+      queueResult([]);
+      const res = await streamDocument('org1', 'd1', actor, { ifNoneMatch: `"${'a'.repeat(64)}"` });
+      expect(res.notModified).toBe(true);
+      expect(res.body).toBeNull();
+      expect(getBlobStream).not.toHaveBeenCalled();
+    });
+
+    it('a stale If-None-Match still streams', async () => {
+      queueResult([{ ...docRow(), storageBackend: 's3', storageKey: 'org-documents/d1' }]);
+      queueResult([]);
+      getBlobStream.mockResolvedValueOnce({ body: Buffer.from('x'), contentLength: 1 });
+      const res = await streamDocument('org1', 'd1', actor, { ifNoneMatch: '"stale"' });
+      expect(res.notModified).toBe(false);
+      expect(getBlobStream).toHaveBeenCalledTimes(1);
+    });
+
     it('reads inline bytes for a db row', async () => {
       queueResult([{ ...docRow(), storageBackend: 'db', storageKey: null }]);
       queueResult([]);
