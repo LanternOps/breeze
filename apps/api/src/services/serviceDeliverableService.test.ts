@@ -37,7 +37,7 @@ import { db } from '../db';
 import {
   addEvidence, createDeliverable, deactivateDeliverable, deliverOccurrence, getDeliverable, listOccurrences,
   materializeOccurrences, openOccurrence, markOccurrenceMissed, applyTicketStatusChange, markDueOccurrencesMissedForDeliverable,
-  openDueOccurrencesForDeliverable, periodLabel,
+  openDueOccurrencesForDeliverable, periodLabel, applyContractCancelledToDeliverables,
   removeEvidence, reopenOccurrence, rescheduleOccurrence, summarizeStatus, updateDeliverable, waiveOccurrence,
   DeliverableServiceError,
 } from './serviceDeliverableService';
@@ -717,6 +717,46 @@ describe('serviceDeliverableService', () => {
       const params = updateWhereParams();
       expect(params).toEqual(expect.arrayContaining(['d1', 'open', 'awaiting_evidence', '2026-10-11']));
       expect(params).not.toContain('scheduled');
+    });
+  });
+
+  describe('applyContractCancelledToDeliverables (spec §5.4)', () => {
+    it('closes the effective window of every open-ended deliverable on the contract', async () => {
+      queueResult([{ id: 'c1', status: 'cancelled' }]); queueResult([{ id: 'd1' }, { id: 'd2' }]);
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        expect(await applyContractCancelledToDeliverables('c1', '2026-09-10')).toBe(2);
+      } finally { log.mockRestore(); }
+      expect(lastSet()).toMatchObject({ effectiveUntil: '2026-09-10' });
+      expect(updateWhereParams()).toContain('c1');
+    });
+
+    it('does nothing when the contract is no longer cancelled (a replayed or reversed event)', async () => {
+      queueResult([{ id: 'c1', status: 'active' }]);
+      expect(await applyContractCancelledToDeliverables('c1', '2026-09-10')).toBe(0);
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('does nothing for a paused or expired contract (neither ends the service)', async () => {
+      queueResult([{ id: 'c1', status: 'paused' }]);
+      expect(await applyContractCancelledToDeliverables('c1', '2026-09-10')).toBe(0);
+      queueResult([{ id: 'c1', status: 'expired' }]);
+      expect(await applyContractCancelledToDeliverables('c1', '2026-09-10')).toBe(0);
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('does nothing for a contract that no longer exists', async () => {
+      queueResult([]);
+      expect(await applyContractCancelledToDeliverables('gone', '2026-09-10')).toBe(0);
+    });
+
+    it('never overwrites an effective_until the MSP already set', async () => {
+      queueResult([{ id: 'c1', status: 'cancelled' }]); queueResult([]);   // IS NULL predicate matched nothing
+      expect(await applyContractCancelledToDeliverables('c1', '2026-09-10')).toBe(0);
+      const { PgDialect } = await import('drizzle-orm/pg-core');
+      const setOrder = chain.set.mock.invocationCallOrder.at(-1)!;
+      const i = chain.where.mock.invocationCallOrder.findIndex((o) => o > setOrder);
+      expect(new PgDialect().sqlToQuery(chain.where.mock.calls[i]![0] as SQL).sql).toContain('"effective_until" is null');
     });
   });
 

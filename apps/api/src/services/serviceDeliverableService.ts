@@ -825,6 +825,37 @@ export async function markDueOccurrencesMissedForDeliverable(d: SweepDeliverable
     .returning({ id: serviceDeliverableOccurrences.id });
   return rows.length;
 }
-export async function applyContractCancelledToDeliverables(_contractId: string, _today: string): Promise<number> {
-  throw new Error('not implemented (W02)');
+/**
+ * Spec §5.4. A cancelled contract ends the service it paid for, so every
+ * deliverable still open-ended on it stops today. `paused` deliberately does
+ * nothing (a billing pause is not a service pause) and `expired` is ignored
+ * entirely (D1 — generateDueInvoice expires an annual-advance contract the day
+ * after its single invoice while service runs on).
+ *
+ * The contract's CURRENT status is re-read rather than trusted from the event:
+ * `contract-events` gained its first consumer in this wave, so the first
+ * deploy drains a historical backlog, and a cancel later reversed must not
+ * close a live deliverable. cancelContract stores no cancellation timestamp,
+ * so `today` is the processing date, not a back-date. Self-wrapping.
+ */
+export async function applyContractCancelledToDeliverables(contractId: string, today: string): Promise<number> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const [contract] = await db.select({ id: contracts.id, orgId: contracts.orgId, status: contracts.status })
+      .from(contracts).where(eq(contracts.id, contractId)).limit(1);
+    if (!contract || contract.status !== 'cancelled') return 0;
+
+    const updated = await db.update(serviceDeliverables)
+      .set({ effectiveUntil: today, updatedAt: new Date() })
+      .where(and(
+        eq(serviceDeliverables.contractId, contractId),
+        eq(serviceDeliverables.orgId, contract.orgId),
+        isNull(serviceDeliverables.effectiveUntil),
+      ))
+      .returning({ id: serviceDeliverables.id });
+    if (updated.length > 0) {
+      console.log('[deliverables] contract cancelled — closed effective window',
+        `contractId=${contractId}`, `deliverables=${updated.length}`, `effectiveUntil=${today}`);
+    }
+    return updated.length;
+  }, 'deliverables.contractCancelled'));
 }
