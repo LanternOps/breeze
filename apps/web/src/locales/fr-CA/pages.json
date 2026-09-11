@@ -214,6 +214,10 @@
       "sites": {
         "title": "Sites",
         "description": "Configurez les emplacements, les fuseaux horaires et les paramètres propres à chaque site."
+      },
+      "deliverableTemplates": {
+        "title": "Modèles de livrables",
+        "description": "Définissez un niveau de service une seule fois et appliquez ses livrables à n'importe quel client."
       }
     }
   },

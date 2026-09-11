@@ -214,6 +214,10 @@
       "sites": {
         "title": "Sites",
         "description": "Configure locais, fusos horários e configurações específicas de cada site."
+      },
+      "deliverableTemplates": {
+        "title": "Modelos de entregáveis",
+        "description": "Defina um nível de serviço uma vez e aplique seus entregáveis a qualquer cliente."
       }
     }
   },

@@ -68,9 +68,9 @@ const locale = Astro.locals.locale;
         data-deliverable-templates-settings-card
       >
         <div class="space-y-2">
-          <h2 class="text-lg font-semibold">Deliverable Templates</h2>
+          <h2 class="text-lg font-semibold">{tServer(locale, 'settingsIndex.cards.deliverableTemplates.title')}</h2>
           <p class="text-sm text-muted-foreground">
-            Define a service tier once and apply its deliverables to any customer.
+            {tServer(locale, 'settingsIndex.cards.deliverableTemplates.description')}
           </p>
         </div>
       </a>

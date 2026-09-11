@@ -214,6 +214,10 @@
       "sites": {
         "title": "Sitios",
         "description": "Configura ubicaciones, zonas horarias y ajustes específicos de cada sitio."
+      },
+      "deliverableTemplates": {
+        "title": "Plantillas de entregables",
+        "description": "Define un nivel de servicio una vez y aplica sus entregables a cualquier cliente."
       }
     }
   },

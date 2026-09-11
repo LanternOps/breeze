@@ -214,6 +214,10 @@
       "sites": {
         "title": "Standorte",
         "description": "Konfigurieren Sie Standorte, Zeitzonen und standortspezifische Einstellungen."
+      },
+      "deliverableTemplates": {
+        "title": "Leistungsvorlagen",
+        "description": "Definieren Sie eine Servicestufe einmal und wenden Sie ihre Leistungen auf jeden Kunden an."
       }
     }
   },
