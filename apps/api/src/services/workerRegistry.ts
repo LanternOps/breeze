@@ -874,14 +874,6 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    name: 'recoveryBootMediaWorker',
-    placement: 'global',
-    load: async () => {
-      const m = await import('../jobs/recoveryBootMediaWorker');
-      return { init: m.initializeRecoveryBootMediaWorker, shutdown: m.shutdownRecoveryBootMediaWorker };
-    },
-  },
-  {
     name: 'warrantyWorker',
     placement: 'global',
     load: async () => {

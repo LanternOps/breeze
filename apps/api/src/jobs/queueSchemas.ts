@@ -404,12 +404,6 @@ export const recoveryMediaQueueJobDataSchema = z.object({
   meta: queueActorMetaSchema.optional(),
 }).strict();
 
-export const recoveryBootMediaQueueJobDataSchema = z.object({
-  type: z.literal('build-boot-media'),
-  artifactId: z.string().min(1),
-  meta: queueActorMetaSchema.optional(),
-}).strict();
-
 export const vulnSourceSyncSchema = z.object({
   source: z.enum(['msrc', 'nvd', 'sofa', 'kev_epss']),
   month: z.string().optional(),
@@ -502,7 +496,6 @@ export type AgentNotifyRetryQueueJobData = z.infer<typeof agentNotifyRetryQueueJ
 export type FixWatchQueueJobData = z.infer<typeof fixWatchQueueJobDataSchema>;
 export type DrExecutionQueueJobData = z.infer<typeof drExecutionQueueJobDataSchema>;
 export type RecoveryMediaQueueJobData = z.infer<typeof recoveryMediaQueueJobDataSchema>;
-export type RecoveryBootMediaQueueJobData = z.infer<typeof recoveryBootMediaQueueJobDataSchema>;
 export type VulnSourceSyncJobData = z.infer<typeof vulnSourceSyncSchema>;
 export type QueueActorMeta = z.infer<typeof queueActorMetaSchema>;
 // Note: NOT named RouteEventJobData/DeliverEventJobData — those canonical

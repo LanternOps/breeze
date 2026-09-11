@@ -26,7 +26,7 @@ import {
 // This list is duplicated here deliberately — the whole point of the test is
 // to catch drift between the plan's documented contract and the actual
 // registry, so it must not import the list from the module under test.
-const EXPECTED_129_NAMES = [
+const EXPECTED_128_NAMES = [
   'alertWorkers', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
   'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
@@ -50,7 +50,7 @@ const EXPECTED_129_NAMES = [
   'maintenanceRebootWorker', 'backupWorker', 'sensitiveDataWorker', 'peripheralJobs',
   'deviceGroupJobs',
   'browserSecurityWorker', 'c2cBackupWorker', 'backupSlaWorker', 'drExecutionWorker',
-  'recoveryMediaWorker', 'recoveryBootMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
+  'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
   'incidentCorrelationWorker', 'incidentTimelineEnricher', 'incidentSlaMonitor', 'staleCommandReaper',
   'softwareDeploymentScheduler', 'pamJobs', 'approvalExpiryReaper', 'offboardingDrainReaper',
   'intentOutboxPublisher', 'aiOperatorTaskOutboxPublisher', 'aiOperatorTaskWorker',
@@ -65,12 +65,12 @@ const EXPECTED_129_NAMES = [
 ];
 
 describe('workerRegistry: losslessness', () => {
-  it('contains exactly the 129 known names, in order', () => {
-    expect(WORKER_REGISTRY.map((e) => e.name)).toEqual(EXPECTED_129_NAMES);
+  it('contains exactly the 128 known names, in order', () => {
+    expect(WORKER_REGISTRY.map((e) => e.name)).toEqual(EXPECTED_128_NAMES);
   });
 
-  it('has exactly 129 entries', () => {
-    expect(WORKER_REGISTRY.length).toBe(129);
+  it('has exactly 128 entries', () => {
+    expect(WORKER_REGISTRY.length).toBe(128);
   });
 
   it('every entry has a well-formed shape', () => {
@@ -90,14 +90,14 @@ describe('workerRegistry: losslessness', () => {
 
 describe('workerRegistry: selectWorkers', () => {
   it("'all' selects every entry", () => {
-    expect(selectWorkers('all').length).toBe(129);
+    expect(selectWorkers('all').length).toBe(128);
     expect(selectWorkers('all')).toEqual(WORKER_REGISTRY);
   });
 
   it("'api' and 'worker' partition the set with no overlap and no loss", () => {
     const api = selectWorkers('api');
     const worker = selectWorkers('worker');
-    expect(api.length + worker.length).toBe(129);
+    expect(api.length + worker.length).toBe(128);
 
     const apiNames = new Set(api.map((e) => e.name));
     const workerNames = new Set(worker.map((e) => e.name));
@@ -105,7 +105,7 @@ describe('workerRegistry: selectWorkers', () => {
       expect(workerNames.has(name)).toBe(false);
     }
     const union = new Set([...apiNames, ...workerNames]);
-    expect(union.size).toBe(129);
+    expect(union.size).toBe(128);
   });
 
   it("'api' selects only socket-owner placements", () => {

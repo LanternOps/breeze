@@ -235,7 +235,6 @@ vi.mock('../../services/recoveryDownloadService', () => ({
 }));
 
 const enqueueRecoveryMediaBuildMock = vi.fn(async () => 'recovery-media:1');
-const enqueueRecoveryBootMediaBuildMock = vi.fn(async () => 'recovery-boot-media:1');
 const capturedAuthorizationSubject = {
   authorizationPrincipalKind: 'user_session' as const,
   authorizationPrincipalId: 'user-123',
@@ -256,32 +255,13 @@ vi.mock('../../jobs/recoveryMediaWorker', () => ({
   enqueueRecoveryMediaBuild: (...args: unknown[]) => enqueueRecoveryMediaBuildMock(...(args as [])),
 }));
 
-vi.mock('../../jobs/recoveryBootMediaWorker', () => ({
-  enqueueRecoveryBootMediaBuild: (...args: unknown[]) =>
-    enqueueRecoveryBootMediaBuildMock(...(args as [])),
-}));
+const lookupReleaseManifestAssetForDisplayMock = vi.fn(
+  async (_assetName: string, _manifestUrl: string): Promise<{ sha256: string; size: number } | null> => null
+);
 
-const createRecoveryBootMediaRequestMock = vi.fn();
-const getRecoveryBootMediaArtifactMock = vi.fn();
-const getRecoveryBootMediaDownloadTargetMock = vi.fn();
-const listRecoveryBootMediaArtifactsMock = vi.fn();
-
-vi.mock('../../services/recoveryBootMediaService', () => ({
-  createRecoveryBootMediaRequest: (...args: unknown[]) =>
-    createRecoveryBootMediaRequestMock(...(args as [])),
-  getRecoveryBootMediaArtifact: (...args: unknown[]) =>
-    getRecoveryBootMediaArtifactMock(...(args as [])),
-  getRecoveryBootMediaDownloadTarget: (...args: unknown[]) =>
-    getRecoveryBootMediaDownloadTargetMock(...(args as [])),
-  listRecoveryBootMediaArtifacts: (...args: unknown[]) =>
-    listRecoveryBootMediaArtifactsMock(...(args as [])),
-  toRecoveryBootMediaSigningDetails: vi.fn((row: Record<string, unknown>) => ({
-    signatureFormat: row.signatureFormat ?? null,
-    signingKeyId: row.signingKeyId ?? null,
-    signedAt: row.signedAt instanceof Date ? row.signedAt.toISOString() : null,
-    publicKey: 'RWQTESTMINISIGNPUBLICKEY',
-    publicKeyPath: '/api/v1/backup/bmr/signing-keys/current',
-  })),
+vi.mock('../../services/releaseArtifactManifest', () => ({
+  lookupReleaseManifestAssetForDisplay: (...args: unknown[]) =>
+    lookupReleaseManifestAssetForDisplayMock(...(args as [string, string])),
 }));
 
 vi.mock('../../services/recoverySigning', () => ({
@@ -368,13 +348,10 @@ describe('bmr routes', () => {
       resetAt: new Date(Date.now() + 60_000),
     });
     getAuthenticatedRecoveryDownloadTargetMock.mockReset();
-    enqueueRecoveryBootMediaBuildMock.mockClear();
     captureRecoveryAuthorizationSubjectMock.mockClear();
     captureRecoveryAuthorizationSubjectMock.mockResolvedValue(capturedAuthorizationSubject);
-    createRecoveryBootMediaRequestMock.mockReset();
-    getRecoveryBootMediaArtifactMock.mockReset();
-    getRecoveryBootMediaDownloadTargetMock.mockReset();
-    listRecoveryBootMediaArtifactsMock.mockReset();
+    lookupReleaseManifestAssetForDisplayMock.mockReset();
+    lookupReleaseManifestAssetForDisplayMock.mockResolvedValue(null);
     delete process.env.BMR_RECOVERY_ALLOW_QUERY_TOKEN;
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', authState);
@@ -409,7 +386,6 @@ describe('bmr routes', () => {
     expect(selectMock).not.toHaveBeenCalled();
     expect(insertMock).not.toHaveBeenCalled();
     expect(enqueueRecoveryMediaBuildMock).not.toHaveBeenCalled();
-    expect(enqueueRecoveryBootMediaBuildMock).not.toHaveBeenCalled();
   });
 
   it('denies an explicit out-of-scope recovery token device filter for site-restricted users', async () => {
@@ -1357,60 +1333,60 @@ describe('bmr routes', () => {
     }));
   });
 
-  it('creates a bootable recovery media build job', async () => {
-    updateMock.mockReturnValueOnce(chainMock([]));
-    selectMock
-      .mockReturnValueOnce(chainMock([]))
-      .mockReturnValueOnce(chainMock([{
-        id: TOKEN_ID,
-        orgId: ORG_ID,
-        deviceId: DEVICE_ID,
-        snapshotId: SNAPSHOT_ID,
-        restoreType: 'bare_metal',
-        status: 'active',
-        createdAt: new Date('2026-03-29T00:00:00.000Z'),
-        expiresAt: new Date('2026-04-01T00:00:00.000Z'),
-      }]));
-    createRecoveryBootMediaRequestMock.mockResolvedValueOnce({
-      id: 'boot-media-1',
-      orgId: ORG_ID,
-      tokenId: TOKEN_ID,
-      snapshotId: SNAPSHOT_ID,
-      bundleArtifactId: 'media-artifact-1',
-      platform: 'linux',
-      architecture: 'amd64',
-      mediaType: 'iso',
-      status: 'pending',
-      checksumSha256: null,
-      metadata: {},
-      createdAt: new Date('2026-03-31T11:00:00.000Z'),
-      completedAt: null,
-      signedAt: null,
-      signatureFormat: null,
-      signingKeyId: null,
-      tokenStatus: 'active',
+  // W04b: the per-token ISO builder (POST /bmr/boot-media, etc.) is retired.
+  // GET /bmr/boot-media now advertises the release-built Linux recovery ISO
+  // catalog instead — see agent/recovery-media/ and
+  // routes/agents/download.ts's /download/recovery-iso/linux/:arch.
+  it('returns the linux recovery media catalog with manifest checksums', async () => {
+    lookupReleaseManifestAssetForDisplayMock.mockImplementation(async (assetName: string) => {
+      if (assetName === 'breeze-recovery-linux-amd64.iso') {
+        return { sha256: 'a'.repeat(64), size: 419430400 };
+      }
+      return null;
     });
 
     const res = await app.request('/backup/bmr/boot-media', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-      body: JSON.stringify({
-        tokenId: TOKEN_ID,
-        platform: 'linux',
-        architecture: 'amd64',
-        mediaType: 'iso',
-      }),
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
     });
 
-    expect(res.status).toBe(202);
+    expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.id).toBe('boot-media-1');
-    expect(body.mediaType).toBe('iso');
-    expect(body.status).toBe('pending');
-    expect(enqueueRecoveryBootMediaBuildMock).toHaveBeenCalledWith('boot-media-1');
-    expect(createRecoveryBootMediaRequestMock).toHaveBeenCalledWith(expect.objectContaining({
-      auth: authState,
-    }));
+    expect(body.data).toEqual([
+      expect.objectContaining({
+        platform: 'linux',
+        arch: 'amd64',
+        filename: 'breeze-recovery-linux-amd64.iso',
+        downloadUrl: '/api/v1/agents/download/recovery-iso/linux/amd64',
+        sha256: 'a'.repeat(64),
+        size: 419430400,
+      }),
+      expect.objectContaining({
+        platform: 'linux',
+        arch: 'arm64',
+        filename: 'breeze-recovery-linux-arm64.iso',
+        downloadUrl: '/api/v1/agents/download/recovery-iso/linux/arm64',
+        sha256: null,
+        size: null,
+      }),
+    ]);
+  });
+
+  it('degrades to null checksums when the release manifest cannot be resolved', async () => {
+    lookupReleaseManifestAssetForDisplayMock.mockResolvedValue(null);
+
+    const res = await app.request('/backup/bmr/boot-media', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(2);
+    for (const entry of body.data) {
+      expect(entry.sha256).toBeNull();
+      expect(entry.size).toBeNull();
+    }
   });
 });
 

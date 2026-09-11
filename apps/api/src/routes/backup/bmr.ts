@@ -16,9 +16,14 @@ import {
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../../services/auditEvents';
 import { enqueueRecoveryMediaBuild } from '../../jobs/recoveryMediaWorker';
-import { enqueueRecoveryBootMediaBuild } from '../../jobs/recoveryBootMediaWorker';
 import { PERMISSIONS } from '../../services/permissions';
-import { getGithubReleasePageUrl } from '../../services/binarySource';
+import {
+  getBinarySource,
+  getGithubReleaseArtifactManifestUrl,
+  getGithubReleasePageUrl,
+  getGithubReleaseVersion,
+} from '../../services/binarySource';
+import { lookupReleaseManifestAssetForDisplay } from '../../services/releaseArtifactManifest';
 import {
   BMR_BOOTSTRAP_VERSION,
   BMR_MIN_HELPER_VERSION,
@@ -35,13 +40,6 @@ import {
   toIsoString,
 } from '../../services/recoveryBootstrap';
 import { getAuthenticatedRecoveryDownloadTarget } from '../../services/recoveryDownloadService';
-import {
-  createRecoveryBootMediaRequest,
-  getRecoveryBootMediaArtifact,
-  getRecoveryBootMediaDownloadTarget,
-  listRecoveryBootMediaArtifacts,
-  toRecoveryBootMediaSigningDetails,
-} from '../../services/recoveryBootMediaService';
 import {
   getRecoveryMediaArtifact,
   getRecoveryMediaDownloadTarget,
@@ -62,8 +60,6 @@ import {
 import { captureRecoveryAuthorizationSubject } from '../../services/recoveryAuthorizationSubject';
 import {
   bmrAuthenticateSchema,
-  bmrBootMediaCreateSchema,
-  bmrBootMediaListSchema,
   bmrCompleteSchema,
   bmrCreateTokenSchema,
   bmrMediaCreateSchema,
@@ -255,54 +251,6 @@ function toMediaResponse(row: {
         : null,
     signatureDownloadPath:
       effectiveStatus === 'ready_signed' ? `/api/v1/backup/bmr/media/${row.id}/signature` : null,
-  };
-}
-
-function toBootMediaResponse(row: {
-  id: string;
-  tokenId: string;
-  snapshotId: string;
-  bundleArtifactId: string;
-  platform: string;
-  architecture: string;
-  mediaType: string;
-  status: string;
-  checksumSha256: string | null;
-  signatureFormat?: string | null;
-  signingKeyId?: string | null;
-  signedAt?: Date | null;
-  metadata: unknown;
-  createdAt: Date;
-  completedAt: Date | null;
-  tokenStatus?: string | null;
-}) {
-  const effectiveStatus =
-    row.tokenStatus === 'revoked' || row.tokenStatus === 'expired' || row.tokenStatus === 'used'
-      ? 'expired'
-      : row.status;
-  const signing = toRecoveryBootMediaSigningDetails(row);
-  return {
-    id: row.id,
-    tokenId: row.tokenId,
-    snapshotId: row.snapshotId,
-    bundleArtifactId: row.bundleArtifactId,
-    platform: row.platform,
-    architecture: row.architecture,
-    mediaType: row.mediaType,
-    status: effectiveStatus,
-    checksumSha256: row.checksumSha256,
-    signatureFormat: signing.signatureFormat,
-    signingKeyId: signing.signingKeyId,
-    signedAt: signing.signedAt,
-    publicKey: signing.publicKey,
-    publicKeyPath: signing.publicKeyPath,
-    metadata: asRecord(row.metadata),
-    createdAt: row.createdAt.toISOString(),
-    completedAt: row.completedAt?.toISOString() ?? null,
-    downloadPath:
-      effectiveStatus === 'ready_signed' ? `/api/v1/backup/bmr/boot-media/${row.id}/download` : null,
-    signatureDownloadPath:
-      effectiveStatus === 'ready_signed' ? `/api/v1/backup/bmr/boot-media/${row.id}/signature` : null,
   };
 }
 
@@ -950,10 +898,22 @@ bmrRoutes.get(
   }
 );
 
+// Recovery media catalog (W04b): the per-token ISO builder above (POST
+// /bmr/boot-media, GET /bmr/boot-media/:id, /download, /signature, and the
+// service module that packaged them) is retired. Booting recovery media no
+// longer requires building anything per-recovery: breeze-recovery-linux-
+// {amd64,arm64}.iso is built once per release, signed by the release
+// manifest, and served like any other component binary through
+// registerComponentDownloadRoute (routes/agents/download.ts,
+// /download/recovery-iso/linux/:arch). This route just advertises what's
+// available. recovery_boot_media_artifacts (the table) is intentionally
+// kept for one more release — see resilienceSiteAuthorization.ts's
+// boot_media_artifact lineage, still resolved for legacy DR plan configs.
+const RECOVERY_MEDIA_ARCHITECTURES = ['amd64', 'arm64'] as const;
+
 bmrRoutes.get(
   '/bmr/boot-media',
   requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
-  zValidator('query', bmrBootMediaListSchema),
   async (c) => {
     const auth = c.get('auth');
     const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
@@ -961,203 +921,29 @@ bmrRoutes.get(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
-    const query = c.req.valid('query');
-    const authorizedDeviceIds = await resolveRouteAuthorizedDeviceIds(c, orgId);
-    if (authorizedDeviceIds && authorizedDeviceIds.length === 0) {
-      return c.json({ data: [], pagination: { limit: query.limit, offset: query.offset, count: 0 } });
-    }
-    await expireTokenArtifacts(orgId);
-    const rows = await listRecoveryBootMediaArtifacts(orgId, { ...query, authorizedDeviceIds });
-    return c.json({
-      data: rows.map(toBootMediaResponse),
-      pagination: {
-        limit: query.limit,
-        offset: query.offset,
-        count: rows.length,
-      },
-    });
-  }
-);
+    const version = getGithubReleaseVersion();
+    const manifestUrl = getGithubReleaseArtifactManifestUrl();
+    const useManifest = getBinarySource() === 'github';
 
-bmrRoutes.post(
-  '/bmr/boot-media',
-  requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
-  requireMfa(),
-  zValidator('json', bmrBootMediaCreateSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if (!orgId) {
-      return c.json({ error: 'orgId is required for this scope' }, 400);
-    }
+    const data = await Promise.all(
+      RECOVERY_MEDIA_ARCHITECTURES.map(async (arch) => {
+        const filename = `breeze-recovery-linux-${arch}.iso`;
+        const manifestEntry = useManifest
+          ? await lookupReleaseManifestAssetForDisplay(filename, manifestUrl)
+          : null;
+        return {
+          platform: 'linux' as const,
+          arch,
+          version,
+          filename,
+          downloadUrl: `/api/v1/agents/download/recovery-iso/linux/${arch}`,
+          sha256: manifestEntry?.sha256 ?? null,
+          size: manifestEntry?.size ?? null,
+        };
+      })
+    );
 
-    const payload = c.req.valid('json');
-    const authorization = await authorizeRouteResilienceResources(c, orgId, [
-      { kind: 'recovery_token', id: payload.tokenId, role: 'source' },
-      { kind: 'recovery_token', id: payload.tokenId, role: 'target' },
-    ], 'media');
-    if (!authorization.ok) return authorization.response;
-    await expireTokenArtifacts(orgId);
-
-    const [token] = await db
-      .select()
-      .from(recoveryTokens)
-      .where(and(eq(recoveryTokens.id, payload.tokenId), eq(recoveryTokens.orgId, orgId)))
-      .limit(1);
-
-    if (!token) {
-      return c.json({ error: 'Recovery token not found' }, 404);
-    }
-    if (token.status !== 'active') {
-      return c.json({ error: `Recovery token is ${token.status}` }, 409);
-    }
-
-    let row;
-    try {
-      row = await createRecoveryBootMediaRequest({
-        orgId,
-        tokenId: token.id,
-        auth,
-        createdBy: auth.user?.id ?? null,
-        bundleArtifactId: payload.bundleArtifactId ?? null,
-      });
-    } catch (error) {
-      return c.json(
-        { error: error instanceof Error ? error.message : 'Failed to create boot media request' },
-        409
-      );
-    }
-
-    const responseStatus =
-      row.status === 'pending' || row.status === 'building' ? 202 : row.status === 'ready_signed' ? 200 : 202;
-    if (row.status === 'pending') {
-      await enqueueRecoveryBootMediaBuild(row.id);
-    }
-
-    writeRouteAudit(c, {
-      orgId,
-      action: 'bmr.boot_media.create',
-      resourceType: 'recovery_boot_media_artifact',
-      resourceId: row.id,
-      details: {
-        tokenId: token.id,
-        snapshotId: token.snapshotId,
-        platform: row.platform,
-        architecture: row.architecture,
-        mediaType: row.mediaType,
-      },
-    });
-
-    return c.json(toBootMediaResponse({ ...row, tokenStatus: token.status }), responseStatus);
-  }
-);
-
-bmrRoutes.get(
-  '/bmr/boot-media/:id',
-  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
-  zValidator('param', idParamSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if (!orgId) {
-      return c.json({ error: 'orgId is required for this scope' }, 400);
-    }
-
-    const { id } = c.req.valid('param');
-    const authorization = await authorizeRouteResilienceResources(c, orgId, [
-      { kind: 'boot_media_artifact', id, role: 'source' },
-      { kind: 'boot_media_artifact', id, role: 'target' },
-    ], 'read');
-    if (!authorization.ok) return authorization.response;
-    await expireTokenArtifacts(orgId);
-    const row = await getRecoveryBootMediaArtifact(orgId, id);
-    if (!row) {
-      return c.json({ error: 'Recovery boot media artifact not found' }, 404);
-    }
-    return c.json(toBootMediaResponse(row));
-  }
-);
-
-bmrRoutes.get(
-  '/bmr/boot-media/:id/download',
-  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
-  zValidator('param', idParamSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if (!orgId) {
-      return c.json({ error: 'orgId is required for this scope' }, 400);
-    }
-
-    const { id } = c.req.valid('param');
-    const authorization = await authorizeRouteResilienceResources(c, orgId, [
-      { kind: 'boot_media_artifact', id, role: 'source' },
-      { kind: 'boot_media_artifact', id, role: 'target' },
-    ], 'media');
-    if (!authorization.ok) return authorization.response;
-    await expireTokenArtifacts(orgId);
-    const target = await getRecoveryBootMediaDownloadTarget(orgId, id);
-    if (!target) {
-      return c.json({ error: 'Recovery boot media artifact not found' }, 404);
-    }
-    if (target.unavailable) {
-      return c.json({ error: 'Recovery boot media artifact is no longer available' }, 410);
-    }
-
-    writeRouteAudit(c, {
-      orgId,
-      action: 'bmr.boot_media.download',
-      resourceType: 'recovery_boot_media_artifact',
-      resourceId: id,
-    });
-
-    if (target.type === 'redirect') {
-      return c.redirect(target.url, 302);
-    }
-
-    return toDownloadStreamResponse(target, 'application/x-iso9660-image');
-  }
-);
-
-bmrRoutes.get(
-  '/bmr/boot-media/:id/signature',
-  requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action),
-  zValidator('param', idParamSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if (!orgId) {
-      return c.json({ error: 'orgId is required for this scope' }, 400);
-    }
-
-    const { id } = c.req.valid('param');
-    const authorization = await authorizeRouteResilienceResources(c, orgId, [
-      { kind: 'boot_media_artifact', id, role: 'source' },
-      { kind: 'boot_media_artifact', id, role: 'target' },
-    ], 'media');
-    if (!authorization.ok) return authorization.response;
-    await expireTokenArtifacts(orgId);
-    const target = await getRecoveryBootMediaDownloadTarget(orgId, id, 'signature');
-    if (!target) {
-      return c.json({ error: 'Recovery boot media artifact not found' }, 404);
-    }
-    if (target.unavailable) {
-      return c.json({ error: 'Recovery boot media signature is not available' }, 410);
-    }
-
-    writeRouteAudit(c, {
-      orgId,
-      action: 'bmr.boot_media.signature.download',
-      resourceType: 'recovery_boot_media_artifact',
-      resourceId: id,
-    });
-
-    if (target.type === 'redirect') {
-      return c.redirect(target.url, 302);
-    }
-
-    return toDownloadStreamResponse(target, 'application/octet-stream');
+    return c.json({ data });
   }
 );
 
