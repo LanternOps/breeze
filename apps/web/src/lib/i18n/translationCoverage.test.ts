@@ -67,6 +67,8 @@ const namespaceDuplicateBaselines = {
     // (2026-12-31)" + mapping.fieldKeyPlaceholder "field_key" — both a
     // literal format token/example key, not wording.
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 165 +4 +5).
+    // #5573 W01 (service deliverables): "Status" and "Portal" are identical cognates in pt-BR.
+    'deliverables.json': 2,
     'devices.json': 174,
     'discovery.json': 17,
     'integrations.json': 23,
@@ -167,6 +169,8 @@ const namespaceDuplicateBaselines = {
     // plus one of dateFormat.iso / mapping.fieldKeyPlaceholder — both literal
     // format tokens, not wording.
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 120 +2 +3).
+    // #5573 W01 (service deliverables): "Portal" is the identical cognate in es-419.
+    'deliverables.json': 1,
     'devices.json': 125,
     'discovery.json': 17,
     'integrations.json': 31,
@@ -273,6 +277,8 @@ const namespaceDuplicateBaselines = {
     // Re-measured after merging main on 2026-09-06 (main's W06/W09 additions
     // plus the unified-device-list branch).
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 146 +2 +4).
+    // #5573 W01 (service deliverables): "Description", "Occurrences", "Document", "Type", "Audit" and "Date" are identical cognates in fr-FR.
+    'deliverables.json': 6,
     'devices.json': 152,
     'discovery.json': 15,
     'integrations.json': 38,
@@ -384,6 +390,8 @@ const namespaceDuplicateBaselines = {
     // Re-measured after merging main on 2026-09-06 (main's W06/W09 additions
     // plus the unified-device-list branch).
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 146 +2 +4).
+    // #5573 W01 (service deliverables): "Description", "Occurrences", "Document", "Type", "Date" and "Notes" are identical cognates in fr-CA.
+    'deliverables.json': 6,
     'devices.json': 152,
     'discovery.json': 15,
     'integrations.json': 40,
@@ -504,6 +512,8 @@ const namespaceDuplicateBaselines = {
     // +1 (#5128 W2): queuedActions.system — "System" is the identical loanword
     // in German.
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 156 +2 +6).
+    // #5573 W01 (service deliverables): "Status", "Portal", "Name" and "Audit" are identical cognates in de-DE.
+    'deliverables.json': 4,
     'devices.json': 164,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     'discovery.json': 27,
@@ -586,6 +596,8 @@ const namespaceDuplicateBaselines = {
     // standard loanword in this locale, already used by the running-timer
     // widget's own copy.
     'common.json': 107, // +1 W06: lists.separator ", " is punctuation
+    // #5573 W01 (service deliverables): "Deliverable" is the established loanword in it-IT and "Audit" is the identical cognate.
+    'deliverables.json': 2,
     'devices.json': 144,
     'discovery.json': 22,
     'integrations.json': 81,
@@ -656,6 +668,8 @@ const namespaceDuplicateBaselines = {
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
     // "field_key" — literal format tokens/example keys, not wording.
     // Merged #4622 W04 + #5213 W02 deltas (base 83 +2 +3).
+    // #5573 W01 (service deliverables): "Portal" is the identical cognate in tr-TR.
+    'deliverables.json': 1,
     'devices.json': 88,
     'discovery.json': 9,
     'integrations.json': 22,

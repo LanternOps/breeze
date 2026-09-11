@@ -1,0 +1,148 @@
+{
+  "section": {
+    "title": "Deliverable del servizio",
+    "empty": "Nessun deliverable ancora. Aggiungi i report e le revisioni periodiche dovuti a questo cliente."
+  },
+  "table": {
+    "name": "Deliverable",
+    "cadence": "Cadenza",
+    "nextDue": "Prossima scadenza",
+    "lastDelivered": "Ultima consegna",
+    "status": "Stato",
+    "portal": "Portale"
+  },
+  "cadence": {
+    "monthly": "Mensile",
+    "quarterly": "Trimestrale",
+    "semiannual": "Semestrale",
+    "annual": "Annuale",
+    "one_time": "Una tantum"
+  },
+  "status": {
+    "on_track": "In linea",
+    "due_soon": "In scadenza",
+    "late": "In ritardo",
+    "missed": "Mancato",
+    "inactive": "Inattivo"
+  },
+  "occurrence": {
+    "status": {
+      "scheduled": "Pianificata",
+      "open": "Aperta",
+      "awaiting_evidence": "In attesa di evidenza",
+      "delivered": "Consegnata",
+      "missed": "Mancata",
+      "waived": "Esonerata"
+    }
+  },
+  "actions": {
+    "add": "Aggiungi deliverable",
+    "edit": "Modifica",
+    "deactivate": "Disattiva",
+    "deliver": "Segna come consegnato",
+    "waive": "Esonera",
+    "reopen": "Riapri",
+    "reschedule": "Ripianifica",
+    "addEvidence": "Aggiungi evidenza",
+    "removeEvidence": "Rimuovi evidenza",
+    "save": "Salva",
+    "cancel": "Annulla"
+  },
+  "form": {
+    "name": "Nome",
+    "description": "Descrizione",
+    "contract": "Contratto",
+    "noContract": "Non collegato a un contratto",
+    "cadence": "Cadenza",
+    "anchorDueDate": "Prima scadenza",
+    "effectiveFrom": "Valido dal",
+    "effectiveUntil": "Valido fino al",
+    "leadDays": "Preavviso (giorni)",
+    "graceDays": "Periodo di tolleranza (giorni)",
+    "artifactRequired": "Evidenza richiesta prima di segnare come consegnato",
+    "completionMode": {
+      "label": "Completamento",
+      "explicit": "Segnato come consegnato da un tecnico",
+      "on_ticket_resolve": "Consegnato alla risoluzione del ticket collegato"
+    },
+    "autoEvidenceReport": "Allega le esecuzioni del report come evidenza",
+    "owner": "Responsabile",
+    "ticketCategory": "Categoria del ticket",
+    "portalVisible": "Mostra nel portale clienti",
+    "sortOrder": "Ordinamento"
+  },
+  "drawer": {
+    "title": "Occorrenze",
+    "evidence": "Evidenze",
+    "noEvidence": "Nessuna evidenza allegata",
+    "late": "In ritardo",
+    "rescheduledFrom": "Ripianificata dal {{date}}",
+    "deliveryNote": "Nota di consegna",
+    "waivedReason": "Motivo dell'esonero",
+    "newDueDate": "Nuova scadenza"
+  },
+  "evidence": {
+    "reportRun": "Esecuzione del report",
+    "document": "Documento",
+    "reportRunId": "ID dell'esecuzione del report"
+  },
+  "upcoming": {
+    "title": "Prossimi 90 giorni",
+    "empty": "Nessuna scadenza nei prossimi 90 giorni."
+  },
+  "group": {
+    "noContract": "Nessun contratto"
+  },
+  "errors": {
+    "evidenceRequired": "Allega un'evidenza prima di segnare questa occorrenza come consegnata.",
+    "duplicateName": "Esiste già un deliverable con questo nome per questa organizzazione.",
+    "loadFailed": "Impossibile caricare i deliverable.",
+    "saveFailed": "Impossibile salvare il deliverable.",
+    "actionFailed": "Impossibile aggiornare l'occorrenza."
+  },
+  "confirm": {
+    "deactivate": "Disattivare {{name}}? Le occorrenze aperte verranno chiuse e non ne verranno pianificate di nuove.",
+    "deleteKeyDate": "Eliminare la data chiave {{label}}?"
+  },
+  "keyDates": {
+    "title": "Date chiave",
+    "empty": "Nessuna data chiave registrata.",
+    "add": "Aggiungi data chiave",
+    "label": "Etichetta",
+    "kind": {
+      "label": "Tipo",
+      "insurance_renewal": "Rinnovo assicurativo",
+      "vendor_contract_end": "Fine del contratto con il fornitore",
+      "compliance_deadline": "Scadenza di conformità",
+      "audit": "Audit",
+      "other": "Altro"
+    },
+    "date": "Data",
+    "recursAnnually": "Si ripete ogni anno",
+    "remindDaysBefore": "Promemoria (giorni prima)",
+    "portalVisible": "Mostra nel portale clienti",
+    "contractEnd": "Fine del contratto",
+    "notes": "Note",
+    "owner": "Responsabile",
+    "edit": "Modifica data chiave",
+    "delete": "Elimina",
+    "errors": {
+      "loadFailed": "Impossibile caricare le date chiave.",
+      "saveFailed": "Impossibile salvare la data chiave."
+    },
+    "toast": {
+      "saved": "Data chiave salvata",
+      "deleted": "Data chiave eliminata"
+    }
+  },
+  "toast": {
+    "saved": "Deliverable salvato",
+    "delivered": "Segnato come consegnato",
+    "waived": "Occorrenza esonerata",
+    "reopened": "Occorrenza riaperta",
+    "rescheduled": "Occorrenza ripianificata",
+    "evidenceAdded": "Evidenza aggiunta",
+    "evidenceRemoved": "Evidenza rimossa",
+    "deactivated": "Deliverable disattivato"
+  }
+}

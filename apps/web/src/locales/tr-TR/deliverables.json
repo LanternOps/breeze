@@ -1,0 +1,148 @@
+{
+  "section": {
+    "title": "Hizmet çıktıları",
+    "empty": "Henüz çıktı yok. Bu müşteriye borçlu olunan düzenli raporları ve gözden geçirmeleri ekleyin."
+  },
+  "table": {
+    "name": "Çıktı",
+    "cadence": "Sıklık",
+    "nextDue": "Sonraki son tarih",
+    "lastDelivered": "Son teslim",
+    "status": "Durum",
+    "portal": "Portal"
+  },
+  "cadence": {
+    "monthly": "Aylık",
+    "quarterly": "Üç aylık",
+    "semiannual": "Altı aylık",
+    "annual": "Yıllık",
+    "one_time": "Tek seferlik"
+  },
+  "status": {
+    "on_track": "Planda",
+    "due_soon": "Yakında dolacak",
+    "late": "Gecikmiş",
+    "missed": "Kaçırıldı",
+    "inactive": "Pasif"
+  },
+  "occurrence": {
+    "status": {
+      "scheduled": "Planlandı",
+      "open": "Açık",
+      "awaiting_evidence": "Kanıt bekleniyor",
+      "delivered": "Teslim edildi",
+      "missed": "Kaçırıldı",
+      "waived": "Muaf tutuldu"
+    }
+  },
+  "actions": {
+    "add": "Çıktı ekle",
+    "edit": "Düzenle",
+    "deactivate": "Devre dışı bırak",
+    "deliver": "Teslim edildi olarak işaretle",
+    "waive": "Muaf tut",
+    "reopen": "Yeniden aç",
+    "reschedule": "Yeniden planla",
+    "addEvidence": "Kanıt ekle",
+    "removeEvidence": "Kanıtı kaldır",
+    "save": "Kaydet",
+    "cancel": "İptal"
+  },
+  "form": {
+    "name": "Ad",
+    "description": "Açıklama",
+    "contract": "Sözleşme",
+    "noContract": "Bir sözleşmeye bağlı değil",
+    "cadence": "Sıklık",
+    "anchorDueDate": "İlk son tarih",
+    "effectiveFrom": "Geçerlilik başlangıcı",
+    "effectiveUntil": "Geçerlilik bitişi",
+    "leadDays": "Hazırlık süresi (gün)",
+    "graceDays": "Ek süre (gün)",
+    "artifactRequired": "Teslim edildi olarak işaretlemeden önce kanıt gerekir",
+    "completionMode": {
+      "label": "Tamamlama",
+      "explicit": "Bir teknisyen tarafından teslim edildi olarak işaretlenir",
+      "on_ticket_resolve": "Bağlı bilet çözüldüğünde teslim edilmiş sayılır"
+    },
+    "autoEvidenceReport": "Rapor çalıştırmalarını kanıt olarak ekle",
+    "owner": "Sorumlu",
+    "ticketCategory": "Bilet kategorisi",
+    "portalVisible": "Müşteri portalında göster",
+    "sortOrder": "Sıralama"
+  },
+  "drawer": {
+    "title": "Oluşumlar",
+    "evidence": "Kanıtlar",
+    "noEvidence": "Ekli kanıt yok",
+    "late": "Gecikmiş",
+    "rescheduledFrom": "{{date}} tarihinden yeniden planlandı",
+    "deliveryNote": "Teslim notu",
+    "waivedReason": "Muafiyet nedeni",
+    "newDueDate": "Yeni son tarih"
+  },
+  "evidence": {
+    "reportRun": "Rapor çalıştırması",
+    "document": "Belge",
+    "reportRunId": "Rapor çalıştırma kimliği"
+  },
+  "upcoming": {
+    "title": "Önümüzdeki 90 gün",
+    "empty": "Önümüzdeki 90 gün içinde son tarihi dolan bir şey yok."
+  },
+  "group": {
+    "noContract": "Sözleşme yok"
+  },
+  "errors": {
+    "evidenceRequired": "Bu oluşumu teslim edildi olarak işaretlemeden önce kanıt ekleyin.",
+    "duplicateName": "Bu kuruluş için aynı ada sahip bir çıktı zaten var.",
+    "loadFailed": "Çıktılar yüklenemedi.",
+    "saveFailed": "Çıktı kaydedilemedi.",
+    "actionFailed": "Oluşum güncellenemedi."
+  },
+  "confirm": {
+    "deactivate": "{{name}} devre dışı bırakılsın mı? Açık oluşumlar kapatılır ve yenileri planlanmaz.",
+    "deleteKeyDate": "{{label}} önemli tarihi silinsin mi?"
+  },
+  "keyDates": {
+    "title": "Önemli tarihler",
+    "empty": "Kayıtlı önemli tarih yok.",
+    "add": "Önemli tarih ekle",
+    "label": "Etiket",
+    "kind": {
+      "label": "Tür",
+      "insurance_renewal": "Sigorta yenileme",
+      "vendor_contract_end": "Tedarikçi sözleşmesi bitişi",
+      "compliance_deadline": "Uyumluluk son tarihi",
+      "audit": "Denetim",
+      "other": "Diğer"
+    },
+    "date": "Tarih",
+    "recursAnnually": "Her yıl tekrarlanır",
+    "remindDaysBefore": "Hatırlat (kaç gün önce)",
+    "portalVisible": "Müşteri portalında göster",
+    "contractEnd": "Sözleşme bitişi",
+    "notes": "Notlar",
+    "owner": "Sorumlu",
+    "edit": "Önemli tarihi düzenle",
+    "delete": "Sil",
+    "errors": {
+      "loadFailed": "Önemli tarihler yüklenemedi.",
+      "saveFailed": "Önemli tarih kaydedilemedi."
+    },
+    "toast": {
+      "saved": "Önemli tarih kaydedildi",
+      "deleted": "Önemli tarih silindi"
+    }
+  },
+  "toast": {
+    "saved": "Çıktı kaydedildi",
+    "delivered": "Teslim edildi olarak işaretlendi",
+    "waived": "Oluşum muaf tutuldu",
+    "reopened": "Oluşum yeniden açıldı",
+    "rescheduled": "Oluşum yeniden planlandı",
+    "evidenceAdded": "Kanıt eklendi",
+    "evidenceRemoved": "Kanıt kaldırıldı",
+    "deactivated": "Çıktı devre dışı bırakıldı"
+  }
+}
