@@ -360,6 +360,56 @@ func TestRun_FullLinuxFlowOnFakeSystem(t *testing.T) {
 	}
 }
 
+// #5493: found live on the bare-metal boot proof. The whole-machine backup
+// preset excludes /proc, /sys, /dev, /run, /tmp, /var/tmp, /mnt, /media, so
+// a snapshot taken before the backup-side fix (collectBackupFilesFromPaths
+// force-recording an excluded directory's own manifest entry) never
+// contains them at all — restore alone leaves the staging root without
+// them. boot()'s pseudoMounts/BindMount calls normally paper over this on a
+// real system (a bind mount creates its target), but a SkipBoot run (or any
+// run where boot() is skipped/fails before reaching them) must not depend on
+// that: restoreTree's ensureMountpoints call is the belt-and-braces fix.
+//
+// This proves it in isolation: SkipBoot means boot() never executes (and
+// fakeSystem's own BindMount, which happens to os.MkdirAll its target, never
+// fires either), and the seeded snapshot's content map (seedSnapshot) has no
+// proc/sys/dev/run/tmp entries — so these directories can only exist
+// afterward because ensureMountpoints created them.
+func TestRun_EnsureMountpointsSurvivesSkipBoot(t *testing.T) {
+	skipUnlessLinuxSystemState(t)
+	resetBmrCalls()
+	dir := t.TempDir()
+	sys := newFakeSystem(dir, 100*GiB)
+	p := seedSnapshot(t, "snap-1", testLayout())
+	staging := filepath.Join(dir, "mnt")
+	res, err := Run(context.Background(), Options{
+		SnapshotID: "snap-1", Provider: p, Target: Target{Kind: TargetImage, Path: filepath.Join(dir, "t.img"), ImageSizeBytes: 100 * GiB},
+		Identity: IdentityOriginal, StateDir: dir, StagingRoot: staging, System: sys, SkipBoot: true,
+	})
+	if err != nil {
+		t.Fatalf("err=%v\n%s", err, sys.dump())
+	}
+	if res.Status != "completed" {
+		t.Fatalf("res = %+v\n%s", res, sys.dump())
+	}
+	if sys.has("mount --bind") {
+		t.Fatalf("SkipBoot run must never bind-mount (that would mask the defect this test checks): %s", sys.dump())
+	}
+	for _, name := range []string{"proc", "sys", "dev", "run"} {
+		fi, statErr := os.Stat(filepath.Join(staging, name))
+		if statErr != nil || !fi.IsDir() {
+			t.Errorf("%s missing after a SkipBoot run: %v", name, statErr)
+		}
+	}
+	fi, statErr := os.Stat(filepath.Join(staging, "tmp"))
+	if statErr != nil || !fi.IsDir() {
+		t.Fatalf("tmp missing after a SkipBoot run: %v", statErr)
+	}
+	if fi.Mode()&os.ModeSticky == 0 || fi.Mode().Perm() != 0o777 {
+		t.Errorf("tmp mode = %v, want sticky 1777", fi.Mode())
+	}
+}
+
 func TestRun_ResumeSkipsProvisionAndReusesPlan(t *testing.T) {
 	skipUnlessLinuxSystemState(t)
 	resetBmrCalls()

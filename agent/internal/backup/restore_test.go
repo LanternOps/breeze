@@ -1214,6 +1214,105 @@ func TestRestore_RecreatesSymlinksDirsAndModes(t *testing.T) {
 	}
 }
 
+// Review fix (#5493): a Placeholder dir entry — the backup walker's force-
+// recorded manifest entry for a directory that matched an exclude pattern
+// (e.g. /tmp under the whole-machine preset) — must NOT have its mode/owner
+// reapplied over an ALREADY-EXISTING directory. A customer may have
+// deliberately tightened permissions on an excluded directory (or simply
+// has real, live data under it) since the backup ran; an ordinary
+// backup_restore silently reverting that would be a real regression. A
+// non-placeholder dir entry (an ordinary empty directory whose mode really
+// was captured because it mattered) keeps the existing behavior: its mode
+// is always (re)applied, even over a pre-existing directory.
+func TestRestore_PlaceholderDirLeavesExistingDirectoryUntouched(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix mode bits and ownership")
+	}
+	provider, snapshotID := setupRestoreTestSnapshot(t, map[string]string{"keep.txt": "keep"})
+
+	manifestKey := filepath.ToSlash(filepath.Join("snapshots", snapshotID, "manifest.json"))
+	tmp := filepath.Join(t.TempDir(), "m.json")
+	if err := provider.Download(manifestKey, tmp); err != nil {
+		t.Fatal(err)
+	}
+	var snap Snapshot
+	data, _ := os.ReadFile(tmp)
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatal(err)
+	}
+	const sticky1777 = os.ModeSticky | 0o777
+	snap.Files = append(snap.Files,
+		SnapshotFile{SourcePath: "/original/tmp", Kind: KindDir, ModeBits: uint32(sticky1777), Placeholder: true, ModTime: time.Now().UTC()},
+		SnapshotFile{SourcePath: "/original/var/empty", Kind: KindDir, ModeBits: 0o700, ModTime: time.Now().UTC()},
+	)
+	snap.FormatVersion = manifestFormatFidelity
+	out, _ := json.Marshal(snap)
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Upload(tmp, manifestKey); err != nil {
+		t.Fatal(err)
+	}
+
+	target := t.TempDir()
+	// Pre-create the placeholder's target directory with a mode the
+	// manifest does NOT carry, and a file inside it — simulating a
+	// customer who tightened /tmp's permissions (or just has real data
+	// there) since the backup ran.
+	existingTmp := filepath.Join(target, "original", "tmp")
+	if err := os.MkdirAll(existingTmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(existingTmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	existingFile := filepath.Join(existingTmp, "existing.txt")
+	if err := os.WriteFile(existingFile, []byte("do not touch"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-create the NON-placeholder empty-dir target too, with a
+	// different mode than the manifest carries, to prove the fix is
+	// scoped to Placeholder entries only.
+	existingEmpty := filepath.Join(target, "original", "var", "empty")
+	if err := os.MkdirAll(existingEmpty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "completed" || res.FilesFailed != 0 {
+		t.Fatalf("result = %+v", res)
+	}
+	// keep.txt (1) + tmp (1, placeholder, metadata skipped but still
+	// counted as restored) + var/empty (1) = 3.
+	if res.FilesRestored != 3 {
+		t.Errorf("FilesRestored = %d, want 3 (the placeholder dir still counts as restored)", res.FilesRestored)
+	}
+
+	fi, err := os.Stat(existingTmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSticky != 0 || fi.Mode().Perm() != 0o700 {
+		t.Errorf("placeholder dir mode = %v, want unchanged 0700 (no sticky bit applied)", fi.Mode())
+	}
+	if data, err := os.ReadFile(existingFile); err != nil || string(data) != "do not touch" {
+		t.Errorf("existing file inside the placeholder dir was touched: data=%q err=%v", data, err)
+	}
+
+	// The non-placeholder empty-dir entry DOES get its mode (re)applied —
+	// existing behavior, unaffected by this fix.
+	fi, err = os.Stat(existingEmpty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o700 {
+		t.Errorf("non-placeholder empty dir mode = %v, want 0700 applied from the manifest", fi.Mode())
+	}
+}
+
 // Review finding #1 (PR #5520): a resumed restore's file pass must never
 // write THROUGH an ancestor that is a symlink. A prior (possibly
 // interrupted) run may have already recreated a directory-shaped manifest

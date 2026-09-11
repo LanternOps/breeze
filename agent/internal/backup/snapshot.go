@@ -286,6 +286,21 @@ type SnapshotFile struct {
 	// uploaded. Omitted (false) for the overwhelming majority of files,
 	// keeping ordinary manifests byte-identical to before this field existed.
 	Volatile bool `json:"volatile,omitempty"`
+	// Placeholder is true ONLY for a KindDir entry that the walker force-
+	// recorded because the directory itself matched a user/preset exclude
+	// pattern (#5493) — e.g. /proc, /tmp under the whole-machine preset.
+	// Its mode/owner exist so a rebuild into an EMPTY tree still gets them,
+	// but they were never a deliberate "this directory's permissions
+	// matter" capture the way a genuinely empty or non-default-mode dir
+	// entry's are. Restore honors that distinction: mode/owner are applied
+	// only when creating the directory fresh; an ALREADY-EXISTING
+	// directory is left untouched, so an ordinary backup_restore can never
+	// silently revert permissions a customer tightened on an excluded
+	// directory after the backup ran (review fix). Never set for a
+	// genuinely empty or non-default-mode directory, nor for a file or
+	// symlink. Omitted (false) for every manifest written before this field
+	// existed, keeping them byte-identical.
+	Placeholder bool `json:"placeholder,omitempty"`
 }
 
 // HasContent reports whether the entry has an uploaded object at BackupPath.
@@ -313,6 +328,7 @@ func contentlessEntry(f backupFile) SnapshotFile {
 		LinkTarget:   f.linkTarget,
 		ModeBits:     f.modeBits,
 		Owner:        f.owner,
+		Placeholder:  f.placeholder,
 	}
 }
 
