@@ -9,6 +9,7 @@ import {
   devicesProtectedTile,
   securityScoreTile,
 } from './securityReadModel';
+import { serviceTile } from './serviceReadModel';
 import { supportTile } from './ticketReadModel';
 
 export async function awaitingYouTile(
@@ -53,6 +54,7 @@ export async function dashboardForOrg(
     support,
     actionItems,
     awaitingYou,
+    service,
   ] = await Promise.all([
     securityScoreTile(orgId, args.now),
     devicesProtectedTile(orgId, args.now),
@@ -61,6 +63,7 @@ export async function dashboardForOrg(
     supportTile(orgId, args),
     actionItemsTile(orgId, args.now),
     awaitingYouTile(orgId, args.now),
+    serviceTile(orgId, args),
   ]);
 
   return {
@@ -73,5 +76,10 @@ export async function dashboardForOrg(
     support,
     actionItems,
     awaitingYou,
+    // Absent, not null, when enable_service is off: an org that never turns the
+    // flag on keeps the exact DashboardDto — and therefore the exact ETag — it
+    // had before this wave (routes/portal/dashboard.ts builds the validator
+    // from the payload).
+    ...(service ? { service } : {}),
   };
 }
