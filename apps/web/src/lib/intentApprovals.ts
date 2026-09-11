@@ -151,6 +151,50 @@ export function batchDecideErrorCopy(token: string): string | undefined {
 }
 
 /**
+ * How long a step-up grant minted by a decide response stays worth trying
+ * before a fresh ceremony (#5601). Mirrors the server's own
+ * `APPROVAL_DECIDE_GRANT_TTL_MS`, but on this side it is only a LATENCY hint:
+ * it saves us attempting a grant we can locally tell has gone stale. The
+ * server is the sole authority on whether a grant is good (scope, expiry,
+ * device liveness, partner floor); one that survives this check can still be
+ * refused with `step_up_required`, which the retry below handles.
+ */
+const STEP_UP_GRANT_TTL_MS = 300_000;
+
+/**
+ * The most recent step-up grant a decide response minted (#5601), so a
+ * follow-up approve inside the window can skip the WebAuthn ceremony.
+ *
+ * A single slot, not keyed by approval id: the server binds a grant to a
+ * CONVERSATION, org and risk tier rather than to one approval row, so a grant
+ * earned deciding one card is usually good for the next card of the same
+ * conversation — which is the whole point.
+ *
+ * It is NOT good for every card: another chat, another org or a higher risk
+ * tier is refused server-side, and this cache cannot tell those apart. That is
+ * deliberate — the client does not re-implement the scope rules, it tries the
+ * grant and lets the `step_up_required` retry fall back to a real ceremony.
+ * Never treat a cached id as authority.
+ */
+let stepUpGrant: { id: string; expiresAt: number } | null = null;
+
+function cachedStepUpGrantId(): string | undefined {
+  if (!stepUpGrant) return undefined;
+  if (stepUpGrant.expiresAt <= Date.now()) {
+    stepUpGrant = null;
+    return undefined;
+  }
+  return stepUpGrant.id;
+}
+
+/** Test-only reset of the module-level grant cache (#5601): it lives for the
+ *  lifetime of the module, so without this a grant minted in one test would
+ *  leak into the next. */
+export function __resetStepUpGrantCacheForTests(): void {
+  stepUpGrant = null;
+}
+
+/**
  * Decide the viewer's own fanned-out approval row for a Tier-3 action intent
  * (the inline chat self-approve, sole-operator case).
  *
@@ -166,6 +210,14 @@ export function batchDecideErrorCopy(token: string): string | undefined {
  * enforcing partner policy answers 403 `step_up_required`, and that — and only
  * that — triggers exactly ONE retry with the ceremony. `four_eyes` and any
  * unknown/absent scope keep the always-ceremony behaviour.
+ *
+ * #5601 layers onto that SAME optimistic-attempt machinery. Where supervised
+ * goes prooflessly, a `four_eyes` (or enforcing-supervised) approve that holds
+ * a live step-up grant sends `stepUpGrantId` instead of running the ceremony —
+ * the server treats a valid grant as equivalent to a fresh proof. A refused
+ * grant takes the identical 403 `step_up_required` path: drop it, run the
+ * ceremony, retry exactly once. The grant is only ever tried on the FIRST
+ * attempt, so the whole function stays bounded at two POSTs.
  *
  * Deny needs no proof under any scope, skips the ceremony, and may carry the
  * optional reason collected by the approvals inbox.
@@ -201,6 +253,12 @@ export async function decideIntentApproval(
   // Only an APPROVE of a supervised row may go prooflessly; deny never carries
   // a proof anyway, and an unknown scope must fall back to the strict path.
   const supervisedApprove = decision === 'approve' && approvalScope === 'supervised';
+  // #5601: a non-supervised approve (four_eyes, or an unknown scope) may spend
+  // a live step-up grant in place of the ceremony. Read ONCE here so the retry
+  // below can never pick up a second grant and loop.
+  const firstAttemptGrantId = decision === 'approve' && !supervisedApprove
+    ? cachedStepUpGrantId()
+    : undefined;
 
   /** Runs the ceremony into `body.proof`. Returns a terminal outcome when the
    *  viewer has no approver device; throws CeremonyError on a real failure. */
@@ -218,8 +276,13 @@ export async function decideIntentApproval(
   };
 
   if (decision === 'approve' && !supervisedApprove) {
-    const noDevice = await collectProof();
-    if (noDevice) return noDevice;
+    if (firstAttemptGrantId) {
+      // #5601: spend the grant instead of prompting for another passkey scan.
+      body.stepUpGrantId = firstAttemptGrantId;
+    } else {
+      const noDevice = await collectProof();
+      if (noDevice) return noDevice;
+    }
   } else if (decision === 'deny' && reason?.trim()) {
     body.reason = reason.trim();
   }
@@ -232,7 +295,7 @@ export async function decideIntentApproval(
   // is still unconsumed) — success toast, error toast and outcome mapping all
   // stay in exactly one place.
   let settledResponse: Response | undefined;
-  if (supervisedApprove) {
+  if (supervisedApprove || firstAttemptGrantId) {
     let firstAttempt: Response;
     try {
       // runaction-exempt: the optimistic proofless attempt (#5600). runAction
@@ -265,8 +328,19 @@ export async function decideIntentApproval(
         )
         .catch(() => undefined);
       if (token === 'step_up_required') {
-        // Enforcing partner authenticator policy: the step-up floor stands and
-        // the viewer can satisfy it. Exactly one retry, with the ceremony.
+        // Enforcing partner authenticator policy (#5600), or a grant the
+        // server refused — expired, out of scope, or minted by a since-revoked
+        // device (#5601). Either way the step-up floor stands and the viewer
+        // can satisfy it: exactly one retry, with a real ceremony.
+        //
+        // The grant is dropped from BOTH the cache and the body. Leaving it on
+        // the body would send a credential we already know is refused
+        // alongside the new proof, and leaving it cached would re-offer it on
+        // the next card — one refusal is enough to know it is spent.
+        if (firstAttemptGrantId) {
+          stepUpGrant = null;
+          delete body.stepUpGrantId;
+        }
         const noDevice = await collectProof();
         if (noDevice) return noDevice;
       } else {
@@ -278,11 +352,11 @@ export async function decideIntentApproval(
   }
 
   try {
-    await runAction({
+    const data = await runAction<{ stepUpGrantId?: unknown } | null>({
       // Kept inline rather than hoisted: the no-silent-mutations guard walks
       // parents for an enclosing runAction call, so a hoisted thunk reads as an
       // unwrapped mutation even when passed straight in. `settledResponse` is
-      // the supervised attempt above, already made and still unread.
+      // the optimistic attempt above, already made and still unread.
       request: () =>
         settledResponse
           ? Promise.resolve(settledResponse)
@@ -305,7 +379,19 @@ export async function decideIntentApproval(
           ? i18n.t('ai:aiApprovalDialog.approvedToast')
           : i18n.t('ai:aiApprovalDialog.deniedToast'),
     });
+    // #5601: a genuine ceremony on this decide may have minted a reusable
+    // grant. Cache it so the NEXT card of this conversation skips the scan.
+    // Only an approve ever mints one; a supervised L1 decide mints none, so
+    // this is simply absent there.
+    if (decision === 'approve' && typeof data?.stepUpGrantId === 'string') {
+      stepUpGrant = { id: data.stepUpGrantId, expiresAt: Date.now() + STEP_UP_GRANT_TTL_MS };
+    }
   } catch (err) {
+    // Whatever authority we were relying on is no good any more — never let a
+    // cached grant outlive it.
+    if (err instanceof ActionError && (err.status === 401 || err.status === 403)) {
+      stepUpGrant = null;
+    }
     if (isStepUpRequired(err)) return 'needs_device';
     if (isNotSoleApprover(err)) return 'not_sole_approver';
     throw err;
