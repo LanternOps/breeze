@@ -451,6 +451,8 @@ The following named permission constants (`packages/shared/src/constants/permiss
 | `INVOICES_WRITE` | `invoices` | `write` |
 | `INVOICES_SEND` | `invoices` | `send` |
 | `INVOICES_EXPORT` | `invoices` | `export` |
+| `ACCOUNTING_READ` | `accounting` | `read` |
+| `ACCOUNTING_MANAGE` | `accounting` | `manage` |
 | `CONTRACTS_READ` | `contracts` | `read` |
 | `CONTRACTS_WRITE` | `contracts` | `write` |
 | `CONTRACTS_MANAGE` | `contracts` | `manage` |
@@ -488,7 +490,19 @@ The following named permission constants (`packages/shared/src/constants/permiss
 | `AI_AGENTS_READ` | `ai_agents` | `read` |
 | `AI_AGENTS_WRITE` | `ai_agents` | `write` |
 | `APPROVALS_DECIDE` | `approvals` | `decide` |
+| `PAM_APPROVE` | `pam` | `approve` |
+| `PAM_MANAGE_POLICY` | `pam` | `manage_policy` |
+| `WORKSPACE_READ` | `workspace` | `read` |
+| `WORKSPACE_WRITE` | `workspace` | `write` |
+| `WORKSPACE_CREDENTIALS` | `workspace` | `credentials` |
+| `WORKSPACE_EXECUTE` | `workspace` | `execute` |
+| `CONNECTED_APPS_READ` | `connected_apps` | `read` |
+| `CONNECTED_APPS_MANAGE` | `connected_apps` | `manage` |
 | `ADMIN_ALL` | `*` | `*` |
+
+<Aside type="caution" title="Permissions added in v0.112.0 replace implicit access">
+  `pam:approve`, `pam:manage_policy`, `accounting:read`, `accounting:manage`, the four `workspace:*` keys and the two `connected_apps:*` keys were introduced in v0.112.0. The upgrade grants them to the built-in **Org Admin** role only; **Partner Admin** already holds them through `*:*`. Every other built-in role (Partner Technician, Partner Billing, Org Technician, …) and every custom role **loses** the access those areas previously inferred from device or billing permissions until you grant the new keys in **Settings → Roles**. In practice: QuickBooks pages and sync now need `accounting:*`; approving, denying or revoking a privileged-access elevation needs `pam:approve` and authoring PAM rules needs `pam:manage_policy` (see [Privileged Access Management](/features/pam/#who-can-approve-and-manage-pam)); Workspace sources need `workspace:*`; and the partner's connected apps (OAuth / MCP clients) need `connected_apps:*`. The keys appear in the role editor automatically.
+</Aside>
 
 ### Role Inheritance
 

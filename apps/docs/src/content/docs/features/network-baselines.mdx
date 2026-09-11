@@ -49,6 +49,16 @@ Each baseline has independent alert toggles that control which event types gener
 | `intervalHours` | integer | `4` | Hours between scans (1 -- 168) |
 | `nextScanAt` | ISO 8601 datetime | Now + interval | When the next automatic scan will run |
 
+A recurring schedule runs under the authority of the user who last saved it (`devices:write` on the baseline's organization). Breeze re-checks that authority live each time the schedule is due: if the user is deactivated, loses the permission, has their site scope narrowed, has their MFA reset, or the baseline's schedule is edited by someone else, the automatic rescans pause and the baseline shows **"Recurring scan paused: re-approval required"** under its schedule (`scheduleBlockedReason` in the API). Re-saving the schedule — any `PATCH` that includes `scanSchedule` — re-arms it under the saving user; editing only the alert settings does not. **Scan Now** is never affected. A system-issued API token cannot arm a recurring schedule.
+
+Baselines that Breeze creates automatically from a discovery run now start with recurrence **disabled**; enable the schedule yourself once you have reviewed the baseline.
+
+### Recurring scans need re-approval after upgrade
+
+<Aside type="caution" title="Upgrading to v0.112.0 or later">
+  Recurring baseline schedules created before v0.112.0 carry no approving-user authority, so the upgrade pauses every enabled one with the **"Recurring scan paused: re-approval required"** banner. Nothing runs until a user with `devices:write` opens each baseline and saves its schedule again. **Scan Now** works throughout.
+</Aside>
+
 ### Rogue Device Detection
 
 Rogue detection is policy-driven at the organization level. Two org-level settings control which devices are flagged:

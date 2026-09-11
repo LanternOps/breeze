@@ -92,6 +92,18 @@ A partner-scoped user with access to every organization under the partner can cr
 
 Scheduled scans on a partner-wide policy fan out across every organization under the partner: the scheduler enqueues scans for devices in each member org, checking each org independently so one backed-up org doesn't delay scans in the others. Scan results and findings always belong to the device's own organization, not the partner. Partner-wide policies show an **All orgs** badge in the policy list, and creating, updating, or deleting one requires partner-wide management access.
 
+### Who can run a recurring scan
+
+A scan policy with an **interval** or **cron** schedule runs under the authority of the person who last activated it — not under a standing system identity. Creating or saving an active recurring policy therefore needs `devices:write` **and** `devices:execute`, with multi-factor authentication satisfied on the session, and every scheduled device must be inside that user's site scope (otherwise the save is refused with "Scheduled scan target is outside authorized scope"). Breeze re-checks that authority each time the schedule fires and each time a scan command is created: if the approving user is deactivated, loses the permission, has their site scope narrowed, or their MFA is reset, the schedule stops silently rather than continuing under stale rights. Re-saving the policy by a user with current authority starts it again.
+
+Manual scans (**Scan Now** / `POST /sensitive-data/scan`) are not tied to a policy's authority — they run as the user who clicks, and need `devices:execute` plus MFA.
+
+### Recurring scans need re-approval after upgrade
+
+<Aside type="caution" title="Upgrading to v0.112.0 or later">
+  Recurring scan policies created before v0.112.0 carry no approving-user authority, so the upgrade **switches every one of them off** and fails any scheduled scan that was queued or running at the time. Nothing is deleted and no badge is shown — each affected policy simply appears **inactive** on the **Scan Policies** tab. To resume it, a user who holds `devices:write` and `devices:execute` (with MFA) turns **Active** back on, or re-saves the policy; the schedule is then bound to that user. Until then, **Scan Now** against a device still works, but a manual scan that names the inactive policy is refused with `Policy is inactive`.
+</Aside>
+
 ### Creating a Policy
 
 ```bash
