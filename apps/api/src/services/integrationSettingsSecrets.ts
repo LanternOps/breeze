@@ -1,30 +1,72 @@
 import { randomUUID } from 'crypto';
-import { encryptSecret, isEncryptedSecret } from './secretCrypto';
+import { encryptSecret, getActiveSecretEncryptionKeyId, isEncryptedSecret } from './secretCrypto';
 
 export const INTEGRATION_MASKED_SECRET = '********';
 
-const SECRET_FIELD_NAMES = new Set([
-  'accesstoken',
-  'apikey',
-  'apisecret',
-  'authtoken',
-  'clientsecret',
+/**
+ * Credential-shaped field-name PARTS, matched as substrings of the normalized
+ * (lowercased, non-alphanumerics stripped) field name.
+ *
+ * This deliberately mirrors `SUSPICIOUS_NAME_PARTS` in `tenantExportPolicy.ts`
+ * rather than listing exact names. An exact-name denylist is one provider away
+ * from being wrong: the shipped stores accept arbitrary JSON, so `apiToken`,
+ * `signingSecret`, `sharedSecret`, `bearerToken`, `dsn` and `passphrase` all
+ * sailed straight through the previous exact-match set and were echoed in
+ * plaintext. Substring matching fails CLOSED — an unrecognised credential name
+ * is far likelier to contain one of these parts than to match a name we
+ * happened to enumerate.
+ *
+ * `connectionstring` and `webhookurl` are kept as whole-word parts because
+ * neither decomposes into any of the generic parts below.
+ */
+const SECRET_NAME_PARTS = [
   'connectionstring',
-  'integrationkey',
+  'credential',
+  'dsn',
+  'key',
+  'passphrase',
   'password',
-  'privatekey',
-  'refreshtoken',
+  'refresh',
   'secret',
-  'secretkey',
   'token',
-  'webhooksecret',
   'webhookurl',
-]);
+] as const;
+
+/**
+ * Normalized field names that match a part above but are known NOT to be
+ * secret, so they keep round-tripping in clear. None of these appear in the
+ * four shipped compatibility stores today (their fields are `enabled`,
+ * `workspaceId`, `clientId`, `tenantId`, `defaultChannel`, `provider`,
+ * `baseUrl`, `severity` and the credential fields themselves) — the set is the
+ * documented escape hatch for the identifier/counter shapes that substring
+ * matching would otherwise over-capture. Adding an entry here removes a field
+ * from encryption and masking, so each one needs a test proving it carries no
+ * credential material.
+ */
+const NON_SECRET_FIELD_NAMES = new Set(['keyid', 'keyname', 'tokencount']);
 
 export class InvalidIntegrationSecretError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'InvalidIntegrationSecretError';
+  }
+}
+
+/**
+ * Raised when a credential would have to be sealed but no active secret
+ * encryption key id is configured.
+ *
+ * `encryptSecret` does NOT fail when `APP_ENCRYPTION_KEY_ID` is unset — it
+ * silently drops the `aad` option and writes non-AAD `enc:v1:` ciphertext. The
+ * value would still be encrypted, so nothing would look broken, but the
+ * family/organization/path binding this module relies on to stop a ciphertext
+ * being replayed into a different provider, org or endpoint would simply not
+ * exist. Refuse the write instead of degrading silently.
+ */
+export class IntegrationSecretsUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'IntegrationSecretsUnavailableError';
   }
 }
 
@@ -34,10 +76,17 @@ function normalizedFieldName(field: string): string {
   return field.replace(/[^a-z0-9]/gi, '').toLowerCase();
 }
 
+export function isSecretFieldName(field: string): boolean {
+  const normalized = normalizedFieldName(field);
+  if (!normalized) return false;
+  if (NON_SECRET_FIELD_NAMES.has(normalized)) return false;
+  return SECRET_NAME_PARTS.some((part) => normalized.includes(part));
+}
+
 function isSecretPath(path: readonly string[]): boolean {
   const last = path.at(-1);
   if (!last) return false;
-  if (SECRET_FIELD_NAMES.has(normalizedFieldName(last))) return true;
+  if (isSecretFieldName(last)) return true;
   return last === 'url' && path.includes('webhooks') && path.includes('endpoints');
 }
 
@@ -123,7 +172,15 @@ function sealValue(
   orgId: string,
   path: readonly string[],
 ): unknown {
-  if (isSecretPath(path)) {
+  // A credential-shaped NAME can label either a leaf secret (`apiKey: "..."`)
+  // or a container of them (`credentials: { username, password }` — 'credentials'
+  // contains the 'credential' part). Decide on the value, not the name alone:
+  // a string leaf is sealed, an object/array is walked as an ordinary container
+  // whose leaves are judged by their own names, and any other scalar is a type
+  // confusion that must not reach storage. Sealing a container by its name is
+  // not an option — it would have to be stringified, and masking it back would
+  // destroy the non-secret siblings inside it.
+  if (isSecretPath(path) && !(value !== null && typeof value === 'object')) {
     if (typeof value !== 'string') {
       throw new InvalidIntegrationSecretError(`Secret field ${path.join('.')} must be a string`);
     }
@@ -136,6 +193,15 @@ function sealValue(
     if (value.length === 0) return '';
     if (isEncryptedSecret(value)) {
       throw new InvalidIntegrationSecretError(`Secret field ${path.join('.')} must not contain ciphertext`);
+    }
+    // Fail closed rather than let encryptSecret drop the AAD and write v1.
+    if (!getActiveSecretEncryptionKeyId()) {
+      throw new IntegrationSecretsUnavailableError(
+        `Integration secret ${path.join('.')} cannot be stored: APP_ENCRYPTION_KEY_ID is not configured on this `
+          + 'API instance, so the credential would be sealed as non-AAD enc:v1 ciphertext with no binding to its '
+          + 'provider, organization or endpoint. Set APP_ENCRYPTION_KEY_ID (alongside APP_ENCRYPTION_KEY) and '
+          + 'restart the API.',
+      );
     }
     return encryptSecret(value, { aad: integrationSettingsSecretAad(family, orgId, path) });
   }
@@ -168,7 +234,10 @@ export function sealIntegrationSettings(
 }
 
 function maskValue(value: unknown, path: readonly string[]): unknown {
-  if (isSecretPath(path)) {
+  // Same leaf-vs-container split as sealValue. Returning a credential-NAMED
+  // container unchanged here would hand the caller the raw ciphertext of every
+  // secret inside it, so containers must fall through to the walk below.
+  if (isSecretPath(path) && !(value !== null && typeof value === 'object')) {
     return typeof value === 'string' && value.length > 0 ? INTEGRATION_MASKED_SECRET : value;
   }
   if (Array.isArray(value)) {

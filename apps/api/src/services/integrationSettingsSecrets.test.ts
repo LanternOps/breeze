@@ -1,12 +1,35 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { decryptSecret } from './secretCrypto';
 import {
   INTEGRATION_MASKED_SECRET,
+  IntegrationSecretsUnavailableError,
   InvalidIntegrationSecretError,
   integrationSettingsSecretAad,
+  isSecretFieldName,
   maskIntegrationSettings,
   sealIntegrationSettings,
 } from './integrationSettingsSecrets';
+
+// The shared test setup configures neither APP_ENCRYPTION_KEY nor
+// APP_ENCRYPTION_KEY_ID, which is exactly the deployment shape this module now
+// refuses to seal in (encryptSecret would drop the AAD and write enc:v1). Give
+// the suite a real active key id so it exercises the v3 path that production
+// is required to run, and restore the ambient env afterwards so no other file
+// in this worker inherits it.
+const priorEncryptionKey = process.env.APP_ENCRYPTION_KEY;
+const priorEncryptionKeyId = process.env.APP_ENCRYPTION_KEY_ID;
+
+beforeAll(() => {
+  process.env.APP_ENCRYPTION_KEY = 'integration-settings-secrets-test-key-material';
+  process.env.APP_ENCRYPTION_KEY_ID = 'integration-settings-test';
+});
+
+afterAll(() => {
+  if (priorEncryptionKey === undefined) delete process.env.APP_ENCRYPTION_KEY;
+  else process.env.APP_ENCRYPTION_KEY = priorEncryptionKey;
+  if (priorEncryptionKeyId === undefined) delete process.env.APP_ENCRYPTION_KEY_ID;
+  else process.env.APP_ENCRYPTION_KEY_ID = priorEncryptionKeyId;
+});
 
 describe('integration settings secret storage', () => {
   it('encrypts secret-shaped fields and masks response projections', () => {
@@ -20,7 +43,7 @@ describe('integration settings secret storage', () => {
 
     expect(sealed.credentials).not.toEqual(input.credentials);
     const password = (sealed.credentials as Record<string, unknown>).password as string;
-    expect(password).toMatch(/^enc:v[123]:/);
+    expect(password).toMatch(/^enc:v3:integration-settings-test:/);
     expect(decryptSecret(password, {
       aad: integrationSettingsSecretAad('ticketing', 'org-a', ['credentials', 'password']),
     })).toBe('private-password');
@@ -135,5 +158,168 @@ describe('integration settings secret storage', () => {
       second.webhooks as { endpoints: Array<Record<string, unknown>> }
     ).endpoints[0];
     expect(secondEndpoint).toEqual(firstEndpoint);
+  });
+
+  it('seals with AAD-bound v3 ciphertext, never the non-AAD v1 fallback', () => {
+    const sealed = sealIntegrationSettings(
+      { apiKey: 'private-api-key' },
+      undefined,
+      'monitoring',
+      'org-a',
+    );
+
+    // enc:v1 is the shape encryptSecret falls back to when no key id is
+    // configured. It encrypts, but it silently ignores the `aad` option, so a
+    // v1 value here would mean the family/org/path binding does not exist.
+    expect(sealed.apiKey).toMatch(/^enc:v3:integration-settings-test:/);
+    expect(sealed.apiKey).not.toMatch(/^enc:v1:/);
+    expect(
+      decryptSecret(sealed.apiKey as string, {
+        aad: integrationSettingsSecretAad('monitoring', 'org-a', ['apiKey']),
+      }),
+    ).toBe('private-api-key');
+  });
+
+  it('refuses to seal a credential when no active encryption key id is configured', () => {
+    const restore = process.env.APP_ENCRYPTION_KEY_ID;
+    delete process.env.APP_ENCRYPTION_KEY_ID;
+    try {
+      expect(() =>
+        sealIntegrationSettings({ apiKey: 'private-api-key' }, undefined, 'monitoring', 'org-a'),
+      ).toThrow(IntegrationSecretsUnavailableError);
+      expect(() =>
+        sealIntegrationSettings({ apiKey: 'private-api-key' }, undefined, 'monitoring', 'org-a'),
+      ).toThrow(/APP_ENCRYPTION_KEY_ID/);
+
+      // A payload with no credential in it is unaffected: the assertion is made
+      // at the point of encryption, so non-secret settings still save.
+      expect(
+        sealIntegrationSettings(
+          { enabled: true, defaultChannel: '#ops' },
+          undefined,
+          'monitoring',
+          'org-a',
+        ),
+      ).toEqual({ enabled: true, defaultChannel: '#ops' });
+    } finally {
+      if (restore === undefined) delete process.env.APP_ENCRYPTION_KEY_ID;
+      else process.env.APP_ENCRYPTION_KEY_ID = restore;
+    }
+  });
+
+  describe('credential-shaped field-name matching', () => {
+    // The six names that the previous exact-name denylist missed entirely.
+    it.each([
+      'apiToken',
+      'signingSecret',
+      'sharedSecret',
+      'bearerToken',
+      'dsn',
+      'passphrase',
+    ])('treats %s as a credential', (field) => {
+      expect(isSecretFieldName(field)).toBe(true);
+
+      const sealed = sealIntegrationSettings({ [field]: 'private-value' }, undefined, 'psa', 'org-a');
+      expect(sealed[field]).toMatch(/^enc:v3:/);
+      expect(maskIntegrationSettings(sealed)[field]).toBe(INTEGRATION_MASKED_SECRET);
+    });
+
+    // Everything the previous exact-name set already covered must stay covered.
+    it.each([
+      'accessToken',
+      'apiKey',
+      'apiSecret',
+      'authToken',
+      'clientSecret',
+      'connectionString',
+      'integrationKey',
+      'password',
+      'privateKey',
+      'refreshToken',
+      'secret',
+      'secretKey',
+      'token',
+      'webhookSecret',
+      'webhookUrl',
+    ])('still treats %s as a credential', (field) => {
+      expect(isSecretFieldName(field)).toBe(true);
+    });
+
+    // Shipped non-credential fields of the four compatibility stores, plus the
+    // explicit allowlist entries, must keep round-tripping in clear.
+    it.each([
+      'enabled',
+      'provider',
+      'baseUrl',
+      'workspaceId',
+      'workspaceName',
+      'defaultChannel',
+      'clientId',
+      'tenantId',
+      'severity',
+      'username',
+      'keyId',
+      'keyName',
+      'tokenCount',
+    ])('does not treat %s as a credential', (field) => {
+      expect(isSecretFieldName(field)).toBe(false);
+    });
+
+    it('seals a credential-named STRING but walks a credential-named CONTAINER', () => {
+      // 'credentials' contains the 'credential' part. As a string it is a leaf
+      // secret and must be sealed; as an object it is a container whose leaves
+      // are judged by their own names, so the password seals and the username
+      // keeps round-tripping in clear.
+      const asString = sealIntegrationSettings(
+        { credentials: 'user:private-password' },
+        undefined,
+        'ticketing',
+        'org-a',
+      );
+      expect(asString.credentials).toMatch(/^enc:v3:/);
+      expect(maskIntegrationSettings(asString)).toEqual({
+        credentials: INTEGRATION_MASKED_SECRET,
+      });
+
+      const asContainer = sealIntegrationSettings(
+        { credentials: { username: 'agent', password: 'private-password' } },
+        undefined,
+        'ticketing',
+        'org-a',
+      );
+      const sealedContainer = asContainer.credentials as Record<string, unknown>;
+      expect(sealedContainer.username).toBe('agent');
+      expect(sealedContainer.password).toMatch(/^enc:v3:/);
+
+      // The masked projection must WALK the container. Returning it untouched
+      // would hand the reader the raw ciphertext of everything inside it.
+      expect(maskIntegrationSettings(asContainer)).toEqual({
+        credentials: { username: 'agent', password: INTEGRATION_MASKED_SECRET },
+      });
+    });
+
+    it('rejects a non-string, non-container value at a credential-shaped name', () => {
+      expect(() =>
+        sealIntegrationSettings({ apiKey: 12345 }, undefined, 'psa', 'org-a'),
+      ).toThrow(InvalidIntegrationSecretError);
+    });
+
+    it('leaves allowlisted names unsealed and unmasked end to end', () => {
+      const sealed = sealIntegrationSettings(
+        { keyName: 'primary', tokenCount: '3', apiToken: 'private-token' },
+        undefined,
+        'ticketing',
+        'org-a',
+      );
+
+      expect(sealed.keyName).toBe('primary');
+      expect(sealed.tokenCount).toBe('3');
+      expect(sealed.apiToken).toMatch(/^enc:v3:/);
+      expect(maskIntegrationSettings(sealed)).toEqual({
+        keyName: 'primary',
+        tokenCount: '3',
+        apiToken: INTEGRATION_MASKED_SECRET,
+      });
+    });
   });
 });

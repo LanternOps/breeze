@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 vi.mock('../middleware/auth', () => ({
@@ -23,6 +23,26 @@ vi.mock('../services/auditEvents', () => ({
 }));
 
 import { integrationRoutes } from './integrations';
+
+// These routes seal provider credentials with AAD-bound enc:v3 ciphertext and
+// fail closed (503) when no active key id is configured — which is what the
+// shared test setup leaves behind. Production is required to set this (see the
+// APP_ENCRYPTION_KEY_ID rule in config/validate.ts); mirror that here so the
+// suite exercises the configured path, and restore the ambient env afterwards.
+const priorEncryptionKey = process.env.APP_ENCRYPTION_KEY;
+const priorEncryptionKeyId = process.env.APP_ENCRYPTION_KEY_ID;
+
+beforeAll(() => {
+  process.env.APP_ENCRYPTION_KEY = 'integration-routes-test-key-material';
+  process.env.APP_ENCRYPTION_KEY_ID = 'integration-routes-test';
+});
+
+afterAll(() => {
+  if (priorEncryptionKey === undefined) delete process.env.APP_ENCRYPTION_KEY;
+  else process.env.APP_ENCRYPTION_KEY = priorEncryptionKey;
+  if (priorEncryptionKeyId === undefined) delete process.env.APP_ENCRYPTION_KEY_ID;
+  else process.env.APP_ENCRYPTION_KEY_ID = priorEncryptionKeyId;
+});
 
 describe('integration compatibility routes', () => {
   let app: Hono;
@@ -267,5 +287,35 @@ describe('integration compatibility routes', () => {
       body: JSON.stringify({ provider: 'connectwise' })
     });
     expect(test.status).toBe(200);
+  });
+
+  it('refuses the write with 503 when no active encryption key id is configured', async () => {
+    const restore = process.env.APP_ENCRYPTION_KEY_ID;
+    delete process.env.APP_ENCRYPTION_KEY_ID;
+    try {
+      const save = await app.request('/integrations/ticketing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ provider: 'example', apiKey: 'unsealable-api-key' })
+      });
+
+      expect(save.status).toBe(503);
+      const body = await save.json();
+      expect(body.error).toContain('APP_ENCRYPTION_KEY_ID');
+    } finally {
+      if (restore === undefined) delete process.env.APP_ENCRYPTION_KEY_ID;
+      else process.env.APP_ENCRYPTION_KEY_ID = restore;
+    }
+
+    // Nothing was stored. The compatibility maps are module-level and outlive
+    // each test's app, so assert on the credential itself rather than on the
+    // store being empty: the refused write must not have left a plaintext or
+    // v1-sealed value behind for a reader to pick up.
+    const read = await app.request('/integrations/ticketing', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+    expect(read.status).toBe(200);
+    expect(await read.text()).not.toContain('unsealable-api-key');
   });
 });

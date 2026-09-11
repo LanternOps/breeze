@@ -49,6 +49,11 @@ const validEnv = {
   // never guesses its compatibility posture. Tests that assert the
   // missing/invalid throw override this.
   EVENT_PERMISSION_EPOCH_MODE: 'compat',
+  // Production-required (SEC-065): integration provider credentials are sealed
+  // with AAD-bound enc:v3 ciphertext and fail closed without an active key id.
+  // Supplied here so the suite's production happy-path tests don't trip it; the
+  // test that asserts the throw overrides it explicitly.
+  APP_ENCRYPTION_KEY_ID: 'app-test-key-1',
 };
 
 describe('validateConfig', () => {
@@ -279,6 +284,31 @@ describe('validateConfig', () => {
         M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID: '',
       }, () => {
         expect(() => validateConfig()).toThrow(/M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID/);
+      });
+    });
+
+    it('requires APP_ENCRYPTION_KEY_ID in production for integration credential sealing', () => {
+      // No feature flag gates /integrations/{communication,monitoring,ticketing,psa}
+      // — they are mounted unconditionally under the default BREEZE_ROLE 'all',
+      // so in production the key id is required outright. Without it,
+      // encryptSecret drops the AAD and writes non-AAD enc:v1, and
+      // sealIntegrationSettings refuses the write with a runtime 503.
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        APP_ENCRYPTION_KEY_ID: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/APP_ENCRYPTION_KEY_ID/);
+      });
+    });
+
+    it('does not require APP_ENCRYPTION_KEY_ID outside production', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'development',
+        APP_ENCRYPTION_KEY_ID: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow(/APP_ENCRYPTION_KEY_ID/);
       });
     });
 

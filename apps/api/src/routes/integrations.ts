@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import {
+  IntegrationSecretsUnavailableError,
   InvalidIntegrationSecretError,
   maskIntegrationSettings,
   sealIntegrationSettings,
@@ -112,12 +113,19 @@ function protectSettings(
   existing: Record<string, unknown> | undefined,
   family: string,
   orgId: string,
-): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
+): { ok: true; value: Record<string, unknown> } | { ok: false; error: string; status: 400 | 503 } {
   try {
     return { ok: true, value: sealIntegrationSettings(body, existing, family, orgId) };
   } catch (error) {
+    // Operator misconfiguration, not a bad request: the caller cannot fix it by
+    // changing the payload, so 503 rather than 400. These routes already
+    // require organizations:write + MFA, so the operator-actionable message is
+    // not being handed to an anonymous or read-only caller.
+    if (error instanceof IntegrationSecretsUnavailableError) {
+      return { ok: false, error: error.message, status: 503 };
+    }
     if (error instanceof InvalidIntegrationSecretError) {
-      return { ok: false, error: error.message };
+      return { ok: false, error: error.message, status: 400 };
     }
     throw error;
   }
@@ -162,7 +170,7 @@ for (const provider of ['slack', 'teams', 'discord'] as const) {
       `communication.${provider}`,
       orgResult.orgId,
     );
-    if (!protectedBody.ok) return c.json({ error: protectedBody.error }, 400);
+    if (!protectedBody.ok) return c.json({ error: protectedBody.error }, protectedBody.status);
     const updated = { ...existing, [provider]: protectedBody.value };
     communicationSettings.set(orgResult.orgId, updated);
 
@@ -208,7 +216,7 @@ integrationRoutes.put('/monitoring', requireScope('organization', 'partner', 'sy
     'monitoring',
     orgResult.orgId,
   );
-  if (!protectedBody.ok) return c.json({ error: protectedBody.error }, 400);
+  if (!protectedBody.ok) return c.json({ error: protectedBody.error }, protectedBody.status);
   monitoringSettings.set(orgResult.orgId, protectedBody.value);
   return c.json({ success: true, data: maskIntegrationSettings(protectedBody.value) });
 });
@@ -239,7 +247,7 @@ integrationRoutes.post('/ticketing', requireScope('organization', 'partner', 'sy
   }
 
   const protectedBody = protectSettings(body, ticketingSettings.get(orgResult.orgId), 'ticketing', orgResult.orgId);
-  if (!protectedBody.ok) return c.json({ error: protectedBody.error }, 400);
+  if (!protectedBody.ok) return c.json({ error: protectedBody.error }, protectedBody.status);
   ticketingSettings.set(orgResult.orgId, protectedBody.value);
   return c.json({
     success: true,
@@ -279,7 +287,7 @@ integrationRoutes.post('/psa', requireScope('organization', 'partner', 'system')
   }
 
   const protectedBody = protectSettings(body, psaSettings.get(orgResult.orgId), 'psa', orgResult.orgId);
-  if (!protectedBody.ok) return c.json({ error: protectedBody.error }, 400);
+  if (!protectedBody.ok) return c.json({ error: protectedBody.error }, protectedBody.status);
   psaSettings.set(orgResult.orgId, protectedBody.value);
   return c.json({ success: true, data: maskIntegrationSettings(protectedBody.value) });
 });
@@ -296,7 +304,7 @@ integrationRoutes.put('/psa', requireScope('organization', 'partner', 'system'),
   }
 
   const protectedBody = protectSettings(body, psaSettings.get(orgResult.orgId), 'psa', orgResult.orgId);
-  if (!protectedBody.ok) return c.json({ error: protectedBody.error }, 400);
+  if (!protectedBody.ok) return c.json({ error: protectedBody.error }, protectedBody.status);
   psaSettings.set(orgResult.orgId, protectedBody.value);
   return c.json({ success: true, data: maskIntegrationSettings(protectedBody.value) });
 });

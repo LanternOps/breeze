@@ -1890,6 +1890,37 @@ const envSchema = envObjectSchema
       });
     }
 
+    // Integration compatibility settings ↔ APP_ENCRYPTION_KEY_ID (SEC-065).
+    //
+    // /integrations/{communication,monitoring,ticketing,psa} seal every
+    // credential-shaped provider field with AAD-bound v3 ciphertext and REFUSE
+    // to seal without a key id: encryptSecret silently drops the `aad` option
+    // and writes non-AAD enc:v1 when none is configured, which would leave the
+    // family/organization/path binding absent with nothing to signal it.
+    //
+    // Unlike the two rules above, there is no feature flag to hang this off —
+    // integrationRoutes is mounted unconditionally in index.ts, and the default
+    // BREEZE_ROLE 'all' (single-container prod and every self-host) serves it.
+    // So the condition is simply "production". Development and test keep
+    // booting without a key id; they just get the runtime 503 from
+    // sealIntegrationSettings if they actually try to store a credential.
+    //
+    // Operator note: this is a NEW required production variable in the same
+    // class as IS_HOSTED and RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS. It must be
+    // present in .env AND mapped in the api service's `environment:` block —
+    // compose only interpolates variables it lists (the #570 gap class).
+    if (isProduction && !data.APP_ENCRYPTION_KEY_ID?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['APP_ENCRYPTION_KEY_ID'],
+        message:
+          'APP_ENCRYPTION_KEY_ID is required in production. Integration provider credentials '
+          + '(/integrations/{communication,monitoring,ticketing,psa}) are sealed with AAD-bound enc:v3 '
+          + 'ciphertext and fail closed without a key id; without it every credential save returns 503. '
+          + 'Set it alongside APP_ENCRYPTION_KEY and map it through the api service environment block.',
+      });
+    }
+
     // --- Native APNs push (all-or-none) ---
     // Push is optional, so an empty APNS_* set is fine. But a partial set
     // (e.g. team + bundle without the signing key) would silently fail to
