@@ -127,14 +127,47 @@ async function loadDeviceHierarchy(deviceId: string): Promise<DeviceHierarchy | 
   };
 }
 
+export type RoleOsFilterable = {
+  roleFilter?: string[] | null;
+  osFilter?: string[] | null;
+};
+
+export type DeviceRoleOs = {
+  deviceRole?: string | null;
+  osType?: string | null;
+};
+
+/**
+ * Pure predicate matching the SQL semantics of buildRoleOsFilterConditions:
+ * - NULL or undefined filter matches all (backward compatible).
+ * - Non-empty filter matches if device's role/os is contained in the array.
+ * - Empty array filter matches none (matches Postgres `x = ANY('{}')` which is false).
+ */
+export function matchesRoleOsFilter(
+  assignment: RoleOsFilterable,
+  device: DeviceRoleOs
+): boolean {
+  if (assignment.roleFilter != null) {
+    if (!device.deviceRole || !assignment.roleFilter.includes(device.deviceRole)) {
+      return false;
+    }
+  }
+  if (assignment.osFilter != null) {
+    if (!device.osType || !assignment.osFilter.includes(device.osType)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Build SQL conditions that enforce roleFilter and osFilter on assignments.
  * NULL filter = match all (backward compatible).
  */
-function buildRoleOsFilterConditions(hierarchy: DeviceHierarchy): SQL[] {
+export function buildRoleOsFilterConditions(device: DeviceRoleOs): SQL[] {
   return [
-    sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(hierarchy.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
-    sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(hierarchy.osType)} = ANY(${configPolicyAssignments.osFilter}))`,
+    sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(device.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
+    sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(device.osType)} = ANY(${configPolicyAssignments.osFilter}))`,
   ];
 }
 

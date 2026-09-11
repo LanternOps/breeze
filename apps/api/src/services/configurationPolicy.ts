@@ -38,6 +38,7 @@ import {
 } from '../db/schema';
 import { and, eq, desc, or, isNull, sql, inArray, asc, getTableColumns, SQL } from 'drizzle-orm';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
+import { buildRoleOsFilterConditions } from './featureConfigResolver';
 import {
   InvalidParentPolicyError,
   isCompatibleParent,
@@ -2427,8 +2428,7 @@ async function resolveEffectiveConfigWithExecutor(
       sql`(${sql.join(targetConditions, sql` OR `)})`,
       // Apply the optional role/os device-type filter (#1724). A NULL filter
       // matches all; a set filter gates the assignment to matching devices.
-      sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(device.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
-      sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(device.osType)} = ANY(${configPolicyAssignments.osFilter}))`
+      ...buildRoleOsFilterConditions(device),
     ))
       .orderBy(configPolicyAssignments.level, configPolicyAssignments.priority, configPolicyAssignments.createdAt);
 
