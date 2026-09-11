@@ -80,6 +80,12 @@ export const PERMISSION_GRANTS = {
   CONTRACTS_READ: { resource: 'contracts', action: 'read' },
   CONTRACTS_WRITE: { resource: 'contracts', action: 'write' },
   CONTRACTS_MANAGE: { resource: 'contracts', action: 'manage' },
+  // Organization document library + key dates (service deliverables, spec §10).
+  // Deliberately NOT folded into `contracts`: a runbook or an onboarding
+  // baseline is org-record content that outlives any contract, and a partner
+  // may want a technician who can file documents without touching billing.
+  DOCUMENTS_READ: { resource: 'documents', action: 'read' },
+  DOCUMENTS_WRITE: { resource: 'documents', action: 'write' },
 
   // Quotes / Proposals (billing program — sub-project 4)
   QUOTES_READ: { resource: 'quotes', action: 'read' },

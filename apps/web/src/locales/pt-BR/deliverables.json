@@ -80,7 +80,11 @@
     "rescheduledFrom": "Reagendada de {{date}}",
     "deliveryNote": "Observação da entrega",
     "waivedReason": "Motivo da dispensa",
-    "newDueDate": "Nova data de vencimento"
+    "newDueDate": "Nova data de vencimento",
+    "uploadEvidence": "Enviar um arquivo como evidência",
+    "uploadEvidenceHint": "PDF, JPEG, PNG ou WebP, até 10 MB. O arquivo é arquivado na biblioteca de documentos desta organização.",
+    "evidenceDocument": "Documento",
+    "upload": "Enviar"
   },
   "evidence": {
     "reportRun": "Execução de relatório",
@@ -99,7 +103,11 @@
     "duplicateName": "Já existe uma entrega com este nome nesta organização.",
     "loadFailed": "Não foi possível carregar as entregas.",
     "saveFailed": "Não foi possível salvar a entrega.",
-    "actionFailed": "Não foi possível atualizar a ocorrência."
+    "actionFailed": "Não foi possível atualizar a ocorrência.",
+    "uploadFailed": "Não foi possível enviar o arquivo de evidência.",
+    "tooLarge": "Esse arquivo é maior que 10 MB.",
+    "unsupportedType": "Só é possível anexar arquivos PDF, JPEG, PNG e WebP.",
+    "storageUnavailable": "O armazenamento de documentos está indisponível no momento. Tente novamente em instantes."
   },
   "confirm": {
     "deactivate": "Desativar {{name}}? As ocorrências abertas serão encerradas e nenhuma nova será agendada.",
@@ -144,6 +152,7 @@
     "rescheduled": "Ocorrência reagendada",
     "evidenceAdded": "Evidência adicionada",
     "evidenceRemoved": "Evidência removida",
-    "deactivated": "Entrega desativada"
+    "deactivated": "Entrega desativada",
+    "evidenceUploaded": "Evidência enviada"
   }
 }

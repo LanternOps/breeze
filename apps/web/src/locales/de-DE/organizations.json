@@ -32,6 +32,7 @@
       "tickets": "Tickets",
       "billing": "Verträge & Abrechnung",
       "service": "Leistungen",
+      "documents": "Dokumente",
       "activity": "Aktivität"
     },
     "comingSoon": {
@@ -127,6 +128,74 @@
         "contracts": "Verträge",
         "invoices": "Rechnungen",
         "quotes": "Angebote"
+      }
+    },
+    "documents": {
+      "title": "Dokumente",
+      "subtitle": "Runbooks, Baselines, Richtlinien und Servicenachweise für diese Organisation.",
+      "empty": "Noch keine Dokumente. Laden Sie ein Runbook, eine Baseline oder eine unterschriebene Richtlinie hoch, um die Bibliothek zu starten.",
+      "emptyFiltered": "Keine Dokumente in dieser Kategorie.",
+      "loadFailed": "Dokumente konnten nicht geladen werden.",
+      "upload": "Dokument hochladen",
+      "uploading": "Wird hochgeladen…",
+      "replace": "Ersetzen",
+      "download": "Herunterladen",
+      "delete": "Löschen",
+      "deleteConfirm": "„{{title}}“ löschen? Dadurch werden die Datei und alle früheren Versionen entfernt. Dies kann nicht rückgängig gemacht werden.",
+      "edit": "Bearbeiten",
+      "save": "Speichern",
+      "cancel": "Abbrechen",
+      "versions": "Versionsverlauf",
+      "showSuperseded": "Frühere Versionen anzeigen",
+      "form": {
+        "title": "Titel",
+        "description": "Beschreibung",
+        "category": "Kategorie",
+        "portalVisible": "Im Kundenportal sichtbar",
+        "file": "Datei",
+        "fileHint": "PDF, JPEG, PNG oder WebP, bis zu 10 MB.",
+        "replaceHint": "Die aktuelle Version wird als Verlauf aufbewahrt, und die neue Datei wird zur aktuellen Version."
+      },
+      "filter": {
+        "all": "Alle Kategorien"
+      },
+      "category": {
+        "baseline": "Basislinie",
+        "runbook": "Betriebshandbuch",
+        "policy": "Richtlinie",
+        "evidence": "Nachweis",
+        "report": "Bericht",
+        "export": "Exportdatei",
+        "other": "Sonstiges"
+      },
+      "column": {
+        "title": "Titel",
+        "category": "Kategorie",
+        "size": "Größe",
+        "uploaded": "Hochgeladen",
+        "portal": "Kundenportal",
+        "actions": "Aktionen"
+      },
+      "badge": {
+        "superseded": "Frühere Version",
+        "portal": "Im Portal"
+      },
+      "errors": {
+        "tooLarge": "Diese Datei ist größer als 10 MB.",
+        "unsupportedType": "Es können nur PDF-, JPEG-, PNG- und WebP-Dateien gespeichert werden.",
+        "storageUnavailable": "Die Dokumentenspeicherung ist derzeit nicht verfügbar. Versuchen Sie es in Kürze erneut.",
+        "notHead": "Dieses Dokument wurde bereits ersetzt. Laden Sie die Seite neu und arbeiten Sie mit der aktuellen Version.",
+        "emptyFile": "Diese Datei ist leer.",
+        "uploadFailed": "Das Dokument konnte nicht hochgeladen werden.",
+        "updateFailed": "Das Dokument konnte nicht gespeichert werden.",
+        "deleteFailed": "Das Dokument konnte nicht gelöscht werden.",
+        "downloadFailed": "Das Dokument konnte nicht heruntergeladen werden."
+      },
+      "toast": {
+        "uploaded": "Dokument hochgeladen",
+        "replaced": "Neue Version hochgeladen",
+        "updated": "Dokument aktualisiert",
+        "deleted": "Dokument gelöscht"
       }
     }
   }

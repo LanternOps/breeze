@@ -40,7 +40,7 @@ import {
   materializeOccurrences, openOccurrence, markOccurrenceMissed, applyTicketStatusChange, markDueOccurrencesMissedForDeliverable,
   openDueOccurrencesForDeliverable, periodLabel, applyContractCancelledToDeliverables,
   removeEvidence, reopenOccurrence, rescheduleOccurrence, summarizeStatus, updateDeliverable, waiveOccurrence,
-  DeliverableServiceError,
+  DeliverableServiceError, getOccurrenceOr404,
 } from './serviceDeliverableService';
 
 type MockCalls = { mock: { calls: unknown[][]; invocationCallOrder: number[] } };
@@ -246,6 +246,61 @@ describe('serviceDeliverableService', () => {
       expect(lastSet()).toMatchObject({ active: false });
       queueResult([]);
       await expect(deactivateDeliverable('org1', 'd1', actor)).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+    });
+  });
+
+  describe('document evidence (W03)', () => {
+    const DOC_ID = '33333333-3333-4333-8333-333333333333';
+
+    it('links a live document of the same org, pinned to that exact version', async () => {
+      queueResult([occ({ status: 'open' })]); // load
+      queueResult([{ id: DOC_ID }]); // document lookup (org + not deleted)
+      queueResult([]); // insert
+      queueResult([occ({ status: 'open' })]); // reload
+      queueResult([{ id: 'e1', kind: 'document', documentId: DOC_ID, reportId: null, reportRunId: null, createdAt: new Date('2026-10-20T00:00:00Z') }]);
+      const view = await addEvidence('org1', 'o1', { kind: 'document', documentId: DOC_ID }, actor);
+      expect(lastValues()).toMatchObject({ orgId: 'org1', occurrenceId: 'o1', kind: 'document', documentId: DOC_ID, reportId: null, reportRunId: null, createdByUserId: 'u1' });
+      expect(view.evidence[0]).toMatchObject({ kind: 'document', documentId: DOC_ID });
+    });
+
+    it('a document of another org (or a deleted one) is 404, not 403, and nothing is inserted', async () => {
+      queueResult([occ({ status: 'open' })]);
+      queueResult([]); // lookup filtered by org_id + deleted_at IS NULL finds nothing
+      await expect(addEvidence('org1', 'o1', { kind: 'document', documentId: DOC_ID }, actor)).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+      expect(chain.insert.mock.calls).toHaveLength(0);
+      const params = chain.where.mock.calls.flatMap((c) => boundParams(c[0]));
+      expect(params).toEqual(expect.arrayContaining([DOC_ID, 'org1']));
+    });
+
+    it('delivering with a document evidence ref satisfies artifactRequired', async () => {
+      queueResult([occ({ status: 'open', artifactRequired: true })]); // load
+      queueResult([{ id: DOC_ID }]); // document lookup
+      queueResult([]); // insert
+      queueResult([{ n: 1 }]); // evidence count
+      queueResult([{ id: 'o1' }]); // update returning
+      queueResult([occ({ status: 'delivered', deliveredAt: new Date('2026-10-20T00:00:00Z'), deliveredVia: 'explicit' })]);
+      queueResult([{ id: 'e1', kind: 'document', documentId: DOC_ID, reportId: null, reportRunId: null, createdAt: new Date('2026-10-20T00:00:00Z') }]);
+      const view = await deliverOccurrence('org1', 'o1', { evidence: [{ kind: 'document', documentId: DOC_ID }] }, actor);
+      expect(view.status).toBe('delivered');
+      expect(lastSet()).toMatchObject({ status: 'delivered', deliveredVia: 'explicit' });
+    });
+  });
+
+  describe('getOccurrenceOr404 (W03)', () => {
+    it('answers 404 — never 403 — for an occurrence of another org, without a query', async () => {
+      await expect(getOccurrenceOr404('org1', 'o1', { ...actor, accessibleOrgIds: ['org9'] })).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+      expect(chain.select.mock.calls).toHaveLength(0);
+    });
+    it('404s a missing occurrence', async () => {
+      queueResult([]);
+      await expect(getOccurrenceOr404('org1', 'o1', actor)).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+    });
+    it('returns the occurrence view with its evidence', async () => {
+      queueResult([occ({ status: 'open' })]);
+      queueResult([]);
+      const view = await getOccurrenceOr404('org1', 'o1', actor);
+      expect(view).toMatchObject({ id: 'o1', deliverableId: 'd1', evidence: [] });
+      expect(view).not.toHaveProperty('artifactRequired');
     });
   });
 
@@ -457,7 +512,9 @@ describe('serviceDeliverableService', () => {
 
     it('an evidence kind the service does not know → 500 UNSUPPORTED_EVIDENCE_KIND, nothing inserted', async () => {
       queueResult([occ({ status: 'open' })]);
-      await expect(addEvidence('org1', 'o1', { kind: 'document', documentId: 'doc1' } as never, actor))
+      // W03 made 'document' a real kind; the exhaustive guard is still pinned
+      // with a kind that exists in neither the enum nor the union.
+      await expect(addEvidence('org1', 'o1', { kind: 'ticket', ticketId: 'x' } as never, actor))
         .rejects.toMatchObject({ status: 500, code: 'UNSUPPORTED_EVIDENCE_KIND' });
       expect(chain.insert.mock.calls).toHaveLength(0);
     });

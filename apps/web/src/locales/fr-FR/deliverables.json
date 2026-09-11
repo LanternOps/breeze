@@ -80,7 +80,11 @@
     "rescheduledFrom": "Replanifiée depuis le {{date}}",
     "deliveryNote": "Note de livraison",
     "waivedReason": "Motif de la dispense",
-    "newDueDate": "Nouvelle échéance"
+    "newDueDate": "Nouvelle échéance",
+    "uploadEvidence": "Téléverser un fichier comme justificatif",
+    "uploadEvidenceHint": "PDF, JPEG, PNG ou WebP, jusqu'à 10 Mo. Le fichier est classé dans la bibliothèque de documents de cette organisation.",
+    "evidenceDocument": "Document justificatif",
+    "upload": "Téléverser"
   },
   "evidence": {
     "reportRun": "Exécution de rapport",
@@ -99,7 +103,11 @@
     "duplicateName": "Un livrable portant ce nom existe déjà pour cette organisation.",
     "loadFailed": "Impossible de charger les livrables.",
     "saveFailed": "Impossible d'enregistrer le livrable.",
-    "actionFailed": "Impossible de mettre à jour l'occurrence."
+    "actionFailed": "Impossible de mettre à jour l'occurrence.",
+    "uploadFailed": "Impossible de téléverser le fichier justificatif.",
+    "tooLarge": "Ce fichier dépasse 10 Mo.",
+    "unsupportedType": "Seuls les fichiers PDF, JPEG, PNG et WebP peuvent être joints.",
+    "storageUnavailable": "Le stockage de documents est indisponible pour le moment. Réessayez sous peu."
   },
   "confirm": {
     "deactivate": "Désactiver {{name}} ? Les occurrences ouvertes seront clôturées et aucune nouvelle ne sera planifiée.",
@@ -144,6 +152,7 @@
     "rescheduled": "Occurrence replanifiée",
     "evidenceAdded": "Justificatif ajouté",
     "evidenceRemoved": "Justificatif retiré",
-    "deactivated": "Livrable désactivé"
+    "deactivated": "Livrable désactivé",
+    "evidenceUploaded": "Justificatif téléversé"
   }
 }

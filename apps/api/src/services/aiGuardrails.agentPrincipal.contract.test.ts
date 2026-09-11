@@ -216,6 +216,9 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_configuration_policies',
   'list_contracts',
   'list_invoices',
+  // W03: read-only document METADATA, same admission shape as the sibling
+  // business-object list tools; bytes are not reachable from any tool.
+  'list_org_documents',
   'list_organizations',
   'list_playbooks',
   'list_quotes',

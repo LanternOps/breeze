@@ -80,7 +80,11 @@
     "rescheduledFrom": "Rescheduled from {{date}}",
     "deliveryNote": "Delivery note",
     "waivedReason": "Reason for waiving",
-    "newDueDate": "New due date"
+    "newDueDate": "New due date",
+    "uploadEvidence": "Upload a file as evidence",
+    "uploadEvidenceHint": "PDF, JPEG, PNG or WebP, up to 10 MB. The file is filed in this organization’s document library.",
+    "evidenceDocument": "Document",
+    "upload": "Upload"
   },
   "evidence": {
     "reportRun": "Report run",
@@ -99,7 +103,11 @@
     "duplicateName": "A deliverable with this name already exists for this organization.",
     "loadFailed": "Could not load deliverables.",
     "saveFailed": "Could not save the deliverable.",
-    "actionFailed": "Could not update the occurrence."
+    "actionFailed": "Could not update the occurrence.",
+    "uploadFailed": "Could not upload the evidence file.",
+    "tooLarge": "That file is larger than 10 MB.",
+    "unsupportedType": "Only PDF, JPEG, PNG and WebP files can be attached.",
+    "storageUnavailable": "Document storage is unavailable right now. Try again shortly."
   },
   "confirm": {
     "deactivate": "Deactivate {{name}}? Open occurrences will be closed and no new ones will be scheduled.",
@@ -144,6 +152,7 @@
     "rescheduled": "Occurrence rescheduled",
     "evidenceAdded": "Evidence added",
     "evidenceRemoved": "Evidence removed",
-    "deactivated": "Deliverable deactivated"
+    "deactivated": "Deliverable deactivated",
+    "evidenceUploaded": "Evidence uploaded"
   }
 }

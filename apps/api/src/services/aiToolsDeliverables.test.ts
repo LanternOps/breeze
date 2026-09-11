@@ -24,11 +24,16 @@ vi.mock('./orgKeyDateService', async (orig) => ({
   ...(await orig<typeof import('./orgKeyDateService')>()),
   listKeyDates: svc.listKeyDates, createKeyDate: svc.createKeyDate, updateKeyDate: svc.updateKeyDate, deleteKeyDate: svc.deleteKeyDate,
 }));
+// W03: the document tools' service, mocked whole (no DB, no bucket).
+const docs = vi.hoisted(() => ({ listDocuments: vi.fn(), updateDocument: vi.fn(), supersedeDocument: vi.fn() }));
+vi.mock('./orgDocumentService', () => docs);
 
 import { aiTools } from './aiTools';
 import { toolInputSchemas } from './aiToolSchemas';
 import { TOOL_PERMISSIONS, TIER3_ACTIONS } from './aiGuardrails';
 import { TOOL_TIERS } from './aiAgentSdkTools';
+import { registerDeliverableTools } from './aiToolsDeliverables';
+import type { AiTool } from './aiTools';
 
 const NAMES = ['list_deliverables', 'manage_deliverables', 'manage_key_dates'] as const;
 const MANAGE_ACTIONS = ['create', 'update', 'deactivate', 'deliver', 'waive', 'reopen', 'reschedule', 'link_evidence'] as const;
@@ -181,5 +186,103 @@ describe('deliverable AI tools — handlers', () => {
   it('rethrows an unexpected error rather than masking it as a tool result', async () => {
     svc.listDeliverables.mockRejectedValue(new Error('db down'));
     await expect(aiTools.get('list_deliverables')!.handler({ orgId: ORG }, auth)).rejects.toThrow('db down');
+  });
+});
+
+// ── Org document tools (#5573 W03) ───────────────────────────────────────────
+
+describe('org document AI tools (#5573 W03)', () => {
+  const DOC = '44444444-4444-4444-8444-444444444444';
+  const DOC2 = '55555555-5555-4555-8555-555555555555';
+  const ACTOR = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: [ORG] };
+  const tool = (name: string): AiTool => {
+    const m = new Map<string, AiTool>();
+    registerDeliverableTools(m);
+    const t = m.get(name);
+    if (!t) throw new Error(`${name} not registered`);
+    return t;
+  };
+  const run = async (name: string, input: Record<string, unknown>, as = auth) => JSON.parse(await tool(name).handler(input, as));
+
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('registers both document tools at tier 2 at every site, alongside the three deliverable tools', () => {
+    for (const n of ['list_org_documents', 'manage_org_documents'] as const) {
+      expect(aiTools.get(n), `${n} not registered`).toBeDefined();
+      expect(aiTools.get(n)!.tier).toBe(2);
+      expect(toolInputSchemas[n], `${n} missing zod schema`).toBeDefined();
+      expect(TOOL_TIERS[n], `${n} missing SDK tier`).toBe(2);
+      expect(TOOL_PERMISSIONS[n], `${n} missing permissions`).toBeDefined();
+    }
+    for (const n of NAMES) expect(aiTools.get(n), `${n} dropped by the W03 merge`).toBeDefined();
+    expect(TOOL_PERMISSIONS.list_org_documents).toEqual({ resource: 'documents', action: 'read' });
+  });
+
+  it('list_org_documents returns heads only by default and reports the count', async () => {
+    docs.listDocuments.mockResolvedValueOnce([{ id: DOC, title: 'Runbook' }]);
+    expect(await run('list_org_documents', { orgId: ORG })).toEqual({ documents: [{ id: DOC, title: 'Runbook' }], showing: 1 });
+    expect(docs.listDocuments).toHaveBeenCalledWith(ORG, { category: undefined, includeSuperseded: false }, ACTOR);
+  });
+
+  it('is NOT limited to partner scope — the documents routes serve org-scope roles', async () => {
+    docs.listDocuments.mockResolvedValueOnce([]);
+    const orgAuth = { user: { id: 'u2' }, scope: 'organization', partnerId: 'p1', accessibleOrgIds: [ORG] } as never;
+    expect(await run('list_org_documents', { orgId: ORG }, orgAuth)).toEqual({ documents: [], showing: 0 });
+  });
+
+  it('list_org_documents promises metadata only, never bytes', () => {
+    const d = tool('list_org_documents').definition.description ?? '';
+    expect(d).toMatch(/metadata only/i);
+    expect(d).toMatch(/never the file bytes/i);
+  });
+
+  it('manage_org_documents has NO byte-upload action', () => {
+    const t = tool('manage_org_documents');
+    const actions = (t.definition.input_schema.properties as Record<string, { enum?: string[] }>).action!.enum;
+    expect(actions).toEqual(['update_metadata', 'set_portal_visibility', 'supersede']);
+    expect(JSON.stringify(t.definition)).not.toMatch(/base64|upload|contentBase/i);
+  });
+
+  it('rejects a missing documentId before coercing it to the string "undefined"', async () => {
+    const out = await run('manage_org_documents', { action: 'set_portal_visibility', orgId: ORG, portalVisible: true });
+    expect(out).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(out.error).toContain('documentId');
+    expect(docs.updateDocument).not.toHaveBeenCalled();
+  });
+
+  it('set_portal_visibility patches ONLY portalVisible, and refuses a string "false"', async () => {
+    docs.updateDocument.mockResolvedValueOnce({ id: DOC, portalVisible: true });
+    await run('manage_org_documents', { action: 'set_portal_visibility', orgId: ORG, documentId: DOC, portalVisible: true });
+    expect(docs.updateDocument).toHaveBeenCalledWith(ORG, DOC, { portalVisible: true }, ACTOR);
+    docs.updateDocument.mockClear();
+    const out = await run('manage_org_documents', { action: 'set_portal_visibility', orgId: ORG, documentId: DOC, portalVisible: 'false' });
+    expect(out).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(docs.updateDocument).not.toHaveBeenCalled();
+  });
+
+  it('update_metadata validates the patch (unknown key rejected) and forwards a valid one', async () => {
+    const bad = await run('manage_org_documents', { action: 'update_metadata', orgId: ORG, documentId: DOC, patch: { storageKey: 'x' } });
+    expect(bad).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(docs.updateDocument).not.toHaveBeenCalled();
+    docs.updateDocument.mockResolvedValueOnce({ id: DOC, title: 'New' });
+    const ok = await run('manage_org_documents', { action: 'update_metadata', orgId: ORG, documentId: DOC, patch: { title: 'New', category: 'runbook' } });
+    expect(ok).toEqual({ id: DOC, title: 'New' });
+    expect(docs.updateDocument).toHaveBeenCalledWith(ORG, DOC, { title: 'New', category: 'runbook' }, ACTOR);
+  });
+
+  it('supersede links two documents', async () => {
+    docs.supersedeDocument.mockResolvedValueOnce({ id: DOC2, supersedesDocumentId: DOC });
+    await run('manage_org_documents', { action: 'supersede', orgId: ORG, documentId: DOC2, supersedesDocumentId: DOC });
+    expect(docs.supersedeDocument).toHaveBeenCalledWith(ORG, DOC2, DOC, ACTOR);
+  });
+
+  it('a document of another org answers a 404 JSON error, never a throw', async () => {
+    docs.updateDocument.mockRejectedValueOnce(new svc.DeliverableServiceError('Not found', 404, 'NOT_FOUND'));
+    expect(await run('manage_org_documents', { action: 'set_portal_visibility', orgId: ORG, documentId: DOC, portalVisible: false }))
+      .toEqual({ error: 'Not found', code: 'NOT_FOUND' });
+  });
+
+  it('an unknown action is a structured error', async () => {
+    expect(await run('manage_org_documents', { action: 'upload', orgId: ORG })).toMatchObject({ code: 'VALIDATION_ERROR' });
   });
 });
