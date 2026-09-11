@@ -3,6 +3,7 @@ import type { CreateKeyDateInput, UpdateKeyDateInput } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { addMonthsClamped } from './contractMath';
 import { createPlannedWorkTicket } from './plannedWorkTicket';
+import { captureException } from './sentry';
 import { buildAutomationEligibleOrgPredicate } from './tenantStatus';
 import { contracts, organizationKeyDates, organizations, users, type OrganizationKeyDateRow } from '../db/schema';
 import type { DeliverableActor } from './serviceDeliverableService';
@@ -236,32 +237,42 @@ export async function sweepKeyDateReminders(today: string): Promise<number> {
 
   let created = 0;
   for (const row of due) {
-    created += await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-      const claimed = await db.update(organizationKeyDates)
-        .set({ remindedForDate: row.date, updatedAt: new Date() })
-        .where(and(eq(organizationKeyDates.id, row.id),
-          sql`${organizationKeyDates.remindedForDate} IS DISTINCT FROM ${row.date}::date`))
-        .returning({ id: organizationKeyDates.id });
-      if (claimed.length === 0) return 0;
+    // Per row, like the roll-forward above: one tenant's failure must not cost
+    // every other tenant its reminders for the day.
+    try {
+      created += await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+        const claimed = await db.update(organizationKeyDates)
+          .set({ remindedForDate: row.date, updatedAt: new Date() })
+          .where(and(eq(organizationKeyDates.id, row.id),
+            sql`${organizationKeyDates.remindedForDate} IS DISTINCT FROM ${row.date}::date`))
+          .returning({ id: organizationKeyDates.id });
+        if (claimed.length === 0) return 0;
 
-      const ticket = await createPlannedWorkTicket({
-        orgId: row.orgId, workKind: 'deliverable',
-        subject: `Key date: ${row.label} — ${row.date}`,
-        description: `This ${String(row.kind).replace(/_/g, ' ')} key date falls on ${row.date}.`,
-        dueDate: new Date(`${row.date}T00:00:00.000Z`),
-        assigneeId: row.ownerUserId ?? null,
-        categoryId: null,
-      }, KEY_DATE_SWEEP_ACTOR, { orgId: row.orgId, keyDateId: row.id });
-      if (ticket.kind === 'service_management_off') {
-        console.warn('[deliverables] key-date reminder recorded without a ticket (Service Management off)',
-          `orgId=${row.orgId}`, `keyDateId=${row.id}`);
+        const ticket = await createPlannedWorkTicket({
+          orgId: row.orgId, workKind: 'deliverable',
+          subject: `Key date: ${row.label} — ${row.date}`,
+          description: `This ${String(row.kind).replace(/_/g, ' ')} key date falls on ${row.date}.`,
+          dueDate: new Date(`${row.date}T00:00:00.000Z`),
+          assigneeId: row.ownerUserId ?? null,
+          categoryId: null,
+        }, KEY_DATE_SWEEP_ACTOR, { orgId: row.orgId, keyDateId: row.id });
+        if (ticket.kind === 'service_management_off') {
+          console.warn('[deliverables] key-date reminder recorded without a ticket (Service Management off)',
+            `orgId=${row.orgId}`, `keyDateId=${row.id}`);
+          return 1;
+        }
+        await db.update(organizationKeyDates)
+          .set({ reminderTicketId: ticket.ticketId, updatedAt: new Date() })
+          .where(eq(organizationKeyDates.id, row.id));
         return 1;
-      }
-      await db.update(organizationKeyDates)
-        .set({ reminderTicketId: ticket.ticketId, updatedAt: new Date() })
-        .where(eq(organizationKeyDates.id, row.id));
-      return 1;
-    }, 'keyDateSweep.remind'));
+      }, 'keyDateSweep.remind'));
+    } catch (err) {
+      // The claim rolled back with the transaction, so tomorrow's run retries
+      // this key date; every other org's reminder still goes out today.
+      console.error('[deliverables] key-date reminder failed', `orgId=${row.orgId}`, `keyDateId=${row.id}`,
+        err instanceof Error ? err.message : String(err));
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
   }
   return created;
 }
@@ -281,22 +292,34 @@ function nextAnniversary(date: string, today: string): string {
  * date that was read: a concurrent edit by a technician wins.
  */
 export async function rollForwardAnnualKeyDates(today: string): Promise<number> {
-  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const stale = await db.select({ id: organizationKeyDates.id, date: organizationKeyDates.date })
+  const stale = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    db.select({ id: organizationKeyDates.id, orgId: organizationKeyDates.orgId, date: organizationKeyDates.date })
       .from(organizationKeyDates)
       .where(and(
         eq(organizationKeyDates.recursAnnually, true),
         lt(organizationKeyDates.date, today),
         buildAutomationEligibleOrgPredicate(organizationKeyDates.orgId),
-      ));
-    let rolled = 0;
-    for (const row of stale) {
-      const updated = await db.update(organizationKeyDates)
-        .set({ date: nextAnniversary(row.date, today), remindedForDate: null, reminderTicketId: null, updatedAt: new Date() })
-        .where(and(eq(organizationKeyDates.id, row.id), eq(organizationKeyDates.date, row.date)))
-        .returning({ id: organizationKeyDates.id });
+      )),
+    'keyDateSweep.selectStale'));
+
+  let rolled = 0;
+  for (const row of stale) {
+    // One transaction per row, and one failure per row: this is a fleet-wide
+    // loop, so a single tenant's bad row must not roll back every other
+    // tenant's roll-forward — nor abort the reminder pass that follows.
+    try {
+      const updated = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+        db.update(organizationKeyDates)
+          .set({ date: nextAnniversary(row.date, today), remindedForDate: null, reminderTicketId: null, updatedAt: new Date() })
+          .where(and(eq(organizationKeyDates.id, row.id), eq(organizationKeyDates.date, row.date)))
+          .returning({ id: organizationKeyDates.id }),
+        'keyDateSweep.rollForward'));
       rolled += updated.length;
+    } catch (err) {
+      console.error('[deliverables] key-date roll-forward failed', `orgId=${row.orgId}`, `keyDateId=${row.id}`,
+        err instanceof Error ? err.message : String(err));
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
-    return rolled;
-  }, 'keyDateSweep.rollForward'));
+  }
+  return rolled;
 }

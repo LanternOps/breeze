@@ -115,6 +115,52 @@ describe('deliverable AI tools — handlers', () => {
       { userId: 'u1', partnerId: 'p1', accessibleOrgIds: [ORG] });
   });
 
+  it('dispatches every manage_deliverables action to its own service function', async () => {
+    const DEL = '44444444-4444-4444-8444-444444444444';
+    svc.updateDeliverable.mockResolvedValue({ id: DEL });
+    svc.deactivateDeliverable.mockResolvedValue(undefined);
+    svc.reopenOccurrence.mockResolvedValue({ id: OCC });
+    svc.rescheduleOccurrence.mockResolvedValue({ id: OCC });
+    svc.waiveOccurrence.mockResolvedValue({ id: OCC });
+
+    await call('manage_deliverables', { action: 'update', orgId: ORG, deliverableId: DEL, patch: { name: 'Renamed' } });
+    expect(svc.updateDeliverable).toHaveBeenCalledWith(ORG, DEL, { name: 'Renamed' }, expect.anything());
+
+    expect(await call('manage_deliverables', { action: 'deactivate', orgId: ORG, deliverableId: DEL })).toEqual({ ok: true });
+    expect(svc.deactivateDeliverable).toHaveBeenCalledWith(ORG, DEL, expect.anything());
+
+    await call('manage_deliverables', { action: 'reopen', orgId: ORG, occurrenceId: OCC });
+    expect(svc.reopenOccurrence).toHaveBeenCalledWith(ORG, OCC, expect.anything());
+
+    await call('manage_deliverables', { action: 'reschedule', orgId: ORG, occurrenceId: OCC, dueAt: '2026-11-30' });
+    expect(svc.rescheduleOccurrence).toHaveBeenCalledWith(ORG, OCC, { dueAt: '2026-11-30' }, expect.anything());
+
+    await call('manage_deliverables', { action: 'waive', orgId: ORG, occurrenceId: OCC, reason: 'Client cancelled' });
+    expect(svc.waiveOccurrence).toHaveBeenCalledWith(ORG, OCC, { reason: 'Client cancelled' }, expect.anything());
+  });
+
+  it('dispatches every manage_key_dates write action to its own service function', async () => {
+    const KD = '55555555-5555-4555-8555-555555555555';
+    svc.createKeyDate.mockResolvedValue({ id: KD });
+    svc.updateKeyDate.mockResolvedValue({ id: KD });
+    svc.deleteKeyDate.mockResolvedValue(undefined);
+
+    await call('manage_key_dates', { action: 'create', orgId: ORG, input: { label: 'Renewal', date: '2027-03-01' } });
+    expect(svc.createKeyDate).toHaveBeenCalledWith(ORG, expect.objectContaining({ label: 'Renewal', date: '2027-03-01' }), expect.anything());
+
+    await call('manage_key_dates', { action: 'update', orgId: ORG, keyDateId: KD, patch: { remindDaysBefore: 30 } });
+    expect(svc.updateKeyDate).toHaveBeenCalledWith(ORG, KD, { remindDaysBefore: 30 }, expect.anything());
+
+    expect(await call('manage_key_dates', { action: 'delete', orgId: ORG, keyDateId: KD })).toEqual({ ok: true });
+    expect(svc.deleteKeyDate).toHaveBeenCalledWith(ORG, KD, expect.anything());
+  });
+
+  it('rejects a reschedule date that is not YYYY-MM-DD before the service sees it', async () => {
+    const out = await call('manage_deliverables', { action: 'reschedule', orgId: ORG, occurrenceId: OCC, dueAt: '30/11/2026' });
+    expect(out).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(svc.rescheduleOccurrence).not.toHaveBeenCalled();
+  });
+
   it('links an existing report run as evidence', async () => {
     svc.addEvidence.mockResolvedValue({ id: OCC });
     await call('manage_deliverables', { action: 'link_evidence', orgId: ORG, occurrenceId: OCC, reportRunId: RUN });

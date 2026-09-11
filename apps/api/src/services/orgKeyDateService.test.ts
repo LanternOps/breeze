@@ -6,6 +6,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 type QueuedQuery = { rows: unknown[] } | { error: unknown };
 const results: QueuedQuery[] = [];
 function queueResult(rows: unknown[]) { results.push({ rows }); }
+function queueError(error: unknown) { results.push({ error }); }
+
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 vi.mock('../db', () => {
   const makeChain = () => {
@@ -305,10 +308,16 @@ describe('orgKeyDateService', () => {
       } finally { warn.mockRestore(); }
     });
 
-    it('rethrows any other ticket failure (the claim rolls back with it)', async () => {
+    it('counts no reminder for any other ticket failure — the claim rolls back with the transaction and retries tomorrow', async () => {
       queueResult([]); queueResult([K]); queueResult([{ id: 'k1' }]);
       createTicketMock.mockRejectedValue(new Error('connection reset'));
-      await expect(svc.sweepKeyDateReminders('2027-01-01')).rejects.toThrow('connection reset');
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await svc.sweepKeyDateReminders('2027-01-01')).toBe(0);
+        expect(err).toHaveBeenCalledWith(expect.stringContaining('key-date reminder failed'), 'orgId=org1', 'keyDateId=k1', 'connection reset');
+      } finally { err.mockRestore(); }
+      // Only the claim was attempted; no ticket link was written.
+      expect(sets()).toHaveLength(1);
     });
   });
 
@@ -337,6 +346,35 @@ describe('orgKeyDateService', () => {
       queueResult([]);
       expect(await svc.rollForwardAnnualKeyDates('2026-09-10')).toBe(0);
       expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('one tenant\'s failing row never costs the rest of the fleet its roll-forward', async () => {
+      queueResult([{ id: 'k1', orgId: 'orgA', date: '2026-03-01' }, { id: 'k2', orgId: 'orgB', date: '2026-04-01' }]);
+      queueError(new Error('deadlock detected'));     // orgA's UPDATE
+      queueResult([{ id: 'k2' }]);                    // orgB's still applies
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await svc.rollForwardAnnualKeyDates('2026-09-10')).toBe(1);
+        expect(err).toHaveBeenCalledWith(expect.stringContaining('roll-forward failed'), 'orgId=orgA', 'keyDateId=k1', 'deadlock detected');
+      } finally { err.mockRestore(); }
+      expect(sets().at(-1)).toMatchObject({ date: '2027-04-01' });
+    });
+  });
+
+  describe('fleet isolation of the reminder pass', () => {
+    it('one failing key date does not stop the other orgs\' reminders', async () => {
+      queueResult([]);                                                        // roll-forward: nothing stale
+      queueResult([{ ...K, id: 'k1', orgId: 'orgA' }, { ...K, id: 'k2', orgId: 'orgB' }]);
+      queueResult([{ id: 'k1' }]);                                            // orgA claim
+      createTicketMock.mockRejectedValueOnce(new Error('connection reset'));   // orgA fails
+      queueResult([{ id: 'k2' }]);                                            // orgB claim
+      createTicketMock.mockResolvedValueOnce({ id: 't9' });
+      queueResult([]);                                                        // orgB link
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await svc.sweepKeyDateReminders('2027-01-01')).toBe(1);
+        expect(err).toHaveBeenCalledWith(expect.stringContaining('key-date reminder failed'), 'orgId=orgA', 'keyDateId=k1', 'connection reset');
+      } finally { err.mockRestore(); }
     });
   });
 });

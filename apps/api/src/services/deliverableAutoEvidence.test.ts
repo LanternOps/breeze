@@ -13,6 +13,7 @@ vi.mock('../db', () => {
   (chain as { then: unknown }).then = (r: (v: unknown) => unknown) => Promise.resolve(rows.shift() ?? []).then(r);
   return { db: chain, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn() };
 });
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./reportGenerationService', () => ({ generateReport: generateReportMock, assertReportExecutionPreflight: preflightMock }));
 vi.mock('./siteScope', async (orig) => ({ ...(await orig<typeof import('./siteScope')>()), resolveLiveReportAuthority: resolveLiveMock }));
 
@@ -94,6 +95,18 @@ describe('generateAutoEvidenceForOccurrence (spec D12)', () => {
     preflightMock.mockImplementationOnce(() => { throw new Error('outside'); });
     expect(await generateAutoEvidenceForOccurrence(ARGS)).toEqual({ ok: false, reason: 'scope_unverifiable' });
     expect(inserted).toHaveLength(0);
+  });
+
+  it('refuses when the persisted site scope and the owner\'s live site scope no longer overlap', async () => {
+    const siteA = '11111111-1111-4111-8111-111111111111';
+    const siteB = '22222222-2222-4222-8222-222222222222';
+    rows.push([], [{ ...DEF, executionScopeKind: 'restricted', executionScopeSiteIds: [siteA],
+      executionScopeFingerprint: siteScopeFingerprint({ version: 1, kind: 'restricted', orgId: 'org1', siteIds: [siteA] }) }]);
+    resolveLiveMock.mockResolvedValue({ ok: true, authority: { ...LIVE.authority,
+      scope: { version: 1, kind: 'restricted', orgId: 'org1', siteIds: [siteB] } } });
+    expect(await generateAutoEvidenceForOccurrence(ARGS)).toEqual({ ok: false, reason: 'scope_no_intersection' });
+    expect(generateReportMock).not.toHaveBeenCalled();
+    expect(inserted).toHaveLength(0);   // no run row is even opened
   });
 
   it('records a failed run and attaches no evidence when generation throws', async () => {

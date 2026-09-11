@@ -23,6 +23,7 @@ import { reports, reportRuns } from '../db/schema/reports';
 import { serviceDeliverableEvidence, serviceDeliverableOccurrences } from '../db/schema/serviceDeliverables';
 import { ticketComments } from '../db/schema/portal';
 import { generateReport, assertReportExecutionPreflight } from './reportGenerationService';
+import { captureException } from './sentry';
 import {
   decodeSiteScope, intersectSiteScopes, persistedSiteScopeValues, resolveLiveReportAuthority,
   siteScopeFingerprint, type PersistedSiteScopeColumns, type ReportExecutionAuthority,
@@ -62,16 +63,25 @@ export async function generateAutoEvidenceForDeliverable(d: SweepDeliverable, to
   let generated = 0;
   for (const occ of open) {
     if (today < occ.dueAt) continue;   // cheap pre-filter; the per-occurrence check is authoritative
-    const res = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-      generateAutoEvidenceForOccurrence({
-        orgId: d.orgId, occurrenceId: occ.id, ticketId: occ.ticketId,
-        reportId, dueAt: occ.dueAt, today,
-      }), 'deliverableSweep.autoEvidence'));
-    if (res.ok) generated++;
-    else if (res.reason !== 'not_due' && res.reason !== 'already_attached') {
-      // Never silent: a refused or failed generation leaves the occurrence
-      // untouched and the technician delivers manually.
-      console.warn('[deliverables] auto-evidence skipped', `occurrenceId=${occ.id}`, `reportId=${reportId}`, `reason=${res.reason}`);
+    try {
+      const res = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+        generateAutoEvidenceForOccurrence({
+          orgId: d.orgId, occurrenceId: occ.id, ticketId: occ.ticketId,
+          reportId, dueAt: occ.dueAt, today,
+        }), 'deliverableSweep.autoEvidence'));
+      if (res.ok) generated++;
+      else if (res.reason !== 'not_due' && res.reason !== 'already_attached') {
+        // Never silent: a refused or failed generation leaves the occurrence
+        // untouched and the technician delivers manually.
+        console.warn('[deliverables] auto-evidence skipped', `occurrenceId=${occ.id}`, `reportId=${reportId}`, `reason=${res.reason}`);
+      }
+    } catch (err) {
+      // Per occurrence, so one unrecoverable failure does not cost this
+      // deliverable's other occurrences their evidence — or the sweep steps
+      // that follow it.
+      console.error('[deliverables] auto-evidence failed', `orgId=${d.orgId}`, `occurrenceId=${occ.id}`,
+        `reportId=${reportId}`, err instanceof Error ? err.message : String(err));
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }
   return generated;

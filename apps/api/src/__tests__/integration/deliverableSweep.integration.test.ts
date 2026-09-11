@@ -46,6 +46,20 @@ vi.mock('../../services/eventBus', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/eventBus')>();
   return { ...actual, publishEvent: publishEventMock };
 });
+// Lets one test force a genuine (non-refusal) failure at the exact point
+// between the occurrence claim and the ticket, to prove the claim rolls back
+// with it on real Postgres — the one thing a mocked db cannot show.
+const { failTicketCreation } = vi.hoisted(() => ({ failTicketCreation: { value: false } }));
+vi.mock('../../services/plannedWorkTicket', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/plannedWorkTicket')>();
+  return {
+    ...actual,
+    createPlannedWorkTicket: async (...args: Parameters<typeof actual.createPlannedWorkTicket>) => {
+      if (failTicketCreation.value) throw new Error('connection reset');
+      return actual.createPlannedWorkTicket(...args);
+    },
+  };
+});
 // cancelContract emits to the contract-events BullMQ queue; the consumer's job
 // body is called directly below instead.
 vi.mock('../../services/contractEvents', async (importOriginal) => {
@@ -330,6 +344,40 @@ describe('deliverable sweep on real Postgres (#5573 W02)', () => {
     await getTestDb().update(serviceDeliverableOccurrences).set({ ticketId: null }).where(eq(serviceDeliverableOccurrences.id, occ!.id));
     const moved = await system(() => moveTicketOrg(ticketId, t.otherOrgId, t.tech));
     expect(moved.orgId).toBe(t.otherOrgId);
+  });
+
+  runDb('11. a ticket failure rolls the claim back: the occurrence stays scheduled and retries next run', async () => {
+    const t = await seedTenant();
+    const d = await seedDeliverable(t);
+    failTicketCreation.value = true;
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await runDeliverableSweep(AS_OF);
+      expect(res).toMatchObject({ materialized: 1, opened: 0 });
+    } finally { err.mockRestore(); failTicketCreation.value = false; }
+
+    // The claim UPDATE committed nothing: no half-open occurrence, no ticket.
+    expect((await occurrencesOf(d))[0]).toMatchObject({ status: 'scheduled', ticketId: null });
+    expect(await ticketsOf(t.orgId)).toHaveLength(0);
+
+    // ... and the next run picks it up normally.
+    const second = await runDeliverableSweep(AS_OF);
+    expect(second).toMatchObject({ opened: 1, failed: 0 });
+    expect((await occurrencesOf(d))[0]!.status).toBe('open');
+    expect(await ticketsOf(t.orgId)).toHaveLength(1);
+  });
+
+  runDb('12. two sweeps racing the same deliverable produce exactly one occurrence and one ticket', async () => {
+    const t = await seedTenant();
+    const d = await seedDeliverable(t);
+    const [a, b] = await Promise.all([runDeliverableSweep(AS_OF), runDeliverableSweep(AS_OF)]);
+    expect(a.failed + b.failed).toBe(0);
+    expect(a.materialized + b.materialized).toBe(1);   // the UNIQUE (deliverable_id, period_start) claim
+    expect(a.opened + b.opened).toBeLessThanOrEqual(1); // the status CAS claim
+    const occ = await occurrencesOf(d);
+    expect(occ).toHaveLength(1);
+    const madeTickets = await ticketsOf(t.orgId);
+    expect(madeTickets).toHaveLength(occ[0]!.ticketId ? 1 : 0);
   });
 
   runDb('the sweep skips an archived tenant inside its purge countdown (automation-eligible predicate)', async () => {

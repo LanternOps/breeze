@@ -2337,6 +2337,30 @@ export async function assertTicketNotPinnedToDeliverable(
   }
 }
 
+/**
+ * The DEVICE-move door onto the same invariant. `routes/devices/moveOrg.ts`
+ * re-stamps `tickets.org_id` for every ticket bound to the moved device
+ * (`tickets` is in getDeviceOrgDenormalizedTables()), which trips
+ * sd_occ_ticket_org_fk exactly as a ticket-level move would — and that FK is
+ * deliberately NOT in that route's `SET CONSTRAINTS ... DEFERRED` list, so it
+ * fires the instant the UPDATE completes and surfaces as an opaque 500.
+ * Checked before the rewrite so the operator gets the same explainable 409.
+ */
+export async function assertDeviceTicketsNotPinnedToDeliverable(
+  tx: Pick<typeof db, 'select'>,
+  deviceId: string
+): Promise<void> {
+  const linked = await tx
+    .select({ id: serviceDeliverableOccurrences.id })
+    .from(serviceDeliverableOccurrences)
+    .innerJoin(tickets, eq(tickets.id, serviceDeliverableOccurrences.ticketId))
+    .where(eq(tickets.deviceId, deviceId))
+    .limit(1);
+  if (linked.length > 0) {
+    throw new TicketServiceError(DELIVERABLE_TICKET_PINNED_MESSAGE, 409, 'DELIVERABLE_TICKET_PINNED');
+  }
+}
+
 export async function moveTicketOrg(
   ticketId: string,
   targetOrgId: string,

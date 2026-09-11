@@ -31,6 +31,7 @@ vi.mock('../db', () => {
 });
 
 const { createTicketMock } = vi.hoisted(() => ({ createTicketMock: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./ticketService', () => ({ createTicket: createTicketMock }));
 
 import { db } from '../db';
@@ -826,10 +827,29 @@ describe('serviceDeliverableService', () => {
       } finally { warn.mockRestore(); }
     });
 
-    it('rethrows any other ticket failure so the claim rolls back and retries tomorrow', async () => {
+    it('counts no open for any other ticket failure — that occurrence\'s claim rolls back and retries tomorrow', async () => {
       seedOpen([{ id: 'o1' }], NO_CFG);
       createTicketMock.mockRejectedValue(new Error('connection reset'));
-      await expect(openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).rejects.toThrow('connection reset');
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(0);
+        expect(err).toHaveBeenCalledWith(expect.stringContaining('opening an occurrence failed'),
+          'orgId=org1', 'deliverableId=d1', 'occurrenceId=o1', 'connection reset');
+      } finally { err.mockRestore(); }
+    });
+
+    it('one failing occurrence never costs the deliverable its other occurrences', async () => {
+      queueResult([OCC, { ...OCC, id: 'o2' }]);
+      queueResult([{ id: 'o1' }]); queueResult([NO_CFG]);          // o1: claim + config
+      createTicketMock.mockRejectedValueOnce(new Error('connection reset'));
+      queueResult([{ id: 'o2' }]); queueResult([NO_CFG]);          // o2: claim + config
+      createTicketMock.mockResolvedValueOnce({ id: 't2' });
+      queueResult([]);                                            // o2: link
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(1);
+      } finally { err.mockRestore(); }
+      expect(lastSet()).toMatchObject({ ticketId: 't2' });
     });
 
     it('drops an owner and a category the ticket service refuses instead of stalling forever', async () => {
@@ -850,11 +870,27 @@ describe('serviceDeliverableService', () => {
       } finally { warn.mockRestore(); }
     });
 
-    it('does not loop on a refusal for a reference it already dropped', async () => {
+    it('does not loop when the refusal names a reference that is already absent', async () => {
       seedOpen([{ id: 'o1' }], NO_CFG);
       createTicketMock.mockRejectedValue(Object.assign(new Error('wrong partner'), { code: 'ASSIGNEE_WRONG_PARTNER' }));
-      await expect(openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).rejects.toThrow('wrong partner');
-      expect(createTicketMock).toHaveBeenCalledTimes(1);
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(0);
+      } finally { err.mockRestore(); }
+      expect(createTicketMock).toHaveBeenCalledTimes(1);      // rethrown, not retried forever
+    });
+
+    it('stops retrying once each refused reference has been dropped once', async () => {
+      seedOpen([{ id: 'o1' }], { ownerUserId: 'u1', ticketCategoryId: 'c1', description: null });
+      createTicketMock.mockRejectedValue(Object.assign(new Error('wrong partner'), { code: 'ASSIGNEE_WRONG_PARTNER' }));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(0);
+      } finally { warn.mockRestore(); err.mockRestore(); }
+      // attempt 1 with the assignee, attempt 2 without it, then the same code
+      // names nothing left to drop and the error propagates.
+      expect(createTicketMock).toHaveBeenCalledTimes(2);
     });
 
     it('retries once without an assignee createTicket still refuses (e.g. deactivated user)', async () => {

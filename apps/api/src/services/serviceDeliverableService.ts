@@ -17,6 +17,7 @@ import { transition, InvalidTransitionError, type OccurrenceStatus } from './ser
 import { isInLeadWindow, isPastGrace, planOccurrences, type Cadence } from './recurrence';
 import { addDaysISO } from './contractMath';
 import { createPlannedWorkTicket } from './plannedWorkTicket';
+import { captureException } from './sentry';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 
 /**
@@ -760,8 +761,17 @@ export async function openDueOccurrencesForDeliverable(
   let opened = 0;
   for (const occ of candidates) {
     if (!isInLeadWindow(occ.dueAt, d.leadDays, today)) continue;
-    opened += await runOutsideDbContext(() => withSystemDbAccessContext(
-      () => openOneOccurrence(d, occ, serviceOffWarned), 'deliverableSweep.openOccurrence'));
+    // Per occurrence: its transaction rolls back (releasing the claim for
+    // tomorrow), and the deliverable's REMAINING occurrences — and the miss
+    // and auto-evidence steps that follow in the sweep — still run today.
+    try {
+      opened += await runOutsideDbContext(() => withSystemDbAccessContext(
+        () => openOneOccurrence(d, occ, serviceOffWarned), 'deliverableSweep.openOccurrence'));
+    } catch (err) {
+      console.error('[deliverables] opening an occurrence failed', `orgId=${d.orgId}`, `deliverableId=${d.id}`,
+        `occurrenceId=${occ.id}`, err instanceof Error ? err.message : String(err));
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
   }
   return opened;
 }
