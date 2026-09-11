@@ -105,6 +105,7 @@ vi.mock('../../services/commandQueue', () => ({
 }));
 
 import { db } from '../../db';
+import { devicePatches, patches } from '../../db/schema';
 import { getDeviceWithOrgAndSiteCheck } from './helpers';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { resolvePartnerIdForOrg } from '../patches/helpers';
@@ -112,6 +113,9 @@ import { resolvePartnerIdForOrg } from '../patches/helpers';
 function selectWhereResult(rows: unknown[]) {
   return {
     from: vi.fn().mockReturnValue({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(rows)
+      }),
       where: vi.fn().mockResolvedValue(rows)
     })
   };
@@ -537,6 +541,158 @@ describe('device patch routes', () => {
           externalId: 'apt:openssl@3.0.2-0ubuntu1.20',
           packageId: 'apt:openssl',
           title: 'OpenSSL'
+        }]
+      },
+      { userId: USER_ID, preferHeartbeat: false }
+    );
+  });
+
+  it('uses the device-observed KB selector instead of a global first-writer WUA UpdateID', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    const observationWhere = vi.fn().mockResolvedValue([
+      {
+        id: PATCH_ID,
+        source: 'microsoft',
+        externalId: 'KB5034441',
+        packageId: 'windows-update:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        title: 'Windows Security Update'
+      }
+    ]);
+    const observationInnerJoin = vi.fn().mockReturnValue({ where: observationWhere });
+    // The direct `where` member keeps this boundary test runnable against the
+    // vulnerable baseline, where the query started from the global catalog.
+    const observationFrom = vi.fn().mockReturnValue({
+      innerJoin: observationInnerJoin,
+      where: observationWhere
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce({ from: observationFrom } as any)
+      .mockReturnValueOnce(selectWhereResult([{ patchId: PATCH_ID }]) as any);
+    vi.mocked(queueCommandForExecution).mockResolvedValue({
+      command: { id: 'cmd-install-kb', status: 'sent' }
+    } as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches/install`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patchIds: [PATCH_ID] })
+    });
+
+    expect(res.status).toBe(200);
+    expect(observationFrom).toHaveBeenCalledWith(devicePatches);
+    expect(observationInnerJoin).toHaveBeenCalledWith(patches, expect.anything());
+    expect(JSON.stringify(observationWhere.mock.calls[0]?.[0])).toContain(DEVICE_ID);
+    expect(JSON.stringify(observationWhere.mock.calls[0]?.[0])).toContain('pending');
+    expect(JSON.stringify(observationWhere.mock.calls[0]?.[0])).toContain(PATCH_ID);
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'install_patches',
+      {
+        patchIds: [PATCH_ID],
+        patches: [{
+          id: PATCH_ID,
+          source: 'microsoft',
+          externalId: 'KB5034441',
+          packageId: null,
+          title: 'Windows Security Update'
+        }]
+      },
+      { userId: USER_ID, preferHeartbeat: false }
+    );
+  });
+
+  it('drops the global selector for a KB-less Microsoft update (driver/feature rows)', async () => {
+    // Driver and feature updates expose no KBArticleIDs, so the agent reports
+    // the raw WUA UpdateID as externalId. Those rows are deduplicated globally
+    // on (source, externalId) exactly like KB rows, and `packageId` is still
+    // first-writer catalog metadata, so it must be dropped here too.
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    const observationWhere = vi.fn().mockResolvedValue([
+      {
+        id: PATCH_ID,
+        source: 'microsoft',
+        externalId: 'aaaaaaaa-1111-2222-3333-444444444444',
+        packageId: 'windows-update:99999999-9999-9999-9999-999999999999',
+        title: 'Intel Corporation - Display - 31.0.101.5186'
+      }
+    ]);
+    const observationFrom = vi.fn().mockReturnValue({
+      innerJoin: vi.fn().mockReturnValue({ where: observationWhere }),
+      where: observationWhere
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce({ from: observationFrom } as any)
+      .mockReturnValueOnce(selectWhereResult([{ patchId: PATCH_ID }]) as any);
+    vi.mocked(queueCommandForExecution).mockResolvedValue({
+      command: { id: 'cmd-install-driver', status: 'sent' }
+    } as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches/install`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patchIds: [PATCH_ID] })
+    });
+
+    expect(res.status).toBe(200);
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'install_patches',
+      {
+        patchIds: [PATCH_ID],
+        patches: [{
+          id: PATCH_ID,
+          source: 'microsoft',
+          externalId: 'aaaaaaaa-1111-2222-3333-444444444444',
+          packageId: null,
+          title: 'Intel Corporation - Display - 31.0.101.5186'
+        }]
+      },
+      { userId: USER_ID, preferHeartbeat: false }
+    );
+  });
+
+  it('keeps the package selector for non-Microsoft sources', async () => {
+    // Over-reach guard: for real package managers the packageId IS the install
+    // selector and must survive untouched.
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    const observationWhere = vi.fn().mockResolvedValue([
+      {
+        id: PATCH_ID,
+        source: 'third_party',
+        externalId: 'winget:Google.Chrome',
+        packageId: 'winget:Google.Chrome',
+        title: 'Google Chrome'
+      }
+    ]);
+    const observationFrom = vi.fn().mockReturnValue({
+      innerJoin: vi.fn().mockReturnValue({ where: observationWhere }),
+      where: observationWhere
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce({ from: observationFrom } as any)
+      .mockReturnValueOnce(selectWhereResult([{ patchId: PATCH_ID }]) as any);
+    vi.mocked(queueCommandForExecution).mockResolvedValue({
+      command: { id: 'cmd-install-winget', status: 'sent' }
+    } as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches/install`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patchIds: [PATCH_ID] })
+    });
+
+    expect(res.status).toBe(200);
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'install_patches',
+      {
+        patchIds: [PATCH_ID],
+        patches: [{
+          id: PATCH_ID,
+          source: 'third_party',
+          externalId: 'winget:Google.Chrome',
+          packageId: 'winget:Google.Chrome',
+          title: 'Google Chrome'
         }]
       },
       { userId: USER_ID, preferHeartbeat: false }
