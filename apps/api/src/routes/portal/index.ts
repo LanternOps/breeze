@@ -16,6 +16,7 @@ import { portalDashboardRoutes } from './dashboard';
 import { portalSecurityRoutes } from './security';
 import { portalBackupRoutes } from './backups';
 import { portalReportRoutes } from './reports';
+import { portalServiceRoutes } from './service';
 
 export const portalRoutes = new Hono();
 
@@ -49,6 +50,9 @@ portalRoutes.use('/backups/*', portalAuthMiddleware);
 portalRoutes.use('/backups/*', createPortalFeatureGateStrict('enableBackups'));
 portalRoutes.use('/reports/*', portalAuthMiddleware);
 portalRoutes.use('/reports/*', createPortalFeatureGateStrict('enableReports'));
+// Service deliverables W04 — both new surfaces fail closed the same way.
+portalRoutes.use('/service/*', portalAuthMiddleware);
+portalRoutes.use('/service/*', createPortalFeatureGateStrict('enableService'));
 
 // `/tickets/usage` (Part B adds the handler to ticketRoutes) is gated on
 // enableSupportUsage, not enableTickets — it must not inherit the general
@@ -85,3 +89,4 @@ portalRoutes.route('/', portalDashboardRoutes);
 portalRoutes.route('/', portalSecurityRoutes);
 portalRoutes.route('/', portalBackupRoutes);
 portalRoutes.route('/', portalReportRoutes);
+portalRoutes.route('/', portalServiceRoutes);
