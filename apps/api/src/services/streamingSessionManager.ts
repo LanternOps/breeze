@@ -795,9 +795,19 @@ export class StreamingSessionManager {
         // message rather than only to a brand-new in-memory session (#5593).
         // Skipped while a turn is in flight: the route answers a concurrent
         // message with 409, and swapping the mode mid-turn would change the
-        // gate the running turn already started under.
+        // gate the running turn already started under. The state is re-checked
+        // AFTER the await as well — a concurrent request can transition the
+        // session to `processing` while this lookup is outstanding, and the
+        // assignment must not land behind a turn that already started.
         if (reusable.state !== 'processing') {
-          reusable.approvalMode = await loadApprovalMode(dbSession.orgId);
+          const refreshedApprovalMode = await loadApprovalMode(dbSession.orgId);
+          // Re-read through the map rather than the narrowed `reusable` alias:
+          // a concurrent request may have started a turn — or evicted the
+          // session entirely — while this lookup was outstanding.
+          const stateAfterLookup = this.sessions.get(breezeSessionId)?.state;
+          if (stateAfterLookup && stateAfterLookup !== 'processing') {
+            reusable.approvalMode = refreshedApprovalMode;
+          }
         }
         reusable.lastActivityAt = Date.now();
         return reusable;

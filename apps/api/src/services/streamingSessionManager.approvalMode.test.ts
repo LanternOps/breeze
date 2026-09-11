@@ -152,6 +152,19 @@ describe('getOrCreate — effective approval mode (#5593)', () => {
     expect(second.approvalMode).toBe('hybrid_plan');
   });
 
+  it('does not swap the mode under a turn that is already running', async () => {
+    const first = await create(manager, 'sess-in-flight');
+    expect(first.approvalMode).toBe('per_step');
+
+    // A turn started (or starts while the lookup is outstanding): the gate the
+    // running turn began under must not change beneath it.
+    first.state = 'processing';
+    getEffectiveAiBudgetMock.mockResolvedValue(budget('auto_approve'));
+    await create(manager, 'sess-in-flight');
+
+    expect(first.approvalMode).toBe('per_step');
+  });
+
   it('falls back to per_step for an unrecognized partner override value', async () => {
     getEffectiveAiBudgetMock.mockResolvedValue(budget('yolo_approve'));
 
