@@ -1,3 +1,4 @@
+export * from './errorCodes';
 // Permission registry (resource:action grants) + derived literal-union types.
 export * from './permissions';
 
