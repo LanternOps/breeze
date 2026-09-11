@@ -788,7 +788,7 @@
       "then": "then",
       "search": "Search Breeze",
       "searchSlash": "Search (also opens with this key)",
-      "cycleSidebar": "Cycle the sidebar: open, auto-hide, icons",
+      "cycleSidebar": "Cycle the sidebar mode",
       "help": "Open the help panel",
       "showThis": "Show this card",
       "close": "Close a dialog or menu",

@@ -1881,7 +1881,7 @@
     "refresh": "Refresh",
     "selectedOrganization": "the selected organization",
     "subtitle": "Manage and monitor your fleet.",
-    "title": "Devices",
+    "title": "Devices & Assets",
     "toasts": {
       "actionFailed": "{{action}} failed on {{hostname}}",
       "advancedFilterFailed": "Advanced filter failed to load — showing no devices. Edit or clear the filter to try again.",

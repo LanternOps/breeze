@@ -69,7 +69,7 @@ export default function KeyboardShortcutsHelp() {
           <dl className="space-y-1.5">
             {general.map((row) => (
               <div key={row.keys.join('+')} className="flex items-center justify-between gap-3 text-sm">
-                <dd className="min-w-0 truncate text-foreground">{row.label}</dd>
+                <dd className="min-w-0 text-foreground">{row.label}</dd>
                 <dt className="flex shrink-0 items-center gap-1">
                   {row.keys.map((k) => <Kbd key={k}>{k}</Kbd>)}
                 </dt>
@@ -86,7 +86,7 @@ export default function KeyboardShortcutsHelp() {
           <dl className="space-y-1.5">
             {GO_TO_SHORTCUTS.map((s) => (
               <div key={s.key} data-testid="shortcut-goto" className="flex items-center justify-between gap-3 text-sm">
-                <dd className="min-w-0 truncate text-foreground">{t(/* i18n-dynamic */ s.labelKey)}</dd>
+                <dd className="min-w-0 text-foreground">{t(/* i18n-dynamic */ s.labelKey)}</dd>
                 <dt className="flex shrink-0 items-center gap-1">
                   <Kbd>g</Kbd>
                   <span className="text-[11px] text-muted-foreground">{t('layout.shortcuts.then')}</span>

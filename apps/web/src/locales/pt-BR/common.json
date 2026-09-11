@@ -788,7 +788,7 @@
       "then": "depois",
       "search": "Pesquisar no Breeze",
       "searchSlash": "Pesquisa (também abre com esta tecla)",
-      "cycleSidebar": "Alternar a barra lateral: aberta, ocultar automaticamente, ícones",
+      "cycleSidebar": "Alternar o modo da barra lateral",
       "help": "Abrir o painel de ajuda",
       "showThis": "Mostrar este cartão",
       "close": "Fechar uma caixa de diálogo ou menu",

@@ -1876,7 +1876,7 @@
     "refresh": "Actualizar",
     "selectedOrganization": "la organización seleccionada",
     "subtitle": "Gestiona y monitoriza su flota.",
-    "title": "Dispositivos",
+    "title": "Dispositivos y activos",
     "toasts": {
       "actionFailed": "{{action}} falló en {{hostname}}",
       "advancedFilterFailed": "No se pudo cargar el filtro avanzado; no se muestra ningún dispositivo. Edite o borre el filtro para volver a intentarlo.",
