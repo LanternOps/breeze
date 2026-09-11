@@ -1735,6 +1735,80 @@ describe('createSessionPreToolUse', () => {
     }));
   });
 
+  it('revalidates live authority at the auto-approve release point and fails closed', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true, tier: 2, requiresApproval: false, description: 'Take screenshot',
+    } as any);
+    mockResolveLiveSessionToolAuthority.mockResolvedValueOnce({
+      ok: false,
+      reason: 'User is no longer active',
+    });
+    const session = makeActiveSession({ approvalMode: 'auto_approve', auditSnapshot: {} });
+
+    const result = await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+
+    // Release point #1: auto_approve / readOnlyAutoExec. This branch has no
+    // approval prompt at all, so without revalidation a revoked user's queued
+    // Tier-2 tool would execute on the session's start-time snapshot.
+    expect(result).toEqual({
+      allowed: false,
+      error: 'Authorization changed before execution; the action was not executed.',
+    });
+    expect(mockResolveLiveSessionToolAuthority).toHaveBeenCalledTimes(1);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(mockWriteAuditEvent).toHaveBeenCalledWith(undefined, expect.objectContaining({
+      action: 'ai.security.tool_authority_changed',
+      result: 'failure',
+    }));
+  });
+
+  it('fails closed when the live authority revalidation itself throws', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true, tier: 2, requiresApproval: false, description: 'Take screenshot',
+    } as any);
+    mockResolveLiveSessionToolAuthority.mockRejectedValueOnce(new Error('db unreachable'));
+    const session = makeActiveSession({ approvalMode: 'auto_approve', auditSnapshot: {} });
+
+    const result = await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+
+    // A revalidation that cannot complete must DENY, never fall through to the
+    // stale snapshot — a database blip would otherwise reopen the whole window.
+    expect(result).toEqual({
+      allowed: false,
+      error: 'Authorization changed before execution; the action was not executed.',
+    });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(mockWriteAuditEvent).toHaveBeenCalledWith(undefined, expect.objectContaining({
+      action: 'ai.security.tool_authority_changed',
+      result: 'failure',
+      errorMessage: 'Live authority revalidation failed',
+    }));
+  });
+
+  it('updates the session authority in place when live revalidation succeeds', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true, tier: 2, requiresApproval: false, description: 'Take screenshot',
+    } as any);
+    const freshAuth = { ...makeAuth({ scope: 'organization' }), token: { roleId: 'role-fresh' } } as any;
+    const freshToolAuth = { ...freshAuth, accessibleOrgIds: ['org-1'] } as any;
+    mockResolveLiveSessionToolAuthority.mockResolvedValueOnce({
+      ok: true, auth: freshAuth, toolAuth: freshToolAuth,
+    });
+    mockInsertReturning({ id: 'exec-live-ok' });
+    const session = makeActiveSession({ approvalMode: 'auto_approve', auditSnapshot: {} });
+
+    const result = await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+
+    expect(result).toEqual({ allowed: true });
+    // The refreshed authority must REPLACE the snapshot, or the tool still
+    // runs on stale reach even though revalidation passed.
+    expect(session.auth).toBe(freshAuth);
+    expect(session.toolAuth).toBe(freshToolAuth);
+    expect(mockWriteAuditEvent).not.toHaveBeenCalledWith(undefined, expect.objectContaining({
+      action: 'ai.security.tool_authority_changed',
+    }));
+  });
+
   it('blocks tools outside the session allowlist before approval handling', async () => {
     const session = makeActiveSession({
       approvalMode: 'auto_approve',

@@ -194,9 +194,20 @@ clientAiAdminSessionRoutes.get('/sessions/:id', requireAiSessionsReadAll, async 
 
   return c.json({
     session,
+    // Redaction is UNCONDITIONAL — it applies to the session's own user too,
+    // not only to cross-user admin readers. Deciding per-reader would mean
+    // trusting the stored `userId` to gate secret material, and an admin
+    // reading their own session gains nothing from seeing raw credentials that
+    // were redacted out of the live transcript anyway.
+    //
+    // `toolOutput` is redacted with the same rule as `toolInput`: tool results
+    // carry credentials just as readily as tool arguments (service configs,
+    // connection strings, env dumps), so exempting the output half would leave
+    // the transcript readable for exactly the material this is meant to stop.
     messages: messages.map((m) => ({
       ...m,
       toolInput: redactPersistedToolInput(m.toolInput),
+      toolOutput: redactPersistedToolInput(m.toolOutput),
       redactionCounts: countRedactions(m.content),
     })),
     toolExecutions: toolExecutions.map((execution) => ({

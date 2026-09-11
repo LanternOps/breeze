@@ -49,6 +49,9 @@ import {
 } from './invoiceService';
 import { createInvoicePayLink } from './invoiceCheckout';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
+import { actorCan } from './contractTypes';
+import { resolveContractActorFromAuth } from './contractActor';
+import { PERMISSIONS } from './permissions';
 import { db } from '../db';
 import type { DeviceSnapshotRow } from './contractQuantities';
 import { computeContractEstimate, getContract, materializeContractLineOntoInvoice } from './contractService';
@@ -328,12 +331,18 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
                 code: 'FULL_PARTNER_SCOPE_REQUIRED',
               });
             }
-            const contractActor = {
-              userId: auth.user.id,
-              partnerId: actor.partnerId,
-              accessibleOrgIds: actor.accessibleOrgIds,
-              permissions: new Set(['contracts:read']),
-            };
+            // Resolve the caller's REAL contract permissions. `ContractActor`
+            // is fail-closed BY CONSTRUCTION (contractTypes.ts): a hard-coded
+            // `permissions` set forges the evidence the contract service relies
+            // on and converts that design into fail-open. The guardrail's
+            // TOOL_ACTION_EXTRA_PERMISSIONS gate still applies on top of this.
+            const contractActor = await resolveContractActorFromAuth(auth);
+            if (!actorCan(contractActor, PERMISSIONS.CONTRACTS_READ)) {
+              return JSON.stringify({
+                error: 'Adding a contract line requires the contracts:read permission',
+                code: 'CONTRACTS_READ_REQUIRED',
+              });
+            }
             const contractId = String(input.contractId);
             const contractLineId = String(input.contractLineId);
             // The tool executes inside the request's ambient DB transaction.

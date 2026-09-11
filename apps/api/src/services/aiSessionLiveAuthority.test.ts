@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { resolveLiveSessionToolAuthority } from './aiSessionLiveAuthority';
 import { canAccessOrg, getUserPermissions } from './permissions';
 import { checkToolPermissionForResolvedUser } from './aiGuardrails';
@@ -9,24 +10,28 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn((fn) => fn()),
   db: { select: vi.fn() },
 }));
-vi.mock('../db/schema', () => ({
-  users: { id: 'users.id', status: 'users.status', isPlatformAdmin: 'users.isPlatformAdmin' },
-  organizations: {
-    id: 'organizations.id', partnerId: 'organizations.partnerId', status: 'organizations.status', deletedAt: 'organizations.deletedAt',
-  },
-}));
+// The real schema and the real drizzle operators are used on purpose: the
+// organization guard is asserted by RENDERING the built condition to SQL
+// below. Against stubbed columns and a mocked `eq`, `where()` receives an
+// opaque placeholder and every such assertion would be vacuous.
 vi.mock('./permissions', () => ({ getUserPermissions: vi.fn(), canAccessOrg: vi.fn() }));
 vi.mock('./aiGuardrails', () => ({ checkToolPermissionForResolvedUser: vi.fn() }));
 vi.mock('../middleware/auth', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../middleware/auth')>()),
   computeAccessibleOrgIds: vi.fn(),
 }));
-vi.mock('drizzle-orm', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('drizzle-orm')>()),
-  eq: vi.fn(),
-}));
 
 const { db } = await import('../db');
+
+/** Rows the mocked `db.select()` chain returns, per test. */
+let userRows: Record<string, unknown>[] = [];
+let orgRows: Record<string, unknown>[] = [];
+/** The condition each query passed to `.where()`, captured for SQL assertions. */
+const capturedWhere: { user?: unknown; org?: unknown } = {};
+
+function renderSql(condition: unknown) {
+  return new PgDialect().sqlToQuery(condition as never);
+}
 
 function session(overrides: Record<string, unknown> = {}) {
   const auth = {
@@ -42,15 +47,23 @@ function session(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  userRows = [{ status: 'active', isPlatformAdmin: false }];
+  orgRows = [{ id: 'org-1', partnerId: 'partner-current' }];
+  delete capturedWhere.user;
+  delete capturedWhere.org;
+  // Both queries terminate at `.limit()`. The chain deliberately exposes no
+  // `.for()`, so re-introducing a row lock on either read fails loudly here
+  // instead of silently reinstating the useless FOR SHARE this dropped.
   vi.mocked(db.select).mockImplementation((columns?: Record<string, unknown>) => {
-    const rows = columns && 'isPlatformAdmin' in columns
-      ? [{ status: 'active', isPlatformAdmin: false }]
-      : [{ id: 'org-1', partnerId: 'partner-current' }];
     const isUserProjection = Boolean(columns && 'isPlatformAdmin' in columns);
     const chain: any = {
-      from: vi.fn(() => chain), where: vi.fn(() => chain),
-      limit: isUserProjection ? vi.fn(async () => rows) : vi.fn(() => chain),
-      for: vi.fn(async () => rows),
+      from: vi.fn(() => chain),
+      where: vi.fn((condition: unknown) => {
+        if (isUserProjection) capturedWhere.user = condition;
+        else capturedWhere.org = condition;
+        return chain;
+      }),
+      limit: vi.fn(async () => (isUserProjection ? userRows : orgRows)),
     };
     return chain;
   });
@@ -191,23 +204,131 @@ describe('resolveLiveSessionToolAuthority', () => {
     }));
   });
 
-  it.each(['moved', 'deleted', 'suspended'])('denies when the target organization is %s before membership/tool checks', async () => {
-    vi.mocked(db.select).mockImplementation((columns?: Record<string, unknown>) => {
-      const rows = columns && 'isPlatformAdmin' in columns
-        ? [{ status: 'active', isPlatformAdmin: false }]
-        : [];
-      const isUserProjection = Boolean(columns && 'isPlatformAdmin' in columns);
-      const chain: any = {
-        from: vi.fn(() => chain), where: vi.fn(() => chain),
-        limit: isUserProjection ? vi.fn(async () => rows) : vi.fn(() => chain),
-        for: vi.fn(async () => rows),
-      };
-      return chain;
-    });
+  it('guards the organization read on live status and deletedAt, without a row lock', async () => {
+    const result = await resolveLiveSessionToolAuthority(session(), 'manage_alerts', { action: 'resolve' });
+    expect(result.ok).toBe(true);
+
+    // Discriminating on the CONDITION, not on the mock's return value: the
+    // stub returns whatever it is told regardless of the WHERE, so asserting
+    // "no row came back" proves nothing about the guard that is meant to
+    // exclude it. Render the built predicate and read the bound params.
+    const { sql, params } = renderSql(capturedWhere.org);
+    expect(sql).toMatch(/"id" = \$\d/);
+    expect(sql).toMatch(/"status" in /i);
+    expect(sql).toMatch(/"deleted_at" is null/i);
+    expect(params).toEqual(expect.arrayContaining(['org-1', 'active', 'trial']));
+    // A suspended/archived org must NOT satisfy the status predicate.
+    expect(params).not.toContain('suspended');
+
+    const userQuery = renderSql(capturedWhere.user);
+    expect(userQuery.params).toEqual(expect.arrayContaining(['user-1']));
+  });
+
+  it('denies before membership and tool checks when the organization read returns nothing', async () => {
+    orgRows = [];
 
     await expect(resolveLiveSessionToolAuthority(session(), 'manage_alerts', { action: 'resolve' }))
       .resolves.toEqual({ ok: false, reason: 'Organization authority was removed' });
     expect(getUserPermissions).not.toHaveBeenCalled();
     expect(checkToolPermissionForResolvedUser).not.toHaveBeenCalled();
+  });
+
+  it.each(['suspended', 'disabled', 'pending'])('denies release when the user status is %s', async (status) => {
+    userRows = [{ status, isPlatformAdmin: false }];
+
+    await expect(resolveLiveSessionToolAuthority(session(), 'manage_alerts', { action: 'resolve' }))
+      .resolves.toEqual({ ok: false, reason: 'User is no longer active' });
+    expect(getUserPermissions).not.toHaveBeenCalled();
+    expect(checkToolPermissionForResolvedUser).not.toHaveBeenCalled();
+  });
+
+  it('denies release when the user row is gone entirely', async () => {
+    userRows = [];
+
+    await expect(resolveLiveSessionToolAuthority(session(), 'manage_alerts', { action: 'resolve' }))
+      .resolves.toEqual({ ok: false, reason: 'User is no longer active' });
+    expect(getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('denies a non-user principal before any database read', async () => {
+    const helper = session({ auth: { ...session().auth, principal: { kind: 'helper_token' } } });
+
+    await expect(resolveLiveSessionToolAuthority(helper, 'manage_alerts', { action: 'resolve' }))
+      .resolves.toEqual({ ok: false, reason: 'Interactive session authority could not be verified' });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('pins tool authority to the device organization when the session is device-bound', async () => {
+    vi.mocked(computeAccessibleOrgIds).mockResolvedValue({
+      orgIds: ['org-1', 'org-sibling'], partnerOrgAccess: 'all',
+    });
+    vi.mocked(getUserPermissions).mockResolvedValue({
+      permissions: [], partnerId: 'partner-current', orgId: 'org-1', roleId: 'role-new',
+      scope: 'partner', orgAccess: 'all',
+    } as never);
+
+    const result = await resolveLiveSessionToolAuthority(
+      session({
+        deviceId: 'device-9',
+        auth: { ...session().auth, scope: 'partner', partnerId: 'partner-stale', orgId: null },
+      }),
+      'manage_alerts', { action: 'resolve' },
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // The user's own reach stays wide...
+      expect(result.auth.accessibleOrgIds).toEqual(['org-1', 'org-sibling']);
+      // ...but the TOOL is bound to the device's org (#3087).
+      expect(result.toolAuth.accessibleOrgIds).toEqual(['org-1']);
+      expect(result.toolAuth.orgId).toBe('org-1');
+      expect(result.toolAuth.canAccessOrg('org-sibling')).toBe(false);
+    }
+  });
+
+  describe('system-scoped (platform admin) sessions', () => {
+    function systemSession(overrides: Record<string, unknown> = {}) {
+      const base = session(overrides);
+      return { ...base, auth: { ...base.auth, scope: 'system', orgId: null }, toolAuth: base.toolAuth };
+    }
+
+    it('re-reads the live platform-admin flag and skips the tenant tool-permission check', async () => {
+      userRows = [{ status: 'active', isPlatformAdmin: true }];
+
+      const result = await resolveLiveSessionToolAuthority(systemSession(), 'manage_alerts', { action: 'resolve' });
+
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.auth.user.isPlatformAdmin).toBe(true);
+      // Platform admins are authorized by the grant itself; there is no tenant
+      // permission set to resolve against.
+      expect(checkToolPermissionForResolvedUser).not.toHaveBeenCalled();
+      expect(getUserPermissions).not.toHaveBeenCalled();
+    });
+
+    it('denies release when platform authority was revoked mid-session', async () => {
+      userRows = [{ status: 'active', isPlatformAdmin: false }];
+
+      await expect(resolveLiveSessionToolAuthority(systemSession(), 'manage_alerts', { action: 'resolve' }))
+        .resolves.toEqual({ ok: false, reason: 'Platform authority was removed' });
+    });
+
+    it('keeps a device-bound platform admin pinned to the device organization', async () => {
+      userRows = [{ status: 'active', isPlatformAdmin: true }];
+
+      const result = await resolveLiveSessionToolAuthority(
+        systemSession({ deviceId: 'device-9' }), 'manage_alerts', { action: 'resolve' },
+      );
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        // THE REGRESSION this guards: the system branch used to return the
+        // session auth as toolAuth verbatim, widening a device-bound platform
+        // admin to full system reach on the first Tier-2 release (#3087).
+        expect(result.toolAuth.accessibleOrgIds).toEqual(['org-1']);
+        expect(result.toolAuth.orgId).toBe('org-1');
+        expect(result.toolAuth.canAccessOrg('org-other')).toBe(false);
+        expect(result.auth.scope).toBe('system');
+      }
+    });
   });
 });

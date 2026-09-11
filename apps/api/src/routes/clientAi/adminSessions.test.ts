@@ -214,6 +214,47 @@ describe('GET /client-ai/admin/sessions/:id', () => {
     expect(body.toolExecutions[0].toolInput.providerConfig.secretKey).toBe('[REDACTED]');
   });
 
+  it('redacts secrets in persisted toolOutput, not only toolInput', async () => {
+    let call = 0;
+    dbSelectMock.mockImplementation(() => {
+      call++;
+      if (call === 1) return chain([SESSION_ROW]);
+      if (call === 2)
+        return chain([
+          {
+            id: 'm1',
+            role: 'assistant',
+            content: 'done',
+            contentBlocks: null,
+            toolName: 'read_config',
+            toolInput: { path: 'app.conf' },
+            // Tool RESULTS carry credentials just as readily as tool
+            // arguments — service configs, connection strings, env dumps.
+            toolOutput: {
+              service: 'backup',
+              providerConfig: { secretKey: 'synthetic-output-secret' },
+              connectionString: 'postgres://u:synthetic-pw@host/db',
+            },
+            createdAt: new Date(),
+          },
+        ]);
+      return chain([]);
+    });
+
+    const res = await buildApp().request(`/client-ai/admin/sessions/${SESSION_ID}`, {
+      headers: AUTHED,
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.messages[0].toolOutput.providerConfig.secretKey).toBe('[REDACTED]');
+    expect(body.messages[0].toolOutput.connectionString).toBe('[REDACTED]');
+    // Non-secret fields survive, so the transcript stays useful.
+    expect(body.messages[0].toolOutput.service).toBe('backup');
+    expect(JSON.stringify(body)).not.toContain('synthetic-output-secret');
+    expect(JSON.stringify(body)).not.toContain('synthetic-pw');
+  });
+
   it('404s when the session does not exist / is not excel_client', async () => {
     dbSelectMock.mockImplementation(() => chain([]));
     const res = await buildApp().request(`/client-ai/admin/sessions/${SESSION_ID}`, {
