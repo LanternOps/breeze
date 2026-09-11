@@ -396,6 +396,13 @@ export const heartbeatSchema = z.object({
   // 400 the heartbeat), but changes here are offer-load-bearing.
   agentEdition: z.enum(['hosted', 'self-host']).optional().catch(undefined),
   migrationRequired: z.boolean().optional().catch(undefined),
+  // Bare-metal recovery W04a: the rebuild engine leaves a marker on the
+  // restored disk; the agent sends it until the server acknowledges the
+  // check-in (recoveryMarkerAck: true in the response), then deletes it.
+  recoveryMarker: z.object({
+    recoveryId: z.string().uuid(),
+    nonce: z.string().regex(/^[0-9a-f]{64}$/),
+  }).optional().catch(undefined),
 });
 
 // ============================================
