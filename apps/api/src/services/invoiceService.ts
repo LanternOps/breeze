@@ -777,6 +777,8 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
 
 export type CustomerInvoiceLine = {
   ticketNumber: string | null;
+  ticketSubject?: string | null;
+  ticketCategory?: string | null;
   /**
    * Line title, mirroring invoice_lines.name (#3319). NULL for legacy lines
    * created before the name/description split, where `description` holds the
@@ -816,6 +818,8 @@ export type CustomerInvoiceHeader = Pick<InvoiceRow,
 
 type CustomerInvoiceLineSource = {
   ticketNumber?: string | null;
+  ticketSubject?: string | null;
+  ticketCategory?: string | null;
   name?: string | null;
   description?: string | null;
   quantity: string;
@@ -828,6 +832,8 @@ type CustomerInvoiceLineSource = {
 export function toCustomerInvoiceLine(line: CustomerInvoiceLineSource): CustomerInvoiceLine {
   return {
     ticketNumber: line.ticketNumber ?? null,
+    ticketSubject: line.ticketSubject ?? null,
+    ticketCategory: line.ticketCategory ?? null,
     // Carry BOTH fields (#3319). This previously collapsed to
     // `description ?? name`, which is the INVERSE of the fallback every other
     // renderer uses, so a line with both set showed the customer only the
@@ -873,6 +879,8 @@ export async function getCustomerInvoice(
   if (orgId !== undefined && inv.orgId !== orgId) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   const rows = await db.select({
     ticketNumber: sql<string | null>`COALESCE(${tickets.internalNumber}, ${tickets.ticketNumber})`,
+    ticketSubject: tickets.subject,
+    ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
     name: invoiceLines.name,
     description: invoiceLines.description,
     quantity: invoiceLines.quantity,
@@ -882,7 +890,8 @@ export async function getCustomerInvoice(
   }).from(invoiceLines).leftJoin(tickets, and(
     eq(tickets.id, invoiceLines.ticketId),
     eq(tickets.orgId, inv.orgId),
-  )).where(and(
+  )).leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
+  .where(and(
     eq(invoiceLines.invoiceId, invoiceId),
     eq(invoiceLines.orgId, inv.orgId),
     eq(invoiceLines.customerVisible, true),

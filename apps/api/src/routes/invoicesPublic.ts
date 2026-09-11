@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { computeChargeNow } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { invoices, invoiceLines, invoiceStripePayments } from '../db/schema';
+import { invoices, invoiceLines, invoiceStripePayments, tickets, ticketCategories } from '../db/schema';
 import { partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
 import { resolveInvoiceByLinkToken, getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../services/invoiceLinkToken';
@@ -126,10 +126,18 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
     }
 
     const rows = await db.select({
-      name: invoiceLines.name, description: invoiceLines.description,
-      quantity: invoiceLines.quantity, unitPrice: invoiceLines.unitPrice,
-      taxable: invoiceLines.taxable, lineTotal: invoiceLines.lineTotal,
+      ticketNumber: sql<string | null>`COALESCE(${tickets.internalNumber}, ${tickets.ticketNumber})`,
+      ticketSubject: tickets.subject,
+      ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
+      name: invoiceLines.name,
+      description: invoiceLines.description,
+      quantity: invoiceLines.quantity,
+      unitPrice: invoiceLines.unitPrice,
+      taxable: invoiceLines.taxable,
+      lineTotal: invoiceLines.lineTotal,
     }).from(invoiceLines)
+      .leftJoin(tickets, eq(invoiceLines.ticketId, tickets.id))
+      .leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
       .where(and(eq(invoiceLines.invoiceId, inv.id), eq(invoiceLines.customerVisible, true)))
       .orderBy(invoiceLines.sortOrder);
 
