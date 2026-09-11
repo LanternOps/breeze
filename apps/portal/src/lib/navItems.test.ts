@@ -52,6 +52,8 @@ describe('buildPortalNavItems — full flag set (#4562)', () => {
       enableBackups: true,
       enableReports: true,
       enableSupportUsage: true,
+      enableService: true,
+      enableDocuments: true,
     }).map((item) => item.href)).toEqual([
       '/dashboard',
       '/quotes',
@@ -61,6 +63,8 @@ describe('buildPortalNavItems — full flag set (#4562)', () => {
       '/security',
       '/backups',
       '/reports',
+      '/service',
+      '/documents',
       '/assets',
       '/profile',
     ]);
@@ -101,4 +105,20 @@ describe('buildPortalNavItems — Equipment (/assets) gating', () => {
       expect(buildPortalNavItems(branding).map((i) => i.href)).not.toContain('/assets');
     }
   );
+});
+
+describe('buildPortalNavItems — W04 service and documents', () => {
+  it('fails CLOSED for the W04 surfaces — absent or false hides them', () => {
+    for (const branding of [{}, { enableService: false, enableDocuments: false }]) {
+      const hrefs = buildPortalNavItems(branding).map((i) => i.href);
+      expect(hrefs).not.toContain('/service');
+      expect(hrefs).not.toContain('/documents');
+    }
+  });
+
+  it('shows each independently of the other', () => {
+    expect(buildPortalNavItems({ enableService: true }).map((i) => i.href)).toContain('/service');
+    expect(buildPortalNavItems({ enableService: true }).map((i) => i.href)).not.toContain('/documents');
+    expect(buildPortalNavItems({ enableDocuments: true }).map((i) => i.href)).toContain('/documents');
+  });
 });
