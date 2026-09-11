@@ -5,6 +5,6 @@ import UserDevicesPage from '../../../../components/admin/UserDevicesPage';
 const { id } = Astro.params;
 ---
 
-<DashboardLayout title="User devices">
+<DashboardLayout titleKey="titles.adminUsersDetailDevices">
   <UserDevicesPage client:load userId={id ?? ''} />
 </DashboardLayout>

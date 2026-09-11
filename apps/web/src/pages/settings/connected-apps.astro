@@ -2,15 +2,17 @@
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import ConnectedAppsList from '../../components/settings/ConnectedAppsList';
 import McpUrlCard from '../../components/shared/McpUrlCard';
+import { tServer } from '../../lib/i18n/server';
+
+const locale = Astro.locals.locale;
 ---
 
-<DashboardLayout title="Connected apps">
+<DashboardLayout titleKey="titles.settingsConnectedApps">
   <div class="mx-auto w-full max-w-4xl space-y-6">
     <div>
-      <h1 class="text-2xl font-semibold tracking-tight">Connected apps</h1>
+      <h1 class="text-2xl font-semibold tracking-tight">{tServer(locale, 'settingsConnectedAppsPage.heading')}</h1>
       <p class="mt-1 text-sm text-muted-foreground">
-        AI assistants and other MCP clients that have been authorized to access your tenant via OAuth.
-        Revoke access at any time — the app's token will be rejected within 10 minutes.
+        {tServer(locale, 'settingsConnectedAppsPage.description')}
       </p>
     </div>
     <McpUrlCard client:only="react" />

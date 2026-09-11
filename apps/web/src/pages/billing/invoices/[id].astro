@@ -5,6 +5,6 @@ import InvoiceWorkspace from '../../../components/billing/InvoiceWorkspace';
 const { id } = Astro.params;
 ---
 
-<DashboardLayout title="Invoice">
+<DashboardLayout titleKey="titles.billingInvoicesDetail">
   <InvoiceWorkspace id={id} client:load />
 </DashboardLayout>
