@@ -58,7 +58,17 @@ export const RECOVERY_STATUS_ORDER: readonly BareMetalRecoveryStatus[] = [
 export function canTransition(from: BareMetalRecoveryStatus, to: BareMetalRecoveryStatus): boolean {
   if (BARE_METAL_RECOVERY_TERMINAL.has(from)) return false;
   if (to === 'failed' || to === 'refused') return true;
-  if (to === 'completed') return from === 'validated';
+  if (to === 'completed') {
+    // A `validated` post on an identity:'new' recovery is stored as
+    // `completed` directly (see canTransition callers in bmrRecoveries.ts) —
+    // there is no heartbeat check-in to wait for when the restored machine
+    // has a brand-new identity. Treat 'completed' as reachable from anywhere
+    // up to and including 'validated' in the forward order, not only from
+    // 'validated' itself.
+    const validatedIdx = RECOVERY_STATUS_ORDER.indexOf('validated');
+    const fromIdx = RECOVERY_STATUS_ORDER.indexOf(from);
+    return fromIdx >= 0 && fromIdx <= validatedIdx;
+  }
   const a = RECOVERY_STATUS_ORDER.indexOf(from);
   const b = RECOVERY_STATUS_ORDER.indexOf(to);
   return a >= 0 && b > a;
