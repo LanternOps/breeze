@@ -165,6 +165,38 @@ function arrayEntryContext(
   return { existingEntry: existingMatches[0], pathPart: `id:${JSON.stringify(id)}` };
 }
 
+function sealSecretLeaf(
+  value: unknown,
+  existing: unknown,
+  family: string,
+  orgId: string,
+  path: readonly string[],
+): unknown {
+  if (typeof value !== 'string') {
+    throw new InvalidIntegrationSecretError(`Secret field ${path.join('.')} must be a string`);
+  }
+  if (value === INTEGRATION_MASKED_SECRET) {
+    if (typeof existing !== 'string' || existing.length === 0) {
+      throw new InvalidIntegrationSecretError(`Secret field ${path.join('.')} is not already configured`);
+    }
+    return existing;
+  }
+  if (value.length === 0) return '';
+  if (isEncryptedSecret(value)) {
+    throw new InvalidIntegrationSecretError(`Secret field ${path.join('.')} must not contain ciphertext`);
+  }
+  // Fail closed rather than let encryptSecret drop the AAD and write v1.
+  if (!getActiveSecretEncryptionKeyId()) {
+    throw new IntegrationSecretsUnavailableError(
+      `Integration secret ${path.join('.')} cannot be stored: APP_ENCRYPTION_KEY_ID is not configured on this `
+        + 'API instance, so the credential would be sealed as non-AAD enc:v1 ciphertext with no binding to its '
+        + 'provider, organization or endpoint. Set APP_ENCRYPTION_KEY_ID (alongside APP_ENCRYPTION_KEY) and '
+        + 'restart the API.',
+    );
+  }
+  return encryptSecret(value, { aad: integrationSettingsSecretAad(family, orgId, path) });
+}
+
 function sealValue(
   value: unknown,
   existing: unknown,
@@ -180,37 +212,27 @@ function sealValue(
   // confusion that must not reach storage. Sealing a container by its name is
   // not an option — it would have to be stringified, and masking it back would
   // destroy the non-secret siblings inside it.
-  if (isSecretPath(path) && !(value !== null && typeof value === 'object')) {
-    if (typeof value !== 'string') {
-      throw new InvalidIntegrationSecretError(`Secret field ${path.join('.')} must be a string`);
-    }
-    if (value === INTEGRATION_MASKED_SECRET) {
-      if (typeof existing !== 'string' || existing.length === 0) {
-        throw new InvalidIntegrationSecretError(`Secret field ${path.join('.')} is not already configured`);
-      }
-      return existing;
-    }
-    if (value.length === 0) return '';
-    if (isEncryptedSecret(value)) {
-      throw new InvalidIntegrationSecretError(`Secret field ${path.join('.')} must not contain ciphertext`);
-    }
-    // Fail closed rather than let encryptSecret drop the AAD and write v1.
-    if (!getActiveSecretEncryptionKeyId()) {
-      throw new IntegrationSecretsUnavailableError(
-        `Integration secret ${path.join('.')} cannot be stored: APP_ENCRYPTION_KEY_ID is not configured on this `
-          + 'API instance, so the credential would be sealed as non-AAD enc:v1 ciphertext with no binding to its '
-          + 'provider, organization or endpoint. Set APP_ENCRYPTION_KEY_ID (alongside APP_ENCRYPTION_KEY) and '
-          + 'restart the API.',
-      );
-    }
-    return encryptSecret(value, { aad: integrationSettingsSecretAad(family, orgId, path) });
+  //
+  // Array ELEMENTS never carry a name of their own (their path parts are
+  // synthetic: `index:N` or `id:"..."`), so `isSecretPath` cannot judge a
+  // bare element by itself — `{ tokens: ["abc"] }` would otherwise stay
+  // plaintext forever. A secret-named array therefore lends its own
+  // secret-ness to each of its direct string elements below; a credential
+  // path is still only ever decided by the enclosing field's own name.
+  const pathIsSecret = isSecretPath(path);
+  if (pathIsSecret && !(value !== null && typeof value === 'object')) {
+    return sealSecretLeaf(value, existing, family, orgId, path);
   }
 
   if (Array.isArray(value)) {
     const entries = isWebhookEndpointsPath(path) ? value.map(ensureWebhookEndpointId) : value;
     return entries.map((entry, index) => {
       const context = arrayEntryContext(entries, existing, entry, index, path);
-      return sealValue(entry, context.existingEntry, family, orgId, [...path, context.pathPart]);
+      const elementPath = [...path, context.pathPart];
+      if (pathIsSecret && !(entry !== null && typeof entry === 'object')) {
+        return sealSecretLeaf(entry, context.existingEntry, family, orgId, elementPath);
+      }
+      return sealValue(entry, context.existingEntry, family, orgId, elementPath);
     });
   }
   if (value && typeof value === 'object') {
@@ -233,15 +255,29 @@ export function sealIntegrationSettings(
   return sealValue(value, existing, family, orgId, []) as JsonRecord;
 }
 
+function maskSecretLeaf(value: unknown): unknown {
+  return typeof value === 'string' && value.length > 0 ? INTEGRATION_MASKED_SECRET : value;
+}
+
 function maskValue(value: unknown, path: readonly string[]): unknown {
-  // Same leaf-vs-container split as sealValue. Returning a credential-NAMED
-  // container unchanged here would hand the caller the raw ciphertext of every
-  // secret inside it, so containers must fall through to the walk below.
-  if (isSecretPath(path) && !(value !== null && typeof value === 'object')) {
-    return typeof value === 'string' && value.length > 0 ? INTEGRATION_MASKED_SECRET : value;
+  // Same leaf-vs-container split as sealValue, including the array-element
+  // inheritance: an element path (`index:N` / `"N"`) carries no name of its
+  // own, so a credential-named array lends its secret-ness to each direct
+  // string element instead of leaving it to round-trip unmasked. Returning a
+  // credential-NAMED container unchanged here would hand the caller the raw
+  // ciphertext of every secret inside it, so containers must fall through to
+  // the walk below.
+  const pathIsSecret = isSecretPath(path);
+  if (pathIsSecret && !(value !== null && typeof value === 'object')) {
+    return maskSecretLeaf(value);
   }
   if (Array.isArray(value)) {
-    return value.map((entry, index) => maskValue(entry, [...path, String(index)]));
+    return value.map((entry, index) => {
+      if (pathIsSecret && !(entry !== null && typeof entry === 'object')) {
+        return maskSecretLeaf(entry);
+      }
+      return maskValue(entry, [...path, String(index)]);
+    });
   }
   if (value && typeof value === 'object') {
     return Object.fromEntries(

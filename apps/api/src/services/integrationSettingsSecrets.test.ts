@@ -304,6 +304,33 @@ describe('integration settings secret storage', () => {
       ).toThrow(InvalidIntegrationSecretError);
     });
 
+    it('seals and masks string elements inside a credential-named ARRAY', () => {
+      // Array elements have no field name of their own (`index:0`, `"0"`, …),
+      // so a credential-named array key must lend its own secret-ness to each
+      // string element rather than leaving them to round-trip in clear.
+      const sealed = sealIntegrationSettings(
+        { tokens: ['abc', 'def'] },
+        undefined,
+        'ticketing',
+        'org-a',
+      );
+      const sealedTokens = sealed.tokens as string[];
+      expect(sealedTokens[0]).toMatch(/^enc:v3:/);
+      expect(sealedTokens[1]).toMatch(/^enc:v3:/);
+      expect(sealedTokens[0]).not.toBe('abc');
+      expect(sealedTokens[1]).not.toBe('def');
+
+      const masked = maskIntegrationSettings(sealed);
+      expect(masked.tokens).toEqual([INTEGRATION_MASKED_SECRET, INTEGRATION_MASKED_SECRET]);
+    });
+
+    it('does not seal or mask a non-credential array', () => {
+      const input = { metrics: { selected: ['cpu', 'memory'] } };
+      const sealed = sealIntegrationSettings(input, undefined, 'monitoring', 'org-a');
+      expect(sealed).toEqual(input);
+      expect(maskIntegrationSettings(sealed)).toEqual(input);
+    });
+
     it('leaves allowlisted names unsealed and unmasked end to end', () => {
       const sealed = sealIntegrationSettings(
         { keyName: 'primary', tokenCount: '3', apiToken: 'private-token' },
