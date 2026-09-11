@@ -6,12 +6,14 @@ import { describe, it, expect, vi } from 'vitest';
 // to the test Redis (same rationale as invoiceService.issue.integration).
 vi.mock('../../services/invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../../services/timeEntryEvents', () => ({ emitTimeEntryEvent: vi.fn().mockResolvedValue(undefined) }));
 
 import { inArray, sql } from 'drizzle-orm';
 import postgres, { type Sql } from 'postgres';
 import { db, withSystemDbAccessContext, withDbAccessContext, type DbAccessContext } from '../../db';
 import { partners, organizations, users, timeEntries, invoices, invoiceLines } from '../../db/schema';
 import * as svc from '../../services/invoiceService';
+import { deleteTimeEntry } from '../../services/timeEntryService';
 import type { InvoiceActor } from '../../services/invoiceTypes';
 import { getTestDb } from './setup';
 
@@ -176,6 +178,69 @@ function errorCode(result: PromiseSettledResult<unknown>): string | undefined {
 }
 
 describe.runIf(RUN)('issueInvoice race safety (B10)', () => {
+  it('issue wins the source lock before delete: delete observes billed and void is the only release path', async () => {
+    const f = await seedFixture(1);
+    const entryId = f.timeEntryIds[0]!;
+    const draftId = await forgeDraftReferencing(f, [entryId]);
+    const locksHeld = deferred<void>();
+    const releaseLocks = deferred<void>();
+    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    let holderWork: Promise<void> | undefined;
+    try {
+      holderWork = holder.begin(async (tx) => {
+        await tx`SELECT id FROM public.time_entries WHERE id = ${entryId} FOR UPDATE`;
+        locksHeld.resolve();
+        await releaseLocks.promise;
+      });
+      await locksHeld.promise;
+
+      const issue = withDbAccessContext(ctx(f), () => svc.issueInvoice(draftId, actor(f)));
+      await waitForBlockedBackends(1);
+      const deletion = withDbAccessContext(ctx(f), () => deleteTimeEntry(entryId, {
+        userId: f.userId,
+        name: 'Billing admin',
+        partnerId: f.partnerId,
+        manageAll: true,
+        accessibleOrgIds: [f.orgId],
+      }));
+      await waitForBlockedBackends(2);
+      releaseLocks.resolve();
+      await holderWork;
+
+      const [issueResult, deleteResult] = await Promise.allSettled([issue, deletion]);
+      expect(issueResult).toMatchObject({
+        status: 'fulfilled',
+        value: expect.objectContaining({ id: draftId, status: 'sent' }),
+      });
+      expect(deleteResult).toMatchObject({
+        status: 'rejected',
+        reason: expect.objectContaining({ code: 'ENTRY_BILLED', status: 409 }),
+      });
+
+      const [stillBilled] = await withSystemDbAccessContext(() =>
+        db.select({ status: timeEntries.billingStatus }).from(timeEntries)
+          .where(inArray(timeEntries.id, [entryId])));
+      expect(stillBilled?.status).toBe('billed');
+
+      await withDbAccessContext(ctx(f), () => svc.voidInvoice(draftId, 'test release', {}, actor(f)));
+      await withDbAccessContext(ctx(f), () => deleteTimeEntry(entryId, {
+        userId: f.userId,
+        name: 'Billing admin',
+        partnerId: f.partnerId,
+        manageAll: true,
+        accessibleOrgIds: [f.orgId],
+      }));
+      const afterDelete = await withSystemDbAccessContext(() =>
+        db.select({ id: timeEntries.id }).from(timeEntries)
+          .where(inArray(timeEntries.id, [entryId])));
+      expect(afterDelete).toEqual([]);
+    } finally {
+      releaseLocks.resolve();
+      if (holderWork) await Promise.allSettled([holderWork]);
+      await closeRaceClients(holder);
+    }
+  }, 30_000);
+
   it('two drafts over the SAME not_billed sources: exactly one issues, loser gets SOURCE_ALREADY_BILLED after lock-wait', async () => {
     const f = await seedFixture(2);
     const draftA = await forgeDraftReferencing(f, f.timeEntryIds);
