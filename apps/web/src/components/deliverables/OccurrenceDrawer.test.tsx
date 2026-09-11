@@ -75,6 +75,78 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+describe('OccurrenceDrawer evidence upload (#5573 W03)', () => {
+  const pdf = () => new File([new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d])], 'findings.pdf', { type: 'application/pdf' });
+
+  const uploadFile = async (testId: string) => {
+    const input = (await screen.findByTestId(testId)) as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [pdf()] } });
+  };
+
+  it('uploads a file as evidence through the multipart route and refreshes the occurrence', async () => {
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET') return jsonResp(200, { data: [occurrence] });
+      if (path.endsWith('/evidence/upload')) {
+        return jsonResp(200, {
+          data: {
+            ...occurrence,
+            evidence: [
+              ...occurrence.evidence,
+              { id: 'ev-2', kind: 'document', documentId: 'doc-1', reportId: null, reportRunId: null, createdAt: '2026-09-03T00:00:00Z' },
+            ],
+          },
+        });
+      }
+      throw new Error(`unexpected ${init?.method} ${path}`);
+    });
+    const onChanged = vi.fn();
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} onChanged={onChanged} />);
+    await uploadFile('occurrence-evidence-file-oc-1');
+    fireEvent.click(screen.getByTestId('occurrence-evidence-upload-oc-1'));
+
+    await waitFor(() => expect(fetcher).toHaveBeenCalledWith(
+      '/orgs/org-1/deliverables/occurrences/oc-1/evidence/upload',
+      expect.objectContaining({ method: 'POST', body: expect.any(FormData) }),
+    ));
+    const uploadCall = (fetcher.mock.calls as unknown as Array<[string, RequestInit | undefined]>)
+      .find((c) => String(c[0]).endsWith('/evidence/upload'));
+    const init = uploadCall![1] as RequestInit;
+    // The browser supplies the multipart boundary; a Content-Type here breaks it.
+    expect(init.headers).toBeUndefined();
+    expect(await screen.findByTestId('evidence-chip-ev-2')).toBeInTheDocument();
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it('does nothing until a file is chosen', async () => {
+    const fetcher = vi.fn(async (_path: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') !== 'GET') throw new Error('no request should be sent without a file');
+      return jsonResp(200, { data: [occurrence] });
+    });
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    const button = await screen.findByTestId('occurrence-evidence-upload-oc-1');
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(fetcher.mock.calls.every(([, init]) => (init?.method ?? 'GET') === 'GET')).toBe(true);
+  });
+
+  it('surfaces a 415 from the upload as the translated unsupported-type message, not a generic error', async () => {
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET') return jsonResp(200, { data: [occurrence] });
+      if (path.endsWith('/evidence/upload')) {
+        return jsonResp(415, { error: 'Only JPEG, PNG, WebP images and PDFs can be stored', code: 'UNSUPPORTED_DOCUMENT_TYPE' });
+      }
+      throw new Error(`unexpected ${init?.method} ${path}`);
+    });
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    await uploadFile('occurrence-evidence-file-oc-1');
+    fireEvent.click(screen.getByTestId('occurrence-evidence-upload-oc-1'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      message: 'Only PDF, JPEG, PNG and WebP files can be attached.',
+    })));
+  });
+});
+
 describe('OccurrenceDrawer', () => {
   it('lists occurrences with status, rescheduled-from note and evidence chips', async () => {
     const fetcher = vi.fn(async () => jsonResp(200, { data: [occurrence] }));

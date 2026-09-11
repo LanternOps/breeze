@@ -4,6 +4,7 @@ import {
   AlertCircle,
   Building2,
   ClipboardCheck,
+  FileText,
   LayoutDashboard,
   MapPin,
   Monitor,
@@ -52,6 +53,7 @@ const TAB_ICONS: Record<OrgRecordTab, React.ReactNode> = {
   tickets: <Ticket className="h-4 w-4" />,
   billing: <Receipt className="h-4 w-4" />,
   service: <ClipboardCheck className="h-4 w-4" />,
+  documents: <FileText className="h-4 w-4" />,
   activity: <ActivityIcon className="h-4 w-4" />,
 };
 
