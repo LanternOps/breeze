@@ -27,6 +27,7 @@ import {
 import { formatMoney, formatDate } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
 import ContractDocumentsSection from './ContractDocumentsSection';
+import ContractDeliverablesSection from './ContractDeliverablesSection';
 import DeviceCoverageNotice, { formatUncoveredBreakdown } from './DeviceCoverageNotice';
 import { LINE_TYPE_LABELS } from './lineTypes';
 import AllowanceCell, { OverageNotice } from './AllowanceCell';
@@ -480,6 +481,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
 
           {/* Executed documents (Task 15's accept-time snapshots) */}
           <ContractDocumentsSection contractId={contract.id} />
+          <ContractDeliverablesSection contractId={contract.id} orgId={contract.orgId} />
         </div>
 
         {/* ── status + lifecycle + generate ─────────────────────────────── */}
