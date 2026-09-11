@@ -1861,9 +1861,16 @@ jobs:
           # directly. Everything else here is used by the host-side
           # scripts (run-qemu.sh's own xorriso extraction, seed-snapshot.sh's
           # mmdebstrap, python3's json comparison, qemu-system-x86/ovmf for
-          # the actual QEMU boots).
+          # the actual QEMU boots). debian-archive-keyring is for
+          # mmdebstrap specifically: it bootstraps a Debian bookworm chroot
+          # directly on this ubuntu-latest runner (unlike the ISO build,
+          # this one isn't containerized), and ubuntu-latest's own trusted
+          # keyring doesn't include Debian's release signing keys, so
+          # `apt-get update` inside the new chroot fails signature
+          # verification (NO_PUBKEY) without it — found running this job
+          # for the first time ever past the ISO-build stage (PR #5588).
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends squashfs-tools xorriso grub-efi-amd64-bin mtools dosfstools qemu-system-x86 ovmf mmdebstrap python3
+          sudo apt-get install -y --no-install-recommends squashfs-tools xorriso grub-efi-amd64-bin mtools dosfstools qemu-system-x86 ovmf mmdebstrap python3 debian-archive-keyring
 
       - name: Build helper + ISO
         run: |
