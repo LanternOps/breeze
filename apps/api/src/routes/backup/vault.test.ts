@@ -14,6 +14,23 @@ vi.mock('../../services', () => ({}));
 const queueCommandForExecutionMock = vi.fn();
 const writeRouteAuditMock = vi.fn();
 
+/**
+ * The string operands drizzle placed into a SQL predicate — column names (the
+ * schema is stubbed with strings in this file) and the values compared against
+ * them. Walks ONLY `queryChunks`, never the whole object graph, so it cannot
+ * pick up unrelated metadata and quietly pass against unfixed code.
+ */
+function predicateOperands(node: unknown, acc: string[] = []): string[] {
+  if (typeof node === 'string') {
+    acc.push(node);
+    return acc;
+  }
+  if (node === null || typeof node !== 'object') return acc;
+  const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+  if (Array.isArray(chunks)) for (const chunk of chunks) predicateOperands(chunk, acc);
+  return acc;
+}
+
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
   for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'for']) {
@@ -351,6 +368,39 @@ describe('vault routes', () => {
       { vaultId: VAULT_ID, snapshotId: 'snap-ext-001' },
       expect.objectContaining({ userId: 'user-123', expectedOrgId: ORG_ID })
     );
+  });
+
+  it('binds both sync status writes to (id, orgId, deviceId), not id alone', async () => {
+    const pendingChain = chainMock([]);
+    const failedChain = chainMock([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([makeVault()]))
+      .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
+    updateMock
+      .mockReturnValueOnce(pendingChain)
+      .mockReturnValueOnce(failedChain);
+    queueCommandForExecutionMock.mockResolvedValueOnce({ error: 'Device not found' });
+
+    const res = await app.request(`/backup/vault/${VAULT_ID}/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ snapshotId: 'snap-ext-003' }),
+    });
+
+    expect(res.status).toBe(502);
+    // The vault was read in a separate statement, so `id` alone is a
+    // check-then-act window: both writes must repeat the axes we authorized.
+    // drizzle-orm is NOT mocked in this file, so assert on the values actually
+    // bound into the predicate rather than on a stub's shape.
+    for (const chain of [pendingChain, failedChain]) {
+      expect(chain.where).toHaveBeenCalledTimes(1);
+      const operands = predicateOperands(chain.where.mock.calls[0]![0]);
+      expect(operands).toEqual(expect.arrayContaining([
+        'local_vaults.id', VAULT_ID,
+        'local_vaults.org_id', ORG_ID,
+        'local_vaults.device_id', DEVICE_ID,
+      ]));
+    }
   });
 
   // #3531: the web client posts NO body to this route, while `fetchWithAuth`
