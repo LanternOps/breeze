@@ -389,7 +389,7 @@ describe('importBundle', () => {
     }
   });
 
-  it('new-version mode appends the previous content to scriptVersions and bumps the version', async () => {
+  it('new-version mode cuts an imported-origin AFTER-image and leaves the bump to cutScriptVersion', async () => {
     const bundle = validBundle([{ ...baseEntry, content: 'new content' }]);
     h.state.selectQueue.push([
       {
@@ -409,18 +409,22 @@ describe('importBundle', () => {
     });
     expect('error' in result).toBe(false);
 
-    const versionInsert = h.state.inserts.find((i) => i.table === scriptVersions);
-    expect(versionInsert).toBeDefined();
-    const snapshot = versionInsert!.values as Record<string, unknown>;
-    expect(snapshot.scriptId).toBe(SCRIPT_ID);
-    expect(snapshot.version).toBe(4);
-    expect(snapshot.content).toBe('old content');
+    // W01a: the importer no longer writes script_versions itself — it hands
+    // the after-image cut to cutScriptVersion, which snapshots the row the
+    // update just wrote and owns scripts.version.
+    expect(h.state.inserts.find((i) => i.table === scriptVersions)).toBeUndefined();
+    expect(h.state.cuts).toHaveLength(1);
+    expect(h.state.cuts[0]!.scriptId).toBe(SCRIPT_ID);
+    expect(h.state.cuts[0]!.provenance).toMatchObject({
+      origin: 'imported',
+      changelog: `Imported from bundle "${baseEntry.name}"`
+    });
 
     const update = h.state.updates.find((u) => u.table === scripts);
     expect(update).toBeDefined();
     const set = update!.values as Record<string, unknown>;
     expect(set.content).toBe('new content');
-    expect(set.version).toBe(5);
+    expect(set).not.toHaveProperty('version');
     if ('versioned' in result) expect(result.versioned).toBe(1);
   });
 

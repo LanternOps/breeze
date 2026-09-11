@@ -21,9 +21,10 @@ const API_SRC = fileURLToPath(new URL('..', import.meta.url));
 
 const SOLE_WRITER = 'services/scriptVersions.ts';
 
-const PENDING_CONVERSION: ReadonlySet<string> = new Set<string>([
-  'services/scriptBundle/index.ts',
-]);
+/** Empty as of W01a Task 13 — every legacy writer now goes through
+ *  cutScriptVersion. This set exists so the ratchet's shape is obvious; adding
+ *  an entry means adding a second writer, which the spec forbids. */
+const PENDING_CONVERSION: ReadonlySet<string> = new Set<string>([]);
 
 /** Files that may legitimately reference the table without inserting into it:
  *  tests, and the schema module that defines it. */
