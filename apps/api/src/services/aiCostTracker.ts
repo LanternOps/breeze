@@ -1349,6 +1349,11 @@ export async function updateBudget(orgId: string, settings: {
       maxTurnsPerSession: settings.maxTurnsPerSession ?? 50,
       messagesPerMinutePerUser: settings.messagesPerMinutePerUser ?? 20,
       messagesPerHourPerOrg: settings.messagesPerHourPerOrg ?? 200,
+      // #5592 — this branch enumerates columns, so every field of the
+      // `settings` parameter must appear here. Omitting one silently discards
+      // the user's choice on the FIRST save (the row takes the column default)
+      // and only sticks on the second save, which takes the update branch.
+      approvalMode: settings.approvalMode ?? 'per_step',
       alertThresholdPercents: settings.alertThresholdPercents ?? null,
     });
   }
