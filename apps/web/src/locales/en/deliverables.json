@@ -145,5 +145,60 @@
     "evidenceAdded": "Evidence added",
     "evidenceRemoved": "Evidence removed",
     "deactivated": "Deliverable deactivated"
+  },
+  "templates": {
+    "pageTitle": "Deliverable templates",
+    "pageDescription": "Define a service tier once and apply it to any customer. Partner-wide sets are available to every organization you manage.",
+    "empty": "No template sets yet.",
+    "allOrganizations": "All orgs",
+    "actions": {
+      "newSet": "New template set",
+      "addItem": "Add deliverable",
+      "apply": "Apply template set",
+      "edit": "Edit",
+      "delete": "Delete",
+      "save": "Save",
+      "cancel": "Cancel"
+    },
+    "form": {
+      "name": "Set name",
+      "description": "Description",
+      "itemName": "Deliverable name",
+      "cadence": "Cadence",
+      "leadDays": "Open this many days before due",
+      "graceDays": "Mark missed this many days after due",
+      "artifactRequired": "Artifact required",
+      "completionMode": "Completion"
+    },
+    "ownerScope": {
+      "legend": "Who is this set for?",
+      "allOrganizations": "All organizations (partner-wide)",
+      "thisOrganizationOnly": "This organization only"
+    },
+    "apply": {
+      "title": "Apply template set",
+      "set": "Template set",
+      "contract": "Contract (optional)",
+      "noContract": "No contract",
+      "effectiveFrom": "Effective from",
+      "owner": "Owner (optional)",
+      "submit": "Apply",
+      "created_one": "Created {{count}} deliverable",
+      "created_other": "Created {{count}} deliverables",
+      "skipped": "Skipped (already present): {{names}}"
+    },
+    "errors": {
+      "collision": "These deliverables already exist on the target: {{names}}",
+      "duplicateSetName": "A template set with this name already exists.",
+      "duplicateItemName": "An item with this name already exists in the set.",
+      "partnerWideDenied": "Managing partner-wide templates requires full partner organization access."
+    },
+    "toast": {
+      "setSaved": "Template set saved",
+      "setDeleted": "Template set deleted",
+      "itemSaved": "Deliverable saved",
+      "itemDeleted": "Deliverable removed",
+      "applied": "Template set applied"
+    }
   }
 }

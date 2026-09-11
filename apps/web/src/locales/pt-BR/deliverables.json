@@ -145,5 +145,60 @@
     "evidenceAdded": "Evidência adicionada",
     "evidenceRemoved": "Evidência removida",
     "deactivated": "Entrega desativada"
+  },
+  "templates": {
+    "pageTitle": "Modelos de entregas",
+    "pageDescription": "Defina um nível de serviço uma vez e aplique-o a qualquer cliente. Conjuntos válidos para todo o parceiro ficam disponíveis para cada organização que você gerencia.",
+    "empty": "Ainda não há conjuntos de modelos.",
+    "allOrganizations": "Todas as orgs",
+    "actions": {
+      "newSet": "Novo conjunto de modelos",
+      "addItem": "Adicionar entrega",
+      "apply": "Aplicar conjunto de modelos",
+      "edit": "Editar",
+      "delete": "Excluir",
+      "save": "Salvar",
+      "cancel": "Cancelar"
+    },
+    "form": {
+      "name": "Nome do conjunto",
+      "description": "Descrição",
+      "itemName": "Nome da entrega",
+      "cadence": "Frequência",
+      "leadDays": "Abrir este número de dias antes do vencimento",
+      "graceDays": "Marcar como não cumprida este número de dias após o vencimento",
+      "artifactRequired": "Evidência obrigatória",
+      "completionMode": "Conclusão"
+    },
+    "ownerScope": {
+      "legend": "Para quem é este conjunto?",
+      "allOrganizations": "Todas as organizações (válido para todo o parceiro)",
+      "thisOrganizationOnly": "Somente esta organização"
+    },
+    "apply": {
+      "title": "Aplicar conjunto de modelos",
+      "set": "Conjunto de modelos",
+      "contract": "Contrato (opcional)",
+      "noContract": "Sem contrato",
+      "effectiveFrom": "Vigente a partir de",
+      "owner": "Responsável (opcional)",
+      "submit": "Aplicar",
+      "created_one": "{{count}} entrega criada",
+      "created_other": "{{count}} entregas criadas",
+      "skipped": "Ignoradas (já existentes): {{names}}"
+    },
+    "errors": {
+      "collision": "Estas entregas já existem no destino: {{names}}",
+      "duplicateSetName": "Já existe um conjunto de modelos com este nome.",
+      "duplicateItemName": "Já existe um item com este nome no conjunto.",
+      "partnerWideDenied": "Gerenciar modelos válidos para todo o parceiro exige acesso completo à organização do parceiro."
+    },
+    "toast": {
+      "setSaved": "Conjunto de modelos salvo",
+      "setDeleted": "Conjunto de modelos excluído",
+      "itemSaved": "Entrega salva",
+      "itemDeleted": "Entrega removida",
+      "applied": "Conjunto de modelos aplicado"
+    }
   }
 }
