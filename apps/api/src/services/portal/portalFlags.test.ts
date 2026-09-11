@@ -18,13 +18,15 @@ import {
 } from './portalFlags';
 
 describe('PORTAL_VISIBILITY_FLAG_KEYS', () => {
-  it('lists exactly the five visibility flags', () => {
+  it('lists exactly the seven visibility flags', () => {
     expect(PORTAL_VISIBILITY_FLAG_KEYS).toEqual([
       'enableDashboard',
       'enableSecurity',
       'enableBackups',
       'enableReports',
-      'enableSupportUsage'
+      'enableSupportUsage',
+      'enableService',
+      'enableDocuments'
     ]);
   });
 });
@@ -36,6 +38,8 @@ describe('onPortalFlagsChanged', () => {
     enableBackups: false,
     enableReports: false,
     enableSupportUsage: false,
+    enableService: false,
+    enableDocuments: false,
   };
 
   beforeEach(() => {

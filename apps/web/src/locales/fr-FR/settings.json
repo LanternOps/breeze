@@ -1149,6 +1149,14 @@
         "enableSupportUsage": {
           "label": "Utilisation du support",
           "description": "Affiche le total du temps de support facturable du mois en cours."
+        },
+        "enableService": {
+          "label": "Service",
+          "description": "Affiche les livrables planifiés, ce qui a été livré et les dates clés."
+        },
+        "enableDocuments": {
+          "label": "Documents",
+          "description": "Permet aux clients de télécharger les documents partagés."
         }
       }
     },

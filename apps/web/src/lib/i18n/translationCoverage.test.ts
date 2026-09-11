@@ -335,7 +335,9 @@ const namespaceDuplicateBaselines = {
     // locale-invariant (the acronym is never translated).
     // +2: aiAgentsPage.summary.minuteCount_one/_other (#5048 QA) — "{{count}} minute" /
     // "{{count}} minutes" spell identically in French.
-    'settings.json': 169,
+    // +2: orgPortalSettingsEditor.visibility.toggles.enableService/enableDocuments
+    // (W04 #5573) — "Service" and "Documents" spell identically in French.
+    'settings.json': 171,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -454,7 +456,9 @@ const namespaceDuplicateBaselines = {
     // "{{count}} minutes" spell identically in French.
     // +1: aiAgentsPage.errors.scriptRejected (#5065) — "Script {{id}}: {{reason}}"
     // spells identically to English here ("script" is the loanword).
-    'settings.json': 175,
+    // +2: orgPortalSettingsEditor.visibility.toggles.enableService/enableDocuments
+    // (W04 #5573) — "Service" and "Documents" spell identically in Canadian French.
+    'settings.json': 177,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -566,7 +570,9 @@ const namespaceDuplicateBaselines = {
     // the same word in German (already accepted above in this namespace).
     // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
     // locale-invariant (the acronym is never translated).
-    'settings.json': 185,
+    // +1: orgPortalSettingsEditor.visibility.toggles.enableService.label (W04 #5573)
+    // — "Service" is the same word in German.
+    'settings.json': 186,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two

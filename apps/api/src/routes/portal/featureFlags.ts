@@ -75,6 +75,14 @@ const STRICT_PORTAL_FEATURES: Record<PortalVisibilityFlag, { error: string; code
     error: 'Support usage is not enabled for this portal',
     code: 'PORTAL_SUPPORT_USAGE_DISABLED',
   },
+  enableService: {
+    error: 'Service delivery is not enabled for this portal',
+    code: 'PORTAL_SERVICE_DISABLED',
+  },
+  enableDocuments: {
+    error: 'Documents are not enabled for this portal',
+    code: 'PORTAL_DOCUMENTS_DISABLED',
+  },
 };
 
 export function createPortalFeatureGateStrict(flag: PortalVisibilityFlag): MiddlewareHandler {
@@ -95,5 +103,38 @@ export function createPortalFeatureGateStrict(flag: PortalVisibilityFlag): Middl
     }
 
     return next();
+  };
+}
+
+/**
+ * Passes when ANY of `flags` is true on the org's portal_branding row. Still
+ * fail-closed: a missing row or all-false refuses, answering with the FIRST
+ * flag's message so the customer is told about the surface they asked for.
+ *
+ * The one legitimate use is the document CONTENT route: spec §8 publishes a
+ * portal-visible document as delivery evidence under enable_service even when
+ * enable_documents (the library page) is off, so the bytes must stay reachable
+ * under either flag while the library listing stays gated on its own.
+ */
+export function createPortalFeatureGateAny(
+  ...flags: readonly [PortalVisibilityFlag, ...PortalVisibilityFlag[]]
+): MiddlewareHandler {
+  return async (c, next) => {
+    const auth = c.get('portalAuth');
+    if (!auth) {
+      return c.json({ error: 'Authentication required' }, 401);
+    }
+
+    const [row] = await db
+      .select(Object.fromEntries(flags.map((f) => [f, portalBranding[f]])))
+      .from(portalBranding)
+      .where(eq(portalBranding.orgId, auth.user.orgId))
+      .limit(1);
+
+    if (flags.some((f) => (row as Record<string, unknown> | undefined)?.[f] === true)) {
+      return next();
+    }
+
+    return c.json(STRICT_PORTAL_FEATURES[flags[0]], 403);
   };
 }
