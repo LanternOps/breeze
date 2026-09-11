@@ -726,7 +726,20 @@ describe('createTicket', () => {
     await createTicket({ orgId: 'o-1', subject: 'SLA test', source: 'manual', categoryId: 'cat-1', priority: 'urgent' }, actor);
 
     const insertPayload = valuesMock.mock.calls[0]![0];
-    expect(insertPayload).toMatchObject({ responseSlaMinutes: 30, resolutionSlaMinutes: 120 });
+    expect(insertPayload).toMatchObject({ responseSlaMinutes: 30, resolutionSlaMinutes: 120, workKind: 'support' });
+  });
+
+  it('#5573 W02: a deliverable ticket stores work_kind and NO SLA even when the category has one', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'cat-1', partnerId: 'p-1', responseSlaMinutes: 30, resolutionSlaMinutes: 120 }]);
+    configMocks.getOrgSlaOverride.mockResolvedValueOnce({ responseMinutes: 120, resolutionMinutes: 480 });
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-dlv-1', orgId: 'o-1', internalNumber: 'T-2026-0043', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Sign-in log review — Oct 2026', source: 'api', workKind: 'deliverable', categoryId: 'cat-1', priority: 'urgent' }, actor);
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload).toMatchObject({ workKind: 'deliverable', responseSlaMinutes: null, resolutionSlaMinutes: null });
   });
 
   it('falls back to priority defaults when the category has no SLA', async () => {

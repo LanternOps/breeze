@@ -1,5 +1,5 @@
 import { and, asc, count, desc, eq, getTableColumns, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   serviceDeliverables, serviceDeliverableOccurrences, serviceDeliverableEvidence,
   type ServiceDeliverableRow, type ServiceDeliverableOccurrenceRow,
@@ -16,6 +16,7 @@ import type {
 import { transition, InvalidTransitionError, type OccurrenceStatus } from './serviceDeliverableState';
 import { isInLeadWindow, isPastGrace, planOccurrences, type Cadence } from './recurrence';
 import { addDaysISO } from './contractMath';
+import { createTicket } from './ticketService';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 
 /**
@@ -623,8 +624,11 @@ export async function materializeOccurrences(deliverableId: string, today: strin
     .onConflictDoNothing({ target: [serviceDeliverableOccurrences.deliverableId, serviceDeliverableOccurrences.periodStart] })
     .returning();
 }
-export async function openOccurrence(_occurrenceId: string, _ticketId: string | null): Promise<void> {
-  throw new Error('not implemented (W02)');
+/** Spec §5.3 step 2, single-row form. System caller. */
+export async function openOccurrence(occurrenceId: string, ticketId: string | null): Promise<void> {
+  await db.update(serviceDeliverableOccurrences)
+    .set({ status: 'open', ...(ticketId ? { ticketId } : {}), updatedAt: new Date() })
+    .where(and(eq(serviceDeliverableOccurrences.id, occurrenceId), eq(serviceDeliverableOccurrences.status, 'scheduled')));
 }
 const MISSABLE: readonly OccurrenceStatus[] = ['open', 'awaiting_evidence'];
 
@@ -651,8 +655,149 @@ export interface SweepDeliverable {
   leadDays: number; graceDays: number; autoEvidenceReportId: string | null;
 }
 
-export async function openDueOccurrencesForDeliverable(_d: SweepDeliverable, _today: string, _serviceOffWarned: Set<string>): Promise<number> {
-  throw new Error('not implemented (W02)');
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
+
+/** "Oct 2026" | "Q4 2026" | "H2 2026" | "2026" — the period label in the ticket subject. */
+export function periodLabel(cadence: Cadence, periodEnd: string): string {
+  const y = Number(periodEnd.slice(0, 4));
+  const m = Number(periodEnd.slice(5, 7));
+  if (cadence === 'annual') return String(y);
+  if (cadence === 'semiannual') return `H${m <= 6 ? 1 : 2} ${y}`;
+  if (cadence === 'quarterly') return `Q${Math.ceil(m / 3)} ${y}`;
+  return `${MONTH_ABBR[m - 1]} ${y}`;                        // monthly and one_time
+}
+
+/**
+ * Synthetic actor for sweep-created tickets: only ever written to
+ * audit_logs.actor_id, which is NOT NULL with no FK to users (precedent:
+ * inboundEmailService.ts). createTicket writes no `tickets` column from it.
+ */
+const DELIVERABLE_SWEEP_ACTOR = { userId: '00000000-0000-0000-0000-000000000000', name: 'Service deliverables' } as const;
+
+type SweepOccurrence = { id: string; nameSnapshot: string; periodStart: string; periodEnd: string; dueAt: string };
+
+/**
+ * Spec §5.3 step 2. Self-wrapping: one system transaction per occurrence, so
+ * the claim UPDATE and the ticket creation commit or roll back together — a
+ * crash between them cannot strand an `open` occurrence with no ticket and no
+ * retry.
+ */
+export async function openDueOccurrencesForDeliverable(
+  d: SweepDeliverable, today: string, serviceOffWarned: Set<string>,
+): Promise<number> {
+  const candidates: SweepOccurrence[] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    db.select({
+        id: serviceDeliverableOccurrences.id, nameSnapshot: serviceDeliverableOccurrences.nameSnapshot,
+        periodStart: serviceDeliverableOccurrences.periodStart, periodEnd: serviceDeliverableOccurrences.periodEnd,
+        dueAt: serviceDeliverableOccurrences.dueAt,
+      })
+      .from(serviceDeliverableOccurrences)
+      .where(and(eq(serviceDeliverableOccurrences.deliverableId, d.id), eq(serviceDeliverableOccurrences.status, 'scheduled'))),
+    'deliverableSweep.selectScheduled'));
+
+  let opened = 0;
+  for (const occ of candidates) {
+    if (!isInLeadWindow(occ.dueAt, d.leadDays, today)) continue;
+    opened += await runOutsideDbContext(() => withSystemDbAccessContext(
+      () => openOneOccurrence(d, occ, serviceOffWarned), 'deliverableSweep.openOccurrence'));
+  }
+  return opened;
+}
+
+const ASSIGNEE_REFUSALS = new Set(['ASSIGNEE_NOT_FOUND', 'ASSIGNEE_WRONG_PARTNER', 'ASSIGNEE_NOT_ELIGIBLE']);
+const CATEGORY_REFUSALS = new Set(['CATEGORY_NOT_FOUND', 'CATEGORY_WRONG_PARTNER']);
+const errorCode = (err: unknown): string | undefined => (err as { code?: unknown } | null)?.code as string | undefined;
+
+async function openOneOccurrence(d: SweepDeliverable, occ: SweepOccurrence, serviceOffWarned: Set<string>): Promise<number> {
+  // Claim first: 0 rows means a concurrent sweep won and already has the ticket.
+  const claimed = await db.update(serviceDeliverableOccurrences)
+    .set({ status: 'open', updatedAt: new Date() })
+    .where(and(eq(serviceDeliverableOccurrences.id, occ.id), eq(serviceDeliverableOccurrences.status, 'scheduled')))
+    .returning({ id: serviceDeliverableOccurrences.id });
+  if (claimed.length === 0) return 0;
+
+  const [cfg] = await db.select({
+      ownerUserId: serviceDeliverables.ownerUserId,
+      ticketCategoryId: serviceDeliverables.ticketCategoryId,
+      description: serviceDeliverables.description,
+    }).from(serviceDeliverables).where(eq(serviceDeliverables.id, d.id)).limit(1);
+
+  let { ownerUserId, ticketCategoryId } =
+    await resolveTicketTargets(d.orgId, cfg?.ownerUserId ?? null, cfg?.ticketCategoryId ?? null);
+
+  let ticketId: string | null = null;
+  // At most one retry per dropped reference: createTicket validates the
+  // assignee and category BEFORE any write, so a refusal leaves this
+  // transaction usable. The partner pre-resolve above catches the common case;
+  // this catches what it cannot see (a deactivated owner, lost org access).
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const ticket = await createTicket({
+        orgId: d.orgId, source: 'api', workKind: 'deliverable',
+        subject: `${occ.nameSnapshot} — ${periodLabel(d.cadence, occ.periodEnd)}`,
+        description: cfg?.description ?? undefined,
+        dueDate: new Date(`${occ.dueAt}T00:00:00.000Z`),
+        assigneeId: ownerUserId ?? undefined,
+        categoryId: ticketCategoryId ?? undefined,
+      }, DELIVERABLE_SWEEP_ACTOR);
+      ticketId = ticket.id;
+      break;
+    } catch (err) {
+      const code = errorCode(err);
+      if (code === 'service_management_off') {
+        // Spec §5.3 step 2: an `off` partner still gets the occurrence,
+        // fulfilled by hand.
+        if (!serviceOffWarned.has(d.orgId)) {
+          serviceOffWarned.add(d.orgId);
+          console.warn('[deliverables] Service Management is off for this partner — occurrences opened without tickets',
+            `orgId=${d.orgId}`, `deliverableId=${d.id}`);
+        }
+        return 1;
+      }
+      if (ownerUserId && code && ASSIGNEE_REFUSALS.has(code)) {
+        console.warn('[deliverables] dropping owner the ticket service refused', `orgId=${d.orgId}`, `deliverableId=${d.id}`, `userId=${ownerUserId}`, `code=${code}`);
+        ownerUserId = null;
+        continue;
+      }
+      if (ticketCategoryId && code && CATEGORY_REFUSALS.has(code)) {
+        console.warn('[deliverables] dropping ticket category the ticket service refused', `orgId=${d.orgId}`, `deliverableId=${d.id}`, `categoryId=${ticketCategoryId}`, `code=${code}`);
+        ticketCategoryId = null;
+        continue;
+      }
+      // Anything else rolls this transaction back — the claim is released and
+      // the occurrence retries on the next run rather than being stranded.
+      throw err;
+    }
+  }
+  if (!ticketId) throw new DeliverableServiceError('Ticket creation did not complete', 500, 'TICKET_CREATE_FAILED');
+
+  await db.update(serviceDeliverableOccurrences)
+    .set({ ticketId, updatedAt: new Date() })
+    .where(eq(serviceDeliverableOccurrences.id, occ.id));
+  return 1;
+}
+
+/**
+ * An owner who left the partner, or a category deleted since, would make
+ * createTicket throw ASSIGNEE_WRONG_PARTNER / CATEGORY_NOT_FOUND on every run
+ * and stall this deliverable permanently. Pre-resolve both against the org's
+ * partner and drop whichever no longer holds, loudly.
+ */
+async function resolveTicketTargets(
+  orgId: string, ownerUserId: string | null, ticketCategoryId: string | null,
+): Promise<{ ownerUserId: string | null; ticketCategoryId: string | null }> {
+  if (!ownerUserId && !ticketCategoryId) return { ownerUserId: null, ticketCategoryId: null };
+  const [row] = await db.select({
+      ownerOk: sql<boolean>`EXISTS (SELECT 1 FROM ${users} u JOIN ${organizations} o ON o.partner_id = u.partner_id
+        WHERE u.id = ${ownerUserId}::uuid AND o.id = ${orgId}::uuid)`,
+      categoryOk: sql<boolean>`EXISTS (SELECT 1 FROM ${ticketCategories} tc JOIN ${organizations} o ON o.partner_id = tc.partner_id
+        WHERE tc.id = ${ticketCategoryId}::uuid AND o.id = ${orgId}::uuid)`,
+    }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+  const okOwner = ownerUserId !== null && row?.ownerOk === true;
+  const okCategory = ticketCategoryId !== null && row?.categoryOk === true;
+  if (ownerUserId && !okOwner) console.warn('[deliverables] dropping owner no longer in the org partner', `orgId=${orgId}`, `userId=${ownerUserId}`);
+  if (ticketCategoryId && !okCategory) console.warn('[deliverables] dropping ticket category no longer in the org partner', `orgId=${orgId}`, `categoryId=${ticketCategoryId}`);
+  return { ownerUserId: okOwner ? ownerUserId : null, ticketCategoryId: okCategory ? ticketCategoryId : null };
 }
 /**
  * Spec §5.3 step 4, sweep form. System caller. The ticket is deliberately
