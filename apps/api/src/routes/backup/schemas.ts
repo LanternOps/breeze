@@ -148,7 +148,11 @@ export const jobListSchema = z.object({
 
 export const snapshotListSchema = z.object({
   deviceId: z.string().optional(),
-  configId: z.string().optional()
+  configId: z.string().optional(),
+  // Bare-metal recovery W04a: the recovery-creation panel needs "which
+  // snapshots CAN start a bare-metal recovery" without pulling every
+  // snapshot and filtering client-side.
+  bareMetalRestorable: z.coerce.boolean().optional(),
 });
 
 export const snapshotProtectionReasonSchema = z.object({
