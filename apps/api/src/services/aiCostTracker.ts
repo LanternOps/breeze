@@ -194,7 +194,7 @@ async function fetchAndCachePartnerCredits(partnerId: string): Promise<PartnerCr
   if (!billingUrl || !billingKey) return { ok: false, reason: 'unconfigured' };
 
   try {
-    const res = await fetch(`${billingUrl}/api/internal/partners/${partnerId}/ai-credits`, {
+    const res = await fetch(`${billingUrl}/billing/api/internal/partners/${partnerId}/ai-credits`, {
       headers: { 'Authorization': `Bearer ${billingKey}` },
     });
 
@@ -375,7 +375,7 @@ export async function deductBillingCredits(orgId: string, costCents: number): Pr
   }
 
   try {
-    const res = await fetch(`${billingUrl}/api/internal/partners/${org.partnerId}/ai-credits/deduct`, {
+    const res = await fetch(`${billingUrl}/billing/api/internal/partners/${org.partnerId}/ai-credits/deduct`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${billingKey}`,
@@ -1349,6 +1349,11 @@ export async function updateBudget(orgId: string, settings: {
       maxTurnsPerSession: settings.maxTurnsPerSession ?? 50,
       messagesPerMinutePerUser: settings.messagesPerMinutePerUser ?? 20,
       messagesPerHourPerOrg: settings.messagesPerHourPerOrg ?? 200,
+      // #5592 — this branch enumerates columns, so every field of the
+      // `settings` parameter must appear here. Omitting one silently discards
+      // the user's choice on the FIRST save (the row takes the column default)
+      // and only sticks on the second save, which takes the update branch.
+      approvalMode: settings.approvalMode ?? 'per_step',
       alertThresholdPercents: settings.alertThresholdPercents ?? null,
     });
   }
