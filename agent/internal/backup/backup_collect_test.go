@@ -285,7 +285,7 @@ func TestCollectBackupFiles_FidelityEntries(t *testing.T) {
 	mk("var/spool/cron/root", 0o600)
 
 	mgr := NewBackupManager(BackupConfig{Paths: []string{root}})
-	files, err := mgr.collectBackupFilesFromPaths(context.Background(), []string{root}, nil, "")
+	files, err := mgr.collectBackupFilesFromPaths(context.Background(), []string{root}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

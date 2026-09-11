@@ -237,7 +237,7 @@ func TestCollectBackupFilesFromPaths_PerRunExcludesOverrideConfig(t *testing.T) 
 
 	// Per-run override: exclude *.tmp instead (as backup_run payload would).
 	files, err := mgr.collectBackupFilesFromPaths(
-		t.Context(), []string{root}, newExcludeMatcher([]string{"*.tmp"}), "",
+		t.Context(), []string{root}, newExcludeMatcher([]string{"*.tmp"}), nil,
 	)
 	if err != nil {
 		t.Fatalf("collectBackupFilesFromPaths failed: %v", err)

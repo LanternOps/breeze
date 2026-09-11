@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -433,5 +434,71 @@ func TestResolveVSSProvider(t *testing.T) {
 				t.Errorf("provider = %v, want the injected instance", provider)
 			}
 		})
+	}
+}
+
+// TestRunBackupContext_JournalHardExclude_MatchesVSSShadowPath is the #5583
+// review fix: journalDirForExclude (RunBackupContext) is computed from the
+// LITERAL StagingDir before rewritePathsForVSS rewrites backupPaths to
+// shadow-copy device paths, but collectBackupFilesFromPaths's walker only
+// ever visits the REWRITTEN paths under VSS. Because VSS snapshots the
+// WHOLE volume, the shadow copy also contains whatever the checkpoint-
+// journal directory held at the instant of the snapshot — a real,
+// uploadable file, not a hypothetical. Without ALSO matching the
+// shadow-rewritten form of the journal directory, the hard-exclude
+// silently never fires on a VSS run: only the whole-machine preset's glob
+// exclude protects that one case, and nothing protects a custom path
+// selection that happens to include the journal's volume.
+func TestRunBackupContext_JournalHardExclude_MatchesVSSShadowPath(t *testing.T) {
+	shadowRoot := t.TempDir()
+	srcDir := t.TempDir()
+	shadowed := shadowedSourceDir(t, shadowRoot, srcDir)
+
+	// journalDir is the LITERAL staging dir the agent resolves and opens its
+	// journal in (resolveJournalDir(m.GetStagingDir())). Its content at
+	// VSS-snapshot time is mirrored under the shadow copy by construction
+	// (VSS snapshots the whole volume) — modeled here by writing directly
+	// under the shadow path, the same way shadowedSourceDir already models
+	// the rest of srcDir's shadow copy.
+	journalDir := filepath.Join(srcDir, "backup-journal")
+	shadowedJournalDir := filepath.Join(shadowed, "backup-journal")
+	if err := os.MkdirAll(shadowedJournalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	createTempFile(t, shadowedJournalDir, "backup-journal-deadbeefdeadbeef.jsonl", "{\"snapshotId\":\"stale\"}\n")
+	createTempFile(t, shadowed, "real.txt", "keep me")
+
+	vssProvider := &fakeVSSProvider{
+		session: &vss.VSSSession{
+			ID:          "shadow-set-1",
+			Volumes:     []string{filepath.VolumeName(srcDir)},
+			ShadowPaths: map[string]string{filepath.VolumeName(srcDir): shadowRoot},
+			CreatedAt:   time.Now().UTC(),
+		},
+	}
+
+	provider := newMockProvider()
+	mgr := NewBackupManager(BackupConfig{
+		Provider:    provider,
+		Paths:       []string{srcDir},
+		VSSEnabled:  true,
+		VSSProvider: vssProvider,
+		StagingDir:  journalDir,
+	})
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("RunBackupContext failed: %v", err)
+	}
+	if job.Snapshot == nil {
+		t.Fatal("expected a snapshot")
+	}
+	if len(job.Snapshot.Files) != 1 || job.Snapshot.Files[0].SourcePath != filepath.Join(shadowed, "real.txt") {
+		t.Fatalf("expected only real.txt (under its shadow path) in the snapshot, got %+v", job.Snapshot.Files)
+	}
+	for _, call := range provider.uploadCalls {
+		if strings.Contains(call.localPath, "backup-journal") {
+			t.Errorf("must never upload a file from the checkpoint-journal directory even under its VSS shadow-copy path, got upload of %q", call.localPath)
+		}
 	}
 }
