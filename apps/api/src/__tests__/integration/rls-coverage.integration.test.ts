@@ -970,7 +970,7 @@ const REQUIRED_CMDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;
 const APPEND_ONLY_PARENT_FK_TABLES: ReadonlySet<string> = new Set<string>(['script_versions']);
 
 /** Commands a parent-FK child must cover, given whether it is append-only. */
-function requiredCmdsFor(table: string): readonly string[] {
+function requiredCmdsFor(table: string): readonly Cmd[] {
   return APPEND_ONLY_PARENT_FK_TABLES.has(table)
     ? (['SELECT', 'INSERT'] as const)
     : REQUIRED_CMDS;
