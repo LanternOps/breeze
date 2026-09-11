@@ -317,6 +317,15 @@ async function resolveGrantScope(
   riskTier: RiskTier,
 ): Promise<ApprovalDecideScope | null> {
   if (!intent) return null;
+  // SUPERVISED ONLY (Todd, 2026-09-11): four_eyes is the high-trust path and
+  // keeps its per-approval passkey, so a four_eyes row neither mints nor
+  // redeems. Refused HERE, in the core, before any lookup and independently
+  // of `isApprovalDecideGrantEligible` (which refuses it again from the
+  // scope's `approvalScope`) — two gates, so a loosening of either alone
+  // cannot let a grant reach a four_eyes decide. A presented grant on such a
+  // row therefore lands in the redeem branch's fail-closed 403 and the client
+  // runs a real ceremony.
+  if (intent.approvalScope !== 'supervised') return null;
   let aiSessionId: string | null = null;
   try {
     const [exec] = await runOutsideDbContext(() =>
@@ -336,6 +345,7 @@ async function resolveGrantScope(
     console.error('[approvals] grant scope: ai session lookup failed:', err);
   }
   const scope: ApprovalDecideScope = {
+    approvalScope: intent.approvalScope,
     agentRunId: intent.requestingAgentRunId ?? null,
     aiSessionId,
     orgId: intent.orgId,
@@ -440,7 +450,9 @@ export interface DecideApprovalInput {
   /**
    * #5601: an `approval_decide` step-up grant minted by an EARLIER decide in
    * this same window, presented in place of running another ceremony. See
-   * services/approvals/approvalDecideGrant.ts.
+   * services/approvals/approvalDecideGrant.ts. Honoured for SUPERVISED rows
+   * only (an enforcing partner's step-up floor); a four_eyes row refuses it
+   * with 403 step_up_required and always takes a fresh proof.
    *
    * Presenting one disables `skipAssuranceLadder` exactly as presenting a
    * `proof` does — otherwise a supervised row under a non-enforcing partner
@@ -900,6 +912,11 @@ export async function decideApprovalRequest(
     // authorization, digest binding, isAgentIntentDecideAuthorized,
     // sole-operator re-derivation below, CAS) still runs per row, unchanged.
     //
+    // Supervised rows only: `resolveGrantScope` (inside redeemGrantForDecide)
+    // returns null for any other approval scope, so a four_eyes decide that
+    // presents a grant is refused below with 403 and must bring a fresh
+    // proof — the four_eyes sole-operator >= L3 gate is untouched.
+    //
     // `status === 'approved'` is a FAIL-SAFE, not a redundancy. Neither /deny
     // nor the batch populates `stepUpGrantId` today, so a deny cannot reach
     // here — but this branch's whole contract is "refuse with 403 when the
@@ -963,8 +980,9 @@ export async function decideApprovalRequest(
   // #5601: the sole-operator gate is SHARED by the fresh-proof path and the
   // grant-redeem path, which is why it sits here rather than inside the ladder
   // branch where it used to live. A redeem branch that sat beside the ladder
-  // and skipped this gate would route four_eyes around its own >= L3
-  // requirement — the exact regression this placement prevents.
+  // and skipped this gate would route an enforcing-partner supervised
+  // self-decide around its own >= L3 requirement — the exact regression this
+  // placement prevents. (four_eyes never reaches the redeem branch at all.)
   //
   // Still skipped for the two branches that were never gated: the batch's
   // `preverifiedAssurance` (the gate already ran once at batch level against

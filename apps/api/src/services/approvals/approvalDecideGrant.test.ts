@@ -87,6 +87,7 @@ import type { AssuranceDecision } from '../authenticatorAssurance';
 const DEVICE = 'device-1';
 
 const scope = (over: Partial<ApprovalDecideScope> = {}): ApprovalDecideScope => ({
+  approvalScope: 'supervised',
   agentRunId: null,
   aiSessionId: 'session-A',
   orgId: 'org-A',
@@ -158,6 +159,10 @@ describe('isApprovalDecideGrantEligible', () => {
     );
   });
 
+  it('refuses a four_eyes row: the high-trust path keeps its per-approval passkey (Todd, 2026-09-11)', () => {
+    expect(isApprovalDecideGrantEligible(scope({ approvalScope: 'four_eyes' }))).toBe(false);
+  });
+
   it('refuses critical (L4), which must always re-prove freshly', () => {
     expect(isApprovalDecideGrantEligible(scope({ riskTier: 'critical' }))).toBe(false);
   });
@@ -183,6 +188,10 @@ describe('mintApprovalDecideGrant', () => {
 
   it('refuses critical, so L4 can never be asserted from a stored credential', async () => {
     await expect(mint({ scope: scope({ riskTier: 'critical' }) })).resolves.toBeNull();
+  });
+
+  it('refuses to mint from a four_eyes ceremony, so a four_eyes proof never seeds a reusable credential', async () => {
+    expect(await mint({ scope: scope({ approvalScope: 'four_eyes' }) })).toBeNull();
   });
 
   it('refuses an ineligible scope', async () => {
@@ -231,6 +240,22 @@ describe('redeemApprovalDecideGrant', () => {
       now: Date.now() + APPROVAL_DECIDE_GRANT_TTL_MS + 1,
     });
     expect(out).toBeNull();
+  });
+
+  // Todd's call (2026-09-11): 120 s for THIS grant, not the 300 s every
+  // single-use step-up operation keeps. Pinned as a number, not just via the
+  // constant, so a change to the window is a deliberate edit here too.
+  it('the window is 120 s: a ceremony 119 s old still redeems, one 121 s old does not', async () => {
+    expect(APPROVAL_DECIDE_GRANT_TTL_MS).toBe(120_000);
+    const grantId = await mint();
+    const minted = Date.now();
+    expect(await redeem({ grantId, now: minted + 119_000 })).not.toBeNull();
+    expect(await redeem({ grantId, now: minted + 121_000 })).toBeNull();
+  });
+
+  it('refuses a grant presented against a FOUR_EYES row, even for the same conversation/org/tier', async () => {
+    const grantId = await mint();
+    expect(await redeem({ grantId, scope: scope({ approvalScope: 'four_eyes' }) })).toBeNull();
   });
 
   it('refuses a ceremony timestamped in the future (clock skew / forgery)', async () => {

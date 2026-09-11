@@ -153,13 +153,14 @@ export function batchDecideErrorCopy(token: string): string | undefined {
 /**
  * How long a step-up grant minted by a decide response stays worth trying
  * before a fresh ceremony (#5601). Mirrors the server's own
- * `APPROVAL_DECIDE_GRANT_TTL_MS`, but on this side it is only a LATENCY hint:
- * it saves us attempting a grant we can locally tell has gone stale. The
- * server is the sole authority on whether a grant is good (scope, expiry,
- * device liveness, partner floor); one that survives this check can still be
- * refused with `step_up_required`, which the retry below handles.
+ * `APPROVAL_DECIDE_GRANT_TTL_MS` (120 s — Todd's call, 2026-09-11), but on
+ * this side it is only a LATENCY hint: it saves us attempting a grant we can
+ * locally tell has gone stale. The server is the sole authority on whether a
+ * grant is good (scope, expiry, device liveness, partner floor); one that
+ * survives this check can still be refused with `step_up_required`, which the
+ * retry below handles.
  */
-const STEP_UP_GRANT_TTL_MS = 300_000;
+const STEP_UP_GRANT_TTL_MS = 120_000;
 
 /**
  * The most recent step-up grant a decide response minted (#5601), so a
@@ -211,13 +212,19 @@ export function __resetStepUpGrantCacheForTests(): void {
  * that — triggers exactly ONE retry with the ceremony. `four_eyes` and any
  * unknown/absent scope keep the always-ceremony behaviour.
  *
- * #5601 layers onto that SAME optimistic-attempt machinery. Where supervised
- * goes prooflessly, a `four_eyes` (or enforcing-supervised) approve that holds
- * a live step-up grant sends `stepUpGrantId` instead of running the ceremony —
- * the server treats a valid grant as equivalent to a fresh proof. A refused
- * grant takes the identical 403 `step_up_required` path: drop it, run the
- * ceremony, retry exactly once. The grant is only ever tried on the FIRST
- * attempt, so the whole function stays bounded at two POSTs.
+ * #5601 layers onto that SAME optimistic-attempt machinery, for SUPERVISED
+ * rows only. A supervised approve that holds a live step-up grant sends
+ * `stepUpGrantId` on the optimistic attempt instead of going proofless — the
+ * server treats a valid grant as equivalent to a fresh proof, which is what an
+ * ENFORCING partner's step-up floor demands. A refused grant takes the
+ * identical 403 `step_up_required` path: drop it, run the ceremony, retry
+ * exactly once. The grant is only ever tried on the FIRST attempt, so the
+ * whole function stays bounded at two POSTs.
+ *
+ * `four_eyes` NEVER sends a grant (Todd, 2026-09-11): it is the high-trust
+ * path and keeps its per-approval passkey ceremony, and the server refuses a
+ * grant there anyway. The cache is therefore only ever filled by, and spent
+ * on, supervised approves.
  *
  * Deny needs no proof under any scope, skips the ceremony, and may carry the
  * optional reason collected by the approvals inbox.
@@ -253,12 +260,11 @@ export async function decideIntentApproval(
   // Only an APPROVE of a supervised row may go prooflessly; deny never carries
   // a proof anyway, and an unknown scope must fall back to the strict path.
   const supervisedApprove = decision === 'approve' && approvalScope === 'supervised';
-  // #5601: a non-supervised approve (four_eyes, or an unknown scope) may spend
-  // a live step-up grant in place of the ceremony. Read ONCE here so the retry
-  // below can never pick up a second grant and loop.
-  const firstAttemptGrantId = decision === 'approve' && !supervisedApprove
-    ? cachedStepUpGrantId()
-    : undefined;
+  // #5601: ONLY a supervised approve may spend a live step-up grant — it rides
+  // the optimistic attempt in place of the proofless body, which is what lets
+  // an enforcing partner's floor be met without a second passkey scan. Read
+  // ONCE here so the retry below can never pick up a second grant and loop.
+  const firstAttemptGrantId = supervisedApprove ? cachedStepUpGrantId() : undefined;
 
   /** Runs the ceremony into `body.proof`. Returns a terminal outcome when the
    *  viewer has no approver device; throws CeremonyError on a real failure. */
@@ -276,13 +282,13 @@ export async function decideIntentApproval(
   };
 
   if (decision === 'approve' && !supervisedApprove) {
-    if (firstAttemptGrantId) {
-      // #5601: spend the grant instead of prompting for another passkey scan.
-      body.stepUpGrantId = firstAttemptGrantId;
-    } else {
-      const noDevice = await collectProof();
-      if (noDevice) return noDevice;
-    }
+    // four_eyes / unknown scope: always a fresh ceremony, never a grant.
+    const noDevice = await collectProof();
+    if (noDevice) return noDevice;
+  } else if (firstAttemptGrantId) {
+    // #5601: supervised with a live grant — present it instead of going
+    // proofless, so an enforcing partner's floor is met without a scan.
+    body.stepUpGrantId = firstAttemptGrantId;
   } else if (decision === 'deny' && reason?.trim()) {
     body.reason = reason.trim();
   }
@@ -295,7 +301,7 @@ export async function decideIntentApproval(
   // is still unconsumed) — success toast, error toast and outcome mapping all
   // stay in exactly one place.
   let settledResponse: Response | undefined;
-  if (supervisedApprove || firstAttemptGrantId) {
+  if (supervisedApprove) {
     let firstAttempt: Response;
     try {
       // runaction-exempt: the optimistic proofless attempt (#5600). runAction
@@ -379,11 +385,12 @@ export async function decideIntentApproval(
           ? i18n.t('ai:aiApprovalDialog.approvedToast')
           : i18n.t('ai:aiApprovalDialog.deniedToast'),
     });
-    // #5601: a genuine ceremony on this decide may have minted a reusable
-    // grant. Cache it so the NEXT card of this conversation skips the scan.
-    // Only an approve ever mints one; a supervised L1 decide mints none, so
-    // this is simply absent there.
-    if (decision === 'approve' && typeof data?.stepUpGrantId === 'string') {
+    // #5601: a genuine ceremony on a SUPERVISED decide (an enforcing partner
+    // forced one via the retry above) may have minted a reusable grant. Cache
+    // it so the NEXT card of this conversation skips the scan. A supervised
+    // L1 decide mints none, and a four_eyes decide never mints one — the
+    // server does not, and even if it did the cache must stay supervised-only.
+    if (supervisedApprove && typeof data?.stepUpGrantId === 'string') {
       stepUpGrant = { id: data.stepUpGrantId, expiresAt: Date.now() + STEP_UP_GRANT_TTL_MS };
     }
   } catch (err) {

@@ -22,9 +22,9 @@ const { redisMock, redisStore, ttls, getRedisMock } = vi.hoisted(() => {
 
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, passkeyRemovalResourceDigest } from './mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, passkeyRemovalResourceDigest, stepUpGrantTtlSeconds, type StepUpOperation } from './mfaStepUpGrant';
 
-const bind = (operation: 'add_factor' | 'rotate_recovery_codes' | 'register_approver_device') => ({
+const bind = (operation: StepUpOperation) => ({
   userId: 'user-1',
   operation,
   authEpoch: 1,
@@ -108,6 +108,18 @@ describe('mfaStepUpGrant', () => {
       expect(redisStore.has(key)).toBe(true);
       expect(ttls.get(key)).toBe(300);
       expect(JSON.parse(redisStore.get(key)!)).toEqual(b);
+    });
+
+    // #5601 (Todd, 2026-09-11): the one multi-use operation gets a shorter
+    // window than the single-use default. Both numbers are pinned so a change
+    // to either is a deliberate edit here too.
+    it('writes approval_decide with a 120s TTL while every other operation keeps 300s', async () => {
+      const grantId = await mintStepUpGrant(bind('approval_decide'));
+      expect(ttls.get(`mfa:stepup:${grantId}`)).toBe(120);
+      const other = await mintStepUpGrant(bind('device_maintenance'));
+      expect(ttls.get(`mfa:stepup:${other}`)).toBe(300);
+      expect(stepUpGrantTtlSeconds('approval_decide')).toBe(120);
+      expect(stepUpGrantTtlSeconds('add_factor')).toBe(300);
     });
 
     it('returns null when Redis is down', async () => {

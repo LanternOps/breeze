@@ -507,10 +507,11 @@ beforeEach(() => {
 });
 
 describe('#5601 approval_decide step-up grant wiring', () => {
-  it('reuses a valid step-up grant for a four_eyes self-approve: 200, CAS carries decidedAssuranceLevel 3 / webauthn_platform / decidedViaStepUpGrant true', async () => {
-    mockFourEyesSelfApprove();
+  it('reuses a valid step-up grant for a supervised self-decide under an ENFORCING partner: 200, CAS carries decidedAssuranceLevel 3 / webauthn_platform / decidedViaStepUpGrant true', async () => {
+    mockSupervisedSelfDecide();
+    vi.mocked(isEnforcing).mockReturnValue(true);
     queueGrantScopeSelect();
-    const { approvalCasSet } = mockFanInTx('intent-1');
+    const { approvalCasSet } = mockFanInTx('intent-sv-1');
     vi.mocked(redeemApprovalDecideGrant).mockResolvedValueOnce({
       context: {
         decidedAssuranceLevel: 3,
@@ -533,9 +534,10 @@ describe('#5601 approval_decide step-up grant wiring', () => {
   });
 
   it('records assuranceSource: step_up_grant in the audit event details when the decision reused a grant', async () => {
-    mockFourEyesSelfApprove();
+    mockSupervisedSelfDecide();
+    vi.mocked(isEnforcing).mockReturnValue(true);
     queueGrantScopeSelect();
-    mockFanInTx('intent-1');
+    mockFanInTx('intent-sv-1');
     vi.mocked(redeemApprovalDecideGrant).mockResolvedValueOnce({
       context: {
         decidedAssuranceLevel: 3,
@@ -549,15 +551,14 @@ describe('#5601 approval_decide step-up grant wiring', () => {
     expect(res.status).toBe(200);
     expect(recordActionIntentEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        outcome: 'self_approved_sole_operator',
-        details: expect.objectContaining({ assuranceSource: 'step_up_grant' }),
+        outcome: 'approved',
+        details: expect.objectContaining({ assuranceSource: 'step_up_grant', approvalMethod: 'supervised_self' }),
       }),
     );
   });
 
   it('never records assuranceSource on a fresh-ceremony decision (proof, no grant)', async () => {
     mockFourEyesSelfApprove();
-    queueGrantScopeSelect(); // post-commit mint attempt (fresh ceremony, not reused)
     mockFanInTx('intent-1');
     vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
       requiredLevel: 3,
@@ -577,15 +578,41 @@ describe('#5601 approval_decide step-up grant wiring', () => {
     expect(call?.[0]?.details as Record<string, unknown>).not.toHaveProperty('assuranceSource');
   });
 
-  it('fails CLOSED (403 step_up_required) when the presented grant fails to redeem — never falls through to L1, and the row is never touched', async () => {
+  // Todd's call (2026-09-11): four_eyes is the high-trust path and keeps its
+  // per-approval passkey. A VALID grant on a four_eyes row must be refused
+  // before the grant module is even consulted.
+  it('four_eyes decide with a VALID grant → 403 step_up_required; the grant is never consulted and the row is never touched', async () => {
     // Deliberately a CROSS-USER four_eyes approve (requestedByUserId is
     // someone else), not a self-approve: a self-approve is ALSO caught by the
-    // separate sole-operator >=L3 gate below, which would still 403 even if
-    // the redeem-fail-closed check itself regressed to fall through to L1 —
-    // masking exactly the regression this test exists to catch. Cross-user
-    // never reaches that gate, so a 403 here can only come from the
-    // fail-closed redeem branch itself.
+    // separate sole-operator >=L3 gate, which would 403 even if the
+    // supervised-only refusal regressed — masking exactly the regression this
+    // test exists to catch. Cross-user never reaches that gate, so a 403 here
+    // can only come from the redeem branch refusing the scope.
     mockFourEyesSelfApprove({ requestedByUserId: 'requester-1' });
+    // No queueGrantScopeSelect(): the core refuses the scope BEFORE the
+    // conversation lookup. A stray queued select would be silently consumed
+    // by nothing, so its absence is itself part of the assertion.
+    vi.mocked(redeemApprovalDecideGrant).mockResolvedValue({
+      context: {
+        decidedAssuranceLevel: 3,
+        decidedVia: 'webauthn_platform',
+        authenticatorDeviceId: 'dev-1',
+        ceremonyAt: Date.now(),
+      },
+    });
+
+    const res = await postJson('/approvals/appr-1/approve', { stepUpGrantId: '11111111-1111-4111-8111-111111111111' });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('step_up_required');
+    expect(redeemApprovalDecideGrant).not.toHaveBeenCalled();
+    expect(assertApprovalAssurance).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('fails CLOSED (403 step_up_required) when a supervised enforcing self-decide presents a grant that fails to redeem — never falls through to L1 or to the ladder', async () => {
+    mockSupervisedSelfDecide();
+    vi.mocked(isEnforcing).mockReturnValue(true);
     queueGrantScopeSelect();
     vi.mocked(redeemApprovalDecideGrant).mockResolvedValueOnce(null);
 
@@ -593,6 +620,10 @@ describe('#5601 approval_decide step-up grant wiring', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body.error).toBe('step_up_required');
+    // The branch was reached (the grant WAS adjudicated) and refused there —
+    // not by the sole-operator gate downstream, which never ran a ladder.
+    expect(redeemApprovalDecideGrant).toHaveBeenCalledTimes(1);
+    expect(assertApprovalAssurance).not.toHaveBeenCalled();
     expect(db.transaction).not.toHaveBeenCalled();
   });
 
@@ -622,8 +653,9 @@ describe('#5601 approval_decide step-up grant wiring', () => {
     );
   });
 
-  it('four_eyes self-approve is still refused below L3 even via a redeemed grant (shared gate is not routed around)', async () => {
-    mockFourEyesSelfApprove();
+  it('a supervised enforcing self-decide is still refused below L3 even via a redeemed grant (the partner floor is re-applied on redeem)', async () => {
+    mockSupervisedSelfDecide();
+    vi.mocked(isEnforcing).mockReturnValue(true);
     queueGrantScopeSelect();
     vi.mocked(redeemApprovalDecideGrant).mockResolvedValueOnce({
       context: {
@@ -643,7 +675,6 @@ describe('#5601 approval_decide step-up grant wiring', () => {
 
   it('a presented proof beats a presented grant: the real ladder runs and the grant is never redeemed', async () => {
     mockFourEyesSelfApprove();
-    queueGrantScopeSelect(); // post-commit mint attempt (fresh ceremony)
     mockFanInTx('intent-1');
     vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
       requiredLevel: 3,
@@ -662,9 +693,10 @@ describe('#5601 approval_decide step-up grant wiring', () => {
   });
 
   it('a grant-redeemed decision mints NOTHING and the response carries no stepUpGrantId', async () => {
-    mockFourEyesSelfApprove();
+    mockSupervisedSelfDecide();
+    vi.mocked(isEnforcing).mockReturnValue(true);
     queueGrantScopeSelect();
-    mockFanInTx('intent-1');
+    mockFanInTx('intent-sv-1');
     vi.mocked(redeemApprovalDecideGrant).mockResolvedValueOnce({
       context: {
         decidedAssuranceLevel: 3,
@@ -681,10 +713,11 @@ describe('#5601 approval_decide step-up grant wiring', () => {
     expect(body).not.toHaveProperty('stepUpGrantId');
   });
 
-  it('a fresh-ceremony decision mints a reusable grant and returns it in the response body', async () => {
-    mockFourEyesSelfApprove();
+  it('a fresh-ceremony supervised enforcing decision mints a reusable grant and returns it in the response body', async () => {
+    mockSupervisedSelfDecide();
+    vi.mocked(isEnforcing).mockReturnValue(true);
     queueGrantScopeSelect();
-    mockFanInTx('intent-1');
+    mockFanInTx('intent-sv-1');
     vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
       requiredLevel: 3,
       decidedAssuranceLevel: 3,
@@ -699,6 +732,30 @@ describe('#5601 approval_decide step-up grant wiring', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.stepUpGrantId).toBe('grant-xyz');
+    expect(mintApprovalDecideGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: expect.objectContaining({ approvalScope: 'supervised', orgId: 'org-9' }) }),
+    );
+  });
+
+  it('a fresh-ceremony FOUR_EYES decision mints NOTHING: no grant call, no stepUpGrantId in the body (Todd, 2026-09-11)', async () => {
+    mockFourEyesSelfApprove();
+    mockFanInTx('intent-1');
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 3,
+      decidedVia: 'webauthn_platform',
+      authenticatorDeviceId: 'dev-1',
+    });
+    // Even if the grant module WOULD mint, the core must never ask it to.
+    vi.mocked(mintApprovalDecideGrant).mockResolvedValue('grant-should-not-leak');
+
+    const res = await postJson('/approvals/appr-1/approve', {
+      proof: { credentialId: 'cred-1', authenticatorData: 'AA', clientDataJSON: 'BB', signature: 'CC', userHandle: null },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(mintApprovalDecideGrant).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty('stepUpGrantId');
   });
 
   // Review fix (#5608): spec §12 — a technician must NEVER be unable to

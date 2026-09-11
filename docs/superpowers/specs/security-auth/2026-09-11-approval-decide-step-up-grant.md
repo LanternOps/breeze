@@ -16,16 +16,40 @@ Approving several Tier-3 AI chat tool calls in a row costs one full passkey
 ceremony per approval row (three in 20 seconds, observed on US prod
 2026-09-11). #5600 removes the ceremony for *supervised* rows under a
 *non-enforcing* partner, at the cost of dropping those rows to L1 /
-`session_tap`. This spec covers the two cases #5600 deliberately does not:
+`session_tap`. This spec covers the one supervised case #5600 deliberately
+does not: **supervised** rows under an **enforcing** partner policy, where
+the step-up floor must not be bypassed.
 
-- **four_eyes** sole-operator self-approve, which must stay ≥ L3; and
-- **supervised** rows under an **enforcing** partner policy, where the
-  step-up floor must not be bypassed.
+There, the ceremony stays *required* — but a ceremony the operator already
+completed seconds ago, for the same conversation, the same org and the same
+risk tier, should be reusable inside a bounded window instead of re-prompted
+per row.
 
-For those, the ceremony stays *required* — but a ceremony the operator
-already completed seconds ago, for the same agent run, the same org and the
-same risk tier, should be reusable inside a bounded window instead of
-re-prompted per row.
+## Decision (Todd, 2026-09-11)
+
+The first draft also covered **four_eyes** sole-operator self-approve. Todd
+chose to narrow it (options "C with B" from the hand-off):
+
+- **Supervised rows only.** four_eyes is the high-trust path — restores and
+  DR, remote control, tenant deletion, identity actions, billing, rollbacks
+  — and keeps its per-approval passkey. A four_eyes row never mints a grant
+  and never redeems one; a grant presented there is refused with
+  `403 step_up_required`, so the client falls back to a real ceremony. This
+  is enforced twice: in the decide core (`resolveGrantScope` returns null for
+  any scope but `supervised`, before the grant module is consulted) and in
+  the grant module (`isApprovalDecideGrantEligible`, plus `approvalScope` in
+  the digest).
+- **120 s window**, not the 300 s every single-use step-up operation keeps.
+  A per-operation TTL in `services/mfaStepUpGrant.ts`; the approvals module
+  derives its age bound from it so the two numbers cannot drift.
+
+Why: the one accepted cost of this credential is that a live stolen access
+token plus a leaked grant id can repeat a decide inside the window. Confining
+the grant to supervised rows confines that exposure to approvals which, under
+a non-enforcing partner, #5600 already lets through with no ceremony at all —
+so the grant never adds capability that the supervised scope does not already
+concede, and four_eyes is untouched. Shortening the window halves what is
+left.
 
 The house position rejects a bare wall-clock grace window
 (`plans/security-auth/2026-09-02-mobile-platform-attestation-l4.md`: "A dated
@@ -36,6 +60,8 @@ and recorded distinctly in audit.
 
 ## Non-goals
 
+- No grant for **four_eyes** rows, in either direction (see the decision
+  above). four_eyes keeps its per-approval passkey ceremony.
 - No new wall-clock leniency for **L4 / critical**. See "L4 is excluded".
 - No TTL cache inside `decideApprovalRequest` (issue's explicit constraint) —
   everything goes through the grant service.
@@ -66,8 +92,10 @@ never leave a reusable credential behind. Mint conditions, all required:
    last of those is what keeps the window from ratcheting forward
    indefinitely — see "TTL and non-extension".)
 4. `riskTier !== 'critical'` (see "L4 is excluded").
-5. The intent is **grant-eligible**: at least one of `agentRunId` /
-   `aiSessionId` is non-null (see the digest section).
+5. The intent is **grant-eligible**: `approvalScope === 'supervised'` AND at
+   least one of `agentRunId` / `aiSessionId` is non-null (see the digest
+   section). A four_eyes row is refused in the core before the conversation
+   lookup even runs.
 6. The linked-intent CAS was **won** (`wonIntent`). The approval-row CAS and
    the intent CAS are separate outcomes and the core deliberately returns
    success when the row commits but the intent CAS loses to another approver
@@ -98,6 +126,10 @@ of* running the assertion ladder:
   ladder and ignores the grant. A presented proof is always verified (this is
   the #5600 fix-round-2 invariant: a presented-but-invalid proof is a 401,
   never a silent downgrade).
+- A grant presented on a **four_eyes** row is refused outright — the core
+  never consults the grant module for a non-supervised scope — and answers
+  the same `403 step_up_required`, so the client runs the ceremony four_eyes
+  always required.
 - A **failed** redeem (expired, wrong binding, wrong digest, revoked
   approver device, ineligible intent, critical tier, Redis down) does **not**
   fall through to an L1 session tap. It answers
@@ -126,10 +158,10 @@ Unlike every other step-up operation, `approval_decide` is redeemed with the
 (`GETDEL`). That is the whole point: N approval rows, one ceremony.
 
 This is a deliberate deviation from the single-use rule, and it is safe only
-because the other three bounds are tight: the grant is worthless outside its
-`{userId, authEpoch, mfaEpoch, sid}` binding, worthless outside its
-`resourceDigest` (one agent run + one org + one risk tier), and worthless
-after 300 s. It authorises *repetition of a decision the operator is already
+because the other bounds are tight: the grant exists for supervised rows
+only, is worthless outside its `{userId, authEpoch, mfaEpoch, sid}` binding,
+worthless outside its `resourceDigest` (one conversation + one org + one
+risk tier + the supervised scope), and worthless after 120 s. It authorises *repetition of a decision the operator is already
 authorised to make*, never a widening of what they may decide — every other
 gate in `decideApprovalRequest` (human-principal assertion, row
 pending/expiry, live authorization, digest binding,
@@ -140,16 +172,19 @@ per row, unchanged.
 
 ```
 sha256(JSON.stringify({
-  agentRunId:  linkedIntent.requestingAgentRunId ?? null,
-  aiSessionId: <ai_tool_executions.session_id for this intent> ?? null,
-  orgId:       linkedIntent.orgId,
-  riskTier:    existing.riskTier,
+  agentRunId:    linkedIntent.requestingAgentRunId ?? null,
+  aiSessionId:   <ai_tool_executions.session_id for this intent> ?? null,
+  approvalScope: linkedIntent.approvalScope,   // always 'supervised' — see below
+  orgId:         linkedIntent.orgId,
+  riskTier:      existing.riskTier,
 }))
 ```
 
-**Eligibility precondition:** at least one of `agentRunId` / `aiSessionId`
-MUST be non-null, or the row is not grant-eligible at all (no mint, and a
-presented grant is refused). See the Codex review, finding 1 — without this
+**Eligibility preconditions:** `approvalScope` MUST be `'supervised'`, and at
+least one of `agentRunId` / `aiSessionId` MUST be non-null, or the row is not
+grant-eligible at all (no mint, and a presented grant is refused). The scope
+is pinned in the digest as well as checked, so a grant could not cross scopes
+even if the eligibility check were ever loosened. See the Codex review, finding 1 — without this
 precondition the digest has a catch-all "neither" bucket that every
 conversation in an org would share.
 
@@ -220,12 +255,14 @@ verbatim, so the grant dies on:
 refresh-family identifier carried in the access token (`jwt.ts:226`), not a
 device or browser binding. An attacker who has stolen a live access token
 presents the same `sid`, so within the window such a token plus a leaked grant
-id can clear the L3 gate without the passkey. The grant therefore *does* add
-capability to a stolen access token, which today is stopped at four_eyes by
-the L3 requirement. This is the real cost of the feature and is accepted
-because: the grant id is never logged and is returned only to the session that
-earned it; the window is 300 s and does not slide; the digest confines it to
-one conversation, org and tier; the approver device must still be live
+id can clear the enforcing-partner L3 floor on a supervised row without the
+passkey. This is the real cost of the feature and is accepted because: the
+grant is confined to supervised rows, which under a non-enforcing partner
+#5600 already approves with no ceremony at all, and four_eyes — where a
+stolen token is today stopped cold by the L3 requirement — never mints or
+redeems one; the grant id is never logged and is returned only to the session
+that earned it; the window is 120 s and does not slide; the digest confines
+it to one conversation, org and tier; the approver device must still be live
 (below); and L4 is excluded entirely. An earlier draft of this spec claimed a
 stolen token could not present the grant — that claim was false and has been
 removed rather than softened.
@@ -238,24 +275,29 @@ assertion would be refused (`authenticatorAssurance.ts:399` requires
 `isNull(disabledAt)`). Redeeming therefore re-reads the grant's recorded
 `authenticatorDeviceId` and requires the row to still exist, still belong to
 the redeeming user, and still be un-disabled. Without this, revoking a lost
-laptop's passkey would leave up to 300 s of continued L3 approvals.
-- **TTL** — 300 s, Redis key expiry.
+laptop's passkey would leave up to 120 s of continued L3 approvals.
+- **TTL** — 120 s, Redis key expiry.
 
 Redis being unreachable fails closed in both directions (`mintStepUpGrant`
 returns `null`; `validateStepUpGrant` returns `false`).
 
 ### TTL and non-extension
 
-TTL is the existing `TTL_SECONDS = 300` in `services/mfaStepUpGrant.ts`,
-reused rather than re-declared. Deliberately **not** a partner policy knob in
-this change — a knob is only worth its configuration surface once someone
-asks for a different number, and shipping it now would mean shipping an
-untested policy path on an auth surface.
+TTL is **120 s** for this operation (Todd, 2026-09-11), set as a
+per-operation override in `services/mfaStepUpGrant.ts`
+(`OPERATION_TTL_SECONDS`, read through `stepUpGrantTtlSeconds`); every
+single-use operation keeps the 300 s default. `APPROVAL_DECIDE_GRANT_TTL_MS`
+in the approvals module is *derived* from that function rather than
+re-declared, so the Redis expiry and the explicit age bound cannot drift.
+Deliberately **not** a partner policy knob in this change — a knob is only
+worth its configuration surface once someone asks for a different number,
+and shipping it now would mean shipping an untested policy path on an auth
+surface.
 
 The recorded `ceremonyAt` (not the Redis `SETEX` moment) is the clock. Redis
 starts its TTL when it receives the write, which is after the ceremony and
-after the decide transaction, so TTL alone would measure "300 s since mint"
-rather than "300 s since the human touched the sensor". The grant context
+after the decide transaction, so TTL alone would measure "120 s since mint"
+rather than "120 s since the human touched the sensor". The grant context
 therefore records `ceremonyAt` and the redeem re-asserts the absolute age
 bound explicitly — the same belt-and-braces shape
 `escalateAchievedLevel` already uses for `APPROVAL_CHALLENGE_TTL_MS`
@@ -264,7 +306,7 @@ review, finding 6.
 
 The window does **not** slide. Because mint condition 3 requires a genuine
 ceremony, a decide that redeemed a grant mints nothing, so a burst of
-approvals cannot ratchet the credential forward. 300 s after the one real
+approvals cannot ratchet the credential forward. 120 s after the one real
 ceremony, the operator does another one. This is what keeps the mechanism a
 bounded credential rather than a renewable session.
 
@@ -279,10 +321,13 @@ floor mid-window therefore invalidates outstanding grants in effect, without
 needing to reach into Redis. Under a non-enforcing policy an under-assured
 redeem sets `graceDowngrade` exactly as the ladder would.
 
-This is why a supervised row under an **enforcing** partner works: the
-enforcing policy is what forces the ceremony in the first place
+This is the whole use case: a supervised row under an **enforcing** partner.
+The enforcing policy is what forces the ceremony in the first place
 (`isPartnerEnforcingForSupervised` disables `skipAssuranceLadder`), and the
 grant satisfies that same floor on subsequent rows instead of re-prompting.
+Under a non-enforcing partner a supervised row never runs the ladder, so no
+grant is ever minted there — and none is needed, #5600 already approves it
+on a plain click.
 
 ### L4 is excluded
 
@@ -341,12 +386,19 @@ populated by the server.
 
 ### four_eyes sole-operator gate
 
-Unchanged in structure. The gate at the end of the ladder block
-(`linkedIntent && status === 'approved' && requestedByUserId === userId &&
-(!isSupervisedSelfDecide || isPartnerEnforcingForSupervised)` → require
-level ≥ 3) runs on the redeem path too, reading the grant's recorded level.
-Since a grant is only minted at level ≥ 3, a valid redeem passes it and an
-invalid redeem never reaches it (it 403s earlier). four_eyes therefore still
+Untouched, and four_eyes never reaches the redeem branch at all: a
+four_eyes decide that presents a grant is refused in the core before the
+grant module is consulted, and a four_eyes ceremony mints nothing. four_eyes
+therefore still requires a fresh proof on every approval, exactly as on
+`main`.
+
+The same sole-operator gate (`linkedIntent && status === 'approved' &&
+requestedByUserId === userId && (!isSupervisedSelfDecide ||
+isPartnerEnforcingForSupervised)` → require level ≥ 3) also applies to a
+supervised self-decide under an enforcing partner, and it runs on the redeem
+path too, reading the grant's recorded level. Since a grant is only minted at
+level ≥ 3, a valid redeem passes it and an invalid redeem never reaches it
+(it 403s earlier). An enforcing-partner supervised row therefore still
 requires "a grant or a proof", and never falls below L3.
 
 ### `approval_decide` is not client-requestable
@@ -358,7 +410,7 @@ MUST be excluded there, and excluded *by the compiler*: the allowlist's
 widened to `Exclude<StepUpOperation, 'enroll_first_factor' | 'approval_decide'>`
 so appending it later is a type error rather than a convention. Without this,
 anyone who can satisfy an ordinary TOTP step-up could mint the credential that
-clears the four_eyes L3 passkey gate — the exact escalation the
+clears an enforcing partner's L3 passkey floor — the exact escalation the
 `enroll_first_factor` exclusion exists to prevent, restated for this
 operation. Codex review, finding 10.
 
@@ -367,13 +419,19 @@ operation. Codex review, finding 10.
 Minimal and rebase-friendly against #5600, which is editing the same file:
 
 - `apps/web/src/lib/intentApprovals.ts` keeps a module-level
-  `{ id, expiresAt }` for the last `stepUpGrantId` the server returned.
-- On approve, if a live grant is held, POST `stepUpGrantId` **instead of**
-  running `startAuthentication`.
+  `{ id, expiresAt }` for the last `stepUpGrantId` a **supervised** decide
+  returned. The cache is filled by, and spent on, supervised approves only.
+- On a **supervised** approve, if a live grant is held, the optimistic
+  attempt (#5600's machinery) POSTs `stepUpGrantId` **instead of** going
+  proofless; with no grant it goes proofless as before.
 - On `403 step_up_required`, drop the cached grant and retry **once** with a
-  fresh ceremony. This is the same retry shape #5600 adds for its supervised
-  path, so the two changes compose rather than conflict.
-- The decide response's `stepUpGrantId`, when present, replaces the cache.
+  fresh ceremony. This is the same retry shape #5600 uses, so the two changes
+  compose rather than conflict, and the function stays bounded at two POSTs.
+- A **four_eyes** approve never consults the cache and never sends a grant:
+  it runs the ceremony up front, as on `main`. A `stepUpGrantId` on a
+  four_eyes response (the server sends none) is not cached either.
+- The decide response's `stepUpGrantId`, when present on a supervised
+  approve, replaces the cache.
 - The cache is per page load and is cleared on any 401/403 — it is a latency
   optimisation, never an authority. The server is the only thing that decides
   whether a grant is good.
@@ -400,6 +458,15 @@ Minimal and rebase-friendly against #5600, which is editing the same file:
 
 ## Alternatives rejected
 
+- **Grant for four_eyes rows as well (the first draft).** Rejected by Todd
+  2026-09-11: four_eyes is the high-trust path, and extending the grant there
+  would let a live stolen access token plus a leaked grant id clear the
+  four_eyes L3 gate inside the window — a capability a stolen token does not
+  have today. Confining the grant to supervised rows keeps that gate exactly
+  as it is.
+- **300 s window (the shared single-use default).** Shortened to 120 s on the
+  same decision; the burst this exists for is measured in seconds, not
+  minutes.
 - **Wall-clock "recent ceremony" timestamp on the session.** Rejected by the
   house position, and unbindable to a resource: it would cover any org and
   any tier.
@@ -410,7 +477,7 @@ Minimal and rebase-friendly against #5600, which is editing the same file:
   issue. It would be process-local (wrong across API replicas), invisible to
   `authEpoch`/`mfaEpoch` invalidation, and unauditable.
 - **Making the grant single-use and minting a fresh one per redeem.** This is
-  the sliding-window design; it turns a 300 s credential into an indefinitely
+  the sliding-window design; it turns a 120 s credential into an indefinitely
   renewable one for as long as the operator keeps clicking.
 
 ## Advisor quorum

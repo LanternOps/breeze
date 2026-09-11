@@ -50,15 +50,18 @@ export type StepUpOperation =
   // several Tier-3 rows one AI conversation raises inside the TTL.
   //
   // That deviation is safe only because the other bounds are tighter than any
-  // other operation's: the digest pins one conversation + one org + one risk
-  // tier (services/approvals/approvalDecideGrant.ts), critical/L4 is excluded
-  // outright, the minting approver device must still be live at redeem, and
-  // redeeming mints nothing so the window cannot ratchet forward.
+  // other operation's: it is minted and redeemed for SUPERVISED rows only
+  // (four_eyes keeps its per-approval passkey, Todd's call 2026-09-11), the
+  // digest pins one conversation + one org + one risk tier
+  // (services/approvals/approvalDecideGrant.ts), critical/L4 is excluded
+  // outright, the minting approver device must still be live at redeem,
+  // redeeming mints nothing so the window cannot ratchet forward, and the
+  // TTL is 120 s (OPERATION_TTL_SECONDS below), not the 300 s default.
   //
   // MUST NOT be client-requestable: it is deliberately excluded from
   // STEP_UP_OPERATIONS in routes/auth/schemas.ts, by the compiler. Letting a
   // client mint one would turn an ordinary TOTP step-up into a bypass of the
-  // four_eyes L3 passkey gate.
+  // enforcing-partner L3 passkey floor on supervised rows.
   | 'approval_decide';
 
 export interface StepUpGrant {
@@ -91,6 +94,26 @@ type GrantBind = Omit<StepUpGrantBinding, 'resourceDigest'> & { resourceDigest?:
 type StoredGrant = StepUpGrantBinding & { context?: unknown };
 
 const TTL_SECONDS = 300;
+
+/**
+ * Per-operation TTL overrides. Every single-use operation keeps the 300 s
+ * default above; `approval_decide` (#5601) is the one MULTI-USE grant in the
+ * codebase, so its window is deliberately shorter — 120 s, Todd's call on
+ * 2026-09-11 — because inside it a live stolen access token plus a leaked
+ * grant id can repeat a decide the session is already authorised to make.
+ * Kept here, next to the default, so a reader comparing the two numbers sees
+ * both in one place; the approvals module derives its own age bound from
+ * `stepUpGrantTtlSeconds` rather than re-declaring the number.
+ */
+const OPERATION_TTL_SECONDS: Partial<Record<StepUpOperation, number>> = {
+  approval_decide: 120,
+};
+
+/** Redis TTL a grant of this operation is written with. */
+export function stepUpGrantTtlSeconds(operation: StepUpOperation): number {
+  return OPERATION_TTL_SECONDS[operation] ?? TTL_SECONDS;
+}
+
 const key = (id: string) => `mfa:stepup:${id}`;
 
 function bindsMatch(record: GrantBind, bind: GrantBind): boolean {
@@ -170,7 +193,7 @@ export async function mintStepUpGrant(bind: GrantBind, context?: unknown): Promi
     // Omitted entirely when absent so every existing operation's stored bytes
     // are unchanged — a grant minted by an older API instance stays readable.
     if (context !== undefined) normalized.context = context;
-    await redis.setex(key(id), TTL_SECONDS, JSON.stringify(normalized));
+    await redis.setex(key(id), stepUpGrantTtlSeconds(bind.operation), JSON.stringify(normalized));
     return id;
   } catch (err) {
     // Still fails closed (null), but no longer silently: a bare `catch {}` here

@@ -2,11 +2,13 @@ import { createHash } from 'crypto';
 import { and, eq, isNull } from 'drizzle-orm';
 
 import type { AssuranceLevel, RiskTier } from '@breeze/shared';
+import type { ActionIntentApprovalScope } from '../../db/schema/actionIntents';
 import { db } from '../../db';
 import { authenticatorDevices } from '../../db/schema';
 import {
   mintStepUpGrant,
   readStepUpGrant,
+  stepUpGrantTtlSeconds,
   type StepUpGrantBinding,
 } from '../mfaStepUpGrant';
 import type { AssuranceDecision } from '../authenticatorAssurance';
@@ -19,9 +21,19 @@ import type { AssuranceDecision } from '../authenticatorAssurance';
  * passkey ceremony per approval row (three in 20 seconds, observed on US prod
  * 2026-09-11). #5600 removes the ceremony for SUPERVISED rows under a
  * NON-ENFORCING partner, at the cost of recording them L1/session_tap. This
- * covers the two cases that deliberately keeps: four_eyes sole-operator
- * self-approve (must stay >= L3) and supervised rows under an ENFORCING
- * partner policy (whose step-up floor must not be bypassed).
+ * covers the one remaining supervised case: rows under an ENFORCING partner
+ * policy, whose step-up floor must not be bypassed but should not be
+ * re-prompted per row either.
+ *
+ * SUPERVISED ONLY (Todd, 2026-09-11). four_eyes is the high-trust path —
+ * irreversible, money-moving, tenant-crossing and control-handover actions —
+ * and keeps its per-approval passkey. A four_eyes row never mints a grant and
+ * never redeems one; presenting a grant there is refused (403
+ * step_up_required) so the client falls back to a real ceremony. That
+ * confines the one accepted cost of this credential — a live stolen access
+ * token plus a leaked grant id can repeat a decide inside the window — to
+ * supervised rows, which under a non-enforcing partner #5600 already lets
+ * through with no ceremony at all.
  *
  * The house position rejects a bare wall-clock grace window
  * (plans/security-auth/2026-09-02-mobile-platform-attestation-l4.md: "A dated
@@ -38,18 +50,20 @@ import type { AssuranceDecision } from '../authenticatorAssurance';
  *
  * Redis starts its own TTL when it receives the SETEX, which is after the
  * ceremony AND after the decide transaction — so leaning on TTL alone would
- * silently mean "300s since mint" rather than "300s since the human touched
+ * silently mean "120s since mint" rather than "120s since the human touched
  * the sensor". Mirrors the same belt-and-braces shape `escalateAchievedLevel`
  * already applies for APPROVAL_CHALLENGE_TTL_MS: Redis expiry stays the
- * backstop, this is the explicit bound. Deliberately equal to the grant
- * module's own TTL_SECONDS (300) rather than a second, drifting number.
+ * backstop, this is the explicit bound. DERIVED from the grant module's
+ * per-operation TTL (120 s for `approval_decide`) rather than re-declared, so
+ * the two cannot drift.
  */
-export const APPROVAL_DECIDE_GRANT_TTL_MS = 300_000;
+export const APPROVAL_DECIDE_GRANT_TTL_MS = stepUpGrantTtlSeconds('approval_decide') * 1000;
 
 /** The minimum a ceremony must have achieved for its grant to be worth
- *  minting. Below L3 the grant could not satisfy the four_eyes sole-operator
- *  gate — the whole reason the credential exists — so an L2-only proof mints
- *  nothing rather than a credential that can only ever be refused. */
+ *  minting. Below L3 the grant could not satisfy the sole-operator gate that
+ *  an enforcing partner applies to a supervised self-decide — the whole reason
+ *  the credential exists — so an L2-only proof mints nothing rather than a
+ *  credential that can only ever be refused. */
 const MIN_GRANTABLE_LEVEL = 3;
 
 /**
@@ -69,8 +83,13 @@ export interface ApprovalDecideGrantContext {
   ceremonyAt: number;
 }
 
-/** The conversation/tenancy/severity scope a grant is pinned to. */
+/** The conversation/tenancy/severity/approval-scope a grant is pinned to. */
 export interface ApprovalDecideScope {
+  /** `action_intents.approval_scope`. Only `'supervised'` rows are grant-
+   *  eligible; `'four_eyes'` keeps its per-approval passkey (see the module
+   *  comment). Typed as the full enum so a caller passes the row's real value
+   *  and the refusal lives in ONE place (`isApprovalDecideGrantEligible`). */
+  approvalScope: ActionIntentApprovalScope;
   /** `action_intents.requesting_agent_run_id` — set only for an `ai_agent`
    *  principal (intentService.ts). NULL for web AI chat. */
   agentRunId: string | null;
@@ -85,7 +104,12 @@ export interface ApprovalDecideScope {
 /**
  * Is this row eligible to mint or redeem a grant at all?
  *
- * TWO independent refusals, and both matter:
+ * THREE independent refusals, and all matter:
+ *
+ *  0. Anything but `supervised` is excluded (Todd, 2026-09-11). four_eyes is
+ *     the high-trust path and must pay a fresh passkey per approval; the
+ *     decide core refuses a presented grant on such a row BEFORE reaching this
+ *     module too, so this is the second of two independent gates.
  *
  *  1. `critical` is excluded outright. L4 means "the human proved themselves
  *     again, JUST NOW, for this one" — a platform-bound key plus a fresh
@@ -105,6 +129,7 @@ export interface ApprovalDecideScope {
  *     there and `agentRunId` alone would have bounded nothing.
  */
 export function isApprovalDecideGrantEligible(scope: ApprovalDecideScope): boolean {
+  if (scope.approvalScope !== 'supervised') return false;
   if (scope.riskTier === 'critical') return false;
   return scope.agentRunId !== null || scope.aiSessionId !== null;
 }
@@ -120,6 +145,10 @@ export function isApprovalDecideGrantEligible(scope: ApprovalDecideScope): boole
  * `maintenanceResourceDigest`.
  *
  * Each component removes a distinct escalation:
+ *  - approvalScope: belt-and-braces for the supervised-only rule. Eligibility
+ *    already refuses anything else at both mint and redeem; pinning it in the
+ *    digest as well means a grant could not cross scopes even if that check
+ *    were ever loosened.
  *  - agentRunId + aiSessionId: the operator's attention is scoped to ONE
  *    conversation, so the credential must be too. Without it, a ceremony for
  *    a chat being actively watched would cover a Tier-3 request raised four
@@ -140,6 +169,7 @@ export function approvalDecideResourceDigest(scope: ApprovalDecideScope): `sha25
   const canonical = JSON.stringify({
     agentRunId: scope.agentRunId,
     aiSessionId: scope.aiSessionId,
+    approvalScope: scope.approvalScope,
     orgId: scope.orgId,
     riskTier: scope.riskTier,
   });
@@ -295,7 +325,7 @@ export async function redeemApprovalDecideGrant(input: {
   // so the epoch binds alone do not catch this — while a FRESH assertion would
   // be refused outright (authenticatorAssurance.ts filters on
   // isNull(disabledAt)). Without this check, revoking a lost laptop's passkey
-  // would leave up to 300s of continued L3 approvals on the revoked factor.
+  // would leave up to 120s of continued L3 approvals on the revoked factor.
   const [device] = await db
     .select({ id: authenticatorDevices.id })
     .from(authenticatorDevices)
