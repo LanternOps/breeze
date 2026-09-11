@@ -195,6 +195,45 @@ describe('resolveBackupTargets', () => {
     ]);
   });
 
+  // Review finding on #5572: osType is windows|macos|linux, but the original
+  // `device?.osType === 'windows' ? 'C:\\' : '/'` silently sent EVERY
+  // non-windows device — including macos, which is explicitly out of scope
+  // (spec §12), and a device whose row couldn't be found at all — a
+  // whole-machine job with paths:['/'] and the Linux exclude list. Both must
+  // refuse loudly instead of walking the wrong filesystem or dispatching
+  // nothing silently.
+  it('refuses a wholeMachine target for a macOS device instead of defaulting to "/"', async () => {
+    mockDb.select.mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ osType: 'macos' }]),
+      }),
+    });
+
+    await expect(
+      resolveBackupTargets(
+        'system_image',
+        { includeSystemState: true, wholeMachine: true, excludes: [] },
+        'device-id'
+      )
+    ).rejects.toThrow('whole-machine backup is not supported on macos');
+  });
+
+  it('refuses a wholeMachine target when the device row cannot be found', async () => {
+    mockDb.select.mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    });
+
+    await expect(
+      resolveBackupTargets(
+        'system_image',
+        { includeSystemState: true, wholeMachine: true, excludes: [] },
+        'device-id'
+      )
+    ).rejects.toThrow('whole-machine backup is not supported on unknown');
+  });
+
   it('returns one entry per discovered VM for hyperv minus excludes', async () => {
     // Chain: db.select({vmName}).from(hypervVms).where(eq(deviceId))
     mockDb.select.mockReturnValue({
