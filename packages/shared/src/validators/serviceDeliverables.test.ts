@@ -41,11 +41,14 @@ describe('serviceDeliverables validators', () => {
         evidence: [{ kind: 'report_run', reportRunId: '11111111-1111-4111-8111-111111111111' }],
       }).evidence,
     ).toHaveLength(1);
-    expect(
-      deliverOccurrenceSchema.safeParse({
-        evidence: [{ kind: 'document', documentId: '11111111-1111-4111-8111-111111111111' }],
-      }).success,
-    ).toBe(false);
+  });
+  it('accepts a document evidence ref now that W03 has landed', () => {
+    const parsed = deliverOccurrenceSchema.parse({ evidence: [{ kind: 'document', documentId: '11111111-1111-4111-8111-111111111111' }] });
+    expect(parsed.evidence).toEqual([{ kind: 'document', documentId: '11111111-1111-4111-8111-111111111111' }]);
+  });
+  it('still rejects a document ref with no documentId or a non-guid one', () => {
+    expect(deliverOccurrenceSchema.safeParse({ evidence: [{ kind: 'document' }] }).success).toBe(false);
+    expect(addEvidenceSchema.safeParse({ kind: 'document', documentId: 'nope' }).success).toBe(false);
   });
   it('addEvidence requires a guid', () =>
     expect(addEvidenceSchema.safeParse({ kind: 'report_run', reportRunId: 'nope' }).success).toBe(false));

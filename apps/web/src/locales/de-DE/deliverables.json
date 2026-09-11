@@ -80,7 +80,11 @@
     "rescheduledFrom": "Verschoben von {{date}}",
     "deliveryNote": "Lieferhinweis",
     "waivedReason": "Grund für den Erlass",
-    "newDueDate": "Neue Fälligkeit"
+    "newDueDate": "Neue Fälligkeit",
+    "uploadEvidence": "Datei als Nachweis hochladen",
+    "uploadEvidenceHint": "PDF, JPEG, PNG oder WebP, bis zu 10 MB. Die Datei wird in der Dokumentenbibliothek dieser Organisation abgelegt.",
+    "evidenceDocument": "Dokument",
+    "upload": "Hochladen"
   },
   "evidence": {
     "reportRun": "Berichtslauf",
@@ -99,7 +103,11 @@
     "duplicateName": "Für diese Organisation existiert bereits eine Leistung mit diesem Namen.",
     "loadFailed": "Leistungen konnten nicht geladen werden.",
     "saveFailed": "Leistung konnte nicht gespeichert werden.",
-    "actionFailed": "Vorkommen konnte nicht aktualisiert werden."
+    "actionFailed": "Vorkommen konnte nicht aktualisiert werden.",
+    "uploadFailed": "Die Nachweisdatei konnte nicht hochgeladen werden.",
+    "tooLarge": "Diese Datei ist größer als 10 MB.",
+    "unsupportedType": "Es können nur PDF-, JPEG-, PNG- und WebP-Dateien angehängt werden.",
+    "storageUnavailable": "Die Dokumentenspeicherung ist derzeit nicht verfügbar. Versuchen Sie es in Kürze erneut."
   },
   "confirm": {
     "deactivate": "{{name}} deaktivieren? Offene Vorkommen werden geschlossen und keine neuen mehr geplant.",
@@ -144,6 +152,7 @@
     "rescheduled": "Vorkommen neu terminiert",
     "evidenceAdded": "Nachweis hinzugefügt",
     "evidenceRemoved": "Nachweis entfernt",
-    "deactivated": "Leistung deaktiviert"
+    "deactivated": "Leistung deaktiviert",
+    "evidenceUploaded": "Nachweis hochgeladen"
   }
 }

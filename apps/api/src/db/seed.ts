@@ -178,6 +178,10 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'contracts', action: 'write', description: 'Create/edit/delete draft contracts and lines' },
   { resource: 'contracts', action: 'manage', description: 'Activate/pause/resume/cancel contracts and generate invoices' },
 
+  // Organization documents (service deliverables W03)
+  { resource: 'documents', action: 'read', description: 'View the organization document library and download documents' },
+  { resource: 'documents', action: 'write', description: 'Upload, replace, edit, and delete organization documents' },
+
   // Quotes / Proposals (billing program)
   { resource: 'quotes', action: 'read', description: 'View quotes and proposals' },
   { resource: 'quotes', action: 'write', description: 'Create/edit/delete draft quotes and proposal blocks' },
@@ -304,7 +308,9 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'reports:read', 'reports:write',
       'sites:read',
       'topology:read',
-      'organizations:read'
+      'organizations:read',
+      // Org document library (service deliverables W03).
+      'documents:read', 'documents:write'
     ]
   },
   {
@@ -393,7 +399,9 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       // grant is inert for an org-scoped token until that boundary is
       // crossed deliberately.
       'workspace:read', 'workspace:write', 'workspace:credentials', 'workspace:execute',
-      'connected_apps:read', 'connected_apps:manage'
+      'connected_apps:read', 'connected_apps:manage',
+      // Org document library (service deliverables W03).
+      'documents:read', 'documents:write'
     ]
   },
   {
@@ -412,7 +420,9 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'remote:access',
       // Read-only: a technician writing a script needs to know which variable
       // keys exist, but not to create or rotate them.
-      'variables:read'
+      'variables:read',
+      // Org document library (service deliverables W03).
+      'documents:read', 'documents:write'
     ]
   },
   {

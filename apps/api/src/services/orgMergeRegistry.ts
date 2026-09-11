@@ -708,6 +708,12 @@ const REPOINT_TABLES: readonly string[] = [
   "oauth_grants",
   "oauth_refresh_tokens",
   "onedrive_device_state",
+  // Plain repoint, NOT repoint-dedupe: org_documents has no org-scoped unique
+  // key (two orgs may both hold "Firewall baseline"), so after a merge the
+  // survivor simply holds both libraries and there is nothing to drop. The
+  // supersedes chain is intra-org and its composite FK is deferrable, so it
+  // survives the re-point unchanged.
+  "org_documents",
   "organization_external_links",
   "organization_key_dates",
   "pam_rules",

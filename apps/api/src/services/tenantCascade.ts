@@ -511,6 +511,16 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'oauth_grants',
   'oauth_refresh_tokens',
   'onedrive_device_state',
+  // org_documents (service deliverables W03). Alphabetical slot only: the list
+  // is STATIC and alphabetised (the contract test asserts exactly that), while
+  // the real delete order comes from topologicalCascadeOrder(), which reads FK
+  // edges from pg_catalog at run time. service_deliverable_evidence is an FK
+  // CHILD of org_documents (sd_evidence_document_org_fk), so the topological
+  // pass necessarily emits it FIRST — verified by the "topological order has all
+  // FK children appearing before their parents" case in
+  // tenantCascade.integration.test.ts. The self-FK on supersedes_document_id is
+  // ignored by that sort by design (one DELETE clears the whole org's rows).
+  'org_documents',
   'org_ticket_settings',
   // organization_external_links (#3242): external-system linkage rows. The
   // composite FK to organizations (id, partner_id) carries ON DELETE CASCADE,
@@ -987,6 +997,12 @@ interface FkEdge {
 }
 
 /**
+ * Tables whose rows are the only index to an S3 object key. The erasure
+ * pre-clear reads them ONE AT A TIME (see the 1a. block in cascadeDeleteOrg).
+ */
+const OBJECT_PRECLEAR_TABLES = ['ticket_attachments', 'org_documents'] as const;
+
+/**
  * Read foreign-key edges from pg_catalog and return a topological order
  * of `getOrgCascadeDeleteOrder()` where children come before parents.
  *
@@ -1132,8 +1148,9 @@ export async function cascadeDeleteOrg(
   // detected we throw and abort BEFORE deleting anything.
   const order = await topologicalCascadeOrder();
 
-  // 1a. Clear ticket-attachment OBJECTS before ANY row is deleted anywhere (W08 #3902,
-  //     spec D9). The rows are the ONLY index to the object keys — deleting
+  // 1a. Clear customer OBJECTS before ANY row is deleted anywhere (W08 #3902
+  //     spec D9; widened to org_documents by service deliverables W03 spec
+  //     #5573 §4.9). The rows are the ONLY index to the object keys — deleting
   //     them first would leave customer bytes in the bucket with nothing left
   //     to find them by, which is exactly the GDPR failure erasure exists to
   //     prevent. A storage fault therefore ABORTS the erasure before anything
@@ -1141,30 +1158,61 @@ export async function cascadeDeleteOrg(
   //     the same keys are re-read and the job finishes. Best-effort deletion
   //     with a logged count is deliberately rejected.
   //
-  //     db-backed rows carry their bytes in the row and need no pre-clear.
-  try {
-    const keys = await dbModule.withSystemDbAccessContext(async () => {
-      const result = await dbModule.db.execute(sql`
-        SELECT storage_key
-        FROM ticket_attachments
-        WHERE org_id = ${orgId}::uuid
-          AND storage_backend = 's3'
-          AND storage_key IS NOT NULL
-      `);
-      const rows = (result as unknown as { rows?: Array<{ storage_key: string }> }).rows
-        ?? (result as unknown as Array<{ storage_key: string }>);
-      return Array.isArray(rows) ? rows.map((r) => r.storage_key).filter(Boolean) : [];
-    });
-    if (keys.length > 0) {
-      await deleteObjectKeys(keys);
-    }
-  } catch (err) {
-    if (!isUndefinedTable(err)) {
+  //     One read PER byte table, deliberately NOT a UNION: the 42P01 tolerance
+  //     below exists for partial-schema fixtures, and a union would let ONE
+  //     missing table blind the read for the other — skipping the pre-clear for
+  //     a table that does exist and orphaning its objects. The reads are still
+  //     followed by a SINGLE deleteObjectKeys batch before the first DELETE, so
+  //     "objects go before rows" remains one observable step.
+  //
+  //     db-backed rows carry their bytes in the row and need no pre-clear; a
+  //     soft-deleted org_documents row has already had its object removed and
+  //     its storage_key cleared, so the NOT NULL excludes it.
+  const objectKeys: string[] = [];
+  for (const table of OBJECT_PRECLEAR_TABLES) {
+    try {
+      const keys = await dbModule.withSystemDbAccessContext(async () => {
+        const result = await dbModule.db.execute(sql`
+          SELECT storage_key
+          FROM ${sql.raw(`"${table}"`)}
+          WHERE org_id = ${orgId}::uuid
+            AND storage_backend = 's3'
+            AND storage_key IS NOT NULL
+        `);
+        const rows = (result as unknown as { rows?: Array<{ storage_key: string }> }).rows
+          ?? (result as unknown as Array<{ storage_key: string }>);
+        return Array.isArray(rows) ? rows.map((r) => r.storage_key).filter(Boolean) : [];
+      });
+      objectKeys.push(...keys);
+    } catch (err) {
+      if (isUndefinedTable(err)) {
+        // Tolerated for partial-schema fixtures only — say so, because in a real
+        // deployment it means this table's objects were never cleared.
+        console.warn(
+          `[tenantCascade] object pre-clear skipped for missing table ${table} (org=${orgId}); ` +
+          'any objects it holds are NOT cleared',
+        );
+        continue;
+      }
       await writeErasureFailedAudit(
-        orgId, performedBy, performedByEmail, 'ticket_attachments_objects', stats, err,
+        orgId, performedBy, performedByEmail, 'tenant_object_preclear', stats, err,
       );
       throw new Error(
-        `[tenantCascade] attachment object pre-clear failed for org=${orgId}; erasure aborted before any row was deleted and is rerunnable: ${
+        `[tenantCascade] object pre-clear failed for org=${orgId} table=${table}; erasure aborted before any row was deleted and is rerunnable: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+  if (objectKeys.length > 0) {
+    try {
+      await deleteObjectKeys(objectKeys);
+    } catch (err) {
+      await writeErasureFailedAudit(
+        orgId, performedBy, performedByEmail, 'tenant_object_preclear', stats, err,
+      );
+      throw new Error(
+        `[tenantCascade] object pre-clear failed for org=${orgId}; erasure aborted before any row was deleted and is rerunnable: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );

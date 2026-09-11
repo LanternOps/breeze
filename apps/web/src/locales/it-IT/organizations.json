@@ -32,6 +32,7 @@
       "tickets": "Ticket",
       "billing": "Contratti e fatturazione",
       "service": "Servizio",
+      "documents": "Documenti",
       "activity": "Attività"
     },
     "comingSoon": {
@@ -127,6 +128,74 @@
         "contracts": "Contratti",
         "invoices": "Fatture",
         "quotes": "Preventivi"
+      }
+    },
+    "documents": {
+      "title": "Documenti",
+      "subtitle": "Runbook, baseline, criteri ed evidenze di erogazione per questa organizzazione.",
+      "empty": "Ancora nessun documento. Carica un runbook, una baseline o un criterio firmato per avviare la libreria.",
+      "emptyFiltered": "Nessun documento in questa categoria.",
+      "loadFailed": "Impossibile caricare i documenti.",
+      "upload": "Carica documento",
+      "uploading": "Caricamento…",
+      "replace": "Sostituisci",
+      "download": "Scarica",
+      "delete": "Elimina",
+      "deleteConfirm": "Eliminare \"{{title}}\"? Questo rimuove il file e tutte le versioni precedenti. L'operazione non può essere annullata.",
+      "edit": "Modifica",
+      "save": "Salva",
+      "cancel": "Annulla",
+      "versions": "Cronologia versioni",
+      "showSuperseded": "Mostra versioni precedenti",
+      "form": {
+        "title": "Titolo",
+        "description": "Descrizione",
+        "category": "Categoria",
+        "portalVisible": "Visibile nel portale clienti",
+        "file": "Allegato",
+        "fileHint": "PDF, JPEG, PNG o WebP, fino a 10 MB.",
+        "replaceHint": "La versione attuale viene conservata nella cronologia e il nuovo file diventa quella corrente."
+      },
+      "filter": {
+        "all": "Tutte le categorie"
+      },
+      "category": {
+        "baseline": "Configurazione di riferimento",
+        "runbook": "Manuale operativo",
+        "policy": "Criterio",
+        "evidence": "Evidenza",
+        "report": "Rapporto",
+        "export": "Esportazione",
+        "other": "Altro"
+      },
+      "column": {
+        "title": "Titolo",
+        "category": "Categoria",
+        "size": "Dimensione",
+        "uploaded": "Caricato",
+        "portal": "Portale",
+        "actions": "Azioni"
+      },
+      "badge": {
+        "superseded": "Versione precedente",
+        "portal": "Nel portale"
+      },
+      "errors": {
+        "tooLarge": "Questo file supera i 10 MB.",
+        "unsupportedType": "È possibile archiviare solo file PDF, JPEG, PNG e WebP.",
+        "storageUnavailable": "Lo storage dei documenti non è al momento disponibile. Riprova a breve.",
+        "notHead": "Questo documento è già stato sostituito. Ricarica la pagina e lavora sulla versione corrente.",
+        "emptyFile": "Questo file è vuoto.",
+        "uploadFailed": "Impossibile caricare il documento.",
+        "updateFailed": "Impossibile salvare il documento.",
+        "deleteFailed": "Impossibile eliminare il documento.",
+        "downloadFailed": "Impossibile scaricare il documento."
+      },
+      "toast": {
+        "uploaded": "Documento caricato",
+        "replaced": "Nuova versione caricata",
+        "updated": "Documento aggiornato",
+        "deleted": "Documento eliminato"
       }
     }
   }
