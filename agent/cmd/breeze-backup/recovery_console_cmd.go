@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -91,24 +92,50 @@ func acquireRecoveryConsoleLock(ctx context.Context, out io.Writer) (func(), err
 	}
 }
 
-// tryCreateRecoveryConsoleLock makes one O_CREATE|O_EXCL attempt at
-// recoveryConsoleLockPath and, on success, stamps the file with this
-// process's own PID so a later instance can tell whether the lock is
-// stale. If the PID write itself fails partway (disk full, etc.) the
-// half-written file is removed rather than left behind unattributed.
+// tryCreateRecoveryConsoleLock publishes recoveryConsoleLockPath, stamped
+// with this process's own PID, using write-to-temp-then-os.Link rather
+// than a bare O_CREATE|O_EXCL followed by a separate write.
+//
+// That two-step version (this function's original W04b review revision)
+// had a real race, found on PR #5588's own CI run: os.OpenFile(O_CREATE|
+// O_EXCL) makes the path exist immediately, but this process's PID isn't
+// written into it until the very next line — under the QEMU e2e's real
+// (TCG-emulated, so much slower and less predictable than bare metal)
+// scheduling, that window was wide enough for the OTHER console instance
+// to os.OpenFile the same path, get EEXIST, read an EMPTY file, conclude
+// — correctly, per the stale-reclaim logic this whole mechanism exists for
+// — that looks exactly like a holder SIGKILLed between O_CREATE and
+// writing its PID, and reclaim a lock the winner was still legitimately
+// creating. Result: both instances believed they held the lock, and
+// progress.json showed the exact duplicated-phase signature (two
+// consoles racing) AcquireLock exists to prevent in the first place.
+//
+// os.Link only succeeds if recoveryConsoleLockPath does NOT already
+// exist (same EEXIST-on-conflict semantics as the O_CREATE|O_EXCL this
+// replaces), but by the time it's called the temp file already holds
+// complete content — so no other process can ever observe the path
+// existing with anything but a valid, complete PID. A leftover temp file
+// from a failed write is always cleaned up.
 func tryCreateRecoveryConsoleLock() (func(), error) {
-	f, err := os.OpenFile(recoveryConsoleLockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	dir := filepath.Dir(recoveryConsoleLockPath)
+	tmp, err := os.CreateTemp(dir, ".breeze-recovery-console.lock.tmp-*")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create temp recovery console lock: %w", err)
 	}
-	_, writeErr := fmt.Fprintf(f, "%d\n", os.Getpid())
-	closeErr := f.Close()
-	if writeErr != nil || closeErr != nil {
-		_ = os.Remove(recoveryConsoleLockPath)
-		if writeErr != nil {
-			return nil, writeErr
-		}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }() // no-op once successfully linked away
+
+	_, writeErr := fmt.Fprintf(tmp, "%d\n", os.Getpid())
+	closeErr := tmp.Close()
+	if writeErr != nil {
+		return nil, writeErr
+	}
+	if closeErr != nil {
 		return nil, closeErr
+	}
+
+	if err := os.Link(tmpPath, recoveryConsoleLockPath); err != nil {
+		return nil, err
 	}
 	return func() { _ = os.Remove(recoveryConsoleLockPath) }, nil
 }

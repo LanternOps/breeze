@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -155,5 +157,77 @@ func TestAcquireRecoveryConsoleLock_LiveLockBlocksWithMessage(t *testing.T) {
 	}
 	if strings.TrimSpace(string(data)) != strconv.Itoa(os.Getpid()) {
 		t.Errorf("lock file contents changed to %q, want untouched", string(data))
+	}
+}
+
+// TestTryCreateRecoveryConsoleLock_NeverObservablyEmpty is the red-first
+// regression test for a real bug this review round's first lock fix
+// introduced: a bare O_CREATE|O_EXCL followed by a SEPARATE write left a
+// window where the lock file existed but was still empty — long enough,
+// under the W04b QEMU e2e's real (if slow, TCG-emulated) scheduling, for
+// the competing console instance to read that empty content, conclude
+// the lock was abandoned mid-write (the SIGKILL case this whole
+// stale-reclaim mechanism exists to handle), and reclaim a lock the
+// winner was still in the middle of legitimately creating — reproducing
+// the exact duplicated-phase progress.json signature (two consoles
+// racing) AcquireLock exists to prevent, confirmed on PR #5588's CI run.
+// Fix: tryCreateRecoveryConsoleLock now writes the PID to a temp file in
+// the same directory first, then publishes it with a single atomic
+// os.Link into recoveryConsoleLockPath — no process can ever observe the
+// path existing with anything but complete content.
+//
+// The exact interleaving can't be forced deterministically, so this
+// stresses it instead: one goroutine repeatedly creates+releases the
+// lock while another polls as fast as it can, failing the instant it
+// ever sees the path exist with content that isn't a complete, valid PID.
+func TestTryCreateRecoveryConsoleLock_NeverObservablyEmpty(t *testing.T) {
+	path := withLockPath(t)
+
+	stop := make(chan struct{})
+	var badRead atomic.Bool
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue // does not exist right now — fine
+			}
+			if _, convErr := strconv.Atoi(strings.TrimSpace(string(data))); convErr != nil {
+				badRead.Store(true)
+				return
+			}
+		}
+	}()
+
+	const attempts = 2000
+	for i := 0; i < attempts; i++ {
+		release, err := tryCreateRecoveryConsoleLock()
+		if err == nil {
+			release()
+		}
+	}
+
+	close(stop)
+	wg.Wait()
+
+	if badRead.Load() {
+		t.Fatal("a concurrent reader observed the lock file existing with incomplete/invalid content — tryCreateRecoveryConsoleLock is not atomic")
+	}
+
+	// No leftover temp files from the publish-by-rename/link mechanism.
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("read lock dir: %v", err)
+	}
+	for _, e := range entries {
+		t.Errorf("leftover file in lock directory: %s", e.Name())
 	}
 }

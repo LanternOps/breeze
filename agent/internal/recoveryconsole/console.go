@@ -94,12 +94,38 @@ func (c *Console) Run(ctx context.Context) error {
 		return errors.New("refusing to run: this is not recovery media (no breeze.media=1 on the kernel cmdline); pass --allow-host for development")
 	}
 
+	// powerAndHold calls c.power(action) and then permanently suppresses
+	// the deferred lock release below, regardless of whether Power itself
+	// errors. Found on PR #5588's own CI run, one level deeper than the
+	// first AcquireLock fix: a blanket `defer release()` released the
+	// lock the instant Run() returned from the success path, which is
+	// right after c.power(action) returns — but systemctl poweroff/
+	// reboot are async and return almost immediately, well before the
+	// kernel actually halts. In that real multi-second shutdown window,
+	// the LOSING console instance (blocked polling the lock) woke up,
+	// saw it free, grabbed it, and ran a full second attempt —
+	// progress.json carried a trailing extra "media_booted" after the
+	// expected phase sequence. Once Run has committed to powering the
+	// machine off or rebooting, there is no scenario where a second
+	// instance should ever get to run afterward — including if Power
+	// itself errors and the machine never actually goes down, since by
+	// then a rebuild may already be underway/complete and a competing
+	// attempt is exactly as unsafe. A leaked lock is harmless either way:
+	// the next real boot's stale-PID reclaim (recovery_console_cmd.go)
+	// finds this PID dead and reclaims it same as any other abandoned
+	// lock.
+	releaseLock := func() {}
+	powerAndHold := func(action string) error {
+		releaseLock = func() {}
+		return c.power(action)
+	}
 	if c.Deps.AcquireLock != nil {
 		release, err := c.Deps.AcquireLock(ctx)
 		if err != nil {
 			return fmt.Errorf("acquire recovery lock: %w", err)
 		}
-		defer release()
+		releaseLock = release
+		defer func() { releaseLock() }()
 	}
 
 	server, err := c.promptServer(ci, answers)
@@ -166,7 +192,7 @@ func (c *Console) Run(ctx context.Context) error {
 			case "retry":
 				continue
 			case "poweroff":
-				return c.power("poweroff")
+				return powerAndHold("poweroff")
 			}
 			continue
 		}
@@ -210,7 +236,7 @@ func (c *Console) Run(ctx context.Context) error {
 			case "retry":
 				continue
 			case "poweroff":
-				return c.power("poweroff")
+				return powerAndHold("poweroff")
 			}
 			continue
 		}
@@ -222,7 +248,7 @@ func (c *Console) Run(ctx context.Context) error {
 			return err
 		}
 		c.postProgress(ctx, server, token, bmr.ProgressUpdate{Status: "rebooted"})
-		return c.power(action)
+		return powerAndHold(action)
 	}
 }
 

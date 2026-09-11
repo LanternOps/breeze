@@ -368,17 +368,23 @@ func TestConsole_ProgressPostFailureIsNonFatal(t *testing.T) {
 	}
 }
 
-// TestConsole_AcquiresAndReleasesLock is the red-first regression test for
-// the W04b QEMU end-to-end finding: breeze-recovery.service (tty1) and the
-// serial-getty@ttyS0 override both unconditionally start on every boot of
-// this media (tty1 is a kernel VT construct present on any Linux boot,
-// unrelated to QEMU's display flags), so without mutual exclusion two
-// console instances independently partitioned/formatted/mounted the SAME
-// target disk concurrently in breeze.ci=1 mode — which is what several
-// "device busy" symptoms actually were. Proves Run acquires the lock
-// before doing anything else and releases it exactly once, even on the
-// success path where Run ends by "rebooting" the machine.
-func TestConsole_AcquiresAndReleasesLock(t *testing.T) {
+// TestConsole_AcquiresLockAndNeverReleasesOnceItPowersOff is the red-first
+// regression test for a SECOND race found on PR #5588's own CI run, after
+// the first AcquireLock fix was already in place: releasing the lock via
+// a blanket `defer release()` meant it was released the instant Run()
+// returned from the success path — which is right after `c.power(action)`
+// returns, but `systemctl poweroff`/`reboot` are async and return almost
+// immediately, well before the kernel actually halts. In that multi-second
+// real-shutdown window, the LOSING console instance (blocked polling the
+// lock) woke up, saw it free, grabbed it, and ran a full second attempt —
+// confirmed by progress.json carrying a trailing extra "media_booted"
+// after the expected 5-phase sequence. Fix: once Run() has committed to
+// powering the machine off or rebooting, the lock is never released —
+// there is no scenario where a second instance should ever get to run
+// after that, and the machine going down for good makes "leaking" the
+// lock harmless (a stale-PID reclaim on the next real boot handles it
+// same as any other abandoned lock).
+func TestConsole_AcquiresLockAndNeverReleasesOnceItPowersOff(t *testing.T) {
 	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "6002248"}}
 	deps := &fakeDeps{
 		exchangeFn: happyExchange(t),
@@ -405,8 +411,40 @@ func TestConsole_AcquiresAndReleasesLock(t *testing.T) {
 	if acquireCalls != 1 {
 		t.Errorf("AcquireLock called %d times, want 1", acquireCalls)
 	}
+	if releaseCalls != 0 {
+		t.Errorf("release called %d times, want 0 (must stay held once the machine is powering off)", releaseCalls)
+	}
+	if strings.Join(deps.powerCalls, ",") != "reboot" {
+		t.Errorf("power calls = %v, want [reboot]", deps.powerCalls)
+	}
+}
+
+// TestConsole_ReleasesLockOnAnEarlyExitThatNeverReachesPower proves the
+// lock IS released on a path that ends before Run ever commits to
+// rebooting/powering off — e.g. the version-gate refusal
+// (TestConsole_OldMediaRefused) — so a genuinely recoverable failure
+// (nothing was touched, nothing is mid-rebuild) doesn't wedge every future
+// boot behind a lock nobody will ever release.
+func TestConsole_ReleasesLockOnAnEarlyExitThatNeverReachesPower(t *testing.T) {
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj"}}
+	deps := &fakeDeps{
+		exchangeFn: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
+			return "tok-1", &bmr.BootstrapResponse{Version: 1, MinHelperVersion: "0.120.0", SnapshotID: "snap-1"}, nil
+		},
+	}
+	d := deps.build("0.111.1")
+
+	var releaseCalls int
+	d.AcquireLock = func(ctx context.Context) (func(), error) {
+		return func() { releaseCalls++ }, nil
+	}
+
+	c := &Console{IO: io, Deps: d, Cmdline: "breeze.media=1"}
+	if err := c.Run(context.Background()); err == nil {
+		t.Fatal("Run() error = nil, want the version-gate error")
+	}
 	if releaseCalls != 1 {
-		t.Errorf("release called %d times, want 1", releaseCalls)
+		t.Errorf("release called %d times, want 1 (this path never reaches Power)", releaseCalls)
 	}
 }
 
