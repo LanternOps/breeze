@@ -15,7 +15,7 @@ import {
   TerminalSquare,
   Trash2,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, formatBytes } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from './backupDashboardHelpers';
 import BareMetalRecoveryPanel from './BareMetalRecoveryPanel';
@@ -112,26 +112,19 @@ type RecoveryMediaArtifact = {
   signatureDownloadPath?: string | null;
 };
 
-type RecoveryBootMediaArtifact = {
-  id: string;
-  tokenId: string;
-  snapshotId: string;
-  bundleArtifactId?: string | null;
+// W04b: the recovery boot-media catalog is no longer a per-token, per-org
+// artifact (built on demand) — it's the release-built
+// breeze-recovery-linux-{amd64,arm64}.iso, the same two rows for every org.
+// See GET /backup/bmr/boot-media (routes/backup/bmr.ts) and
+// agent/recovery-media/.
+type RecoveryMediaCatalogEntry = {
   platform: string;
-  architecture: string;
-  mediaType: string;
-  status: string;
-  checksumSha256?: string | null;
-  signatureFormat?: string | null;
-  signingKeyId?: string | null;
-  signedAt?: string | null;
-  publicKey?: string | null;
-  publicKeyPath?: string | null;
-  metadata?: Record<string, unknown> | null;
-  createdAt?: string | null;
-  completedAt?: string | null;
-  downloadPath?: string | null;
-  signatureDownloadPath?: string | null;
+  arch: string;
+  version: string;
+  filename: string;
+  downloadUrl: string;
+  sha256: string | null;
+  size: number | null;
 };
 
 type RecoveryTokenRecord = {
@@ -383,27 +376,15 @@ function toMediaRecord(raw: Record<string, unknown>): RecoveryMediaArtifact {
   };
 }
 
-function toBootMediaRecord(raw: Record<string, unknown>): RecoveryBootMediaArtifact {
+function toMediaCatalogEntry(raw: Record<string, unknown>): RecoveryMediaCatalogEntry {
   return {
-    id: toText(raw.id),
-    tokenId: toText(raw.tokenId),
-    snapshotId: toText(raw.snapshotId),
-    bundleArtifactId: raw.bundleArtifactId == null ? null : toText(raw.bundleArtifactId),
     platform: toText(raw.platform),
-    architecture: toText(raw.architecture),
-    mediaType: toText(raw.mediaType),
-    status: toText(raw.status),
-    checksumSha256: raw.checksumSha256 == null ? null : toText(raw.checksumSha256),
-    signatureFormat: raw.signatureFormat == null ? null : toText(raw.signatureFormat),
-    signingKeyId: raw.signingKeyId == null ? null : toText(raw.signingKeyId),
-    signedAt: raw.signedAt == null ? null : toText(raw.signedAt),
-    publicKey: raw.publicKey == null ? null : toText(raw.publicKey),
-    publicKeyPath: raw.publicKeyPath == null ? null : toText(raw.publicKeyPath),
-    metadata: toMaybeRecord(raw.metadata),
-    createdAt: raw.createdAt == null ? null : toText(raw.createdAt),
-    completedAt: raw.completedAt == null ? null : toText(raw.completedAt),
-    downloadPath: raw.downloadPath == null ? null : toText(raw.downloadPath),
-    signatureDownloadPath: raw.signatureDownloadPath == null ? null : toText(raw.signatureDownloadPath),
+    arch: toText(raw.arch),
+    version: toText(raw.version),
+    filename: toText(raw.filename),
+    downloadUrl: toText(raw.downloadUrl),
+    sha256: raw.sha256 == null ? null : toText(raw.sha256),
+    size: typeof raw.size === 'number' ? raw.size : null,
   };
 }
 
@@ -467,7 +448,7 @@ export default function RecoveryBootstrapTab() {
   const [snapshots, setSnapshots] = useState<SnapshotSummary[]>([]);
   const [catalog, setCatalog] = useState<RecoveryTokenRecord[]>(() => readStoredTokens());
   const [mediaCatalog, setMediaCatalog] = useState<RecoveryMediaArtifact[]>([]);
-  const [bootMediaCatalog, setBootMediaCatalog] = useState<RecoveryBootMediaArtifact[]>([]);
+  const [bootMediaCatalog, setBootMediaCatalog] = useState<RecoveryMediaCatalogEntry[]>([]);
   const [selectedTokenId, setSelectedTokenId] = useState<string>('');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<TokenStatusFilter>('all');
@@ -482,7 +463,6 @@ export default function RecoveryBootstrapTab() {
   const [tokenMessage, setTokenMessage] = useState<string>();
   const [loadingMedia, setLoadingMedia] = useState(false);
   const [creatingMedia, setCreatingMedia] = useState(false);
-  const [creatingBootMedia, setCreatingBootMedia] = useState(false);
   const [createSnapshotId, setCreateSnapshotId] = useState('');
   const [createRestoreType, setCreateRestoreType] = useState<RecoveryTokenRestoreType>('bare_metal');
   const [createExpiresInHours, setCreateExpiresInHours] = useState('24');
@@ -519,14 +499,12 @@ export default function RecoveryBootstrapTab() {
     const bootMediaPayload = await bootMediaResponse.json();
     const bootMediaRows = isRecord(bootMediaPayload) && Array.isArray(bootMediaPayload.data)
       ? bootMediaPayload.data
-      : Array.isArray(bootMediaPayload)
-        ? bootMediaPayload
-        : [];
+      : [];
     setBootMediaCatalog(
       Array.isArray(bootMediaRows)
         ? bootMediaRows
             .filter((item): item is Record<string, unknown> => isRecord(item))
-            .map(toBootMediaRecord)
+            .map(toMediaCatalogEntry)
         : []
     );
   }, []);
@@ -629,14 +607,12 @@ export default function RecoveryBootstrapTab() {
     () => mediaCatalog.filter((artifact) => artifact.tokenId === selectedTokenId),
     [mediaCatalog, selectedTokenId]
   );
-  const selectedBootMedia = useMemo(
-    () => bootMediaCatalog.filter((artifact) => artifact.tokenId === selectedTokenId),
-    [bootMediaCatalog, selectedTokenId]
-  );
 
   useEffect(() => {
-    if (!selectedMedia.some((artifact) => artifact.status === 'pending' || artifact.status === 'building') &&
-        !selectedBootMedia.some((artifact) => artifact.status === 'pending' || artifact.status === 'building')) {
+    // bootMediaCatalog (W04b) is the static, release-built ISO list — it
+    // never transitions through pending/building, so only selectedMedia's
+    // (bundle) build status needs polling here.
+    if (!selectedMedia.some((artifact) => artifact.status === 'pending' || artifact.status === 'building')) {
       return;
     }
 
@@ -647,7 +623,7 @@ export default function RecoveryBootstrapTab() {
     }, 10000);
 
     return () => window.clearInterval(timer);
-  }, [refreshArtifacts, selectedBootMedia, selectedMedia]);
+  }, [refreshArtifacts, selectedMedia]);
 
   useEffect(() => {
     if (!selectedTokenId && catalog.length > 0) {
@@ -998,48 +974,6 @@ export default function RecoveryBootstrapTab() {
       setLoadingMedia(false);
     }
   }, []);
-
-  const handleCreateBootMedia = useCallback(async () => {
-    if (!selectedToken) {
-      setError('Select a recovery token first.');
-      return;
-    }
-
-    try {
-      setCreatingBootMedia(true);
-      setError(undefined);
-      const response = await fetchWithAuth('/backup/bmr/boot-media', {
-        method: 'POST',
-        body: JSON.stringify({
-          tokenId: selectedToken.id,
-          platform: 'linux',
-          architecture: 'amd64',
-          mediaType: 'iso',
-        }),
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToCreateBootableRecoveryMedia'));
-      }
-      const payload = normalizeApiResponse(await response.json());
-      if (isRecord(payload)) {
-        const nextArtifact = toBootMediaRecord(payload);
-        setBootMediaCatalog((prev) => {
-          const existing = prev.findIndex((item) => item.id === nextArtifact.id);
-          if (existing === -1) return [nextArtifact, ...prev];
-          const copy = [...prev];
-          copy[existing] = nextArtifact;
-          return copy;
-        });
-      }
-      setTokenMessage('Bootable recovery media build started.');
-      await refreshArtifacts();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToCreateBootableRecoveryMedia'));
-    } finally {
-      setCreatingBootMedia(false);
-    }
-  }, [refreshArtifacts, selectedToken]);
 
   const selectedCommand = selectedToken?.token
     ? `breeze-backup bmr-recover --token ${selectedToken.token} --server ${selectedToken.bootstrapPreview?.serverUrl ?? getRecoveryServerBase()}`
@@ -1401,92 +1335,52 @@ export default function RecoveryBootstrapTab() {
                     <div>
                       <p className="text-sm font-semibold text-foreground">{t('recoveryBootstrapTab.bootableRecoveryMedia')}</p>
                       <p className="text-xs text-muted-foreground">
-                        {t('recoveryBootstrapTab.buildASignedLinuxAmd64RecoveryIsoFrom')} </p>
+                        {t('recoveryBootstrapTab.bootableRecoveryMediaDescription')} </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => void handleCreateBootMedia()}
-                      disabled={creatingBootMedia}
-                      className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
-                    >
-                      {creatingBootMedia ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-                      {t('recoveryBootstrapTab.createIso')} </button>
                   </div>
 
-                  {selectedBootMedia.length > 0 ? (
+                  {bootMediaCatalog.length > 0 ? (
                     <div className="mt-3 grid gap-3">
-                      {selectedBootMedia.map((artifact) => (
-                        <div key={artifact.id} className="rounded-md border bg-muted/20 p-3">
+                      {bootMediaCatalog.map((entry) => (
+                        <div key={`${entry.platform}-${entry.arch}`} className="rounded-md border bg-muted/20 p-3">
                           <div className="flex flex-wrap items-center justify-between gap-3">
                             <div>
-                              <p className="text-sm font-medium text-foreground">
-                                {artifact.platform} / {artifact.architecture} / {artifact.mediaType}
-                              </p>
+                              <p className="text-sm font-medium text-foreground">{entry.filename}</p>
                               <p className="text-xs text-muted-foreground">
-                                {formatStatusLabel(artifact.status)}
-                                {artifact.completedAt ? ` • ${formatTime(artifact.completedAt)}` : ''}
+                                {entry.platform} / {entry.arch}
+                                {entry.version ? ` • v${entry.version}` : ''}
+                                {typeof entry.size === 'number' ? ` • ${formatBytes(entry.size)}` : ''}
                               </p>
                             </div>
                             <div className="flex items-center gap-2">
-                              {artifact.checksumSha256 ? (
+                              {entry.sha256 ? (
                                 <button
                                   type="button"
-                                  onClick={() => void copyText(artifact.checksumSha256!, `${artifact.id}-boot-checksum`)}
+                                  onClick={() => void copyText(entry.sha256!, `${entry.arch}-boot-checksum`)}
                                   className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
                                 >
                                   <Copy className="h-3.5 w-3.5" />
                                   {t('recoveryBootstrapTab.copyChecksum')} </button>
                               ) : null}
-                              {artifact.signatureDownloadPath ? (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void handleDownloadArtifact(
-                                      artifact.signatureDownloadPath!,
-                                      `${artifact.platform}-${artifact.architecture}.${artifact.mediaType}.minisig`,
-                                      t('recoveryBootstrapTab.failedToDownloadBootMediaSignature')
-                                    )
-                                  }
-                                  disabled={loadingMedia}
-                                  className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-60"
-                                >
-                                  <ShieldCheck className="h-3.5 w-3.5" />
-                                  {t('recoveryBootstrapTab.signature')} </button>
-                              ) : null}
-                              {artifact.downloadPath ? (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void handleDownloadArtifact(
-                                      artifact.downloadPath!,
-                                      `breeze-recovery-${artifact.platform}-${artifact.architecture}.${artifact.mediaType}`,
-                                      t('recoveryBootstrapTab.failedToDownloadBootableRecoveryMedia')
-                                    )
-                                  }
-                                  disabled={loadingMedia}
-                                  className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-60"
-                                >
-                                  {loadingMedia ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <TerminalSquare className="h-3.5 w-3.5" />}
-                                  {t('recoveryBootstrapTab.downloadIso')} </button>
-                              ) : null}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void handleDownloadArtifact(
+                                    entry.downloadUrl,
+                                    entry.filename,
+                                    t('recoveryBootstrapTab.failedToDownloadBootableRecoveryMedia')
+                                  )
+                                }
+                                disabled={loadingMedia}
+                                className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-60"
+                              >
+                                {loadingMedia ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <TerminalSquare className="h-3.5 w-3.5" />}
+                                {t('recoveryBootstrapTab.downloadIso')} </button>
                             </div>
                           </div>
-                          {artifact.checksumSha256 ? (
-                            <p className="mt-2 break-all font-mono chart-legend-xs text-muted-foreground">{artifact.checksumSha256}</p>
+                          {entry.sha256 ? (
+                            <p className="mt-2 break-all font-mono chart-legend-xs text-muted-foreground">{entry.sha256}</p>
                           ) : null}
-                          {(artifact.signingKeyId || artifact.signedAt) ? (
-                            <div className="mt-2 space-y-1 chart-legend-xs text-muted-foreground">
-                              <p>{t('recoveryBootstrapTab.signing')} {artifact.signatureFormat ?? 'signed'} {t('recoveryBootstrapTab.via')} {artifact.signingKeyId ?? 'unknown key'}</p>
-                              {artifact.signedAt ? <p>{t('recoveryBootstrapTab.signedAt')} {formatTime(artifact.signedAt)}</p> : null}
-                            </div>
-                          ) : null}
-                          {renderTrustMetadata(artifact.metadata, [
-                            'bootTemplateId',
-                            'bootTemplateVersion',
-                            'bootTemplateSourceRef',
-                            'bootTemplateSha256',
-                            'bootTemplateManifestVersion',
-                          ])}
                         </div>
                       ))}
                     </div>

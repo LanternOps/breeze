@@ -1,0 +1,12 @@
+#!/bin/sh
+# Runs inside the live-build chroot after packages are installed (W04b).
+# Masks the plain login getty on tty1 (breeze-recovery.service owns tty1
+# instead) and enables the services the recovery console and networking
+# need at boot. See config/includes.chroot/etc/systemd/system/
+# breeze-recovery.service and .../serial-getty@ttyS0.service.d/override.conf.
+set -e
+
+systemctl mask getty@tty1.service
+systemctl enable breeze-recovery.service
+systemctl enable systemd-networkd.service
+systemctl enable systemd-resolved.service

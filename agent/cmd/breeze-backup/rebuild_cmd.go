@@ -39,6 +39,12 @@ func newRebuildCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rebuild",
 		Short: "Rebuild a whole machine from a snapshot onto a disk or raw image (bare-metal recovery engine)",
+		// A rebuild failure (a real operational error — wrong disk, refused
+		// preflight, download fault) is common on recovery media; dumping the
+		// full cobra flag/usage listing after the error buries the actual
+		// reason on a screen an operator is already anxiously reading.
+		// SilenceErrors stays false — the error text itself must still print.
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if token != "" && providerConfig != "" {
 				return fmt.Errorf("use either --token/--server or --provider-config, not both")
