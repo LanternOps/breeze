@@ -12,6 +12,10 @@ import type {
 } from '@breeze/shared';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { isPgUniqueViolation, pgErrorConstraint } from '../utils/pgErrors';
+import { createDeliverable, DeliverableServiceError } from './serviceDeliverableService';
+import { firstAnchorAfter, type Cadence } from './recurrence';
+import { contracts } from '../db/schema/contracts';
+import { serviceDeliverables } from '../db/schema/serviceDeliverables';
 
 /**
  * Deliverable template sets and items (spec #5573 §4.6, D9). Dual ownership per
@@ -264,6 +268,125 @@ export async function updateTemplateItem(setId: string, itemId: string, patch: U
   } catch (err) {
     mapUniqueViolation(err);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Apply (spec §4.6 D9 — copy on apply)
+// ---------------------------------------------------------------------------
+
+export interface AppliedTemplateResult {
+  setId: string;
+  setName: string;
+  orgId: string;
+  contractId: string | null;
+  effectiveFrom: string;
+  created: Array<{ id: string; name: string; cadence: Cadence; anchorDueDate: string }>;
+  skipped: string[];
+}
+
+/**
+ * Copy every item of a template set into one organization as scheduled
+ * deliverables, all-or-nothing.
+ *
+ * Applying does NOT require canManagePartnerWidePolicies: reading a
+ * partner-wide set and copying it into an org you can already administer is a
+ * READ of the template plus an org write, not an edit of partner-wide state.
+ */
+export async function applyTemplateSet(
+  orgId: string,
+  setId: string,
+  opts: { contractId?: string; effectiveFrom?: string; ownerUserId?: string; onCollision?: 'reject' | 'skip' },
+  actor: TemplateActor,
+): Promise<AppliedTemplateResult> {
+  requireOrgAccess(actor, orgId);
+  const set = await loadSetOr404(setId, actor);
+  const items = await db.select().from(deliverableTemplateItems)
+    .where(eq(deliverableTemplateItems.setId, set.id))
+    .orderBy(asc(deliverableTemplateItems.sortOrder), asc(deliverableTemplateItems.name));
+
+  const contractId = opts.contractId ?? null;
+  let contractStart: string | null = null;
+  if (contractId) {
+    const [row] = await db.select({ startDate: contracts.startDate }).from(contracts)
+      .where(and(eq(contracts.id, contractId), eq(contracts.orgId, orgId))).limit(1);
+    if (!row) throw new TemplateServiceError('Contract does not belong to this organization', 400, 'CONTRACT_NOT_IN_ORG');
+    contractStart = row.startDate;
+  }
+  // Spec D1: effective_from defaults to the contract start when attached, else today.
+  const effectiveFrom = opts.effectiveFrom ?? contractStart ?? new Date().toISOString().slice(0, 10);
+
+  const names = items.map((i) => i.name);
+  const collisions = names.length === 0 ? [] : (await db
+    .select({ name: serviceDeliverables.name }).from(serviceDeliverables)
+    .where(and(
+      eq(serviceDeliverables.orgId, orgId),
+      // Mirrors service_deliverables_org_contract_name_uq, whose contract axis
+      // is COALESCE(contract_id, nil).
+      contractId ? eq(serviceDeliverables.contractId, contractId) : isNull(serviceDeliverables.contractId),
+      inArray(serviceDeliverables.name, names),
+    ))).map((r) => r.name);
+
+  if (collisions.length > 0 && (opts.onCollision ?? 'reject') === 'reject') {
+    throw new TemplateServiceError(
+      `These deliverables already exist on the target: ${collisions.join(', ')}`,
+      409, 'TEMPLATE_NAME_COLLISION', { collisions },
+    );
+  }
+  const skipped = new Set(collisions);
+  const toCreate = items.filter((i) => !skipped.has(i.name));
+
+  const deliverableActor = { userId: actor.userId, partnerId: actor.partnerId, accessibleOrgIds: actor.accessibleOrgIds };
+
+  // All-or-nothing: every createDeliverable runs on the SAME tx handle, so a
+  // failure on item 7 of 8 leaves no partial schedule behind. Nested under the
+  // request transaction this is a SAVEPOINT, so a mapped 409 survives commit.
+  let created: AppliedTemplateResult['created'];
+  try {
+    created = await db.transaction(async (tx) => {
+      const out: AppliedTemplateResult['created'] = [];
+      for (const item of toCreate) {
+        const anchorDueDate = firstAnchorAfter(effectiveFrom, item.cadence as Cadence);
+        const row = await createDeliverable(orgId, {
+          contractId: contractId ?? undefined,
+          name: item.name,
+          description: item.description ?? undefined,
+          cadence: item.cadence as Cadence,
+          anchorDueDate,
+          effectiveFrom,
+          leadDays: item.leadDays,
+          graceDays: item.graceDays,
+          artifactRequired: item.artifactRequired,
+          completionMode: item.completionMode,
+          ownerUserId: opts.ownerUserId ?? undefined,
+          portalVisible: true,
+          sortOrder: item.sortOrder,
+        }, deliverableActor, tx);
+        out.push({ id: row.id, name: row.name, cadence: row.cadence as Cadence, anchorDueDate });
+      }
+      return out;
+    });
+  } catch (err) {
+    mapApplyError(err);
+  }
+
+  return { setId: set.id, setName: set.name, orgId, contractId, effectiveFrom, created, skipped: [...skipped] };
+}
+
+/**
+ * A concurrent apply races past the pre-check and hits
+ * service_deliverables_org_contract_name_uq (or trips W01's own DUPLICATE_NAME
+ * pre-check); give the caller one error shape.
+ */
+function mapApplyError(err: unknown): never {
+  const duplicate = isPgUniqueViolation(err)
+    || (err instanceof DeliverableServiceError && err.code === 'DUPLICATE_NAME');
+  if (duplicate) {
+    throw new TemplateServiceError(
+      'A deliverable with one of these names already exists on the target',
+      409, 'TEMPLATE_NAME_COLLISION', { collisions: [] },
+    );
+  }
+  throw err;
 }
 
 export async function removeTemplateItem(setId: string, itemId: string, actor: TemplateActor): Promise<void> {

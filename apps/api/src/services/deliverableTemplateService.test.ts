@@ -16,12 +16,30 @@ vi.mock('../db', () => {
   return { db: chain() };
 });
 
+// The db chain mock cannot feed W01's real createDeliverable (it would read an
+// empty queue and throw INSERT_FAILED), so the collaborator is mocked here and
+// the REAL create path is proven against Postgres in
+// deliverableTemplatesPartnerRls.integration.test.ts ("apply fan-out").
+const createdCalls = vi.hoisted(() => [] as Array<{ orgId: string; input: Record<string, unknown>; hasTx: boolean }>);
+vi.mock('./serviceDeliverableService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./serviceDeliverableService')>();
+  return {
+    ...actual,
+    createDeliverable: vi.fn(async (orgId: string, input: Record<string, unknown>, _actor: unknown, tx?: unknown) => {
+      createdCalls.push({ orgId, input, hasTx: tx !== undefined });
+      return { id: `d${createdCalls.length}`, name: input.name, cadence: input.cadence };
+    }),
+  };
+});
+
 import {
+  applyTemplateSet,
   createTemplateSet,
   listTemplateSets,
   addTemplateItem,
   TemplateServiceError,
 } from './deliverableTemplateService';
+import { firstAnchorAfter } from './recurrence';
 import { PartnerWideWriteDeniedError } from './partnerWideAccess';
 
 const partnerAdmin = { userId: 'u1', scope: 'partner' as const, partnerId: 'p1', partnerOrgAccess: 'all' as const, accessibleOrgIds: ['org1'] };
@@ -100,5 +118,53 @@ describe('deliverableTemplateService', () => {
     dbMocks.rows.push([]);
     await expect(addTemplateItem('s9', { name: 'x', cadence: 'monthly', leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve', sortOrder: 0 }, partnerAdmin))
       .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+  });
+});
+
+describe('applyTemplateSet', () => {
+  beforeEach(() => { dbMocks.rows.length = 0; createdCalls.length = 0; });
+  const set = { id: 's1', orgId: null, partnerId: 'p1', name: 'Best plan' };
+  const items = [
+    { id: 'i1', setId: 's1', name: 'Sign-in log review', cadence: 'monthly', leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve', sortOrder: 0, description: null },
+    { id: 'i2', setId: 's1', name: 'Firewall rule review', cadence: 'quarterly', leadDays: 14, graceDays: 21, artifactRequired: true, completionMode: 'on_ticket_resolve', sortOrder: 1, description: null },
+  ];
+
+  it('409s with every colliding name and writes nothing', async () => {
+    dbMocks.rows.push([set]);                                   // loadSetOr404
+    dbMocks.rows.push(items);                                   // items
+    dbMocks.rows.push([{ name: 'Sign-in log review' }]);        // existing deliverables
+    await expect(applyTemplateSet('org1', 's1', { effectiveFrom: '2026-10-01' }, partnerAdmin))
+      .rejects.toMatchObject({ status: 409, code: 'TEMPLATE_NAME_COLLISION', details: { collisions: ['Sign-in log review'] } });
+    expect(createdCalls).toEqual([]);
+  });
+
+  it('onCollision skip reports the skipped names and still creates the rest', async () => {
+    dbMocks.rows.push([set], items, [{ name: 'Sign-in log review' }]);
+    const result = await applyTemplateSet('org1', 's1', { effectiveFrom: '2026-10-01', onCollision: 'skip' }, partnerAdmin);
+    expect(result.skipped).toEqual(['Sign-in log review']);
+    expect(result.created.map((c) => c.name)).toEqual(['Firewall rule review']);
+  });
+
+  it('computes each anchor from the item cadence (spec §4.6)', async () => {
+    dbMocks.rows.push([set], items, []);
+    const result = await applyTemplateSet('org1', 's1', { effectiveFrom: '2026-10-01' }, partnerAdmin);
+    expect(result.created.map((c) => c.anchorDueDate)).toEqual(['2026-10-31', '2026-12-31']);
+    expect(result.created[0]!.anchorDueDate).toBe(firstAnchorAfter('2026-10-01', 'monthly'));
+    // Every create runs on the SHARED transaction handle — that is what makes
+    // the apply all-or-nothing.
+    expect(createdCalls.every((c) => c.hasTx)).toBe(true);
+  });
+
+  it('404s an org the actor cannot access before reading the set', async () => {
+    const { db } = await import('../db');
+    (db as any).select.mockClear();
+    await expect(applyTemplateSet('org2', 's1', {}, partnerAdmin)).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+    expect((db as any).select).not.toHaveBeenCalled();
+  });
+
+  it('rejects a contract belonging to another org', async () => {
+    dbMocks.rows.push([set], items, []);                        // set, items, contract lookup empty
+    await expect(applyTemplateSet('org1', 's1', { contractId: '11111111-1111-4111-8111-111111111111' }, partnerAdmin))
+      .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_IN_ORG' });
   });
 });
