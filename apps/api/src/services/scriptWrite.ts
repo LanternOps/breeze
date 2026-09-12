@@ -10,7 +10,12 @@
  */
 import type { ScriptOrigin, ScriptParameterDefinition } from '@breeze/shared';
 import { db } from '../db';
-import { cutScriptVersion, type ScriptVersionProvenance } from './scriptVersions';
+import {
+  cutScriptVersion,
+  type ScriptVersionExecutor,
+  type ScriptVersionProvenance,
+  type ScriptVersionTx,
+} from './scriptVersions';
 import { scripts } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import {
@@ -209,6 +214,14 @@ export type ScriptInsertOptions = {
    *  in hand (W03's promote passes the proposal's review evidence here rather
    *  than cutting a second version on top of the create). */
   provenance?: ScriptVersionProvenance;
+  /** W03 promotion: the APPROVER who acknowledged the STRICT patterns on the
+   *  card, stamped as security_acknowledged_by instead of the caller. Only
+   *  consulted when something was actually acknowledged. */
+  securityAcknowledgedBy?: string | null;
+  /** W03 promotion: run inside the caller's transaction (as a savepoint) so the
+   *  script insert and the proposal's `promoted` CAS commit or roll back as one
+   *  unit. Default: a fresh transaction, as every existing caller expects. */
+  tx?: ScriptVersionTx;
 };
 
 export async function insertScriptRow(
@@ -218,6 +231,7 @@ export async function insertScriptRow(
   opts: ScriptInsertOptions = {}
 ) {
   const isSystem = auth.scope === 'system' ? (opts.requestedIsSystem ?? false) : false;
+  const origin: ScriptOrigin = opts.provenance?.origin ?? opts.origin ?? (isSystem ? 'system' : 'human');
 
   // Clamped at the chokepoint for the same reason `isSystem` is (#5129): both
   // intakes — POST /scripts and the bundle importer — go through here, so
@@ -235,7 +249,9 @@ export async function insertScriptRow(
   //
   // `version: 0` is transient — cutScriptVersion locks the row, moves it to 1,
   // and snapshots it. Nothing outside this transaction ever sees 0.
-  return db.transaction(async (tx) => {
+  const acknowledgedBy = opts.securityAcknowledgedBy ?? auth.user.id;
+  const handle: ScriptVersionExecutor = opts.tx ?? db;
+  return handle.transaction(async (tx) => {
   const [script] = await tx
     .insert(scripts)
     .values({
@@ -252,11 +268,15 @@ export async function insertScriptRow(
       runAs: input.runAs,
       isSystem,
       version: 0,
+      // The RECORD's birth (spec §4.1); the version row below carries the same
+      // origin plus the review evidence, when there is any.
+      origin,
+      originProposalId: opts.provenance?.proposalId ?? null,
       exitCodeSeverityMapping: input.exitCodeSeverityMapping ?? null,
       acknowledgedSecurityPatterns: acknowledgement.acknowledged,
       // Only stamp attribution when something was actually acknowledged; an
       // ordinary script with no risky pattern must not look risk-approved.
-      securityAcknowledgedBy: acknowledgement.acknowledged.length > 0 ? auth.user.id : null,
+      securityAcknowledgedBy: acknowledgement.acknowledged.length > 0 ? acknowledgedBy : null,
       securityAcknowledgedAt: acknowledgement.acknowledged.length > 0 ? new Date() : null,
       createdBy: auth.user.id
     })
@@ -269,12 +289,12 @@ export async function insertScriptRow(
     const cut = await cutScriptVersion(tx, {
       scriptId: script.id,
       provenance: opts.provenance ?? {
-        origin: opts.origin ?? (isSystem ? 'system' : 'human'),
+        origin,
         changelog: 'Initial version',
         createdBy: auth.user.id
       }
     });
 
-    return { ...script, version: cut.version };
+    return { ...script, version: cut.version, headVersionId: cut.id };
   });
 }
