@@ -60,6 +60,14 @@ const ALLOWED_TAG_NAMES = new Set([
   'org_id',
   'partner_id',
   'stripe_reconcile_stage',
+  // SEC-150: which phase of Checkout-session revocation produced the alert —
+  // 'request' (intent/sibling request), 'expire' (the sweep's provider call),
+  // 'blocked' (terminal-unrepaired) or 'charged_repair' (the session was paid
+  // after we asked for it to die). A closed four-value set of string literals
+  // written at fixed call sites in stripeSessionRevocation.ts; it carries no
+  // tenant, invoice or session identifier. Without the allowlist entry the
+  // scrubber drops it and the alerts arrive indistinguishable from each other.
+  'stripe_revocation_stage',
   // BREEZE-X: a `dbWriteExpectingRows` 0-row warning is only triageable if the
   // call site (`cas_label`) and the state the row was already in
   // (`prior_status`) survive the scrubber. Both are enum-ish and bounded by

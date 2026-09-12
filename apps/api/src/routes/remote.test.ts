@@ -52,7 +52,10 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  db: mockDb
+  db: mockDb,
+  // remoteDesktopStartIntent.ts (real impl, not mocked here) throws unless
+  // this reports an open db access context.
+  hasDbAccessContext: vi.fn(() => true)
 }));
 
 vi.mock('../db/schema', () => ({
@@ -61,6 +64,9 @@ vi.mock('../db/schema', () => ({
     status: 'remoteSessions.status',
     desktopStartCommandId: 'remoteSessions.desktopStartCommandId',
     desktopPromptMode: 'remoteSessions.desktopPromptMode',
+    desktopStartGeneration: 'remoteSessions.desktopStartGeneration',
+    terminalGeneration: 'remoteSessions.terminalGeneration',
+    terminationPhase: 'remoteSessions.terminationPhase',
   },
   devices: {},
   organizations: {},
@@ -209,6 +215,21 @@ function mockInsertReturning(result: unknown) {
   return {
     values: vi.fn().mockReturnValue({
       returning: vi.fn().mockResolvedValue(result)
+    })
+  } as any;
+}
+
+// select().from().where().limit().for('update') — the row-locked read
+// commitDesktopStartIntent/commitDesktopStreamStartIntent issue (SEC-038 W02,
+// real impl in remoteDesktopStartIntent.ts, not mocked in this file).
+function mockSelectLimitForChain(result: unknown) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockReturnValue({
+          for: vi.fn().mockResolvedValue(result)
+        })
+      })
     })
   } as any;
 }
@@ -387,15 +408,35 @@ describe('remote routes', () => {
         mockSelectInnerJoinChain([sessionResult])
       );
 
-      // update session
-      vi.mocked(db.update).mockReturnValueOnce(mockUpdateReturning([{
-        id: SESSION_UUID,
-        status: 'connecting',
-        webrtcOffer: 'offer-sdp'
+      // device hardware gpu lookup — select().from().where().limit() -> []
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectChain([]));
+
+      // buildRemoteSessionPromptPayload (real impl, not mocked in this file)
+      // makes its own unrelated db.select for the technician identity lookup
+      // once resolveRemoteSessionPromptConfig fails closed to its
+      // non-'off' defaults. Any shape here is fine — production wraps this
+      // read in a try/catch and proceeds without the identity details — but
+      // it still consumes one slot in this shared FIFO mock queue.
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectLimitForChain([]));
+
+      // commitDesktopStartIntent: row-locked read
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectLimitForChain([{
+        status: 'pending',
+        terminationPhase: 'none',
+        generation: 0n
       }]));
+
+      // commitDesktopStartIntent: generation-bump update
+      vi.mocked(db.update).mockReturnValueOnce(mockUpdateReturning([{ generation: 1n }]));
 
       // audit log insert
       vi.mocked(db.insert).mockReturnValueOnce(mockInsertNoReturn());
+
+      // assertDesktopStartIntentCurrent: pre-send re-read
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectChain([{
+        terminationPhase: 'none',
+        generation: 1n
+      }]));
 
       const res = await app.request(`/remote/sessions/${SESSION_UUID}/offer`, {
         method: 'POST',

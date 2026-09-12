@@ -57,6 +57,13 @@ export type SoftwarePolicyViolation = {
     minVersion?: string;
     maxVersion?: string;
     reason?: string;
+    /**
+     * The catalog item the matched/unmatched rule points at (#5505 D9).
+     * Load-bearing for desired-state install: a `missing` violation is the only
+     * place the install path can learn WHAT to install, and rule names are not
+     * unique within a policy, so re-deriving it by name is not an option.
+     */
+    catalogId?: string;
   };
   severity: 'low' | 'medium' | 'high' | 'critical';
   detectedAt: string;
@@ -64,6 +71,13 @@ export type SoftwarePolicyViolation = {
 
 export type SoftwarePolicyRemediationOptions = {
   autoUninstall?: boolean;
+  /**
+   * Desired-state install arming (#5505). Opt-in — absent or non-boolean means
+   * NOT armed — and deliberately NOT sharing `autoUninstall`'s flag: a policy
+   * armed to REMOVE unauthorised software is not thereby armed to INSTALL
+   * anything. Both verbs still sit behind `enforceMode` and `mode !== 'audit'`.
+   */
+  autoInstall?: boolean;
   notifyUser?: boolean; // not yet implemented
   gracePeriod?: number; // hours; max 90 days
   cooldownMinutes?: number;

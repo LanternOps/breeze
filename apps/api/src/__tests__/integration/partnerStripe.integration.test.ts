@@ -14,15 +14,23 @@ import { invoices } from '../../db/schema/invoices';
 import { createOrganization, createPartner } from './db-utils';
 import { isEncryptedSecret } from '../../services/secretCrypto';
 
-const { accountsRetrieveMock, eventsListMock } = vi.hoisted(() => ({
+const { accountsRetrieveMock, eventsListMock, sessionsExpireMock } = vi.hoisted(() => ({
   accountsRetrieveMock: vi.fn(),
   eventsListMock: vi.fn().mockResolvedValue({ data: [], has_more: false }),
+  // SEC-150: savePartnerStripeKey now also probes Checkout WRITE access —
+  // a key that can create sessions but not expire them would collect money it
+  // can never be told to stop collecting. `resource_missing` on a bogus
+  // session id is the "you have the permission" answer.
+  sessionsExpireMock: vi.fn().mockRejectedValue(
+    Object.assign(new Error('No such checkout session'), { type: 'StripeInvalidRequestError', code: 'resource_missing' }),
+  ),
 }));
 vi.mock('stripe', () => ({
   default: class MockStripe {
     public _key: string;
     accounts = { retrieve: accountsRetrieveMock };
     events = { list: eventsListMock };
+    checkout = { sessions: { expire: sessionsExpireMock } };
     constructor(key: string) { this._key = key; }
   },
 }));

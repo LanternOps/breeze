@@ -72,6 +72,9 @@ vi.mock('../../db', () => ({
   },
   runOutsideDbContext: vi.fn(<T>(fn: () => T): T => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+  // remoteDesktopStartIntent.ts (real impl, not mocked in this file) throws
+  // unless this reports an open db access context.
+  hasDbAccessContext: vi.fn(() => true),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -90,6 +93,9 @@ vi.mock('../../db/schema', () => ({
     bytesTransferred: 'remoteSessions.bytesTransferred',
     recordingUrl: 'remoteSessions.recordingUrl',
     createdAt: 'remoteSessions.createdAt',
+    desktopStartGeneration: 'remoteSessions.desktopStartGeneration',
+    terminalGeneration: 'remoteSessions.terminalGeneration',
+    terminationPhase: 'remoteSessions.terminationPhase',
   },
   devices: {
     id: 'devices.id',
@@ -318,6 +324,74 @@ function rigStaleUnrestricted(staleIds: string[]) {
     set: vi.fn().mockReturnValue({ where: staleWhere.mockReturnValue({ returning }) }),
   } as never);
   return { staleWhere };
+}
+
+// Rigs the full commitDesktopStartIntent / assertDesktopStartIntentCurrent DB
+// sequence that a successful desktop offer now drives through
+// remoteDesktopStartIntent.ts's real implementation (SEC-038 W02, not mocked
+// in this file): the row-locked read, the generation-bump update, and the
+// pre-publication re-read. `includeHardwareLookup` covers the REST route's
+// extra device-hardware gpu select that runs before the commit.
+function rigDesktopStartIntent(options: {
+  lockedStatus?: string;
+  committedGeneration?: bigint;
+  includeHardwareLookup?: boolean;
+} = {}) {
+  const {
+    lockedStatus = 'pending',
+    committedGeneration = 1n,
+    includeHardwareLookup = true,
+  } = options;
+
+  // A prior test in a describe whose beforeEach only calls vi.clearAllMocks()
+  // (not mockReset()) can leave an unconsumed mockReturnValueOnce queued on
+  // these mocks — e.g. when a test exits the offer flow early (agent-upgrade
+  // 503) after consuming only the hardware+lock selects, stranding the
+  // pre-send-reread once-value for the NEXT test to dequeue out of order.
+  // Reset before queuing this test's own sequence so it can never inherit one.
+  vi.mocked(db.select).mockReset();
+  vi.mocked(db.update).mockReset();
+
+  if (includeHardwareLookup) {
+    // (a) device hardware gpu lookup: select().from().where().limit() -> []
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as never);
+  }
+
+  // (b) commit: row lock read — select().from().where().limit().for('update')
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockReturnValue({
+          for: vi.fn().mockResolvedValue([
+            { status: lockedStatus, terminationPhase: 'none', generation: 0n },
+          ]),
+        }),
+      }),
+    }),
+  } as never);
+
+  // (c) commit: generation-bump update — update().set().where().returning()
+  const returning = vi.fn().mockResolvedValue([{ generation: committedGeneration }]);
+  vi.mocked(db.update).mockReturnValueOnce({
+    set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) }),
+  } as never);
+
+  // (d) pre-send re-read — select().from().where().limit()
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([
+          { terminationPhase: 'none', generation: committedGeneration },
+        ]),
+      }),
+    }),
+  } as never);
+
+  return { returning };
 }
 
 function rigLockedCleanupDevice(siteId: string | null, orgId = ORG_ID) {
@@ -904,19 +978,12 @@ describe('remote sessions — site-scope enforcement', () => {
   describe('POST /sessions/:id/offer', () => {
     const offerBody = JSON.stringify({ offer: 'v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n' });
 
-    function rigOfferUpdate(updatedStatus = 'connecting') {
-      const returning = vi
-        .fn()
-        .mockResolvedValue([{ id: SESSION_ID, status: updatedStatus, webrtcOffer: 'v=0\r\n' }]);
-      vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) }),
-      } as never);
-      // device hardware lookup (gpu) — select().from().where().limit()
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
-        }),
-      } as never);
+    function rigOfferUpdate() {
+      // The route no longer issues its own db.update: the offer commit (row
+      // lock + generation bump) plus the device-hardware gpu lookup and the
+      // pre-send re-read all run through remoteDesktopStartIntent.ts's real
+      // implementation. See rigDesktopStartIntent.
+      return rigDesktopStartIntent({ lockedStatus: 'pending' });
     }
 
     it('returns 403 when caller is site-restricted away from the session device site', async () => {
@@ -1257,18 +1324,7 @@ describe('remote sessions — revocation-lease capability gate', () => {
       session: { id: SESSION_ID2, userId: 'user-1', type: 'desktop', status: 'pending', deviceId: DEVICE_ID2 },
       device: { id: DEVICE_ID2, orgId: ORG_ID2, siteId: null, agentId: 'agent-1' },
     });
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: SESSION_ID2, status: 'connecting', webrtcOffer: 'sdp' }]),
-        }),
-      }),
-    } as never);
-    (db as any).select = vi.fn().mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
-      }),
-    });
+    rigDesktopStartIntent({ lockedStatus: 'pending' });
   }
 
   const offerBody = JSON.stringify({ offer: 'v=0\r\n' });
