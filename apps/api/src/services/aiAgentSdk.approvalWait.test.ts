@@ -566,7 +566,7 @@ describe('approved-at-creation intent (unattended lane, #5612 W04)', () => {
 
     await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
 
-    const types = vi.mocked(session.eventBus.publish).mock.calls.map((c) => (c[0] as { type: string }).type);
+    const types = vi.mocked(session.eventBus.publish).mock.calls.map((c: unknown[]) => (c[0] as { type: string }).type);
     expect(types).not.toContain('approval_required');
     expect(session.eventBus.publish).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'unattended_release', executionId: 'exec-lane', intentId: 'intent-lane' }),
@@ -586,7 +586,7 @@ describe('approved-at-creation intent (unattended lane, #5612 W04)', () => {
 
     await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
 
-    const types = vi.mocked(session.eventBus.publish).mock.calls.map((c) => (c[0] as { type: string }).type);
+    const types = vi.mocked(session.eventBus.publish).mock.calls.map((c: unknown[]) => (c[0] as { type: string }).type);
     expect(types).toContain('approval_required');
     expect(types).not.toContain('unattended_release');
   });

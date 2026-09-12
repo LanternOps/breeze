@@ -404,7 +404,7 @@ describe('createActionIntent — script_reviewer autonomy (#5612 W04)', () => {
 
   it('a missing proposal is a proposal_not_runnable breadcrumb and the evaluator is never called', async () => {
     dbState.insertActionIntentsResults.push(echoInsertedIntent());
-    scriptLaneState.loadProposalForRelease.mockResolvedValue(null);
+    scriptLaneState.loadProposalForRelease.mockResolvedValue(null as never);
     // W01b's CAS then refuses the claim — the intent never commits.
     scriptLaneState.consumeProposalForIntent.mockResolvedValue(false);
     await expect(createActionIntent(makeUserAuth(), proposalRunInput())).rejects.toMatchObject({ code: 'proposal_not_runnable' });

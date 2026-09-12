@@ -349,7 +349,7 @@ vi.mock('../services/actionIntents/effectDigest', () => ({
 // wholesale (its own truth table is laneCheckpoint.test.ts). Default: no
 // checkpoint needed — the pre-existing cases must be inert.
 const laneCheckpointMock = vi.hoisted(() => ({
-  ensureLaneCheckpointBeforeRelease: vi.fn(async () => ({ ok: true as const, checkpointRef: null })),
+  ensureLaneCheckpointBeforeRelease: vi.fn(async () => ({ ok: true as const, checkpointRef: null as string | null })),
 }));
 vi.mock('../services/actionIntents/laneCheckpoint', () => laneCheckpointMock);
 // The lane's release revalidation is reached only through revalidateRelease

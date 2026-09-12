@@ -109,6 +109,14 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // mutate org-wide default policies — is closed by the ORTHOGONAL
   // site-ceiling gate (canMutateOrgWideGovernance) added directly to
   // /approve, /deny, /clear.
+  // AI script authoring W04 (#5612): the ORG GRANT half of ai_script_policies.
+  // Every write sets a concrete org_id (resolveTargetOrgId → auth.orgId or a
+  // canAccessOrg-checked ?orgId), so this route can never create or modify a
+  // partner-wide (org_id NULL) row; the partner CEILING row has its own route
+  // (routes/partnerAiScriptPolicy.ts), gated on canManagePartnerWidePolicies.
+  // Enabling the lane is additionally gated at the route: approvals:decide +
+  // MFA + a resource-bound ai_script_lane_grant step-up.
+  'routes/ai/scriptPolicy.ts': 'org GRANT writes only (org_id always set); partner ceiling gated at routes/partnerAiScriptPolicy.ts — canManagePartnerWidePolicies on the PUT',
   'routes/softwareInventory.ts': 'software_policies/configurationPolicies writes here are always org-scoped — resolveOrgId always resolves a concrete org id, so this route can never create or modify a partner-wide (org_id NULL) row; the site-restricted-user gap is closed separately by canMutateOrgWideGovernance',
 
   // ==========================================================================
