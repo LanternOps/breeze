@@ -7,7 +7,7 @@
     },
     "loading": "Carregando automação...",
     "breadcrumb": {
-      "automations": "Automações",
+      "automations": "Jobs",
       "new": "Nova automação",
       "edit": "Editar automação"
     },
@@ -341,8 +341,8 @@
       "delete": "Falha ao excluir automação"
     },
     "loading": "Carregando automações...",
-    "title": "Automações",
-    "description": "Crie e gerencie fluxos automatizados.",
+    "title": "Jobs",
+    "description": "Automações agendadas, sob demanda, por webhook e por evento.",
     "actions": {
       "new": "Nova automação",
       "deleting": "Excluindo..."

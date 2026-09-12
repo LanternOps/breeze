@@ -252,7 +252,7 @@ export default function AutomationsPage() {
   }, [modalMode, selectedAutomation, runHistory, fetchRunHistory]);
 
   const handleEdit = (automation: Automation) => {
-    void navigateTo(`/automations/${automation.id}`);
+    void navigateTo(`/jobs/${automation.id}`);
   };
 
   const handleDelete = (automation: Automation) => {
@@ -366,7 +366,7 @@ export default function AutomationsPage() {
           <p className="text-muted-foreground">{t('automationsPage.description')}</p>
         </div>
         <a
-          href="/automations/new"
+          href="/jobs/new"
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
           <Plus className="h-4 w-4" />

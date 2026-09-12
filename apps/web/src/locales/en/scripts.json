@@ -7,7 +7,7 @@
     },
     "loading": "Loading automation...",
     "breadcrumb": {
-      "automations": "Automations",
+      "automations": "Jobs",
       "new": "New Automation",
       "edit": "Edit Automation"
     },
@@ -341,8 +341,8 @@
       "delete": "Failed to delete automation"
     },
     "loading": "Loading automations...",
-    "title": "Automations",
-    "description": "Create and manage automated workflows.",
+    "title": "Jobs",
+    "description": "Scheduled, on-demand, webhook and event-driven automations.",
     "actions": {
       "new": "New Automation",
       "deleting": "Deleting..."
