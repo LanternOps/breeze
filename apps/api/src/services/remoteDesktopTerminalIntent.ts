@@ -67,7 +67,7 @@ export interface TerminalIntentWrite {
   endedAt: Date;
   errorMessage?: string | SQL | null;
   durationSeconds?: number;
-  bytesTransferred?: bigint;
+  bytesTransferred?: bigint | null;
   recordingUrl?: string | null;
 }
 

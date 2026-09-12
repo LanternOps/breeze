@@ -29,6 +29,13 @@ import { createRemoteSession, RemoteSessionDeniedError } from '../services/remot
 import { evaluateCapability, partnerIdForDevice, trustDenyBody, unresolvedPartnerDecision } from '../services/partnerTrust';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import { authorizeRemoteSessionContinuation } from '../services/remoteWsAuthorization';
+import { teardownDisconnectedSessions } from '../services/remoteSessionTeardown';
+import {
+  terminalIntentSet,
+  terminalSessionReturning,
+  toTerminalSessionRow,
+  type TerminalSessionRow,
+} from '../services/remoteDesktopTerminalIntent';
 
 export const tunnelRoutes = new Hono();
 
@@ -1618,26 +1625,33 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
   // Reuse the same pattern as /sessions: terminate stragglers first, insert
   // new pending row via the partner-trust-gated service, return its id.
   let session: typeof remoteSessions.$inferSelect;
+  let stragglers: TerminalSessionRow[] = [];
   try {
-    session = await withSystemDbAccessContext(async () => {
-      await db
+    ({ session, stragglers } = await withSystemDbAccessContext(async () => {
+      // Through the terminal-intent contract (SEC-038 W03), returning the rows
+      // so each straggler's stop can name its terminal generation. The stop
+      // itself is dispatched AFTER this context commits — the relay's ack wait
+      // must not pin this connection idle-in-transaction.
+      const swept = (await db
         .update(remoteSessions)
-        .set({ status: 'disconnected', endedAt: new Date() })
+        .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date() }, 'pending'))
         .where(
           and(
             eq(remoteSessions.deviceId, bound.deviceId),
             eq(remoteSessions.type, 'desktop'),
             inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
           )
-        );
-      return createRemoteSession('remote', {
+        )
+        .returning(terminalSessionReturning)).map(toTerminalSessionRow);
+      const created = await createRemoteSession('remote', {
         id: transitionSessionId,
         deviceId: bound.deviceId,
         orgId: bound.tunnelOrgId,
         userId: bound.tunnelUserId,
         type: 'desktop',
       });
-    }) as typeof remoteSessions.$inferSelect;
+      return { session: created as typeof remoteSessions.$inferSelect, stragglers: swept };
+    }));
   } catch (e) {
     if (e instanceof RemoteSessionDeniedError) {
       return c.json(trustDenyBody({ allow: false, code: e.code, capability: 'remote_control', reason: e.reason }, false), 403);
@@ -1648,6 +1662,10 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
   if (!session) {
     return c.json({ error: 'Failed to create desktop session' }, 500);
   }
+
+  // Same as POST /remote/sessions: a straggler may still be a live WebRTC
+  // stream, so revoke its viewer token and push the generation-bound stop.
+  await teardownDisconnectedSessions(stragglers);
 
   // Viewer-token auth — no JWT actor. Attribute the upgrade to the tunnel-bound
   // owner (the user who opened the originating VNC tunnel) so the credential
