@@ -1287,7 +1287,22 @@ describe('POST /devices/:id/move-org', () => {
       expect(collapseStmt(statements[6]!)).toContain(
         'UPDATE manual_assets SET linked_device_id = NULL',
       );
-      expect(statements[7]).toBe('UPDATE devices');
+      // #5329 (M365 tenant sync W02, spec §3.4) — the Intune link detach sits
+      // between the manual-asset detach and the device UPDATE for the same
+      // reason the one above does: m365_intune_devices_breeze_device_org_fk
+      // ((breeze_device_id, org_id) -> devices(id, org_id)) is DEFERRABLE
+      // INITIALLY IMMEDIATE, so its check fires at the end of the org flip
+      // below. There is no trigger-side mirror: breeze_device_child_orgid_tables()
+      // discovers by a column named `device_id` and this one is
+      // `breeze_device_id`, so the route statement is the ONLY thing standing
+      // between an Intune-linked device and a 23503 on every move.
+      const intuneDetach = collapseStmt(statements[7]!);
+      expect(intuneDetach).toContain(
+        'UPDATE m365_intune_devices SET breeze_device_id = NULL',
+      );
+      // Scoped to the SOURCE org, not just the device id.
+      expect(intuneDetach).toMatch(/AND org_id =/);
+      expect(statements[8]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,
