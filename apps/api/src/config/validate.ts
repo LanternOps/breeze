@@ -1834,7 +1834,7 @@ const envSchema = envObjectSchema
         code: z.ZodIssueCode.custom,
         path: ['BREEZE_AI_SCRIPT_AUTHORING_ENABLED'],
         message:
-          'BREEZE_AI_SCRIPT_AUTHORING_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (AI script authoring is dark).',
+          'BREEZE_AI_SCRIPT_AUTHORING_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to true (W03 #5612); set false to keep AI script authoring dark.',
       });
     }
 

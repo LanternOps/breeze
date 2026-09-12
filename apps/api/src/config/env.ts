@@ -115,12 +115,17 @@ export function policyDecideEnabled(): boolean {
 
 /**
  * AI script authoring, review, and reviewer-gated execution (spec
- * 2026-09-11-ai-script-authoring-and-review-design.md). Default OFF until W03.
- * Call-time, not a module const: the flag is read per tool-registration and per
- * run_script call, and tests flip it without vi.resetModules().
+ * 2026-09-11-ai-script-authoring-and-review-design.md §8).
+ *
+ * W01b shipped this dark. W03 (#5612) turns it ON by default: the human loop,
+ * the review card and the verification job are all in place, so a proposal can
+ * no longer reach a device without a human reading a truthful summary of it.
+ * W05 removes the flag. Call-time, not a module const: the flag is read per
+ * tool-registration and per run_script call, and tests flip it without
+ * vi.resetModules(). The compose template's `:-true` default must agree.
  */
 export function aiScriptAuthoringEnabled(): boolean {
-  return envFlag('BREEZE_AI_SCRIPT_AUTHORING_ENABLED', false);
+  return envFlag('BREEZE_AI_SCRIPT_AUTHORING_ENABLED', true);
 }
 
 // W02 (#5612): the script-proposal reviewer's model. A flat env-driven
