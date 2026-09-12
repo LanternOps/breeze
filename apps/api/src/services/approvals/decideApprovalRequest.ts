@@ -46,6 +46,9 @@ import { getUserPermissions, hasPermission, userCanDecideApprovals, canAccessOrg
 import { createPamDecisionIntent } from '../pamActuationLifecycle';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
 import { requiredAssurance, type RiskTier, type ApprovalProof } from '@breeze/shared';
+import { scriptProposals } from '../../db/schema/scriptProposals';
+import { loadProposalRow } from '../scriptProposals/queries';
+import { resolveStrictAcknowledgement } from './strictAcknowledgement';
 
 /**
  * The approvals DECIDE core (P2-2 #4189), lifted verbatim out of
@@ -430,6 +433,13 @@ export interface DecideApprovalInput {
   reason?: string;
   proof?: ApprovalProof;
   reauthVerified?: boolean;
+  /**
+   * W03 (#5612, spec §4.5): STRICT pattern descriptions the approver ticked on
+   * the script-proposal card. Only meaningful when the intent is a
+   * `run_script { proposalId }` whose proposal has `strict_hits`; ignored for
+   * every other approval. Resolved server-side as (submitted ∩ strict_hits).
+   */
+  acknowledgedPatterns?: string[];
   /**
    * P2-2 batch decide (#4189): an `AssuranceDecision` already established for
    * this decider by ONE ceremony covering the whole batch
@@ -840,6 +850,45 @@ export async function decideApprovalRequest(
     }
   }
 
+  // ── W03 (#5612): STRICT acknowledgement ceremony (spec §4.5) ─────────────
+  // Only on APPROVE, only for an intent whose run_script arguments name a
+  // proposal, only when that proposal has strict hits. Everything else
+  // short-circuits before any extra DB read. Placed AFTER the supervised /
+  // four-eyes authority checks (an unauthorised decider is refused first, with
+  // the existing 403s) and BEFORE the assurance ladder, so a refused
+  // acknowledgement never consumes a WebAuthn challenge.
+  let acknowledgedPatterns: string[] = [];
+  let proposalIdForDecision: string | null = null;
+  if (status === 'approved' && linkedIntent?.actionName === 'run_script') {
+    const proposalId = (linkedIntent.arguments as { proposalId?: unknown } | null)?.proposalId;
+    if (typeof proposalId === 'string' && proposalId.length > 0) {
+      const proposal = await loadProposalRow(proposalId);
+      if (proposal && (proposal.strictHits?.length ?? 0) > 0) {
+        const resolved = await resolveStrictAcknowledgement({
+          auth: input.auth,
+          proposal: { strictHits: proposal.strictHits, orgId: proposal.orgId },
+          submitted: input.acknowledgedPatterns ?? [],
+        });
+        if (!resolved.ok) {
+          recordActionIntentEvent({
+            orgId: linkedIntent.orgId,
+            intentId: linkedIntent.id,
+            actionName: linkedIntent.actionName,
+            argumentDigest: linkedIntent.argumentDigest,
+            source: linkedIntent.source,
+            outcome: 'approver_unauthorized',
+            actorId: userId,
+            details: { approvalId: existing.id, errorCode: resolved.error, proposalId },
+          });
+          const { ok: _ok, ...body } = resolved;
+          return { httpStatus: 422, body: body as Record<string, unknown> };
+        }
+        acknowledgedPatterns = resolved.acknowledged;
+        proposalIdForDecision = proposalId;
+      }
+    }
+  }
+
   // Phase 2/3: verify an optional assertion proof. No proof → L1 session tap. A
   // presented-but-invalid proof throws → 401 (never silently L1). The L3 recency
   // clock is derived server-side from the consumed challenge (no param here);
@@ -1070,6 +1119,18 @@ export async function decideApprovalRequest(
               .from(actionIntents)
               .where(eq(actionIntents.id, existing.intentId))
               .for('update');
+          }
+
+          if (proposalIdForDecision && acknowledgedPatterns.length > 0) {
+            // W03: persisted on the PROPOSAL, not on the approval row — dispatch
+            // reads the proposal (ScriptDispatchSource { kind: 'proposal' }) and
+            // the release worker projects only (id, status, bound_argument_digest)
+            // off the approval. Same transaction as the CAS below so a lost
+            // decision race cannot leave an acknowledgement behind.
+            await tx
+              .update(scriptProposals)
+              .set({ acknowledgedPatterns })
+              .where(eq(scriptProposals.id, proposalIdForDecision));
           }
 
           const casRows = await tx
