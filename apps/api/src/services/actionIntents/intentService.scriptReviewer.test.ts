@@ -212,6 +212,10 @@ vi.mock('./ticketAutonomy', () => ({ evaluateTicketAutonomy: ticketAutonomyState
 vi.mock('./scriptReviewerAutonomy', () => ({
   evaluateScriptReviewerAutonomy: scriptLaneState.evaluateScriptReviewerAutonomy,
 }));
+const auditState = vi.hoisted(() => ({ audits: [] as Array<Record<string, unknown>> }));
+vi.mock('../auditService', () => ({
+  createAuditLogAsync: vi.fn(async (p: Record<string, unknown>) => { auditState.audits.push(p); }),
+}));
 vi.mock('../scriptProposals', () => ({
   consumeProposalForIntent: scriptLaneState.consumeProposalForIntent,
   loadProposalForRelease: scriptLaneState.loadProposalForRelease,
@@ -284,6 +288,7 @@ function resetDbState() {
 
 beforeEach(() => {
   resetDbState();
+  auditState.audits.length = 0;
   vi.clearAllMocks();
   aiToolsState.tools.clear();
   aiToolsState.resolveWritableToolOrgId.mockReturnValue({ orgId: ORG_ID });
@@ -373,6 +378,28 @@ describe('createActionIntent — script_reviewer autonomy (#5612 W04)', () => {
     expect(dbState.insertedOutboxValues.map((o) => o.eventType)).toEqual(['intent_created']);
     // The proposal is still claimed by the (pending) intent — W01b's CAS.
     expect(scriptLaneState.consumeProposalForIntent).toHaveBeenCalledWith(expect.anything(), 'prop-1', snap.id);
+  });
+
+  it('audits ai.script.unattended_run once the intent commits', async () => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    await createActionIntent(makeUserAuth(), proposalRunInput());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(auditState.audits).toContainEqual(expect.objectContaining({
+      action: 'ai.script.unattended_run',
+      resourceType: 'action_intent',
+      resourceId: 'intent-echo',
+      result: 'success',
+      initiatedBy: 'ai',
+      details: expect.objectContaining({ proposalId: 'prop-1', reviewId: 'rev-1', origin: 'chat' }),
+    }));
+  });
+
+  it('does NOT audit an unattended run when the lane refused', async () => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    scriptLaneState.evaluateScriptReviewerAutonomy.mockResolvedValue({ granted: false, reason: 'lane_open' });
+    await createActionIntent(makeUserAuth(), proposalRunInput());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(auditState.audits.map((a) => a.action)).not.toContain('ai.script.unattended_run');
   });
 
   it('a missing proposal is a proposal_not_runnable breadcrumb and the evaluator is never called', async () => {

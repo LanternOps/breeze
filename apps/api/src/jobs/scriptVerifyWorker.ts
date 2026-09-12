@@ -28,6 +28,7 @@ import {
   type ScriptVerifyJobData, type VerificationOutcome,
 } from '../services/scriptProposals/verify';
 import { transitionProposal } from '../services/scriptProposals';
+import { registerLaneOutcomeHandler } from '../services/scriptProposals/laneOutcome';
 import { loadProposalRequesterUserId, loadProposalRow } from '../services/scriptProposals/queries';
 import { postProposalOutcomeToAuthor } from '../services/scriptProposals/authorNotify';
 import { requestLikeFromSnapshot, writeAuditEventAsync } from '../services/auditEvents';
@@ -192,6 +193,9 @@ export function createScriptVerifyWorker(): Worker {
 
 export async function initializeScriptVerifyWorker(): Promise<void> {
   if (scriptVerifyWorker) return;
+  // W04 (#5612): the unattended lane's circuit consumes every terminal
+  // verification outcome (it filters to lane runs itself).
+  registerLaneOutcomeHandler();
   scriptVerifyWorker = createScriptVerifyWorker();
   attachWorkerObservability(scriptVerifyWorker, WORKER_NAME);
 }

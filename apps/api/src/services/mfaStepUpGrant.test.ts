@@ -22,7 +22,7 @@ const { redisMock, redisStore, ttls, getRedisMock } = vi.hoisted(() => {
 
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, passkeyRemovalResourceDigest, stepUpGrantTtlSeconds, type StepUpOperation } from './mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, readStepUpGrant, rollbackResourceDigest, maintenanceResourceDigest, passkeyRemovalResourceDigest, scriptLanePolicyResourceDigest, stepUpGrantTtlSeconds, type StepUpOperation } from './mfaStepUpGrant';
 
 const bind = (operation: StepUpOperation) => ({
   userId: 'user-1',
@@ -80,6 +80,17 @@ describe('maintenanceResourceDigest', () => {
 
   it('emits the sha256: prefixed shape the grant store compares literally', () => {
     expect(maintenanceResourceDigest(base)).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+});
+
+describe('scriptLanePolicyResourceDigest (#5612 W04)', () => {
+  it('binds the org AND the requested value AND the reset flag', () => {
+    const a = scriptLanePolicyResourceDigest({ orgId: 'org-1', unattendedEnabled: true });
+    expect(a).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(a).toBe(scriptLanePolicyResourceDigest({ orgId: 'org-1', unattendedEnabled: true, reset: false }));
+    expect(a).not.toBe(scriptLanePolicyResourceDigest({ orgId: 'org-1', unattendedEnabled: false }));
+    expect(a).not.toBe(scriptLanePolicyResourceDigest({ orgId: 'org-2', unattendedEnabled: true }));
+    expect(a).not.toBe(scriptLanePolicyResourceDigest({ orgId: 'org-1', unattendedEnabled: true, reset: true }));
   });
 });
 

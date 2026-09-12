@@ -215,6 +215,11 @@ vi.mock('../../db/schema/actionIntents', () => ({
 // W04 (#5612): the script lane's evaluator is a sibling decision path this
 // suite does not exercise; mocked wholesale so its transitive imports (agent
 // policy resolver, maintenance gate) never reach the partial schema mocks here.
+// W04 (#5612): the post-commit `ai.script.unattended_run` audit write. Mocked
+// so auditService's whole-schema import never reaches the partial schema
+// mocks in this file; the write itself is asserted in
+// intentService.scriptReviewer.test.ts.
+vi.mock('../auditService', () => ({ createAuditLogAsync: vi.fn(async () => {}) }));
 vi.mock('./scriptReviewerAutonomy', () => ({
   evaluateScriptReviewerAutonomy: vi.fn(async () => ({ granted: false, reason: 'lane_disabled' })),
   revalidateScriptReviewerEvidence: vi.fn(async () => ({ ok: false, reason: 'lane_disabled' })),

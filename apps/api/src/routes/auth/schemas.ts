@@ -159,6 +159,7 @@ const STEP_UP_OPERATIONS = [
   'register_approver_device',
   'agent_rollback',
   'device_maintenance',
+  'ai_script_lane_grant',
 ] as const satisfies readonly Exclude<
   StepUpOperation,
   'enroll_first_factor' | 'approval_decide'
@@ -186,7 +187,14 @@ export const maintenanceStepUpResource = z.object({
 // operation" is RESOURCE_BOUND_OPERATIONS in routes/auth/mfa.ts, which
 // re-parses under the operation's own schema — a union member alone would
 // happily accept a rollback-shaped body under operation:'device_maintenance'.
-const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource]);
+// AI script authoring W04 (#5612): the unattended-lane grant / reset binding.
+// One org, one value — mirrors scriptLanePolicyResourceDigest exactly.
+export const scriptLaneStepUpResource = z.object({
+  orgId: z.string().uuid(),
+  unattendedEnabled: z.boolean(),
+  reset: z.boolean().optional(),
+});
+const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource, scriptLaneStepUpResource]);
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
   z.object({
     method: z.literal('totp'),

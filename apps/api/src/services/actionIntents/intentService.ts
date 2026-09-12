@@ -7,6 +7,7 @@ import {
   type ActionIntentTaskContext,
   type AiAgentPolicySnapshot,
   type AssuranceLevel,
+  type ScriptReviewerEvidence,
 } from '@breeze/shared';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type Database, type DbAccessContext } from '../../db';
 import { createNotification } from '../userNotifications';
@@ -61,6 +62,7 @@ import {
   IntentScopeArgumentMismatchError,
 } from './intentTargetScope';
 import { evaluateTicketAutonomy } from './ticketAutonomy';
+import { createAuditLogAsync } from '../auditService';
 import { evaluateScriptReviewerAutonomy, type ScriptReviewerDecision } from './scriptReviewerAutonomy';
 import { aiOperatorOperations, aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
 import {
@@ -2177,6 +2179,33 @@ export async function createActionIntent(
             creation.fanOutUserIds[0] === requesterId,
           ...agentAuditDetails,
         },
+    });
+  }
+
+  // AI script authoring W04 (#5612), spec §4.6: `ai.script.unattended_run`
+  // at approval. After the creation transaction committed (audit writes run
+  // outside the caller's transaction, auditService.ts) — fire-and-forget with
+  // createAuditLogAsync's in-process retry queue: the intent already
+  // committed, and a transient audit fault must not undo an approved run.
+  if (creation.isNew && creation.intent.decidedVia === 'script_reviewer') {
+    const evidence = creation.intent.scriptReviewerEvidence as ScriptReviewerEvidence | null;
+    void createAuditLogAsync({
+      orgId,
+      actorType: agentRun ? 'ai_agent' : 'system',
+      actorId: agentRun?.agentId ?? requesterId ?? 'ai-script-lane',
+      action: 'ai.script.unattended_run',
+      resourceType: 'action_intent',
+      resourceId: creation.intent.id,
+      details: {
+        proposalId: evidence?.proposalId ?? null,
+        reviewId: evidence?.reviewId ?? null,
+        touchClasses: evidence?.touchClasses ?? null,
+        policySnapshot: evidence?.policySnapshot ?? null,
+        checkpointRequired: evidence?.checkpointRequired ?? null,
+        origin: agentRun ? 'agent' : 'chat',
+      },
+      result: 'success',
+      initiatedBy: 'ai',
     });
   }
 
