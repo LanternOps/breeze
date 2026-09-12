@@ -442,10 +442,15 @@ scriptRoutes.get(
     const scriptList = await db
       .select({
         ...getTableColumns(scripts),
+        // The outer columns are spelled with the table name on purpose:
+        // inside a raw fragment Drizzle renders `${scripts.id}` as a bare
+        // "id", which the correlated subquery resolves against `sv` (its own
+        // id / version) — the EXISTS then compares a row to itself and is
+        // false for every script. Caught by the e2e badge assertion.
         reviewedAtHead: sql<boolean>`EXISTS (
           SELECT 1 FROM script_versions sv
-          WHERE sv.script_id = ${scripts.id}
-            AND sv.version = ${scripts.version}
+          WHERE sv.script_id = ${sql.identifier('scripts')}.${sql.identifier('id')}
+            AND sv.version = ${sql.identifier('scripts')}.${sql.identifier('version')}
             AND sv.review_id IS NOT NULL
         )`,
       })

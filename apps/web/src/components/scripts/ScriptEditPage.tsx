@@ -231,7 +231,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-testid="script-edit-page">
       <Breadcrumbs items={[
         { label: t('scriptEditPage.breadcrumb.scripts'), href: '/scripts' },
         { label: isNew ? t('scriptEditPage.breadcrumb.new') : (script?.name || t('scriptEditPage.breadcrumb.edit')) }

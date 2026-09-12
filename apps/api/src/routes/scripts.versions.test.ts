@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { scriptRoutes } from './scripts';
 
 // Valid UUID constants
@@ -230,6 +232,33 @@ describe('GET /scripts — origin and reviewedAtHead projection', () => {
     vi.clearAllMocks();
     app = new Hono();
     app.route('/scripts', scriptRoutes);
+  });
+
+  it('correlates the reviewedAtHead EXISTS on the OUTER scripts columns, not the subquery alias', async () => {
+    // Regression: `${scripts.id}` inside a raw fragment renders as a bare "id",
+    // which the correlated subquery resolves against `sv` — the EXISTS then
+    // compares a version row to itself and every script reads "Edited since
+    // review". The fix spells the outer columns as "scripts"."id".
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 0 }]) }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue([]) }),
+            }),
+          }),
+        }),
+      } as any);
+
+    await app.request('/scripts?limit=10&page=1', { method: 'GET', headers: { Authorization: 'Bearer valid-token' } });
+
+    const projection = vi.mocked(db.select).mock.calls[1]![0] as { reviewedAtHead: SQL };
+    const rendered = new PgDialect().sqlToQuery(projection.reviewedAtHead).sql.replace(/\s+/g, ' ');
+    expect(rendered).toContain('sv.script_id = "scripts"."id"');
+    expect(rendered).toContain('sv.version = "scripts"."version"');
   });
 
   it('passes through origin and reviewedAtHead when the query already projects them', async () => {

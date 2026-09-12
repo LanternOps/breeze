@@ -657,10 +657,15 @@ export default function ApprovalsInbox() {
       // the existing single-card approve test asserts the exact 2-arg call
       // (`'approval-1', 'approve'`), so an unconditional `undefined, undefined`
       // here would break it despite being semantically a no-op.
+      //
+      // The script-proposal card path (`opts` present) also passes the row's
+      // approvalScope: a SUPERVISED proposal is the requester's own plain-click
+      // decision (#5600), and without the scope decideIntentApproval falls back
+      // to the four-eyes passkey ceremony and stops on "register a device".
       const outcome =
         decision === 'approve'
-          ? opts?.acknowledgedPatterns
-            ? await decideIntentApproval(approval.id, 'approve', undefined, undefined, opts)
+          ? opts
+            ? await decideIntentApproval(approval.id, 'approve', undefined, approval.approvalScope, opts)
             : await decideIntentApproval(approval.id, 'approve')
           : await decideIntentApproval(approval.id, 'deny', reason?.trim() || undefined);
       if (outcome === 'needs_device') {
