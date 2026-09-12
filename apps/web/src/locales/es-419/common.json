@@ -85,6 +85,11 @@
     "sectionServiceDesk": "Mesa de servicio",
     "serviceManagement": "Gestión de servicios"
   },
+  "monitoringTabs": {
+    "ariaLabel": "Secciones de monitoreo",
+    "network": "Red",
+    "delivery": "Entrega"
+  },
   "documentTitles": {
     "dashboard": "Panel",
     "profileSettings": "Configuración de perfil"
