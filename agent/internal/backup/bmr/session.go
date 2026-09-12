@@ -168,11 +168,17 @@ func ExchangeRecoveryCode(ctx context.Context, serverURL, code string) (string, 
 	if body.Token == "" || len(body.Bootstrap) == 0 {
 		return "", nil, fmt.Errorf("bmr: exchange response missing token or bootstrap")
 	}
-	var bootstrap BootstrapResponse
-	if err := json.Unmarshal(body.Bootstrap, &bootstrap); err != nil {
+	// The server returns the same authenticate ENVELOPE here as
+	// /bmr/recover/authenticate does (flat legacy fields + a nested versioned
+	// `bootstrap` carrying download/recovery). Decode it through the shared
+	// envelope-aware decoder; a bare Unmarshal into BootstrapResponse read
+	// only the flat outer fields, left Download/Recovery nil, and the console
+	// failed AFTER the one-time code had been consumed (KIT proof, #5493).
+	bootstrap, err := decodeBootstrapResponse(body.Bootstrap)
+	if err != nil {
 		return "", nil, fmt.Errorf("bmr: decode exchange bootstrap: %w", err)
 	}
-	return body.Token, &bootstrap, nil
+	return body.Token, bootstrap, nil
 }
 
 func authenticateRecoverySession(serverURL, token string) (*BootstrapResponse, error) {
