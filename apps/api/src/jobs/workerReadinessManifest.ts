@@ -181,6 +181,12 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('accountingSyncWorker'),
   consumers('aiAgentImpactRollup', ['aiAgentImpactRollupWorker']),
   consumers('aiAgentGraduation'),
+  // W02 (#5612): plain-required (`redis`) — scriptReviewWorker constructs
+  // exactly one Worker unconditionally (it has no feature-flag gate of its
+  // own; BREEZE_AI_SCRIPT_AUTHORING_ENABLED is checked upstream, before any
+  // proposal is ever enqueued) and attaches it under its own registry-key
+  // name.
+  consumers('scriptReviewWorker'),
   // SEC-142/143 (review B3). Plain-required (`redis`): read, not inferred —
   // aiBudgetReservationSweep reads no feature flag anywhere in the module and
   // constructs exactly one Worker unconditionally, attaching it under its own
