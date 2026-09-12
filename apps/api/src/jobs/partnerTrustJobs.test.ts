@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   update, select, runOutside, withSystem, classify, tryAutoPromote,
-  evaluateHardDenies, setTrustState, partnerForDevice, sendEvidenceCard,
+  restrictOnHardDeny, partnerForDevice, ipClassifyProvider,
 } = vi.hoisted(() => ({
   update: vi.fn(),
   select: vi.fn(),
@@ -10,10 +10,9 @@ const {
   withSystem: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   classify: vi.fn(),
   tryAutoPromote: vi.fn(),
-  evaluateHardDenies: vi.fn(),
-  setTrustState: vi.fn(),
+  restrictOnHardDeny: vi.fn(),
   partnerForDevice: vi.fn(),
-  sendEvidenceCard: vi.fn(),
+  ipClassifyProvider: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -22,22 +21,53 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: withSystem,
 }));
 vi.mock('../db/schema', () => ({
-  partners: { id: 'partners.id', trustState: 'partners.trustState' },
+  partners: {
+    id: 'partners.id',
+    trustState: 'partners.trustState',
+    signupIp: 'partners.signupIp',
+    signupIpClass: 'partners.signupIpClass',
+    signupIpClassifiedAt: 'partners.signupIpClassifiedAt',
+  },
   devices: { id: 'devices.id' },
 }));
-vi.mock('../services/ipClassify', () => ({
-  classifyIp: classify,
+vi.mock('../services/ipClassify', () => ({ classifyIp: classify }));
+vi.mock('../config/env', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config/env')>()),
+  ipClassifyProvider,
 }));
-vi.mock('../services/partnerTrustPromotion', () => ({ tryAutoPromote, evaluateHardDenies }));
-vi.mock('../services/partnerTrust', () => ({ setTrustState }));
+vi.mock('../services/partnerTrustPromotion', () => ({ tryAutoPromote, restrictOnHardDeny }));
 vi.mock('../services/partnerTrust.repo', () => ({ partnerForDevice }));
-vi.mock('../services/partnerTrustEvidenceCard', () => ({ sendEvidenceCard }));
 
 import { processPartnerTrustJob } from './partnerTrustJobs';
+
+type ProbationRow = {
+  id: string;
+  signupIp: string | null;
+  signupIpClass: string;
+  signupIpClassifiedAt: Date | null;
+};
+
+const probationRow = (overrides: Partial<ProbationRow> = {}): ProbationRow => ({
+  id: 'partner-1',
+  signupIp: '198.51.100.7',
+  signupIpClass: 'unknown',
+  signupIpClassifiedAt: null,
+  ...overrides,
+});
 
 describe('processPartnerTrustJob', () => {
   const set = vi.fn();
   const where = vi.fn(async () => undefined);
+
+  const withBatch = (...batches: ProbationRow[][]) => {
+    const limit = vi.fn();
+    for (const batch of batches) limit.mockResolvedValueOnce(batch);
+    limit.mockResolvedValue([]);
+    select.mockReturnValue({
+      from: () => ({ where: () => ({ orderBy: () => ({ limit }) }) }),
+    });
+    return limit;
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -45,33 +75,149 @@ describe('processPartnerTrustJob', () => {
     process.env.PARTNER_TRUST_MODE = 'shadow';
     classify.mockResolvedValue({ ipClass: 'hosting', asn: 64500, provider: 'ipinfo' });
     tryAutoPromote.mockResolvedValue(false);
-    evaluateHardDenies.mockResolvedValue({ restrict: false });
-    setTrustState.mockResolvedValue(true);
+    restrictOnHardDeny.mockResolvedValue(false);
     partnerForDevice.mockResolvedValue('partner-for-device');
-    sendEvidenceCard.mockResolvedValue(undefined);
+    ipClassifyProvider.mockReturnValue('none');
     set.mockReturnValue({ where });
     update.mockReturnValue({ set });
   });
 
   it('iterates probation partners in batches and attempts promotion for each', async () => {
-    const first = Array.from({ length: 200 }, (_, i) => ({ id: `partner-${String(i).padStart(3, '0')}` }));
-    const second = [{ id: 'partner-200' }];
-    const limit = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second);
-    const orderBy = vi.fn(() => ({ limit }));
-    const selectWhere = vi.fn(() => ({ orderBy }));
-    const from = vi.fn(() => ({ where: selectWhere }));
-    select.mockReturnValue({ from });
+    const first = Array.from({ length: 200 }, (_, i) => probationRow({ id: `partner-${String(i).padStart(3, '0')}` }));
+    const second = [probationRow({ id: 'partner-200' })];
+    const limit = withBatch(first, second);
     tryAutoPromote.mockImplementation(async (id: string) => id === 'partner-200');
 
     await expect(processPartnerTrustJob({ name: 'partner-trust-promote', data: {} }))
       .resolves.toEqual({ processed: 201, promoted: 1 });
 
     expect(tryAutoPromote).toHaveBeenCalledTimes(201);
-    expect(evaluateHardDenies).toHaveBeenCalledTimes(201);
     expect(tryAutoPromote).toHaveBeenLastCalledWith('partner-200');
     expect(limit).toHaveBeenCalledTimes(2);
-    expect(runOutside).toHaveBeenCalledTimes(2);
-    expect(withSystem).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips a partner whose promotion evaluation throws, without stopping the batch', async () => {
+    withBatch([probationRow({ id: 'partner-1' }), probationRow({ id: 'partner-2' })]);
+    tryAutoPromote.mockImplementation(async (id: string) => {
+      if (id === 'partner-1') throw new Error('db exploded');
+      return true;
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(processPartnerTrustJob({ name: 'partner-trust-promote', data: {} }))
+      .resolves.toEqual({ processed: 2, promoted: 1 });
+
+    expect(tryAutoPromote).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('partner-1'), expect.any(Error));
+    warnSpy.mockRestore();
+  });
+
+  it('never evaluates hard denies twice — tryAutoPromote owns that call now', async () => {
+    withBatch([probationRow()]);
+
+    await processPartnerTrustJob({ name: 'partner-trust-promote', data: {} });
+
+    expect(restrictOnHardDeny).not.toHaveBeenCalled();
+  });
+
+  describe('signup-IP backfill', () => {
+    it('classifies and persists an unclassified signup IP before promotion is attempted', async () => {
+      ipClassifyProvider.mockReturnValue('ipinfo');
+      withBatch([probationRow({ id: 'partner-1', signupIp: '198.51.100.7' })]);
+      const order: string[] = [];
+      classify.mockImplementation(async () => {
+        order.push('classify');
+        return { ipClass: 'residential', asn: 64500, provider: 'ipinfo' };
+      });
+      tryAutoPromote.mockImplementation(async () => {
+        order.push('promote');
+        return false;
+      });
+
+      await processPartnerTrustJob({ name: 'partner-trust-promote', data: {} });
+
+      expect(classify).toHaveBeenCalledWith('198.51.100.7');
+      expect(set).toHaveBeenCalledWith({
+        signupIpClass: 'residential',
+        signupIpAsn: 64500,
+        signupIpClassifiedAt: expect.any(Date),
+      });
+      expect(order).toEqual(['classify', 'promote']);
+    });
+
+    it('persists the unknown result so a provider outage does not retry every run', async () => {
+      ipClassifyProvider.mockReturnValue('ipinfo');
+      withBatch([probationRow()]);
+      classify.mockResolvedValue({ ipClass: 'unknown', asn: null, provider: 'ipinfo' });
+
+      await processPartnerTrustJob({ name: 'partner-trust-promote', data: {} });
+
+      expect(set).toHaveBeenCalledWith({
+        signupIpClass: 'unknown',
+        signupIpAsn: null,
+        signupIpClassifiedAt: expect.any(Date),
+      });
+    });
+
+    it('does not classify when no provider is configured', async () => {
+      ipClassifyProvider.mockReturnValue('none');
+      withBatch([probationRow()]);
+
+      await processPartnerTrustJob({ name: 'partner-trust-promote', data: {} });
+
+      expect(classify).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('does not classify a partner with no signup IP recorded', async () => {
+      ipClassifyProvider.mockReturnValue('ipinfo');
+      withBatch([probationRow({ signupIp: null })]);
+
+      await processPartnerTrustJob({ name: 'partner-trust-promote', data: {} });
+
+      expect(classify).not.toHaveBeenCalled();
+      expect(tryAutoPromote).toHaveBeenCalledWith('partner-1');
+    });
+
+    it('does not re-classify a partner that already has a class', async () => {
+      ipClassifyProvider.mockReturnValue('ipinfo');
+      withBatch([probationRow({ signupIpClass: 'residential' })]);
+
+      await processPartnerTrustJob({ name: 'partner-trust-promote', data: {} });
+
+      expect(classify).not.toHaveBeenCalled();
+    });
+
+    it('skips a retry attempted within the last hour', async () => {
+      ipClassifyProvider.mockReturnValue('ipinfo');
+      withBatch([probationRow({ signupIpClassifiedAt: new Date(Date.now() - 30 * 60 * 1_000) })]);
+
+      await processPartnerTrustJob({ name: 'partner-trust-promote', data: {} });
+
+      expect(classify).not.toHaveBeenCalled();
+    });
+
+    it('retries once the previous attempt is older than an hour', async () => {
+      ipClassifyProvider.mockReturnValue('ipinfo');
+      withBatch([probationRow({ signupIpClassifiedAt: new Date(Date.now() - 2 * 60 * 60 * 1_000) })]);
+
+      await processPartnerTrustJob({ name: 'partner-trust-promote', data: {} });
+
+      expect(classify).toHaveBeenCalledWith('198.51.100.7');
+    });
+
+    it('still attempts promotion when the backfill lookup throws', async () => {
+      ipClassifyProvider.mockReturnValue('ipinfo');
+      withBatch([probationRow()]);
+      classify.mockRejectedValue(new Error('provider exploded'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      await expect(processPartnerTrustJob({ name: 'partner-trust-promote', data: {} }))
+        .resolves.toEqual({ processed: 1, promoted: 0 });
+
+      expect(tryAutoPromote).toHaveBeenCalledWith('partner-1');
+      warnSpy.mockRestore();
+    });
   });
 
   it('writes partner signup classification in a system DB context', async () => {
@@ -84,7 +230,7 @@ describe('processPartnerTrustJob', () => {
     }));
     expect(runOutside).toHaveBeenCalledTimes(1);
     expect(withSystem).toHaveBeenCalledTimes(1);
-    expect(evaluateHardDenies).toHaveBeenCalledWith('partner-1');
+    expect(restrictOnHardDeny).toHaveBeenCalledWith('partner-1');
   });
 
   it('writes device enrollment classification', async () => {
@@ -96,98 +242,11 @@ describe('processPartnerTrustJob', () => {
       enrollmentIpClass: 'hosting', enrollmentIpAsn: 64500, enrollmentIpClassifiedAt: expect.any(Date),
     }));
     expect(partnerForDevice).toHaveBeenCalledWith('device-1');
-    expect(evaluateHardDenies).toHaveBeenCalledWith('partner-for-device');
-  });
-
-  it('restricts a probation partner on hard deny and does not attempt promotion', async () => {
-    const limit = vi.fn().mockResolvedValue([{ id: 'partner-1' }]);
-    select.mockReturnValue({
-      from: () => ({ where: () => ({ orderBy: () => ({ limit }) }) }),
-    });
-    evaluateHardDenies.mockResolvedValue({
-      restrict: true,
-      reason: 'auto:tor_signup',
-      evidence: { matchedAxes: ['signup_ip_class'] },
-    });
-
-    await expect(processPartnerTrustJob({ name: 'partner-trust-promote', data: {} }))
-      .resolves.toEqual({ processed: 1, promoted: 0 });
-
-    expect(setTrustState).toHaveBeenCalledWith(
-      'partner-1', 'restricted', 'auto:tor_signup', null,
-      { matchedAxes: ['signup_ip_class'] },
-      { expectedFrom: 'probation' },
-    );
-    expect(tryAutoPromote).not.toHaveBeenCalled();
-    expect(sendEvidenceCard).toHaveBeenCalledWith('partner-1', 'restricted');
-  });
-
-  it('does not send the evidence card when the probation CAS loses to a trusted state', async () => {
-    evaluateHardDenies.mockResolvedValue({
-      restrict: true,
-      reason: 'auto:tor_signup',
-      evidence: {},
-    });
-    setTrustState.mockResolvedValue(false);
-
-    await processPartnerTrustJob({
-      name: 'ip-classify',
-      data: { kind: 'partner', partnerId: 'partner-1', ip: '198.51.100.1' },
-    });
-
-    expect(setTrustState).toHaveBeenCalledWith(
-      'partner-1', 'restricted', 'auto:tor_signup', null, {},
-      { expectedFrom: 'probation' },
-    );
-    expect(sendEvidenceCard).not.toHaveBeenCalled();
-  });
-
-  it('does not fail the job when sending the restricted evidence card throws (best-effort)', async () => {
-    const limit = vi.fn().mockResolvedValue([{ id: 'partner-1' }]);
-    select.mockReturnValue({
-      from: () => ({ where: () => ({ orderBy: () => ({ limit }) }) }),
-    });
-    evaluateHardDenies.mockResolvedValue({
-      restrict: true,
-      reason: 'auto:tor_signup',
-      evidence: { matchedAxes: ['signup_ip_class'] },
-    });
-    sendEvidenceCard.mockRejectedValue(new Error('smtp down'));
-
-    await expect(processPartnerTrustJob({ name: 'partner-trust-promote', data: {} }))
-      .resolves.toEqual({ processed: 1, promoted: 0 });
-
-    expect(sendEvidenceCard).toHaveBeenCalledWith('partner-1', 'restricted');
-  });
-
-  it('skips a partner whose hard-deny evaluation throws, without stopping the batch', async () => {
-    const limit = vi.fn().mockResolvedValue([{ id: 'partner-1' }, { id: 'partner-2' }]);
-    select.mockReturnValue({ from: () => ({ where: () => ({ orderBy: () => ({ limit }) }) }) });
-    evaluateHardDenies.mockImplementation(async (id: string) => {
-      if (id === 'partner-1') throw new Error('db exploded');
-      return { restrict: false };
-    });
-    tryAutoPromote.mockImplementation(async (id: string) => id === 'partner-2');
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-
-    await expect(processPartnerTrustJob({ name: 'partner-trust-promote', data: {} }))
-      .resolves.toEqual({ processed: 2, promoted: 1 });
-
-    // The throwing partner is skipped entirely — not promoted just because
-    // its restrict check couldn't be confirmed — while the next partner in
-    // the batch still gets processed normally.
-    expect(tryAutoPromote).toHaveBeenCalledTimes(1);
-    expect(tryAutoPromote).toHaveBeenCalledWith('partner-2');
-    expect(tryAutoPromote).not.toHaveBeenCalledWith('partner-1');
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('partner-1'),
-      expect.any(Error),
-    );
-    warnSpy.mockRestore();
+    expect(restrictOnHardDeny).toHaveBeenCalledWith('partner-for-device');
   });
 
   it('does not throw out of the ip-classify job when hard-deny evaluation fails', async () => {
-    evaluateHardDenies.mockRejectedValue(new Error('db exploded'));
+    restrictOnHardDeny.mockRejectedValue(new Error('db exploded'));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     await expect(processPartnerTrustJob({
@@ -195,10 +254,7 @@ describe('processPartnerTrustJob', () => {
       data: { kind: 'partner', partnerId: 'partner-1', ip: '198.51.100.1' },
     })).resolves.toEqual({ ipClass: 'hosting', asn: 64500, provider: 'ipinfo' });
 
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('partner-1'),
-      expect.any(Error),
-    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('partner-1'), expect.any(Error));
     warnSpy.mockRestore();
   });
 
