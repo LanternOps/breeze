@@ -15,7 +15,24 @@ const state = vi.hoisted(() => ({
   updateSets: [] as Array<Record<string, unknown>>,
   redisAvailable: false,
   queueAdds: [] as Array<{ name: string; data: unknown }>,
+  updateScopes: [] as Array<string | undefined>,
 }));
+
+/**
+ * Faithful stand-in for the real DB-context helpers (#5566): the system helper
+ * EARLY-RETURNS into whatever context is already open instead of opening a
+ * fresh one, and `setImmediate` propagates the AsyncLocalStorage store out of
+ * the request handler. Modelling both with a real AsyncLocalStorage is what
+ * makes the difference between "joined the request transaction" and "opened a
+ * genuine system context" observable in a unit test.
+ */
+const dbCtx = await vi.hoisted(async () => {
+  const { AsyncLocalStorage } = await import('node:async_hooks');
+  return {
+    storage: new AsyncLocalStorage<string>(),
+    calls: [] as string[],
+  };
+});
 
 vi.mock('node:fs/promises', () => ({
   mkdir: vi.fn(),
@@ -69,7 +86,14 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../db', () => ({
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
+    dbCtx.calls.push('withSystemDbAccessContext');
+    return dbCtx.storage.getStore() ? fn() : dbCtx.storage.run('system', fn);
+  }),
+  runOutsideDbContext: vi.fn(<T>(fn: () => T): T => {
+    dbCtx.calls.push('runOutsideDbContext');
+    return dbCtx.storage.exit(fn);
+  }),
   db: {
     select: vi.fn(() => ({
       from: vi.fn((table: unknown) => table === 'reports.id' ? undefined : undefined),
@@ -163,6 +187,13 @@ function installSelects() {
     } as never);
 }
 
+/** Drain microtask/immediate turns until the deferred inline work has settled. */
+async function flushUntil(done: () => boolean, ticks = 50): Promise<void> {
+  for (let i = 0; i < ticks && !done(); i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
 describe('patch compliance report worker authority', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -181,9 +212,12 @@ describe('patch compliance report worker authority', () => {
     state.updateSets = [];
     state.redisAvailable = false;
     state.queueAdds = [];
+    state.updateScopes = [];
+    dbCtx.calls.length = 0;
     vi.mocked(db.update).mockImplementation(() => ({
       set: vi.fn((values: Record<string, unknown>) => {
         state.updateSets.push(values);
+        state.updateScopes.push(dbCtx.storage.getStore());
         return {
           where: vi.fn(() => ({
             returning: vi.fn(async () => state.claimRows),
@@ -275,6 +309,22 @@ describe('patch compliance report worker authority', () => {
 
     expect(db.select).toHaveBeenCalledTimes(1);
     expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('runs the Redis-down inline fallback in a fresh system context, not the request transaction', async () => {
+    state.redisAvailable = false;
+    installSelects();
+
+    await expect(
+      dbCtx.storage.run('request-org-scoped', () => enqueuePatchComplianceReport(REPORT_ID)),
+    ).resolves.toEqual({ enqueued: false });
+
+    await flushUntil(() => state.updateSets.some((v) => v.status === 'completed'));
+
+    expect(dbCtx.calls).toEqual(['runOutsideDbContext', 'withSystemDbAccessContext']);
+    expect(state.updateScopes.length).toBeGreaterThan(0);
+    expect(state.updateScopes).not.toContain('request-org-scoped');
+    expect([...new Set(state.updateScopes)]).toEqual(['system']);
   });
 
   it('places only the report locator on Redis rather than serialized authority', async () => {
