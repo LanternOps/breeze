@@ -150,6 +150,22 @@ export interface AiTicketDraft {
  * only when the assistant chose nothing and the script row could not be read,
  * in which case the card falls back to "the script's saved run context".
  */
+/**
+ * W03 (#5612): the trimmed proposal block that rides the `approval_required`
+ * SSE frame so a client with no API access to `GET /ai/script-proposals/:id`
+ * (the helper) can still render a truthful card. Capped server-side
+ * (content ≤ 16 KiB, findings ≤ 20).
+ */
+export interface AiApprovalScriptProposalSummary {
+  proposalId: string;
+  goal: string;
+  summary: string;
+  riskTier: string;
+  findings: string[];
+  content: string;
+  strictHits: string[];
+}
+
 export interface AiScriptRunContext {
   effectiveRunAs: 'system' | 'user' | 'elevated' | null;
   scriptDefaultRunAs: 'system' | 'user' | 'elevated' | null;
@@ -188,7 +204,13 @@ export type AiStreamEvent =
    * assistant choose SYSTEM for a user-context script is a privilege
    * decision, and the human deciding it has to be told.
    */
-  | { type: 'approval_required'; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null }
+  | { type: 'approval_required'; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary }
+  /**
+   * W03 (#5612): a proposal outcome delivered into the author's chat session —
+   * request-changes findings + note, or a verification result. The durable
+   * copy is the `ai_messages` row; this is the best-effort live nudge.
+   */
+  | { type: 'script_proposal_update'; proposalId: string; outcome: 'changes_requested' | 'verified' | 'verification_failed' | 'verification_unknown'; message: string }
   | { type: 'plan_approval_required'; planId: string; steps: ActionPlanStep[] }
   | { type: 'plan_step_start'; planId: string; stepIndex: number; toolName: string }
   | { type: 'plan_step_complete'; planId: string; stepIndex: number; toolName: string; isError: boolean }
