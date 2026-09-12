@@ -1,7 +1,7 @@
 import Stripe from 'stripe';
 import { and, eq, isNotNull, isNull, lt, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { stripeConnectAccounts } from '../db/schema/stripePayments';
+import { invoiceStripePayments, stripeConnectAccounts } from '../db/schema/stripePayments';
 import { encryptSecret, decryptSecret } from './secretCrypto';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 
@@ -14,6 +14,7 @@ export type PartnerStripeErrorCode =
   | 'STRIPE_KEY_UNREADABLE' // stored ciphertext can't be decrypted (corrupt / KEK rotated away) — PERMANENT
   | 'STRIPE_CONNECTION_CHANGED' // the stored connection was replaced/disconnected mid-operation —
                                  // a purely LOCAL race, nothing to do with Stripe's availability
+  | 'STRIPE_ACCOUNT_CHANGE_BLOCKED' // historical payments still require the old account's event stream
   | 'STRIPE_ACCOUNT_UNKNOWN' // Stripe answered, but not with the account: restricted key without
                              // accounts.retrieve, an untyped/unknown error. The KEY MAY BE FINE
                              // (checkout can still work) — never tell the partner to reconnect.
@@ -26,6 +27,7 @@ const STATUS_FOR_CODE: Record<PartnerStripeErrorCode, 400 | 409 | 500 | 503> = {
   INVALID_STRIPE_KEY: 400,
   STRIPE_KEY_UNREADABLE: 500,
   STRIPE_CONNECTION_CHANGED: 409,
+  STRIPE_ACCOUNT_CHANGE_BLOCKED: 409,
   STRIPE_ACCOUNT_UNKNOWN: 503,
   STRIPE_UNAVAILABLE: 503,
 };
@@ -76,6 +78,8 @@ export type PartnerStripeStatus =
       defaultCurrency: string | null;
       accountCountry: string | null;
       accountRefreshedAt: Date | null;
+      financialEventLastPolledAt: Date | null;
+      financialEventLastError: string | null;
     };
 
 export const STRIPE_ACCOUNT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -112,9 +116,9 @@ export async function savePartnerStripeKey(input: {
 
   // Validate by retrieving the account the key belongs to. Any rejection (bad key,
   // revoked, insufficient scope) → INVALID_STRIPE_KEY rather than a 500.
+  const probe = new Stripe(apiKey, { apiVersion: API_VERSION });
   let account: Stripe.Account;
   try {
-    const probe = new Stripe(apiKey, { apiVersion: API_VERSION });
     // No-arg accounts.retrieve() hits GET /v1/account — the account the KEY belongs
     // to (the partner's own account). The SDK's typed overload requires an id (for
     // Connect), so cast to the documented no-arg form.
@@ -141,6 +145,29 @@ export async function savePartnerStripeKey(input: {
         );
   }
 
+  // Refund/dispute integrity depends on the direct-account event poller. A
+  // restricted key that can create Checkout sessions but cannot read Events
+  // would collect money without a reversal observation channel.
+  try {
+    await runOutsideDbContext(() => probe.events.list({ limit: 1 }));
+  } catch (err) {
+    const type = (err as { type?: string })?.type;
+    const transient = isTransientStripeError(err);
+    console.error('[partnerStripe] event-read validation failed', {
+      partnerId: input.partnerId, type: type ?? 'unknown', transient,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    throw transient
+      ? new PartnerStripeError(
+          'Could not reach Stripe to verify Events access right now — please try again in a moment.',
+          'STRIPE_UNAVAILABLE',
+        )
+      : new PartnerStripeError(
+          'That Stripe key cannot read Events. Grant Events read access so refunds and disputes can be reconciled.',
+          'INVALID_STRIPE_KEY',
+        );
+  }
+
   const accountId = account.id;
   const defaultCurrency = account.default_currency ? account.default_currency.toUpperCase() : null;
   const accountCountry = account.country ?? null;
@@ -148,6 +175,7 @@ export async function savePartnerStripeKey(input: {
   const livemode = apiKey.startsWith('sk_live') || apiKey.startsWith('rk_live');
   const encrypted = encryptSecret(apiKey);
   const now = new Date();
+  const financialEventCursorCreated = Math.floor(now.getTime() / 1000) - (29 * 24 * 60 * 60);
 
   // stripe_connect_accounts_acct_uq is a GLOBAL unique index on
   // stripe_account_id (one Breeze partner per Stripe account, cross-partner),
@@ -186,8 +214,26 @@ export async function savePartnerStripeKey(input: {
 
   await runOutsideDbContext(async () => {
     try {
-      await withSystemDbAccessContext(() =>
-        db
+      await withSystemDbAccessContext(async () => {
+        const [current] = await db.select({
+          id: stripeConnectAccounts.id,
+          stripeAccountId: stripeConnectAccounts.stripeAccountId,
+        }).from(stripeConnectAccounts)
+          .where(eq(stripeConnectAccounts.partnerId, input.partnerId))
+          .limit(1).for('update');
+        if (current && current.stripeAccountId !== accountId) {
+          const [historicalPayment] = await db.select({ id: invoiceStripePayments.id })
+            .from(invoiceStripePayments)
+            .where(eq(invoiceStripePayments.stripeAccountId, current.stripeAccountId))
+            .limit(1);
+          if (historicalPayment) {
+            throw new PartnerStripeError(
+              'This key belongs to a different Stripe account. Existing online payments still require the currently connected account for refund and dispute reconciliation.',
+              'STRIPE_ACCOUNT_CHANGE_BLOCKED',
+            );
+          }
+        }
+        await db
           .insert(stripeConnectAccounts)
           .values({
             partnerId: input.partnerId,
@@ -198,6 +244,11 @@ export async function savePartnerStripeKey(input: {
             defaultCurrency,
             accountCountry,
             accountRefreshedAt: now,
+            financialEventCursorCreated,
+            financialEventPageAfter: null,
+            financialEventScanUpperCreated: null,
+            financialEventLastPolledAt: null,
+            financialEventLastError: null,
             status: 'connected',
             connectedBy: input.userId,
             connectedAt: now,
@@ -214,14 +265,19 @@ export async function savePartnerStripeKey(input: {
               defaultCurrency,
               accountCountry,
               accountRefreshedAt: now,
+              financialEventCursorCreated,
+              financialEventPageAfter: null,
+              financialEventScanUpperCreated: null,
+              financialEventLastPolledAt: null,
+              financialEventLastError: null,
               status: 'connected',
               connectedBy: input.userId,
               connectedAt: now,
               disconnectedAt: null,
               updatedAt: now,
             },
-          })
-      );
+          });
+      });
     } catch (err) {
       // Concurrent-writer backstop only: the system-context pre-check above
       // catches the deterministic case, so acct_uq (23505) can now fire solely
@@ -416,6 +472,8 @@ export type PartnerStripeAccountSnapshot =
       defaultCurrency: string | null;
       accountCountry: string | null;
       accountRefreshedAt: Date | null;
+      financialEventLastPolledAt: Date | null;
+      financialEventLastError: string | null;
       cacheState: StripeAccountCacheState;
       error: { code: PartnerStripeErrorCode; message: string } | null;
     };
@@ -448,7 +506,12 @@ export async function getPartnerStripeAccountSnapshot(partnerId: string): Promis
 
   try {
     const fresh = await refreshPartnerStripeAccount(partnerId);
-    return { connected: true, ...fresh, cacheState: 'fresh', error: null };
+    return {
+      connected: true, ...fresh,
+      financialEventLastPolledAt: status.financialEventLastPolledAt,
+      financialEventLastError: status.financialEventLastError,
+      cacheState: 'fresh', error: null,
+    };
   } catch (err) {
     if (!(err instanceof PartnerStripeError)) throw err;
     if (err.code === 'NO_STRIPE_KEY') return { connected: false, last4: status.last4 };
@@ -513,6 +576,8 @@ export async function getPartnerStripeStatus(partnerId: string): Promise<Partner
       defaultCurrency: row.defaultCurrency,
       accountCountry: row.accountCountry,
       accountRefreshedAt: row.accountRefreshedAt,
+      financialEventLastPolledAt: row.financialEventLastPolledAt,
+      financialEventLastError: row.financialEventLastError,
     };
   }
   return { connected: false, last4: row?.keyLast4 ?? null };

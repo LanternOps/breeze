@@ -36,7 +36,7 @@ vi.mock('../db/schema', () => ({
   },
   networkBaselines: { id: 'id', subnet: 'subnet' },
   sites: { id: 'id', orgId: 'org_id' },
-  devices: { id: 'id', orgId: 'org_id' },
+  devices: { id: 'id', orgId: 'org_id', siteId: 'site_id' },
   alerts: { id: 'id', deviceId: 'device_id' },
 }));
 
@@ -58,8 +58,12 @@ vi.mock('../middleware/auth', () => ({
     c.set('permissions', restrict ? {
       permissions: [{ resource: 'devices', action: 'read' }],
       partnerId: null, orgId: ORG_ID, roleId: 'role-1', scope: 'organization',
-      allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
+      allowedSiteIds: restrict === '__empty__' ? [] : restrict.split(','),
     } : undefined);
+    return next();
+  }),
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    if (c.req.header('x-deny-mfa')) return c.json({ error: 'MFA required' }, 403);
     return next();
   }),
 }));
@@ -160,6 +164,17 @@ describe('networkChange by-id/bulk site-axis scope (T9, #1051)', () => {
 
   // ---- POST /:id/link-device ----
   describe('POST /changes/:id/link-device', () => {
+    it('requires MFA before reading the event or target device', async () => {
+      const res = await app.request(`/changes/${EVENT_A}/link-device`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-deny-mfa': 'true' },
+        body: JSON.stringify({ deviceId: DEVICE_ID }),
+      });
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     it('404 and no write on an out-of-site event for a SITE_A-restricted caller', async () => {
       vi.mocked(db.select).mockReturnValueOnce(selectResolving([makeEvent({ id: EVENT_B, siteId: SITE_B })]) as any);
       const res = await app.request(`/changes/${EVENT_B}/link-device`, {
@@ -169,6 +184,98 @@ describe('networkChange by-id/bulk site-axis scope (T9, #1051)', () => {
       });
       expect(res.status).toBe(404);
       expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('404 and no write when the target device is outside the caller site ceiling', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResolving([makeEvent({ siteId: SITE_A })]) as any)
+        .mockReturnValueOnce(selectResolving([{ id: DEVICE_ID, orgId: ORG_ID, siteId: SITE_B }]) as any);
+
+      const res = await app.request(`/changes/${EVENT_A}/link-device`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-restrict-site': SITE_A },
+        body: JSON.stringify({ deviceId: DEVICE_ID }),
+      });
+
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('fails closed for a null-site target under a selected-site ceiling', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResolving([makeEvent({ siteId: SITE_A })]) as any)
+        .mockReturnValueOnce(selectResolving([{ id: DEVICE_ID, orgId: ORG_ID, siteId: null }]) as any);
+
+      const res = await app.request(`/changes/${EVENT_A}/link-device`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-restrict-site': SITE_A },
+        body: JSON.stringify({ deviceId: DEVICE_ID }),
+      });
+
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('lets an unrestricted caller link an event to a device in another site', async () => {
+      // Both site columns are NOT NULL and an unrestricted caller sees every
+      // site in the org, so a same-site rule would add no authorization and
+      // would strand a roaming asset. Only the site ceiling constrains links.
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResolving([makeEvent({ siteId: SITE_A })]) as any)
+        .mockReturnValueOnce(selectResolving([{ id: DEVICE_ID, orgId: ORG_ID, siteId: SITE_B }]) as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([makeEvent({ linkedDeviceId: DEVICE_ID })]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/changes/${EVENT_A}/link-device`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: DEVICE_ID }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('403 and no write when accessible event and device belong to different sites', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResolving([makeEvent({ siteId: SITE_A })]) as any)
+        .mockReturnValueOnce(selectResolving([{ id: DEVICE_ID, orgId: ORG_ID, siteId: SITE_B }]) as any);
+
+      const res = await app.request(`/changes/${EVENT_A}/link-device`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-restrict-site': `${SITE_A},${SITE_B}` },
+        body: JSON.stringify({ deviceId: DEVICE_ID }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('links when event and device are in the same allowed site', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResolving([makeEvent({ siteId: SITE_A })]) as any)
+        .mockReturnValueOnce(selectResolving([{ id: DEVICE_ID, orgId: ORG_ID, siteId: SITE_A }]) as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([makeEvent({ linkedDeviceId: DEVICE_ID })]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/changes/${EVENT_A}/link-device`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-restrict-site': SITE_A },
+        body: JSON.stringify({ deviceId: DEVICE_ID }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalledTimes(1);
     });
   });
 

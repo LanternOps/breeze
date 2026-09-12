@@ -176,6 +176,15 @@ export function siteScopeFromPermissions(
   };
 }
 
+/**
+ * An INTEGRITY digest over the normalized scope, not a MAC. It is unkeyed, so
+ * anyone able to write the row can also write a matching digest: it proves the
+ * seven execution-scope columns are internally consistent (no half-written or
+ * hand-edited envelope decodes), never that a particular principal authored
+ * them. Binding to a principal is done by the per-table
+ * `*_execution_scope_shape_chk` constraint (`execution_scope_user_id =
+ * requested_by`) plus the worker's re-assertion of live authority before use.
+ */
 export function siteScopeFingerprint(scope: SiteScopeV1): string {
   const normalized = normalizeScope(scope);
   let stableValue: Record<string, unknown>;

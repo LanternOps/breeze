@@ -34,6 +34,9 @@ const dbState = vi.hoisted(() => ({
   wherePredicates: [] as unknown[],
   liveUserRows: [] as unknown[],
   liveUserError: null as unknown,
+  // Every (table, on-condition) pair the live-user query joined. Bearer
+  // admission must resolve the Grant in THAT query, not a second round-trip.
+  liveUserJoins: [] as { table: unknown; on: unknown }[],
 }));
 
 vi.mock('../db', () => {
@@ -51,7 +54,11 @@ vi.mock('../db', () => {
       thenable.limit = limit;
       return thenable;
     });
-    const from = vi.fn(() => ({ where, limit }));
+    const leftJoin = vi.fn((table: unknown, on: unknown) => {
+      if (!collectPredicate) dbState.liveUserJoins.push({ table, on });
+      return { where, limit, leftJoin };
+    });
+    const from = vi.fn(() => ({ where, limit, leftJoin }));
     return { from };
   }
   return {
@@ -74,6 +81,14 @@ vi.mock('../oauth/revocationCache', () => ({
   isJtiRevoked: vi.fn().mockResolvedValue(false),
   isGrantRevoked: vi.fn().mockResolvedValue(false),
 }));
+
+vi.mock('../oauth/grantStatus', async () => {
+  // Keep the REAL predicate builder — the join-condition assertions below are
+  // only meaningful if the middleware composes the genuine active-Grant
+  // condition rather than a test double.
+  const actual = await vi.importActual<typeof import('../oauth/grantStatus')>('../oauth/grantStatus');
+  return { activeGrantCondition: actual.activeGrantCondition };
+});
 
 vi.mock('../services/tenantStatus', () => ({
   TenantInactiveError: class TenantInactiveError extends Error {},
@@ -103,6 +118,7 @@ vi.mock('jose', async () => {
 
 import { importJWK, jwtVerify, type JWK } from 'jose';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
+import { oauthGrants } from '../db/schema';
 import { isGrantRevoked, isJtiRevoked } from '../oauth/revocationCache';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { generateTestKeypair, signTestJwt, type TestKeypair } from '../oauth/testHelpers';
@@ -115,6 +131,34 @@ import {
 type TestContext = Context & {
   get: (key: string) => unknown;
 };
+
+/**
+ * Reduce a drizzle clause to the columns it names and the literal SQL it
+ * renders, so the join condition can be asserted structurally instead of by a
+ * string match that would also see bound values.
+ */
+function inspectClause(clause: unknown): { columns: string[]; sql: string } {
+  const columns: string[] = [];
+  const fragments: string[] = [];
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== 'object') return;
+    const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+    if (Array.isArray(chunks)) {
+      chunks.forEach(visit);
+      return;
+    }
+    const { name, table, value } = node as { name?: unknown; table?: unknown; value?: unknown };
+    if (typeof name === 'string' && table) {
+      columns.push(name);
+      return;
+    }
+    if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
+      fragments.push(...(value as string[]));
+    }
+  };
+  visit(clause);
+  return { columns, sql: fragments.join('').toLowerCase().replace(/\s+/g, ' ') };
+}
 
 const issuer = 'https://issuer.test';
 const audience = 'https://issuer.test/mcp/server';
@@ -140,7 +184,7 @@ function createContext(headers: Record<string, string | undefined> = {}): TestCo
 }
 
 async function mintToken(claims: Record<string, unknown>, opts: { issuer?: string; audience?: string; ttlSeconds?: number } = {}) {
-  return signTestJwt(keypair.privateJwk, keypair.kid, claims, {
+  return signTestJwt(keypair.privateJwk, keypair.kid, { grant_id: 'grant-test-default', ...claims }, {
     issuer: opts.issuer ?? issuer,
     audience: opts.audience ?? audience,
     ttlSeconds: opts.ttlSeconds,
@@ -194,7 +238,8 @@ describe('bearerTokenAuthMiddleware', () => {
     vi.clearAllMocks();
     dbState.rows = [];
     dbState.wherePredicates = [];
-    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 1 }];
+    dbState.liveUserJoins = [];
+    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 1, grantActive: true }];
     dbState.liveUserError = null;
     _resetJwksCacheForTests();
     envState.issuer = issuer;
@@ -303,7 +348,7 @@ describe('bearerTokenAuthMiddleware', () => {
   });
 
   it('authorizes a matching live auth epoch before consulting Redis', async () => {
-    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 6 }];
+    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 6, grantActive: true }];
     const token = await mintToken({
       sub: userId,
       partner_id: partnerId,
@@ -356,7 +401,7 @@ describe('bearerTokenAuthMiddleware', () => {
 
   it('accepts a claimless compatibility token before the deadline only after an active live lookup', async () => {
     envState.authEpochEnforceAfter = new Date('2099-01-01T00:00:00.000Z');
-    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 12 }];
+    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 12, grantActive: true }];
     const result = await assertLiveOAuthUser(
       { sub: userId },
       new Date('2098-12-31T23:59:59.999Z'),
@@ -367,13 +412,28 @@ describe('bearerTokenAuthMiddleware', () => {
       userId,
       authEpoch: 12,
       legacyClaim: true,
+      // No grant id was asked about, so the join answers nothing. `null` is
+      // "not asked" and must stay distinct from `false` ("asked, and dead").
+      grantActive: null,
     });
     expect(vi.mocked(db.select)).toHaveBeenCalled();
   });
 
+  it('reports grantActive from the joined row when a grant id is supplied', async () => {
+    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 3, grantActive: false }];
+    await expect(
+      assertLiveOAuthUser({ sub: userId, auth_epoch: 3 }, new Date(), { grantId: 'grant-dead' }),
+    ).resolves.toEqual(expect.objectContaining({ ok: true, grantActive: false }));
+
+    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 3, grantActive: true }];
+    await expect(
+      assertLiveOAuthUser({ sub: userId, auth_epoch: 3 }, new Date(), { grantId: 'grant-live' }),
+    ).resolves.toEqual(expect.objectContaining({ ok: true, grantActive: true }));
+  });
+
   it('rejects a claimless token exactly at and after the compatibility deadline', async () => {
     envState.authEpochEnforceAfter = new Date('2026-08-06T00:30:00.000Z');
-    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 12 }];
+    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 12, grantActive: true }];
 
     await expect(
       assertLiveOAuthUser({ sub: userId }, new Date('2026-08-06T00:30:00.000Z')),
@@ -542,6 +602,7 @@ describe('bearerTokenAuthMiddleware', () => {
     // ai:execute is NOT granted — that now requires mcp:execute.
     expect(c.get('apiKey')).toEqual({
       id: 'oauth:org-token-jti',
+      oauthGrantId: 'grant-test-default',
       orgId,
       partnerId,
       name: 'OAuth bearer',
@@ -635,6 +696,98 @@ describe('bearerTokenAuthMiddleware', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
+  it('rejects a bearer whose Redis marker expired but whose Grant is durably revoked', async () => {
+    // Redis says nothing (marker lapsed); the durable join says the Grant is
+    // gone. The durable answer is the authority.
+    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 1, grantActive: false }];
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      scope: 'mcp:read',
+      jti: 'durable-revocation-jti',
+      grant_id: 'durably-revoked-grant',
+    });
+    const next = vi.fn();
+
+    await expectUnauthorized(
+      createContext({ Authorization: `Bearer ${token}` }),
+      'token revoked',
+      next,
+    );
+    expect(isGrantRevoked).toHaveBeenCalledWith('durably-revoked-grant');
+  });
+
+  it('resolves the durable Grant in the SAME query as the live user (one round-trip)', async () => {
+    // Two sequential system-context queries per accepted bearer doubled pool
+    // pressure on the hottest OAuth path for no isolation benefit.
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      scope: 'mcp:read',
+      jti: 'single-roundtrip-jti',
+      grant_id: 'grant-single-roundtrip',
+    });
+    const next = vi.fn();
+
+    await bearerTokenAuthMiddleware(createContext({ Authorization: `Bearer ${token}` }), next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(dbState.liveUserJoins).toHaveLength(1);
+    const join = dbState.liveUserJoins[0]!;
+    expect(join.table).toBe(oauthGrants);
+    const { columns, sql } = inspectClause(join.on);
+    expect(columns).toEqual(expect.arrayContaining([
+      oauthGrants.id.name,
+      oauthGrants.revokedAt.name,
+      oauthGrants.expiresAt.name,
+    ]));
+    expect(sql).toContain('is null');
+    expect(sql).toContain('>=');
+  });
+
+  it('rejects a bearer without a durable Grant identifier', async () => {
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      scope: 'mcp:read',
+      jti: 'missing-grant-jti',
+      grant_id: undefined,
+    });
+    const next = vi.fn();
+
+    await expectUnauthorized(
+      createContext({ Authorization: `Bearer ${token}` }),
+      'token missing required claims',
+      next,
+    );
+  });
+
+  it('fails closed with 503 when durable Grant status cannot be read', async () => {
+    // The Grant now rides along in the live-user query, so a failure there is
+    // uncertainty about BOTH facts. It must never be admitted as "active".
+    dbState.liveUserError = new Error('database unavailable');
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      scope: 'mcp:read',
+      jti: 'grant-read-error-jti',
+      grant_id: 'grant-read-error',
+    });
+    const next = vi.fn();
+
+    await expect(
+      bearerTokenAuthMiddleware(createContext({ Authorization: `Bearer ${token}` }), next),
+    ).rejects.toMatchObject({
+      status: 503,
+      message: expect.stringContaining('temporarily unavailable'),
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it('sets partner-scope API key context when org_id is null and resolves the partner org allowlist (M-B1)', async () => {
     // Defense-in-depth: partner-scope tokens used to pass `accessibleOrgIds: null`
     // to withDbAccessContext, which downstream auth.orgCondition() interprets
@@ -663,6 +816,7 @@ describe('bearerTokenAuthMiddleware', () => {
 
     expect(c.get('apiKey')).toEqual({
       id: 'oauth:partner-token-jti',
+      oauthGrantId: 'grant-test-default',
       orgId: null,
       partnerId,
       name: 'OAuth bearer',

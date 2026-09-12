@@ -24,6 +24,7 @@ import {
 import { db } from '../db';
 import { scripts } from '../db/schema';
 import { clearedScriptSecurityAcknowledgementColumns } from './scriptSecurityAcknowledgement';
+import { cutScriptVersion } from './scriptVersions';
 
 export type SystemLibraryScriptDefinition = {
   name: string;
@@ -304,19 +305,37 @@ export async function ensureSystemLibraryScripts(): Promise<{
       .limit(1);
 
     if (!existing) {
-      await db.insert(scripts).values({
-        orgId: null,
-        partnerId: null,
-        name: def.name,
-        description: def.description,
-        category: def.category,
-        osTypes: def.osTypes,
-        language: def.language,
-        content: def.content,
-        parameters,
-        timeoutSeconds: def.timeoutSeconds,
-        runAs: def.runAs,
-        isSystem: true,
+      await db.transaction(async (tx) => {
+        const [created] = await tx
+          .insert(scripts)
+          .values({
+            orgId: null,
+            partnerId: null,
+            name: def.name,
+            description: def.description,
+            category: def.category,
+            osTypes: def.osTypes,
+            language: def.language,
+            content: def.content,
+            parameters,
+            timeoutSeconds: def.timeoutSeconds,
+            runAs: def.runAs,
+            isSystem: true,
+            // cutScriptVersion moves it to 1 below.
+            version: 0,
+          })
+          .returning({ id: scripts.id });
+
+        if (!created) {
+          throw new Error(`system library script "${def.name}" insert returned no row`);
+        }
+
+        // No user on the boot path — index.ts wraps this in
+        // runWithSystemDbAccess, so createdBy is honestly null.
+        await cutScriptVersion(tx, {
+          scriptId: created.id,
+          provenance: { origin: 'system', changelog: 'Shipped system library definition', createdBy: null },
+        });
       });
       result.created += 1;
       continue;
@@ -350,7 +369,8 @@ export async function ensureSystemLibraryScripts(): Promise<{
       continue;
     }
 
-    await db
+    await db.transaction(async (tx) => {
+    await tx
       .update(scripts)
       .set({
         description: def.description,
@@ -373,10 +393,21 @@ export async function ensureSystemLibraryScripts(): Promise<{
         // also fires for a metadata-only diff (a timeout or description tweak)
         // where the reviewed body is untouched and the approval must stand.
         ...(contentChanged ? clearedScriptSecurityAcknowledgementColumns() : {}),
-        version: existing.version + 1,
+        // `version` is NOT set here — cutScriptVersion owns the bump, and a
+        // second bump would skip a number and break UNIQUE-backed history.
         updatedAt: new Date(),
       })
       .where(eq(scripts.id, existing.id));
+
+      await cutScriptVersion(tx, {
+        scriptId: existing.id,
+        provenance: {
+          origin: 'system',
+          changelog: 'Shipped system library definition updated',
+          createdBy: null,
+        },
+      });
+    });
     result.updated += 1;
   }
 

@@ -17,6 +17,7 @@ function chainable(rows: unknown[]) {
     innerJoin: () => obj,
     orderBy: () => obj,
     limit: () => obj,
+    for: () => obj,
     then: (resolve: (v: unknown[]) => unknown, reject?: (e: unknown) => unknown) =>
       Promise.resolve(rows).then(resolve, reject),
   };
@@ -24,14 +25,28 @@ function chainable(rows: unknown[]) {
 }
 
 const selectQueue: unknown[][] = [];
+const insertedRows: unknown[] = [];
 
 const mockDb = {
   select: vi.fn(() => chainable(selectQueue.shift() ?? [])),
   delete: vi.fn(() => chainable([])),
   update: vi.fn(() => chainable([])),
+  insert: vi.fn((_table: unknown) => ({
+    values: (v: unknown) => {
+      insertedRows.push(v);
+      return chainable([]);
+    },
+  })),
 };
 
-vi.mock('../db', () => ({ db: mockDb }));
+vi.mock('../db', () => ({
+  db: mockDb,
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  // D18 §3.7 review fix: cleanupExpiredSnapshots asserts no ambient context
+  // is held on entry — a no-op here since this suite's mock has no context
+  // tracking (every call is "outside" by construction).
+  assertOutsideHeldDbContext: () => {},
+}));
 
 // notFoundError mirrors what isBackupObjectNotFound (backupSnapshotStorage.ts)
 // recognizes as "object absent" (S3's NoSuchKey / local's ENOENT) — used
@@ -120,69 +135,115 @@ describe('backup retention', () => {
   });
 });
 
-describe('cleanupExpiredSnapshots — object storage decoupling', () => {
+describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/3.7)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     selectQueue.length = 0;
+    insertedRows.length = 0;
   });
 
-  it('deletes only the DB row for an expired snapshot and never touches object storage directly', async () => {
+  it('deletes only the DB row for an expired snapshot, writes a retirement row, and never touches object storage directly', async () => {
     // Regression test for the incremental-backup GC bug: row-level retention
     // used to eagerly delete a snapshot's whole storage prefix, which would
     // destroy objects a still-retained sibling snapshot's manifest
     // references. Object deletion is now exclusively GC's job.
     selectQueue.push([
       {
-        id: 'snap-expired-1',
-        snapshotId: 'snap-1',
-        metadata: null,
-        legalHold: false,
-        isImmutable: false,
-        immutableUntil: null,
-        provider: 's3',
-        providerConfig: { bucket: 'b', region: 'us-east-1' },
+        id: 'snap-expired-1', snapshotId: 'snap-1', deviceId: 'device-1', configId: 'config-1',
+        storageIdentity: 's3::e::b', backupType: 'file',
       },
-    ]); // expired query
-    selectQueue.push([]); // versionBoundSnapshots query (maxVersions pass)
+    ]); // expired query (enumeration pass)
+    selectQueue.push([{ id: 'snap-expired-1', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock
+    selectQueue.push([]); // backup pin -- none
+    selectQueue.push([]); // restore pin -- none
+    selectQueue.push([]); // recovery pin -- none
+    selectQueue.push([]); // versionBoundSnapshots query (maxVersions pass) -- read AFTER the expired-row loop
 
     const result = await cleanupExpiredSnapshots('org-1');
 
     expect(result.deleted).toBe(1);
     expect(mockDb.delete).toHaveBeenCalledTimes(1);
+    expect(insertedRows).toEqual([
+      expect.objectContaining({ snapshotId: 'snap-1', storageIdentity: 's3::e::b', reason: 'expired' }),
+    ]);
     expect(fetchBackupObjectTextMock).not.toHaveBeenCalled();
     expect(listBackupObjectsUnderPrefixMock).not.toHaveBeenCalled();
     expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
   });
 
-  it('prunes the oldest snapshots past retention.maxVersions, skipping legal-hold and immutable rows', async () => {
+  it('skips a row pinned by an in-flight backup_jobs base pin and counts it as skippedPinned (no retirement written)', async () => {
+    selectQueue.push([
+      { id: 'snap-pinned', snapshotId: 'snap-pinned-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'file' },
+    ]); // expired query
+    selectQueue.push([{ id: 'snap-pinned', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock
+    selectQueue.push([{ id: 'job-1' }]); // backup pin -- found, short-circuits
+    selectQueue.push([]); // versionBoundSnapshots query
+
+    const result = await cleanupExpiredSnapshots('org-1');
+
+    expect(result.skippedPinned).toBe(1);
+    expect(result.deleted).toBe(0);
+    expect(insertedRows.length).toBe(0);
+  });
+
+  it('re-reads legal hold under the FOR UPDATE lock, ignoring a stale enumeration-pass value (the enumeration select no longer even fetches it)', async () => {
+    selectQueue.push([
+      { id: 'snap-hold', snapshotId: 'snap-hold-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'file' },
+    ]); // expired query
+    selectQueue.push([{ id: 'snap-hold', legalHold: true, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock -- held
+    selectQueue.push([]); // versionBoundSnapshots query
+
+    const result = await cleanupExpiredSnapshots('org-1');
+
+    expect(result.skippedLegalHold).toBe(1);
+    expect(result.deleted).toBe(0);
+    expect(insertedRows.length).toBe(0);
+  });
+
+  it('skips (does not retire) a row with an unresolved storage_identity and counts it as skippedUnresolved', async () => {
+    selectQueue.push([
+      { id: 'snap-unresolved', snapshotId: 'snap-unresolved-provider', deviceId: 'device-1', configId: null, storageIdentity: null, backupType: 'file' },
+    ]); // expired query
+    selectQueue.push([{ id: 'snap-unresolved', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock
+    selectQueue.push([]); // versionBoundSnapshots query
+
+    const result = await cleanupExpiredSnapshots('org-1');
+
+    expect(result.skippedUnresolved).toBe(1);
+    expect(result.deleted).toBe(0);
+    expect(insertedRows.length).toBe(0); // no invented 'unknown::<uuid>' retirement is ever written
+  });
+
+  it('prunes the oldest snapshots past retention.maxVersions, skipping legal-hold and immutable rows (both re-read under the lock)', async () => {
     // Exercises the version-bound prune loop, which no other test reaches
     // (the versionBoundSnapshots query is normally fed []). One device/config
     // group with 5 snapshots (newest-first) and maxVersions=2: the 2 newest
     // are kept, the remaining 3 are pruning candidates. Of those, one is on
-    // legal hold and one is still immutable (both skipped), leaving exactly one
+    // legal hold and one is still immutable (both re-decided under the
+    // FOR UPDATE lock, not from the enumeration pass), leaving exactly one
     // prunable row.
-    selectQueue.push([]); // expired query — nothing expired by date
+    selectQueue.push([]); // expired query -- nothing expired by date
 
     const future = new Date(Date.now() + 1 * 24 * 60 * 60 * 1000);
     const retention = { maxVersions: 2 };
     const base = {
-      deviceId: 'd1',
-      configId: 'c1',
-      metadata: null,
-      provider: 's3',
-      providerConfig: { bucket: 'b', region: 'us-east-1' },
-      retention,
-      legalHold: false,
-      isImmutable: false,
-      immutableUntil: null,
+      deviceId: 'd1', configId: 'c1', storageIdentity: 's3::e::b', backupType: 'file' as const, retention,
     };
     selectQueue.push([
       { ...base, id: 's1', snapshotId: 'snap-1', timestamp: new Date('2026-05-05') }, // kept (within maxVersions)
       { ...base, id: 's2', snapshotId: 'snap-2', timestamp: new Date('2026-05-04') }, // kept
-      { ...base, id: 's3', snapshotId: 'snap-3', timestamp: new Date('2026-05-03'), legalHold: true }, // skipped (legal hold)
-      { ...base, id: 's4', snapshotId: 'snap-4', timestamp: new Date('2026-05-02'), isImmutable: true, immutableUntil: future }, // skipped (immutable)
+      { ...base, id: 's3', snapshotId: 'snap-3', timestamp: new Date('2026-05-03') }, // over cap, legal hold at lock time
+      { ...base, id: 's4', snapshotId: 'snap-4', timestamp: new Date('2026-05-02') }, // over cap, immutable at lock time
       { ...base, id: 's5', snapshotId: 'snap-5', timestamp: new Date('2026-05-01') }, // pruned by maxVersions
     ]); // versionBoundSnapshots query
+
+    // Per-candidate FOR UPDATE locks + pin checks, in slice order [s3, s4, s5]:
+    selectQueue.push([{ id: 's3', legalHold: true, isImmutable: false, immutableUntil: null }]); // s3 lock -- held
+    selectQueue.push([{ id: 's4', legalHold: false, isImmutable: true, immutableUntil: future }]); // s4 lock -- immutable
+    selectQueue.push([{ id: 's5', legalHold: false, isImmutable: false, immutableUntil: null }]); // s5 lock -- clean
+    selectQueue.push([]); // s5 backup pin -- none
+    selectQueue.push([]); // s5 restore pin -- none
+    selectQueue.push([]); // s5 recovery pin -- none
 
     const result = await cleanupExpiredSnapshots('org-1');
 
@@ -191,6 +252,9 @@ describe('cleanupExpiredSnapshots — object storage decoupling', () => {
     expect(result.skippedLegalHold).toBe(1);
     expect(result.skippedImmutable).toBe(1);
     expect(mockDb.delete).toHaveBeenCalledTimes(1); // only s5 physically deleted
+    expect(insertedRows).toEqual([
+      expect.objectContaining({ snapshotId: 'snap-5', reason: 'max_versions' }),
+    ]);
   });
 
   it('logs and skips a row whose delete rejects with a FK violation (D17), and still deletes the next expired row', async () => {
@@ -198,32 +262,25 @@ describe('cleanupExpiredSnapshots — object storage decoupling', () => {
     // verified/tokened) still has a NO-ACTION-FK history row pointing at it
     // (e.g. restore_jobs.snapshot_id), so its DELETE raised 23503. Before the
     // fix that aborted cleanupExpiredSnapshots entirely, so no other expired
-    // row in the org — let alone the object-storage sweep that runs after
-    // this job in backupWorker.ts — was ever reached. Per-row isolation means
-    // the bad row is logged and skipped while the next expired row is still
-    // deleted.
+    // row in the org -- let alone the object-storage sweep that runs after
+    // this job in backupWorker.ts -- was ever reached. Per-row isolation
+    // means the bad row is logged and skipped while the next expired row is
+    // still deleted.
     selectQueue.push([
-      {
-        id: 'snap-fk-blocked',
-        snapshotId: 'snap-blocked',
-        metadata: null,
-        legalHold: false,
-        isImmutable: false,
-        immutableUntil: null,
-        provider: 's3',
-        providerConfig: { bucket: 'b', region: 'us-east-1' },
-      },
-      {
-        id: 'snap-ok',
-        snapshotId: 'snap-2',
-        metadata: null,
-        legalHold: false,
-        isImmutable: false,
-        immutableUntil: null,
-        provider: 's3',
-        providerConfig: { bucket: 'b', region: 'us-east-1' },
-      },
+      { id: 'snap-fk-blocked', snapshotId: 'snap-blocked', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'file' },
+      { id: 'snap-ok', snapshotId: 'snap-2', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'file' },
     ]); // expired query
+    // Row 1 (snap-fk-blocked): lock + 3 pin checks, all clear, then the
+    // delete itself throws.
+    selectQueue.push([{ id: 'snap-fk-blocked', legalHold: false, isImmutable: false, immutableUntil: null }]);
+    selectQueue.push([]); // backup pin
+    selectQueue.push([]); // restore pin
+    selectQueue.push([]); // recovery pin
+    // Row 2 (snap-ok): lock + 3 pin checks, all clear, delete succeeds.
+    selectQueue.push([{ id: 'snap-ok', legalHold: false, isImmutable: false, immutableUntil: null }]);
+    selectQueue.push([]); // backup pin
+    selectQueue.push([]); // restore pin
+    selectQueue.push([]); // recovery pin
     selectQueue.push([]); // versionBoundSnapshots query (maxVersions pass)
 
     const fkError = Object.assign(

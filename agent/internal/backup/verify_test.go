@@ -153,6 +153,82 @@ func TestVerifyIntegrity_MissingFile(t *testing.T) {
 	}
 }
 
+// TestVerifyIntegrity_VolatileSizeMismatch_WarnsNotFails proves #5581's
+// verify-side policy: a Volatile manifest entry's size mismatch is a
+// warning, counted as verified, not a failure — while an ordinary
+// (non-Volatile) entry with the exact same kind of mismatch still fails,
+// proving this doesn't loosen verification generally.
+func TestVerifyIntegrity_VolatileSizeMismatch_WarnsNotFails(t *testing.T) {
+	basePath := t.TempDir()
+	snapshotID := "snapshot-volatile"
+	prefix := path.Join("snapshots", snapshotID)
+	srcDir := t.TempDir()
+
+	volatileSrc := filepath.Join(srcDir, "volatile.log")
+	if err := os.WriteFile(volatileSrc, []byte("0123456789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	provider := providers.NewLocalProvider(basePath)
+	volatileBackupPath := path.Join(prefix, "files", "volatile.log.gz")
+	if err := provider.Upload(volatileSrc, volatileBackupPath); err != nil {
+		t.Fatal(err)
+	}
+
+	staleSrc := filepath.Join(srcDir, "stale.txt")
+	if err := os.WriteFile(staleSrc, []byte("0123456789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	staleBackupPath := path.Join(prefix, "files", "stale.txt.gz")
+	if err := provider.Upload(staleSrc, staleBackupPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both objects are actually 10 bytes; the manifest declares a stale 5
+	// bytes for each, but only the volatile one carries Volatile: true.
+	manifest := Snapshot{
+		ID: snapshotID,
+		Files: []SnapshotFile{
+			{SourcePath: volatileSrc, BackupPath: volatileBackupPath, Size: 5, Volatile: true},
+			{SourcePath: staleSrc, BackupPath: staleBackupPath, Size: 5},
+		},
+		Size: 10,
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestDir := filepath.Join(basePath, prefix)
+	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(manifestDir, "manifest.json"), manifestBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := VerifyIntegrity(provider, snapshotID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.FilesVerified != 1 {
+		t.Errorf("FilesVerified = %d, want 1 (the volatile entry counts as verified despite the mismatch)", result.FilesVerified)
+	}
+	if result.FilesFailed != 1 {
+		t.Errorf("FilesFailed = %d, want 1 (only the non-volatile mismatch)", result.FilesFailed)
+	}
+	if len(result.FailedFiles) != 1 || result.FailedFiles[0] != staleBackupPath {
+		t.Errorf("FailedFiles = %v, want only %q", result.FailedFiles, staleBackupPath)
+	}
+	foundVolatileWarning := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, volatileBackupPath) && strings.Contains(w, "volatile") {
+			foundVolatileWarning = true
+		}
+	}
+	if !foundVolatileWarning {
+		t.Errorf("expected an advisory warning mentioning the volatile file, got %v", result.Warnings)
+	}
+}
+
 func TestVerifyIntegrity_CorruptedGzip(t *testing.T) {
 	basePath := t.TempDir()
 	snapshotID := "snapshot-corrupt"

@@ -19,6 +19,7 @@ const { dbMocks, emitMock, configMocks } = vi.hoisted(() => {
     forUpdateCalls: 0,
     deleteError: null as Error | null,
     deleteResult: [] as unknown[],
+    deleteCalls: 0,
   };
   const configMocks = {
     getOrgBillingDefaults: vi.fn().mockResolvedValue(null),
@@ -99,6 +100,7 @@ vi.mock('../db', () => ({
     })),
     delete: vi.fn(() => ({
       where: vi.fn(() => {
+        dbMocks.deleteCalls += 1;
         const terminal = dbMocks.deleteError
           ? Promise.reject(dbMocks.deleteError)
           : Promise.resolve();
@@ -143,6 +145,7 @@ vi.mock('../db/schema', () => ({
 import {
   computeDurationMinutes, createTimeEntry, startTimer, stopTimer,
   updateTimeEntry, deleteTimeEntry, approveTimeEntries, addTicketPart, updateTicketPart,
+  deleteTicketPart,
   getTimesheet, getTicketBillingSummary, listBillables, entryOrgAllowed, resolveDefaultRate,
   resolveAndLockOrgLink, readTimeEntryById, getTicketTimeEntryDefaults
 } from './timeEntryService';
@@ -188,6 +191,7 @@ beforeEach(() => {
   dbMocks.forUpdateCalls = 0;
   dbMocks.deleteError = null;
   dbMocks.deleteResult = [];
+  dbMocks.deleteCalls = 0;
   emitMock.mockClear();
   configMocks.getOrgBillingDefaults.mockResolvedValue(null);
 });
@@ -655,14 +659,67 @@ describe('deleteTimeEntry', () => {
     dbMocks.selectResults.push([{ id: 'te-1', userId: 'u-1', isApproved: true, partnerId: 'p-1', ticketId: null }]);
     await expect(deleteTimeEntry('te-1', ACTOR)).rejects.toMatchObject({ code: 'APPROVED_IMMUTABLE' });
   });
-  it('owner deletes own unapproved entry: emits deleted event with entry userId', async () => {
-    dbMocks.selectResults.push([{ id: 'te-1', userId: 'u-1', isApproved: false, partnerId: 'p-1', ticketId: null }]);
-    await deleteTimeEntry('te-1', ACTOR);
-    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'time_entry.deleted',
-      payload: expect.objectContaining({ userId: 'u-1' })
-    }));
+  it.each(['not_billed', 'no_charge', 'contract'] as const)(
+    'owner deletes an own unapproved %s entry and emits its userId',
+    async (billingStatus) => {
+      dbMocks.selectResults.push([{
+        id: 'te-1', userId: 'u-1', isApproved: false, partnerId: 'p-1',
+        ticketId: null, billingStatus,
+      }]);
+      await deleteTimeEntry('te-1', ACTOR);
+      expect(dbMocks.deleteCalls).toBe(1);
+      expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'time_entry.deleted',
+        payload: expect.objectContaining({ userId: 'u-1' })
+      }));
+    },
+  );
+
+  it('409s before delete, feed, audit, or lifecycle event when the locked entry is billed', async () => {
+    const recordAuditMutation = vi.fn();
+    dbMocks.selectResults.push([{
+      id: 'te-billed', orgId: 'o-1', userId: 'u-1', isApproved: false,
+      partnerId: 'p-1', ticketId: 't-1', durationMinutes: 30,
+      billingStatus: 'billed',
+    }]);
+
+    await expect(deleteTimeEntry('te-billed', { ...ACTOR, recordAuditMutation }))
+      .rejects.toMatchObject({ code: 'ENTRY_BILLED', status: 409 });
+
+    expect(dbMocks.deleteCalls).toBe(0);
+    expect(dbMocks.insertedValues).toHaveLength(0);
+    expect(recordAuditMutation).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
+    expect(dbMocks.forUpdateCalls).toBe(1);
   });
+});
+
+describe('deleteTicketPart', () => {
+  it('409s before delete when the locked part is billed', async () => {
+    dbMocks.selectResults.push([{
+      id: 'part-billed', billingStatus: 'billed', currencyCode: 'USD',
+    }]);
+
+    await expect(deleteTicketPart('part-billed', ACTOR))
+      .rejects.toMatchObject({ code: 'PART_BILLED', status: 409 });
+
+    expect(dbMocks.deleteCalls).toBe(0);
+    expect(dbMocks.forUpdateCalls).toBe(1);
+  });
+
+  it.each(['not_billed', 'no_charge', 'contract'] as const)(
+    'allows deletion after locked re-read when status is %s',
+    async (billingStatus) => {
+      dbMocks.selectResults.push([{
+        id: `part-${billingStatus}`, billingStatus, currencyCode: 'USD',
+      }]);
+
+      await deleteTicketPart(`part-${billingStatus}`, ACTOR);
+
+      expect(dbMocks.deleteCalls).toBe(1);
+      expect(dbMocks.forUpdateCalls).toBe(1);
+    },
+  );
 });
 
 describe('approveTimeEntries', () => {
@@ -973,6 +1030,52 @@ describe('addTicketPart', () => {
     dbMocks.insertResult = [];
     await expect(addTicketPart('t-3', { description: 'Cable', quantity: 1, unitPrice: 5 }, ACTOR))
       .rejects.toThrow('Failed to create ticket part');
+  });
+});
+
+describe('routine billed-state admission', () => {
+  const range = {
+    startedAt: new Date('2026-06-11T09:00:00Z'),
+    endedAt: new Date('2026-06-11T09:30:00Z'),
+  };
+
+  it('rejects billed on time-entry creation before any database work', async () => {
+    await expect(createTimeEntry(
+      { ...range, billingStatus: 'billed' } as never,
+      ACTOR,
+    )).rejects.toMatchObject({ code: 'BILLING_STATUS_RESERVED', status: 409 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+    expect(dbMocks.selectResults).toHaveLength(0);
+  });
+
+  it('rejects a direct transition to billed before locking or updating the entry', async () => {
+    await expect(updateTimeEntry(
+      'te-1',
+      { billingStatus: 'billed' } as never,
+      ACTOR,
+    )).rejects.toMatchObject({ code: 'BILLING_STATUS_RESERVED', status: 409 });
+    expect(dbMocks.forUpdateCalls).toBe(0);
+    expect(dbMocks.updateSetArgs).toHaveLength(0);
+  });
+
+  it('rejects billed on part creation before ticket lookup or insert', async () => {
+    await expect(addTicketPart(
+      't-1',
+      { description: 'SSD', quantity: 1, billingStatus: 'billed' } as never,
+      ACTOR,
+    )).rejects.toMatchObject({ code: 'BILLING_STATUS_RESERVED', status: 409 });
+    expect(dbMocks.forUpdateCalls).toBe(0);
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('rejects a direct transition to billed before locking or updating the part', async () => {
+    await expect(updateTicketPart(
+      'part-1',
+      { billingStatus: 'billed' } as never,
+      ACTOR,
+    )).rejects.toMatchObject({ code: 'BILLING_STATUS_RESERVED', status: 409 });
+    expect(dbMocks.forUpdateCalls).toBe(0);
+    expect(dbMocks.updateSetArgs).toHaveLength(0);
   });
 });
 

@@ -72,6 +72,37 @@ func grubTarget(arch string) (target, efiFile string) {
 
 var pseudoMounts = []string{"/dev", "/dev/pts", "/proc", "/sys", "/run"}
 
+// ensureMountpoints is belt-and-braces against #5493: the whole-machine
+// backup preset excludes /proc/**, /sys/**, /dev/**, /run/**, /tmp/**,
+// /var/tmp/**, /mnt/**, /media/** (apps/web's backupTabPresets.ts), and the
+// backup walker now force-records an excluded directory's own manifest
+// entry (backup.go collectBackupFilesFromPaths) precisely so these
+// directories survive a restore. This is the second line of defense for any
+// snapshot taken before that fix, or with a different exclude list, so a
+// rebuild is never left without the directories systemd needs to mount its
+// API filesystems (see boot's pseudoMounts/BindMount calls above, which
+// target exactly proc/sys/dev/run) and update-initramfs needs for scratch
+// space (mktemp under /var/tmp). Idempotent and safe to call unconditionally
+// — MkdirAll no-ops on an existing directory, and the sticky-bit chmod on
+// tmp/var/tmp is a no-op when it's already 1777.
+func ensureMountpoints(root string) error {
+	for _, name := range []string{"proc", "sys", "dev", "run", "mnt", "media"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
+			return fmt.Errorf("ensure mount point %s: %w", name, err)
+		}
+	}
+	for _, name := range []string{"tmp", filepath.Join("var", "tmp")} {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("ensure mount point %s: %w", name, err)
+		}
+		if err := os.Chmod(dir, os.ModeSticky|0o777); err != nil {
+			return fmt.Errorf("chmod mount point %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func boot(ctx context.Context, r *run) error {
 	if r.opts.SkipBoot {
 		r.warn("boot phase skipped by request (SkipBoot)")

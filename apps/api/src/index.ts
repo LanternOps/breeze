@@ -52,6 +52,10 @@ import { orgRoutes } from './routes/orgs';
 import { orgMergeRoutes } from './routes/orgMerge';
 import { orgArchiveRoutes } from './routes/orgArchive';
 import { orgSummaryRoutes } from './routes/orgSummary';
+import { serviceDeliverableRoutes } from './routes/serviceDeliverables';
+import { deliverableTemplateRoutes } from './routes/deliverableTemplates';
+import { orgDocumentRoutes } from './routes/orgDocuments';
+import { orgKeyDateRoutes } from './routes/orgKeyDates';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
 import { oauthInteractionRoutes } from './routes/oauthInteraction';
@@ -136,6 +140,9 @@ import { tunnelRoutes, vncExchangeRoutes, vncViewerRoutes } from './routes/tunne
 import { agentVersionRoutes } from './routes/agentVersions';
 import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
+import { aiScriptProposalRoutes } from './routes/ai/scriptProposals';
+import { aiScriptPolicyRoutes } from './routes/ai/scriptPolicy';
+import { partnerAiScriptPolicyRoutes } from './routes/partnerAiScriptPolicy';
 import { aiProviderRoutes } from './routes/aiProvider';
 import { aiAgentsRoutes } from './routes/aiAgents';
 import { aiAgentSchedulesRoutes } from './routes/aiAgentSchedules';
@@ -835,6 +842,10 @@ api.route('/orgs', orgRoutes);
 api.route('/orgs', orgMergeRoutes);
 api.route('/orgs', orgArchiveRoutes);
 api.route('/orgs', orgSummaryRoutes);
+api.route('/orgs', serviceDeliverableRoutes); // /orgs/:orgId/deliverables/* (#5573 W01)
+api.route('/deliverable-templates', deliverableTemplateRoutes); // (#5573 W05)
+api.route('/orgs', orgDocumentRoutes); // /orgs/:orgId/documents/* (#5573 W03)
+api.route('/orgs', orgKeyDateRoutes);         // /orgs/:orgId/key-dates/* (#5573 W01)
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);
 api.route('/permissions', permissionsCatalogRoutes);
@@ -958,6 +969,8 @@ api.route('/groups', groupRoutes);
 api.route('/device-groups', groupRoutes);
 api.route('/integrations', integrationRoutes);
 api.route('/partner/trust', partnerTrustRoutes);
+// W04 (#5612): the partner CEILING for the unattended script lane.
+api.route('/partner/ai/script-policy', partnerAiScriptPolicyRoutes);
 api.route('/partner', partnerRoutes);
 api.route('/internal/synthetic', internalSyntheticRoutes);
 api.route('/partner/known-guests', networkKnownGuestsRoutes);
@@ -983,6 +996,14 @@ api.route('/ai/agents', aiAgentsRoutes);
 // Read-only Operator task surface (W07 of #5205, P3-1e) — a separate route
 // module from the already-large aiAgentsRoutes per spec §12.
 api.route('/ai/operator', aiOperatorTasksRoutes);
+// W03 (#5612): more specific than '/ai', so it must be registered first — same
+// reason '/ai/agents/schedules' sits above '/ai/agents'. Hono matches in
+// registration order.
+api.route('/ai/script-proposals', aiScriptProposalRoutes);
+// W04 (#5612): GET/PUT /ai/script-policy + POST /ai/script-lane/reset —
+// registered ahead of '/ai' so the literal paths never fall into a sibling
+// param route.
+api.route('/ai', aiScriptPolicyRoutes);
 api.route('/ai', aiRoutes);
 api.route('/ai/script-builder', scriptAiRoutes);
 api.route('/mcp', mcpServerRoutes);

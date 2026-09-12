@@ -343,6 +343,13 @@ const recordSessionlessSdkUsage = vi.hoisted(() =>
 const calculateCostCents = vi.hoisted(() => vi.fn<(...args: unknown[]) => number>(() => 0));
 vi.mock('../aiCostTracker', () => ({ recordSessionlessSdkUsage, calculateCostCents }));
 
+const reserveAiBudget = vi.hoisted(() => vi.fn());
+const markAiBudgetReservationIndeterminate = vi.hoisted(() => vi.fn());
+vi.mock('../aiBudgetReservations', () => ({
+  reserveAiBudget,
+  markAiBudgetReservationIndeterminate,
+}));
+
 // checkToolPermission must NEVER be reachable from an agent run. Spying through
 // the real module would require mocking it; instead the contract is asserted by
 // the red-team suite (Task 5). Here we assert the loop never imports it by
@@ -571,6 +578,16 @@ beforeEach(() => {
   preVerdicts.length = 0;
   lastQueryOptions = undefined;
   transitionRunStatus.mockResolvedValue(true);
+  reserveAiBudget.mockResolvedValue({
+    kind: 'unlimited',
+    reservationId: '00000000-0000-4000-8000-0000000000e1',
+    dailyPeriodKey: '2026-09-06',
+    monthlyPeriodKey: '2026-09-01',
+    status: 'active',
+  });
+  markAiBudgetReservationIndeterminate.mockResolvedValue({
+    kind: 'indeterminate', reservationId: '00000000-0000-4000-8000-0000000000e1',
+  });
   let execCounter = 0;
   createAgentRunSession.mockResolvedValue('session-1');
   startToolExecution.mockImplementation(async () => `exec-${++execCounter}`);
@@ -607,6 +624,41 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('executeAgentRun', () => {
+  it('caps provider dispatch to the durable org reservation', async () => {
+    seedRows();
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'reserved',
+      reservationId: '00000000-0000-4000-8000-0000000000e1',
+      reservedCostCents: 5,
+      dailyPeriodKey: '2026-09-06',
+      monthlyPeriodKey: '2026-09-01',
+      status: 'active',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions?.maxBudgetUsd).toBe(0.05);
+    expect(recordSessionlessSdkUsage).toHaveBeenCalledWith(
+      ORG_ID,
+      expect.any(Object),
+      'platform',
+      '00000000-0000-4000-8000-0000000000e1',
+    );
+  });
+
+  it('does not create an SDK query when durable org admission denies the run', async () => {
+    seedRows();
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'denied', reason: 'daily_budget', message: 'Daily AI budget exhausted ($1.00)',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(finalTransition()?.to).toBe('failed');
+    expect(finalTransition()?.patch.errorCode).toBe('org_budget_exceeded');
+  });
+
   it('CAS queued->running, executes a read tool, completes with cost and summary', async () => {
     seedRows();
     scriptQuery({

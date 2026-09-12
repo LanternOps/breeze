@@ -874,7 +874,8 @@
     "couldNotRefresh": "Impossibile aggiornare i dettagli dell'account Stripe.",
     "notCached": "Valuta non ancora in cache — aggiorna per recuperarla da Stripe.",
     "staleCache": "Impossibile raggiungere Stripe — vengono mostrati gli ultimi dettagli dell'account in cache.",
-    "reconnectRequired": "La chiave Stripe salvata (•••• {{last4}}) non funziona più: {{reason}} Incolla una nuova chiave per riconnetterti; i pagamenti online falliranno fino ad allora."
+    "reconnectRequired": "La chiave Stripe salvata (•••• {{last4}}) non funziona più: {{reason}} Incolla una nuova chiave per riconnetterti; i pagamenti online falliranno fino ad allora.",
+    "reconciliationError": "La riconciliazione degli storni di pagamento non è in esecuzione: {{reason}} Sostituisci la chiave Stripe con una che possa leggere gli Eventi."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Impossibile salvare le mappature siti.",

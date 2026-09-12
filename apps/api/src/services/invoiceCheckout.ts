@@ -1,7 +1,7 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { computeChargeNow, buildStripeCurrencyWarning, type StripeCurrencyWarning } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { invoices, invoiceStripePayments } from '../db/schema';
+import { invoices, invoiceStripePayments, stripeConnectAccounts } from '../db/schema';
 import { getPartnerStripeClient, PartnerStripeError } from './partnerStripe';
 import { toMinorUnits } from './stripeMoney';
 import { mapStripeCheckoutError } from './stripeCheckoutErrors';
@@ -118,8 +118,8 @@ export async function createInvoicePayLink(
       quantity: 1,
     }],
     // {CHECKOUT_SESSION_ID} is substituted by Stripe on redirect — the portal
-    // verify-on-return handler reads it to settle server-side (the API-key model
-    // has no inbound webhook).
+    // verify-on-return handler reads it to settle server-side. Provider-side
+    // reversals are observed independently by the direct-account event poller.
     success_url: urls.successUrl ?? `${portalBaseUrl}/invoices/${inv.id}?paid=1&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: urls.cancelUrl ?? `${portalBaseUrl}/invoices/${inv.id}`,
     metadata: {
@@ -151,8 +151,20 @@ export async function createInvoicePayLink(
 
   // Fresh short context so the pending-mapping write isn't a contextless 0-row
   // no-op under forced-RLS breeze_app (#1375).
-  await withSystemDbAccessContext(() =>
-    db.insert(invoiceStripePayments).values({
+  await withSystemDbAccessContext(async () => {
+    // Serialize the final mapping insert against account replacement. If the
+    // key changed during the external Checkout call, never return an orphaned
+    // payment URL whose future reversals cannot be observed.
+    const [currentConnection] = await db.select({ id: stripeConnectAccounts.id })
+      .from(stripeConnectAccounts).where(and(
+        eq(stripeConnectAccounts.partnerId, inv.partnerId),
+        eq(stripeConnectAccounts.stripeAccountId, stripeAccountId),
+        eq(stripeConnectAccounts.status, 'connected'),
+      )).limit(1).for('share');
+    if (!currentConnection) {
+      throw new InvoiceServiceError('Stripe connection changed while creating the payment link — please retry', 409, 'STRIPE_NOT_CONNECTED');
+    }
+    await db.insert(invoiceStripePayments).values({
       orgId: inv.orgId,
       invoiceId: inv.id,
       stripeAccountId,
@@ -162,8 +174,8 @@ export async function createInvoicePayLink(
       amount: chargeNow.amount,
       currency: inv.currencyCode,
       status: 'pending',
-    })
-  );
+    });
+  });
 
   // Warn-don't-block (spec §10): the session is ALWAYS minted in the document
   // currency; a differing account default is surfaced so the partner knows they

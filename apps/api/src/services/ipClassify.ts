@@ -67,9 +67,22 @@ function parseAsn(value: unknown): number | null {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
+/**
+ * True only when the provider actually returned its privacy/threat evidence
+ * object. Both providers omit it entirely on plans without privacy detection —
+ * and absent evidence is not evidence of absence: treating a missing object as
+ * "no privacy flags set" classified every hosting/VPN/proxy address as
+ * `residential`, which is precisely what a signup-abuse gate must not do.
+ */
+function hasEvidence(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function mapProviderResponse(provider: 'ipinfo' | 'ipdata', body: any): IpClassification {
+  const asn = parseAsn(body?.asn?.asn ?? body?.asn);
   if (provider === 'ipinfo') {
-    const privacy = body?.privacy ?? {};
+    const privacy = body?.privacy;
+    if (!hasEvidence(privacy)) return { ipClass: 'unknown', asn, provider };
     const ipClass: IpClass = privacy.tor === true
       ? 'tor'
       : privacy.vpn === true
@@ -79,10 +92,11 @@ function mapProviderResponse(provider: 'ipinfo' | 'ipdata', body: any): IpClassi
           : body?.company?.type === 'business'
             ? 'business'
             : 'residential';
-    return { ipClass, asn: parseAsn(body?.asn?.asn ?? body?.asn), provider };
+    return { ipClass, asn, provider };
   }
 
-  const threat = body?.threat ?? {};
+  const threat = body?.threat;
+  if (!hasEvidence(threat)) return { ipClass: 'unknown', asn, provider };
   const ipClass: IpClass = threat.is_tor === true
     ? 'tor'
     : threat.is_vpn === true || threat.is_proxy === true
@@ -92,7 +106,7 @@ function mapProviderResponse(provider: 'ipinfo' | 'ipdata', body: any): IpClassi
         : body?.company?.type === 'business'
           ? 'business'
           : 'residential';
-  return { ipClass, asn: parseAsn(body?.asn?.asn ?? body?.asn), provider };
+  return { ipClass, asn, provider };
 }
 
 function providerUrl(provider: 'ipinfo' | 'ipdata', ip: string, key: string): string {

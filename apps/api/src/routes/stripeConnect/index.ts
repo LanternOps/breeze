@@ -62,6 +62,7 @@ stripeConnectRoutes.post(
         defaultCurrency: result.defaultCurrency,
         accountCountry: result.accountCountry,
         accountRefreshedAt: result.accountRefreshedAt.toISOString(),
+        reconciliation: { state: 'pending', lastPolledAt: null, error: null },
       });
     } catch (err) {
       // A rejected/unreadable key is a user-actionable 400/409/500 with a clear
@@ -100,6 +101,11 @@ stripeConnectRoutes.get(
       cacheState: snap.cacheState,
       stale: snap.cacheState !== 'fresh',
       error: snap.error,
+      reconciliation: {
+        state: snap.financialEventLastError ? 'error' : snap.financialEventLastPolledAt ? 'healthy' : 'pending',
+        lastPolledAt: snap.financialEventLastPolledAt?.toISOString() ?? null,
+        error: snap.financialEventLastError,
+      },
     });
   }
 );

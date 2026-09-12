@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 func TestRecoveryDownloadProviderUsesAdvertisedAuthHeader(t *testing.T) {
@@ -404,6 +406,71 @@ func TestRecoveryDownloadProviderDoesNotRetryPermanent4xx(t *testing.T) {
 	}
 	if len(*recorded) != 0 {
 		t.Fatalf("recorded sleeps = %v, want none", *recorded)
+	}
+}
+
+// TestRecoveryDownloadProviderNotFoundSatisfiesErrObjectNotFound proves a
+// 404 from the recovery download endpoint is recognizable via
+// errors.Is(err, providers.ErrObjectNotFound) — the exact check
+// DownloadSystemState (download_system_state.go) uses to decide "this
+// snapshot never captured system state" (ErrNoSystemState, a soft skip)
+// versus "some other download failure" (hard error). Before
+// downloadStatusError.Is existed, this provider's 404 satisfied neither
+// LocalProvider's nor S3Provider's own ErrObjectNotFound wrapping (both
+// wrap it themselves; this provider never did), so a token/HTTP-driven
+// recovery of a snapshot with no system state always failed preflight hard
+// instead of taking the intended soft-skip path — found by the W04b QEMU
+// end-to-end proof, which is the only test exercising a real snapshot with
+// no system state through this exact provider.
+func TestRecoveryDownloadProviderNotFoundSatisfiesErrObjectNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":"object_not_found"}`)
+	}))
+	defer server.Close()
+
+	provider := newRecoveryDownloadProvider(context.Background(), server.URL, "brz_rec_test", &AuthenticatedDownloadDescriptor{
+		URL:            server.URL + "/download",
+		PathQueryParam: "path",
+		PathPrefix:     "snapshots/provider-snapshot-1",
+	})
+
+	dest := filepath.Join(t.TempDir(), "f.bin")
+	err := provider.Download("snapshots/provider-snapshot-1/system-state/manifest.json", dest)
+	if err == nil {
+		t.Fatal("expected an error for a 404 response")
+	}
+	if !errors.Is(err, providers.ErrObjectNotFound) {
+		t.Fatalf("errors.Is(err, providers.ErrObjectNotFound) = false, want true (err = %v)", err)
+	}
+}
+
+// TestRecoveryDownloadProviderOtherFailuresDoNotSatisfyErrObjectNotFound is
+// the negative control: a 401/403/5xx/network failure must NOT satisfy
+// ErrObjectNotFound — those are exactly the "not confirmed absent" cases
+// its own doc comment says must never match (a fail-open bug otherwise:
+// preflight would silently skip system-state verification after a mere
+// auth or transport failure instead of refusing).
+func TestRecoveryDownloadProviderOtherFailuresDoNotSatisfyErrObjectNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":"forbidden"}`)
+	}))
+	defer server.Close()
+
+	provider := newRecoveryDownloadProvider(context.Background(), server.URL, "brz_rec_test", &AuthenticatedDownloadDescriptor{
+		URL:            server.URL + "/download",
+		PathQueryParam: "path",
+		PathPrefix:     "snapshots/provider-snapshot-1",
+	})
+
+	dest := filepath.Join(t.TempDir(), "f.bin")
+	err := provider.Download("snapshots/provider-snapshot-1/system-state/manifest.json", dest)
+	if err == nil {
+		t.Fatal("expected an error for a 403 response")
+	}
+	if errors.Is(err, providers.ErrObjectNotFound) {
+		t.Fatalf("errors.Is(err, providers.ErrObjectNotFound) = true, want false for a 403 (err = %v)", err)
 	}
 }
 

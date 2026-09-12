@@ -34,6 +34,12 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
 }));
 
+vi.mock('../services/tenantStatus', () => ({
+  // The mutation/rotation ceiling resolves the key ORG's owning partner here
+  // (mirroring middleware/apiKeyAuth.ts) before re-authorizing the creator.
+  getActiveOrgTenant: vi.fn(async (orgId: string) => ({ orgId, partnerId: 'partner-1' })),
+}));
+
 vi.mock('../db/schema', () => ({
   apiKeys: {},
   organizations: {}

@@ -5,8 +5,9 @@
  * isAuthorisedForTicket) is called by ticketNotifyWorker INSIDE
  * withSystemDbAccessContext, which bypasses RLS. That context is DISCOVERY
  * ONLY. Every recipient is re-authorised (spec D5): same partner as the event,
- * holds tickets:read, and can access the ticket's org; account status gates the
- * PUSH (see the worker) — never the in-app row or the email.
+ * is active, holds tickets:read, can access the ticket's org and, for a
+ * device-bound ticket, can access the device's current site. The worker applies
+ * that predicate before every subject-bearing channel.
  *
  * Push materialisation is deliberately TWO-PHASE so no network round-trip ever
  * happens inside the open fan-out transaction (#1105 class — the shape
@@ -21,10 +22,10 @@
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { resolveTicketPushPrefs, type TicketPushPreferences } from '@breeze/shared';
 import { db } from '../db';
-import { mobileDevices, ticketPushPreferences, users } from '../db/schema';
+import { devices, mobileDevices, ticketPushPreferences, users } from '../db/schema';
 import { isApnsConfigured } from './apns';
 import { checkNotificationThrottle } from './notificationThrottle';
-import { canAccessOrg, getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
+import { canAccessOrg, canAccessSite, getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
 import { isInQuietHours, type QuietHoursConfig } from './quietHours';
 import { captureException } from './sentry';
 import type { PushSpec, TaggedPushToken } from './expoPush';
@@ -151,14 +152,38 @@ export function assertSamePartner(
 export async function isAuthorisedForTicket(
   userId: string,
   partnerId: string,
-  orgId: string
+  orgId: string,
+  deviceId?: string | null
 ): Promise<boolean> {
   const perms = await getUserPermissions(userId, { partnerId, orgId });
   if (!perms) return false;
-  return (
-    hasPermission(perms, PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action) &&
-    canAccessOrg(perms, orgId)
-  );
+  if (!hasPermission(perms, PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action)) return false;
+  if (!canAccessOrg(perms, orgId)) return false;
+
+  // A deviceless ticket is org-wide, matching the HTTP ticket visibility
+  // contract. A device-bound ticket follows the device's CURRENT site. Apply
+  // the same ceiling here because this helper is used from a system-RLS worker.
+  if (!deviceId || perms.allowedSiteIds === undefined) return true;
+  if (perms.allowedSiteIds.length === 0) return false;
+  const rows = await db
+    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .from(devices)
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
+    .limit(1);
+  const device = rows[0];
+  return !!device?.siteId && canAccessSite(perms, device.siteId);
+}
+
+/** One canonical eligibility predicate shared by assignment and notification. */
+export async function isEligibleTicketRecipient(
+  candidate: RecipientCandidate,
+  partnerId: string,
+  orgId: string,
+  deviceId?: string | null
+): Promise<boolean> {
+  return candidate.status === 'active' &&
+    candidate.partnerId === partnerId &&
+    isAuthorisedForTicket(candidate.userId, partnerId, orgId, deviceId);
 }
 
 /**

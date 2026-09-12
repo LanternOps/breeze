@@ -50,14 +50,30 @@ export const fetchOne = createAsyncThunk('approvals/fetchOne', async (id: string
   return await apiFetchOne(id);
 });
 
-export const approve = createAsyncThunk('approvals/approve', async (id: string) => {
+/**
+ * Approve arg accepts either a bare id (legacy shape — every pre-existing
+ * caller and test) or `{ id, acknowledgedPatterns }` when the approval is a
+ * `script_proposal` carrying ticked STRICT patterns (#5612 W03). Kept a union
+ * rather than widening every caller to the object form so the
+ * `decisionInFlight`/error reducers (keyed by plain id) don't have to change
+ * shape for every existing dispatch site and test fixture.
+ */
+export type ApproveArg = string | { id: string; acknowledgedPatterns?: string[] };
+
+function approveArgId(arg: ApproveArg): string {
+  return typeof arg === 'string' ? arg : arg.id;
+}
+
+export const approve = createAsyncThunk('approvals/approve', async (arg: ApproveArg) => {
+  const id = approveArgId(arg);
+  const acknowledgedPatterns = typeof arg === 'string' ? undefined : arg.acknowledgedPatterns;
   // Breeze Authenticator (Phase 3) — opt-in hardware step-up. Best-effort: a
   // signed proof upgrades the recorded decision to L2 (mobile_hw_key); a device
   // without a registered key yields null and approves at L1 (Phase 3 never
   // blocks — enforcement is Phase 4). A cancelled biometric prompt DOES throw,
   // aborting the approve rather than silently downgrading a deliberate cancel.
   const proof = await gatherApprovalProof(id);
-  const updated = await apiApprove(id, proof ? { proof } : undefined);
+  const updated = await apiApprove(id, proof ? { proof } : undefined, acknowledgedPatterns);
   await clearCachedApproval(id);
   return updated;
 });
@@ -215,16 +231,17 @@ const slice = createSlice({
     });
 
     b.addCase(approve.pending, (s, a) => {
-      s.decisionInFlight[a.meta.arg] = 'approve';
+      s.decisionInFlight[approveArgId(a.meta.arg)] = 'approve';
     });
     b.addCase(approve.fulfilled, (s, a) => {
-      delete s.decisionInFlight[a.meta.arg];
+      delete s.decisionInFlight[approveArgId(a.meta.arg)];
       dropAndRefocus(s, a.payload.id);
     });
     b.addCase(approve.rejected, (s, a) => {
-      delete s.decisionInFlight[a.meta.arg];
+      const id = approveArgId(a.meta.arg);
+      delete s.decisionInFlight[id];
       if (TERMINAL_DECISION_ERRORS.has(a.error.message ?? '')) {
-        dropAndRefocus(s, a.meta.arg);
+        dropAndRefocus(s, id);
         // ApprovalScreen already toasts "Already decided elsewhere." / "This
         // request expired." — no banner needed for an outcome the user caused.
         return;

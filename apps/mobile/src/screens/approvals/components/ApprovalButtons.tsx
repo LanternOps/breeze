@@ -28,6 +28,9 @@ interface Props {
   holdLabel?: string;
   onApprove: (requestId: CapturedRequestId) => void;
   onDeny: (requestId: CapturedRequestId, reason?: string) => void;
+  /** W03: the script-proposal card blocks Approve until every STRICT pattern
+   *  is acknowledged by a permitted approver. Deny stays available. */
+  approveDisabled?: boolean;
 }
 
 const PASSCODE_FALLBACK_CODES = new Set(['not_enrolled', 'passcode_not_set']);
@@ -40,6 +43,7 @@ export function ApprovalButtons({
   holdLabel = 'Hold to approve',
   onApprove,
   onDeny,
+  approveDisabled = false,
 }: Props) {
   const theme = useApprovalTheme('dark');
   const [denyOpen, setDenyOpen] = useState(false);
@@ -200,13 +204,13 @@ export function ApprovalButtons({
         </Pressable>
 
         {isRecursive ? (
-          <View style={{ flex: 1.4 }}>
+          <View style={{ flex: 1.4, opacity: approveDisabled ? 0.4 : 1 }} pointerEvents={approveDisabled ? 'none' : 'auto'}>
             <HoldToConfirm label={holdLabel} onComplete={handleApprovePress} />
           </View>
         ) : (
           <Pressable
             onPress={handleApprovePress}
-            disabled={inFlight !== null}
+            disabled={inFlight !== null || approveDisabled}
             style={({ pressed }) => ({
               flex: 1.4,
               paddingVertical: spacing[5],

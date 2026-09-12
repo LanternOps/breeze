@@ -492,8 +492,11 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | `AGENT_MTLS_BINDING_MODE` | `off` | `audit` counts certificate/device binding mismatches without denying; `enforce` denies them. Requires a validating proxy. Never inferred from `NODE_ENV`/`IS_HOSTED`/`CF_MTLS_*`. |
 | `MANAGED_SOFTWARE_POLICY_MODE` | `compat` | `enforce` requires an upgraded agent for every managed-software command, public destinations included. Check your not-yet-upgraded device count first — they are denied outright. |
 | `AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID` | `false` | Requires update manifests to carry a signing key ID. Not fleet-wide: older agent builds ignore the pushed value. Only enable once the missing-ID count has been zero for 7 consecutive days. |
-| `AUTH_BROWSER_TRANSITIONS_ENFORCED` | `false` | Phased rollout switch for a browser-session binding hardening mechanism that ties an issued session to a browser-generated binding value, so a stolen refresh token alone is not enough to move a session to a different browser. `true` requires every new session to carry the binding and disables legacy issuance. Validated at boot: must be a boolean (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`) when set. |
-| `AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED` | `false` | Extends the same binding to terminal/native sessions. Requires `AUTH_BROWSER_TRANSITIONS_ENFORCED=true` — the API refuses to boot if this is `true` while that one is not. |
+| `AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED` | `false` | Enables the terminal/native logout-preparation flow described in [Cloudflare Access trust](/deploy/cloudflare-access-trust/). Validated at boot: must be a boolean (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`) when set. It no longer depends on any other flag. |
+
+<Aside type="note" title="Removed in v0.112.0: `AUTH_BROWSER_TRANSITIONS_ENFORCED`">
+  Browser-session binding — tying an issued session to a browser-generated binding value so a stolen refresh token alone cannot move a session to another browser — is now **always enforced** on every sign-in path (password, SSO, Cloudflare Access, MFA, passkey, refresh, registration, invitation). The rollout switch is gone and is ignored if still present in `.env`; delete the line. There is no configuration that restores the unguarded issuance path. See the [v0.112.0 upgrade notes](/deploy/upgrades/#v01120--windows-msi-fix-security-remediations-bare-metal-recovery).
+</Aside>
 
 ## Feature Flags
 
@@ -578,6 +581,8 @@ Both variables are validated when the API starts. An invalid mode or an unknown 
 | Variable | Default | Description |
 |---|---|---|
 | `AGENT_BACKUP_SERVER_URL` | — | Instance-level backup control-plane URL, pushed to every agent through its config, enrollment response, and heartbeat reply. Lets you point the [enterprise backup](/deploy/binaries/#backup-binary) subsystem (Hyper-V, MSSQL, system image) at a separate backup control plane instead of the main API. Must be `https://` in production; `http://` is accepted only for `localhost`/`127.0.0.1`. Leave unset to keep backups pointed at the main API. |
+| `RECOVERY_MEDIA_WORK_DIR` | `/data/recovery-work` (Compose) | Scratch directory for building [bare-metal recovery](/backup/bare-metal-recovery/) bundles and ISOs (a 45–65 MB helper binary plus a tarball or ISO per build). The `api` and `worker` containers mount `/tmp` as a 64 MB tmpfs, so building under the OS temp directory fails with `ENOSPC`; the shipped Compose files default this to a directory on the persistent `api_data` volume. Override only to move it elsewhere on durable storage, and map it in the `api` service `environment:` block. |
+| `BACKUP_GC_GRACE_MS` | `172800000` (48 h) | How long an expired snapshot's storage objects are kept before the retention sweep deletes them. **Lab/test knob only.** In production the API enforces a floor of one hour and logs when a lower value is ignored. Leave unset. |
 
 ## Cloud-to-Cloud Backup (M365)
 

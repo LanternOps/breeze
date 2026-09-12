@@ -4,6 +4,10 @@ import { getBullMQConnection } from '../services/redis';
 import { detectPatternCorrelation, runCorrelationRules } from '../services/logSearch';
 import { captureException } from '../services/sentry';
 import { isReusableState } from '../services/bullmqUtils';
+import {
+  revalidateLogReadAuthority,
+  type LogReadAuthorityEnvelope,
+} from '../services/logReadAuthority';
 import * as dbModule from '../db';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -35,9 +39,23 @@ type DetectPatternJobData = {
   minOccurrences?: number;
   sampleLimit?: number;
   queuedAt: string;
+  authority: LogReadAuthorityEnvelope;
 };
 
 type CorrelationJobData = DetectRulesJobData | DetectPatternJobData;
+
+function isValidPatternJobData(data: DetectPatternJobData): boolean {
+  const optionalInteger = (value: unknown, min: number, max: number) => value === undefined
+    || (Number.isInteger(value) && Number(value) >= min && Number(value) <= max);
+  return typeof data.orgId === 'string' && data.orgId.length > 0
+    && typeof data.pattern === 'string' && data.pattern.length > 0 && data.pattern.length <= 1000
+    && typeof data.isRegex === 'boolean'
+    && typeof data.queuedAt === 'string' && Number.isFinite(Date.parse(data.queuedAt))
+    && optionalInteger(data.timeWindowSeconds, 30, 86_400)
+    && optionalInteger(data.minDevices, 1, 200)
+    && optionalInteger(data.minOccurrences, 1, 50_000)
+    && optionalInteger(data.sampleLimit, 1, 1_000);
+}
 
 export interface LogCorrelationDetectionJobSnapshot {
   id: string;
@@ -75,43 +93,49 @@ export function getLogCorrelationQueue(): Queue<CorrelationJobData> {
 export function createLogCorrelationWorker(): Worker<CorrelationJobData> {
   return new Worker<CorrelationJobData>(
     LOG_CORRELATION_QUEUE,
-    async (job: Job<CorrelationJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        if (job.data.type === 'pattern') {
-          const detection = await detectPatternCorrelation({
-            orgId: job.data.orgId,
-            pattern: job.data.pattern,
-            isRegex: job.data.isRegex,
-            minDevices: job.data.minDevices,
-            minOccurrences: job.data.minOccurrences,
-            sampleLimit: job.data.sampleLimit,
-            timeWindowSeconds: job.data.timeWindowSeconds,
-          });
-          return {
-            mode: 'pattern',
-            detected: Boolean(detection),
-            result: detection,
-            queuedAt: job.data.queuedAt,
-          };
-        }
-
-        const detections = await runCorrelationRules({
-          orgId: job.data.orgId,
-          ruleIds: job.data.ruleIds,
-        });
-
-        return {
-          mode: 'rules',
-          detections: detections.length,
-          queuedAt: job.data.queuedAt,
-        };
-      });
-    },
+    async (job: Job<CorrelationJobData>) => processLogCorrelationJob(job.data),
     {
       connection: getBullMQConnection(),
       concurrency: 1,
     }
   );
+}
+
+export async function processLogCorrelationJob(data: CorrelationJobData): Promise<unknown> {
+  return runWithSystemDbAccess(async () => {
+    if (data.type === 'pattern') {
+      if (!isValidPatternJobData(data)) {
+        throw new Error('Log detection job is malformed');
+      }
+      const live = await revalidateLogReadAuthority(data.authority);
+      if (!live || live.authority.orgId !== data.orgId) {
+        throw new Error('Log detection authority is no longer valid');
+      }
+      const detection = await detectPatternCorrelation({
+        orgId: data.orgId,
+        pattern: data.pattern,
+        isRegex: data.isRegex,
+        minDevices: data.minDevices,
+        minOccurrences: data.minOccurrences,
+        sampleLimit: data.sampleLimit,
+        timeWindowSeconds: data.timeWindowSeconds,
+        allowedDeviceIds: live.allowedDeviceIds,
+        allowedSiteIds: live.allowedSiteIds,
+      });
+      return {
+        mode: 'pattern',
+        detected: Boolean(detection),
+        result: detection,
+        queuedAt: data.queuedAt,
+      };
+    }
+
+    const detections = await runCorrelationRules({
+      orgId: data.orgId,
+      ruleIds: data.ruleIds,
+    });
+    return { mode: 'rules', detections: detections.length, queuedAt: data.queuedAt };
+  });
 }
 
 async function scheduleCorrelationDetection(): Promise<void> {
@@ -222,6 +246,7 @@ export async function enqueueAdHocPatternCorrelationDetection(options: {
   minDevices?: number;
   minOccurrences?: number;
   sampleLimit?: number;
+  authority: LogReadAuthorityEnvelope;
 }): Promise<string> {
   const queue = getLogCorrelationQueue();
   const slot = Math.floor(Date.now() / ON_DEMAND_DEDUPE_WINDOW_MS).toString(36);
@@ -235,6 +260,7 @@ export async function enqueueAdHocPatternCorrelationDetection(options: {
       minDevices: options.minDevices,
       minOccurrences: options.minOccurrences,
       sampleLimit: options.sampleLimit,
+      authorityFingerprint: options.authority.fingerprint,
     })),
     slot,
   ].join(':');
@@ -264,6 +290,7 @@ export async function enqueueAdHocPatternCorrelationDetection(options: {
       minOccurrences: options.minOccurrences,
       sampleLimit: options.sampleLimit,
       queuedAt: new Date().toISOString(),
+      authority: options.authority,
     },
     {
       jobId,

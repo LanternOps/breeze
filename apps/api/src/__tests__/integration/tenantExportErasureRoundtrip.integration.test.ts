@@ -767,4 +767,36 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(stats.tablesDeleted['device_mtls_certificates']).toBe(1);
     expect(stats.tablesDeleted['devices']).toBe(1);
   });
+
+  it('aborts erasure before any row when an S3-backed org document cannot be cleared, then completes once the object is gone (W03)', async () => {
+    const db = getTestDb();
+    const { orgA } = await seedTwoOrgs();
+    const docId = crypto.randomUUID();
+    await db.execute(sql`
+      INSERT INTO org_documents (id, org_id, title, category, storage_backend, storage_key,
+                                 content_type, byte_size, sha256, original_filename)
+      VALUES (${docId}, ${orgA}, 'Onboarding baseline', 'baseline', 's3', ${`org-documents/${docId}`},
+              'application/pdf', 1024, ${'a'.repeat(64)}, 'baseline.pdf')
+    `);
+    expect(await rowCount(db, 'org_documents', orgA)).toBe(1);
+
+    // No S3 bucket is configured in the integration environment, so the object
+    // pre-clear faults. The contract is that it faults BEFORE the first row
+    // delete and is rerunnable — nothing may be missing afterwards.
+    await expect(cascadeDeleteOrg(orgA, PERFORMED_BY, PERFORMED_EMAIL)).rejects.toThrow(/rerunnable/i);
+    expect(await rowCount(db, 'org_documents', orgA)).toBe(1);
+    expect(await rowCount(db, 'sites', orgA)).toBe(2);
+    expect(await rowCount(db, 'tickets', orgA)).toBe(1);
+
+    // Operator clears the object out of band (or it was a db-backed row all
+    // along); the same erasure now runs to completion — proving the pre-clear
+    // is a gate, not a one-way failure.
+    await db.execute(sql`
+      UPDATE org_documents SET storage_backend = 'db', storage_key = NULL, data = '\\x00'::bytea
+      WHERE id = ${docId}
+    `);
+    const stats = await cascadeDeleteOrg(orgA, PERFORMED_BY, PERFORMED_EMAIL);
+    expect(await rowCount(db, 'org_documents', orgA)).toBe(0);
+    expect(stats.tablesDeleted['org_documents']).toBe(1);
+  });
 });

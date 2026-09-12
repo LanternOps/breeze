@@ -42,10 +42,12 @@ type SLAEvent = {
 };
 
 type SLADashboardData = {
-  compliancePercent?: number;
+  // null when the caller's site ceiling is empty — no visible device means no
+  // compliance or RPO/RTO figure to report. Rendered via `?? 0` below.
+  compliancePercent?: number | null;
   activeBreaches?: number;
-  avgRpoMinutes?: number;
-  avgRtoMinutes?: number;
+  avgRpoMinutes?: number | null;
+  avgRtoMinutes?: number | null;
 };
 
 const eventTypeBadge: Record<string, { label: string; className: string }> = {

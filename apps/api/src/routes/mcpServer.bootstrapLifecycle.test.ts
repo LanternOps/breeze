@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { Hono } from 'hono';
 import { z as zod } from 'zod';
 // Type-only imports — erased at compile time, so importing them here has no
 // runtime effect on module resolution/mocking order below. Used to tie the
@@ -9,6 +10,7 @@ import type { SendDeploymentInvitesOutput } from '../modules/mcpInvites/tools/se
 import type { ConfigureDefaultsOutput } from '../modules/mcpInvites/tools/configureDefaults';
 import { BootstrapError } from '../modules/mcpInvites/types';
 import {
+  __dispatchBootstrapAuthToolForTests,
   __loadMcpBootstrapForTests,
   classifyBootstrapToolResult,
   mcpServerRoutes,
@@ -287,156 +289,112 @@ async function callBootstrap(
   return res.json();
 }
 
-// ---------------------------------------------------------------------------
-// MCP-OAUTH-11 — bootstrap RBAC
-// ---------------------------------------------------------------------------
+/**
+ * `tools/call` denies bootstrap tools at the approval boundary before the
+ * dispatcher runs (see the suite above), so the dispatcher's own contracts —
+ * RBAC before ledger, fail-closed ledger, uniform audit, partial-failure
+ * classification — can no longer be reached through a request. Drive it
+ * directly via the test-only export so those contracts stay pinned on the code
+ * that is still shipped, and so an approval surface can be re-attached with
+ * evidence rather than hope.
+ */
+/**
+ * A real Hono `Context`. The dispatcher's uniform audit is skipped outright
+ * when `c` is undefined (`writeMcpToolAuditEvent` returns early), so a
+ * hand-rolled stub would silently make every audit assertion below vacuous.
+ */
+async function makeContext(): Promise<any> {
+  let captured: unknown;
+  const app = new Hono();
+  app.get('/', (c) => {
+    captured = c;
+    return c.text('ok');
+  });
+  await app.request('/');
+  return captured;
+}
 
-describe('bootstrap tool RBAC (MCP-OAUTH-11)', () => {
-  it('send_deployment_invites: low-priv member (no devices.write) is DENIED even with execute-admin OFF + tool allowlisted', async () => {
-    const body = await callBootstrap('send_deployment_invites', {
-      perms: [{ resource: 'devices', action: 'read' }],
+async function dispatchBootstrap(
+  toolName: string,
+  opts: {
+    scopes?: string[];
+    perms?: Array<{ resource: string; action: string }>;
+    args?: Record<string, unknown>;
+  } = {},
+) {
+  testState.scopes = opts.scopes ?? ['ai:read', 'ai:execute'];
+  testState.permissions = opts.perms ?? [{ resource: '*', action: '*' }];
+  // Only ONE getUserPermissions call happens here: the transport-level
+  // SR2-15 coarse re-clamp lives in buildAuthFromApiKey, which this direct
+  // entry deliberately skips.
+  mocks.getUserPermissions.mockReset();
+  mocks.getUserPermissions.mockResolvedValue(buildPermsResult(testState.permissions));
+
+  const bootstrap = await __loadMcpBootstrapForTests();
+  const tool = bootstrap!.authTools.find((t: any) => t.definition.name === toolName)!;
+  const apiKey = {
+    id: 'key-1',
+    orgId: 'org-1',
+    partnerId: 'partner-1',
+    name: 'test',
+    keyPrefix: 'brz_test',
+    scopes: testState.scopes,
+    rateLimit: 1000,
+    createdBy: 'user-1',
+  };
+  const auth = {
+    user: { id: 'user-1', email: 'key@example.com' },
+    // checkPermissionRequirements fails OPEN without a token and skips RBAC
+    // when roleId is null — the transport normally supplies both, so the
+    // direct entry must too or the RBAC assertions below are vacuous.
+    token: { roleId: testState.roleId },
+    scope: 'organization',
+    orgId: 'org-1',
+    partnerId: 'partner-1',
+    accessibleOrgIds: ['org-1'],
+    accessiblePartnerIds: [],
+    canAccessOrg: (orgId: string) => orgId === 'org-1',
+    orgCondition: () => null,
+  };
+
+  return __dispatchBootstrapAuthToolForTests(
+    1,
+    tool as any,
+    opts.args ?? {},
+    auth as any,
+    testState.scopes,
+    apiKey as any,
+    await makeContext(),
+    'sess-1',
+  ) as Promise<any>;
+}
+
+describe('bootstrap Tier 3 interactive-approval boundary', () => {
+  it.each([
+    ['send_deployment_invites', { emails: ['a@b.com'] }],
+    ['configure_defaults', {}],
+  ])('%s is denied before RBAC, validation, ledger, audit, or handler effects', async (toolName, args) => {
+    const body = await callBootstrap(toolName, {
+      perms: [{ resource: '*', action: '*' }],
+      args,
     });
-    expect(body.error?.code).toBe(-32603);
-    expect(body.error?.message).toContain('devices.write');
-    // Reject precedes ledger: no ledger row, handler never ran.
+    const payload = JSON.parse(body.result.content[0].text);
+    expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
+    expect(body.result.isError).toBe(true);
     expect(mocks.ledgerBegin).not.toHaveBeenCalled();
+    expect(mocks.ledgerComplete).not.toHaveBeenCalled();
+    expect(mocks.writeAuditEvent).toHaveBeenCalledTimes(1); // transport call audit only
     expect(mocks.sendHandler).not.toHaveBeenCalled();
-  });
-
-  it('send_deployment_invites: role WITH devices.write succeeds', async () => {
-    const body = await callBootstrap('send_deployment_invites', {
-      perms: [{ resource: 'devices', action: 'write' }],
-      args: { emails: ['a@b.com'] },
-    });
-    expect(body.error).toBeUndefined();
-    expect(mocks.sendHandler).toHaveBeenCalledTimes(1);
-  });
-
-  it('configure_defaults: role with organizations.write but MISSING devices.write extra is DENIED', async () => {
-    const body = await callBootstrap('configure_defaults', {
-      perms: [
-        { resource: 'organizations', action: 'write' },
-        { resource: 'alerts', action: 'write' },
-      ],
-    });
-    expect(body.error?.code).toBe(-32603);
-    expect(body.error?.message).toContain('devices.write');
-    expect(mocks.ledgerBegin).not.toHaveBeenCalled();
     expect(mocks.configureHandler).not.toHaveBeenCalled();
   });
 
-  it('configure_defaults: role with organizations.write + devices.write + alerts.write succeeds', async () => {
-    const body = await callBootstrap('configure_defaults', {
-      perms: [
-        { resource: 'organizations', action: 'write' },
-        { resource: 'devices', action: 'write' },
-        { resource: 'alerts', action: 'write' },
-      ],
-    });
-    expect(body.error).toBeUndefined();
-    expect(mocks.configureHandler).toHaveBeenCalledTimes(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// MCP-OAUTH-12 — shared Tier 3 ledger/audit lifecycle for bootstrap tools
-// ---------------------------------------------------------------------------
-
-describe('bootstrap Tier 3 ledger/audit lifecycle (MCP-OAUTH-12)', () => {
-  const ALL: Array<{ resource: string; action: string }> = [{ resource: '*', action: '*' }];
-
-  it('send_deployment_invites: ledger row is created BEFORE the handler runs', async () => {
-    let ledgerCallsAtHandlerTime = -1;
-    mocks.sendHandler = vi.fn(async () => {
-      ledgerCallsAtHandlerTime = mocks.ledgerBegin.mock.calls.length;
-      return { invites_sent: 1, invite_ids: ['i1'], skipped_duplicates: 0 };
-    });
-    await callBootstrap('send_deployment_invites', { perms: ALL, args: { emails: ['a@b.com'] } });
-    expect(mocks.ledgerBegin).toHaveBeenCalledTimes(1);
-    expect(ledgerCallsAtHandlerTime).toBe(1);
-    const arg = (mocks.ledgerBegin.mock.calls[0] as any[])[0];
-    expect(arg.toolName).toBe('send_deployment_invites');
-    expect(arg.tier).toBe(3);
-    expect(arg.orgId).toBe('org-1');
-  });
-
-  it('configure_defaults: ledger row is created BEFORE the handler runs', async () => {
-    let ledgerCallsAtHandlerTime = -1;
-    mocks.configureHandler = vi.fn(async () => {
-      ledgerCallsAtHandlerTime = mocks.ledgerBegin.mock.calls.length;
-      return { applied: {} };
-    });
-    await callBootstrap('configure_defaults', { perms: ALL });
-    expect(mocks.ledgerBegin).toHaveBeenCalledTimes(1);
-    expect(ledgerCallsAtHandlerTime).toBe(1);
-    const arg = (mocks.ledgerBegin.mock.calls[0] as any[])[0];
-    expect(arg.toolName).toBe('configure_defaults');
-    expect(arg.tier).toBe(3);
-  });
-
-  it('ledger-creation failure prevents the handler from running (fail closed)', async () => {
-    mocks.ledgerBegin.mockRejectedValueOnce(new Error('ledger insert boom'));
-    const body = await callBootstrap('send_deployment_invites', { perms: ALL, args: { emails: ['a@b.com'] } });
-    expect(body.error?.code).toBe(-32000);
-    expect(mocks.sendHandler).not.toHaveBeenCalled();
-    expect(mocks.ledgerComplete).not.toHaveBeenCalled();
-  });
-
-  it('success completes the ledger (success) and writes a uniform mcp.tool.<name> audit', async () => {
-    await callBootstrap('send_deployment_invites', { perms: ALL, args: { emails: ['a@b.com'] } });
-    expect(mocks.ledgerComplete).toHaveBeenCalledTimes(1);
-    expect((mocks.ledgerComplete.mock.calls[0] as any[])[0].status).toBe('success');
-    const toolAudit = mocks.writeAuditEvent.mock.calls
-      .map((c: any[]) => c[1])
-      .find((p: any) => p?.resourceType === 'mcp_tool_execution');
-    expect(toolAudit).toBeDefined();
-    expect(toolAudit.action).toBe('mcp.tool.send_deployment_invites');
-    expect(toolAudit.result).toBe('success');
-  });
-
-  it('thrown BootstrapError completes the ledger (failure) and writes a failure audit', async () => {
-    mocks.sendHandler = vi.fn(async () => {
-      throw new BootstrapError('RATE_LIMITED', 'too many');
-    });
-    const body = await callBootstrap('send_deployment_invites', { perms: ALL, args: { emails: ['a@b.com'] } });
-    expect(body.error?.code).toBe(-32000);
-    expect(mocks.ledgerComplete).toHaveBeenCalledTimes(1);
-    expect((mocks.ledgerComplete.mock.calls[0] as any[])[0].status).toBe('failure');
-    const toolAudit = mocks.writeAuditEvent.mock.calls
-      .map((c: any[]) => c[1])
-      .find((p: any) => p?.resourceType === 'mcp_tool_execution');
-    expect(toolAudit?.result).toBe('failure');
-  });
-
-  it('send_deployment_invites PARTIAL failure (per-invite failures) classifies the ledger as failure', async () => {
-    mocks.sendHandler = vi.fn(async () => ({
-      invites_sent: 1,
-      invite_ids: ['i1'],
-      skipped_duplicates: 0,
-      failures: [{ email: 'bad@x.com', error: 'smtp down' }],
-    }));
+  it('denies malformed bootstrap input at the approval boundary before schema parsing', async () => {
     const body = await callBootstrap('send_deployment_invites', {
-      perms: ALL,
-      args: { emails: ['a@b.com', 'bad@x.com'] },
+      perms: [{ resource: '*', action: '*' }],
+      args: { emails: 'not-an-array' },
     });
-    // Handler result is still returned to the caller (not an RPC error).
-    expect(body.error).toBeUndefined();
-    expect(mocks.ledgerComplete).toHaveBeenCalledTimes(1);
-    expect((mocks.ledgerComplete.mock.calls[0] as any[])[0].status).toBe('failure');
-    const toolAudit = mocks.writeAuditEvent.mock.calls
-      .map((c: any[]) => c[1])
-      .find((p: any) => p?.resourceType === 'mcp_tool_execution');
-    expect(toolAudit?.result).toBe('failure');
-  });
-
-  it('configure_defaults PARTIAL failure (step errors) classifies the ledger as failure', async () => {
-    mocks.configureHandler = vi.fn(async () => ({
-      applied: {},
-      errors: [{ step: 'alert_policy', error: 'boom' }],
-    }));
-    await callBootstrap('configure_defaults', { perms: ALL });
-    expect(mocks.ledgerComplete).toHaveBeenCalledTimes(1);
-    expect((mocks.ledgerComplete.mock.calls[0] as any[])[0].status).toBe('failure');
+    expect(JSON.parse(body.result.content[0].text).code).toBe('MCP_APPROVAL_REQUIRED');
+    expect(mocks.sendHandler).not.toHaveBeenCalled();
   });
 
   it('classifyBootstrapToolResult treats REAL-shaped handler output as failure (regression against field-name drift)', async () => {
@@ -468,6 +426,160 @@ describe('bootstrap Tier 3 ledger/audit lifecycle (MCP-OAUTH-12)', () => {
     expect(classifyBootstrapToolResult(sendResult)).toBe('failure');
     expect(classifyBootstrapToolResult(configureResult)).toBe('failure');
   });
+});
+
+// ---------------------------------------------------------------------------
+// MCP-OAUTH-11 — bootstrap RBAC. Driven through the dispatcher directly
+// (see `dispatchBootstrap`): `tools/call` no longer reaches it.
+// ---------------------------------------------------------------------------
+
+describe('bootstrap tool RBAC (MCP-OAUTH-11)', () => {
+  it('send_deployment_invites: low-priv member (no devices.write) is DENIED even with execute-admin OFF + tool allowlisted', async () => {
+    const body = await dispatchBootstrap('send_deployment_invites', {
+      perms: [{ resource: 'devices', action: 'read' }],
+    });
+    expect(body.error?.code).toBe(-32603);
+    expect(body.error?.message).toContain('devices.write');
+    // Reject precedes ledger: no ledger row, handler never ran.
+    expect(mocks.ledgerBegin).not.toHaveBeenCalled();
+    expect(mocks.sendHandler).not.toHaveBeenCalled();
+  });
+
+  it('send_deployment_invites: role WITH devices.write succeeds', async () => {
+    const body = await dispatchBootstrap('send_deployment_invites', {
+      perms: [{ resource: 'devices', action: 'write' }],
+      args: { emails: ['a@b.com'] },
+    });
+    expect(body.error).toBeUndefined();
+    expect(mocks.sendHandler).toHaveBeenCalledTimes(1);
+  });
+
+  it('configure_defaults: role with organizations.write but MISSING devices.write extra is DENIED', async () => {
+    const body = await dispatchBootstrap('configure_defaults', {
+      perms: [
+        { resource: 'organizations', action: 'write' },
+        { resource: 'alerts', action: 'write' },
+      ],
+    });
+    expect(body.error?.code).toBe(-32603);
+    expect(body.error?.message).toContain('devices.write');
+    expect(mocks.ledgerBegin).not.toHaveBeenCalled();
+    expect(mocks.configureHandler).not.toHaveBeenCalled();
+  });
+
+  it('configure_defaults: role with organizations.write + devices.write + alerts.write succeeds', async () => {
+    const body = await dispatchBootstrap('configure_defaults', {
+      perms: [
+        { resource: 'organizations', action: 'write' },
+        { resource: 'devices', action: 'write' },
+        { resource: 'alerts', action: 'write' },
+      ],
+    });
+    expect(body.error).toBeUndefined();
+    expect(mocks.configureHandler).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MCP-OAUTH-12 — shared Tier 3 ledger/audit lifecycle for bootstrap tools
+// ---------------------------------------------------------------------------
+
+describe('bootstrap Tier 3 ledger/audit lifecycle (MCP-OAUTH-12)', () => {
+  const ALL: Array<{ resource: string; action: string }> = [{ resource: '*', action: '*' }];
+
+  it('send_deployment_invites: ledger row is created BEFORE the handler runs', async () => {
+    let ledgerCallsAtHandlerTime = -1;
+    mocks.sendHandler = vi.fn(async () => {
+      ledgerCallsAtHandlerTime = mocks.ledgerBegin.mock.calls.length;
+      return { invites_sent: 1, invite_ids: ['i1'], skipped_duplicates: 0 };
+    });
+    await dispatchBootstrap('send_deployment_invites', { perms: ALL, args: { emails: ['a@b.com'] } });
+    expect(mocks.ledgerBegin).toHaveBeenCalledTimes(1);
+    expect(ledgerCallsAtHandlerTime).toBe(1);
+    const arg = (mocks.ledgerBegin.mock.calls[0] as any[])[0];
+    expect(arg.toolName).toBe('send_deployment_invites');
+    expect(arg.tier).toBe(3);
+    expect(arg.orgId).toBe('org-1');
+  });
+
+  it('configure_defaults: ledger row is created BEFORE the handler runs', async () => {
+    let ledgerCallsAtHandlerTime = -1;
+    mocks.configureHandler = vi.fn(async () => {
+      ledgerCallsAtHandlerTime = mocks.ledgerBegin.mock.calls.length;
+      return { applied: {} };
+    });
+    await dispatchBootstrap('configure_defaults', { perms: ALL });
+    expect(mocks.ledgerBegin).toHaveBeenCalledTimes(1);
+    expect(ledgerCallsAtHandlerTime).toBe(1);
+    const arg = (mocks.ledgerBegin.mock.calls[0] as any[])[0];
+    expect(arg.toolName).toBe('configure_defaults');
+    expect(arg.tier).toBe(3);
+  });
+
+  it('ledger-creation failure prevents the handler from running (fail closed)', async () => {
+    mocks.ledgerBegin.mockRejectedValueOnce(new Error('ledger insert boom'));
+    const body = await dispatchBootstrap('send_deployment_invites', { perms: ALL, args: { emails: ['a@b.com'] } });
+    expect(body.error?.code).toBe(-32000);
+    expect(mocks.sendHandler).not.toHaveBeenCalled();
+    expect(mocks.ledgerComplete).not.toHaveBeenCalled();
+  });
+
+  it('success completes the ledger (success) and writes a uniform mcp.tool.<name> audit', async () => {
+    await dispatchBootstrap('send_deployment_invites', { perms: ALL, args: { emails: ['a@b.com'] } });
+    expect(mocks.ledgerComplete).toHaveBeenCalledTimes(1);
+    expect((mocks.ledgerComplete.mock.calls[0] as any[])[0].status).toBe('success');
+    const toolAudit = mocks.writeAuditEvent.mock.calls
+      .map((c: any[]) => c[1])
+      .find((p: any) => p?.resourceType === 'mcp_tool_execution');
+    expect(toolAudit).toBeDefined();
+    expect(toolAudit.action).toBe('mcp.tool.send_deployment_invites');
+    expect(toolAudit.result).toBe('success');
+  });
+
+  it('thrown BootstrapError completes the ledger (failure) and writes a failure audit', async () => {
+    mocks.sendHandler = vi.fn(async () => {
+      throw new BootstrapError('RATE_LIMITED', 'too many');
+    });
+    const body = await dispatchBootstrap('send_deployment_invites', { perms: ALL, args: { emails: ['a@b.com'] } });
+    expect(body.error?.code).toBe(-32000);
+    expect(mocks.ledgerComplete).toHaveBeenCalledTimes(1);
+    expect((mocks.ledgerComplete.mock.calls[0] as any[])[0].status).toBe('failure');
+    const toolAudit = mocks.writeAuditEvent.mock.calls
+      .map((c: any[]) => c[1])
+      .find((p: any) => p?.resourceType === 'mcp_tool_execution');
+    expect(toolAudit?.result).toBe('failure');
+  });
+
+  it('send_deployment_invites PARTIAL failure (per-invite failures) classifies the ledger as failure', async () => {
+    mocks.sendHandler = vi.fn(async () => ({
+      invites_sent: 1,
+      invite_ids: ['i1'],
+      skipped_duplicates: 0,
+      failures: [{ email: 'bad@x.com', error: 'smtp down' }],
+    }));
+    const body = await dispatchBootstrap('send_deployment_invites', {
+      perms: ALL,
+      args: { emails: ['a@b.com', 'bad@x.com'] },
+    });
+    // Handler result is still returned to the caller (not an RPC error).
+    expect(body.error).toBeUndefined();
+    expect(mocks.ledgerComplete).toHaveBeenCalledTimes(1);
+    expect((mocks.ledgerComplete.mock.calls[0] as any[])[0].status).toBe('failure');
+    const toolAudit = mocks.writeAuditEvent.mock.calls
+      .map((c: any[]) => c[1])
+      .find((p: any) => p?.resourceType === 'mcp_tool_execution');
+    expect(toolAudit?.result).toBe('failure');
+  });
+
+  it('configure_defaults PARTIAL failure (step errors) classifies the ledger as failure', async () => {
+    mocks.configureHandler = vi.fn(async () => ({
+      applied: {},
+      errors: [{ step: 'alert_policy', error: 'boom' }],
+    }));
+    await dispatchBootstrap('configure_defaults', { perms: ALL });
+    expect(mocks.ledgerComplete).toHaveBeenCalledTimes(1);
+    expect((mocks.ledgerComplete.mock.calls[0] as any[])[0].status).toBe('failure');
+  });
 
   it('handler-specific business audits still fire alongside the uniform audit', async () => {
     // Model configureDefaults writing its own bootstrap.configure_defaults audit.
@@ -483,7 +595,7 @@ describe('bootstrap Tier 3 ledger/audit lifecycle (MCP-OAUTH-12)', () => {
       });
       return { applied: {} };
     });
-    await callBootstrap('configure_defaults', { perms: ALL });
+    await dispatchBootstrap('configure_defaults', { perms: ALL });
     const actions = mocks.writeAuditEvent.mock.calls.map((c: any[]) => c[1]?.action);
     expect(actions).toContain('bootstrap.configure_defaults'); // business audit intact
     expect(actions).toContain('mcp.tool.configure_defaults'); // uniform audit added
@@ -496,7 +608,7 @@ describe('bootstrap Tier 3 ledger/audit lifecycle (MCP-OAUTH-12)', () => {
 
 describe('reject precedes ledger (ordering pin)', () => {
   it('an RBAC denial creates NO ledger row and never invokes the handler', async () => {
-    const body = await callBootstrap('send_deployment_invites', {
+    const body = await dispatchBootstrap('send_deployment_invites', {
       perms: [{ resource: 'devices', action: 'read' }],
     });
     expect(body.error).toBeDefined();

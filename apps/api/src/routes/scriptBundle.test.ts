@@ -14,7 +14,12 @@ const h = vi.hoisted(() => {
     auth: {} as Record<string, unknown>,
     selectQueue: [] as unknown[][],
     inserts: [] as Array<{ table: unknown; values: unknown }>,
-    updates: [] as Array<{ table: unknown; values: unknown }>
+    updates: [] as Array<{ table: unknown; values: unknown }>,
+    // cutScriptVersion calls, recorded rather than executed: the real helper
+    // needs a live `SELECT ... FOR UPDATE`. Its behaviour is covered by
+    // services/scriptVersions.test.ts and, end to end, by
+    // __tests__/integration/scriptBundleRls.integration.test.ts.
+    cuts: [] as Array<{ scriptId: string; provenance: Record<string, unknown> }>
   };
   function chain(get: () => unknown) {
     const c: Record<string, unknown> = {};
@@ -32,8 +37,24 @@ const h = vi.hoisted(() => {
 // service graph (queues, config validation) never loads in the test fork.
 vi.mock('../services', () => ({}));
 
+// W01a (#5612): every script writer now cuts an immutable version row through
+// this helper, inside the caller's transaction.
+vi.mock('../services/scriptVersions', () => ({
+  cutScriptVersion: vi.fn((_tx: unknown, args: { scriptId: string; provenance: Record<string, unknown> }) => {
+    h.state.cuts.push(args);
+    return Promise.resolve({ id: 'version-row', scriptId: args.scriptId, version: 1 });
+  })
+}));
+
 vi.mock('../db', () => ({
   db: {
+    // insertScriptRow and the bundle's new-version path wrap their write plus
+    // the version cut in db.transaction; the `tx` handed to the callback is
+    // this same mock, so the insert/update recorders above capture both.
+    transaction: vi.fn(async (fn: (tx: unknown) => unknown) => {
+      const { db } = await import('../db');
+      return fn(db);
+    }),
     select: vi.fn(() => h.chain(() => h.state.selectQueue.shift() ?? [])),
     insert: vi.fn((table: unknown) => ({
       values: vi.fn((values: unknown) => {
@@ -113,6 +134,7 @@ describe('script bundle routes', () => {
     h.state.selectQueue = [];
     h.state.inserts = [];
     h.state.updates = [];
+    h.state.cuts = [];
     setAuth();
     app = new Hono();
     app.route('/scripts', scriptRoutes);

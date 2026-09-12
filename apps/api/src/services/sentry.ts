@@ -59,6 +59,7 @@ const ALLOWED_TAG_NAMES = new Set([
   'scope',
   'org_id',
   'partner_id',
+  'stripe_reconcile_stage',
   // BREEZE-X: a `dbWriteExpectingRows` 0-row warning is only triageable if the
   // call site (`cas_label`) and the state the row was already in
   // (`prior_status`) survive the scrubber. Both are enum-ish and bounded by
@@ -291,6 +292,14 @@ const ALLOWED_TAG_NAMES = new Set([
   // thousand. Cardinality is bounded in practice by the throttle: at most one
   // event per outage.
   'llm_egress_dropped',
+  // SEC-142/143: WHICH reservation TTL the expiry sweep fired on. A closed
+  // two-literal union produced by the sweep's own arithmetic (`active_ttl` /
+  // `indeterminate_ttl`) — no org, reservation or amount can reach it; those go
+  // only to the console lines, which are not scrubbed. Allowlisted because
+  // `scrubEvent` deletes `message`, and the two cases need different responses:
+  // `active_ttl` means dispatches are dying before they settle, while
+  // `indeterminate_ttl` means the provider's outcome never became known.
+  'ai_budget_expiry_reason',
   // #4143: which CONTAINER produced the event. Since the api/worker role split
   // (#4086) a droplet in split mode runs two processes off the same image,
   // same DSN, same release — so an event from the worker was indistinguishable

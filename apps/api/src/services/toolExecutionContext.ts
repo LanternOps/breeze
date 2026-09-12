@@ -1,3 +1,4 @@
+import type { ReleaseDecision } from './scriptProposals/approvalMethod';
 import type { scripts } from '../db/schema';
 import type { RunScriptSnapshot } from './actionIntents/runScriptSnapshot';
 import type { TenantVariableScope } from './tenantVariableResolution';
@@ -89,4 +90,17 @@ export type ToolExecutionContext = {
    * writing anything.
    */
   actionIntentId?: string;
+  /**
+   * The released intent's decision record — set by the SAME two release
+   * paths that set `actionIntentId`, from the intent row they already hold,
+   * and by nothing else (#5645). `run_script`'s proposal branch derives the
+   * execution row's `approval_method` (spec §4.1) from it via
+   * `approvalMethodForRelease`; a handler that finds it absent has no
+   * release to attribute the run to and must not invent a method.
+   *
+   * Passed alongside `actionIntentId` unconditionally for the reason that
+   * field is: structurally unobservable to every handler that does not read
+   * it, and a tool-name gate would have to be edited by the next consumer.
+   */
+  releaseDecision?: ReleaseDecision;
 };

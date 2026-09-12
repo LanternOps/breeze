@@ -9,7 +9,8 @@ import {
   lte,
   or,
   sql,
-  type SQL
+  type SQL,
+  type SQLWrapper
 } from 'drizzle-orm';
 
 import { db } from '../db';
@@ -284,6 +285,7 @@ export type UserRiskEventFilter = {
   severity?: 'low' | 'medium' | 'high' | 'critical';
   from?: Date;
   to?: Date;
+  siteIds?: string[];
   limit?: number;
   offset?: number;
 };
@@ -292,7 +294,64 @@ export type UserRiskEvaluationFilter = {
   orgIds?: string[];
   orgId?: string;
   days?: number;
+  siteIds?: string[];
 };
+
+/**
+ * Current membership-site visibility for user-risk rows. Site scope is an
+ * application-layer axis: org RLS cannot express it. The EXISTS form avoids
+ * multiplying rows when historical data contains duplicate org memberships.
+ * Undefined is unrestricted (but still requires current membership), [] is
+ * denied, and a non-empty list uses the canonical any-overlap rule. NULL target
+ * site_ids therefore fails closed for every restricted caller.
+ */
+function userRiskMembershipVisible(
+  orgIdColumn: SQLWrapper,
+  userIdColumn: SQLWrapper,
+  siteIds?: string[],
+  requestedSiteId?: string,
+): SQL {
+  if (siteIds !== undefined && siteIds.length === 0) return sql`false`;
+  const conditions: SQL[] = [
+    sql`"risk_site_membership"."org_id" = ${orgIdColumn}`,
+    sql`"risk_site_membership"."user_id"::text = (${userIdColumn})::text`,
+  ];
+  if (requestedSiteId) {
+    conditions.push(sql`"risk_site_membership"."site_ids" @> ARRAY[${requestedSiteId}::uuid]`);
+  }
+  if (siteIds !== undefined) {
+    const allowed = sql.join(siteIds.map((siteId) => sql`${siteId}::uuid`), sql`, `);
+    conditions.push(sql`"risk_site_membership"."site_ids" && ARRAY[${allowed}]::uuid[]`);
+  }
+  return sql`exists (
+    select 1 from "organization_users" as "risk_site_membership"
+    where ${and(...conditions)}
+  )`;
+}
+
+/**
+ * Site-ceiling predicate for readers whose base table is NOT already constrained
+ * to a current `organization_users` row — the user-risk event log and the ML
+ * feedback ledger. An unrestricted caller (`siteIds === undefined`) gets `true`:
+ * these projections are org-scoped history, so requiring a *current* membership
+ * would silently drop events of departed members from an unrestricted reader's
+ * history and from the evaluation denominators, and would add a correlated
+ * subquery per row for no authorization gain. A defined ceiling (including the
+ * empty one) still gets the full membership + overlap proof.
+ *
+ * Readers that already select FROM / INNER JOIN `organization_users`
+ * (`listUserRiskScores`, `getUserRiskDetail`, `getUserRiskOrgMembership`) keep
+ * calling {@link userRiskMembershipVisible} directly — main required a current
+ * membership there before this change and must keep doing so.
+ */
+function userRiskSiteCeiling(
+  orgIdColumn: SQLWrapper,
+  userIdColumn: SQLWrapper,
+  siteIds?: string[],
+): SQL {
+  if (siteIds === undefined) return sql`true`;
+  return userRiskMembershipVisible(orgIdColumn, userIdColumn, siteIds);
+}
 
 export type UserRiskEvaluation = {
   windowDays: number;
@@ -954,7 +1013,12 @@ export async function listUserRiskScores(filter: UserRiskScoreListFilter): Promi
     .groupBy(userRiskScores.orgId, userRiskScores.userId)
     .as('latest_user_risk_scores');
 
-  const conditions: SQL[] = [];
+  const conditions: SQL[] = [userRiskMembershipVisible(
+    userRiskScores.orgId,
+    userRiskScores.userId,
+    filter.siteIds,
+    filter.siteId,
+  )];
   if (filter.minScore !== undefined) conditions.push(gte(userRiskScores.score, clampScore(filter.minScore)));
   if (filter.maxScore !== undefined) conditions.push(lte(userRiskScores.score, clampScore(filter.maxScore)));
   if (filter.trendDirection) conditions.push(eq(userRiskScores.trendDirection, filter.trendDirection));
@@ -967,17 +1031,6 @@ export async function listUserRiskScores(filter: UserRiskScoreListFilter): Promi
       )!
     );
   }
-  if (filter.siteId) {
-    conditions.push(sql`${organizationUsers.siteIds} @> ARRAY[${filter.siteId}]::uuid[]`);
-  } else if (filter.siteIds) {
-    if (filter.siteIds.length === 0) {
-      conditions.push(sql`false`);
-    } else {
-      const allowedSiteIds = sql.join(filter.siteIds.map((siteId) => sql`${siteId}::uuid`), sql`, `);
-      conditions.push(sql`${organizationUsers.siteIds} && ARRAY[${allowedSiteIds}]`);
-    }
-  }
-
   const whereClause = and(...conditions);
   const limit = Math.min(Math.max(1, filter.limit ?? 25), 200);
   const offset = Math.max(0, filter.offset ?? 0);
@@ -992,13 +1045,6 @@ export async function listUserRiskScores(filter: UserRiskScoreListFilter): Promi
         eq(userRiskScores.calculatedAt, latestByUser.calculatedAt)
       ))
       .innerJoin(users, eq(userRiskScores.userId, users.id))
-      .innerJoin(
-        organizationUsers,
-        and(
-          eq(organizationUsers.orgId, userRiskScores.orgId),
-          eq(organizationUsers.userId, users.id)
-        )
-      )
       .where(whereClause)
       .then((result) => result[0]?.count ?? 0),
     db
@@ -1019,13 +1065,6 @@ export async function listUserRiskScores(filter: UserRiskScoreListFilter): Promi
         eq(userRiskScores.calculatedAt, latestByUser.calculatedAt)
       ))
       .innerJoin(users, eq(userRiskScores.userId, users.id))
-      .innerJoin(
-        organizationUsers,
-        and(
-          eq(organizationUsers.orgId, userRiskScores.orgId),
-          eq(organizationUsers.userId, users.id)
-        )
-      )
       .where(whereClause)
       .orderBy(desc(userRiskScores.score), desc(userRiskScores.calculatedAt), desc(userRiskScores.id))
       .limit(limit)
@@ -1047,7 +1086,7 @@ export async function listUserRiskScores(filter: UserRiskScoreListFilter): Promi
   };
 }
 
-export async function getUserRiskDetail(orgId: string, userId: string): Promise<{
+export async function getUserRiskDetail(orgId: string, userId: string, siteIds?: string[]): Promise<{
   user: { id: string; name: string; email: string; mfaEnabled: boolean; lastLoginAt: string | null };
   latestScore: {
     score: number;
@@ -1073,6 +1112,12 @@ export async function getUserRiskDetail(orgId: string, userId: string): Promise<
   }>;
   policy: UserRiskPolicy;
 } | null> {
+  // No row lock here on purpose: requests run inside one
+  // `withDbAccessContext` transaction, so a FOR SHARE would pin these `users`
+  // and `organization_users` rows for the whole request — blocking concurrent
+  // membership writes on hot rows and being blocked by org erasure or bulk site
+  // moves. Every subsidiary read below re-evaluates the same visibility
+  // predicate under its own snapshot, so the ceiling still holds.
   const [membership] = await db
     .select({
       userId: users.id,
@@ -1086,14 +1131,15 @@ export async function getUserRiskDetail(orgId: string, userId: string): Promise<
     .where(
       and(
         eq(organizationUsers.orgId, orgId),
-        eq(organizationUsers.userId, userId)
+        eq(organizationUsers.userId, userId),
+        userRiskMembershipVisible(organizationUsers.orgId, organizationUsers.userId, siteIds)
       )
     )
     .limit(1);
 
   if (!membership) return null;
 
-  const [history, events, policy] = await Promise.all([
+  const [history, events] = await Promise.all([
     db
       .select({
         score: userRiskScores.score,
@@ -1105,7 +1151,8 @@ export async function getUserRiskDetail(orgId: string, userId: string): Promise<
       .where(
         and(
           eq(userRiskScores.orgId, orgId),
-          eq(userRiskScores.userId, userId)
+          eq(userRiskScores.userId, userId),
+          userRiskMembershipVisible(userRiskScores.orgId, userRiskScores.userId, siteIds)
         )
       )
       .orderBy(desc(userRiskScores.calculatedAt))
@@ -1124,15 +1171,16 @@ export async function getUserRiskDetail(orgId: string, userId: string): Promise<
       .where(
         and(
           eq(userRiskEvents.orgId, orgId),
-          eq(userRiskEvents.userId, userId)
+          eq(userRiskEvents.userId, userId),
+          userRiskMembershipVisible(userRiskEvents.orgId, userRiskEvents.userId, siteIds)
         )
       )
       .orderBy(desc(userRiskEvents.occurredAt))
-      .limit(100),
-    getOrCreateUserRiskPolicy(orgId)
+      .limit(100)
   ]);
 
   if (history.length === 0) return null;
+  const policy = await getOrCreateUserRiskPolicy(orgId);
 
   const latest = history[0]!;
   const previous = history[1] ?? null;
@@ -1199,6 +1247,11 @@ export async function listUserRiskEvents(filter: UserRiskEventFilter): Promise<{
   if (filter.severity) conditions.push(eq(userRiskEvents.severity, filter.severity));
   if (filter.from) conditions.push(gte(userRiskEvents.occurredAt, filter.from));
   if (filter.to) conditions.push(lte(userRiskEvents.occurredAt, filter.to));
+  conditions.push(userRiskSiteCeiling(
+    userRiskEvents.orgId,
+    userRiskEvents.userId,
+    filter.siteIds,
+  ));
 
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
   const limit = Math.min(Math.max(1, filter.limit ?? 50), 500);
@@ -1274,6 +1327,16 @@ export async function getUserRiskEvaluation(filter: UserRiskEvaluationFilter): P
     feedbackConditions.push(inArray(mlFeedbackEvents.orgId, filter.orgIds));
     riskEventConditions.push(inArray(userRiskEvents.orgId, filter.orgIds));
   }
+  feedbackConditions.push(userRiskSiteCeiling(
+    mlFeedbackEvents.orgId,
+    sql`${mlFeedbackEvents.sourceId}`,
+    filter.siteIds,
+  ));
+  riskEventConditions.push(userRiskSiteCeiling(
+    userRiskEvents.orgId,
+    userRiskEvents.userId,
+    filter.siteIds,
+  ));
 
   const [feedbackRows, signalRows] = await Promise.all([
     db
@@ -1560,14 +1623,15 @@ export async function appendUserRiskSignalEvent(input: {
   return row?.id ?? '';
 }
 
-export async function getUserRiskOrgMembership(userId: string, orgId: string): Promise<boolean> {
+export async function getUserRiskOrgMembership(userId: string, orgId: string, siteIds?: string[]): Promise<boolean> {
   const [membership] = await db
     .select({ id: organizationUsers.id })
     .from(organizationUsers)
     .where(
       and(
         eq(organizationUsers.userId, userId),
-        eq(organizationUsers.orgId, orgId)
+        eq(organizationUsers.orgId, orgId),
+        userRiskMembershipVisible(organizationUsers.orgId, organizationUsers.userId, siteIds)
       )
     )
     .limit(1);
@@ -1603,5 +1667,7 @@ export async function listActiveDeviceSessionsForUserInOrg(input: {
 }
 
 export const userRiskScoringInternals = {
-  recordTrainingAssignment
+  recordTrainingAssignment,
+  userRiskMembershipVisible,
+  userRiskSiteCeiling
 };

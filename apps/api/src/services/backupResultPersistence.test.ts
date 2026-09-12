@@ -13,19 +13,33 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // below would fail. A shared spy would make that mistake invisible.
 const txSelect = vi.hoisted(() => vi.fn());
 
-vi.mock('../db', () => ({
-  db: {
-    update: vi.fn(),
-    select: vi.fn(),
-    insert: vi.fn(),
-    delete: vi.fn(),
-    transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ select: txSelect })),
-  },
+vi.mock('../db', () => {
+  const dbUpdate = vi.fn();
+  return {
+    db: {
+      update: dbUpdate,
+      select: vi.fn(),
+      insert: vi.fn(),
+      delete: vi.fn(),
+      // D18 W01: the late-result base fence AND (on its accept path) the
+      // main job UPDATE both now run inside this ONE transaction, under the
+      // SAME FOR UPDATE lock — so `tx.update` is deliberately the SAME spy
+      // as the ambient `db.update` here: every existing test that configures
+      // `vi.mocked(db.update)...` for "the main update" keeps working
+      // whether that write happens to run through `tx` or the ambient
+      // proxy, which is the point (this mock cannot tell, and in real
+      // Postgres.js neither can the caller — a nested `tx` still commits
+      // through the same connection). `tx.select` stays a DISTINCT spy
+      // (txSelect) — that half of the "must go through tx, not the ambient
+      // proxy" assertion (#2189) is still meaningful and still tested.
+      transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ select: txSelect, update: dbUpdate })),
+    },
 
-  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-}));
+    runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  };
+});
 
 vi.mock('../db/schema', () => ({
   backupJobs: {
@@ -39,6 +53,9 @@ vi.mock('../db/schema', () => ({
     policyId: 'backupJobs.policyId',
     deviceId: 'backupJobs.deviceId',
     errorLog: 'backupJobs.errorLog',
+    baseSnapshotId: 'backupJobs.baseSnapshotId',
+    publishLeaseExpiresAt: 'backupJobs.publishLeaseExpiresAt',
+    storageIdentity: 'backupJobs.storageIdentity',
   },
   backupSnapshots: {
     id: 'backupSnapshots.id',
@@ -52,6 +69,14 @@ vi.mock('../db/schema', () => ({
     requestedImmutabilityEnforcement: 'backupSnapshots.requestedImmutabilityEnforcement',
     immutabilityFallbackReason: 'backupSnapshots.immutabilityFallbackReason',
     encryptionKeyId: 'backupSnapshots.encryptionKeyId',
+    storageIdentity: 'backupSnapshots.storageIdentity',
+    parentSnapshotId: 'backupSnapshots.parentSnapshotId',
+    isIncremental: 'backupSnapshots.isIncremental',
+  },
+  backupSnapshotRetirements: {
+    id: 'backupSnapshotRetirements.id',
+    storageIdentity: 'backupSnapshotRetirements.storageIdentity',
+    snapshotId: 'backupSnapshotRetirements.snapshotId',
   },
   backupSnapshotFiles: {
     snapshotDbId: 'backupSnapshotFiles.snapshotDbId',
@@ -129,7 +154,7 @@ import { checkBackupProviderCapabilities } from './backupSnapshotStorage';
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set']) {
+  for (const method of ['from', 'where', 'limit', 'for', 'returning', 'values', 'set']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -139,6 +164,12 @@ describe('backup result persistence', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     resolveBackupProtectionForDeviceMock.mockReset();
+    // D18 W01: the late-result base fence opens its own db.transaction on
+    // EVERY agent+success call, before the main job UPDATE — give tx.select
+    // a harmless empty-row default so tests that do not care about the fence
+    // (the overwhelming majority) do not have to know it exists. Tests that
+    // DO care push their own mockReturnValueOnce ahead of this default.
+    vi.mocked(txSelect).mockReturnValue(chainMock([]) as any);
     // The diagnostic-failure capture is one-shot per process (#3036); without
     // this the "captures once" assertion would depend on test ordering.
     __resetBackupPredicateMissDiagnosticGuardForTests();
@@ -152,6 +183,12 @@ describe('backup result persistence', () => {
         }),
       }),
     } as any);
+    // D18 W01: the late-result base fence's own db.transaction runs FIRST
+    // (source defaults 'agent', resultStatus is 'completed') — its select is
+    // keyed on `status`/`errorLog`, not `deviceId`/`orgId`/`status` (the
+    // #3036 diagnostic's shape), so this queued value is for the fence, not
+    // the diagnostic; 'cancelled' is not 'failed', so the fence is a no-op.
+    vi.mocked(txSelect).mockReturnValueOnce(chainMock([{ status: 'cancelled', errorLog: null }]) as any);
     // #3036 diagnostic re-read: the job exists and belongs to the reporting
     // device, so the status guard is what rejected it — the routine case.
     vi.mocked(txSelect).mockReturnValueOnce(
@@ -1176,6 +1213,137 @@ describe('backup result persistence', () => {
       }),
     ]);
   });
+
+  describe('D18 W01 -- lineage on write + late-result fence', () => {
+    it('sets parentSnapshotId/isIncremental/storageIdentity from the job and result', async () => {
+      resolveBackupProtectionForDeviceMock.mockResolvedValueOnce(null);
+      vi.mocked(db.update).mockReturnValueOnce(chainMock([{
+        id: 'job-1', orgId: 'org-1', configId: 'config-1', backupType: 'file', backupMode: 'file',
+        baseSnapshotId: 'snap-1', publishLeaseExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        storageIdentity: 's3::e::b',
+      }]) as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(chainMock([{ id: 'base-db-id' }]) as any) // parentSnapshotId lookup
+        .mockReturnValueOnce(chainMock([]) as any); // existingSnapshot -- none
+      vi.mocked(db.insert).mockReturnValueOnce(chainMock([{ id: 'new-snap-db-id', jobId: 'job-1', snapshotId: 'snap-2' }]) as any);
+      vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+      vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+      vi.mocked(computeExpiresAt).mockReturnValue(null);
+
+      const result = await applyBackupCommandResultToJob({
+        jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+        result: {
+          snapshotId: 'snap-2',
+          snapshot: { id: 'snap-2', baseSnapshotId: 'snap-1', formatVersion: 2 },
+          filesBackedUp: 0, bytesBackedUp: 0, referencedFiles: 5,
+        } as any,
+        source: 'agent',
+      });
+
+      expect(result.applied).toBe(true);
+      const insertValues = vi.mocked(db.insert).mock.results[0]?.value?.values;
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+        parentSnapshotId: 'base-db-id',
+        isIncremental: true,
+        storageIdentity: 's3::e::b',
+      }));
+    });
+
+    it('fails a late result with publish_lease_expired when the job is reaped-terminal and its lease has passed', async () => {
+      vi.mocked(txSelect).mockReturnValueOnce(chainMock([{
+        status: 'failed', errorLog: '[stale-backup-reaper] reaped: no progress',
+        baseSnapshotId: null, publishLeaseExpiresAt: new Date(Date.now() - 60 * 1000), storageIdentity: 's3::e::b',
+      }]) as any);
+      const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+
+      const result = await applyBackupCommandResultToJob({
+        jobId: 'job-2', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+        result: { snapshotId: 'snap-3', snapshot: { id: 'snap-3' }, filesBackedUp: 1, bytesBackedUp: 1 } as any,
+        source: 'agent',
+      });
+
+      expect(result.applied).toBe(true);
+      expect(result.snapshotDbId).toBeNull();
+      expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'failed',
+        errorLog: expect.stringContaining('publish_lease_expired'),
+      }));
+      // The fenced branch returns before the ORDINARY main job UPDATE ever
+      // runs -- the one db.update() call that DID happen is the fence's own
+      // reject-write (captured above via setSpy), inside the same
+      // transaction/lock.
+      expect(db.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails a late result with publish_lease_expired when the lease is NULL (review fix: no implicit pass)', async () => {
+      vi.mocked(txSelect).mockReturnValueOnce(chainMock([{
+        status: 'failed', errorLog: '[stale-backup-reaper] reaped: no progress',
+        baseSnapshotId: null, publishLeaseExpiresAt: null, storageIdentity: 's3::e::b',
+      }]) as any);
+      const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+
+      const result = await applyBackupCommandResultToJob({
+        jobId: 'job-2b', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+        result: { snapshotId: 'snap-3b', snapshot: { id: 'snap-3b' }, filesBackedUp: 1, bytesBackedUp: 1 } as any,
+        source: 'agent',
+      });
+
+      expect(result.applied).toBe(true);
+      expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({
+        errorLog: expect.stringContaining('publish_lease_expired'),
+      }));
+    });
+
+    it('fails a late result with base_retired when the lease is live but the base row is gone', async () => {
+      vi.mocked(txSelect).mockReturnValueOnce(chainMock([{
+        status: 'failed', errorLog: '[stale-backup-reaper] reaped: no progress',
+        baseSnapshotId: 'snap-0', publishLeaseExpiresAt: new Date(Date.now() + 60 * 60 * 1000), storageIdentity: 's3::e::b',
+      }]) as any);
+      // checkLateResultBaseFence's base-existence lookup goes through the
+      // AMBIENT db.select (not tx.select) -- it is not part of the fence's own
+      // FOR UPDATE lock read.
+      vi.mocked(db.select).mockReturnValueOnce(chainMock([]) as any); // no live base row
+      const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+
+      const result = await applyBackupCommandResultToJob({
+        jobId: 'job-3', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+        result: { snapshotId: 'snap-4', snapshot: { id: 'snap-4' }, filesBackedUp: 1, bytesBackedUp: 1 } as any,
+        source: 'agent',
+      });
+
+      expect(result.applied).toBe(true);
+      expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({
+        errorLog: expect.stringContaining('base_retired'),
+      }));
+    });
+
+    it('does not fence a live (non-reaped) job even when it carries a base pin', async () => {
+      // status 'running' (not 'failed') -- isReapedTerminal is false regardless
+      // of the lease/base fields, so the fence must not touch the job at all.
+      vi.mocked(txSelect).mockReturnValueOnce(chainMock([{
+        status: 'running', errorLog: null,
+        baseSnapshotId: 'snap-0', publishLeaseExpiresAt: new Date(Date.now() - 1000), storageIdentity: 's3::e::b',
+      }]) as any);
+      vi.mocked(db.update).mockReturnValueOnce(chainMock([]) as any); // main job update: 0 rows (not in-flight/terminal by the outer guard)
+      vi.mocked(txSelect).mockReturnValueOnce(chainMock([]) as any); // #3036 diagnostic re-read
+
+      const result = await applyBackupCommandResultToJob({
+        jobId: 'job-4', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+        result: { snapshotId: 'snap-5', snapshot: { id: 'snap-5' }, filesBackedUp: 1, bytesBackedUp: 1 } as any,
+        source: 'agent',
+      });
+
+      // The fence never fires (not reaped-terminal), so the only update() is
+      // the ordinary main job UPDATE (which this test arranges to return 0
+      // rows) -- never the fence's OWN reject-write, which would be a SECOND
+      // call carrying a `base_retired`/`publish_lease_expired` errorLog.
+      expect(db.update).toHaveBeenCalledTimes(1);
+      expect(result.applied).toBe(false);
+    });
+  });
 });
 
 
@@ -1188,6 +1356,7 @@ describe('partial backup terminal status (#3000)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     resolveBackupProtectionForDeviceMock.mockReset();
+    vi.mocked(txSelect).mockReturnValue(chainMock([]) as any);
   });
 
   function mockSuccessPath() {
@@ -1354,6 +1523,7 @@ describe('VSS metadata persistence (#3027)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     resolveBackupProtectionForDeviceMock.mockReset();
+    vi.mocked(txSelect).mockReturnValue(chainMock([]) as any);
   });
 
   function mockSuccessPath() {

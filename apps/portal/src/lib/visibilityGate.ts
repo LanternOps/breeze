@@ -20,6 +20,9 @@ export const PORTAL_DISABLED_CODES = [
   'PORTAL_TICKETS_DISABLED',
   'PORTAL_SELF_SERVICE_DISABLED',
   'PORTAL_ASSET_CHECKOUT_DISABLED',
+  // Service deliverables W04 (#5573): two more strict fail-closed flags.
+  'PORTAL_SERVICE_DISABLED',
+  'PORTAL_DOCUMENTS_DISABLED',
 ] as const;
 
 const DISABLED_CODE_SET: ReadonlySet<string> = new Set(PORTAL_DISABLED_CODES);
@@ -34,6 +37,8 @@ export const PORTAL_GATED_PAGES = [
   '/devices',
   '/assets',
   '/tickets',
+  '/service',
+  '/documents',
 ] as const;
 
 /**

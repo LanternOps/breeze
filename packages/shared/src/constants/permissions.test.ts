@@ -43,3 +43,10 @@ describe('Workspace extension grants', () => {
     expect(PERMISSION_GRANTS.WORKSPACE_EXECUTE).toEqual({ resource: 'workspace', action: 'execute' });
   });
 });
+
+describe('documents permission (service deliverables W03)', () => {
+  it('declares read and write on the documents resource', () => {
+    expect(PERMISSION_GRANTS.DOCUMENTS_READ).toEqual({ resource: 'documents', action: 'read' });
+    expect(PERMISSION_GRANTS.DOCUMENTS_WRITE).toEqual({ resource: 'documents', action: 'write' });
+  });
+});

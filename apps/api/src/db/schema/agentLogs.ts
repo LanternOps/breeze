@@ -19,6 +19,9 @@ export const agentLogs = pgTable('agent_logs', {
 }, (table) => ({
   deviceIdx: index('agent_logs_device_idx').on(table.deviceId),
   orgTimestampIdx: index('agent_logs_org_ts_idx').on(table.orgId, table.timestamp),
+  orgCreatedAtIdx: index('agent_logs_org_created_at_idx').on(table.orgId, table.createdAt.desc(), table.id.desc()),
   levelComponentIdx: index('agent_logs_level_component_idx').on(table.level, table.component),
   timestampIdx: index('agent_logs_timestamp_idx').on(table.timestamp),
+  createdAtIdx: index('agent_logs_created_at_idx').on(table.createdAt),
+  deviceCreatedAtIdx: index('agent_logs_device_created_at_idx').on(table.deviceId, table.createdAt.desc(), table.id.desc()),
 }));

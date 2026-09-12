@@ -874,7 +874,8 @@
     "couldNotRefresh": "No se pudieron actualizar los datos de la cuenta de Stripe.",
     "notCached": "Moneda aún no almacenada en caché: actualiza para obtenerla de Stripe.",
     "staleCache": "No se pudo contactar a Stripe: se muestran los últimos datos de cuenta almacenados en caché.",
-    "reconnectRequired": "Tu clave de Stripe guardada (•••• {{last4}}) ya no funciona: {{reason}} Pega una clave nueva para reconectar; los pagos en línea fallarán hasta que lo hagas."
+    "reconnectRequired": "Tu clave de Stripe guardada (•••• {{last4}}) ya no funciona: {{reason}} Pega una clave nueva para reconectar; los pagos en línea fallarán hasta que lo hagas.",
+    "reconciliationError": "La conciliación de reversiones de pago no está funcionando: {{reason}} Reemplaza la clave de Stripe por una que pueda leer Eventos."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "No se pudieron guardar las asignaciones del sitio.",

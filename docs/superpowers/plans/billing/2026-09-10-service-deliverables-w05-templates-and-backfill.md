@@ -20,7 +20,7 @@ tracking_issue: LanternOps/breeze#5573
 - **Partner-wide reads are gated on `actor.scope === 'partner'`** in the app layer. An org token carries a `partnerId` but never passes `breeze_has_partner_access`, and the SELECT branch deliberately makes partner-wide rows *readable* from an org context — so the app-layer gate is the only authorization control on that axis, not a redundant second one (`partnerWideAccess.ts:73` `canReadPartnerWideRows`). Never claim RLS/app parity.
 - **Never use the #1105 escalation** (`runOutsideDbContext(() => withSystemDbAccessContext(...))`) on this table: it double-holds a pooled connection under the request's own transaction and bypasses RLS. The SELECT branch is the sanctioned mechanism.
 - Migrations are idempotent (`CREATE TABLE IF NOT EXISTS`, `DO $$ … EXCEPTION WHEN duplicate_object`, `DROP POLICY IF EXISTS` then `CREATE`), carry **no inner `BEGIN`/`COMMIT`**, and write no rows (DDL only ⇒ no `breeze.scope` election needed).
-- Migration filename must sort after the newest **committed** migration. As of 2026-09-10 that is `2026-10-15-160010-backup-snapshots-layout-manifest.sql`; W01–W04 claim `2026-10-15-170000` … `-170400`. This wave uses `2026-10-15-170500-deliverable-templates.sql`. Re-check with `ls apps/api/migrations | sort | tail -1` before every commit and rename upward if origin/main gained a later one. W05's migration has no dependency on W02/W03/W04's files, so a fresh-DB replay in filename order is safe whatever order the waves land in.
+- Migration filename must sort after the newest **committed** migration. As of 2026-09-10 that is `2026-10-15-160010-backup-snapshots-layout-manifest.sql`; W01–W04 claim `2026-10-15-170000` … `-170400`. This wave uses `2026-10-16-110100-deliverable-templates.sql`. Re-check with `ls apps/api/migrations | sort | tail -1` before every commit and rename upward if origin/main gained a later one. W05's migration has no dependency on W02/W03/W04's files, so a fresh-DB replay in filename order is safe whatever order the waves land in.
 - Every composite FK that references an `org_id` column is `DEFERRABLE INITIALLY IMMEDIATE` (org-merge contract). Both branch FKs on `deliverable_template_items` are declared deferrable for symmetry.
 - Table privileges for `breeze_app` are NOT per-migration: `apps/api/src/db/ensureAppRole.ts:85-88` runs a blanket `GRANT SELECT, INSERT, UPDATE, DELETE, REFERENCES ON ALL TABLES IN SCHEMA public` plus `ALTER DEFAULT PRIVILEGES … ON TABLES TO breeze_app` at startup, so new tables inherit access automatically. Explicit per-table `GRANT`/`REVOKE` lines exist only for append-only overrides (e.g. `2026-10-08-101200-billing-evidence.sql:92`). The two `GRANT` statements kept in Task 1 are therefore harmless redundancy, not a requirement, and W01 needs nothing.
 - Registrations in the same PR as the migration: `DUAL_AXIS_TENANT_TABLES` **and** `XOR_OWNERSHIP_DUAL_AXIS_TABLES` (`apps/api/src/__tests__/integration/rls-coverage.integration.test.ts:315` and `:587`), `CORE_ORG_CASCADE_DELETE_ORDER` (`services/tenantCascade.ts`), `CORE_TENANT_EXPORT_POLICY` (`services/tenantExportPolicyRegistry.ts`), `services/orgMergeRegistry.ts`. `PARTNER_WIDE_SELECT_BRANCH_EXEMPT` has a hard ceiling of 0 (`rls-coverage.integration.test.ts:654`) — a new table **cannot** take an exemption, the branch ships in the creating migration.
@@ -36,7 +36,7 @@ tracking_issue: LanternOps/breeze#5573
 
 | Path | Responsibility |
 |---|---|
-| `apps/api/migrations/2026-10-15-170500-deliverable-templates.sql` | two tables, XOR checks, branch FKs, dual-axis RLS + partner-wide SELECT branch |
+| `apps/api/migrations/2026-10-16-110100-deliverable-templates.sql` | two tables, XOR checks, branch FKs, dual-axis RLS + partner-wide SELECT branch |
 | `apps/api/src/db/schema/deliverableTemplates.ts` | Drizzle tables + row types |
 | `apps/api/src/db/schema/index.ts` | export the new module |
 | `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` | `DUAL_AXIS_TENANT_TABLES` + `XOR_OWNERSHIP_DUAL_AXIS_TABLES` entries |
@@ -65,7 +65,7 @@ tracking_issue: LanternOps/breeze#5573
 ### Task 1: Migration — `deliverable_template_sets` and `deliverable_template_items`
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-15-170500-deliverable-templates.sql`
+- Create: `apps/api/migrations/2026-10-16-110100-deliverable-templates.sql`
 
 **Interfaces:**
 - Produces: tables `deliverable_template_sets`, `deliverable_template_items`; policies `deliverable_template_sets_isolation`, `deliverable_template_sets_partner_wide_select`, `deliverable_template_items_isolation`, `deliverable_template_items_partner_wide_select`; unique indexes `deliverable_template_sets_id_org_uq`, `deliverable_template_sets_id_partner_uq`. Reuses W01's enums `deliverable_cadence` and `deliverable_completion_mode` (created by `2026-10-15-170000-service-deliverables.sql`).
@@ -245,7 +245,7 @@ Expected: `ERROR: insert or update on table "deliverable_template_items" violate
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/migrations/2026-10-15-170500-deliverable-templates.sql
+git add apps/api/migrations/2026-10-16-110100-deliverable-templates.sql
 git commit -m "feat(deliverables): partner-wide deliverable template set and item tables (W05)"
 ```
 
@@ -355,7 +355,7 @@ In `DUAL_AXIS_TENANT_TABLES` (the set starting at line 315) add, with a comment 
   // deliverable_template_sets / deliverable_template_items (spec §4.6, D9): a
   // template set is org-scoped (org_id set) OR partner-wide (partner_id set,
   // org_id NULL — one service tier applied across every org the MSP manages).
-  // Created dual-axis from day one in 2026-10-15-170500-deliverable-templates.
+  // Created dual-axis from day one in 2026-10-16-110100-deliverable-templates.
   // The org_id column means org-tenant auto-discovery already asserts the
   // breeze_has_org_access branch, so these entries are what assert the
   // breeze_has_partner_access (partner-wide) branch. CHECKs

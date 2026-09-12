@@ -20,19 +20,43 @@ type fakeSystem struct {
 	mounted  []string // devices reported by MountedSources
 	rootSrcs []string
 	fail     map[string]error // command prefix → error
-	arch     string
-	mountLog []string // "device dir"
-	unmounts []string
+	// failTimes, when non-nil for a prefix, fails that command with the
+	// given error the first N times it is run and succeeds from the
+	// (N+1)th call onward — for testing a bounded retry (see
+	// TestRunMkfsWithBusyRetry_RetriesOnDeviceBusyThenSucceeds in
+	// provision_test.go). Checked before fail, so an
+	// exhausted failTimes entry falls through to permanent success even if
+	// the same prefix also has a `fail` entry.
+	failTimes map[string]*failTimesEntry
+	arch      string
+	mountLog  []string // "device dir"
+	unmounts  []string
 }
 
 func newFakeSystem(dir string, diskSize int64) *fakeSystem {
 	return &fakeSystem{dir: dir, diskSize: diskSize, fail: map[string]error{}, arch: "amd64"}
 }
 
+// failTimesEntry is the state behind fakeSystem.failTimes: fail with err
+// while remaining > 0, decrementing on each match; once remaining reaches
+// 0 the command succeeds (empty output, nil error) every time after.
+type failTimesEntry struct {
+	remaining int
+	out       []byte
+	err       error
+}
+
 func (f *fakeSystem) record(name string, args ...string) ([]byte, error) {
 	line := strings.TrimSpace(name + " " + strings.Join(args, " "))
 	f.mu.Lock()
 	f.cmds = append(f.cmds, line)
+	for prefix, entry := range f.failTimes {
+		if strings.HasPrefix(line, prefix) && entry.remaining > 0 {
+			entry.remaining--
+			f.mu.Unlock()
+			return entry.out, entry.err
+		}
+	}
 	f.mu.Unlock()
 	for prefix, err := range f.fail {
 		if strings.HasPrefix(line, prefix) {

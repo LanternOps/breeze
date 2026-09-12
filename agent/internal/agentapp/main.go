@@ -900,6 +900,17 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Start heartbeat - this implements the main agent run loop
 	hb := heartbeat.NewWithVersion(cfg, version, secureToken, tlsCfg)
 	hb.SetAuthMonitor(authMon)
+
+	// Bare-metal recovery W04a: if the rebuild engine left a marker on this
+	// disk (i.e. this agent booted up as the RESULT of a bare-metal
+	// recovery), report it every heartbeat until the server acks the
+	// check-in — see heartbeat.LoadRecoveryMarker / SetRecoveryMarker.
+	if marker, err := heartbeat.LoadRecoveryMarker(config.GetDataDir()); err != nil {
+		log.Warn("recovery marker unreadable; bare-metal recovery will not auto-complete", "error", err.Error())
+	} else if marker != nil {
+		log.Info("recovery marker found; reporting bare-metal recovery check-in", "recoveryId", marker.RecoveryID)
+		hb.SetRecoveryMarker(marker)
+	}
 	if !cfg.SupportMode {
 		for _, result := range preparePAMLifetimeStartup(context.Background(), hb, startupStatePath) {
 			log.Info("PAM lifetime startup reconciliation evidence",
