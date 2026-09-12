@@ -27,6 +27,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import {
   actionIntents,
   aiScriptPolicies,
+  approvalRequests,
   devices,
   scriptProposalReviews,
   scriptProposals,
@@ -229,6 +230,16 @@ describe('unattended lane hourly cap under concurrency (#5612 W04)', () => {
       expect(row.releaseBy).toBeInstanceOf(Date);
       expect(row.evidence).toMatchObject({ touchClasses: ['temp_files'], checkpointRequired: false, policySnapshot: { perHour: CAP } });
     }
+    // No approval_requests row for any lane-approved intent; every refused
+    // one fanned out to the requester (supervised self-approve) as usual.
+    const approvalRows = await withSystemDbAccessContext(() =>
+      db.select({ intentId: approvalRequests.intentId }).from(approvalRequests)
+        .innerJoin(actionIntents, eq(approvalRequests.intentId, actionIntents.id))
+        .where(eq(actionIntents.orgId, s.orgId)));
+    const approvedIds = new Set(approved.map((r) => (r as { id: string }).id));
+    expect(approvalRows.filter((r) => approvedIds.has(r.intentId!))).toHaveLength(0);
+    expect(new Set(approvalRows.map((r) => r.intentId)).size).toBe(N - CAP);
+
     // script_proposals.decided_by stays NULL for lane decisions.
     const decided = await withSystemDbAccessContext(() =>
       db.select({ decidedBy: scriptProposals.decidedBy, intentId: scriptProposals.intentId }).from(scriptProposals)
