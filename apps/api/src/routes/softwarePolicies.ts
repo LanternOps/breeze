@@ -76,8 +76,13 @@ export const softwareRulesSchema = z.object({
   { message: 'rules must include at least one software[] or executable[] entry' }
 );
 
-const remediationOptionsSchema = z.object({
+// NOTE: a non-strict z.object STRIPS unknown keys silently rather than
+// rejecting them, so a field is invisible to the API until it is declared
+// here. Both createPolicySchema and updatePolicySchema reference this one
+// object, so a field added here covers the create and update surfaces alike.
+export const remediationOptionsSchema = z.object({
   autoUninstall: z.boolean().optional(),
+  autoInstall: z.boolean().optional(), // #5505 — see SoftwarePolicyRemediationOptions
   notifyUser: z.boolean().optional(),
   gracePeriod: z.number().int().min(0).max(24 * 90).optional(), // hours; max 90 days
   cooldownMinutes: z.number().int().min(1).max(24 * 90 * 60).optional(),

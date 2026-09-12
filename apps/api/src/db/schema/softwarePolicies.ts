@@ -64,6 +64,13 @@ export type SoftwarePolicyViolation = {
 
 export type SoftwarePolicyRemediationOptions = {
   autoUninstall?: boolean;
+  /**
+   * Desired-state install arming (#5505). Opt-in — absent or non-boolean means
+   * NOT armed — and deliberately NOT sharing `autoUninstall`'s flag: a policy
+   * armed to REMOVE unauthorised software is not thereby armed to INSTALL
+   * anything. Both verbs still sit behind `enforceMode` and `mode !== 'audit'`.
+   */
+  autoInstall?: boolean;
   notifyUser?: boolean; // not yet implemented
   gracePeriod?: number; // hours; max 90 days
   cooldownMinutes?: number;
