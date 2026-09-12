@@ -22,7 +22,7 @@ import { organizations } from './orgs';
  *
  * Tenancy shape 1 throughout: direct `org_id NOT NULL`, RLS enabled + forced
  * with one FOR ALL `breeze_has_org_access(org_id)` policy per table, all
- * declared in `migrations/2026-10-16-130300-m365-tenant-sync-foundation.sql`.
+ * declared in `migrations/2026-10-16-160400-m365-tenant-sync-foundation.sql`.
  *
  * The two composite tenant FKs — `(connection_id, org_id) -> m365_connections(id, org_id)`
  * and `(breeze_device_id, org_id) -> devices(id, org_id)`, both DEFERRABLE

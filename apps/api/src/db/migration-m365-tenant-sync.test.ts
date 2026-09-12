@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const MIGRATION = '2026-10-16-130300-m365-tenant-sync-foundation.sql';
+const MIGRATION = '2026-10-16-160400-m365-tenant-sync-foundation.sql';
 
 const TABLES = [
   'm365_sync_state',
