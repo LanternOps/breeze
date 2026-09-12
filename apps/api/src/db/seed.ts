@@ -5,6 +5,7 @@ import { db, withSystemDbAccessContext } from './index';
 import { roles, permissions, rolePermissions, scripts, alertTemplates, partners, organizations, sites, users, partnerUsers } from './schema';
 import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
+import { cutScriptVersion } from '../services/scriptVersions';
 import { eq, and, isNull } from 'drizzle-orm';
 import { hashPassword } from '../services/password';
 
@@ -881,17 +882,43 @@ export async function seedScripts() {
       continue;
     }
 
-    await db.insert(scripts).values({
-      name: scriptDef.name,
-      description: scriptDef.description,
-      category: scriptDef.category,
-      osTypes: scriptDef.osTypes,
-      language: scriptDef.language,
-      content: scriptDef.content,
-      timeoutSeconds: scriptDef.timeoutSeconds,
-      runAs: scriptDef.runAs,
-      isSystem: true,
-      orgId: null // System scripts have no org
+    // The row and its v1 version are one unit of work (#5622). Seeding the
+    // `scripts` row alone left a HEADLESS script: `headScriptVersion()` returns
+    // null for it forever, and `script_versions` is append-only so it could not
+    // be repaired afterwards. Same shape as services/systemScriptLibrary.ts —
+    // insert at version 0, let cutScriptVersion move it to 1 and snapshot it;
+    // 0 is never observable outside this transaction.
+    await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(scripts)
+        .values({
+          name: scriptDef.name,
+          description: scriptDef.description,
+          category: scriptDef.category,
+          osTypes: scriptDef.osTypes,
+          language: scriptDef.language,
+          content: scriptDef.content,
+          timeoutSeconds: scriptDef.timeoutSeconds,
+          runAs: scriptDef.runAs,
+          isSystem: true,
+          orgId: null, // System scripts have no org
+          version: 0,
+          // Matches what the 2026-10-16-100000 backfill stamps on an is_system
+          // row in production (`CASE WHEN s.is_system THEN 'system' ...`), so a
+          // dev stack and a migrated prod DB agree on these same scripts.
+          origin: 'system',
+        })
+        .returning({ id: scripts.id });
+
+      if (!created) {
+        throw new Error(`system script "${scriptDef.name}" insert returned no row`);
+      }
+
+      // No user on the seed path, so createdBy is honestly null.
+      await cutScriptVersion(tx, {
+        scriptId: created.id,
+        provenance: { origin: 'system', changelog: 'Seeded system script', createdBy: null },
+      });
     });
     console.log('  Created script:', scriptDef.name);
   }
