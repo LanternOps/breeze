@@ -140,6 +140,11 @@ export function RootNavigator() {
         setApproverRegistration({
           status: outcome.status === 'already_registered' ? 'registered' : outcome.status,
           reason: 'reason' in outcome ? outcome.reason : null,
+          // #5162 (#1374 W07): carry `attested` through so ApprovalGate can
+          // show the 'unattested' banner instead of reading this as a fully
+          // L4-capable device — see the outcome.status === 'registered' branch
+          // above, which is exactly the case this was previously dropping.
+          attested: outcome.status === 'registered' ? outcome.attested : null,
         })
       );
     });

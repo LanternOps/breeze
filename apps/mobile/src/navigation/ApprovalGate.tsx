@@ -59,6 +59,7 @@ export function ApprovalGate({ children }: Props) {
   const pushRegistration = useAppSelector((s) => s.auth.pushRegistration);
   const approverRegistration = useAppSelector((s) => s.auth.approverRegistration);
   const approverReason = useAppSelector((s) => s.auth.approverRegistrationReason);
+  const approverAttested = useAppSelector((s) => s.auth.approverRegistrationAttested);
 
   // Dismissals are per-session and per-kind. These banners describe a standing
   // condition, not a transient event, so without a dismiss the user is stuck
@@ -141,12 +142,18 @@ export function ApprovalGate({ children }: Props) {
   // outranks approver failure: an approval that never arrives is worse than one
   // that arrives unsigned.
   const showPush = !error && pushRegistration === 'failed' && !dismissedPush;
+  // #5162 (#1374 W07): 'registered' is not itself sufficient — a device can
+  // finish registration and still be capped below critical-tier if its key's
+  // basis isn't in the server's L4-trusted set (`approverAttested === false`).
+  // failed/deferred outrank it: those mean the device signs NOTHING yet.
   const approverSeverity: ApproverBannerSeverity | null =
     approverRegistration === 'failed'
       ? 'failed'
       : approverRegistration === 'deferred'
         ? 'deferred'
-        : null;
+        : approverRegistration === 'registered' && approverAttested === false
+          ? 'unattested'
+          : null;
   const showApprover =
     !error && pushRegistration !== 'failed' && approverSeverity !== null && !dismissedApprover;
 
