@@ -116,6 +116,22 @@ describe('POST /:id/request-changes', () => {
     expect((await post({ note: 'x' })).status).toBe(404);
   });
 
+  it('409s intent_already_decided and rolls the proposal transition back when the intent CAS loses', async () => {
+    denyIntentForProposal.mockResolvedValue(false);
+    const res = await post({ note: 'x' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'intent_already_decided' });
+    // The tx callback threw, so the proposal transition inside it never committed.
+    expect(postProposalOutcomeToAuthor).not.toHaveBeenCalled();
+    expect(writeAuditEventAsync).not.toHaveBeenCalled();
+  });
+
+  it('skips the intent denial for a proposal that was never claimed by an intent', async () => {
+    loadProposalRow.mockResolvedValue({ ...row, intentId: null });
+    expect((await post({ note: 'x' })).status).toBe(200);
+    expect(denyIntentForProposal).not.toHaveBeenCalled();
+  });
+
   it('409s when the proposal already left a requestable state', async () => {
     transitionProposal.mockResolvedValue(false);
     const res = await post({ note: 'x' });

@@ -182,4 +182,20 @@ describe('ScriptProposalApprovalCard', () => {
     render(<ScriptProposalApprovalCard proposalId="p1" />);
     expect(screen.getByTestId('script-proposal-verification-state')).toHaveTextContent(/verified/i);
   });
+
+  it.each([
+    ['verification_failed', /failed/i],
+    ['unknown', /could not be verified/i],
+    ['pending', /pending/i],
+  ] as const)('renders the %s verification state distinctly', (outcome, copy) => {
+    useScriptProposal.mockReturnValue({
+      data: dto({ proposal: { status: outcome === 'pending' ? 'executed' : 'verification_failed' }, verification: { outcome, verifiedAt: null, attempts: 3, detail: null } }),
+      loading: false, error: null, reload: vi.fn(),
+    });
+    render(<ScriptProposalApprovalCard proposalId="p1" />);
+    const line = screen.getByTestId('script-proposal-verification-state');
+    expect(line).toHaveAttribute('data-outcome', outcome);
+    expect(line).toHaveTextContent(copy);
+    expect(screen.queryByTestId('script-proposal-save-to-library')).not.toBeInTheDocument();
+  });
 });

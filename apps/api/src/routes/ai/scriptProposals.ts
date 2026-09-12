@@ -7,6 +7,7 @@ import { aiScriptAuthoringEnabled } from '../../config/env';
 import { db } from '../../db';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeAuditEventAsync } from '../../services/auditEvents';
+import { captureException } from '../../services/sentry';
 import { loadScriptProposalDetail } from '../../services/scriptProposals/detail';
 import { denyIntentForProposal, transitionProposal } from '../../services/scriptProposals';
 import { postProposalOutcomeToAuthor } from '../../services/scriptProposals/authorNotify';
@@ -76,25 +77,47 @@ aiScriptProposalRoutes.post(
 
     // The transition and the intent denial commit together: a proposal that
     // reads `changes_requested` while its intent is still pending would let the
-    // release worker run the very content the approver just sent back.
-    const moved = await db.transaction(async (tx) => {
-      const ok = await transitionProposal(tx, id, ['reviewed', 'approved'], 'changes_requested', {
-        decidedBy: auth.user.id, decidedAt: new Date(), decisionNote: note,
+    // release worker run the very content the approver just sent back. And the
+    // other way round: if the intent was ALREADY decided by a concurrent
+    // approver (its CAS on pending_approval loses), the proposal must not be
+    // marked changes_requested either — the whole tx rolls back and the caller
+    // gets a 409, exactly like a lost decide race.
+    class IntentAlreadyDecided extends Error {}
+    let moved = false;
+    try {
+      moved = await db.transaction(async (tx) => {
+        const ok = await transitionProposal(tx, id, ['reviewed', 'approved'], 'changes_requested', {
+          decidedBy: auth.user.id, decidedAt: new Date(), decisionNote: note,
+        });
+        if (!ok) return false;
+        if (row.intentId) {
+          const denied = await denyIntentForProposal(tx, row, 'changes_requested', auth.user.id);
+          if (!denied) throw new IntentAlreadyDecided();
+        }
+        return true;
       });
-      if (!ok) return false;
-      await denyIntentForProposal(tx, row, 'changes_requested', auth.user.id);
-      return true;
-    });
+    } catch (err) {
+      if (err instanceof IntentAlreadyDecided) return c.json({ error: 'intent_already_decided' }, 409);
+      throw err;
+    }
     if (!moved) return c.json({ error: 'proposal_not_requestable' }, 409);
 
-    const requestedByUserId = await loadProposalRequesterUserId(row);
-    await postProposalOutcomeToAuthor(
-      {
-        id: row.id, orgId: row.orgId, authorKind: row.authorKind,
-        sessionId: row.sessionId, agentRunId: row.agentRunId, requestedByUserId,
-      },
-      { kind: 'changes_requested', note, findings: loaded.dto.review?.findings ?? [] },
-    );
+    // Post-commit side effect: the decision is already durable, so a failed
+    // delivery must not report the decision as failed (routes/approvals.ts
+    // guards its own post-commit mirrors for the same reason). Reported.
+    try {
+      const requestedByUserId = await loadProposalRequesterUserId(row);
+      await postProposalOutcomeToAuthor(
+        {
+          id: row.id, orgId: row.orgId, authorKind: row.authorKind,
+          sessionId: row.sessionId, agentRunId: row.agentRunId, requestedByUserId,
+        },
+        { kind: 'changes_requested', note, findings: loaded.dto.review?.findings ?? [] },
+      );
+    } catch (err) {
+      console.error(`[scriptProposals] author notification failed for ${id}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)), c, { area: 'script_proposal_request_changes_notify' });
+    }
     void writeAuditEventAsync(c, {
       action: 'script.proposal.decided', orgId: row.orgId, actorId: auth.user.id,
       resourceType: 'script_proposal', resourceId: id,

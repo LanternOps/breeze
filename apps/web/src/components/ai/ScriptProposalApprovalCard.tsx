@@ -338,7 +338,7 @@ export default function ScriptProposalApprovalCard({
 
       {/* Verification state — makes the reason Save-to-library is absent
           visible instead of mysterious. */}
-      <p data-testid="script-proposal-verification-state" className="mt-1 text-xs text-muted-foreground">
+      <p data-testid="script-proposal-verification-state" data-outcome={data.verification.outcome} className="mt-1 text-xs text-muted-foreground">
         {t(
           /* i18n-dynamic */ verificationKeyByOutcome[data.verification.outcome] ??
             'ai:scriptProposal.verificationUnknown',

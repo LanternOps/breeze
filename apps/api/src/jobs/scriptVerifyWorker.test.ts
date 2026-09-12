@@ -36,11 +36,11 @@ vi.mock('../services/auditEvents', () => ({
   writeAuditEventAsync: (...a: unknown[]) => writeAuditEventAsync(...a),
   requestLikeFromSnapshot: () => ({ req: { header: () => undefined } }),
 }));
-const selectLimit = vi.fn();
+const selectWhere = vi.fn();
 const TX = { tx: true };
 vi.mock('../db', () => ({
   db: {
-    select: () => ({ from: () => ({ where: () => ({ limit: selectLimit }) }) }),
+    select: () => ({ from: () => ({ where: selectWhere }) }),
     transaction: (fn: (tx: unknown) => unknown) => fn(TX),
   },
   runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -63,7 +63,7 @@ beforeEach(() => {
   transitionProposal.mockResolvedValue(true);
   loadProposalRow.mockResolvedValue(proposal);
   loadProposalRequesterUserId.mockResolvedValue('u1');
-  selectLimit.mockResolvedValue([execution]);
+  selectWhere.mockResolvedValue([execution]);
 });
 
 describe('runScriptVerifyJob', () => {
@@ -148,8 +148,42 @@ describe('runScriptVerifyJob', () => {
   });
 
   it('refuses an execution that does not belong to the proposal', async () => {
-    selectLimit.mockResolvedValue([]);
+    selectWhere.mockResolvedValue([{ ...execution, id: 'other-exec' }]);
     expect(await runScriptVerifyJob(JOB)).toBe('unknown');
     expect(evaluateVerificationClaim).not.toHaveBeenCalled();
+  });
+
+  // Multi-device: the verdict is proposal-level, so every execution counts.
+  const execB = { ...execution, id: '66666666-6666-4666-8666-666666666666', deviceId: 'd2' };
+
+  it('fails the proposal when ANY device fails, even if the triggering one verified', async () => {
+    selectWhere.mockResolvedValue([execution, { ...execB, exitCode: 3 }]);
+    evaluateVerificationClaim
+      .mockResolvedValueOnce({ outcome: 'verified', evidence: { exitCode: 0 } })
+      .mockResolvedValueOnce({ outcome: 'verification_failed', evidence: { exitCode: 3, expected: 0 } });
+    expect(await runScriptVerifyJob(JOB)).toBe('verification_failed');
+    expect(evaluateVerificationClaim).toHaveBeenCalledTimes(2);
+    expect(transitionProposal).toHaveBeenCalledWith(
+      TX, PROPOSAL, ['executed'], 'verification_failed',
+      expect.objectContaining({ verificationResult: expect.objectContaining({
+        evidence: expect.objectContaining({ devices: expect.arrayContaining([expect.objectContaining({ deviceId: 'd2', outcome: 'verification_failed' })]) }),
+      }) }),
+    );
+  });
+
+  it('waits (retry) while another device has not reported yet, without reading that device', async () => {
+    selectWhere.mockResolvedValue([execution, { ...execB, status: 'running', exitCode: null }]);
+    evaluateVerificationClaim.mockResolvedValue({ outcome: 'verified', evidence: { exitCode: 0 } });
+    expect(await runScriptVerifyJob(JOB)).toBe('retry');
+    expect(evaluateVerificationClaim).toHaveBeenCalledTimes(1);
+    expect(addJob).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ attempt: 2 }), expect.anything());
+    expect(transitionProposal).not.toHaveBeenCalled();
+  });
+
+  it('verifies only when every device verified', async () => {
+    selectWhere.mockResolvedValue([execution, execB]);
+    evaluateVerificationClaim.mockResolvedValue({ outcome: 'verified', evidence: { exitCode: 0 } });
+    expect(await runScriptVerifyJob(JOB)).toBe('verified');
+    expect(evaluateVerificationClaim).toHaveBeenCalledTimes(2);
   });
 });

@@ -14,13 +14,14 @@
 // executeCommandWithSystemPrecheck -> agentCommandAwait / agentWs, the same
 // dependency that puts alertVerdictScheduler there.
 import { Worker, type Job } from 'bullmq';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { scriptExecutions } from '../db/schema/scripts';
 import { getBullMQConnection } from '../services/redis';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import { scriptVerifyQueueJobDataSchema } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
+import { captureException } from '../services/sentry';
 import {
   SCRIPT_VERIFY_JOB_NAME, SCRIPT_VERIFY_MAX_ATTEMPTS, SCRIPT_VERIFY_QUEUE, SCRIPT_VERIFY_RETRY_DELAY_MS,
   enqueueScriptVerify, evaluateVerificationClaim, onUnattendedVerificationOutcome,
@@ -37,6 +38,8 @@ const WORKER_CONCURRENCY = 5;
 // 30 s lock would expire mid-read. Same class of fix as scriptReviewWorker.
 const LOCK_DURATION_MS = 90_000;
 
+const TERMINAL_EXECUTION_STATUSES = new Set(['completed', 'failed', 'timeout', 'cancelled']);
+
 export async function runScriptVerifyJob(data: ScriptVerifyJobData): Promise<VerificationOutcome | 'retry'> {
   const proposal = await loadProposalRow(data.proposalId);
   // Only an `executed` proposal has a claim to evaluate; anything else (a
@@ -44,25 +47,54 @@ export async function runScriptVerifyJob(data: ScriptVerifyJobData): Promise<Ver
   // no-op — never a device read.
   if (!proposal || proposal.status !== 'executed') return 'unknown';
 
-  const [execution] = await runOutsideDbContext(() =>
+  // EVERY execution of the proposal, not just the one whose result enqueued
+  // this job: a proposal targets up to 10 devices and its verdict is
+  // proposal-level (spec §4.9), so the claim must hold on all of them. The
+  // triggering execution must be among them (a foreign id is a no-op).
+  const executions = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
-      db
-        .select()
-        .from(scriptExecutions)
-        .where(and(eq(scriptExecutions.id, data.executionId), eq(scriptExecutions.proposalId, data.proposalId)))
-        .limit(1),
+      db.select().from(scriptExecutions).where(eq(scriptExecutions.proposalId, data.proposalId)),
     ),
   );
-  if (!execution) return 'unknown';
+  if (!executions.some((e) => e.id === data.executionId)) {
+    // The proposal is still `executed` but the execution that enqueued this
+    // job is gone or belongs to another proposal: a data-consistency fault,
+    // not a late duplicate. Reported, because nothing else will be — the
+    // proposal would otherwise sit in `executed` with no trail anywhere.
+    const err = new Error(`script-verify: execution ${data.executionId} not found for proposal ${data.proposalId}`);
+    console.error(`[${WORKER_NAME}] ${err.message}`);
+    captureException(err, undefined, { area: 'script_verify_execution_missing', proposalId: data.proposalId });
+    return 'unknown';
+  }
 
   const requesterId = await loadProposalRequesterUserId(proposal);
 
-  const { outcome, evidence } = await evaluateVerificationClaim(
-    proposal.verification,
-    { status: execution.status, exitCode: execution.exitCode, stdout: execution.stdout, stderr: execution.stderr },
-    { deviceId: execution.deviceId, orgId: proposal.orgId },
-    requesterId ?? '',
-  );
+  const perDevice: Array<{ executionId: string; deviceId: string; outcome: VerificationOutcome; evidence: Record<string, unknown> }> = [];
+  for (const execution of executions) {
+    if (!TERMINAL_EXECUTION_STATUSES.has(execution.status)) {
+      // Another device has not reported yet; its own result frame enqueues a
+      // job that will see the full set. Treat as unknown so the ladder waits.
+      perDevice.push({ executionId: execution.id, deviceId: execution.deviceId, outcome: 'unknown', evidence: { reason: 'execution_pending', status: execution.status } });
+      continue;
+    }
+    const { outcome, evidence } = await evaluateVerificationClaim(
+      proposal.verification,
+      { status: execution.status, exitCode: execution.exitCode, stdout: execution.stdout, stderr: execution.stderr },
+      { deviceId: execution.deviceId, orgId: proposal.orgId },
+      requesterId ?? '',
+    );
+    perDevice.push({ executionId: execution.id, deviceId: execution.deviceId, outcome, evidence });
+  }
+
+  // Aggregate: one failed device fails the proposal (a library candidate must
+  // hold everywhere it ran); otherwise any unknown keeps it unknown; verified
+  // only when every device verified.
+  const outcome: VerificationOutcome = perDevice.some((d) => d.outcome === 'verification_failed')
+    ? 'verification_failed'
+    : perDevice.some((d) => d.outcome === 'unknown') ? 'unknown' : 'verified';
+  const evidence: Record<string, unknown> = perDevice.length === 1
+    ? perDevice[0]!.evidence
+    : { devices: perDevice, ...(perDevice.find((d) => d.outcome === outcome)?.evidence ?? {}) };
 
   if (outcome === 'unknown' && data.attempt < SCRIPT_VERIFY_MAX_ATTEMPTS) {
     await enqueueScriptVerify({ ...data, attempt: data.attempt + 1 }, SCRIPT_VERIFY_RETRY_DELAY_MS);
@@ -88,7 +120,11 @@ export async function runScriptVerifyJob(data: ScriptVerifyJobData): Promise<Ver
   );
 
   if (moved) {
-    await postProposalOutcomeToAuthor(
+    // Post-commit side effects: the verdict is already durable, so a failed
+    // notification must neither fail the job (a retry is a no-op past
+    // `executed`) nor skip the W04 hook below. Reported, not swallowed.
+    try {
+      await postProposalOutcomeToAuthor(
       {
         id: proposal.id, orgId: proposal.orgId, authorKind: proposal.authorKind,
         sessionId: proposal.sessionId, agentRunId: proposal.agentRunId, requestedByUserId: requesterId,
@@ -98,6 +134,12 @@ export async function runScriptVerifyJob(data: ScriptVerifyJobData): Promise<Ver
         detail: result.detail,
       },
     );
+    } catch (err) {
+      console.error(`[${WORKER_NAME}] author notification failed for ${proposal.id}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        area: 'script_verify_author_notify', proposalId: proposal.id,
+      });
+    }
     void writeAuditEventAsync(requestLikeFromSnapshot({}), {
       action: outcome === 'verified' ? 'script.proposal.verified' : 'script.proposal.verification_failed',
       orgId: proposal.orgId,
@@ -105,7 +147,7 @@ export async function runScriptVerifyJob(data: ScriptVerifyJobData): Promise<Ver
       actorId: null,
       resourceType: 'script_proposal',
       resourceId: proposal.id,
-      details: { outcome, attempts: data.attempt, executionId: execution.id, deviceId: execution.deviceId },
+      details: { outcome, attempts: data.attempt, executionId: data.executionId, devices: perDevice.map((d) => ({ deviceId: d.deviceId, outcome: d.outcome })) },
     });
   }
   await onUnattendedVerificationOutcome({ id: proposal.id, orgId: proposal.orgId }, outcome);

@@ -2,6 +2,7 @@ import { Queue } from 'bullmq';
 import { scriptVerificationClaimSchema } from '@breeze/shared';
 import { verifyServiceRunningForTask, verifyProcessAbsentByNameForTask } from '../aiAgents/actVerify';
 import { getBullMQConnection } from '../redis';
+import { captureException } from '../sentry';
 
 export type VerificationOutcome = 'verified' | 'verification_failed' | 'unknown';
 
@@ -212,5 +213,8 @@ export async function onUnattendedVerificationOutcome(
     await unattendedHandler(proposal, outcome);
   } catch (err) {
     console.error(`[scriptVerify] unattended outcome handler failed for ${proposal.id}:`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      area: 'script_verify_unattended_hook', proposalId: proposal.id,
+    });
   }
 }

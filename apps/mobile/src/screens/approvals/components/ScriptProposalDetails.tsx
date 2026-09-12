@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { reportInternalError } from '../../../lib/errorReporting';
 import { Pressable, Text, View } from 'react-native';
 import { useApprovalTheme, type, spacing, radii } from '../../../theme';
 import { fetchScriptProposal } from '../../../services/approvals';
@@ -48,8 +49,9 @@ export function ScriptProposalDetails({ proposalId, onAcknowledgementsChange, on
         if (cancelled) return;
         setDto(result);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (cancelled) return;
+        reportInternalError(err, 'approvals.scriptProposal');
         setError("Couldn't load this script proposal. Try again.");
       });
     return () => {

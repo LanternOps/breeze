@@ -130,4 +130,17 @@ describe('loadScriptProposalDetail', () => {
       id: 'r1', findings: [{ severity: 'warning', text: 'x' }], blastRadius: ['spooler'], createdAt: '2026-09-11T11:00:00.000Z',
     });
   });
+
+  it('distinguishes a genuine verification failure from a final unknown (status is the same)', async () => {
+    userCanDecideApprovals.mockReturnValue(true);
+    canAccessOrg.mockReturnValue(true);
+    loadProposalRow.mockResolvedValue({ ...baseRow(), status: 'verification_failed', verificationResult: { outcome: 'verification_failed', attempts: 1, detail: 'exit 3' } });
+    const failed = await loadScriptProposalDetail(auth(STRANGER), PROPOSAL);
+    expect(failed.ok && failed.dto.verification).toMatchObject({ outcome: 'verification_failed', attempts: 1, detail: 'exit 3' });
+
+    loadProposalRow.mockResolvedValue({ ...baseRow(), status: 'verification_failed', verificationResult: { outcome: 'unknown', attempts: 3, detail: 'no response' } });
+    const unknown = await loadScriptProposalDetail(auth(STRANGER), PROPOSAL);
+    expect(unknown.ok && unknown.dto.verification).toMatchObject({ outcome: 'unknown', attempts: 3 });
+    expect(unknown.ok && unknown.dto.viewer.canPromote).toBe(false);
+  });
 });
