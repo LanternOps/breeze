@@ -414,6 +414,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #5329 (M365 tenant sync W02) — daily stale-snapshot + score-detail prune.
+    name: 'm365SyncRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/m365SyncRetentionWorker');
+      return { init: m.initializeM365SyncRetention, shutdown: m.shutdownM365SyncRetention };
+    },
+  },
+  {
     name: 'serviceProcessCheckRetention',
     placement: 'global',
     load: async () => {
