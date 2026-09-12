@@ -19,6 +19,7 @@ import { convertAlertConditionToMonitor } from '../services/monitors/monitorConv
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { evaluateConditions } from '../services/alertConditions';
+import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 import {
   createMonitorDefinition,
   deleteMonitorDefinition,
@@ -363,8 +364,13 @@ monitorDefinitionRoutes.post(
         await addFeatureLink(configPolicyId, 'monitors', null, { items: nextItems });
       }
     } catch (error) {
-      // The deferred compatibility trigger surfaces at COMMIT as 23514.
-      if (typeof error === 'object' && error && (error as { code?: string }).code === '23514') {
+      // The deferred compatibility trigger surfaces at COMMIT as 23514 on the
+      // constraint name it raises with. Drizzle wraps the SQLSTATE in .cause,
+      // so it has to be read through pgErrorCode/pgErrorConstraint.
+      if (
+        pgErrorCode(error) === '23514' &&
+        pgErrorConstraint(error) === 'config_policy_monitors_compat'
+      ) {
         return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
       }
       throw error;

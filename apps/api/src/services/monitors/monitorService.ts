@@ -100,6 +100,11 @@ function resolveOwnerForCreate(input: CreateMonitorDefinitionInput, auth: AuthCo
  * service is also called from the AI tools and from convert-to-monitor, which
  * build their input in code rather than parsing a request body.
  */
+function normalizeList(actions: unknown): AutomationAction[] {
+  if (!Array.isArray(actions) || actions.length === 0) return [];
+  return normalizeAutomationActions(actions);
+}
+
 function validateDefinitionShape(args: {
   kind: MonitorKind;
   condition: Record<string, unknown>;
@@ -118,8 +123,12 @@ function validateDefinitionShape(args: {
   let responses: AutomationAction[];
   let recurrenceActions: AutomationAction[];
   try {
-    responses = normalizeAutomationActions(args.responses ?? []);
-    recurrenceActions = normalizeAutomationActions(args.recurrenceActions ?? []);
+    // A monitor with NO responses is the normal case (alert-only), but
+    // `normalizeAutomationActions` throws on an empty array — an automation
+    // must have at least one action. Normalise only non-empty lists, or every
+    // create would fail on the schema's own `[]` default.
+    responses = normalizeList(args.responses);
+    recurrenceActions = normalizeList(args.recurrenceActions);
   } catch (error) {
     throw new MonitorValidationError(
       error instanceof Error ? error.message : 'invalid monitor responses',
