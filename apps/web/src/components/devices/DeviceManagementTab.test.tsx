@@ -89,6 +89,45 @@ describe('DeviceManagementTab identity card', () => {
     ).not.toContain('Unknown');
   });
 
+  it('keeps flags Unknown even if a stray true arrives with an unsupported source', async () => {
+    // Defence in depth: the stub reports all-false today, but the source
+    // sentinel — not the flag values — is what decides the rendering.
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse(
+        postureResponse({ source: 'unsupported', azureAdJoined: true }),
+      ),
+    );
+
+    render(<DeviceManagementTab deviceId="dev-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('identity-flag-azureAdJoined')).toBeTruthy();
+    });
+
+    const flag = screen.getByTestId('identity-flag-azureAdJoined');
+    expect(flag.textContent).toContain('Unknown');
+    // No confirmed-join styling on a value that was never checked.
+    expect(flag.querySelector('.text-emerald-600')).toBeNull();
+  });
+
+  it('falls back to the raw join type when the agent reports an unknown one', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse(
+        postureResponse({ joinType: 'some_future_join', source: 'dsregcmd' }),
+      ),
+    );
+
+    render(<DeviceManagementTab deviceId="dev-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('identity-join-type')).toBeTruthy();
+    });
+
+    const headline = screen.getByTestId('identity-join-type').textContent;
+    expect(headline).toContain('some_future_join');
+    expect(headline).not.toContain('undefined');
+  });
+
   it('renders a real join result unchanged', async () => {
     fetchWithAuthMock.mockResolvedValue(
       makeJsonResponse(

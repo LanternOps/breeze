@@ -127,11 +127,14 @@ describe('agent security routes — requireAgentRole gate (F3)', () => {
       expect(res.status).toBe(200);
     });
 
-    // The web identity card distinguishes "never checked" from "checked and not
-    // joined" purely by identity.source === 'unsupported' (#5626). The ingest
-    // schema must accept that value and persist it verbatim — silently dropping
-    // or rewriting it would make Linux devices read as genuinely unjoined again.
-    it('accepts and persists the unsupported detection source verbatim', async () => {
+    // Pinning test, not coverage of a behaviour change: `source` is already
+    // `z.string()` and the payload is stored whole, so this passes pre-fix too.
+    // It exists because the web identity card distinguishes "never checked"
+    // from "checked and not joined" purely by identity.source === 'unsupported'
+    // (#5626). If anyone later narrows `source` to an enum allowlist or picks
+    // fields on write, Linux devices silently go back to reading as genuinely
+    // unjoined — this test is what stops that landing unnoticed.
+    it('pins the unsupported detection source as accepted and stored verbatim', async () => {
       const set = mockDeviceLookup();
       const app = mountWithRole('agent');
       const unsupportedPosture = {

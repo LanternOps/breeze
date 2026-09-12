@@ -278,7 +278,9 @@ export default function DeviceManagementTab({
             <span className="text-sm font-medium" data-testid="identity-join-type">
               {identityDetectionUnsupported
                 ? t("deviceManagementTab.identityDetectionUnsupported")
-                : JOIN_TYPE_LABELS[identity.joinType]}
+                : // A newer agent can report a join type this build predates;
+                  // fall back to the raw value rather than rendering "undefined".
+                  (JOIN_TYPE_LABELS[identity.joinType] ?? identity.joinType)}
             </span>
           </div>
 
