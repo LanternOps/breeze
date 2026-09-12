@@ -17,6 +17,7 @@ import {
   consumeConsentSessionInTransaction,
   createAdminConsentSessionInTransaction,
   deleteConsentSessionsForAttemptInTransaction,
+  deleteConsentSessionsForConnection,
   insertPreparedIdentityVerificationSessionInTransaction,
   type M365ConsentSessionProfile,
   type PreparedIdentityVerificationSession,
@@ -917,6 +918,20 @@ export function createConnectionService<
     executorClient?: Client;
   }): Promise<M365ConnectionSnapshot<P>> {
     return runOutsideDbContext(async () => {
+      // loadRetestSnapshot rotates consent_attempt_id, and the consent-session
+      // composite FK has ON DELETE CASCADE but no ON UPDATE CASCADE — so a
+      // live session on this connection would make the rotation raise 23503.
+      // Before upgrade consent existed, an executable connection never carried
+      // one. Superseding an in-flight upgrade is the correct resolution: the
+      // upgrade has written nothing, retest is an explicit operator action,
+      // and the banner restarts it. Narrow race: an upgrade started between
+      // this delete and the rotation still 409s, which is the pre-existing
+      // failure mode, not a new one.
+      await deleteConsentSessionsForConnection({
+        connectionId: input.id,
+        orgId: input.orgId,
+        profile,
+      });
       const retestSnapshot = await loadRetestSnapshot(input);
       let result: RetestResult;
       try {

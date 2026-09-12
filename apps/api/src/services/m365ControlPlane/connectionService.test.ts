@@ -1078,3 +1078,54 @@ describe('transitionUpgradeConsentToIdentity', () => {
     expect(consentMocks.consumeAdmin).not.toHaveBeenCalled();
   });
 });
+
+describe('retest with an upgrade consent in flight', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMocks.selectResults.length = 0;
+    dbMocks.updateResults.length = 0;
+    dbMocks.updateSets.length = 0;
+    dbMocks.order.length = 0;
+    contextMocks.callerDepth = 0;
+  });
+
+  it("supersedes the connection's consent sessions before rotating the attempt id", async () => {
+    // The attempt-id rotation in loadRetestSnapshot has no ON UPDATE CASCADE
+    // on m365_consent_sessions_connection_identity_fkey, so a live upgrade
+    // session would make the rotation raise 23503.
+    const CURRENT = {
+      id: CONNECTION_ID,
+      orgId: ORG_ID,
+      tenantId: TENANT_ID,
+      clientId: CLIENT_ID,
+      profile: 'customer-graph-read' as const,
+      permissionManifestVersion: 3,
+      observedGrants: [],
+      consentAttemptId: ATTEMPT_ID,
+      grantsVerifiedAt: new Date('2026-09-01T00:00:00.000Z'),
+      displayName: 'Contoso',
+      status: 'active' as const,
+      lastVerifiedAt: new Date('2026-09-01T00:00:00.000Z'),
+      lastErrorCode: null,
+    };
+    dbMocks.selectResults.push([CURRENT]);
+    dbMocks.updateResults.push([CURRENT], [CURRENT]);
+
+    await retestCustomerGraphReadConnection({
+      id: CURRENT.id,
+      orgId: CURRENT.orgId,
+      auth: auth(),
+      executorClient: {
+        retestCustomerGraphRead: async () => ({ success: false, errorCode: 'credential_unavailable' }),
+      } as never,
+    });
+
+    expect(consentMocks.deleteForConnection).toHaveBeenCalledWith({
+      connectionId: CURRENT.id,
+      orgId: CURRENT.orgId,
+      profile: 'customer-graph-read',
+    });
+    expect(dbMocks.order.indexOf('delete-session-by-connection'))
+      .toBeLessThan(dbMocks.order.indexOf('update'));
+  });
+});
