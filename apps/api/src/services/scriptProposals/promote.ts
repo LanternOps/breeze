@@ -70,6 +70,14 @@ export async function promoteProposalToLibrary(args: {
   // the loader takes its own system-scope connection, and holding it inside
   // `db.transaction` would double-hold the pool.
   const approvalMethod = await loadProposalRunApprovalMethod(proposal.id, proposal.orgId);
+  if (approvalMethod === null) {
+    // Recorded at the point the gap becomes permanent: promotion can happen
+    // long after the run, so this is the only line that ties the version's
+    // missing method back to its proposal.
+    console.warn('[scriptProposals] promoting a proposal whose run carries no approval_method', {
+      proposalId: proposal.id, orgId: proposal.orgId,
+    });
+  }
 
   return db.transaction(async (tx): Promise<PromoteResult> => {
     const claimed = await transitionProposal(tx, proposal.id, ['verified'], 'promoted', {});

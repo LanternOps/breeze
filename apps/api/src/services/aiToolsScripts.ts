@@ -251,8 +251,15 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
     // this column).
     const approvalMethod = context?.releaseDecision ? approvalMethodForRelease(context.releaseDecision) : null;
     if (approvalMethod === null) {
+      // Unreachable while run_script stays Tier 3 (every proposal run IS an
+      // intent release, and both release paths attach the record). Reaching
+      // it means that invariant broke — reported, not just logged, because
+      // the row this leaves behind is exactly the audit gap #5645 closed.
       console.warn('[aiToolsScripts] run_script proposal dispatch without a release decision — approval_method left null', {
         proposalId: input.proposalId, actionIntentId: context?.actionIntentId ?? null,
+      });
+      captureException(new Error('run_script proposal dispatch without a release decision'), undefined, {
+        area: 'script_proposal_release_decision_missing',
       });
     }
     const proposalResults: Record<string, unknown> = {};

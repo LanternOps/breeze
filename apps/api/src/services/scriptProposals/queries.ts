@@ -80,6 +80,13 @@ export async function loadProposalRunApprovalMethod(
         .where(and(eq(scriptExecutions.proposalId, proposalId), eq(scriptExecutions.orgId, orgId)))
         .orderBy(desc(scriptExecutions.createdAt))
         .limit(1);
+      if (!row) {
+        // A `verified` proposal was proved against an execution row, so no
+        // row at all is an invariant break (orphaned proposal, or an org
+        // mismatch hiding the real row) — distinct from a row whose method
+        // is genuinely null, and worth telling apart in the logs.
+        console.warn('[scriptProposals] no execution row found for a promotable proposal', { proposalId, orgId });
+      }
       return row?.approvalMethod ?? null;
     }),
   );
