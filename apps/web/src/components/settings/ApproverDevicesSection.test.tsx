@@ -37,6 +37,7 @@ const deviceFixture = (over: Partial<ApproverDevice> = {}): ApproverDevice => ({
   label: 'Front-desk laptop',
   kind: 'platform',
   isPlatformBound: true,
+  platformBoundBasis: 'webauthn_backup_flags',
   createdAt: '2026-06-01T12:00:00.000Z',
   lastUsedAt: '2026-06-10T09:00:00.000Z',
   disabledAt: null,
@@ -60,6 +61,39 @@ describe('ApproverDevicesSection', () => {
     expect(screen.getByTestId('approver-device-label-dev-1').textContent).toContain('Front-desk laptop');
     expect(screen.getByTestId('approver-device-platform-badge-dev-1')).toBeTruthy();
     expect(listApproverDevicesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows "Hardware-attested" for a device with a basis in the L4 trusted set (#5162)', async () => {
+    listApproverDevicesMock.mockResolvedValueOnce([
+      deviceFixture({ platformBoundBasis: 'ios_se_p256_app_attest' }),
+    ]);
+    render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
+
+    const badge = await screen.findByTestId('approver-device-platform-badge-dev-1');
+    expect(badge.textContent).toBe('Hardware-attested');
+  });
+
+  it('shows a neutral "Not attested" badge with a tooltip for a legacy_unattested basis (#5162)', async () => {
+    listApproverDevicesMock.mockResolvedValueOnce([
+      deviceFixture({ isPlatformBound: true, platformBoundBasis: 'legacy_unattested' }),
+    ]);
+    render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
+
+    const badge = await screen.findByTestId('approver-device-platform-badge-dev-1');
+    expect(badge.textContent).toBe('Not attested');
+    expect(badge.getAttribute('title')).toBe(
+      "Critical approvals aren't available from this device until it's re-registered on an attested app build.",
+    );
+  });
+
+  it('shows "Not attested" for an unattested basis, not the honest-but-confusing raw boolean (#5162)', async () => {
+    listApproverDevicesMock.mockResolvedValueOnce([
+      deviceFixture({ isPlatformBound: false, platformBoundBasis: 'unattested' }),
+    ]);
+    render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
+
+    const badge = await screen.findByTestId('approver-device-platform-badge-dev-1');
+    expect(badge.textContent).toBe('Not attested');
   });
 
   it('shows an empty state when no devices are registered', async () => {
