@@ -17,6 +17,8 @@ import { ToolExecutionAnalytics } from "./ToolExecutionAnalytics";
 import { ApprovalHistoryFeed } from "./ApprovalHistoryFeed";
 import { RateLimitStatus } from "./RateLimitStatus";
 import { RejectionDenialLog } from "./RejectionDenialLog";
+import { ScriptProposalsPanel } from "./ScriptProposalsPanel";
+import type { ScriptProposalsMetrics } from "./ScriptProposalsPanel";
 import { formatTime } from "@/lib/dateTimeFormat";
 type TimeRange = "24h" | "7d" | "30d";
 interface ToolExecSummary {
@@ -67,7 +69,7 @@ export interface ToolExecData {
   timeSeries: TimeSeriesPoint[];
   executions: ToolExecution[];
 }
-type Tab = "guardrails" | "analytics" | "approvals" | "rate-limits" | "denials";
+type Tab = "guardrails" | "analytics" | "approvals" | "rate-limits" | "denials" | "proposals";
 const TABS: Array<{
   id: Tab;
   labelKey: string;
@@ -98,6 +100,11 @@ const TABS: Array<{
     labelKey: "aiRiskAiRiskDashboard.denials",
     icon: AlertTriangle,
   },
+  {
+    id: "proposals",
+    labelKey: "aiRiskAiRiskDashboard.proposals",
+    icon: BrainCircuit,
+  },
 ];
 const TIME_RANGES: {
   labelKey: string;
@@ -120,15 +127,17 @@ export default function AiRiskDashboard() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [execData, setExecData] = useState<ToolExecData | null>(null);
   const [securityEvents, setSecurityEvents] = useState<SecurityEvent[]>([]);
+  const [scriptMetrics, setScriptMetrics] = useState<ScriptProposalsMetrics | null>(null);
   const needsData = activeTab !== "guardrails" && activeTab !== "rate-limits";
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
       const since = getSinceDate(timeRange);
-      const [execResult, secResult] = await Promise.allSettled([
+      const [execResult, secResult, scriptResult] = await Promise.allSettled([
         fetchWithAuth(`/ai/admin/tool-executions?since=${since}&limit=200`),
         fetchWithAuth(`/ai/admin/security-events?since=${since}&limit=100`),
+        fetchWithAuth(`/ai/admin/script-proposals-metrics?since=${since}`),
       ]);
       if (execResult.status === "fulfilled" && execResult.value.ok) {
         setExecData(await execResult.value.json());
@@ -143,6 +152,12 @@ export default function AiRiskDashboard() {
         setError(
           t("aiRiskAiRiskDashboard.securityEventsCouldNotBeLoadedDenialData"),
         );
+      }
+      if (scriptResult.status === "fulfilled" && scriptResult.value.ok) {
+        const scriptJson = await scriptResult.value.json();
+        setScriptMetrics(scriptJson.scriptProposals ?? null);
+      } else {
+        setScriptMetrics(null);
       }
       setLastUpdated(new Date());
     } catch (err) {
@@ -280,6 +295,8 @@ export default function AiRiskDashboard() {
           loading={loading}
         />
       )}
+
+      {activeTab === "proposals" && <ScriptProposalsPanel data={scriptMetrics} loading={loading} />}
     </div>
   );
 }
