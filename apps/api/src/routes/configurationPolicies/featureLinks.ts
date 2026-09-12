@@ -48,7 +48,7 @@ import {
 import { AutomationReferenceAuthorizationError } from '../../services/automationReferenceAuthorization';
 
 // The `config_policy_monitors_compat` deferred constraint trigger
-// (2026-10-16-140300-monitor-definitions.sql) is the owner-compatibility
+// (2026-10-16-160300-monitor-definitions.sql) is the owner-compatibility
 // authority for monitor attachments — it fires at COMMIT, after the insert
 // this route issues has already returned, so the 23514 surfaces from the
 // `await addFeatureLink(...)` / `await updateFeatureLink(...)` call itself.

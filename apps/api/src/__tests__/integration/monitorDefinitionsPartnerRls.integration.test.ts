@@ -3,7 +3,7 @@
  * partner-wide SELECT branch and the attachment-compatibility trigger
  * (#5287 W02, CLAUDE.md "Partner-Wide First" step 6).
  *
- * Shipped by 2026-10-16-140300-monitor-definitions.sql:
+ * Shipped by 2026-10-16-160300-monitor-definitions.sql:
  *   monitor_definitions_isolation             FOR ALL     system OR breeze_has_org_access(org_id)
  *                                                         OR breeze_has_partner_access(partner_id)
  *   monitor_definitions_partner_wide_select   FOR SELECT  org_id IS NULL
