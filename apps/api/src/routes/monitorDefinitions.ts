@@ -4,8 +4,6 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { zValidator } from '../lib/validation';
 import { db } from '../db';
 import {
-  alertRules,
-  alertTemplates,
   configPolicyAssignments,
   configPolicyFeatureLinks,
   configurationPolicies,
@@ -14,8 +12,6 @@ import {
   configPolicyMonitors,
 } from '../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../middleware/auth';
-import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
-import { convertAlertConditionToMonitor } from '../services/monitors/monitorConversion';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { evaluateConditions } from '../services/alertConditions';
@@ -33,6 +29,7 @@ import {
 import { buildCompiledCondition } from '../services/monitors/monitorCompiler';
 import { MONITOR_KIND_SPECS } from '../services/monitors/kinds';
 import { resolveMonitorsForDevice } from '../services/monitors/monitorResolver';
+import { convertRuleToMonitor } from '../services/monitors/ruleConversionService';
 import {
   addFeatureLink,
   assignPolicy,
@@ -580,15 +577,8 @@ monitorDefinitionRoutes.post(
 
 // POST /monitor-definitions/convert-from-rule/:ruleId (#5289)
 //
-// The one-way door off the legacy standalone alert rules (that router is
-// deprecated). It lives HERE rather than on /alerts/rules/:id — the plan's
-// original path — because importing the configuration-policy service into
-// routes/alerts/rules.ts pulls a far larger module graph into that file and
-// broke seven existing suites' `db/schema` mocks. Conversion is a
-// monitor-creation operation, so this is also the more honest home.
-//
-// All-or-nothing in one transaction: a half-converted rule (monitor created,
-// old rule still active) would double-alert on every device it targets.
+// Thin HTTP shell; the orchestration (and the reason it does not live on
+// /alerts/rules/:id) is in services/monitors/ruleConversionService.ts.
 monitorDefinitionRoutes.post(
   '/convert-from-rule/:ruleId',
   requireScope('organization', 'partner', 'system'),
@@ -598,123 +588,34 @@ monitorDefinitionRoutes.post(
     const auth = c.get('auth');
     const ruleId = c.req.param('ruleId')!;
 
-    const [rule] = await db.select().from(alertRules).where(eq(alertRules.id, ruleId)).limit(1);
-    if (!rule) return c.json({ error: 'Alert rule not found' }, 404);
-
-    // Dual-axis access, mirroring getAlertRuleWithOrgCheck: an org-owned rule
-    // via org access; a partner-wide rule only for system scope or the owning
-    // partner's own PARTNER-scoped token (an org token carries a partnerId too,
-    // so matching on that alone would hand every partner-wide rule to every org
-    // user under that partner — #4952).
-    const canSee = rule.orgId
-      ? auth.canAccessOrg(rule.orgId)
-      : auth.scope === 'system' || (auth.scope === 'partner' && auth.partnerId === rule.partnerId);
-    if (!canSee) return c.json({ error: 'Alert rule not found' }, 404);
-    if (rule.managedByMonitorId) return c.json({ error: 'RULE_ALREADY_MANAGED' }, 409);
-    if (rule.orgId === null && !canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
-    }
-
-    const [template] = await db
-      .select()
-      .from(alertTemplates)
-      .where(eq(alertTemplates.id, rule.templateId))
-      .limit(1);
-    if (!template) return c.json({ error: 'Alert template not found' }, 404);
-
-    const overrides = (rule.overrideSettings ?? {}) as Record<string, unknown>;
-    const converted = convertAlertConditionToMonitor(overrides.conditions ?? template.conditions);
-    if (!converted) {
-      // A condition group, a multi-condition rule, or a metric with no monitor
-      // kind: converting would change what the rule measures.
-      return c.json({ error: 'RULE_NOT_CONVERTIBLE' }, 409);
-    }
-
-    // The policy is assigned exactly where the rule targeted, so the converted
-    // monitor reaches the same devices. 'all' means "everything this rule's
-    // owner covers": org-level for an org rule, partner-level for a
-    // partner-wide one.
-    const assignment: { level: 'partner' | 'organization' | 'site' | 'device_group' | 'device'; targetId: string } | null =
-      rule.targetType === 'all'
-        ? rule.orgId
-          ? { level: 'organization', targetId: rule.orgId }
-          : rule.partnerId
-            ? { level: 'partner', targetId: rule.partnerId }
-            : null
-        : rule.targetType === 'org'
-          ? { level: 'organization', targetId: rule.targetId }
-          : rule.targetType === 'site'
-            ? { level: 'site', targetId: rule.targetId }
-            : rule.targetType === 'group'
-              ? { level: 'device_group', targetId: rule.targetId }
-              : rule.targetType === 'device'
-                ? { level: 'device', targetId: rule.targetId }
-                : null;
-    if (!assignment) return c.json({ error: 'RULE_NOT_CONVERTIBLE' }, 409);
-
-    const severity =
-      (overrides.severity as 'critical' | 'high' | 'medium' | 'low' | 'info' | undefined) ?? template.severity;
-    const channelIds = Array.isArray(overrides.notificationChannelIds)
-      ? (overrides.notificationChannelIds as string[])
-      : [];
-
     try {
-      const result = await db.transaction(async () => {
-        const monitor = await createMonitorDefinition(
-          {
-            ownerScope: rule.orgId ? 'organization' : 'partner',
-            orgId: rule.orgId ?? undefined,
-            name: rule.name,
-            description: template.description ?? undefined,
-            kind: converted.kind,
-            enabled: rule.isActive,
-            condition: converted.condition,
-            severity,
-            cooldownMinutes: (overrides.cooldownMinutes as number | undefined) ?? template.cooldownMinutes,
-            autoResolve: template.autoResolve,
-            responses: [],
-            deliveryMode: channelIds.length > 0 ? 'channels' : 'inherit',
-            deliveryChannelIds: channelIds,
-            escalationPolicyId: (overrides.escalationPolicyId as string | undefined) ?? null,
-            recurrenceActions: [],
-            pauseResponsesOnEscalation: true,
-          } as Parameters<typeof createMonitorDefinition>[0],
-          auth,
-        );
+      const result = await convertRuleToMonitor(ruleId, auth);
+      if (!result.ok) {
+        switch (result.failure.kind) {
+          case 'rule_not_found':
+            return c.json({ error: 'Alert rule not found' }, 404);
+          case 'template_not_found':
+            return c.json({ error: 'Alert template not found' }, 404);
+          case 'already_managed':
+            return c.json({ error: 'RULE_ALREADY_MANAGED' }, 409);
+          case 'not_convertible':
+            return c.json({ error: 'RULE_NOT_CONVERTIBLE' }, 409);
+          case 'partner_wide_denied':
+            return c.json({ error: result.failure.message }, 403);
+        }
+      }
 
-        const policy = await createConfigPolicy(
-          rule.orgId ? { orgId: rule.orgId } : { partnerId: rule.partnerId as string },
-          { name: `Converted: ${rule.name}` },
-          auth.user.id,
-        );
-        if (!policy) throw new Error('Failed to create configuration policy');
-
-        await assignPolicy(policy.id, assignment.level, assignment.targetId, 0, auth.user.id);
-        await addFeatureLink(policy.id, 'monitors', null, {
-          items: [{ monitorId: monitor.id, enabled: true }],
-        });
-
-        // The old rule is deactivated, never deleted: its alert history keeps
-        // pointing at it, and convertedToMonitorId is what the UI reads to send
-        // a technician to the monitor that replaced it.
-        await db
-          .update(alertRules)
-          .set({ isActive: false, overrideSettings: { ...overrides, convertedToMonitorId: monitor.id } })
-          .where(eq(alertRules.id, ruleId));
-
-        return { monitorId: monitor.id, configPolicyId: policy.id };
-      });
-
+      const { monitorId, configPolicyId, ruleName, ruleOrgId } = result.data;
       writeRouteAudit(c, {
-        orgId: rule.orgId ?? undefined,
+        orgId: ruleOrgId ?? undefined,
         action: 'alert_rule.convert_to_monitor',
         resourceType: 'alert_rule',
         resourceId: ruleId,
-        resourceName: rule.name,
-        details: result,
+        resourceName: ruleName,
+        details: { monitorId, configPolicyId },
       });
 
-      return c.json({ data: result }, 201);
+      return c.json({ data: { monitorId, configPolicyId } }, 201);
     } catch (error) {
       const mapped = errorResponse(error);
       if (mapped) return c.json(mapped.body, mapped.status);
