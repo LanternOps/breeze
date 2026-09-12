@@ -27,6 +27,10 @@ import { buildOrgAccessClosures } from '../middleware/auth';
 // Real (unmocked): access.ts is the single source of truth for who may mutate
 // an agent row, and POST /:id/enable calls it directly.
 import { AgentAccessDeniedError } from '../services/aiAgents/access';
+// Resolves to the MOCKED class (vi.mock('../services/aiAgents/agentService')
+// below) — needed so a PATCH test can construct the exact instance
+// `updateAgentMock` rejects with.
+import { ModeNotAllowedForKindError } from '../services/aiAgents/agentService';
 
 const {
   selectMock,
@@ -171,11 +175,21 @@ vi.mock('../services/aiAgents/agentService', () => ({
     }
   },
   UnsupportedAgentModeError: class UnsupportedAgentModeError extends Error {},
+  // Fleet Designer (W01) — faithful to the real class: `mapError` reads
+  // `.code` off it (see the `AgentKindConflictError` comment above for why
+  // that matters).
+  ModeNotAllowedForKindError: class ModeNotAllowedForKindError extends Error {
+    readonly code = 'mode_not_allowed_for_kind';
+    constructor(mode: string, kind: string) {
+      super(`mode ${mode} is not available for a ${kind} agent`);
+      this.name = 'ModeNotAllowedForKindError';
+    }
+  },
   ActPrerequisitesNotMetError,
   InvalidSupervisedActionKeysError,
   SupervisedKeysGrantOnlyError,
   createAgent: vi.fn(),
-  updateAgent: vi.fn(),
+  updateAgent: updateAgentMock,
   disableAgent: vi.fn(),
   listAgents: listAgentsMock,
   getAgent: getAgentMock,
@@ -287,7 +301,7 @@ const dbCtxMock = vi.hoisted(() => ({
 // GET / 's batched last-run probe and POST /:id/enable 's UPDATE. Kept OUT of
 // the shared `selectMock` so an enable test's UPDATE can never be satisfied by
 // a stray SELECT chain queued by another test.
-const { selectDistinctOnMock, updateMock, withAgentRowLockedMock, recordAgentMutationMock } = vi.hoisted(() => ({
+const { selectDistinctOnMock, updateMock, withAgentRowLockedMock, recordAgentMutationMock, updateAgentMock } = vi.hoisted(() => ({
   selectDistinctOnMock: vi.fn(),
   updateMock: vi.fn(),
   withAgentRowLockedMock: vi.fn(),
@@ -295,6 +309,10 @@ const { selectDistinctOnMock, updateMock, withAgentRowLockedMock, recordAgentMut
   // records. Its own coverage is agentService.test.ts; here it exists so
   // POST /:id/enable can be proven to record the SAME way disable does.
   recordAgentMutationMock: vi.fn(),
+  // Fleet Designer (W01): PATCH /:id's own route test needs to control what
+  // `updateAgent` throws — a bare inline `vi.fn()` in the factory below is
+  // not referenceable from a test body.
+  updateAgentMock: vi.fn(),
 }));
 vi.mock('../db', () => ({
   db: { select: selectMock, selectDistinctOn: selectDistinctOnMock, update: updateMock },
@@ -413,7 +431,7 @@ function minimalToolCatalogDto(overrides: Partial<AgentToolCatalogDto> = {}): Ag
         ],
       },
     ],
-    presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [] },
+    presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [] },
     unreachableTools: [],
     ...overrides,
   };
@@ -1083,6 +1101,10 @@ const runDetailResponseSchema = z.object({
       contextTruncated: z.boolean(),
     }).strict().nullable(),
     reportRunId: z.string().nullable(),
+    // Fleet Designer (W01): always `null` for now — Task 9 is what actually
+    // projects a design-profile run's outcome into this field and gives it
+    // a real shape here.
+    fleetDesign: z.unknown().nullable(),
   }).strict(),
 }).strict();
 
@@ -3526,6 +3548,31 @@ describe('GET /ai-agents — hasPartnerBaseline (#4170)', () => {
   });
 });
 
+// Fleet Designer (W01) — `kind` cannot be patched, so `updateAgent`
+// (agentService.ts) is the only place that can catch a mode not allowed for
+// the row's EXISTING kind; this route test proves the service's rejection
+// reaches the client as a 400 with the stable `mode_not_allowed_for_kind`
+// code, distinct from the 422 `UnsupportedAgentModeError` case.
+describe('PATCH /ai-agents/:id — mode vs kind (Fleet Designer W01)', () => {
+  function patchAgent(app: Hono, body: unknown, id = AGENT_ID) {
+    return app.request(`/ai-agents/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('400s mode_not_allowed_for_kind when the service rejects a shadow mode for a designer agent', async () => {
+    updateAgentMock.mockRejectedValueOnce(new ModeNotAllowedForKindError('shadow', 'designer'));
+
+    const res = await patchAgent(buildApp(), { mode: 'shadow' });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body).toEqual({ error: 'mode_not_allowed_for_kind' });
+  });
+});
+
 describe('POST /ai-agents/:id/enable', () => {
   const ENABLE = `/ai-agents/${AGENT_ID}/enable`;
 
@@ -3801,6 +3848,28 @@ function previewRequest(app: Hono, body: Record<string, unknown>) {
     body: JSON.stringify(body),
   });
 }
+
+// Fleet Designer (W01) — `createAiAgentSchema`'s `superRefine` runs
+// `assertModeAllowedForKind` (packages/shared/validators/aiAgents.ts) BEFORE
+// the route handler ever sees the body, so this is a pure zValidator 400 —
+// `createAgent` is never called.
+describe('POST /ai-agents (create)', () => {
+  function createAgentRequest(app: Hono, body: Record<string, unknown>) {
+    return app.request('/ai-agents', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('400s a designer agent created with mode shadow (mode not allowed for kind)', async () => {
+    const res = await createAgentRequest(buildApp(), { kind: 'designer', mode: 'shadow', name: 'Fleet Designer' });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { details: { fieldErrors: Record<string, string[]> } };
+    expect(body.details.fieldErrors.mode?.[0]).toMatch(/not available for a designer agent/);
+  });
+});
 
 describe('POST /ai-agents/preview', () => {
   it('evaluates a draft policy against the mocked catalog', async () => {

@@ -258,6 +258,8 @@ function seedAdmissionReads(options: {
   dailyCents?: number | null;
   agentOrgId?: string | null;
   agentPartnerId?: string | null;
+  /** Fleet Designer (W01): the `ai_agents.kind` the ownership select returns. */
+  agentKind?: string;
   orgPartnerId?: string | null;
   agentMissing?: boolean;
   /** The (device, org) ownership probe: false means the device is not in the org. */
@@ -278,6 +280,7 @@ function seedAdmissionReads(options: {
     dailyCents = 0,
     agentOrgId = null,
     agentPartnerId = PARTNER_ID,
+    agentKind = 'triage',
     orgPartnerId = PARTNER_ID,
     agentMissing = false,
     deviceInOrg = true,
@@ -297,7 +300,7 @@ function seedAdmissionReads(options: {
   dbMockState.rowQueues.ai_agents = [
     agentMissing
       ? []
-      : [{ id: AGENT_ID, orgId: agentOrgId, partnerId: agentPartnerId, name: 'Triage', kind: 'triage' }],
+      : [{ id: AGENT_ID, orgId: agentOrgId, partnerId: agentPartnerId, name: 'Triage', kind: agentKind }],
   ];
   dbMockState.rowQueues.devices = [deviceInOrg ? [{ id: DEVICE_ID }] : []];
   dbMockState.insertRows = [
@@ -2220,5 +2223,113 @@ describe('createAndEnqueueAgentRun narrative-profile admission (P2-3)', () => {
       input({ profile: 'narrative', deviceId: null, dedupeKey: 'narrative:n7' }),
     );
     expect(publishEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('createAndEnqueueAgentRun design-profile admission (Fleet Designer W01)', () => {
+  /**
+   * Design-profile runs skip the cooldown probe entirely (step 5 wraps in
+   * `profile === 'full'`), same as verdict/sweep/narrative — so this seeds
+   * only [reap, concurrency, per-window, daily spend], NOT `seedAdmissionReads`'
+   * 5-slot cooldown-inclusive queue.
+   */
+  function seedDesignAdmissionReads(options: {
+    concurrent?: number;
+    perWindow?: number;
+    dailyCents?: number | null;
+    agentKind?: string;
+  } = {}): void {
+    const { concurrent = 0, perWindow = 0, dailyCents = 0, agentKind = 'designer' } = options;
+    seedAdmissionReads({ concurrent, perHour: perWindow, dailyCents, deviceInOrg: true, agentKind });
+    dbMockState.rowQueues.ai_agent_runs = [
+      [], // 4c reap candidates
+      [{ value: concurrent }], // 6b concurrency
+      [{ value: perWindow }], // 6b rate (24h window for design)
+      [{ totalCostCents: dailyCents }], // 7 daily spend
+    ];
+  }
+
+  function designInput(over: Partial<CreateAgentRunInput> = {}): CreateAgentRunInput {
+    return input({ kind: 'designer', profile: 'design', deviceId: null, ...over });
+  }
+
+  it('max_concurrent_design_runs when queued+running design runs reach the design-only cap', async () => {
+    seedDesignAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentDesignRuns });
+    const result = await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d1' }));
+    expect(result).toEqual({ created: false, skipped: 'max_concurrent_design_runs' });
+  });
+
+  it('rate-limits design-profile runs on maxDesignRunsPerDay with skip design_rate', async () => {
+    seedDesignAdmissionReads({ perWindow: AI_AGENT_LIMIT_DEFAULTS.maxDesignRunsPerDay });
+    const result = await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d2' }));
+    expect(result).toEqual({ created: false, skipped: 'design_rate' });
+  });
+
+  it('a design run is not blocked by saturated full/verdict/sweep/narrative counts — its counters are its own', async () => {
+    seedDesignAdmissionReads({ concurrent: 0, perWindow: 0 });
+    const result = await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d3' }));
+    expect(result).toMatchObject({ created: true });
+    const runSelects = dbMockState.selects.filter((s) => s.table === 'ai_agent_runs');
+    expect(compiled(runSelects[1]?.where)).toContain('"profile"');
+    expect(compiled(runSelects[2]?.where)).toContain('"profile"');
+  });
+
+  it('design and sweep caps are distinct values, so one cannot starve the other', () => {
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxConcurrentDesignRuns)
+      .not.toBe(AI_AGENT_LIMIT_DEFAULTS.maxConcurrentSweepRuns);
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxDesignRunsPerDay)
+      .not.toBe(AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour);
+  });
+
+  it('reads the caps off the SNAPSHOT, not a hard-coded default', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({
+      limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentDesignRuns: 3, maxDesignRunsPerDay: 20 },
+    }));
+    seedDesignAdmissionReads({ concurrent: 2, perWindow: 9 });
+    const result = await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d4' }));
+    expect(result).toMatchObject({ created: true });
+  });
+
+  it('falls back to the v10 defaults on a pre-v10 snapshot with no design caps at all', async () => {
+    const { maxConcurrentDesignRuns: _c, maxDesignRunsPerDay: _h, ...preV10 } = AI_AGENT_LIMIT_DEFAULTS;
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({
+      limits: preV10 as typeof AI_AGENT_LIMIT_DEFAULTS,
+    }));
+    seedDesignAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentDesignRuns });
+    const result = await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d5' }));
+    expect(result).toEqual({ created: false, skipped: 'max_concurrent_design_runs' });
+  });
+
+  it('skips the cooldown step entirely for a design run, even with cooldownSeconds > 0', async () => {
+    seedDesignAdmissionReads({ concurrent: 0, perWindow: 0, dailyCents: 0 });
+    const result = await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d6' }));
+    expect(result).toMatchObject({ created: true });
+  });
+
+  it('writes profile=design and the scheduleId on the run row', async () => {
+    seedDesignAdmissionReads();
+    await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d7', scheduleId: SCHEDULE_ID }));
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values).toMatchObject({ profile: 'design', scheduleId: SCHEDULE_ID });
+  });
+
+  it('does not publish max_concurrent_design_runs or design_rate — logged only, volume guards not policy events', async () => {
+    seedDesignAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentDesignRuns });
+    await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d8' }));
+    expect(publishEvent).not.toHaveBeenCalled();
+  });
+
+  it('ownership_mismatch when a design run targets a non-designer agent', async () => {
+    seedDesignAdmissionReads({ agentKind: 'triage' });
+    const result = await createAndEnqueueAgentRun(designInput({ dedupeKey: 'design:d9' }));
+    expect(result).toEqual({ created: false, skipped: 'ownership_mismatch' });
+  });
+
+  it('ownership_mismatch when a design run carries a deviceId', async () => {
+    seedDesignAdmissionReads();
+    const result = await createAndEnqueueAgentRun(
+      designInput({ dedupeKey: 'design:d10', deviceId: DEVICE_ID }),
+    );
+    expect(result).toEqual({ created: false, skipped: 'ownership_mismatch' });
   });
 });

@@ -129,6 +129,24 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *  - triageMaxTurns        — run loop (triageLimits(), triageProfile.ts):
  *                            substitutes for maxTurnsPerRun on a
  *                            triage-profile run; not enforced here.
+ *  - maxConcurrentDesignRuns — HERE (admission rule 6b, via profileCaps()),
+ *                            design-profile runs only — counted separately
+ *                            from every other per-run-shape concurrency cap
+ *                            above (Fleet Designer W01).
+ *  - maxDesignRunsPerDay   — HERE (admission rule 6b, via profileCaps()),
+ *                            design-profile runs only, over a 24-HOUR window
+ *                            rather than the hourly window every other
+ *                            profile uses (`caps.windowMs`) — a design run is
+ *                            a scheduled-at-most-monthly, expensive-relative-
+ *                            to-a-sweep report, so an hourly rate cap would
+ *                            be meaningless; a daily one bounds manual-trigger
+ *                            abuse without needing its own bespoke plumbing.
+ *  - designBudgetCentsPerRun — run loop (designLimits(), designProfile.ts):
+ *                            substitutes for maxBudgetCentsPerRun on a
+ *                            design-profile run; not enforced here.
+ *  - designMaxTurns        — run loop (designLimits(), designProfile.ts):
+ *                            substitutes for maxTurnsPerRun on a
+ *                            design-profile run; not enforced here.
  */
 
 export interface CreateAgentRunInput {
@@ -276,7 +294,14 @@ export type AgentRunSkipReason =
   // (admission rule 6b, via profileCaps()). Same posture as the verdict,
   // sweep and narrative pairs above: deliberately NOT added to
   // PUBLISHED_SKIP_REASONS — volume guards, not policy events.
-  | 'max_concurrent_triage_runs' | 'triage_rate';
+  | 'max_concurrent_triage_runs' | 'triage_rate'
+  // Fleet Designer (W01) — the design-profile equivalents, counted against
+  // maxConcurrentDesignRuns/maxDesignRunsPerDay instead (admission rule 6b,
+  // via profileCaps()). Same posture as the verdict/sweep/narrative/triage
+  // pairs above: deliberately NOT added to PUBLISHED_SKIP_REASONS — a volume
+  // guard on a scheduled-at-most-monthly, manually-triggerable run shape,
+  // not a policy event worth a bus publish.
+  | 'max_concurrent_design_runs' | 'design_rate';
 
 export type CreateAgentRunResult =
   | { created: true; run: AiAgentRunRow }
@@ -684,30 +709,44 @@ export async function reapStalledAgentRuns(scope: {
  * `AI_AGENT_RUN_PROFILES` without a matching arm here must fail to compile
  * rather than silently falling through to inherit `full`'s caps (which a
  * ternary chain would have done for any un-matched value).
+ *
+ * `windowMs` (Fleet Designer W01): every pre-existing arm's rate window was
+ * an implicit, hard-coded hour; it is now explicit per arm so `design` can
+ * use a 24-hour window instead without a second code path at the call site
+ * (rule 6b reads `caps.windowMs`/`caps.maxPerWindow` uniformly).
  */
 function profileCaps(
   profile: AiAgentRunProfile,
   limits: AiAgentLimits,
-): { maxConcurrent: number; maxPerHour: number; concurrentSkip: AgentRunSkipReason; rateSkip: AgentRunSkipReason } {
+): {
+  maxConcurrent: number;
+  maxPerWindow: number;
+  windowMs: number;
+  concurrentSkip: AgentRunSkipReason;
+  rateSkip: AgentRunSkipReason;
+} {
   switch (profile) {
     case 'full':
       return {
         maxConcurrent: limits.maxConcurrentRuns,
-        maxPerHour: limits.maxRunsPerHour,
+        maxPerWindow: limits.maxRunsPerHour,
+        windowMs: 3_600_000,
         concurrentSkip: 'max_concurrent_runs',
         rateSkip: 'max_runs_per_hour',
       };
     case 'verdict':
       return {
         maxConcurrent: limits.maxConcurrentVerdictRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentVerdictRuns,
-        maxPerHour: limits.maxVerdictRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxVerdictRunsPerHour,
+        maxPerWindow: limits.maxVerdictRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxVerdictRunsPerHour,
+        windowMs: 3_600_000,
         concurrentSkip: 'max_concurrent_verdict_runs',
         rateSkip: 'verdict_rate',
       };
     case 'sweep':
       return {
         maxConcurrent: limits.maxConcurrentSweepRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentSweepRuns,
-        maxPerHour: limits.maxSweepRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour,
+        maxPerWindow: limits.maxSweepRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour,
+        windowMs: 3_600_000,
         concurrentSkip: 'max_concurrent_sweep_runs',
         rateSkip: 'sweep_rate',
       };
@@ -715,7 +754,8 @@ function profileCaps(
       return {
         maxConcurrent:
           limits.maxConcurrentNarrativeRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentNarrativeRuns,
-        maxPerHour: limits.maxNarrativeRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxNarrativeRunsPerHour,
+        maxPerWindow: limits.maxNarrativeRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxNarrativeRunsPerHour,
+        windowMs: 3_600_000,
         concurrentSkip: 'max_concurrent_narrative_runs',
         rateSkip: 'narrative_rate',
       };
@@ -729,9 +769,23 @@ function profileCaps(
     case 'triage':
       return {
         maxConcurrent: limits.maxConcurrentTriageRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentTriageRuns,
-        maxPerHour: limits.maxTriageRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxTriageRunsPerHour,
+        maxPerWindow: limits.maxTriageRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxTriageRunsPerHour,
+        windowMs: 3_600_000,
         concurrentSkip: 'max_concurrent_triage_runs',
         rateSkip: 'triage_rate',
+      };
+    // Fleet Designer (W01) — a design run is a scheduled-at-most-monthly (or
+    // manually-triggered) report, not a high-frequency background loop, so
+    // its rate cap is a 24-HOUR window rather than the hourly window every
+    // other profile above uses. `maxConcurrentDesignRuns` still guards
+    // ordinary same-instant overlap the same way as every other profile.
+    case 'design':
+      return {
+        maxConcurrent: limits.maxConcurrentDesignRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentDesignRuns,
+        maxPerWindow: limits.maxDesignRunsPerDay ?? AI_AGENT_LIMIT_DEFAULTS.maxDesignRunsPerDay,
+        windowMs: 86_400_000,
+        concurrentSkip: 'max_concurrent_design_runs',
+        rateSkip: 'design_rate',
       };
     default: {
       const exhaustive: never = profile;
@@ -1016,11 +1070,11 @@ export async function createAndEnqueueAgentRun(
       return skip(caps.concurrentSkip);
     }
 
-    const [lastHour] = await db
+    const [inWindow] = await db
       .select({ value: count() })
       .from(aiAgentRuns)
-      .where(and(agentOrgScope, profileScope, gte(aiAgentRuns.queuedAt, new Date(now - 3_600_000))));
-    if ((lastHour?.value ?? 0) >= caps.maxPerHour) {
+      .where(and(agentOrgScope, profileScope, gte(aiAgentRuns.queuedAt, new Date(now - caps.windowMs))));
+    if ((inWindow?.value ?? 0) >= caps.maxPerWindow) {
       return skip(caps.rateSkip);
     }
 
@@ -1073,6 +1127,17 @@ export async function createAndEnqueueAgentRun(
     } catch (error) {
       if (error instanceof AgentRunOwnershipError) return skip('ownership_mismatch');
       throw error;
+    }
+
+    // 8a. Fleet Designer (W01): a `design`-profile run must be driven by a
+    //     `designer` agent against no device — anything else is a caller
+    //     bug (a triage/patch/helpdesk agent has no `submit_fleet_design`
+    //     floor to run against, and a design run is device-less by
+    //     construction, Global Constraints). Same `ownership_mismatch` skip
+    //     as the cross-table invariant above: this is the same class of
+    //     violation, just on `kind`/`deviceId` instead of `orgId`.
+    if (profile === 'design' && (agentRow.kind !== 'designer' || deviceId !== null)) {
+      return skip('ownership_mismatch');
     }
 
     // 8b. device ∈ org. `assertRunOwnership` covers agent<->org only; the

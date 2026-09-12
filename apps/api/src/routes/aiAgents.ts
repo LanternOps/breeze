@@ -55,7 +55,8 @@ import {
 import {
   createAgent, disableAgent, getAgent, listAgents, recordAgentMutation, updateAgent, withAgentRowLocked,
   ActPrerequisitesNotMetError, AgentInvariantError, AgentKindConflictError,
-  InvalidSupervisedActionKeysError, SupervisedKeysGrantOnlyError, UnsupportedAgentModeError,
+  InvalidSupervisedActionKeysError, SupervisedKeysGrantOnlyError, ModeNotAllowedForKindError,
+  UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
 import { InvalidScriptIdsError } from '../services/aiAgents/scriptAuthorization';
 import { buildAgentToolCatalog } from '../services/aiAgents/agentToolCatalog';
@@ -210,6 +211,13 @@ export function mapError(c: Context, err: unknown) {
     // err.code, not a repeated literal — the class types it as a literal, so
     // this cannot drift from the value the client branches on.
     return c.json({ error: err.message, code: err.code, supportedModes: SUPPORTED_AGENT_MODES }, 422);
+  }
+  // Fleet Designer (W01): the mode IS generally supported (`shadow` passes
+  // isSupportedAgentMode), it just is not available for THIS agent's kind
+  // (`allowedModesForKind`) — a 400 `mode_not_allowed_for_kind`, distinct
+  // from the 422 above, matching the create route's zod issue shape.
+  if (err instanceof ModeNotAllowedForKindError) {
+    return c.json({ error: err.code }, 400);
   }
   // Task 6 (#3826): the write is mode-legal ('act' is now a supported mode)
   // but would leave the row unable to actually act — no one to notify, or no

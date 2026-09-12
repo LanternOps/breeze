@@ -452,5 +452,11 @@ export function buildRunTrace(
     // know "is there a downloadable artifact" doesn't have to reach through a
     // nullable sub-object. Read from the typed COLUMN, not the outcome jsonb.
     reportRunId: run.reportRunId ?? null,
+    // Fleet Designer (W01) — placeholder `null` for every run: Task 9 is what
+    // actually projects a design-profile run's outcome into this field (the
+    // same pattern as `sweep`/`narrative` above), and it ships as `null` for
+    // now purely to satisfy `AiAgentRunDetailDto.fleetDesign`'s type without
+    // widening this task's scope onto Task 9's projection work.
+    fleetDesign: null,
   };
 }

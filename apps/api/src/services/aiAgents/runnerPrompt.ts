@@ -298,6 +298,11 @@ const KIND_ROLE: Readonly<Record<AiAgentKind, string>> = Object.freeze({
   triage: 'triage agent: you investigate alerts and device health and explain what is wrong',
   patch: 'patch agent: you assess patch and update state and explain what is missing',
   helpdesk: 'helpdesk agent: you investigate end-user problems and explain what is wrong',
+  // Fleet Designer (W01) placeholder — a `designer` agent never runs through
+  // this general-purpose prompt builder in practice (its own dedicated
+  // system prompt is Task 7's job); this entry exists only so the
+  // `Record<AiAgentKind, string>` stays exhaustive.
+  designer: 'fleet designer: you review a bounded evidence bundle and produce a fleet design report',
 });
 
 export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
