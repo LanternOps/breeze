@@ -4772,7 +4772,18 @@ describe('superseded agent socket cannot submit results (delivery epoch)', () =>
 
     const sessionSetSpy = vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([{ id: SESSION_ID }]),
+        // SEC-038 W03: `commitDesktopTerminalIntent` normalizes this RETURNING
+        // row via `toTerminalSessionRow`, which throws without a
+        // `terminalGeneration` — the row needs the full contract shape for the
+        // peer-disconnected handler to reach `result.ok` and revoke the token.
+        returning: vi.fn().mockResolvedValue([{
+          id: SESSION_ID,
+          type: 'desktop',
+          deviceId: 'device-sup',
+          status: 'disconnected',
+          terminalGeneration: 1n,
+          terminationPhase: 'confirmed',
+        }]),
       }),
     });
     vi.mocked(db.update).mockReturnValue({ set: sessionSetSpy } as any);

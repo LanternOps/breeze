@@ -2885,20 +2885,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                       eq(remoteSessions.desktopStartCommandId, fastCommandId),
                     ],
                   });
-                  const updated = denied.ok
-                    ? await db
-                      .select({
-                        id: remoteSessions.id,
-                        orgId: remoteSessions.orgId,
-                        userId: remoteSessions.userId,
-                        type: remoteSessions.type,
-                        promptMode: remoteSessions.desktopPromptMode,
-                      })
-                      .from(remoteSessions)
-                      .where(eq(remoteSessions.id, sessionId))
-                      .limit(1)
-                      .then((rows) => rows[0])
-                    : undefined;
+                  const updated = denied.ok ? denied.row : undefined;
 
                   if (updated) {
                     // Kill the viewer token so a lingering token can't resurrect

@@ -103,12 +103,18 @@ export function terminalIntentSet<W extends TerminalIntentWrite>(
   };
 }
 
-/** The row shape every terminal commit returns — what a teardown needs to send the stop. */
+/**
+ * The row shape every terminal commit returns — what a teardown needs to send
+ * the stop, plus the identity an audit of the decision needs.
+ */
 export interface TerminalSessionRow {
   id: string;
   type: string;
   deviceId: string;
+  orgId: string;
+  userId: string;
   status: string;
+  promptMode: string | null;
   terminalGeneration: bigint;
   terminationPhase: 'pending' | 'confirmed';
 }
@@ -118,7 +124,10 @@ export const terminalSessionReturning = {
   id: remoteSessions.id,
   type: remoteSessions.type,
   deviceId: remoteSessions.deviceId,
+  orgId: remoteSessions.orgId,
+  userId: remoteSessions.userId,
   status: remoteSessions.status,
+  promptMode: remoteSessions.desktopPromptMode,
   terminalGeneration: remoteSessions.terminalGeneration,
   terminationPhase: remoteSessions.terminationPhase,
 } as const;
@@ -128,7 +137,10 @@ export function toTerminalSessionRow(row: {
   id: string;
   type: string;
   deviceId: string;
+  orgId?: string;
+  userId?: string;
   status: string;
+  promptMode?: string | null;
   terminalGeneration: bigint | string | number | null;
   terminationPhase: string | null;
 }): TerminalSessionRow {
@@ -141,7 +153,10 @@ export function toTerminalSessionRow(row: {
     id: row.id,
     type: String(row.type),
     deviceId: row.deviceId,
+    orgId: row.orgId ?? '',
+    userId: row.userId ?? '',
     status: String(row.status),
+    promptMode: row.promptMode ?? null,
     terminalGeneration: BigInt(row.terminalGeneration),
     terminationPhase: (row.terminationPhase ?? 'confirmed') as TerminalSessionRow['terminationPhase'],
   };

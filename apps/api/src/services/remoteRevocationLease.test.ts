@@ -358,7 +358,7 @@ describe('renewRevocationLease', () => {
   it('revokes, marks the row and tears the stream down when the recheck fails', async () => {
     const redis = fakeRedis(leaseValue());
     const markRow = vi.fn(async () => ({
-      id: 'sess-1', type: 'desktop', deviceId: 'dev-1',
+      id: 'sess-1', type: 'desktop', deviceId: 'dev-1', orgId: 'org-1', userId: 'user-1', promptMode: null,
       status: 'disconnected', terminalGeneration: 7n, terminationPhase: 'pending' as const,
     }));
     const result = await renewRevocationLease('sess-1', {
@@ -371,7 +371,7 @@ describe('renewRevocationLease', () => {
     expect(markRow).toHaveBeenCalledWith('sess-1', 'user_inactive');
     expect(teardownDisconnectedSessions).toHaveBeenCalledWith([
       {
-        id: 'sess-1', type: 'desktop', deviceId: 'dev-1',
+        id: 'sess-1', type: 'desktop', deviceId: 'dev-1', orgId: 'org-1', userId: 'user-1', promptMode: null,
         status: 'disconnected', terminalGeneration: 7n, terminationPhase: 'pending',
       },
     ]);
@@ -453,7 +453,7 @@ describe('renewRevocationLease', () => {
   it('revokes a session whose hard deadline elapsed even while everything else is intact', async () => {
     const redis = fakeRedis(leaseValue({ hardDeadline: NOW - 1 }));
     const markRow = vi.fn(async () => ({
-      id: 'sess-1', type: 'desktop', deviceId: 'dev-1',
+      id: 'sess-1', type: 'desktop', deviceId: 'dev-1', orgId: 'org-1', userId: 'user-1', promptMode: null,
       status: 'disconnected', terminalGeneration: 7n, terminationPhase: 'pending' as const,
     }));
     const result = await renewRevocationLease('sess-1', {
