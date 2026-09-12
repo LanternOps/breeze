@@ -8,12 +8,14 @@ const {
   updateFeatureLinkMock,
   validateFeaturePolicyExistsMock,
   getMonitorDefinitionMock,
+  isMonitorAttachableToPolicyMock,
 } = vi.hoisted(() => ({
   getConfigPolicyMock: vi.fn(),
   addFeatureLinkMock: vi.fn(),
   updateFeatureLinkMock: vi.fn(),
   validateFeaturePolicyExistsMock: vi.fn(),
   getMonitorDefinitionMock: vi.fn(),
+  isMonitorAttachableToPolicyMock: vi.fn(),
 }));
 
 vi.mock('../../services/configurationPolicy', async (importOriginal) => {
@@ -32,6 +34,10 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
 // The route imports getMonitorDefinition directly from monitorService — NOT
 // through the configurationPolicy service barrel — to check visibility of
 // each monitorId before ever calling addFeatureLink/updateFeatureLink.
+vi.mock('../../services/monitors/monitorAttachability', () => ({
+  isMonitorAttachableToPolicy: isMonitorAttachableToPolicyMock,
+}));
+
 vi.mock('../../services/monitors/monitorService', () => ({
   getMonitorDefinition: getMonitorDefinitionMock,
 }));
@@ -113,6 +119,7 @@ describe('featureLinks routes — monitors inlineSettings validation (#5289 Task
 
     it('accepts a monitorId visible to the caller → 201', async () => {
       getMonitorDefinitionMock.mockResolvedValue({ id: MONITOR_ID, kind: 'cpu' });
+      isMonitorAttachableToPolicyMock.mockResolvedValue(true);
 
       const res = await app.request(`/${POLICY_ID}/features`, {
         method: 'POST',
@@ -161,16 +168,14 @@ describe('featureLinks routes — monitors inlineSettings validation (#5289 Task
       expect(addFeatureLinkMock).not.toHaveBeenCalled();
     });
 
-    it('maps the 23514 config_policy_monitors_compat trigger to 400 MONITOR_NOT_ATTACHABLE', async () => {
+    it('refuses an incompatible monitor with 400 MONITOR_NOT_ATTACHABLE BEFORE writing', async () => {
+      // The database's own guard is a DEFERRABLE INITIALLY DEFERRED trigger, so
+      // it only fires at the request transaction's COMMIT — after this handler
+      // has returned. The compatibility check therefore has to happen here,
+      // before the write, and this test pins that it does: addFeatureLink must
+      // never be called for an incompatible pair.
       getMonitorDefinitionMock.mockResolvedValue({ id: MONITOR_ID, kind: 'cpu' });
-      // The compat trigger is DEFERRED — it fires at COMMIT, i.e. from inside
-      // the awaited addFeatureLink() call, not from a synchronous insert.
-      addFeatureLinkMock.mockRejectedValue(
-        Object.assign(new Error('owner mismatch'), {
-          code: '23514',
-          constraint_name: 'config_policy_monitors_compat',
-        })
-      );
+      isMonitorAttachableToPolicyMock.mockResolvedValue(false);
 
       const res = await app.request(`/${POLICY_ID}/features`, {
         method: 'POST',
@@ -216,6 +221,7 @@ describe('featureLinks routes — monitors inlineSettings validation (#5289 Task
 
     it('accepts a monitorId visible to the caller → 200', async () => {
       getMonitorDefinitionMock.mockResolvedValue({ id: MONITOR_ID, kind: 'cpu' });
+      isMonitorAttachableToPolicyMock.mockResolvedValue(true);
 
       const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
         method: 'PATCH',
@@ -246,14 +252,11 @@ describe('featureLinks routes — monitors inlineSettings validation (#5289 Task
       expect(updateFeatureLinkMock).not.toHaveBeenCalled();
     });
 
-    it('maps the 23514 config_policy_monitors_compat trigger to 400 MONITOR_NOT_ATTACHABLE', async () => {
+    it('refuses an incompatible monitor with 400 MONITOR_NOT_ATTACHABLE BEFORE writing', async () => {
+      // See the POST case: the DB guard is deferred, so this must be a
+      // pre-check, not a caught constraint violation.
       getMonitorDefinitionMock.mockResolvedValue({ id: MONITOR_ID, kind: 'cpu' });
-      updateFeatureLinkMock.mockRejectedValue(
-        Object.assign(new Error('owner mismatch'), {
-          code: '23514',
-          constraint_name: 'config_policy_monitors_compat',
-        })
-      );
+      isMonitorAttachableToPolicyMock.mockResolvedValue(false);
 
       const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
         method: 'PATCH',
@@ -266,6 +269,7 @@ describe('featureLinks routes — monitors inlineSettings validation (#5289 Task
       expect(res.status).toBe(400);
       const body = (await res.json()) as Record<string, unknown>;
       expect(body.error).toBe('MONITOR_NOT_ATTACHABLE');
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
     });
   });
 });

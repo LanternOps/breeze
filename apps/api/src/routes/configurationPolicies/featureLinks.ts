@@ -32,6 +32,7 @@ import {
   PARTNER_LINKABLE_FEATURE_TYPES,
   isBackupProfileReference,
 } from '../../services/configurationPolicy';
+import { isMonitorAttachableToPolicy } from '../../services/monitors/monitorAttachability';
 import { getMonitorDefinition } from '../../services/monitors/monitorService';
 import { pgErrorCode, pgErrorConstraint } from '../../utils/pgErrors';
 import {
@@ -263,14 +264,21 @@ featureLinkRoutes.post(
           400
         );
       }
-      // The compat trigger is the tenancy authority (owner mismatch → 23514,
-      // mapped below); this is only an existence/visibility check so an
-      // unknown or foreign monitorId gets a specific 400 rather than falling
-      // through to the generic constraint-violation message.
+      // Two checks, both BEFORE the write. Visibility gets its own specific
+      // 400; ownership compatibility is checked here rather than by catching
+      // the database's guard, because that guard is a DEFERRABLE INITIALLY
+      // DEFERRED constraint trigger and this route already runs inside the
+      // middleware's ambient transaction — `addFeatureLink`'s own
+      // db.transaction() is a SAVEPOINT whose release never forces the deferred
+      // check, so the 23514 would land at the request's commit, after this
+      // handler returned (same class as #5580).
       for (const item of parsed.data.items) {
         const monitor = await getMonitorDefinition(item.monitorId, auth);
         if (!monitor) {
           return c.json({ error: 'Unknown monitorId' }, 400);
+        }
+        if (!(await isMonitorAttachableToPolicy(item.monitorId, id))) {
+          return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
         }
       }
       data.inlineSettings = parsed.data;
@@ -467,10 +475,15 @@ featureLinkRoutes.patch(
             400
           );
         }
+        // See the POST handler for why attachability is pre-checked rather
+        // than caught from the deferred trigger.
         for (const item of parsed.data.items) {
           const monitor = await getMonitorDefinition(item.monitorId, auth);
           if (!monitor) {
             return c.json({ error: 'Unknown monitorId' }, 400);
+          }
+          if (!(await isMonitorAttachableToPolicy(item.monitorId, id))) {
+            return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
           }
         }
         data.inlineSettings = parsed.data;

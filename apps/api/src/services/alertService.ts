@@ -901,10 +901,22 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
           // A per-attachment override that no longer validates (the monitor's
           // kind changed under it) must NOT silently disable the monitor —
           // fall back to the compiled, un-overridden condition and say so.
+          //
+          // Reported to Sentry as well as the log: this is invisible to the
+          // technician who set the override (it still saves fine; only
+          // evaluation rejects it), so a console line nobody reads would leave
+          // a device evaluating a different threshold than the UI shows,
+          // indefinitely.
           console.error(
             `[AlertService] Ignoring invalid monitor override for monitor=${rule.managedByMonitorId} device=${deviceId}:`,
             error
           );
+          captureException(error, undefined, {
+            area: 'monitors',
+            issue: 'invalid_monitor_override',
+            monitorId: rule.managedByMonitorId,
+            deviceId,
+          });
         }
       }
     }

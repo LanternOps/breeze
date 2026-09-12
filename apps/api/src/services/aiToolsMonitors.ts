@@ -26,6 +26,8 @@ import { db } from '../db';
 import { configPolicyMonitors, configPolicyFeatureLinks, configurationPolicies } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { isMonitorAttachableToPolicy } from './monitors/monitorAttachability';
+import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 import { toolErrorResult } from './aiToolErrors';
 import { describeFirstZodIssue } from '../lib/zodIssues';
@@ -325,6 +327,13 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
         if (!monitor) return JSON.stringify({ error: 'Monitor not found or access denied' });
         const policy = await getConfigPolicy(input.configPolicyId as string, auth);
         if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
+        // A partner-wide policy applies to every org under the partner, so
+        // mutating its monitor list takes the partner-wide capability, not just
+        // visibility (CLAUDE.md "Partner-Wide First" step 2). RLS matches only
+        // the partner id; the org_access subdivision is app-layer.
+        if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+        }
 
         const { linkId, items } = await currentAttachmentItems(input.configPolicyId as string);
         if (items.some((i) => i.monitorId === monitor.id)) {
@@ -339,6 +348,16 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
             sortOrder: items.length,
           },
         ];
+
+        // Pre-checked, not caught: the database guard is a DEFERRABLE
+        // INITIALLY DEFERRED trigger and this runs inside the request's
+        // ambient transaction, so its 23514 would only fire at that
+        // transaction's commit — after this tool already answered (#5580 class).
+        if (!(await isMonitorAttachableToPolicy(monitor.id, input.configPolicyId as string))) {
+          return JSON.stringify({
+            error: 'Monitor cannot be attached to this policy — ownership axis mismatch (org vs partner-wide).',
+          });
+        }
 
         try {
           if (linkId) {
@@ -389,6 +408,11 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
 
         const policy = await getConfigPolicy(attachment.configPolicyId, auth);
         if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
+        // Detaching from a partner-wide policy removes the monitor from every
+        // org under the partner — same capability as attaching.
+        if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+        }
 
         const { items } = await currentAttachmentItems(attachment.configPolicyId);
         const nextItems = items.filter((i) => i.monitorId !== monitor.id);

@@ -29,14 +29,18 @@ import {
 import { buildCompiledCondition } from '../services/monitors/monitorCompiler';
 import { MONITOR_KIND_SPECS } from '../services/monitors/kinds';
 import { resolveMonitorsForDevice } from '../services/monitors/monitorResolver';
+import { isMonitorAttachableToPolicy } from '../services/monitors/monitorAttachability';
+import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { convertRuleToMonitor } from '../services/monitors/ruleConversionService';
 import {
   addFeatureLink,
   assignPolicy,
+  authorizeAssignmentTarget,
   createConfigPolicy,
   getConfigPolicy,
   removeFeatureLink,
   updateFeatureLink,
+  validateAssignmentTarget,
 } from '../services/configurationPolicy';
 import {
   createMonitorDefinitionSchema,
@@ -317,27 +321,75 @@ monitorDefinitionRoutes.post(
     if (!monitor) return c.json({ error: 'Monitor not found' }, 404);
     const body = c.req.valid('json');
 
+    // "Deploy this monitor to X" with no policy in hand creates a policy,
+    // assigns it and attaches the monitor. Those three writes run inside ONE
+    // db.transaction so a failure in the second or third does not strand a
+    // committed, empty, unassigned policy that nothing will ever clean up (and
+    // that a client retry would duplicate).
+    const creatingPolicy = !('configPolicyId' in body);
     let configPolicyId: string;
     if ('configPolicyId' in body) {
       const policy = await getConfigPolicy(body.configPolicyId, auth);
       if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
+      // Attaching a monitor to a PARTNER-WIDE policy changes what every org
+      // under that partner runs, so it takes the same capability every other
+      // partner-wide config write takes (CLAUDE.md "Partner-Wide First" step 2).
+      // `policyAccessCondition` admits any partner-scoped caller to these rows
+      // and RLS only matches the partner id — the org_access subdivision is
+      // app-layer only, which is exactly why this check cannot be skipped.
+      if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
       configPolicyId = body.configPolicyId;
     } else {
-      // "Deploy this monitor to X" with no policy in hand: create a policy
-      // owned the same way the monitor is, and assign it at the requested
-      // level. A partner-wide monitor therefore never lands under an
-      // org-owned policy, which the compatibility trigger would refuse anyway.
+      // A partner-wide monitor therefore never lands under an org-owned policy,
+      // which the compatibility check below would refuse anyway.
       const owner = monitor.orgId
         ? ({ orgId: monitor.orgId } as const)
         : ({ partnerId: monitor.partnerId as string } as const);
-      const created = await createConfigPolicy(
-        owner,
-        { name: body.createPolicyFor.name ?? `Monitor: ${monitor.name}` },
-        auth.user.id,
+
+      // Creating a PARTNER-WIDE policy here is the same privileged act as
+      // creating one through /configuration-policies, and takes the same gate.
+      // Partner-wide MONITORS are deliberately readable by any caller carrying
+      // a partnerId (monitorService's read branch), so without this an ordinary
+      // org technician could reach this branch off a monitor they can merely
+      // see.
+      if (owner.partnerId && !canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+
+      // The assignment target is client-supplied: validate it against the
+      // policy's own ownership axis and against the caller's site allowlist,
+      // exactly as POST /configuration-policies/:id/assignments does. Without
+      // this the route accepts a dangling or out-of-scope target silently.
+      const targetValidation = await validateAssignmentTarget(
+        { orgId: owner.orgId ?? null, partnerId: owner.partnerId ?? null },
+        body.createPolicyFor.level,
+        body.createPolicyFor.targetId,
       );
-      if (!created) return c.json({ error: 'Failed to create configuration policy' }, 500);
+      if (!targetValidation.valid) {
+        return c.json({ error: targetValidation.error }, 403);
+      }
+      const siteAuth = await authorizeAssignmentTarget(
+        auth,
+        body.createPolicyFor.level,
+        body.createPolicyFor.targetId,
+      );
+      if (!siteAuth.valid) {
+        return c.json({ error: siteAuth.error }, 403);
+      }
+
+      const created = await db.transaction(async () => {
+        const policy = await createConfigPolicy(
+          owner,
+          { name: body.createPolicyFor.name ?? `Monitor: ${monitor.name}` },
+          auth.user.id,
+        );
+        if (!policy) throw new Error('Failed to create configuration policy');
+        await assignPolicy(policy.id, body.createPolicyFor.level, body.createPolicyFor.targetId, 0, auth.user.id);
+        return policy;
+      });
       configPolicyId = created.id;
-      await assignPolicy(created.id, body.createPolicyFor.level, body.createPolicyFor.targetId, 0, auth.user.id);
     }
 
     const { linkId, items } = await currentItems(configPolicyId);
@@ -354,6 +406,22 @@ monitorDefinitionRoutes.post(
       },
     ];
 
+    // Ownership compatibility is checked HERE, before the write, not by
+    // catching the database's own guard: that guard is a DEFERRABLE INITIALLY
+    // DEFERRED constraint trigger, and the whole request already runs inside
+    // one ambient transaction, so `addFeatureLink`'s db.transaction() is a
+    // SAVEPOINT whose release never forces the deferred check. The 23514 would
+    // land at the middleware's commit, long after this handler returned 201
+    // (same class as #5580). The catch below is kept as a belt-and-braces map
+    // for any path that does surface it synchronously.
+    if (!(await isMonitorAttachableToPolicy(monitor.id, configPolicyId))) {
+      // A policy created a few lines up for a monitor that then turns out not
+      // to be attachable would be an orphan; `creatingPolicy` says the caller
+      // never had a policy of their own here, so say so in the response rather
+      // than leaving them guessing what the id refers to.
+      return c.json({ error: 'MONITOR_NOT_ATTACHABLE', ...(creatingPolicy ? { configPolicyId } : {}) }, 400);
+    }
+
     try {
       if (linkId) {
         await updateFeatureLink(linkId, { inlineSettings: { items: nextItems } }, configPolicyId);
@@ -361,9 +429,6 @@ monitorDefinitionRoutes.post(
         await addFeatureLink(configPolicyId, 'monitors', null, { items: nextItems });
       }
     } catch (error) {
-      // The deferred compatibility trigger surfaces at COMMIT as 23514 on the
-      // constraint name it raises with. Drizzle wraps the SQLSTATE in .cause,
-      // so it has to be read through pgErrorCode/pgErrorConstraint.
       if (
         pgErrorCode(error) === '23514' &&
         pgErrorConstraint(error) === 'config_policy_monitors_compat'
@@ -419,6 +484,11 @@ monitorDefinitionRoutes.delete(
 
     const policy = await getConfigPolicy(attachment.configPolicyId, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
+    // Detaching from a partner-wide policy removes the monitor from every org
+    // under the partner — same capability as attaching (see the POST handler).
+    if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
 
     const { items } = await currentItems(attachment.configPolicyId);
     const nextItems = items.filter((i) => i.monitorId !== monitor.id);
