@@ -27,6 +27,7 @@ import {
   describeScriptRunContext,
   type ScriptApprovalRunContext,
 } from './scriptRunContextApproval';
+import { loadProposalApprovalSummary } from './scriptProposals/approvalSummary';
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
 import { compactToolResultForChat } from './aiToolOutput';
@@ -1139,6 +1140,13 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         console.error('[AI-SDK] Failed to resolve script run context for approval:', err);
       }
 
+      // W03 (#5612): the helper card has no API client of its own, so a
+      // proposal-backed run_script carries a trimmed summary on the event.
+      // Non-fatal and null for every other tool.
+      const scriptProposal = toolName === 'run_script'
+        ? await loadProposalApprovalSummary(input as Record<string, unknown>, session.orgId)
+        : null;
+
       const baseDescription = guardrailCheck.description ?? `Execute ${toolName}`;
       // Appended to the DESCRIPTION (not only to the SSE field) so it reaches
       // every surface that renders one: the chat card, the durable intent's
@@ -1257,6 +1265,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // the card can render a localized, always-visible run-context row
             // instead of relying on the English prose.
             scriptRunContext,
+            ...(scriptProposal ? { scriptProposal } : {}),
             // The intent's real server-side deadline, so the self-approve card's
             // countdown reflects actual expiry (created_at + CHAT_EXPIRY_MS)
             // rather than a mount-relative client constant that can silently drift
@@ -1795,6 +1804,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             description,
             deviceContext,
             scriptRunContext,
+            ...(scriptProposal ? { scriptProposal } : {}),
           });
 
           // Block until user clicks Approve/Reject, the cycle's shared approval
