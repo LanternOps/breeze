@@ -42,6 +42,9 @@
       "unknownPermission": "Permissão desconhecida (função {{appRoleId}})",
       "grantsVerifiedAt": "Permissões verificadas"
     },
+    "upgrade": {
+      "banner": "Novas permissões do Microsoft 365 são necessárias para Acesso Condicional, Pontuação de Segurança e visibilidade de funções de administrador. Um administrador global precisa aprová-las."
+    },
     "actions": {
       "connect": "Conectar",
       "reconsent": "Conceder novamente",
@@ -53,7 +56,9 @@
       "retestSucceeded": "O novo teste da conexão foi concluído.",
       "disconnectWarning": "A desconexão impede o Breeze de usar esta conexão. O consentimento da Microsoft para todo o locatário permanece até que um administrador do cliente o remova no Microsoft Entra.",
       "disconnectFailed": "Não foi possível desconectar a conexão.",
-      "disconnectSucceeded": "A conexão do Breeze foi desconectada."
+      "disconnectSucceeded": "A conexão do Breeze foi desconectada.",
+      "approveNewPermissions": "Aprovar novas permissões",
+      "upgradeFailed": "Não foi possível iniciar a aprovação das novas permissões."
     },
     "errors": {
       "consent_expired": "A sessão de consentimento expirou. Inicie o consentimento novamente.",

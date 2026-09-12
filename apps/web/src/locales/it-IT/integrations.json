@@ -42,6 +42,9 @@
       "unknownPermission": "Autorizzazione sconosciuta (ruolo {{appRoleId}})",
       "grantsVerifiedAt": "Autorizzazioni verificate"
     },
+    "upgrade": {
+      "banner": "Sono necessarie nuove autorizzazioni Microsoft 365 per l'accesso condizionale, il punteggio di sicurezza e la visibilità dei ruoli di amministratore. Un amministratore globale deve approvarle."
+    },
     "actions": {
       "connect": "Connetti",
       "reconsent": "Rinnova consenso",
@@ -53,7 +56,9 @@
       "retestSucceeded": "Nuovo test della connessione completato.",
       "disconnectWarning": "La disconnessione impedisce a Breeze di usare questa connessione. Il consenso Microsoft a livello tenant resta attivo finché un amministratore del cliente non lo rimuove in Microsoft Entra.",
       "disconnectFailed": "Impossibile disconnettere la connessione.",
-      "disconnectSucceeded": "Connessione Breeze disconnessa."
+      "disconnectSucceeded": "Connessione Breeze disconnessa.",
+      "approveNewPermissions": "Approva le nuove autorizzazioni",
+      "upgradeFailed": "Non è stato possibile avviare l'approvazione delle nuove autorizzazioni."
     },
     "errors": {
       "consent_expired": "La sessione di consenso è scaduta. Avvia di nuovo il consenso.",

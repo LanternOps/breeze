@@ -42,6 +42,9 @@
       "unknownPermission": "Unknown permission (role {{appRoleId}})",
       "grantsVerifiedAt": "Permissions verified"
     },
+    "upgrade": {
+      "banner": "New Microsoft 365 permissions are required for Conditional Access, Secure Score, and admin role visibility. A Global Administrator must approve them."
+    },
     "actions": {
       "connect": "Connect",
       "reconsent": "Re-consent",
@@ -53,7 +56,9 @@
       "retestSucceeded": "Connection retest completed.",
       "disconnectWarning": "Disconnecting stops Breeze from using this connection. Microsoft tenant-wide consent remains until a customer administrator removes it in Microsoft Entra.",
       "disconnectFailed": "The connection could not be disconnected.",
-      "disconnectSucceeded": "Breeze connection disconnected."
+      "disconnectSucceeded": "Breeze connection disconnected.",
+      "approveNewPermissions": "Approve new permissions",
+      "upgradeFailed": "Approval for the new permissions could not be started."
     },
     "errors": {
       "consent_expired": "The consent session expired. Start consent again.",

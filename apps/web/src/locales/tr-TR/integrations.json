@@ -42,6 +42,9 @@
       "unknownPermission": "Bilinmeyen izin (rol {{appRoleId}})",
       "grantsVerifiedAt": "İzinler doğrulandı"
     },
+    "upgrade": {
+      "banner": "Koşullu Erişim, Güvenli Puan ve yönetici rolü görünürlüğü için yeni Microsoft 365 izinleri gereklidir. Bunları bir Genel Yönetici onaylamalıdır."
+    },
     "actions": {
       "connect": "Bağlan",
       "reconsent": "Yeniden onay ver",
@@ -53,7 +56,9 @@
       "retestSucceeded": "Bağlantının yeniden testi tamamlandı.",
       "disconnectWarning": "Bağlantının kesilmesi Breeze'nin bu bağlantıyı kullanmasını durdurur. Microsoft kiracı çapında izin, bir müşteri yöneticisi bunu Microsoft Entra'da kaldırıncaya kadar kalır.",
       "disconnectFailed": "Bağlantı kesilemedi.",
-      "disconnectSucceeded": "Breeze bağlantısı kesildi."
+      "disconnectSucceeded": "Breeze bağlantısı kesildi.",
+      "approveNewPermissions": "Yeni izinleri onayla",
+      "upgradeFailed": "Yeni izinlerin onayı başlatılamadı."
     },
     "errors": {
       "consent_expired": "İzin oturumunun süresi doldu. Onaylamayı yeniden başlatın.",
