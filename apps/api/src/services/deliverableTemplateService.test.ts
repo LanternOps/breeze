@@ -103,6 +103,34 @@ describe('deliverableTemplateService', () => {
     expect(sql).not.toContain('partner_id');
   });
 
+  it('a pinned orgId still lists partner-wide sets for a partner-scope reader (#5675)', async () => {
+    dbMocks.rows.push([]);
+    await listTemplateSets(partnerAdmin, { orgId: 'org1' });
+    const { db } = await import('../db');
+    const { sql, params } = compile((db as any).where.mock.calls.at(-1)?.[0]);
+    // The web fetch wrapper pins orgId on every request once an org is open, so
+    // this filter is the one that decides whether a partner-wide set is
+    // reachable at all. It must be a disjunction that admits org_id IS NULL —
+    // a bare `org_id = $n` conjunct filters every partner-wide row out no
+    // matter what the visibility clause already allowed.
+    expect(sql).toMatch(
+      /and \("deliverable_template_sets"\."org_id" = \$\d+ or \("deliverable_template_sets"\."org_id" is null and "deliverable_template_sets"\."partner_id" = \$\d+\)\)/,
+    );
+    // Positive control: the pinned org is still bound, so the assertion above
+    // cannot pass by the filter having been dropped altogether.
+    expect(params).toContain('org1');
+  });
+
+  it('a pinned orgId keeps an org-scope reader on the org-only filter (#5675)', async () => {
+    dbMocks.rows.push([]);
+    await listTemplateSets(orgUser, { orgId: 'org1' });
+    const { db } = await import('../db');
+    const { sql, params } = compile((db as any).where.mock.calls.at(-1)?.[0]);
+    expect(params).toContain('org1');
+    expect(params).not.toContain('p1');
+    expect(sql).not.toContain('partner_id');
+  });
+
   it('an item copies the set owner columns and never trusts input', async () => {
     dbMocks.rows.push([{ id: 's1', orgId: null, partnerId: 'p1', name: 'Best plan' }]); // loaded set
     dbMocks.rows.push([{ id: 'i1', setId: 's1', orgId: null, partnerId: 'p1', name: 'Sign-in log review' }]);
