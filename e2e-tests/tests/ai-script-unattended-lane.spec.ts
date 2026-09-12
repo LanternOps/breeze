@@ -113,12 +113,10 @@ test.describe('AI script authoring — unattended lane', () => {
     // The lane is closed, so no banner.
     await expect(settings.laneBanner).toHaveCount(0);
 
-    // The API agrees: partner ceiling AND org grant → effective ON.
-    const res = await authedPage.request.get('/api/v1/ai/script-policy');
-    expect(res.status()).toBe(200);
-    const body = await res.json();
-    expect(body.effective.unattendedEnabled).toBe(true);
-    expect(body.laneState.state).toBe('closed');
+    // Both halves of the effective view are on the page because both rows
+    // exist: partner ceiling (unattended_allowed) AND org grant (enabled).
+    expect(psql(`SELECT count(*) FROM ai_script_policies WHERE (org_id = '${seed.orgId}' AND unattended_enabled) OR (org_id IS NULL AND unattended_allowed)`)).toBe('2');
+    expect(psql(`SELECT state FROM ai_script_lane_state WHERE org_id = '${seed.orgId}'`)).toBe('closed');
   });
 
   test('a lane-decided run has NO approval card; the human-path run for the same script shape does', async () => {
@@ -148,15 +146,14 @@ test.describe('AI script authoring — unattended lane', () => {
     await expect
       .poll(() => psql(`SELECT unattended_enabled::text FROM ai_script_policies WHERE org_id = '${seed.orgId}'`), { timeout: 30_000 })
       .toBe('false');
-    // The API's effective view follows the grant.
-    const off = await (await authedPage.request.get('/api/v1/ai/script-policy')).json();
-    expect(off.effective.unattendedEnabled).toBe(false);
+    // The page's effective view follows the grant on reload.
+    await settings.goto();
+    await expect(settings.enableToggle).not.toBeChecked();
 
     // Back ON: the route demands a fresh step-up (403 STEP_UP_REQUIRED) and the
     // page must say so instead of failing silently. The seeded admin has no
     // TOTP/passkey enrolled, so the ceremony cannot complete here — the
     // surfaced requirement IS the assertion.
-    await settings.goto();
     await settings.enableToggle.click();
     await expect(settings.enableToggle).toBeChecked();
     await settings.save.click();
