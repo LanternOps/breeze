@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS,
   compareSoftwareVersions,
   evaluateSoftwareInventory,
   matchesSoftwareRule,
@@ -178,5 +179,58 @@ describe('compareSoftwareVersions edge cases', () => {
 
   it('handles empty string inputs', () => {
     expect(compareSoftwareVersions('', '')).toBe(0);
+  });
+});
+
+/**
+ * #5505 D6 — `software_policy_audit.action` is a bare varchar(50) with no enum
+ * and no pre-existing const set (softwarePolicies.ts:142), so this object IS
+ * the registry. An audit reader must never have to infer the verb, so install
+ * events never reuse an uninstall action value.
+ */
+describe('SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS', () => {
+  // Every action string already written to software_policy_audit.action,
+  // enumerated from the emitters as of #5506. The point is collision, not
+  // completeness: a new install action must not be any of these.
+  const EXISTING_ACTIONS = [
+    'policy_created',
+    'policy_updated',
+    'policy_deleted',
+    'compliance_check_requested',
+    'compliance_check_failed',
+    'violation_detected',
+    'remediation_requested',
+    'remediation_scheduled',
+    'remediation_denied',
+    'remediation_deferred',
+    'remediation_skipped_unarmed',
+    'remediation_manual_override',
+    'remediation_command_failed',
+    'software_uninstalled',
+    'inventory_approve',
+    'inventory_deny',
+    'inventory_clear',
+  ];
+
+  it('exposes exactly the four install actions the contract names', () => {
+    expect(SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS).toEqual({
+      queued: 'install_queued',
+      succeeded: 'install_succeeded',
+      failed: 'install_failed',
+      gaveUp: 'install_gave_up',
+    });
+  });
+
+  it('never collides with an existing uninstall or lifecycle action', () => {
+    for (const action of Object.values(SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS)) {
+      expect(EXISTING_ACTIONS).not.toContain(action);
+    }
+  });
+
+  it('every value is install-prefixed and fits software_policy_audit.action varchar(50)', () => {
+    for (const action of Object.values(SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS)) {
+      expect(action.startsWith('install_')).toBe(true);
+      expect(action.length).toBeLessThanOrEqual(50);
+    }
   });
 });

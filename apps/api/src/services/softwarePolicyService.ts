@@ -238,6 +238,33 @@ export function evaluateSoftwarePolicyArming(
   return { armed: true };
 }
 
+/**
+ * Install-remediation audit actions (#5505 D6).
+ *
+ * `software_policy_audit.action` is a bare `varchar(50)`
+ * (`db/schema/softwarePolicies.ts:142`) written as `action: string` — no enum,
+ * no pre-existing const set — so this object IS the registry. Every emitter
+ * imports it; no install emit site writes a string literal.
+ *
+ * Install actions never reuse an uninstall action value: an audit reader must
+ * never have to infer which verb an event describes. The existing uninstall
+ * action strings are deliberately NOT refactored into a matching object here —
+ * that is a separate, unrelated change.
+ */
+export const SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS = {
+  /** An install was queued for a (policy, device). */
+  queued: 'install_queued',
+  /** The queued install reported success. */
+  succeeded: 'install_succeeded',
+  /** The queued install reported failure (one attempt). */
+  failed: 'install_failed',
+  /** Consecutive attempts exhausted; the install loop guard stopped retrying. */
+  gaveUp: 'install_gave_up',
+} as const;
+
+export type SoftwarePolicyInstallAuditAction =
+  (typeof SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS)[keyof typeof SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS];
+
 export function normalizeSoftwarePolicyRules(rules: unknown): SoftwarePolicyRulesDefinition {
   if (!rules || typeof rules !== 'object') {
     return { software: [], allowUnknown: false };
