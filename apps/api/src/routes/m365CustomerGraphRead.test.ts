@@ -22,6 +22,7 @@ const { authRef, mocks } = vi.hoisted(() => ({
   mocks: {
     list: vi.fn(),
     initiate: vi.fn(),
+    upgrade: vi.fn(),
     retest: vi.fn(),
     disconnect: vi.fn(),
     onboardingEnabled: vi.fn(() => true),
@@ -68,6 +69,7 @@ vi.mock('../services/m365ControlPlane/connectionService', async (importActual) =
   ...await importActual<typeof import('../services/m365ControlPlane/connectionService')>(),
   listCustomerGraphReadConnections: mocks.list,
   initiateCustomerGraphReadConsent: mocks.initiate,
+  initiateCustomerGraphReadUpgradeConsent: mocks.upgrade,
   retestCustomerGraphReadConnection: mocks.retest,
   disconnectCustomerGraphReadConnection: mocks.disconnect,
 }));
@@ -465,5 +467,84 @@ describe('connection DTO grant health', () => {
     expect(body.connection.grantHealth).toBe('active');
     expect(body.connection.manifestVersion).toBe(3);
     expect(body.connection.currentManifestVersion).toBe(3);
+  });
+});
+
+describe('POST /m365/connections/:id/upgrade-consent', () => {
+  beforeEach(() => {
+    mocks.upgrade.mockResolvedValue({
+      connection: connection(),
+      rawState: 'raw-state',
+      consentUrl: 'https://login.microsoftonline.com/common/adminconsent?state=raw-state',
+    });
+  });
+
+  it('requires MFA exactly like retest', async () => {
+    authRef.current = auth({ mfa: false });
+
+    const response = await app().request(
+      `/m365/connections/${CONNECTION_ID}/upgrade-consent?orgId=${ORG_ID}`,
+      { method: 'POST' },
+    );
+
+    expect(response.status).toBe(403);
+    expect(mocks.upgrade).not.toHaveBeenCalled();
+  });
+
+  it('requires organizations:write', async () => {
+    authRef.current = auth({ permissions: new Set(['organizations:read']) });
+
+    const response = await app().request(
+      `/m365/connections/${CONNECTION_ID}/upgrade-consent?orgId=${ORG_ID}`,
+      { method: 'POST' },
+    );
+
+    expect(response.status).toBe(403);
+    expect(mocks.upgrade).not.toHaveBeenCalled();
+  });
+
+  it('returns the Microsoft admin-consent URL and sets the browser binding', async () => {
+    const response = await app().request(
+      `/m365/connections/${CONNECTION_ID}/upgrade-consent?orgId=${ORG_ID}`,
+      { method: 'POST' },
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      adminConsentUrl: 'https://login.microsoftonline.com/common/adminconsent?state=raw-state',
+    });
+    expect(response.headers.get('set-cookie')).toContain('binding-cookie=');
+    expect(mocks.upgrade).toHaveBeenCalledWith(expect.objectContaining({
+      connectionId: CONNECTION_ID,
+      orgId: ORG_ID,
+    }));
+    expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: 'm365.customer_graph_read.upgrade_consent_initiated',
+      outcome: 'initiated',
+    }));
+  });
+
+  it('404s a connection in another organization', async () => {
+    const response = await app().request(
+      `/m365/connections/${CONNECTION_ID}/upgrade-consent?orgId=${OTHER_ORG_ID}`,
+      { method: 'POST' },
+    );
+
+    expect(response.status).toBe(404);
+    expect(mocks.upgrade).not.toHaveBeenCalled();
+  });
+
+  it('409s when the stored manifest is already current', async () => {
+    mocks.upgrade.mockRejectedValue(
+      Object.assign(new Error('manifest_current'), { code: 'manifest_current' }),
+    );
+
+    const response = await app().request(
+      `/m365/connections/${CONNECTION_ID}/upgrade-consent?orgId=${ORG_ID}`,
+      { method: 'POST' },
+    );
+
+    expect(response.status).toBe(409);
   });
 });

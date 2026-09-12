@@ -18,6 +18,7 @@ import {
   type GrantHealthState,
   disconnectCustomerGraphReadConnection,
   initiateCustomerGraphReadConsent,
+  initiateCustomerGraphReadUpgradeConsent,
   listCustomerGraphReadConnections,
   retestCustomerGraphReadConnection,
   type CustomerGraphReadConnectionSnapshot,
@@ -246,6 +247,57 @@ m365CustomerGraphReadRoutes.post(
       const auth = c.get('auth');
       recordM365CustomerGraphReadEvent(c, {
         event: 'm365.customer_graph_read.consent_initiated',
+        orgId: resolved.orgId,
+        connectionId: initiated.connection.id,
+        profile: PROFILE_ID,
+        consentAttemptId: initiated.connection.consentAttemptId,
+        manifestVersion: profileManifest.version,
+        outcome: 'initiated',
+        correlationId,
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+      });
+      return c.json({ adminConsentUrl: initiated.consentUrl });
+    } catch (error) {
+      return lifecycleFailure(c, error);
+    }
+  },
+);
+
+/**
+ * Starts a manifest upgrade on an existing connection (spec §2.2). Unlike the
+ * consent route above, this one does not move the connection to
+ * pending-consent — reads keep working on the grants the customer already
+ * approved for the whole duration of the Microsoft round trip, including if
+ * the administrator abandons it.
+ */
+m365CustomerGraphReadRoutes.post(
+  '/connections/:id/upgrade-consent',
+  requireOrgsWrite,
+  requireMfa(),
+  zValidator('param', idParam),
+  async (c) => {
+    const resolved = mutationOrg(c);
+    if (resolved instanceof Response) return resolved;
+    if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
+    const { id } = c.req.valid('param');
+    try {
+      const correlationId = randomUUID();
+      const initiated = await initiateCustomerGraphReadUpgradeConsent({
+        connectionId: id,
+        orgId: resolved.orgId,
+        auth: c.get('auth'),
+      });
+      c.header('Set-Cookie', buildM365ConsentBindingCookie({
+        phase: 'admin_consent',
+        rawState: initiated.rawState,
+        connectionId: initiated.connection.id,
+        consentAttemptId: initiated.connection.consentAttemptId,
+        tenantHint: null,
+      }), { append: true });
+      const auth = c.get('auth');
+      recordM365CustomerGraphReadEvent(c, {
+        event: 'm365.customer_graph_read.upgrade_consent_initiated',
         orgId: resolved.orgId,
         connectionId: initiated.connection.id,
         profile: PROFILE_ID,
