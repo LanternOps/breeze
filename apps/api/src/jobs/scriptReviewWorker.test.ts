@@ -12,6 +12,7 @@ const shared = vi.hoisted(() => ({
   runScriptReviewMock: vi.fn(),
   tryAcquireOrgReviewSlotMock: vi.fn(),
   releaseOrgReviewSlotMock: vi.fn(async () => undefined),
+  captureExceptionMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
@@ -54,6 +55,7 @@ vi.mock('../services/scriptProposals/reviewConcurrency', () => ({
   releaseOrgReviewSlot: shared.releaseOrgReviewSlotMock,
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({ host: 'mock' }) }));
+vi.mock('../services/sentry', () => ({ captureException: shared.captureExceptionMock }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: shared.attachWorkerObservabilityMock }));
 
 import { ProposalNotReviewableError } from '../services/scriptProposals/reviewer';
@@ -102,6 +104,17 @@ describe('processScriptReviewJob', () => {
 
     await expect(processScriptReviewJob(job() as never, 'lock-token-1')).rejects.toMatchObject({ name: 'UnrecoverableError' });
     expect(shared.releaseOrgReviewSlotMock).toHaveBeenCalledWith(ORG_ID);
+  });
+
+  it('a release failure in finally never masks the try-block outcome (UnrecoverableError stays unrecoverable; success stays success)', async () => {
+    shared.releaseOrgReviewSlotMock.mockRejectedValueOnce(new Error('redis reset'));
+    shared.runScriptReviewMock.mockRejectedValueOnce(new ProposalNotReviewableError('p', 'expired'));
+    await expect(processScriptReviewJob(job() as never, 'tok')).rejects.toMatchObject({ name: 'UnrecoverableError' });
+    expect(shared.captureExceptionMock).toHaveBeenCalledWith(expect.objectContaining({ message: 'redis reset' }), undefined, expect.objectContaining({ service: 'scriptReviewWorker' }));
+
+    shared.releaseOrgReviewSlotMock.mockRejectedValueOnce(new Error('redis reset'));
+    shared.runScriptReviewMock.mockResolvedValueOnce({ id: 'review-2' });
+    await expect(processScriptReviewJob(job() as never, 'tok')).resolves.toBeUndefined();
   });
 
   it('re-delays itself under its own lock token when the org is at its concurrency cap', async () => {

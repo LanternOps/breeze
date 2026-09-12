@@ -23,6 +23,7 @@ const shared = vi.hoisted(() => ({
   getAnthropicClientForPartnerMock: vi.fn(),
   messagesCreateMock: vi.fn(),
   createAuditLogAsyncMock: vi.fn(async () => undefined),
+  captureExceptionMock: vi.fn(),
   systemContextDepth: 0,
   maxSystemContextDepth: 0,
   modelCallSystemContextDepth: -1,
@@ -106,9 +107,11 @@ vi.mock('../llm/llmConfigResolver', () => ({
   resolveWireModel: vi.fn((_resolved: unknown, model: string) => ({ model })),
 }));
 vi.mock('../auditService', () => ({ createAuditLogAsync: shared.createAuditLogAsyncMock }));
+vi.mock('../sentry', () => ({ captureException: shared.captureExceptionMock }));
 vi.mock('./proposals', () => ({ transitionProposal: shared.transitionProposalMock }));
 vi.mock('../../config/env', () => ({ AI_SCRIPT_REVIEWER_MODEL: 'claude-sonnet-4-6' }));
 
+import { APIUserAbortError } from '@anthropic-ai/sdk';
 import { ProposalNotReviewableError, runScriptReview, REVIEWER_PROMPT_VERSION } from './reviewer';
 
 const PROPOSAL_ROW = {
@@ -496,5 +499,114 @@ describe('runScriptReview — failure paths (D7: fail closed)', () => {
     expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 500, 80, false, 'platform', undefined, RESERVATION_ID);
     // Not fail-closed: the winner's completed review stands.
     expect(shared.transitionProposalMock).not.toHaveBeenCalledWith(expect.anything(), PROPOSAL_ID, expect.anything(), 'review_failed', expect.anything());
+  });
+});
+
+describe('runScriptReview — review-round fixes (#5636)', () => {
+  beforeEach(() => {
+    resetDbState();
+    vi.clearAllMocks();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    shared.transitionProposalMock.mockResolvedValue(true);
+    shared.getAnthropicClientForPartnerMock.mockImplementation(async () => ({
+      client: { messages: { create: shared.messagesCreateMock } },
+      resolved: { source: 'platform' },
+    }));
+  });
+
+  it('a lost CAS while recording a FAILURE rolls the failure row back and returns the winner (no spurious failed row, no review_failed audit)', async () => {
+    queueReadsThroughModelCall();
+    shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'loser-fail-row', reviewerKind: 'model', status: 'failed' }]);
+    shared.messagesCreateMock.mockRejectedValueOnce(new Error('connection reset'));
+    shared.transitionProposalMock.mockResolvedValueOnce(false); // review_failed CAS loses
+    shared.selectQueue.push([{ id: 'winner-row', reviewerKind: 'model', status: 'completed' }]);
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ id: 'winner-row', status: 'completed' });
+    // The reservation was still settled (at zero) exactly once.
+    expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
+    expect(shared.createAuditLogAsyncMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'script.proposal.review_failed' }),
+    );
+  });
+
+  it('an org that vanished after the reservation (partner-id read throws) fails closed and settles at zero', async () => {
+    shared.selectQueue.push([PROPOSAL_ROW]);
+    shared.selectQueue.push([]); // no static_scan row
+    // readOrgPartnerId: no org row ⇒ throws inside the system context.
+    shared.selectQueue.push([]);
+    shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row-org', reviewerKind: 'model', status: 'failed' }]);
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(shared.getAnthropicClientForPartnerMock).not.toHaveBeenCalled();
+    expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
+    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID);
+    expect(shared.transitionProposalMock).toHaveBeenCalledWith(expect.anything(), PROPOSAL_ID, ['proposed'], 'review_failed', expect.anything());
+    expect(shared.insertValues.at(-1)).toMatchObject({ summary: expect.stringContaining('Review inputs unavailable') });
+  });
+
+  it('a device-facts query error after the reservation fails closed and settles at zero', async () => {
+    shared.selectQueue.push([PROPOSAL_ROW]);
+    shared.selectQueue.push([]);
+    shared.selectQueue.push([{ partnerId: PARTNER_ID }]);
+    // loadDeviceFacts: nothing queued ⇒ the mock throws "no queued select rows".
+    shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row-dev', reviewerKind: 'model', status: 'failed' }]);
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(shared.messagesCreateMock).not.toHaveBeenCalled();
+    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID);
+  });
+
+  it("the SDK's own abort/timeout error classes are classified as timeout (not just the DOM TimeoutError name)", async () => {
+    queueReadsThroughModelCall();
+    shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row-sdk', reviewerKind: 'model', status: 'timeout' }]);
+    shared.messagesCreateMock.mockRejectedValueOnce(new APIUserAbortError());
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ status: 'timeout' });
+    expect(shared.insertValues.at(-1)).toMatchObject({ status: 'timeout' });
+  });
+
+  it('a settlement error AFTER the review committed does not fail the job: the review is returned, the audit row is written, Sentry is told', async () => {
+    queueReadsThroughModelCall();
+    shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: REVIEW_ROW_ID, reviewerKind: 'model', status: 'completed' }]);
+    shared.messagesCreateMock.mockResolvedValueOnce({ usage: { input_tokens: 500, output_tokens: 80 }, content: [{ type: 'text', text: JSON.stringify(VALID_VERDICT) }] });
+    shared.recordUsageMock.mockRejectedValueOnce(new Error('ledger write failed'));
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ id: REVIEW_ROW_ID, status: 'completed' });
+    expect(shared.captureExceptionMock).toHaveBeenCalledWith(expect.objectContaining({ message: 'ledger write failed' }), undefined, expect.objectContaining({ service: 'scriptReview' }));
+    expect(shared.createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({ action: 'script.proposal.reviewed' }));
+  });
+
+  it('an unparseable verdict keeps the raw model text on the failure row for diagnosis, and reaches Sentry', async () => {
+    queueReadsThroughModelCall();
+    shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row-raw', reviewerKind: 'model', status: 'failed' }]);
+    shared.messagesCreateMock.mockResolvedValueOnce({ usage: { input_tokens: 300, output_tokens: 40 }, content: [{ type: 'text', text: 'Sure! Here is my review in prose…' }] });
+
+    await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(shared.insertValues.at(-1)).toMatchObject({ verdict: { rawText: 'Sure! Here is my review in prose…' } });
+    expect(shared.captureExceptionMock).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ service: 'scriptReview', reviewStatus: 'failed' }));
   });
 });

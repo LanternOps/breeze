@@ -8,6 +8,7 @@
 // connection for the lifetime of the (up to 60 s) Anthropic call, the
 // "hang at concurrency ≥ pool size" anti-pattern CLAUDE.md calls out.
 import { getRedis } from '../redis';
+import { captureException } from '../sentry';
 
 export const SCRIPT_REVIEW_ORG_CONCURRENCY = 3;
 
@@ -45,11 +46,13 @@ return 1
 
 /**
  * Attempts to claim one of `cap` concurrent review slots for `orgId`.
- * Fails OPEN (returns true, no cap enforced) when Redis itself is
- * unavailable — this is a cost/fairness control, not a security boundary,
- * and BullMQ cannot process the job at all without Redis anyway, so the
- * fail-open branch is unreachable in practice; it exists only to make this
- * function total and testable in isolation.
+ * Fails OPEN (returns true, no cap enforced) when the general Redis client
+ * is unavailable — this is a cost/fairness control, not a security boundary.
+ * That branch IS reachable: `getRedis()` and BullMQ's own connection are two
+ * ioredis instances with independent availability flags (services/redis.ts),
+ * so BullMQ can be delivering jobs while the general client is down. It is
+ * therefore captured to Sentry (rate-limited by Sentry itself), not just
+ * logged, so a silently-disabled cap is visible.
  */
 export async function tryAcquireOrgReviewSlot(
   orgId: string,
@@ -58,6 +61,9 @@ export async function tryAcquireOrgReviewSlot(
   const redis = getRedis();
   if (!redis) {
     console.warn('[scriptReviewConcurrency] Redis unavailable — failing open (no per-org cap enforced)', { orgId });
+    captureException(new Error('script-review per-org concurrency cap disabled: general Redis client unavailable'), undefined, {
+      service: 'scriptReviewConcurrency', orgId,
+    });
     return true;
   }
   const result = await redis.eval(

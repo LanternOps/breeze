@@ -8,6 +8,8 @@ const shared = vi.hoisted(() => ({
   redisAvailable: true,
 }));
 
+const { captureMock } = vi.hoisted(() => ({ captureMock: vi.fn() }));
+vi.mock('../sentry', () => ({ captureException: captureMock }));
 vi.mock('../redis', () => ({
   getRedis: () => (shared.redisAvailable ? { eval: shared.evalMock } : null),
 }));
@@ -51,6 +53,8 @@ describe('tryAcquireOrgReviewSlot', () => {
     await expect(tryAcquireOrgReviewSlot(ORG_ID)).resolves.toBe(true);
     expect(shared.evalMock).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalled();
+    // Reachable in prod (general Redis client ≠ BullMQ's connection) — must reach Sentry.
+    expect(captureMock).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ service: 'scriptReviewConcurrency', orgId: ORG_ID }));
     warn.mockRestore();
   });
 });

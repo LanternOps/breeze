@@ -17,6 +17,7 @@
 // against the job's `attempts`.
 import { DelayedError, UnrecoverableError, Worker, type Job } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
+import { captureException } from '../services/sentry';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import { scriptReviewQueueJobDataSchema } from './queueSchemas';
 import { SCRIPT_REVIEW_JOB_NAME, SCRIPT_REVIEW_QUEUE } from '../services/scriptProposals/reviewQueue';
@@ -68,7 +69,19 @@ export async function processScriptReviewJob(job: Job<unknown>, token?: string):
     }
     throw error;
   } finally {
-    await releaseOrgReviewSlot(data.orgId);
+    // Never let a Redis hiccup on release replace the try-block's error: that
+    // would turn an UnrecoverableError into a retryable one (or vice versa).
+    // The counter key's TTL self-heals a missed release.
+    try {
+      await releaseOrgReviewSlot(data.orgId);
+    } catch (releaseError) {
+      console.error(`[${WORKER_NAME}] failed to release the per-org review slot`, {
+        proposalId: data.proposalId, orgId: data.orgId, error: releaseError,
+      });
+      captureException(releaseError instanceof Error ? releaseError : new Error(String(releaseError)), undefined, {
+        service: WORKER_NAME, orgId: data.orgId,
+      });
+    }
   }
 }
 

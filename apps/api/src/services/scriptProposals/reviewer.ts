@@ -16,6 +16,7 @@ import {
 import { reserveAiBudget } from '../aiBudgetReservations';
 import { recordUsage } from '../aiCostTracker';
 import { createAuditLogAsync } from '../auditService';
+import { captureException } from '../sentry';
 import { ANONYMOUS_ACTOR_ID } from '../auditEvents';
 import {
   getAnthropicClientForPartner, getLlmBillingSourceForOrg, resolveWireModel,
@@ -344,17 +345,29 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   const reservationId = reservation.reservationId;
 
   const model = resolveReviewerModel(job.orgId);
-  const partnerId = await readOrgPartnerId(job.orgId);
-  const targetDevices = await loadDeviceFacts(job.orgId, proposal.targetDeviceIds);
-  // Advisory context only (spec §9's documented default) — see
-  // buildReviewerPrompt's comment. W04 replaces this with
-  // resolveEffectiveScriptPolicy(orgId).maxUnattendedRiskTier.
-  const ceiling: RiskTier = 'low';
-  const { system, user } = buildReviewerPrompt({ proposal, scan, devices: targetDevices, ceiling });
 
   // Settle-at-zero helper for the branches where no tokens were ever spent.
   const settleAtZero = (catalogPricing?: CatalogPricing) =>
     recordUsage(null, job.orgId, model, 0, 0, false, billingSource, catalogPricing, reservationId);
+
+  // From here on a reservation is open: every exit must settle it and fail
+  // closed, including the prompt-input reads (an org erased mid-flight, a
+  // device query error) — not only the provider and model calls.
+  let system: string;
+  let user: string;
+  let partnerId: string;
+  try {
+    partnerId = await readOrgPartnerId(job.orgId);
+    const targetDevices = await loadDeviceFacts(job.orgId, proposal.targetDeviceIds);
+    // Advisory context only (spec §9's documented default) — see
+    // buildReviewerPrompt's comment. W04 replaces this with
+    // resolveEffectiveScriptPolicy(orgId).maxUnattendedRiskTier.
+    const ceiling: RiskTier = 'low';
+    ({ system, user } = buildReviewerPrompt({ proposal, scan, devices: targetDevices, ceiling }));
+  } catch (error) {
+    await settleAtZero();
+    return failReview(job, `Review inputs unavailable: ${errorMessage(error)}`, 'failed', { reservationId, model });
+  }
 
   let client: Awaited<ReturnType<typeof getAnthropicClientForPartner>>['client'];
   let wireModel: string;
@@ -367,7 +380,11 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
     catalogPricing = wire.catalogPricing;
   } catch (error) {
     await settleAtZero();
-    return failReview(job, `Provider unavailable: ${errorMessage(error)}`, 'failed', { reservationId, model });
+    // Covers both a genuine provider/egress outage and a model-catalog
+    // misconfiguration (LlmUnavailableError from resolveWireModel); the error
+    // name is kept so the two stay distinguishable in the row and the logs.
+    const name = error instanceof Error ? error.name : 'Error';
+    return failReview(job, `Provider or model resolution failed (${name}): ${errorMessage(error)}`, 'failed', { reservationId, model });
   }
 
   let resp: Awaited<ReturnType<typeof client.messages.create>>;
@@ -398,7 +415,8 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   const inputTokens = resp.usage?.input_tokens ?? 0;
   const outputTokens = resp.usage?.output_tokens ?? 0;
   const textBlock = resp.content.find((b) => b.type === 'text');
-  const parsedJson = parseVerdictText(textBlock?.type === 'text' ? textBlock.text : undefined);
+  const rawText = textBlock?.type === 'text' ? textBlock.text : undefined;
+  const parsedJson = parseVerdictText(rawText);
   const parsed = parsedJson === undefined ? undefined : scriptReviewVerdictSchema.safeParse(parsedJson);
 
   if (!parsed || !parsed.success) {
@@ -407,7 +425,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
     const reason = !parsed
       ? 'Reviewer returned no parseable JSON verdict'
       : `Malformed reviewer verdict: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`;
-    return failReview(job, reason, 'failed', { reservationId, model, inputTokens, outputTokens });
+    return failReview(job, reason, 'failed', { reservationId, model, inputTokens, outputTokens, rawText });
   }
 
   const floored = applyReviewFloors(parsed.data, scan);
@@ -463,7 +481,21 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
     throw error;
   }
 
-  await recordUsage(null, job.orgId, model, inputTokens, outputTokens, false, billingSource, catalogPricing, reservationId);
+  // The review is committed and authoritative from here. A settlement error
+  // now must NOT fail the job: a BullMQ retry would short-circuit on the
+  // `reviewed` status and never reach this line again, so throwing would
+  // only lose the audit row on top of the spend. Capture loudly instead —
+  // the reservation's 30-minute TTL sweep still reclaims the cap.
+  try {
+    await recordUsage(null, job.orgId, model, inputTokens, outputTokens, false, billingSource, catalogPricing, reservationId);
+  } catch (error) {
+    console.error('[scriptReview] budget settlement failed after the review committed', {
+      proposalId: job.proposalId, orgId: job.orgId, reservationId, inputTokens, outputTokens,
+    });
+    captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+      service: 'scriptReview', orgId: job.orgId,
+    });
+  }
 
   createAuditLogAsync({
     orgId: job.orgId,
@@ -496,11 +528,26 @@ async function failReview(
   job: ScriptReviewJobData,
   reason: string,
   status: 'failed' | 'timeout',
-  ctx: { reservationId: string | undefined; model: string | undefined; inputTokens?: number; outputTokens?: number },
+  ctx: {
+    reservationId: string | undefined;
+    model: string | undefined;
+    inputTokens?: number;
+    outputTokens?: number;
+    /** The model's raw text when it was received but unusable — kept on the row for diagnosis. */
+    rawText?: string;
+  },
 ): Promise<ScriptProposalReviewRow> {
   console.error('[scriptReview] review failed', { proposalId: job.proposalId, orgId: job.orgId, reason, status });
+  // None of these branches throw out of the job (D7 resolves them into a
+  // review row), so the generic worker 'failed' listener never sees them —
+  // this is the only path by which a reviewer outage reaches Sentry.
+  captureException(new Error(`script-review ${status}: ${reason}`), undefined, {
+    service: 'scriptReview', orgId: job.orgId, reviewStatus: status,
+  });
 
-  const row = await withSystemDbAccessContext(async () => {
+  let row: ScriptProposalReviewRow;
+  try {
+    row = await withSystemDbAccessContext(async () => {
     const [inserted] = await db
       .insert(scriptProposalReviews)
       .values({
@@ -516,7 +563,7 @@ async function failReview(
         reversible: null,
         verificationAdequate: null,
         recommendedAction: null,
-        verdict: { error: reason },
+        verdict: { error: reason, ...(ctx.rawText !== undefined ? { rawText: ctx.rawText.slice(0, 4000) } : {}) },
         inputTokens: ctx.inputTokens ?? 0,
         outputTokens: ctx.outputTokens ?? 0,
         costCents: null,
@@ -526,9 +573,25 @@ async function failReview(
     if (!inserted) {
       throw new Error(`script-review: failed to insert failure review row for proposal ${job.proposalId}`);
     }
-    await transitionProposal(db, job.proposalId, ['proposed'], 'review_failed', { decisionNote: reason.slice(0, 2000) });
+    // Same CAS discipline as the success path: if a concurrent attempt already
+    // moved the proposal off `proposed`, the throw rolls THIS insert back so a
+    // spurious failure row never lands after (and shadows) the winner's row.
+    const transitioned = await transitionProposal(db, job.proposalId, ['proposed'], 'review_failed', {
+      decisionNote: reason.slice(0, 2000),
+    });
+    if (!transitioned) throw new ProposalAlreadyReviewedError(job.proposalId);
     return inserted;
-  });
+    });
+  } catch (error) {
+    if (error instanceof ProposalAlreadyReviewedError) {
+      console.warn('[scriptReview] lost the transition race while recording a failure; the winner\'s review stands', {
+        proposalId: job.proposalId,
+      });
+      const existing = await loadLatestModelReview(job.proposalId);
+      if (existing) return existing;
+    }
+    throw error;
+  }
 
   createAuditLogAsync({
     orgId: job.orgId,
