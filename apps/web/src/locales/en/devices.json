@@ -278,7 +278,8 @@
     "loadMore": "Load more",
     "couldnTLoadMore": "Couldn't load more.",
     "viewAllActivity2": "View all activity",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "View proposal"
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Failed to fetch alert history",
