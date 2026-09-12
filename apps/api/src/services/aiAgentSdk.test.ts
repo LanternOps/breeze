@@ -160,6 +160,13 @@ vi.mock('./actionIntents/durableRelease', () => ({
   DURABLE_RELEASE_ONLY_TOOLS: new Set<string>(),
 }));
 
+// W04 (#5612): the lane's restore-checkpoint release precondition, mocked so
+// its transitive scriptDispatch/schema imports never reach the partial
+// schema mock in this file.
+vi.mock('./actionIntents/laneCheckpoint', () => ({
+  ensureLaneCheckpointBeforeRelease: vi.fn(async () => ({ ok: true, checkpointRef: null })),
+}));
+
 vi.mock('./actionIntents/revalidateRelease', () => ({
   revalidateApprovedIntentForRelease: (...args: unknown[]) =>
     mockRevalidateApprovedIntentForRelease(...args),

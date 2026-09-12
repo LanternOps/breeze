@@ -113,6 +113,14 @@ vi.mock('./actionIntents/durableRelease', () => ({
   DURABLE_RELEASE_ONLY_TOOLS: new Set<string>(),
 }));
 
+// W04 (#5612): the lane's restore-checkpoint release precondition (its own
+// truth table: actionIntents/laneCheckpoint.test.ts). Mocked so its
+// transitive scriptDispatch/schema imports never reach the partial schema
+// mock above.
+vi.mock('./actionIntents/laneCheckpoint', () => ({
+  ensureLaneCheckpointBeforeRelease: vi.fn(async () => ({ ok: true, checkpointRef: null })),
+}));
+
 vi.mock('./actionIntents/revalidateRelease', () => ({
   revalidateApprovedIntentForRelease: vi.fn(() => Promise.resolve({ ok: true, auth: {} })),
 }));
@@ -533,5 +541,53 @@ describe('waitForTurnToSettle (#3089)', () => {
     const session = makeActiveSession({ state: 'processing' });
 
     await expect(waitForTurnToSettle(session, 300)).resolves.toBe(false);
+  });
+});
+
+// ============================================
+// W04 (#5612): an intent approved AT CREATION (script_reviewer / ticket
+// autonomy) has no approval row — the session gets an informational
+// `unattended_release` event, never an approval card.
+// ============================================
+
+describe('approved-at-creation intent (unattended lane, #5612 W04)', () => {
+  it('publishes unattended_release and NO approval_required when the intent is already approved', async () => {
+    tier3Guardrail('supervised');
+    mockInsertReturning({ id: 'exec-lane' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-lane', status: 'approved', approvalRequestIds: [], requesterApprovalRequestId: null }),
+    );
+    // The wait returns the row's status on its first poll; the release CAS
+    // is stubbed to lose so the (mocked-out) execution path is not entered.
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(false);
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    const types = vi.mocked(session.eventBus.publish).mock.calls.map((c) => (c[0] as { type: string }).type);
+    expect(types).not.toContain('approval_required');
+    expect(session.eventBus.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'unattended_release', executionId: 'exec-lane', intentId: 'intent-lane' }),
+    );
+    // The wait/CAS path is still taken for the approved intent.
+    expect(mockWaitForIntentDecision).toHaveBeenCalledWith('intent-lane', expect.any(Number), expect.anything());
+    expect(mockTransitionIntent).toHaveBeenCalledWith('intent-lane', 'approved', 'executing', expect.anything(), expect.anything());
+  });
+
+  it('still publishes approval_required for an ordinary pending intent', async () => {
+    tier3Guardrail('supervised');
+    mockInsertReturning({ id: 'exec-pending' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-pending' }));
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    const types = vi.mocked(session.eventBus.publish).mock.calls.map((c) => (c[0] as { type: string }).type);
+    expect(types).toContain('approval_required');
+    expect(types).not.toContain('unattended_release');
   });
 });

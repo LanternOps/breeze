@@ -345,6 +345,19 @@ vi.mock('../services/actionIntents/effectDigest', () => ({
   computeEffectDigestForRelease: effectDigestMock.computeEffectDigestForRelease,
   hasPinnedDigest: effectDigestMock.hasPinnedDigest,
 }));
+// W04 (#5612): the lane's restore-checkpoint release precondition, mocked
+// wholesale (its own truth table is laneCheckpoint.test.ts). Default: no
+// checkpoint needed — the pre-existing cases must be inert.
+const laneCheckpointMock = vi.hoisted(() => ({
+  ensureLaneCheckpointBeforeRelease: vi.fn(async () => ({ ok: true as const, checkpointRef: null })),
+}));
+vi.mock('../services/actionIntents/laneCheckpoint', () => laneCheckpointMock);
+// The lane's release revalidation is reached only through revalidateRelease
+// (itself real here); stub the evaluator so its transitive imports never
+// reach this file's partial schema mocks.
+vi.mock('../services/actionIntents/scriptReviewerAutonomy', () => ({
+  revalidateScriptReviewerEvidence: vi.fn(async () => ({ ok: true })),
+}));
 vi.mock('../services/tenantStatus', () => ({
   getActiveOrgTenant: tenantStatusMock.getActiveOrgTenant,
 }));
@@ -4027,5 +4040,59 @@ describe('outcome notification dedupe identity (#4465)', () => {
       expect(rows[1]!.dedupeKey).toBe('agent-intent-outcome:intent-1:failed');
       expect(rows[1]!.title).toBe('Agent action failed');
     });
+  });
+});
+
+// AI script authoring W04 (#5612), spec §4.6 invariant 11: the restore
+// checkpoint is a RELEASE precondition, taken after the digest recompute and
+// before the effect.
+describe('script lane checkpoint precondition (#5612 W04)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetDbState();
+    resetGoogleSecretActions();
+    googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
+    m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(false);
+    effectDigestMock.computeEffectDigestForRelease.mockResolvedValue({ digest: null });
+  });
+
+  it('runs the gate after revalidation and BEFORE executeTool, and proceeds when it holds', async () => {
+    const intent = baseIntent({ decidedVia: 'script_reviewer' });
+    primeThroughRevalidation(intent);
+    laneCheckpointMock.ensureLaneCheckpointBeforeRelease.mockResolvedValueOnce({ ok: true, checkpointRef: '42' });
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(laneCheckpointMock.ensureLaneCheckpointBeforeRelease).toHaveBeenCalledWith(intent);
+    expect(aiToolsMock.executeTool).toHaveBeenCalledTimes(1);
+    const checkpointOrder = laneCheckpointMock.ensureLaneCheckpointBeforeRelease.mock.invocationCallOrder[0]!;
+    const executeOrder = aiToolsMock.executeTool.mock.invocationCallOrder[0]!;
+    expect(checkpointOrder).toBeLessThan(executeOrder);
+  });
+
+  it('fails the intent checkpoint_unavailable WITHOUT executing when the checkpoint cannot be taken', async () => {
+    const intent = baseIntent({ decidedVia: 'script_reviewer' });
+    primeThroughRevalidation(intent);
+    laneCheckpointMock.ensureLaneCheckpointBeforeRelease.mockResolvedValueOnce({ ok: false, reason: 'checkpoint_failed' } as never);
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      expect.objectContaining({ errorCode: 'checkpoint_unavailable' }),
+    );
+    expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        result: 'failure',
+        details: expect.objectContaining({ errorCode: 'checkpoint_unavailable', reason: 'checkpoint_failed' }),
+      }),
+    );
   });
 });

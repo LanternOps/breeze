@@ -107,6 +107,13 @@ vi.mock('./actionIntents/intentService', () => ({
 // Collaborator mock (also cuts the real module's ../aiTools import chain, which
 // would drag in aiToolSchemas' drizzle-enum schemas the ../db/schema mock does
 // not provide). Default: still authorized.
+// W04 (#5612): the lane's restore-checkpoint release precondition, mocked so
+// its transitive scriptDispatch/schema imports never reach the partial
+// schema mock in this file.
+vi.mock('./actionIntents/laneCheckpoint', () => ({
+  ensureLaneCheckpointBeforeRelease: vi.fn(async () => ({ ok: true, checkpointRef: null })),
+}));
+
 vi.mock('./actionIntents/revalidateRelease', () => ({
   revalidateApprovedIntentForRelease: vi.fn(async () => ({ ok: true, auth: {} })),
 }));

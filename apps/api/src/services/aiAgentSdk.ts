@@ -17,6 +17,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
 import { attachProposalToSession, loadProposalGuardrailContext } from './scriptProposals';
+import { ensureLaneCheckpointBeforeRelease } from './actionIntents/laneCheckpoint';
 import { checkBudget, checkAiRateLimit } from './aiCostTracker';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
@@ -1236,6 +1237,27 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             console.error('[AI-SDK] Failed to stamp intent id onto execution:', approvalExec.id, err);
           }
 
+          // W04 (#5612): an intent that is ALREADY `approved` at creation was
+          // decided by an autonomy path (script_reviewer here; ticket_autonomy
+          // too) and has NO approval_requests row for anyone to act on. Showing
+          // an approval card for it is a lie that resolves itself a second
+          // later. Publish an informational event instead, and fall through to
+          // the same wait/CAS/revalidate path — `waitForIntentDecision` returns
+          // `approved` on its first poll, so the release below is unchanged.
+          // Keyed on `status`, not `decidedVia`: the snapshot exposes `status`,
+          // and "already decided, nothing to approve" is the honest condition.
+          if (intent.status === 'approved') {
+            session.eventBus.publish({
+              type: 'unattended_release',
+              executionId: approvalExec.id,
+              intentId: intent.id,
+              toolName,
+              description,
+              deviceContext,
+              scriptRunContext,
+              ...(scriptProposal ? { scriptProposal } : {}),
+            });
+          } else {
           // Emit approval_required event via session event bus. `intentBacked:
           // true` always means the four-eyes waiting state UNLESS
           // selfApprovalRequestId is also set — in that case the sole-operator
@@ -1277,6 +1299,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             deviceContext,
             intentBacked: true,
           });
+          }
 
           // Block until an approver decides, OR the cycle's SHARED approval-wait
           // budget (up to 300s — matches the intent's own 5-minute chat expiry)
@@ -1551,6 +1574,39 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // letting it read the same rows again. Only reached on a match:
             // the mismatch branch above returns.
             verifiedToolContext = recomputed.context;
+          }
+
+          // AI script authoring W04 (#5612), spec §4.6 invariant 11 — the
+          // SAME release precondition the durable worker enforces
+          // (jobs/intentReleaseWorker.ts): a lane intent whose evidence says a
+          // restore checkpoint was required takes one NOW, after the digest
+          // check and before the effect. No-op for every non-lane intent.
+          const laneCheckpoint = await ensureLaneCheckpointBeforeRelease(intentRow);
+          if (!laneCheckpoint.ok) {
+            const checkpointCasWon = await transitionIntentAndPublish(
+              intent.id,
+              'failed',
+              { errorCode: 'checkpoint_unavailable' },
+              session.orgId,
+              'intent_failed',
+            );
+            if (!checkpointCasWon) {
+              reportLostTerminalCas({
+                intentId: intent.id,
+                orgId: session.orgId,
+                toolName,
+                intendedStatus: 'failed',
+                casLabel: 'ai_sdk_inline_checkpoint_unavailable',
+                executed: false,
+              });
+            }
+            console.error(
+              `[AI-SDK] inline release restore checkpoint unavailable for intent ${intent.id}: ${laneCheckpoint.reason}`,
+            );
+            return await failMatchedPlanStep({
+              allowed: false,
+              error: 'A System Restore checkpoint could not be taken before the unattended run; it was not executed.',
+            });
           }
 
           // Won the release: track the intent id so createSessionPostToolUse can

@@ -211,6 +211,13 @@ export type AiStreamEvent =
    * copy is the `ai_messages` row; this is the best-effort live nudge.
    */
   | { type: 'script_proposal_update'; proposalId: string; outcome: 'changes_requested' | 'verified' | 'verification_failed' | 'verification_unknown'; message: string }
+  /**
+   * W04 (#5612): an intent that was ALREADY approved at creation by the
+   * reviewer-gated unattended lane (`decided_via = 'script_reviewer'`). There
+   * is no approval row for anyone to act on, so the session must not show an
+   * approval card; this informational event replaces it.
+   */
+  | { type: 'unattended_release'; executionId: string; intentId: string; toolName: string; description: string; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string }; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary }
   | { type: 'plan_approval_required'; planId: string; steps: ActionPlanStep[] }
   | { type: 'plan_step_start'; planId: string; stepIndex: number; toolName: string }
   | { type: 'plan_step_complete'; planId: string; stepIndex: number; toolName: string; isError: boolean }
