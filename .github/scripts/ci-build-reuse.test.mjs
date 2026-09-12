@@ -89,6 +89,9 @@ if [[ "$1" == "load" ]]; then
 elif [[ "$1 $2" == "image inspect" ]]; then
   [[ "\${@: -1}" == ghcr.io/lanternops/breeze/*:ci-smoke-123 ]] || exit 1
   echo "$TEST_REVISION"
+elif [[ "$1" == "tag" ]]; then
+  [[ "$2" == ghcr.io/lanternops/breeze/*:ci-smoke-123 && "$3" == ghcr.io/lanternops/breeze/*:0.112.0-ci-smoke-123 ]] || exit 1
+  echo "$3" >> "$TAG_LOG"
 else
   exit 1
 fi
@@ -99,7 +102,8 @@ fi
         encoding: 'utf8',
         env: {
           ...process.env, PATH: `${dir}:${process.env.PATH}`, IMAGE_ARCHIVE_DIR: dir,
-          CI_IMAGE_VERSION: 'ci-smoke-123', CI_IMAGE_REVISION: 'current-sha',
+          CI_IMAGE_VERSION: 'ci-smoke-123', GUIDED_IMAGE_VERSION: '0.112.0-ci-smoke-123',
+          CI_IMAGE_REVISION: 'current-sha', TAG_LOG: join(dir, 'tags'),
           TEST_REVISION: revision, LOAD_FAILURE: loadFailure, GITHUB_ENV: envFile,
         },
       });
@@ -107,7 +111,12 @@ fi
       const output = readFileSync(envFile, 'utf8');
       if (expectedStatus !== 0) assert.equal(output, '');
       else {
-        assert.ok(output.includes('GUIDED_SMOKE_VERSION=ci-smoke-123\n'));
+        // guided-setup.sh rejects a non-semver BREEZE_VERSION and version-floors
+        // the signed-inventory check, so the guided tag must be semver-shaped.
+        assert.ok(output.includes('GUIDED_SMOKE_VERSION=0.112.0-ci-smoke-123\n'));
+        assert.match(output, /GUIDED_SMOKE_VERSION=\d+\.\d+\.\d+/u);
+        const tagged = readFileSync(join(dir, 'tags'), 'utf8').trim().split('\n').sort();
+        assert.deepEqual(tagged, ['api', 'portal', 'web'].map((app) => `ghcr.io/lanternops/breeze/${app}:0.112.0-ci-smoke-123`));
         for (const app of ['api', 'web', 'portal']) {
           assert.ok(output.includes(`BREEZE_${app.toUpperCase()}_IMAGE_REF=ghcr.io/lanternops/breeze/${app}:ci-smoke-123\n`));
         }

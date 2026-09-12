@@ -97,8 +97,13 @@ describe.each(['api', 'web'])('release %s compilation reuse', (app) => {
   });
 
   it('keeps publishing behind release integrity and lineage validation', () => {
-    expect(publish.needs).toEqual(expect.arrayContaining([`build-${app}`, 'create-release']));
-    expect(publish.if).toContain("needs.create-release.result == 'success'");
+    // main inverted the graph: the docker publishers depend only on their
+    // build job and create-release depends on them, so the gate is the tag
+    // guard plus the build result.
+    expect(publish.needs).toEqual([`build-${app}`]);
+    expect(publish.if).toContain("github.ref_type == 'tag'");
+    expect(publish.if).toContain(`needs.build-${app}.result == 'success'`);
+    expect(publish.if).not.toContain('create-release');
     expect(required(workflow.jobs['create-release'], 'create-release job').needs).toEqual(expect.arrayContaining(['release-integrity-gate', 'validate-release-lineage']));
     expect(build.permissions?.packages).not.toBe('write');
     expect(stepsUsing(build, 'docker/login-action')).toHaveLength(0);
