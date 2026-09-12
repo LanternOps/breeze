@@ -983,7 +983,7 @@ describe('upgrade consent callback', () => {
       consumeSession: vi.fn(async () => ({
         userId: USER_ID, purpose: 'upgrade',
         tenantHintHash: tenantHintHash(TENANT_ID), nonce: 'n', codeVerifier: 'v',
-      })),
+      })) as never,
       markAttemptFailed,
       audit: vi.fn(),
       metric: vi.fn(),
@@ -1014,16 +1014,16 @@ describe('upgrade consent callback', () => {
         consumeSession: vi.fn(async () => ({
           userId: USER_ID, purpose: 'upgrade',
           tenantHintHash: tenantHintHash(TENANT_ID), nonce: 'n', codeVerifier: 'v',
-        })),
+        })) as never,
         completeIdentity: vi.fn(async () => ({
           success: true, tenantId: TENANT_ID, manifestVersion: scenario.manifestVersion,
-        })),
+        })) as never,
         applyUpgradeResult: vi.fn(async () => ({
           id: CONNECTION_ID,
           status: scenario.status,
           lastErrorCode: scenario.lastErrorCode,
           permissionManifestVersion: scenario.manifestVersion,
-        })),
+        })) as never,
         applyIdentityResult,
         loadConfig: vi.fn(() => ({
           clientId: '22222222-2222-2222-2222-222222222222',
