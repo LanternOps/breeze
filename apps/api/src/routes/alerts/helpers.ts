@@ -531,6 +531,8 @@ export function formatAlertRuleResponse(rule: AlertRuleRow, template?: AlertTemp
     notificationChannels: notificationChannelIds,
     templateId: rule.templateId,
     templateName: template?.name,
+    // #5289 — lets the web render a compiled rule read-only.
+    managedByMonitorId: rule.managedByMonitorId ?? null,
     createdAt: rule.createdAt,
     updatedAt: overrides.updatedAt ?? rule.createdAt
   };
