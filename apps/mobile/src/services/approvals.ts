@@ -1,9 +1,11 @@
 import * as SecureStore from 'expo-secure-store';
 import { getServerUrl } from './serverConfig';
 import { fetchWithAuthRefresh } from './authedFetch';
+import type { ScriptProposalDetailDto } from '../screens/approvals/scriptProposalCopy';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const PREFIX = '/api/v1/mobile/approvals';
+const SCRIPT_PROPOSALS_PREFIX = '/api/v1/ai/script-proposals';
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
 const CSRF_HEADER_VALUE = '1';
 const TOKEN_KEY = 'breeze_auth_token';
@@ -98,9 +100,22 @@ export interface ApproveStepUp {
   pin?: string;
 }
 
-export async function approveRequest(id: string, stepUp?: ApproveStepUp): Promise<ApprovalRequest> {
-  const body = stepUp && (stepUp.proof || stepUp.pin)
-    ? JSON.stringify({ proof: stepUp.proof, pin: stepUp.pin })
+export async function approveRequest(
+  id: string,
+  stepUp?: ApproveStepUp,
+  /** W03 (#5612): STRICT patterns the approver ticked on a script_proposal's
+   *  checklist. Omitted (not an empty array) when there is nothing to send —
+   *  most approvals never carry this. */
+  acknowledgedPatterns?: string[],
+): Promise<ApprovalRequest> {
+  const hasStepUp = !!(stepUp && (stepUp.proof || stepUp.pin));
+  const hasAcknowledgements = !!(acknowledgedPatterns && acknowledgedPatterns.length > 0);
+  const body = hasStepUp || hasAcknowledgements
+    ? JSON.stringify({
+        proof: stepUp?.proof,
+        pin: stepUp?.pin,
+        acknowledgedPatterns: hasAcknowledgements ? acknowledgedPatterns : undefined,
+      })
     : undefined;
   // A 401 on a decision is a failed step-up (see STEP_UP_FAILED below), not an
   // expired token, so it must not be refreshed and replayed.
@@ -132,4 +147,18 @@ export async function reportSuspicious(id: string): Promise<void> {
   const res = await authedFetch(`${PREFIX}/${id}/report-suspicious`, { method: 'POST' });
   if (res.status === 404) throw new Error('NOT_FOUND');
   if (!res.ok) throw new Error(`Report failed: ${res.status}`);
+}
+
+/**
+ * W03 (#5612): the approval row carries only the proposal id
+ * (`actionArguments.proposalId`) — the card content (goal, reviewer
+ * findings, STRICT patterns, script body) lives behind this live-authorised
+ * detail endpoint, which re-derives this user's authority per request rather
+ * than trusting anything cached on the approval row.
+ */
+export async function fetchScriptProposal(id: string): Promise<ScriptProposalDetailDto> {
+  const res = await authedFetch(`${SCRIPT_PROPOSALS_PREFIX}/${id}`);
+  if (res.status === 404) throw new Error('NOT_FOUND');
+  if (!res.ok) throw new Error(`Failed to fetch proposal: ${res.status}`);
+  return (await res.json()) as ScriptProposalDetailDto;
 }

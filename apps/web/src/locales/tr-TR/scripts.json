@@ -1412,5 +1412,19 @@
       "pollFailed": "Çalıştırma sonucu okunamadı — silinmiş olabilir veya erişiminiz değişmiş olabilir."
     },
     "devicesLoadFailed": "Cihazlar yüklenemedi"
+  },
+  "provenance": {
+    "origin": "Köken",
+    "originHuman": "İnsan",
+    "originAiProposal": "Yapay zekâ önerisi",
+    "originImported": "İçe aktarıldı",
+    "originSystem": "Yerleşik",
+    "reviewed": "İncelendi",
+    "editedSinceReview": "İncelemeden sonra düzenlendi",
+    "provenanceTitle": "Kaynak geçmişi",
+    "reviewSummary": "İnceleme özeti",
+    "approvedBy": "Onaylayan",
+    "evidenceErased": "İnceleme kanıtı silindi",
+    "allOrigins": "Tüm kökenler"
   }
 }

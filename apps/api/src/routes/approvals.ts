@@ -47,6 +47,7 @@ import {
   loadHomogeneousBatch,
 } from '../services/approvals/batchDecide';
 import {
+  acknowledgedPatternsSchema,
   assertionProofSchema,
   mobileHwKeyProofSchema,
   type ApprovalProof,
@@ -764,6 +765,19 @@ approvalRoutes.post('/:id/approve', async (c) => {
     reauthVerified = true;
   }
 
+  // W03 (#5612): the script-proposal card submits the STRICT patterns the
+  // approver ticked. Shape-checked here so a malformed array is a 400 rather
+  // than a silently-dropped acknowledgement the approver believes they granted
+  // (same reasoning as unknownSecurityPatternDescriptions in
+  // scriptSecurityAcknowledgement.ts). Resolution against strict_hits, the
+  // scripts:write + MFA bar and the 422s live in the decide core.
+  let acknowledgedPatterns: string[] | undefined;
+  if (raw && raw.acknowledgedPatterns !== undefined) {
+    const parsed = acknowledgedPatternsSchema.safeParse(raw.acknowledgedPatterns);
+    if (!parsed.success) return c.json({ error: 'Invalid acknowledgedPatterns' }, 400);
+    acknowledgedPatterns = parsed.data;
+  }
+
   return respond(
     c,
     await decideApprovalRequest({
@@ -773,6 +787,7 @@ approvalRoutes.post('/:id/approve', async (c) => {
       proof,
       reauthVerified,
       stepUpGrantId,
+      acknowledgedPatterns,
     }),
   );
 });

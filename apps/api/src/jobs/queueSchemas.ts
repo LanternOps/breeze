@@ -513,6 +513,14 @@ export type DrExecutionQueueJobData = z.infer<typeof drExecutionQueueJobDataSche
 export type RecoveryMediaQueueJobData = z.infer<typeof recoveryMediaQueueJobDataSchema>;
 export type VulnSourceSyncJobData = z.infer<typeof vulnSourceSyncSchema>;
 export type ScriptReviewQueueJobData = z.infer<typeof scriptReviewQueueJobDataSchema>;
+// W03 (#5612): `script-verify` queue — the dequeue-boundary parse of
+// services/scriptProposals/verify.ts's `ScriptVerifyJobData`.
+export const scriptVerifyQueueJobDataSchema = z.object({
+  proposalId: z.string().uuid(),
+  executionId: z.string().uuid(),
+  attempt: z.number().int().min(1),
+});
+export type ScriptVerifyQueueJobData = z.infer<typeof scriptVerifyQueueJobDataSchema>;
 export type QueueActorMeta = z.infer<typeof queueActorMetaSchema>;
 // Note: NOT named RouteEventJobData/DeliverEventJobData — those canonical
 // interfaces are hand-written in services/eventDispatchQueue.ts (the

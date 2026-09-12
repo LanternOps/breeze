@@ -32,6 +32,7 @@ import {
 } from '../aiGuardrails';
 import { consumeProposalForIntent, loadProposalGuardrailContext } from '../scriptProposals';
 import { getUserPermissions, userCanDecideApprovals } from '../permissions';
+import { PERMISSION_GRANTS } from '@breeze/shared';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from '../expoPush';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { recordActionIntentEvent } from './metrics';
@@ -1477,7 +1478,16 @@ export async function createActionIntent(
   // idempotency conflict below, this resolved set is simply discarded —
   // cheap relative to the round-trip savings on the common (non-conflicting)
   // path.
-  const eligibleAll = await resolveIntentApprovers(orgId);
+  // W03 (#5612): a STRICT-bearing proposal can only be approved by someone who
+  // can also acknowledge the patterns (scripts:write + MFA, spec §4.5), so the
+  // four-eyes candidate set is filtered to scripts:write holders. The context
+  // was already loaded once for the guardrail above — no second proposal read.
+  const eligibleAll = await resolveIntentApprovers(orgId, {
+    alsoRequire:
+      input.toolName === 'run_script' && (guardrailContext?.proposal?.strictHits?.length ?? 0) > 0
+        ? PERMISSION_GRANTS.SCRIPTS_WRITE
+        : undefined,
+  });
   const eligibleApprovers = eligibleAll.filter((userId) => userId !== requesterId);
   const requesterEligible = eligibleAll.includes(requesterId);
 

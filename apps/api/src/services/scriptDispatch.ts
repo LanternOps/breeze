@@ -352,11 +352,15 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   // refused on the device. That is deliberate — there is no human decision on
   // file for content that exists only for the duration of one dispatch.
   //
-  // A `proposal` source's acknowledged STRICT patterns would ride the same
-  // field; W01b always sends an empty array because the acknowledgement
-  // ceremony lands on the decide endpoint in W03.
+  // W03 (#5612): a `proposal` source carries the set the APPROVER ticked on
+  // the card, resolved server-side as (submitted ∩ strict_hits) at decide time
+  // (services/approvals/strictAcknowledgement.ts) and persisted on
+  // script_proposals.acknowledged_patterns. Same wire field, so the Go agent
+  // is unchanged.
   const acknowledgedSecurityPatterns =
-    source.kind === 'saved' ? (source.script.acknowledgedSecurityPatterns ?? []) : [];
+    source.kind === 'saved' ? (source.script.acknowledgedSecurityPatterns ?? [])
+    : source.kind === 'proposal' ? (source.proposal.acknowledgedPatterns ?? [])
+    : [];
 
   // #3409 PR2 Task 4: resolve {{var.*}} tokens for this device's org before
   // anything else happens with `content`. `hasVariableTokens` comes first so

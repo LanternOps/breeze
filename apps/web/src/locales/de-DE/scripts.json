@@ -1412,5 +1412,19 @@
       "pollDeadline": "Noch kein Ergebnis — prüfen Sie den Ausführungsverlauf.",
       "pollFailed": "Ergebnis konnte nicht gelesen werden — der Lauf wurde möglicherweise gelöscht oder Ihr Zugriff hat sich geändert."
     }
+  },
+  "provenance": {
+    "origin": "Herkunft",
+    "originHuman": "Mensch",
+    "originAiProposal": "KI-Vorschlag",
+    "originImported": "Importiert",
+    "originSystem": "Integriert",
+    "reviewed": "Geprüft",
+    "editedSinceReview": "Seit der Prüfung bearbeitet",
+    "provenanceTitle": "Nachweis",
+    "reviewSummary": "Zusammenfassung der Prüfung",
+    "approvedBy": "Freigegeben von",
+    "evidenceErased": "Prüfnachweis gelöscht",
+    "allOrigins": "Alle Herkünfte"
   }
 }

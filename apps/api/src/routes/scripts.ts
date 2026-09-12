@@ -6,12 +6,14 @@ import {
   scriptParameterDefinitionsEqual,
   scriptParameterDefinitionsSchema,
 } from '@breeze/shared';
-import { and, eq, sql, desc, like, inArray, or, isNull } from 'drizzle-orm';
+import { and, eq, sql, desc, like, inArray, or, isNull, getTableColumns } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import { executeScriptSchema } from '../services/scriptRunRequest';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   scripts,
+  scriptVersions,
+  scriptProposalReviews,
   scriptExecutions,
   devices,
   automationPolicies,
@@ -434,9 +436,24 @@ scriptRoutes.get(
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
-    // Get scripts
+    // Get scripts. `reviewedAtHead` is a lateral EXISTS — never fetched
+    // per-row from the client — so the list UI can badge "Reviewed" vs.
+    // "Edited since review" without an N+1 read of script_versions.
     const scriptList = await db
-      .select()
+      .select({
+        ...getTableColumns(scripts),
+        // The outer columns are spelled with the table name on purpose:
+        // inside a raw fragment Drizzle renders `${scripts.id}` as a bare
+        // "id", which the correlated subquery resolves against `sv` (its own
+        // id / version) — the EXISTS then compares a row to itself and is
+        // false for every script. Caught by the e2e badge assertion.
+        reviewedAtHead: sql<boolean>`EXISTS (
+          SELECT 1 FROM script_versions sv
+          WHERE sv.script_id = ${sql.identifier('scripts')}.${sql.identifier('id')}
+            AND sv.version = ${sql.identifier('scripts')}.${sql.identifier('version')}
+            AND sv.review_id IS NOT NULL
+        )`,
+      })
       .from(scripts)
       .where(whereCondition)
       // `id` is a mandatory tiebreaker, not a cosmetic nicety (#3462).
@@ -450,7 +467,14 @@ scriptRoutes.get(
       .offset(offset);
 
     return c.json({
-      data: scriptList,
+      // A row from a pre-existing test mock (or a stale read path) may lack
+      // these two fields entirely — default to a plain, unreviewed human
+      // script rather than surface `undefined` to the client.
+      data: scriptList.map((row: Record<string, unknown>) => ({
+        ...row,
+        origin: row.origin ?? 'human',
+        reviewedAtHead: row.reviewedAtHead ?? false,
+      })),
       pagination: { page, limit, total }
     });
   }
@@ -644,6 +668,71 @@ scriptRoutes.get(
     }
 
     return c.json(script);
+  }
+);
+
+// GET /scripts/:id/versions - Immutable version history with provenance.
+// Two path segments — cannot collide with the `/:id` registration above.
+// The version rows carry the full historical CONTENT, so this uses the same
+// org gate as the detail route: exactly as sensitive as the script itself.
+scriptRoutes.get(
+  '/:id/versions',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_READ.resource, PERMISSIONS.SCRIPTS_READ.action),
+  zValidator('param', scriptIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: scriptId } = c.req.valid('param');
+
+    const script = await getScriptWithOrgCheck(scriptId, auth);
+    if (!script) {
+      return c.json({ error: 'Script not found' }, 404);
+    }
+
+    const rows = await db
+      .select()
+      .from(scriptVersions)
+      .where(eq(scriptVersions.scriptId, scriptId))
+      .orderBy(desc(scriptVersions.version));
+
+    // Resolve the cited reviews in ONE query. A missing row is not an error:
+    // the source org may have been erased after a partner-wide promotion
+    // (spec §4.8), which the UI renders as "review evidence erased" rather
+    // than following a broken link.
+    const reviewIds = [...new Set(rows.map((r) => r.reviewId).filter((v): v is string => !!v))];
+    const reviews = reviewIds.length
+      ? await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            db.select().from(scriptProposalReviews).where(inArray(scriptProposalReviews.id, reviewIds))
+          )
+        )
+      : [];
+    const byId = new Map(reviews.map((r) => [r.id, r]));
+
+    return c.json({
+      versions: rows.map((r) => {
+        const review = r.reviewId ? byId.get(r.reviewId) : undefined;
+        return {
+          id: r.id,
+          version: r.version,
+          contentDigest: r.contentDigest,
+          changelog: r.changelog,
+          createdAt: r.createdAt.toISOString(),
+          origin: r.origin,
+          proposalId: r.proposalId,
+          reviewId: r.reviewId,
+          reviewedAt: r.reviewedAt?.toISOString() ?? null,
+          approvedBy: r.approvedBy,
+          approverName: null,
+          approvedAt: r.approvedAt?.toISOString() ?? null,
+          approvalMethod: r.approvalMethod,
+          reviewSummary: review?.summary ?? null,
+          reviewRiskTier: review?.riskTier ?? null,
+          reviewModel: review?.model ?? null,
+          reviewEvidenceErased: !!r.reviewId && !review,
+        };
+      }),
+    });
   }
 );
 

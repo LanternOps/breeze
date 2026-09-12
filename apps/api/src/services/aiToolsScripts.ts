@@ -35,7 +35,7 @@ import type { AiTool } from './aiTools';
 import type { CancelOutcome } from './scriptCancellation';
 import type { ToolExecutionContext, VerifiedRunScript } from './toolExecutionContext';
 import { dispatchScriptToDevice } from './scriptDispatch';
-import { assertProposalRunnable, proposalDispatchSnapshot } from './scriptProposals';
+import { assertProposalRunnable, proposalDispatchSnapshot, transitionProposal } from './scriptProposals';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { executeScriptSchema, AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES } from './scriptRunRequest';
 import { loadTenantVariableScope } from './tenantVariableResolution';
@@ -243,6 +243,7 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
     }
     const snapshot = proposalDispatchSnapshot(runnable.proposal, proposalDeviceIds);
     const proposalResults: Record<string, unknown> = {};
+    let markedExecuted = false;
     // Same cap and same wait as the library path below — a proposal is not a
     // reason to relax either.
     for (const deviceId of proposalDeviceIds.slice(0, 10)) {
@@ -266,6 +267,18 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
             },
           })));
         if (!dispatch.ok) { proposalResults[deviceId] = { error: dispatch.error }; continue; }
+        if (!markedExecuted) {
+          // W03 (#5612): the proposal has now produced a real execution.
+          // `executed` is the precondition for verification (spec §4.9) and,
+          // through `verified`, for promotion (§4.8). CAS from
+          // reviewed|approved, once per call, so a second device in the same
+          // call or a retried dispatch cannot rewind a later status.
+          markedExecuted = true;
+          await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+            db.transaction((tx) =>
+              transitionProposal(tx, runnable.proposal.id, ['reviewed', 'approved'], 'executed', {}),
+            )));
+        }
         const { waitForCommandResult } = await getCommandQueue();
         const cmd = await runOutsideDbContext(() => waitForCommandResult(dispatch.commandId, 60000));
         proposalResults[deviceId] = {

@@ -1412,5 +1412,19 @@
       "pollDeadline": "Toujours aucun résultat — consultez l'historique des exécutions.",
       "pollFailed": "Impossible de lire le résultat — l'exécution a peut-être été supprimée ou votre accès a changé."
     }
+  },
+  "provenance": {
+    "origin": "Origine",
+    "originHuman": "Humain",
+    "originAiProposal": "Proposition de l'IA",
+    "originImported": "Importé",
+    "originSystem": "Intégré",
+    "reviewed": "Révisé",
+    "editedSinceReview": "Modifié depuis la révision",
+    "provenanceTitle": "Traçabilité",
+    "reviewSummary": "Résumé de la révision",
+    "approvedBy": "Approuvé par",
+    "evidenceErased": "Preuves de révision supprimées",
+    "allOrigins": "Toutes les origines"
   }
 }

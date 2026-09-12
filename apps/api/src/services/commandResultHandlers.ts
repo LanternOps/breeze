@@ -43,6 +43,7 @@ import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 // while the REST path rejected at 1 MB. The byte-accurate one wins.
 import { commandResultSchema } from '../routes/agents/schemas';
 import { applyAutomationActionTerminal } from './automationActionResults';
+import { enqueueScriptVerify } from './scriptProposals/verify';
 import { handlePeripheralPolicyResultV2 } from './peripheralPolicyState';
 import {
   pamAgentResultV2Schema,
@@ -335,6 +336,19 @@ async function handleSnmpPollResult({ agentId, command, result, commandId }: Par
   }
 }
 
+/** W03 (#5612): `proposalId` rides every CAS rung's RETURNING so the terminal
+ *  convergence point below can enqueue verification without a second read.
+ *  A function, not a module-level const: many route suites mock `../db/schema`
+ *  with a narrow table set, and a const would dereference `scriptExecutions`
+ *  at import time and fail every one of them. */
+function terminalExecutionProjection() {
+  return {
+    id: scriptExecutions.id,
+    scriptId: scriptExecutions.scriptId,
+    proposalId: scriptExecutions.proposalId,
+  } as const;
+}
+
 async function handleScriptResult({ agentId, command, result, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
   // Which write we are on, for the shared catch below. This function now runs a
   // five-step compare-and-swap ladder inside ONE try; without a phase tag every
@@ -452,7 +466,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       const markerCommandId = typeof rawMarkerCommandId === 'string' ? rawMarkerCommandId : null;
 
       phase = 'cancel-confirm-cas';
-      let cancelClosed: Array<{ id: string; scriptId: string | null }> = [];
+      let cancelClosed: Array<{ id: string; scriptId: string | null; proposalId: string | null }> = [];
       let cancelConfirmed = false;
       if (cancelledMarker && markerCommandId) {
         cancelClosed = await db
@@ -464,10 +478,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             eq(scriptExecutions.status, 'cancelling'),
             eq(scriptExecutions.cancelCommandId, markerCommandId),
           ))
-          .returning({
-            id: scriptExecutions.id,
-            scriptId: scriptExecutions.scriptId,
-          });
+          .returning(terminalExecutionProjection());
         cancelConfirmed = cancelClosed.length > 0;
       }
       if (cancelClosed.length === 0) {
@@ -480,13 +491,10 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             eq(scriptExecutions.deviceId, resolvedDeviceId),
             eq(scriptExecutions.status, 'cancelling'),
           ))
-          .returning({
-            id: scriptExecutions.id,
-            scriptId: scriptExecutions.scriptId,
-          });
+          .returning(terminalExecutionProjection());
       }
 
-      let updatedExecutions: Array<{ id: string; scriptId: string | null }> = [];
+      let updatedExecutions: Array<{ id: string; scriptId: string | null; proposalId: string | null }> = [];
       let effectiveExecution = cancelClosed[0] ?? null;
 
       if (cancelClosed.length === 0) {
@@ -499,10 +507,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             eq(scriptExecutions.deviceId, resolvedDeviceId),
             inArray(scriptExecutions.status, ['pending', 'queued', 'running'])
           ))
-          .returning({
-            id: scriptExecutions.id,
-            scriptId: scriptExecutions.scriptId,
-          });
+          .returning(terminalExecutionProjection());
         effectiveExecution = updatedExecutions[0] ?? null;
 
         // #3607 — second chance for an execution a server-side sweep already
@@ -548,10 +553,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
               isNull(scriptExecutions.exitCode),
               isNull(scriptExecutions.stdout)
             ))
-            .returning({
-              id: scriptExecutions.id,
-              scriptId: scriptExecutions.scriptId,
-            });
+            .returning(terminalExecutionProjection());
 
           if (recovered.length > 0) {
             effectiveExecution = recovered[0] ?? null;
@@ -673,6 +675,27 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
           error: executionValues.errorMessage ?? executionValues.stderr,
           completedAt: executionValues.completedAt,
         });
+
+        if (effectiveExecution.proposalId) {
+          // W03 (#5612, spec §4.9): the proposal's verification claim is
+          // evaluated AFTER the execution reaches a terminal state, by an
+          // independent device read — never inferred from this result frame,
+          // which is why a failed run still enqueues. Wrapped: a Redis hiccup
+          // must not fail result ingestion, which is the durable record. The
+          // proposal simply stays `executed` and the card shows "verification
+          // pending" rather than losing the output.
+          try {
+            // #1105: never hold the ambient DB context across a Redis round-trip.
+            await runOutsideDbContext(() => enqueueScriptVerify({
+              proposalId: effectiveExecution.proposalId as string,
+              executionId: effectiveExecution.id,
+              attempt: 1,
+            }));
+          } catch (err) {
+            console.error(`[AgentWs] script-verify enqueue failed for execution ${effectiveExecution.id}:`, err);
+            captureException(err, undefined, { area: 'script_verify_enqueue', executionId: effectiveExecution.id });
+          }
+        }
       }
 
       // Update batch counters if this is part of a batch.

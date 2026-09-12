@@ -1412,5 +1412,19 @@
       "pollDeadline": "Still no result — check the execution history for the outcome.",
       "pollFailed": "Could not read the run result — it may have been deleted or your access changed."
     }
+  },
+  "provenance": {
+    "origin": "Origin",
+    "originHuman": "Human",
+    "originAiProposal": "AI proposal",
+    "originImported": "Imported",
+    "originSystem": "Built-in",
+    "reviewed": "Reviewed",
+    "editedSinceReview": "Edited since review",
+    "provenanceTitle": "Provenance",
+    "reviewSummary": "Review summary",
+    "approvedBy": "Approved by",
+    "evidenceErased": "Review evidence erased",
+    "allOrigins": "All origins"
   }
 }

@@ -157,3 +157,54 @@ describe('dispatchScriptToDevice — acknowledged security patterns (#5129)', ()
     expect(dispatchedPayload().acknowledgedSecurityPatterns).toEqual(patterns);
   });
 });
+
+// W03 (#5612): a proposal-backed run carries the set the APPROVER ticked on
+// the card, resolved server-side as (submitted ∩ strict_hits) at decide time.
+// Same wire field, so the Go agent is unchanged.
+const proposalRow = (o = {}) =>
+  ({
+    id: 'p1',
+    orgId: 'org-a',
+    language: 'powershell',
+    content: "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Contoso' -Name Enabled -Value 1",
+    timeoutSeconds: 300,
+    runAs: 'system',
+    contentDigest: 'a'.repeat(64),
+    riskTier: 'medium',
+    acknowledgedPatterns: [],
+    ...o,
+  }) as never;
+const snapshot = {
+  proposalId: 'p1', contentDigest: 'a'.repeat(64), language: 'powershell' as const, runAs: 'system' as const,
+  timeoutSeconds: 300, deviceIds: ['device-1'], scannerVersion: '2026-09-11.1',
+};
+
+describe('dispatchScriptToDevice — proposal acknowledgements (W03)', () => {
+  it('sends the proposal acknowledgements as acknowledgedSecurityPatterns', async () => {
+    const result = await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'proposal', proposal: proposalRow({ acknowledgedPatterns: [HKLM] }), snapshot },
+      runAs: 'system',
+    });
+    expect(result.ok).toBe(true);
+    expect(dispatchedPayload().acknowledgedSecurityPatterns).toEqual([HKLM]);
+  });
+
+  it('omits the key entirely when the proposal acknowledged nothing (agent fail-closed)', async () => {
+    await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'proposal', proposal: proposalRow({ acknowledgedPatterns: [] }), snapshot },
+      runAs: 'system',
+    });
+    expect(dispatchedPayload()).not.toHaveProperty('acknowledgedSecurityPatterns');
+  });
+
+  it('leaves the saved-script path byte-identical', async () => {
+    await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript({ acknowledgedSecurityPatterns: [HKLM] }) },
+      runAs: 'system',
+    });
+    expect(dispatchedPayload().acknowledgedSecurityPatterns).toEqual([HKLM]);
+  });
+});
