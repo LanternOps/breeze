@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   RISK_TIERS, SCRIPT_PROPOSAL_STATUSES, proposeScriptInputSchema, riskTierRank,
-  scriptVerificationClaimSchema,
+  scriptReviewVerdictSchema, scriptVerificationClaimSchema,
 } from './scriptProposals';
 
 const base = {
@@ -76,5 +76,58 @@ describe('risk tiers and statuses', () => {
     expect(SCRIPT_PROPOSAL_STATUSES).toHaveLength(13);
     expect(SCRIPT_PROPOSAL_STATUSES).toContain('scan_rejected');
     expect(SCRIPT_PROPOSAL_STATUSES).toContain('promoted');
+  });
+});
+
+describe('scriptReviewVerdictSchema', () => {
+  const valid = {
+    summary: 'Restarts the print spooler service.',
+    goalMatch: 'yes' as const,
+    riskTier: 'low' as const,
+    blastRadius: ['print spooler restarts, jobs in queue are lost'],
+    reversible: true,
+    verificationAdequate: true,
+    findings: [{ severity: 'info' as const, text: 'No destructive operations detected.' }],
+    recommendedAction: 'approve' as const,
+  };
+
+  it('accepts a well-formed verdict', () => {
+    expect(scriptReviewVerdictSchema.parse(valid)).toEqual(valid);
+  });
+
+  it('accepts a finding with an optional lineRef', () => {
+    const withLineRef = {
+      ...valid,
+      findings: [{ severity: 'warning' as const, text: 'Reads a registry key.', lineRef: 4 }],
+    };
+    expect(scriptReviewVerdictSchema.parse(withLineRef).findings[0]?.lineRef).toBe(4);
+  });
+
+  it('rejects a summary over 600 chars', () => {
+    expect(() => scriptReviewVerdictSchema.parse({ ...valid, summary: 'x'.repeat(601) })).toThrow();
+  });
+
+  it('rejects an unknown goalMatch value', () => {
+    expect(() => scriptReviewVerdictSchema.parse({ ...valid, goalMatch: 'sort of' })).toThrow();
+  });
+
+  it('rejects an unknown recommendedAction value', () => {
+    expect(() => scriptReviewVerdictSchema.parse({ ...valid, recommendedAction: 'maybe' })).toThrow();
+  });
+
+  it('rejects an unknown finding severity', () => {
+    expect(() =>
+      scriptReviewVerdictSchema.parse({ ...valid, findings: [{ severity: 'urgent', text: 'x' }] })
+    ).toThrow();
+  });
+
+  it('rejects a missing findings array', () => {
+    const { findings: _findings, ...rest } = valid;
+    expect(() => scriptReviewVerdictSchema.parse(rest)).toThrow();
+  });
+
+  it('defaults blastRadius to an empty array when omitted', () => {
+    const { blastRadius: _blastRadius, ...rest } = valid;
+    expect(scriptReviewVerdictSchema.parse(rest).blastRadius).toEqual([]);
   });
 });
