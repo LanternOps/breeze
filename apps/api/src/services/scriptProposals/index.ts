@@ -7,3 +7,4 @@ export * from './runnable';
 export * from './guardrailContext';
 export * from './dispatchSnapshot';
 export * from './reviewQueue';
+export * from './intentLink';

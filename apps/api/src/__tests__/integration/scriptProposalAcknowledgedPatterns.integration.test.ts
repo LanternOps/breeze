@@ -1,10 +1,14 @@
+import './setup';
+
 import { describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { CORE_TENANT_EXPORT_POLICY } from '../tenantExportPolicyRegistry';
+import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegistry';
+
+const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 describe('script_proposals.acknowledged_patterns', () => {
-  it('exists as a NOT NULL text[] defaulting to empty', async () => {
+  runDb('exists as a NOT NULL text[] defaulting to empty', async () => {
     const rows = await db.execute(sql`
       SELECT data_type, is_nullable, column_default
       FROM information_schema.columns

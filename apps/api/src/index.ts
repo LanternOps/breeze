@@ -140,6 +140,7 @@ import { tunnelRoutes, vncExchangeRoutes, vncViewerRoutes } from './routes/tunne
 import { agentVersionRoutes } from './routes/agentVersions';
 import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
+import { aiScriptProposalRoutes } from './routes/ai/scriptProposals';
 import { aiProviderRoutes } from './routes/aiProvider';
 import { aiAgentsRoutes } from './routes/aiAgents';
 import { aiAgentSchedulesRoutes } from './routes/aiAgentSchedules';
@@ -991,6 +992,10 @@ api.route('/ai/agents', aiAgentsRoutes);
 // Read-only Operator task surface (W07 of #5205, P3-1e) — a separate route
 // module from the already-large aiAgentsRoutes per spec §12.
 api.route('/ai/operator', aiOperatorTasksRoutes);
+// W03 (#5612): more specific than '/ai', so it must be registered first — same
+// reason '/ai/agents/schedules' sits above '/ai/agents'. Hono matches in
+// registration order.
+api.route('/ai/script-proposals', aiScriptProposalRoutes);
 api.route('/ai', aiRoutes);
 api.route('/ai/script-builder', scriptAiRoutes);
 api.route('/mcp', mcpServerRoutes);
