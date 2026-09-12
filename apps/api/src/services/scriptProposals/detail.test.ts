@@ -19,7 +19,7 @@ vi.mock('../../db', async (importOriginal) => ({
 
 const loadProposalRow = vi.fn();
 const loadProposalRequesterUserId = vi.fn();
-const loadLatestReview = vi.fn(async () => null);
+const loadLatestReview = vi.fn<(...a: unknown[]) => Promise<unknown>>(async () => null);
 vi.mock('./queries', () => ({
   loadProposalRow: (...a: unknown[]) => loadProposalRow(...a),
   loadProposalRequesterUserId: (...a: unknown[]) => loadProposalRequesterUserId(...a),

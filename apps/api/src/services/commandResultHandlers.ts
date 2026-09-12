@@ -461,7 +461,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       const markerCommandId = typeof rawMarkerCommandId === 'string' ? rawMarkerCommandId : null;
 
       phase = 'cancel-confirm-cas';
-      let cancelClosed: Array<{ id: string; scriptId: string | null }> = [];
+      let cancelClosed: Array<{ id: string; scriptId: string | null; proposalId: string | null }> = [];
       let cancelConfirmed = false;
       if (cancelledMarker && markerCommandId) {
         cancelClosed = await db

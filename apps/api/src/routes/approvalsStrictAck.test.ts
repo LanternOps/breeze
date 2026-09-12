@@ -593,7 +593,7 @@ describe('W03 STRICT acknowledgement ceremony on decide', () => {
     mockProposalFourEyesApprove();
     vi.mocked(loadProposalRow).mockResolvedValue({ id: PROPOSAL_ID, orgId: 'org-9', strictHits: STRICT } as any);
     vi.mocked(resolveStrictAcknowledgement).mockResolvedValue({
-      ok: false, error: 'strict_acknowledgement_incomplete', missing: [STRICT[1]],
+      ok: false, error: 'strict_acknowledgement_incomplete', missing: [STRICT[1]!],
     });
 
     const res = await postJson('/approvals/appr-1/approve', { acknowledgedPatterns: [STRICT[0]] });
