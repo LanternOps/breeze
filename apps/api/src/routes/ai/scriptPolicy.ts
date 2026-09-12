@@ -5,7 +5,7 @@ import { TOUCH_CLASSES, riskTierRank, type EffectiveScriptPolicyDto, type Script
 import { db } from '../../db';
 import { aiScriptLaneState, type AiScriptLaneStateRow } from '../../db/schema/aiScriptLaneState';
 import { aiScriptPolicies, type AiScriptPolicyRow } from '../../db/schema/aiScriptPolicies';
-import { ENABLE_2FA } from '../../config/env';
+import { ENABLE_2FA } from '../auth/schemas';
 import { zValidator } from '../../lib/validation';
 import { authMiddleware, hasSatisfiedMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
 import { getUserEpochs } from '../../services/authEpochs';
@@ -205,7 +205,6 @@ aiScriptPolicyRoutes.put(
       .values({ orgId, createdBy: auth.user.id, ...columns, ...enableStamp })
       .onConflictDoUpdate({
         target: aiScriptPolicies.orgId,
-        targetWhere: eq(aiScriptPolicies.orgId, orgId),
         set: { ...columns, ...enableStamp, updatedAt: now },
       })
       .returning();

@@ -313,7 +313,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // circuit). Rows die with the loser shell.
   ai_script_lane_state: { kind: 'leave-for-erasure', note: 'per-org unattended-lane failure streak and circuit state, not carried config; the survivor keeps its own lane state' },
   // AI script authoring W04 (#5612): the ORG GRANT row is singleton org config
-  // (ai_script_policies_org_uq, partial on org_id IS NOT NULL) — the survivor's
+  // (ai_script_policies_org_uq, a total UNIQUE on org_id) — the survivor's
   // own grant wins and the loser's is dropped, exactly like ai_budgets. Partner
   // CEILING rows have org_id NULL and are not merge participants at all.
   ai_script_policies: { kind: 'keep-survivor' }, // verified: ai_script_policies_org_uq (org_id) WHERE org_id IS NOT NULL

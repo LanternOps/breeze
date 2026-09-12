@@ -43,10 +43,9 @@ export const aiScriptPolicies = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    orgUq: uniqueIndex('ai_script_policies_org_uq').on(t.orgId).where(sql`${t.orgId} IS NOT NULL`),
-    partnerUq: uniqueIndex('ai_script_policies_partner_uq')
-      .on(t.partnerId)
-      .where(sql`${t.partnerId} IS NOT NULL`),
+    // Total uniques (NULLs never collide), so `keep-survivor` merge applies.
+    orgUq: uniqueIndex('ai_script_policies_org_uq').on(t.orgId),
+    partnerUq: uniqueIndex('ai_script_policies_partner_uq').on(t.partnerId),
   }),
 );
 

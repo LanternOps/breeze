@@ -239,6 +239,10 @@ describe('action_intents immutability trigger (live DB)', () => {
     task_id: { taskId: randomUUID() },
     task_step_key: { taskStepKey: 'restart-service' },
     operation_key: { operationKey: 'restart:spooler:1' },
+    // 2026-10-16-120300 (AI script authoring W04, #5612): the unattended
+    // lane's typed decision evidence. Written once at INSERT; the seeded
+    // intent starts with it NULL, so setting any blob is the blocked direction.
+    script_reviewer_evidence: { scriptReviewerEvidence: { proposalId: randomUUID(), reviewId: randomUUID() } },
   };
 
   it('has a behavioral case for every column on the trigger deny-list', () => {

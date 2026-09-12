@@ -83,11 +83,16 @@ BEGIN
   END IF;
 END $$;
 
--- One row per owner.
+-- One row per owner. TOTAL (non-partial) uniques on purpose: Postgres never
+-- treats two NULLs as equal in a unique index, so the partner rows (org_id
+-- NULL) and org rows (partner_id NULL) coexist freely — and a total UNIQUE on
+-- exactly (org_id) is what the org-merge `keep-survivor` policy requires
+-- (orgMergeRegistry.integration.test.ts: the survivor's grant wins, the
+-- loser's is dropped, exactly like ai_budgets / portal_branding).
 CREATE UNIQUE INDEX IF NOT EXISTS ai_script_policies_org_uq
-  ON ai_script_policies (org_id) WHERE org_id IS NOT NULL;
+  ON ai_script_policies (org_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ai_script_policies_partner_uq
-  ON ai_script_policies (partner_id) WHERE partner_id IS NOT NULL;
+  ON ai_script_policies (partner_id);
 
 ALTER TABLE ai_script_policies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ai_script_policies FORCE ROW LEVEL SECURITY;

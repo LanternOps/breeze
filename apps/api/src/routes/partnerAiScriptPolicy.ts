@@ -75,7 +75,6 @@ partnerAiScriptPolicyRoutes.put('/', zValidator('json', partnerUpdateSchema), as
     .values({ partnerId: auth.partnerId, orgId: null, createdBy: auth.user.id, ...body })
     .onConflictDoUpdate({
       target: aiScriptPolicies.partnerId,
-      targetWhere: eq(aiScriptPolicies.partnerId, auth.partnerId),
       set: { ...body, updatedAt: now },
     })
     .returning();
