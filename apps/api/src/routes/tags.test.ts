@@ -355,6 +355,23 @@ describe('tag routes', () => {
       });
     });
 
+    it('filters manual assets by the requested tag in SQL', async () => {
+      // The mock DB ignores the WHERE, so without this assertion the handler
+      // could return every manual asset regardless of tag and still look green.
+      const where = captureManualWhere([]);
+
+      const res = await app.request('/tags/devices?tag=printer-fleet', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(where).toHaveBeenCalledTimes(1);
+      const whereText = conditionText(where.mock.calls[0]?.[0]);
+      expect(whereText).toContain('ma_tags');
+      expect(whereText).toContain('printer-fleet');
+    });
+
     it('should validate that tag query parameter is required', async () => {
       const res = await app.request('/tags/devices', {
         method: 'GET',
@@ -448,6 +465,50 @@ describe('tag routes', () => {
       expect(body.total).toBe(2);
     });
 
+    it('narrows the manual-asset arm to every accessible org', async () => {
+      // The org axis is RLS-backed, but the app-layer condition is what keeps a
+      // partner's query from asking for rows outside accessibleOrgIds — drop it
+      // and this arm silently widens.
+      const where = captureManualWhere([]);
+
+      const res = await app.request('/tags', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(where).toHaveBeenCalledTimes(1);
+      const whereText = conditionText(where.mock.calls[0]?.[0]);
+      expect(whereText).toContain('ma_orgId');
+      expect(whereText).toContain(ORG_ID);
+      expect(whereText).toContain(ORG_ID_2);
+    });
+
+    it('unions manual-asset tags from every accessible org', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ tags: ['shared-tag'] }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ tags: ['shared-tag', 'org2-printer'] }])
+          })
+        } as any);
+
+      const res = await app.request('/tags', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(db.select).toHaveBeenCalledTimes(2);
+      const byTag = Object.fromEntries(body.data.map((t: any) => [t.tag, t.deviceCount]));
+      expect(byTag).toEqual({ 'shared-tag': 2, 'org2-printer': 1 });
+    });
+
     it('should return empty when partner has no accessible orgs', async () => {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
@@ -524,6 +585,20 @@ describe('tag routes', () => {
   // narrowing must be present — and on the empty-allowlist short-circuit.
   // ----------------------------------------------------------------
   const ALLOWED_SITE_ID = 'site-a';
+
+  // Captures the WHERE of the SECOND query (the manual-asset arm, #5425). The
+  // manual arm is narrowed on the same axes as the device arm — org (also
+  // RLS-backed) and the app-layer site allowlist — so a dropped condition here
+  // would leak another tenant's or another site's manual-asset tags.
+  function captureManualWhere(rows: unknown[]) {
+    const where = vi.fn().mockResolvedValue(rows);
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
+      } as any)
+      .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where }) } as any);
+    return where;
+  }
 
   function captureWhere(rows: unknown[]) {
     const where = vi.fn().mockResolvedValue(rows);
@@ -613,19 +688,6 @@ describe('tag routes', () => {
       // drizzle's `"shouldInlineParams":false` and would pass without it.
       expect(JSON.stringify(whereArg)).toContain('"value":["false"]');
     });
-
-    // The manual-asset arm (#5425) is narrowed on the same app-layer site axis.
-    // RLS covers the org axis only, so a missing site filter here would leak the
-    // tags of out-of-site manual assets into a site-restricted user's taxonomy.
-    function captureManualWhere(rows: unknown[]) {
-      const where = vi.fn().mockResolvedValue(rows);
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
-        } as any)
-        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where }) } as any);
-      return where;
-    }
 
     it('GET /tags narrows the manual-asset arm to the site allowlist', async () => {
       const where = captureManualWhere([{ tags: ['finance'] }]);
