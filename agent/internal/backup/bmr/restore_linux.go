@@ -9,8 +9,8 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -20,14 +20,6 @@ type linuxRestorer struct{}
 
 func newRestorer() Restorer {
 	return &linuxRestorer{}
-}
-
-// runCommand executes an external command and returns its combined output.
-// It is a package-level var (rather than calling exec.Command directly)
-// purely so tests can substitute a fake instead of shelling out to real
-// apt-get/dnf/systemctl/crontab/iptables-restore.
-var runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 // etcTargetDir is where restoreEtcTree copies the staged /etc tree. It is a
@@ -51,19 +43,19 @@ func (r *linuxRestorer) RestoreSystemState(stagingDir string) error {
 	slog.Info("bmr: restoring Linux system state", "stagingDir", stagingDir)
 
 	var errs []error
-	if _, err := r.restoreEtcTree(stagingDir); err != nil {
+	if _, err := r.restoreEtcTree(stagingDir, etcTargetDir); err != nil {
 		errs = append(errs, fmt.Errorf("etc: %w", err))
 	}
 	if err := r.reinstallPackages(stagingDir); err != nil {
 		errs = append(errs, fmt.Errorf("packages: %w", err))
 	}
-	if err := r.restoreServices(stagingDir); err != nil {
+	if err := r.restoreServices(stagingDir, ""); err != nil {
 		errs = append(errs, fmt.Errorf("services: %w", err))
 	}
 	if err := r.restoreFirewall(stagingDir); err != nil {
 		errs = append(errs, fmt.Errorf("firewall: %w", err))
 	}
-	if err := r.restoreCrontabs(stagingDir); err != nil {
+	if err := r.restoreCrontabs(stagingDir, ""); err != nil {
 		errs = append(errs, fmt.Errorf("crontabs: %w", err))
 	}
 
@@ -105,7 +97,21 @@ func (r *linuxRestorer) InjectDrivers(_ string) (int, error) {
 // function provides as inert/a no-op relative to the real source machine.
 // Tracked for a systemstate follow-up; do not assume restored /etc
 // permissions are trustworthy in the meantime.
-func (r *linuxRestorer) restoreEtcTree(stagingDir string) ([]string, error) {
+func (r *linuxRestorer) restoreEtcTree(stagingDir, targetEtc string) ([]string, error) {
+	return r.restoreEtcTreeMode(stagingDir, targetEtc, true)
+}
+
+// restoreEtcTreeMode is restoreEtcTree's implementation. applyExcludes is
+// true for the live path (targetEtc is the currently-running system's real
+// /etc — etcRestoreExcludes protects that system's own identity/network
+// config from being clobbered by an older snapshot) and false for the
+// offline path (RestoreSystemStateOffline: targetEtc is a freshly
+// provisioned, not-yet-booted tree with no identity of its own to protect —
+// the source machine's fstab/machine-id/hostname/network config must land
+// there faithfully, same as every other restored file; the rebuild engine's
+// later identity phase is what mutates machine-id/hostname for a fresh
+// identity, not this exclusion list).
+func (r *linuxRestorer) restoreEtcTreeMode(stagingDir, targetEtc string, applyExcludes bool) ([]string, error) {
 	srcDir := filepath.Join(stagingDir, "etc")
 	if _, err := os.Stat(srcDir); os.IsNotExist(err) {
 		slog.Info("bmr: no etc/ artifact in staging dir, skipping /etc restore")
@@ -126,14 +132,14 @@ func (r *linuxRestorer) restoreEtcTree(stagingDir string) ([]string, error) {
 		if relPath == "." {
 			return nil
 		}
-		if isExcludedEtcPath(relPath) {
+		if applyExcludes && isExcludedEtcPath(relPath) {
 			skipped = append(skipped, relPath)
 			if d.IsDir() {
 				return fs.SkipDir
 			}
 			return nil
 		}
-		dst := filepath.Join(etcTargetDir, relPath)
+		dst := filepath.Join(targetEtc, relPath)
 		info, infoErr := d.Info() // Lstat-based: does not follow symlinks
 		if infoErr != nil {
 			copyErrs = append(copyErrs, fmt.Errorf("%s: stat: %w", relPath, infoErr))
@@ -388,8 +394,11 @@ func (r *linuxRestorer) reinstallDnf(listPath string) error {
 // restoreServices re-enables systemd services from the collector's
 // `systemctl list-unit-files --type=service` capture at
 // services/systemd.txt, restricted to units whose STATE was "enabled"
-// (parseEnabledServices in restore_linux_logic.go).
-func (r *linuxRestorer) restoreServices(stagingDir string) error {
+// (parseEnabledServices in restore_linux_logic.go). When root is non-empty
+// (an offline apply under a mounted-but-not-booted tree — see
+// RestoreSystemStateOffline), each unit is enabled via
+// `systemctl --root=<root> enable <unit>` instead of the live-system form.
+func (r *linuxRestorer) restoreServices(stagingDir, root string) error {
 	listPath := filepath.Join(stagingDir, "services", "systemd.txt")
 	if _, err := os.Stat(listPath); os.IsNotExist(err) {
 		slog.Info("bmr: no service list found in staging dir, skipping service restore")
@@ -410,7 +419,13 @@ func (r *linuxRestorer) restoreServices(stagingDir string) error {
 	var errs []error
 	enabled := 0
 	for _, svc := range services {
-		out, runErr := runCommand(context.Background(), "systemctl", "enable", svc)
+		var args []string
+		if root != "" {
+			args = []string{"--root=" + root, "enable", svc}
+		} else {
+			args = []string{"enable", svc}
+		}
+		out, runErr := runCommand(context.Background(), "systemctl", args...)
 		if runErr != nil {
 			slog.Warn("bmr: failed to enable service",
 				"service", svc, "error", runErr.Error(), "output", string(out))
@@ -451,7 +466,12 @@ func (r *linuxRestorer) restoreFirewall(stagingDir string) error {
 // collector's copy of /etc/crontab — is deliberately never restored here:
 // it lives one level above spool/, so a walk rooted at spool/ never sees
 // it, and it is redundant with the /etc tree restore anyway.
-func (r *linuxRestorer) restoreCrontabs(stagingDir string) error {
+//
+// When root is non-empty (offline apply — see RestoreSystemStateOffline),
+// there is no running crond to hand the file to via `crontab -u`, so each
+// entry is written directly into the restored tree's spool directory
+// instead of shelling out.
+func (r *linuxRestorer) restoreCrontabs(stagingDir, root string) error {
 	spoolDir := filepath.Join(stagingDir, "crontabs", "spool")
 	if _, err := os.Stat(spoolDir); os.IsNotExist(err) {
 		slog.Info("bmr: no crontab spool found in staging dir, skipping crontab restore")
@@ -475,6 +495,10 @@ func (r *linuxRestorer) restoreCrontabs(stagingDir string) error {
 		return nil
 	}
 
+	if root != "" {
+		return placeCrontabsOffline(root, entries)
+	}
+
 	var errs []error
 	restored := 0
 	for user, path := range entries {
@@ -492,6 +516,180 @@ func (r *linuxRestorer) restoreCrontabs(stagingDir string) error {
 		return fmt.Errorf("crontab restore had %d/%d error(s): %w", len(errs), len(entries), errors.Join(errs...))
 	}
 	return nil
+}
+
+// crontabsSpoolDirIsDebian reports whether the restored tree under root
+// looks like a Debian family (crontabs live at
+// /var/spool/cron/crontabs/<user>) as opposed to RHEL (/var/spool/cron/<user>
+// directly). Defaults to the Debian layout — the more common convention —
+// when neither family's own marker is present in the restored tree.
+func crontabsSpoolDirIsDebian(root string) bool {
+	_, rhelErr := os.Stat(filepath.Join(root, "usr", "sbin", "grub2-mkconfig"))
+	return rhelErr != nil
+}
+
+// placeCrontabsOffline writes each user's crontab spool file directly into
+// root's restored spool directory, mirroring what `crontab -u <user> <file>`
+// would install on a live system: mode 0600, owned by the user (uid looked
+// up from the restored /etc/passwd) and the crontab group (gid looked up
+// from the restored /etc/group) when this process can chown at all.
+func placeCrontabsOffline(root string, entries map[string]string) error {
+	debian := crontabsSpoolDirIsDebian(root)
+	gid := lookupGroupGID(root, "crontab")
+	var errs []error
+	for user, srcPath := range entries {
+		data, err := os.ReadFile(srcPath)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("read %s: %w", srcPath, err))
+			continue
+		}
+		var dst string
+		if debian {
+			dst = filepath.Join(root, "var", "spool", "cron", "crontabs", user)
+		} else {
+			dst = filepath.Join(root, "var", "spool", "cron", user)
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			errs = append(errs, fmt.Errorf("mkdir for %s: %w", user, err))
+			continue
+		}
+		if err := os.WriteFile(dst, data, 0o600); err != nil {
+			errs = append(errs, fmt.Errorf("write crontab for %s: %w", user, err))
+			continue
+		}
+		if os.Geteuid() == 0 {
+			uid := lookupPasswdUID(root, user)
+			if uid >= 0 {
+				if err := os.Lchown(dst, uid, gid); err != nil {
+					slog.Warn("bmr: failed to chown offline crontab", "user", user, "path", dst, "error", err.Error())
+				}
+			}
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("place %d/%d offline crontab(s) had errors: %w", len(errs), len(entries), errors.Join(errs...))
+	}
+	return nil
+}
+
+// lookupPasswdUID returns the uid for user from root's restored
+// /etc/passwd, or -1 when not found or unreadable.
+func lookupPasswdUID(root, user string) int {
+	data, err := os.ReadFile(filepath.Join(root, "etc", "passwd"))
+	if err != nil {
+		return -1
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) >= 3 && fields[0] == user {
+			uid, err := strconv.Atoi(fields[2])
+			if err != nil {
+				return -1
+			}
+			return uid
+		}
+	}
+	return -1
+}
+
+// lookupGroupGID returns the gid for group name from root's restored
+// /etc/group, or 0 when not found or unreadable.
+func lookupGroupGID(root, name string) int {
+	data, err := os.ReadFile(filepath.Join(root, "etc", "group"))
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) >= 3 && fields[0] == name {
+			gid, err := strconv.Atoi(fields[2])
+			if err != nil {
+				return 0
+			}
+			return gid
+		}
+	}
+	return 0
+}
+
+// restoreFirewallOffline stages firewall/iptables.rules into the restored
+// tree under root instead of running iptables-restore against the live
+// kernel netfilter table (there is none for a not-yet-booted tree). When the
+// tree has iptables-persistent (netfilter-persistent or iptables-restore
+// under usr/sbin), the rules land where that service reads them on first
+// boot; otherwise they're staged at a Breeze-owned recovery path and the
+// returned warning tells the operator where to find them.
+func (r *linuxRestorer) restoreFirewallOffline(stagingDir, root string) (string, error) {
+	rulesPath := filepath.Join(stagingDir, "firewall", "iptables.rules")
+	data, err := os.ReadFile(rulesPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read %s: %w", rulesPath, err)
+	}
+
+	hasPersistent := fileExistsOffline(filepath.Join(root, "usr", "sbin", "netfilter-persistent")) ||
+		fileExistsOffline(filepath.Join(root, "usr", "sbin", "iptables-restore"))
+
+	var dst, warning string
+	if hasPersistent {
+		dst = filepath.Join(root, "etc", "iptables", "rules.v4")
+	} else {
+		dst = filepath.Join(root, "etc", "breeze", "recovery", "iptables.rules")
+		warning = "firewall rules staged at /etc/breeze/recovery/iptables.rules (no iptables-persistent in the restored system)"
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", fmt.Errorf("mkdir for firewall rules: %w", err)
+	}
+	if err := os.WriteFile(dst, data, 0o640); err != nil {
+		return "", fmt.Errorf("write firewall rules: %w", err)
+	}
+	return warning, nil
+}
+
+func fileExistsOffline(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// RestoreSystemStateOffline applies a downloaded system state (typically the
+// output of DownloadSystemState) under root — a mounted, not-yet-booted
+// tree, as the bare-metal rebuild engine's restore phase uses it. Package
+// reinstall is deliberately skipped: the whole-machine file backup already
+// restored the package database and files, and dpkg/dnf cannot run against
+// a tree that is not booted (no running dpkg lock holder, no chroot-safe
+// postinst environment for most packages). Services are enabled via
+// `systemctl --root=<root>`; firewall rules and crontabs are placed as
+// files for the restored system's first real boot rather than applied live.
+func RestoreSystemStateOffline(ctx context.Context, root, stagingDir string) ([]string, error) {
+	if root == "" || root == "/" {
+		return nil, errors.New("offline apply requires a non-root target tree")
+	}
+	r := &linuxRestorer{}
+	var warnings []string
+	var errs []error
+	if skipped, err := r.restoreEtcTreeMode(stagingDir, filepath.Join(root, "etc"), false); err != nil {
+		errs = append(errs, fmt.Errorf("etc: %w", err))
+	} else if len(skipped) > 0 {
+		warnings = append(warnings, fmt.Sprintf("etc: skipped %d excluded path(s)", len(skipped)))
+	}
+	if _, err := os.Stat(filepath.Join(stagingDir, "packages")); err == nil {
+		warnings = append(warnings, "package reinstall skipped in offline mode (files restored from backup)")
+	}
+	if err := r.restoreServices(stagingDir, root); err != nil {
+		errs = append(errs, fmt.Errorf("services: %w", err))
+	}
+	if w, err := r.restoreFirewallOffline(stagingDir, root); err != nil {
+		errs = append(errs, fmt.Errorf("firewall: %w", err))
+	} else if w != "" {
+		warnings = append(warnings, w)
+	}
+	if err := r.restoreCrontabs(stagingDir, root); err != nil {
+		errs = append(errs, fmt.Errorf("crontabs: %w", err))
+	}
+	_ = ctx // no long-running step here needs cancellation today; kept for the call-site contract
+	return warnings, errors.Join(errs...)
 }
 
 // shellQuote wraps s in double quotes for interpolation into a `bash -c`

@@ -134,6 +134,11 @@ describe('Action intents migration', () => {
     'task_id',
     'task_step_key',
     'operation_key',
+    // 2026-10-16-120300 (AI script authoring W04, #5612): the unattended
+    // lane's typed decision evidence. Written once at INSERT alongside
+    // status/decided_via; a release that could rewrite it could relax the
+    // very invariants it records.
+    'script_reviewer_evidence',
   ] as const;
 
   // Deliberately MUTABLE. release_by is written by the approve fan-in

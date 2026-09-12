@@ -35,6 +35,7 @@ import {
 import { enqueueFixWatchPhase1 } from './fixWatchWorker';
 import { attemptPolicyDecision, PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
+import { ensureLaneCheckpointBeforeRelease } from '../services/actionIntents/laneCheckpoint';
 import { readAiKillState } from '../services/aiKillState';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
@@ -1031,6 +1032,19 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     verifiedContext = recomputed.context;
   }
 
+  // AI script authoring W04 (#5612), spec §4.6 invariant 11: the recovery
+  // prerequisite is a RELEASE precondition, read back immediately before the
+  // effect. After the digest recompute (a drifted proposal never costs a
+  // checkpoint), before the session gate and the dispatch (nothing mutates
+  // the device without a rollback point). No-op for every non-lane intent.
+  const laneCheckpoint = await ensureLaneCheckpointBeforeRelease(intent);
+  if (!laneCheckpoint.ok) {
+    await failIntent(intent, 'checkpoint_unavailable', {
+      details: { actionName: intent.actionName, reason: laneCheckpoint.reason },
+    });
+    return;
+  }
+
   // Phase-1 deferral: the headless worker still cannot run session-aware M365
   // Delegant/inline tools. Google Tier-3 tools ARE headless-executable
   // (org-keyed connection, resolved by intent.orgId) as of Phase 2, and M365
@@ -1129,9 +1143,20 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
           // receive the execution context"). The no-verified-material case in
           // this file's suite asserts the bag's EXACT shape, so a future field
           // cannot ride along unnoticed.
+          //
+          // `releaseDecision` (#5645) rides with it on the same terms: it is
+          // the intent's own decision record (approval scope + decided_via),
+          // which `run_script`'s proposal branch turns into the execution
+          // row's spec §4.1 `approval_method` — so a reviewer-decided lane
+          // run reads as `unattended_reviewer_gated` instead of the
+          // constant it used to be stamped with.
           () =>
             executeTool(intent.actionName, intent.arguments, auth, {
-              context: { ...verifiedContext, actionIntentId: intent.id },
+              context: {
+                ...verifiedContext,
+                actionIntentId: intent.id,
+                releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia ?? null },
+              },
             });
       rawResult = await withToolTimeout(
         withAuthDbAccessContext(auth, invoke),

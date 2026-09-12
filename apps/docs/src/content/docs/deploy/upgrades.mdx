@@ -108,6 +108,180 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 ## Version-specific notes
 
+### v0.112.0 — Windows MSI fix, security remediations, bare-metal recovery
+
+**No breaking API changes and no new *required* environment variables**, but
+this release **removes implicit access and pauses some scheduled work** the
+moment the migrations run. Read [Action required](#action-required-in-v01120)
+before you pull.
+
+<Aside type="danger" title="If you enroll Windows devices with the MSI, take this release now">
+  The agent MSI published with v0.110.0 through v0.111.1 refused **every fresh
+  install** on Windows 10, 11 and Server 2016+ with "Breeze Agent requires
+  Windows 10 or Windows Server 2016 or later". Already-enrolled agents were
+  unaffected (self-update never runs the MSI); only new MSI enrollments were
+  blocked. v0.112.0 reads the Windows version from the registry instead of the
+  value Windows Installer reports. Replace any installer links or MSIs you handed
+  out from those releases. See [Supported Windows versions](/agents/installation/#supported-windows-versions).
+</Aside>
+
+**Pull `api`, `web` and `portal` together, in one pass** (plus `worker` if you
+run the [worker split](/deploy/worker-split/)). Two changes in this release have
+no flag-level rollback: session-binding enforcement (below) and the remote
+desktop lease, which expects every replica on the new protocol. **Sequence the
+API restart as stop-then-start rather than rolling:** stop the old API
+replicas, let the migrations apply, then start only the new ones — an older
+API must not resume serving after the installer-token cutover (item 6 below).
+Afterwards assert version parity on every `ghcr.io/lanternops/breeze/*`
+container rather than trusting the service list.
+
+#### Action required in v0.112.0
+
+1. **PAM auto-approve rules are suspended.** Every rule with verdict
+   **Auto-approve** is switched to **Require approval** and badged
+   "Auto-approve suspended". Matching elevations wait for a human
+   until an admin holding the new `pam:manage_policy` permission clicks
+   **Re-approve** on the rule (MFA). See [PAM → Rules](/features/pam/#rules).
+2. **New permissions replace implicit access.** `pam:approve`,
+   `pam:manage_policy`, `accounting:read`, `accounting:manage`,
+   `workspace:read|write|credentials|execute` and
+   `connected_apps:read|manage` are granted to the built-in **Org Admin** only
+   (Partner Admin holds `*:*`). **Every other built-in role and every custom
+   role loses** QuickBooks, Workspace, connected-apps and PAM-approval access
+   until you grant the keys in **Settings → Roles**. A Partner Technician or
+   Partner Billing user who could browse or sync QuickBooks yesterday gets a
+   403 today. See [Built-in permissions](/reference/users-and-roles/#built-in-permissions).
+3. **Recurring sensitive-data scan policies are switched off** and any queued
+   or running scheduled scan is failed. There is no badge: each affected policy
+   simply shows as inactive on the **Scan Policies** tab. A user who holds
+   `devices:write` **and** `devices:execute`, with MFA satisfied, re-approves it
+   by turning **Active** back on (or re-saving it), which binds the schedule to
+   that user's authority. Manual scans are unaffected. See
+   [Sensitive Data](/features/sensitive-data/#recurring-scans-need-re-approval-after-upgrade).
+4. **Recurring network-baseline scans are paused** with the banner "Recurring
+   scan paused: re-approval required". Re-saving the schedule arms it under the
+   saving user; **Scan Now** still works. Newly auto-created baselines now start
+   with recurrence **off**. See [Network Baselines](/features/network-baselines/#recurring-scans-need-re-approval-after-upgrade).
+5. **Office add-in technician bindings are revoked.** Every technician who
+   uses the Outlook/Office add-in technician pane repeats the one-time sign-in;
+   the account must now have an authenticator-app (TOTP) factor. See
+   [AI for Office](/features/ai-for-office/).
+6. **Outstanding installer bootstrap tokens are invalidated.** Unused
+   bootstrap-derived enrollment keys are deleted. Regenerate any installer
+   links or copies you handed out before the upgrade.
+7. **Remote desktop needs an updated agent and is capped at 12 hours.** Only
+   an agent that reports lease support can start a desktop session; older
+   agents show "Remote desktop needs an agent update on this device" (HTTP
+   `503 agent_upgrade_required`). Expect up to one heartbeat interval (about a
+   minute) per device while agents self-update; **if you pin agent versions,
+   desktop sessions are unavailable until you move the pin.** `Max session
+   duration` is clamped to 1–12 hours (`0` no longer means unlimited), a
+   membership/role/site-scope/MFA change ends a live session within about 25 s,
+   and a Redis outage longer than 90 s ends live desktop sessions. Terminal,
+   Files and VNC are unaffected. See [Session lease and revocation](/features/remote-access/#session-lease-and-revocation).
+8. **`AUTH_BROWSER_TRANSITIONS_ENFORCED` is removed.** Session binding is
+   enforced on every issuance path (password, SSO, Cloudflare Access, MFA,
+   passkey, refresh, registration, invitation) with no opt-out. Delete the line
+   from `.env`; the safety net is an image rollback, not a flag. Existing browser
+   sessions self-heal on their next refresh. **Mobile app builds older than
+   v0.109.0 cannot sign in** until updated.
+9. **Legacy policy execution routes are gone.** `POST /policies/:id/evaluate`,
+   `/remediate` and `/activate` are retired; use `POST /automations/:id/trigger`.
+   `/deactivate` is unchanged.
+10. **Site-restricted technicians** can no longer create or edit organization-wide
+    governance objects (webhooks, notification channels, software and peripheral
+    policies, configuration policies, PAM config, backup destinations and
+    profiles) or manage PSA and DNS-security connections. They can still assign
+    an existing policy to their own site.
+11. **Check `TRUSTED_PROXY_CIDRS`.** With proxy trust unset, client-IP
+    attribution now records the raw socket peer instead of `unknown`. Behind a
+    real proxy that peer is the proxy, so make sure the variable is set on every
+    deployment that fronts Breeze with one.
+
+#### Database migrations in v0.112.0
+
+**20 migrations. Take a database backup first.** All are idempotent, none abort
+on pre-existing data, and all apply automatically on API startup unless you
+have set `AUTO_MIGRATE=false`. The ones with operator-visible effects:
+
+| Migration | Effect |
+|---|---|
+| `2026-10-15-150200-pam-dedicated-permissions.sql` | Suspends every `auto_approve` PAM rule (original verdict kept for re-approval); seeds `pam:approve` / `pam:manage_policy` and grants them to each built-in Org Admin. |
+| `2026-10-15-150051-office-addin-binding-mfa-epoch.sql` | Revokes every existing Office add-in technician binding. |
+| `2026-10-15-140001` / `140002` / `140003-sensitive-data-*.sql` | Deactivate every recurring sensitive-data policy and fail queued/running scheduled scans. |
+| `2026-10-15-141001-installer-bootstrap-credential-generation.sql` | Deletes unused bootstrap-derived enrollment keys and bumps the generation on their parents. |
+| `2026-10-15-150030` / `150031` / `150032` and `150500-accounting-dedicated-permissions.sql` | Seed `workspace:*`, `connected_apps:*`, `accounting:read`, `accounting:manage`; grant them to the built-in Org Admin only. |
+| `2026-10-15-140004-backup-snapshot-lineage-fk-set-null.sql` | Makes `restore_jobs.snapshot_id` and `recovery_tokens.snapshot_id` nullable and moves five foreign keys onto `backup_snapshots` to `ON DELETE SET NULL`, so retention can finally delete a snapshot that was ever restored, verified or tokened. |
+| `2026-10-15-150600-network-baseline-recurring-authority.sql` | Pauses every enabled recurring baseline scan (`reapproval_required`) until an authorized user re-saves the schedule. |
+| `2026-10-15-150001-bound-webhook-retries.sql` | Normalizes legacy webhook `retryCount` values into 0–2; the count is logged as a Postgres `WARNING`. |
+| `2026-10-15-150050-mobile-refresh-family-binding.sql` | Adds a partial index on `refresh_token_families` **in-transaction** (not `CONCURRENTLY`). Instant at typical sizes; run off-peak if yours is very large. |
+
+The rest (`150010`, `150020`, `150040`, `150100`, `150300`, `160010`) are
+additive column adds with no data change. A non-superuser migrating role is
+sufficient, as before.
+
+#### New optional settings in v0.112.0
+
+None are required. Full descriptions are in [Environment Variables](/deploy/environment/).
+
+| Variable | Why you might set it |
+|---|---|
+| `LENOVO_WARRANTY_ENABLED=true` and/or `LENOVO_API_KEY` | Lenovo warranty lookup works for the first time — credential-free via Lenovo's public lookup endpoint, or through the official Warranty API. `DELL_CLIENT_ID` / `DELL_CLIENT_SECRET` and both Lenovo knobs are now mapped through every shipped Compose file, so a value in `.env` is enough. See [Warranty lookups](/deploy/environment/#warranty-lookups). |
+| `RECOVERY_MEDIA_WORK_DIR` | Already defaulted to `/data/recovery-work` by the shipped Compose files; moves bare-metal recovery media builds off the container's 64 MB `/tmp`. Override only to relocate it. |
+| `BACKUP_GC_GRACE_MS` | Lab/test only. Production enforces a one-hour floor; the 48 h default is unchanged. |
+
+**Removed:** `AUTH_BROWSER_TRANSITIONS_ENFORCED` (see item 8 above).
+
+#### Fresh installs and image pinning in v0.112.0
+
+`.env.example` and `deploy/docker-compose.prod.yml` now expect **signed,
+digest-pinned image references** (`ghcr.io/lanternops/breeze/api@sha256:…`)
+resolved from the release's signed image inventory. The guided installer
+resolves and verifies them itself for 0.112.0 and later (fail-closed), and
+falls back to tag-tracking refs for older releases. **Existing installs whose
+`.env` still carries `…/api:${BREEZE_VERSION}` refs keep working with the
+upgrade steps at the top of this page.** If you have already switched to digest
+pins, update the four `BREEZE_*_IMAGE_REF` lines from the new release's
+inventory on every upgrade — bumping `BREEZE_VERSION` alone changes nothing.
+See [Signed, digest-pinned image references](/deploy/production/#signed-digest-pinned-image-references-v01120-and-later).
+
+Rotating `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` is a fleet re-enrollment:
+agents pin the key they enrolled under and there is no remote revocation. See
+[Binary Distribution](/deploy/binaries/).
+
+#### Rolling back v0.112.0
+
+Prefer roll-forward. If you must roll back, **downgrade agents before the
+API**: a v0.112.0 agent talking to an older API gets no lease answer and ends
+its desktop session after about 150 s. The added columns are additive and need
+no schema rollback. Rolling back the network-baseline change resumes every
+paused recurring baseline **under no authority** — clear each affected
+baseline's schedule first.
+
+#### Other behaviour changes in v0.112.0
+
+- **Bare-metal recovery now restores system state on Linux**, every
+  `system_image` backup records a disk-layout manifest with a restorability
+  verdict, and a `breeze-backup rebuild` command can provision a disk from a
+  snapshot. See [Bare Metal Recovery](/backup/bare-metal-recovery/).
+- **Backup exclude patterns with a leading `/` are root-anchored** (gitignore
+  semantics) instead of matching at any depth. File backups now capture
+  symlinks, directories, ownership and setuid/setgid/sticky bits; manifests
+  carrying them use a new format that **older agents cannot read**, so restore
+  with a v0.112.0 agent. See [Backup Policies](/backup/policies/#file-backup).
+- **Retention GC no longer stops** on the first snapshot that was ever
+  restored, verified or tokened. Bucket usage still does not shrink — storage
+  reclamation lands in a later release.
+- **Webhooks make one HTTP attempt per invocation**; the queue owns retries,
+  `retryCount` is capped at 2, and permanent failures (bad configuration,
+  SSRF-blocked URL, ordinary 4xx) dead-letter immediately. `/test` and `/retry`
+  on a paused webhook return `409`.
+- **Org-scoped sessions are now evaluated against the partner IP allowlist.**
+- **MCP tool `get_fleet_status` is renamed `get_invite_funnel`.** The old name
+  dispatches for one more release but no longer appears in `tools/list`.
+- **HP warranty lookup is de-registered** — HP's API is not available to RMM
+  vendors, so HP devices stay at `unknown`.
+
 ### v0.111.1 — hotfix for a v0.111.0 upgrade-blocking migration
 
 <Aside type="danger" title="Install v0.111.1, not v0.111.0">

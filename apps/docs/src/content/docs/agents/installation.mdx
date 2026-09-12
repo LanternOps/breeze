@@ -40,6 +40,19 @@ later.`), and the PowerShell quick-install command checks the same floor
 before it downloads anything, so an unsupported machine fails fast with a
 clear message instead of installing a binary that can't run.
 
+<Aside type="caution" title="MSI installs on Windows 10/11 failed in v0.110.0 – v0.111.1">
+  Agent MSIs published with those releases refused **every fresh install** on
+  Windows 10, Windows 11 and Server 2016+ with the legacy-OS message above.
+  Windows Installer reports the Windows 8.1 version number to MSI packages on
+  every newer Windows by design, so the floor check tripped on supported
+  machines. From **v0.112.0** the MSI reads the Windows version from the
+  registry instead, which is not affected. Already-enrolled agents were never
+  affected (self-update does not run the MSI), and repair, upgrade and
+  uninstall of an installed agent are never blocked by the floor check. If you
+  handed out installer links or MSIs from those releases, replace them with the
+  current ones.
+</Aside>
+
 <Aside type="note">
   Monitoring a Windows 7 / Server 2008 R2 fleet? There's no supported Breeze
   agent path today. Agentless coverage (SNMP/WMI from a modern jump-box

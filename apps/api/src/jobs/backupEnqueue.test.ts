@@ -103,4 +103,23 @@ describe('backup enqueue helpers', () => {
     expect(opts.attempts).toBe(3);
     expect(opts.backoff).toEqual({ type: 'exponential', delay: 1_000 });
   });
+
+  // D18 W01 (#5429/§3.1): baseSnapshotId/formatVersion/backupIdentity must
+  // survive the enqueueBackupResults -> backupQueueJobDataSchema.parse round
+  // trip -- both backupSnapshotSummarySchema (queueSchemas.ts) and
+  // ProcessResultsResult.snapshot (backupEnqueue.ts) were widened to declare
+  // them; a regression here would silently strip/reject the lineage fields
+  // before backupWorker.ts's process-results handler ever sees them.
+  it('round-trips baseSnapshotId/formatVersion/backupIdentity through enqueueBackupResults', async () => {
+    await enqueueBackupResults('job-1', 'org-1', 'device-1', {
+      status: 'completed',
+      snapshotId: 'snap-1',
+      snapshot: { id: 'snap-1', baseSnapshotId: 'snap-0', formatVersion: 2, backupIdentity: 's3::e::b' },
+    });
+
+    const payload = addMock.mock.calls[0]![1] as { result: { snapshot?: Record<string, unknown> } };
+    expect(payload.result.snapshot?.baseSnapshotId).toBe('snap-0');
+    expect(payload.result.snapshot?.formatVersion).toBe(2);
+    expect(payload.result.snapshot?.backupIdentity).toBe('s3::e::b');
+  });
 });

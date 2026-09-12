@@ -98,6 +98,14 @@ export const devices = pgTable('devices', {
   maintenanceStartedBy: uuid('maintenance_started_by').references(() => users.id, { onDelete: 'set null' }),
   lastSeenAt: timestamp('last_seen_at'),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
+  // Bare-metal recovery W04a: stamped by the heartbeat check-in that completes
+  // a recovery. recoveredFromSnapshotId is a soft reference to
+  // backup_snapshots.id (no FK, like possibleReplacementOfDeviceId above) —
+  // a real FK would create a devices <-> backup_snapshots cascade cycle
+  // (backup_snapshots.device_id already points the other way), which
+  // topologicalCascadeOrder() in tenantCascade.ts rejects outright.
+  recoveredAt: timestamp('recovered_at', { withTimezone: true }),
+  recoveredFromSnapshotId: uuid('recovered_from_snapshot_id'),
   enrolledBy: uuid('enrolled_by').references(() => users.id),
   // Linked device profiles for multi-boot systems (#2138). NULL => unlinked.
   // When set, the device is one boot profile of a physical machine grouped in

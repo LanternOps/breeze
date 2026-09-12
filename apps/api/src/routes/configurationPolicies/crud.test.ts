@@ -11,8 +11,6 @@ const {
   assignPolicyMock,
   dbSelectMock,
   listEligibleParentPoliciesMock,
-  getParentLinkFeatureTypesMock,
-  mfaState,
 } = vi.hoisted(() => ({
   listConfigPoliciesMock: vi.fn(),
   createConfigPolicyMock: vi.fn(),
@@ -22,9 +20,6 @@ const {
   assignPolicyMock: vi.fn(),
   dbSelectMock: vi.fn(),
   listEligibleParentPoliciesMock: vi.fn(),
-  getParentLinkFeatureTypesMock: vi.fn(),
-  // Mutable so a single test can flip MFA off without re-mocking the module.
-  mfaState: { satisfied: true },
 }));
 
 vi.mock('../../services/configurationPolicy', async (importOriginal) => {
@@ -40,7 +35,6 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
     deleteConfigPolicy: deleteConfigPolicyMock,
     assignPolicy: assignPolicyMock,
     listEligibleParentPolicies: listEligibleParentPoliciesMock,
-    getParentLinkFeatureTypes: getParentLinkFeatureTypesMock,
   };
 });
 
@@ -66,11 +60,18 @@ vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
-vi.mock('../../middleware/auth', () => ({
+// `importOriginal` on purpose: this is the ONE config-policy route suite that
+// exercises the REAL `requireMfa()` (and, through it, the real
+// `hasSatisfiedMfa` + `ENABLE_2FA` resolution) rather than a hand-written
+// stand-in. A stand-in can only prove middleware ORDERING; it cannot catch a
+// change to what the gate actually accepts — e.g. an API-key context whose
+// `token: {}` carries no `mfa` claim. Only `authMiddleware` / `requireScope` /
+// `requirePermission` are stubbed, so the suite can inject its own auth.
+vi.mock('../../middleware/auth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../middleware/auth')>()),
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
-  hasSatisfiedMfa: vi.fn(() => mfaState.satisfied),
 }));
 
 import { crudRoutes } from './crud';
@@ -93,7 +94,10 @@ function makeAuth(overrides: Record<string, unknown> = {}): any {
     orgId: ORG_ID,
     partnerId: null,
     user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
-    token: { scope: 'organization' },
+    // The real `requireMfa()` runs in this suite (see the auth mock above), so
+    // the default session must carry a satisfied claim or every mutation case
+    // would 403. Individual tests override `token` to assert the denial.
+    token: { scope: 'organization', mfa: true },
     accessibleOrgIds: [ORG_ID],
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: () => undefined,
@@ -115,6 +119,9 @@ function makePermissions(overrides: Record<string, unknown> = {}): any {
 
 describe('configurationPolicies CRUD routes', () => {
   let app: Hono;
+  // Swapped in per test so a case can drive the shared `app` with a different
+  // principal without rebuilding it (the beforeEach app is mounted once).
+  let authOverride: any = null;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -123,17 +130,73 @@ describe('configurationPolicies CRUD routes', () => {
     // auto-assign error-path test leaks into later cases.
     assignPolicyMock.mockResolvedValue({ id: 'assignment-1' });
     deleteConfigPolicyMock.mockResolvedValue({ id: POLICY_ID });
-    getParentLinkFeatureTypesMock.mockResolvedValue([]);
     listEligibleParentPoliciesMock.mockResolvedValue([]);
-    mfaState.satisfied = true;
+    authOverride = null;
     mockOrgExists(true); // default: system-scope org-existence check passes
     app = new Hono();
     // Set auth context before mounting routes
     app.use('*', async (c, next) => {
-      c.set('auth', makeAuth());
+      c.set('auth', authOverride ?? makeAuth());
       await next();
     });
     app.route('/', crudRoutes);
+  });
+
+  describe('MFA boundary for effective policy mutations', () => {
+    beforeEach(() => {
+      // A human session that never satisfied MFA: same shape as the default,
+      // minus the `mfa` claim. Denial here comes from the REAL requireMfa().
+      authOverride = makeAuth({ token: { scope: 'organization' } });
+    });
+
+    it.each([
+      ['create', '/', 'POST', { name: 'Must not persist' }, createConfigPolicyMock],
+      ['update', `/${POLICY_ID}`, 'PATCH', { status: 'inactive' }, updateConfigPolicyMock],
+      ['delete', `/${POLICY_ID}`, 'DELETE', undefined, deleteConfigPolicyMock],
+    ] as const)('denies %s before any policy service or success audit', async (_name, path, method, body, sink) => {
+      const res = await app.request(path, {
+        method,
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(sink).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('denies an API-key principal whose token carries no mfa claim', async () => {
+      // Machine MCP/API-key contexts are minted with `token: {}` (mcpServer.ts),
+      // so with ENABLE_2FA on they never satisfy the real gate. This is the
+      // assertion a hand-written requireMfa stand-in cannot make: it proves
+      // what the gate ACCEPTS, not merely that some middleware ran first.
+      authOverride = makeAuth({ principal: { kind: 'api_key', apiKeyId: 'key-1' }, token: {} });
+
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Must not persist' }),
+      });
+
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    });
+
+    it('admits the default session, proving the gate is not denying unconditionally', async () => {
+      createConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'Root', orgId: ORG_ID });
+      authOverride = null; // makeAuth() default: token.mfa === true
+
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Root' }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(createConfigPolicyMock).toHaveBeenCalled();
+    });
   });
 
   // ============================================
@@ -749,11 +812,8 @@ describe('configurationPolicies CRUD routes', () => {
       expect(await res.json()).toMatchObject({ error: 'INVALID_PARENT_POLICY' });
     });
 
-    // MFA follows effectiveness: inheriting a gated link enables it on the new
-    // policy, the same capability POST /:id/features already gates.
-    it('POST requires MFA when the parent carries a gated link', async () => {
-      getParentLinkFeatureTypesMock.mockResolvedValue(['maintenance']);
-      mfaState.satisfied = false;
+    it('POST with a parent requires MFA before resolving or creating the policy', async () => {
+      authOverride = makeAuth({ token: { scope: 'organization' } });
 
       const res = await app.request('/', {
         method: 'POST',
@@ -766,22 +826,8 @@ describe('configurationPolicies CRUD routes', () => {
       expect(createConfigPolicyMock).not.toHaveBeenCalled();
     });
 
-    it('POST allows an ungated parent without MFA', async () => {
-      getParentLinkFeatureTypesMock.mockResolvedValue(['event_log']);
-      mfaState.satisfied = false;
-      createConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'Child', orgId: ORG_ID });
-
-      const res = await app.request('/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Child', parentPolicyId: PARENT_ID }),
-      });
-
-      expect(res.status).toBe(201);
-    });
-
-    it('POST without a parent never consults the parent MFA gate', async () => {
-      mfaState.satisfied = false;
+    it('POST without a parent also requires MFA before policy creation', async () => {
+      authOverride = makeAuth({ token: { scope: 'organization' } });
       createConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'Root', orgId: ORG_ID });
 
       const res = await app.request('/', {
@@ -790,8 +836,8 @@ describe('configurationPolicies CRUD routes', () => {
         body: JSON.stringify({ name: 'Root' }),
       });
 
-      expect(res.status).toBe(201);
-      expect(getParentLinkFeatureTypesMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      expect(createConfigPolicyMock).not.toHaveBeenCalled();
     });
 
     it('DELETE maps PolicyHasChildrenError to 409 with the children', async () => {

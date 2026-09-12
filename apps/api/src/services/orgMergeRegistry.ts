@@ -233,6 +233,8 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   ai_operator_tasks: { kind: 'custom', note: 'live tasks are fenced to state=stopping BEFORE ai_agents repoints (resolve phase), then left for erasure with the loser shell — task history never follows a merge, same rule as ai_agent_runs' },
   ai_operator_operations: { kind: 'leave-for-erasure', note: 'operations hang off a task that stays with the source org (ai_operator_tasks disposition) via a composite (task_id, org_id) FK; they are erased with it' },
   ai_operator_task_outbox: { kind: 'leave-for-erasure', note: 'coordinator wake rows for a task that stays with the source org; a fenced task has nothing left to wake, and the rows cascade with the task on erasure' },
+  script_proposals: { kind: 'custom', note: 'non-terminal proposals are fenced to status=expired BEFORE devices repoint (resolve phase), then left for erasure with the loser shell — proposal history is source-org incident history, same rule as ai_operator_tasks and ai_agent_runs' },
+  script_proposal_reviews: { kind: 'leave-for-erasure', note: 'append-only review evidence hangs off a proposal that stays with the source org via a composite (proposal_id, org_id) FK; erased with it' },
   ai_alert_verdicts: { kind: 'leave-for-erasure', note: 'verdicts hang off ai_agent_runs (leave-for-erasure) and cascade with them; alert/group FKs cascade too' },
   // ai_agent_schedules (Phase 2 wave P2-2, #4189): dual-owner (org_id XOR
   // partner_id) config, same "not a normal org_id table" shape as ai_agents
@@ -306,6 +308,15 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // available anyway — the row would need to be reinserted under the new
   // key, i.e. a fresh circuit, which is exactly what closed+erased achieves.
   ai_agent_circuit_state: { kind: 'leave-for-erasure', note: 'per-org failure-streak state, not carried config; composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
+  // AI script authoring W04 (#5612): per-org lane circuit, not carried config
+  // — a survivor org must not inherit a loser's failure streak (or its open
+  // circuit). Rows die with the loser shell.
+  ai_script_lane_state: { kind: 'leave-for-erasure', note: 'per-org unattended-lane failure streak and circuit state, not carried config; the survivor keeps its own lane state' },
+  // AI script authoring W04 (#5612): the ORG GRANT row is singleton org config
+  // (ai_script_policies_org_uq, a total UNIQUE on org_id) — the survivor's
+  // own grant wins and the loser's is dropped, exactly like ai_budgets. Partner
+  // CEILING rows have org_id NULL and are not merge participants at all.
+  ai_script_policies: { kind: 'keep-survivor' }, // verified: ai_script_policies_org_uq (org_id) WHERE org_id IS NOT NULL
   // llm_egress_events (#3922 phase 2, landed on main 2026-08-27): per-request
   // egress telemetry — which org attempted which outbound LLM dial, allowed or
   // blocked. Repointing would attribute the loser org's egress history to the
@@ -402,10 +413,30 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   alert_correlation_groups: { kind: 'repoint-dedupe', key: ['group_key'] }, // verified: alert_correlation_groups_org_key_uq (org_id, group_key)
   ai_cost_usage: { kind: 'repoint-dedupe', key: ['period', 'period_key'] }, // verified: ai_cost_usage_org_period_idx (org_id, period, period_key)
   ai_budget_alert_events: { kind: 'repoint-dedupe', key: ['period', 'period_key', 'threshold_pct'] }, // verified: ai_budget_alert_events_org_period_rung_uidx (org_id, period, period_key, threshold_pct)
+  ai_budget_reservations: { kind: 'repoint-dedupe', key: ['idempotency_key'] }, // verified: ai_budget_reservations_org_idempotency_uidx (org_id, idempotency_key). Its composite (session_id, org_id) FK to ai_sessions is DEFERRABLE INITIALLY IMMEDIATE so the merge can re-point ai_sessions and this table in separate statements.
   client_ai_usage: { kind: 'repoint-dedupe', key: ['client_user_id', 'period', 'period_key'] }, // verified: client_ai_usage_bucket_uniq (org_id, client_user_id, period, period_key)
   contact_external_links: { kind: 'repoint-dedupe', key: ['system', 'external_id'] }, // verified: contact_external_links_uniq (org_id, system, external_id)
+  // deliverable_template_sets_org_name_uq (org_id, name) WHERE org_id IS NOT NULL
+  // (2026-10-16-100500) — a plain repoint raises 23505 when both orgs own a set
+  // with the same name. Partner-wide sets (org_id NULL) are never merge
+  // participants, and keyWhere keeps them out of the collision predicate on
+  // both sides. A dropped loser set takes its items with it (both branch FKs
+  // are ON DELETE CASCADE), and a template set carries no delivery history —
+  // the deliverables it produced are separate rows with their own disposition.
+  deliverable_template_sets: { kind: 'repoint-dedupe', key: ['name'], keyWhere: '{org_id} IS NOT NULL' },
+  // Items ride the parent: their only unique is (set_id, name), which no
+  // repoint can collide on, and both (set_id, org_id)/(set_id, partner_id)
+  // branch FKs are DEFERRABLE INITIALLY IMMEDIATE so parent and child may
+  // repoint in separate statements under SET CONSTRAINTS ALL DEFERRED.
+  deliverable_template_items: { kind: 'repoint' },
   delegant_m365_connections: { kind: 'repoint-dedupe', key: ['customer_label'] }, // verified: delegant_m365_org_customer_uniq (org_id, customer_label)
   remediation_suggestions: { kind: 'repoint-dedupe', key: ['source_type', 'source_id'] }, // superset of its four partial uniques (org_id, source_type, source_id, {script_id|script_template_id|playbook_id|target_type}); derived rows, over-dropping is safe
+  // service_deliverables_org_contract_name_uq (org_id, COALESCE(contract_id, nil), name)
+  // — 2026-10-15-170000. NOT repoint-dedupe: the loser's row carries its
+  // occurrences and evidence via ON DELETE CASCADE, i.e. the delivered/waived
+  // history the customer portal (#5573) shows. Rename on collision instead,
+  // exactly as audit_baselines does, then repoint everything.
+  service_deliverables: { kind: 'custom', note: "rename colliding loser deliverables (same COALESCE(contract_id), name under the survivor) with a ' (merged <org8>)' suffix, then repoint all rows; NEVER delete — service_deliverable_occurrences/evidence are ON DELETE CASCADE and are the delivery history" },
   tunnel_allowlists: { kind: 'repoint-dedupe', key: ['direction', 'pattern', "COALESCE({site_id}, '00000000-0000-0000-0000-000000000000'::uuid)"] }, // verified: tunnel_allowlists_org_direction_pattern_site_idx (2026-08-08-proxy-session-lifetime.sql)
   // action_intents used to be classified here as a `repoint-dedupe` keyed on
   // action_intents_org_idem_uniq. It is now `leave-for-erasure` above: the
@@ -562,8 +593,10 @@ const REPOINT_TABLES: readonly string[] = [
   "backup_profiles",
   "backup_sla_configs",
   "backup_sla_events",
+  "backup_snapshot_retirements",
   "backup_snapshots",
   "backup_verifications",
+  "bare_metal_recoveries",
   "brain_device_context",
   "browser_extensions",
   "browser_policies",
@@ -699,7 +732,14 @@ const REPOINT_TABLES: readonly string[] = [
   "oauth_grants",
   "oauth_refresh_tokens",
   "onedrive_device_state",
+  // Plain repoint, NOT repoint-dedupe: org_documents has no org-scoped unique
+  // key (two orgs may both hold "Firewall baseline"), so after a merge the
+  // survivor simply holds both libraries and there is nothing to drop. The
+  // supersedes chain is intra-org and its composite FK is deferrable, so it
+  // survives the re-point unchanged.
+  "org_documents",
   "organization_external_links",
+  "organization_key_dates",
   "pam_rules",
   "partner_enrollment_key_idempotency",
   "patch_compliance_reports",
@@ -758,6 +798,8 @@ const REPOINT_TABLES: readonly string[] = [
   "sensitive_data_findings",
   "sensitive_data_policies",
   "sensitive_data_scans",
+  "service_deliverable_evidence",
+  "service_deliverable_occurrences",
   "service_principals",
   "service_process_check_results",
   "sites",

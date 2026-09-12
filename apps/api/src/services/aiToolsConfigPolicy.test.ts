@@ -114,7 +114,13 @@ import {
   MAINTENANCE_LINK_MACHINE_PRINCIPAL_DENIED,
   MAINTENANCE_LINK_FEATURE_TYPE_REQUIRED,
 } from './aiToolsConfigPolicy';
-import { addFeatureLink, getConfigPolicy, removeFeatureLink, updateFeatureLink } from './configurationPolicy';
+import {
+  addFeatureLink,
+  getConfigPolicy,
+  listFeatureLinks,
+  removeFeatureLink,
+  updateFeatureLink,
+} from './configurationPolicy';
 import { onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
 import { GENERIC_TOOL_ERROR_MESSAGE } from './aiToolErrors';
 
@@ -130,6 +136,7 @@ function makeAuth() {
     scope: 'organization',
     orgId: ORG_ID,
     accessibleOrgIds: [ORG_ID],
+    token: { mfa: true },
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: () => undefined,
   } as any;
@@ -142,6 +149,7 @@ function makePartnerAuth() {
     orgId: null,
     partnerId: PARTNER_ID,
     accessibleOrgIds: [ORG_ID],
+    token: { mfa: true },
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: () => undefined,
   } as any;
@@ -184,6 +192,102 @@ function mockSelectWhereRows(rows: unknown[]) {
   const chain: any = { from: vi.fn(() => chain), where: vi.fn().mockResolvedValue(rows) };
   vi.mocked(db.select).mockReturnValueOnce(chain);
 }
+
+describe('configuration policy AI/MCP mutation MFA boundary', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    enable2faState.value = true;
+  });
+
+  function tools() {
+    const result = new Map<string, any>();
+    registerConfigPolicyTools(result);
+    return result;
+  }
+
+  function unassuredUser() {
+    return { ...makeUserAuth(), token: { mfa: false } } as any;
+  }
+
+  it.each([
+    ['apply_configuration_policy', { configPolicyId: POLICY_ID, level: 'device', targetId: DEVICE_ID }],
+    ['remove_configuration_policy_assignment', { assignmentId: 'assignment-1' }],
+    ['manage_configuration_policy', { action: 'create', name: 'Unassured policy' }],
+    ['manage_policy_feature_link', {
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'monitoring',
+      inlineSettings: { checkIntervalSeconds: 60, watches: [] },
+    }],
+  ])('denies an unassured user in %s before any query or mutation', async (toolName, input) => {
+    const output = await tools().get(toolName)!.handler(input, unassuredUser());
+
+    expect(JSON.parse(output)).toEqual({ error: 'MFA required' });
+    expect(db.select).not.toHaveBeenCalled();
+    expect(assignPolicyMock).not.toHaveBeenCalled();
+    expect(unassignPolicyMock).not.toHaveBeenCalled();
+    expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it.each(['api_key', 'oauth_grant'] as const)(
+    'does not treat an empty %s token as MFA under an MFA-enabled deployment',
+    async (kind) => {
+      const output = await tools().get('manage_configuration_policy')!.handler(
+        { action: 'create', name: 'Machine policy' },
+        makeMachineAuth(kind),
+      );
+
+      expect(JSON.parse(output)).toEqual({ error: 'MFA required' });
+      expect(db.select).not.toHaveBeenCalled();
+      expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('lets an ai_agent principal through — its authorization is the upstream approval, not a session claim', async () => {
+    // RMM-QA-176 D9.3, restated for the blanket gate: an agent has no session
+    // and can never satisfy `hasSatisfiedMfa`, so an MFA-shaped denial here is
+    // not a gate — it is a permanent shutdown of the grantable
+    // `config_policies` agent capability (agentToolCatalog.ts). The real
+    // authorization for an agent run is the Tier-3 approval in aiGuardrails.
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy' } as any);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'monitoring' } as any);
+
+    const output = await tools().get('manage_policy_feature_link')!.handler({
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'monitoring',
+      inlineSettings: { checkIntervalSeconds: 60, watches: [] },
+    }, makeAgentAuth());
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(vi.mocked(addFeatureLink)).toHaveBeenCalled();
+  });
+
+  it('keeps read-only feature-link listing available without MFA', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, name: 'Policy' } as any);
+    vi.mocked(listFeatureLinks).mockResolvedValue([] as any);
+
+    const output = await tools().get('manage_policy_feature_link')!.handler(
+      { action: 'list', configPolicyId: POLICY_ID },
+      unassuredUser(),
+    );
+
+    expect(JSON.parse(output)).toMatchObject({ configPolicyId: POLICY_ID, featureLinks: [] });
+    expect(listFeatureLinks).toHaveBeenCalledWith(POLICY_ID);
+  });
+
+  it('preserves the global MFA-disabled behavior for non-maintenance MCP mutations', async () => {
+    enable2faState.value = false;
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, name: 'Policy' } as any);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'monitoring' } as any);
+
+    const output = await tools().get('manage_policy_feature_link')!.handler({
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'monitoring',
+      inlineSettings: { checkIntervalSeconds: 60, watches: [] },
+    }, makeMachineAuth('api_key'));
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(addFeatureLink).toHaveBeenCalled();
+  });
+});
 
 describe('configuration policy AI tools', () => {
   beforeEach(() => {
@@ -1032,16 +1136,17 @@ describe('manage_policy_feature_link machine-principal denial (RMM-QA-176 D9.3)'
     return tools;
   }
 
-  it('denies an api_key principal adding a maintenance link, before the feature-link write', async () => {
+  it('denies an unassured api_key principal before maintenance-link lookup or write', async () => {
     const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
       action: 'add', configPolicyId: POLICY_ID, featureType: 'maintenance', inlineSettings: MAINTENANCE_SETTINGS,
     }, makeMachineAuth('api_key'));
 
-    expect(JSON.parse(output).error).toBe(MAINTENANCE_LINK_MACHINE_PRINCIPAL_DENIED);
+    expect(JSON.parse(output).error).toBe('MFA required');
+    expect(getConfigPolicy).not.toHaveBeenCalled();
     expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
   });
 
-  it('denies an oauth_grant principal updating an existing maintenance link', async () => {
+  it('denies an unassured oauth_grant principal before maintenance-link lookup or write', async () => {
     const tools = toolsWithPolicy();
     mockSelectRows([{ featureType: 'maintenance' }]);
     const output = await tools.get('manage_policy_feature_link')!.handler({
@@ -1049,7 +1154,8 @@ describe('manage_policy_feature_link machine-principal denial (RMM-QA-176 D9.3)'
       featureType: 'maintenance', inlineSettings: MAINTENANCE_SETTINGS,
     }, makeMachineAuth('oauth_grant'));
 
-    expect(JSON.parse(output).error).toBe(MAINTENANCE_LINK_MACHINE_PRINCIPAL_DENIED);
+    expect(JSON.parse(output).error).toBe('MFA required');
+    expect(getConfigPolicy).not.toHaveBeenCalled();
     expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
   });
 
@@ -1116,7 +1222,10 @@ describe('manage_policy_feature_link machine-principal denial (RMM-QA-176 D9.3)'
   it('an ai_agent principal PROCEEDS — approval is upstream, the handler must not hard-deny', async () => {
     // Inside the web app an escalated call is a normal supervised approval; an
     // APPROVED run reaching this handler must execute. Hard-denying here would
-    // break the approval workflow the escalation exists to create.
+    // break the approval workflow the escalation exists to create — and the MFA
+    // gate must not reintroduce that denial by a side door: an agent principal
+    // has no session and can never carry an `mfa` claim, so gating on one would
+    // permanently disable the grantable `config_policies` agent capability.
     vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'maintenance' } as any);
     const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
       action: 'add', configPolicyId: POLICY_ID, featureType: 'maintenance', inlineSettings: MAINTENANCE_SETTINGS,
@@ -1126,23 +1235,25 @@ describe('manage_policy_feature_link machine-principal denial (RMM-QA-176 D9.3)'
     expect(vi.mocked(addFeatureLink)).toHaveBeenCalled();
   });
 
-  it('an api_key principal is NOT denied for a non-maintenance link', async () => {
+  it('an unassured api_key principal is denied for a non-maintenance link', async () => {
     vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'monitoring' } as any);
     const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
       action: 'add', configPolicyId: POLICY_ID, featureType: 'monitoring',
       inlineSettings: { checkIntervalSeconds: 60, watches: [] },
     }, makeMachineAuth('api_key'));
 
-    expect(JSON.parse(output).success).toBe(true);
+    expect(JSON.parse(output).error).toBe('MFA required');
+    expect(addFeatureLink).not.toHaveBeenCalled();
   });
 
-  it('remove is untouched — it is already Tier 3 and ending suppression is the safe direction', async () => {
+  it('requires MFA for remove even when the direction ends suppression', async () => {
     vi.mocked(removeFeatureLink).mockResolvedValue(true as any);
     const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
       action: 'remove', configPolicyId: POLICY_ID, featureLinkId: 'link-1',
     }, makeMachineAuth('api_key'));
 
-    expect(JSON.parse(output).success).toBe(true);
+    expect(JSON.parse(output).error).toBe('MFA required');
+    expect(removeFeatureLink).not.toHaveBeenCalled();
   });
 
   it('the pre-existing no-principal auth shape still reaches the real handler, not a generic error', async () => {

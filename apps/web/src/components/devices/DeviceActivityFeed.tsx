@@ -15,6 +15,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Loader2,
+  Sparkles,
   type LucideIcon,
 } from "lucide-react";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -31,6 +32,7 @@ type ActivityEvent = {
   initiatedBy?: string | null;
   timestamp?: string;
   actor?: { type?: string; name?: string; email?: string | null };
+  details?: { proposalId?: string | null } | null;
 };
 
 type DeviceActivityFeedProps = {
@@ -57,6 +59,7 @@ type DeviceActivityFeedProps = {
 const ACTION_RULES: { prefix: string; icon: LucideIcon }[] = [
   { prefix: "device.command", icon: Power }, // reboot / shutdown / wake / lock / refresh
   { prefix: "script.", icon: Terminal }, // run / cancel
+  { prefix: "ai.script.", icon: Sparkles }, // #5022 W05 — AI-authored script runs
   { prefix: "device.remote_access", icon: Monitor }, // remote session launched
   { prefix: "device.patch", icon: Download }, // patch install / rollback
   { prefix: "device.software", icon: Package }, // software install / uninstall / update
@@ -476,6 +479,14 @@ export default function DeviceActivityFeed({
                         </span>
                       )}
                     </p>
+                    {e.details?.proposalId && (
+                      <a
+                        href={`/ai-script-proposals/${e.details.proposalId}`}
+                        className="mt-0.5 inline-block text-xs font-medium text-primary hover:underline"
+                      >
+                        {t("deviceActivityFeed.viewProposal")}
+                      </a>
+                    )}
                   </div>
                 </li>
               );

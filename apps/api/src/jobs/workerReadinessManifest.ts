@@ -124,7 +124,6 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('backupSlaWorker'),
   consumers('drExecutionWorker'),
   consumers('recoveryMediaWorker'),
-  consumers('recoveryBootMediaWorker'),
   consumers('warrantyWorker'),
   consumers('ssoDomainRecheckWorker'),
   { kind: 'non_consumer', initializer: 'incidentCorrelationWorker' },
@@ -154,6 +153,10 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('ticketMailboxPollWorker'),
   consumers('invoiceWorker'),
   consumers('contractWorker'),
+  // ONE initializer constructing TWO Workers, so both stable names are declared.
+  // They must match the attachWorkerObservability strings character for
+  // character — workerReadinessCoverage.test.ts diffs the two sets.
+  consumers('deliverableWorker', ['deliverableWorker', 'deliverableContractEventsWorker']),
   // Registry entries main added after Track C's merge base (wave 3.5d-b names;
   // registry entry name == consumer name). Rows 1-3 and 10-12 already attached
   // under exactly these names on main; rows 4-9 (authBrowserTransitionCleanup
@@ -179,6 +182,20 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('accountingSyncWorker'),
   consumers('aiAgentImpactRollup', ['aiAgentImpactRollupWorker']),
   consumers('aiAgentGraduation'),
+  // W02 (#5612): plain-required (`redis`) — scriptReviewWorker constructs
+  // exactly one Worker unconditionally (it has no feature-flag gate of its
+  // own; BREEZE_AI_SCRIPT_AUTHORING_ENABLED is checked upstream, before any
+  // proposal is ever enqueued) and attaches it under its own registry-key
+  // name.
+  consumers('scriptReviewWorker'),
+  // W03 (#5612): same shape as scriptReviewWorker — one Worker, no flag gate
+  // of its own (the producer is gated), attached under its registry-key name.
+  consumers('scriptVerifyWorker'),
+  // SEC-142/143 (review B3). Plain-required (`redis`): read, not inferred —
+  // aiBudgetReservationSweep reads no feature flag anywhere in the module and
+  // constructs exactly one Worker unconditionally, attaching it under its own
+  // registry-key name.
+  consumers('aiBudgetReservationSweep'),
   // Task 8 merge-forward (origin/main ff9e10aec): five more `global` registry
   // entries. Each was read, not inferred from its name — none is feature-flag
   // gated, every one constructs exactly one Worker and attaches it

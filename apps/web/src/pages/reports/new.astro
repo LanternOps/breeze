@@ -3,18 +3,21 @@ import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import ReportBuilder from '../../components/reports/ReportBuilder';
 import Breadcrumbs from '../../components/layout/Breadcrumbs';
 import { navigateTo } from '../../lib/navigation';
+import { tServer } from '../../lib/i18n/server';
+
+const locale = Astro.locals.locale;
 ---
 
-<DashboardLayout title="Create Report">
+<DashboardLayout titleKey="titles.reportsNew">
   <Breadcrumbs client:load items={[
-    { label: 'Reports', href: '/reports' },
-    { label: 'New Report' }
+    { label: tServer(locale, 'reportsNewPage.breadcrumbReports'), href: '/reports' },
+    { label: tServer(locale, 'reportsNewPage.breadcrumbNew') }
   ]} />
   <div class="space-y-6">
     <div>
-      <h1 class="text-xl font-semibold tracking-tight">Create Report</h1>
+      <h1 class="text-xl font-semibold tracking-tight">{tServer(locale, 'reportsNewPage.heading')}</h1>
       <p class="text-muted-foreground">
-        Configure a new report to track and analyze your infrastructure.
+        {tServer(locale, 'reportsNewPage.description')}
       </p>
     </div>
 

@@ -511,3 +511,64 @@ var errTestCommandFailed = &testCommandError{"exit status 1"}
 type testCommandError struct{ msg string }
 
 func (e *testCommandError) Error() string { return e.msg }
+
+// hasCommand reports whether calls contains a recorded invocation whose
+// name+args, joined with spaces, equals full exactly.
+func hasCommand(calls []recordedCommand, full string) bool {
+	for _, c := range calls {
+		joined := strings.TrimSpace(c.name + " " + strings.Join(c.args, " "))
+		if joined == full {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRestoreSystemStateOffline_AppliesUnderRootWithoutTouchingHost(t *testing.T) {
+	root := t.TempDir()
+	staging := t.TempDir()
+	mustWriteFile(t, filepath.Join(staging, "etc", "hostname"), "srv-1\n")
+	mustWriteFile(t, filepath.Join(staging, "services", "systemd.txt"), "ssh.service enabled\ncron.service enabled\n")
+	mustWriteFile(t, filepath.Join(staging, "firewall", "iptables.rules"), "*filter\nCOMMIT\n")
+	mustWriteFile(t, filepath.Join(staging, "crontabs", "spool", "root"), "* * * * * /bin/true\n")
+	mustWriteFile(t, filepath.Join(staging, "packages", "dpkg.txt"), "vim\tinstall\n")
+	mustWriteFile(t, filepath.Join(root, "etc", "passwd"), "root:x:0:0:root:/root:/bin/bash\n")
+	mustWriteFile(t, filepath.Join(root, "etc", "group"), "root:x:0:\ncrontab:x:105:\n")
+	mustWriteFile(t, filepath.Join(root, "usr", "sbin", "netfilter-persistent"), "#!/bin/sh\n")
+	recorded := fakeCommands(t, map[string]error{})
+
+	warnings, err := RestoreSystemStateOffline(context.Background(), root, staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "etc", "hostname")); string(b) != "srv-1\n" {
+		t.Errorf("etc tree not applied under root: %q", b)
+	}
+	if !hasCommand(*recorded, "systemctl --root="+root+" enable ssh.service") || !hasCommand(*recorded, "systemctl --root="+root+" enable cron.service") {
+		t.Errorf("services not enabled offline: %+v", *recorded)
+	}
+	for _, c := range *recorded {
+		if strings.HasPrefix(c.name, "iptables-restore") || c.name == "crontab" || c.name == "dpkg" || c.name == "apt-get" || c.name == "bash" {
+			t.Errorf("offline apply must not run %q against the host", c.name)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "etc", "iptables", "rules.v4")); !strings.Contains(string(b), "COMMIT") {
+		t.Errorf("firewall rules not staged for first boot: %q", b)
+	}
+	if fi, err := os.Stat(filepath.Join(root, "var", "spool", "cron", "crontabs", "root")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("crontab not placed (err=%v mode=%v)", err, fi)
+	}
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, "package reinstall skipped") {
+		t.Errorf("warnings = %v", warnings)
+	}
+}
+
+func TestRestoreSystemStateOffline_RejectsLiveRoot(t *testing.T) {
+	if _, err := RestoreSystemStateOffline(context.Background(), "", t.TempDir()); err == nil {
+		t.Fatal("expected an error for an empty root")
+	}
+	if _, err := RestoreSystemStateOffline(context.Background(), "/", t.TempDir()); err == nil {
+		t.Fatal("expected an error for root \"/\"")
+	}
+}

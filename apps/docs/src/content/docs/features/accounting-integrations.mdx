@@ -40,6 +40,17 @@ QuickBooks Online connects through Intuit's standard OAuth consent flow. Once co
   Connecting and disconnecting QuickBooks are **MFA-gated** — you may be prompted to complete multi-factor authentication before the action goes through.
 </Aside>
 
+### Who can use the QuickBooks integration
+
+Since v0.112.0 the QuickBooks integration is gated by two dedicated permissions instead of the general billing and invoice permissions:
+
+| Permission | Grants |
+|---|---|
+| **Accounting: read** (`accounting:read`) | See the connection status, browse and import QuickBooks customers, and view customer and income-account mappings. |
+| **Accounting: manage** (`accounting:manage`) | Connect and disconnect QuickBooks, change push settings, edit and sync mappings, reconcile, and push invoices (each also asks for MFA). |
+
+**Partner Admin** holds both through its full-access grant, and the built-in **Org Admin** role is granted both on upgrade. **Every other role — including Partner Technician, Partner Billing and any custom role — must be granted the keys explicitly in Settings → Roles**, or its users get a 403 on the QuickBooks tab and sync actions. The permissions apply only to the QuickBooks routes; the Stripe payments sub-tab is unchanged. Recording and voiding invoice payments in Breeze still uses **Invoices: write**.
+
 ### What syncs
 
 | Item | Direction | Notes |

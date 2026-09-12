@@ -49,6 +49,10 @@ Your tenant's MCP SSE endpoint is surfaced in two places in the dashboard so you
 
 Both cards resolve the URL from the tenant you're connecting to, so what's shown is what the AI client should use.
 
+<Aside type="note" title="Who can see and disconnect connected apps">
+  Since v0.112.0 the **Settings → Connected Apps** list needs the `connected_apps:read` permission, and disconnecting an app needs `connected_apps:manage` plus a multi-factor step-up. Both are held by Partner Admin and (after the upgrade) the built-in Org Admin only; grant them to any other role that manages OAuth/MCP clients in **Settings → Roles**. Managing connected apps also requires a partner-scope session with access to every organization.
+</Aside>
+
 ---
 
 ## Authentication

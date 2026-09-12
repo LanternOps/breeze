@@ -4,6 +4,7 @@
     "analytics": "Analitik",
     "approvals": "Onaylar",
     "denials": "Reddediliyor",
+    "proposals": "Komut Dosyası Önerileri",
     "failedToLoadData": "Veri yüklenemedi",
     "failedToLoadToolExecutions": "Araç uygulamaları yüklenemedi",
     "guardrails": "Korkuluklar",
@@ -16,6 +17,19 @@
     "value24h": "24 saat",
     "value30d": "30g",
     "value7d": "7g"
+  },
+  "aiRiskScriptProposalsPanel": {
+    "title": "Komut Dosyası Önerileri",
+    "proposalsPerDay": "Günlük öneriler",
+    "reviewerDisagreements": "İnceleyici anlaşmazlıkları",
+    "humanRejectedAfterApprove": "Yapay zeka onayladıktan sonra insan reddetti",
+    "humanApprovedAfterReject": "Yapay zeka reddettikten sonra insan onayladı",
+    "unattendedRuns": "Gözetimsiz çalıştırmalar",
+    "laneState": "Gözetimsiz şerit",
+    "laneOpen": "Açık (tekrarlanan doğrulama hatalarından sonra duraklatıldı)",
+    "laneClosed": "Kapalı",
+    "laneNotConfigured": "Bu kuruluş için yapılandırılmadı",
+    "noData": "Bu dönemde komut dosyası önerisi yok"
   },
   "aiRiskApprovalHistoryFeed": {
     "all2": "Hepsi",

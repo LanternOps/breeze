@@ -14,6 +14,7 @@ const { state } = vi.hoisted(() => ({
     // captured writes
     inserts: [] as { table: string; values: Record<string, unknown> }[],
     updates: [] as { table: string; set: Record<string, unknown> }[],
+    locks: [] as { table: string; mode: string }[],
     // id to hand back from comment insert .returning()
     insertedCommentId: 'c-1' as string
   }
@@ -105,7 +106,8 @@ vi.mock('../../db', () => {
         }
         return Promise.resolve(rows);
       },
-      for(_mode: string) {
+      for(mode: string) {
+        state.locks.push({ table: resolvedTable, mode });
         return chain;
       },
     };
@@ -162,7 +164,8 @@ vi.mock('../../db/schema', () => ({
     id: 'id', partnerId: 'partnerId', orgId: 'orgId', status: 'status', subject: 'subject',
     emailThreadKey: 'emailThreadKey', emailMessageId: 'emailMessageId',
     internalNumber: 'internalNumber', resolvedAt: 'resolvedAt', updatedAt: 'updatedAt',
-    deletedAt: 'deletedAt', submittedBy: 'submittedBy', submitterEmail: 'submitterEmail'
+    deletedAt: 'deletedAt', submittedBy: 'submittedBy', requesterContactId: 'requesterContactId',
+    submitterEmail: 'submitterEmail'
   },
   ticketComments: { __t: 'ticket_comments', ticketId: 'ticketId' },
   portalUsers: { __t: 'portal_users', id: 'id', orgId: 'orgId', email: 'email' },
@@ -279,6 +282,7 @@ beforeEach(() => {
   state.selectRows['partners'] = [{ status: 'active' }];
   state.inserts = [];
   state.updates = [];
+  state.locks = [];
   state.insertedCommentId = 'c-1';
   resolveMock.mockReset();
   createTicketMock.mockReset();
@@ -1391,6 +1395,7 @@ describe('subject-token matches are bound to the sender (§1.3)', () => {
       emailThreadKey: '<anchor-b@tickets.example.com>',
       internalNumber: VICTIM_TOKEN,
       submittedBy: 'pu-victim',
+      requesterContactId: 'ct-victim',
       submitterEmail: 'victim@customer-b.example',
       ...overrides,
     };
@@ -1466,6 +1471,7 @@ describe('subject-token matches are bound to the sender (§1.3)', () => {
   });
 
   it('ALLOWED: the ticket requester replying by token still matches (comment + reopen)', async () => {
+    state.selectRows['portal_users'] = [{ id: 'pu-b', orgId: 'org-b', contactId: null }];
     await processInboundEmail(email({
       from: 'Victim@Customer-B.example', // case-insensitive match on submitter_email
       subject: `Re: [${VICTIM_TOKEN}] any update?`,
@@ -1476,32 +1482,90 @@ describe('subject-token matches are bound to the sender (§1.3)', () => {
     expect(reopened()).toHaveLength(1);
     expect(inboundOf()[0]!.parseStatus).toBe('matched');
     expect(inboundOf()[0]!.ticketId).toBe('t-victim');
+    expect(state.locks).toContainEqual({ table: 'tickets', mode: 'update' });
   });
 
-  it('ALLOWED: a portal user / email contact in the ticket org matches by token', async () => {
-    state.selectRows['tickets'] = [victimTicket({ submitterEmail: null, submittedBy: null })];
-    state.selectRows['portal_users'] = [{ id: 'pu-b2', orgId: 'org-b' }];
+  it('DENIED: a preserved submitter-email snapshot is not authority after the ticket moves orgs', async () => {
+    state.selectRows['portal_users'] = [{ id: 'pu-source', orgId: 'org-a', contactId: null }];
+    createTicketMock.mockResolvedValue({ id: 't-source-fallback', internalNumber: 'T-2026-0503' });
+
+    await processInboundEmail(email({
+      from: 'Victim@Customer-B.example',
+      subject: `Re: [${VICTIM_TOKEN}] stale moved-ticket identity`,
+    }));
+
+    expect(comments()).toHaveLength(0);
+    expect(reopened()).toHaveLength(0);
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    expect((createTicketMock.mock.calls[0]![0] as Record<string, unknown>).orgId).toBe('org-a');
+  });
+
+  it('DENIED: a legacy contact-only ticket cannot be claimed without a current portal identity', async () => {
+    state.selectRows['tickets'] = [victimTicket({ submitterEmail: null, submittedBy: null, requesterContactId: 'legacy-contact' })];
+
+    await processInboundEmail(email({
+      from: 'legacy-contact@customer-b.example',
+      subject: `Re: [${VICTIM_TOKEN}] legacy contact`,
+    }));
+
+    expect(comments()).toHaveLength(0);
+    expect(reopened()).toHaveLength(0);
+  });
+
+  it('DENIED: a different portal user in the ticket org cannot claim an enumerable token', async () => {
+    state.selectRows['tickets'] = [victimTicket({ submitterEmail: null })];
+    state.selectRows['portal_users'] = [{ id: 'pu-b2', orgId: 'org-b', contactId: 'ct-colleague' }];
+    createTicketMock.mockResolvedValue({ id: 't-colleague', internalNumber: 'T-2026-0501' });
 
     await processInboundEmail(email({
       from: 'colleague@customer-b.example',
       subject: `Re: [${VICTIM_TOKEN}] adding myself`,
     }));
 
-    expect(comments()).toHaveLength(1);
-    expect(comments()[0]!.portalUserId).toBe('pu-b2');
-    expect(inboundOf()[0]!.parseStatus).toBe('matched');
+    expect(comments()).toHaveLength(0);
+    expect(reopened()).toHaveLength(0);
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    expect((createTicketMock.mock.calls[0]![0] as Record<string, unknown>).orgId).toBe('org-b');
+    expect(inboundOf()[0]!.ticketId).toBe('t-colleague');
   });
 
-  it('ALLOWED: a sender whose domain is mapped to the ticket org matches by token', async () => {
+  it('DENIED: a mapped-domain sender in the ticket org cannot claim an enumerable token', async () => {
     state.selectRows['tickets'] = [victimTicket({ submitterEmail: null, submittedBy: null })];
     resolveOrgMock.mockResolvedValue({ orgId: 'org-b', autoCreateContact: false });
+    createTicketMock.mockResolvedValue({ id: 't-domain-sender', internalNumber: 'T-2026-0502' });
 
     await processInboundEmail(email({
       from: 'newperson@customer-b.example',
       subject: `Re: [${VICTIM_TOKEN}] hello`,
     }));
 
+    expect(comments()).toHaveLength(0);
+    expect(reopened()).toHaveLength(0);
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    expect((createTicketMock.mock.calls[0]![0] as Record<string, unknown>).orgId).toBe('org-b');
+    expect(inboundOf()[0]!.ticketId).toBe('t-domain-sender');
+  });
+
+  it('ALLOWED: the exact requester contact may match by enumerable token through its portal login', async () => {
+    state.selectRows['tickets'] = [victimTicket({
+      submitterEmail: null,
+      submittedBy: null,
+      requesterContactId: 'ct-requester',
+    })];
+    state.selectRows['portal_users'] = [{
+      id: 'pu-requester-login',
+      orgId: 'org-b',
+      contactId: 'ct-requester',
+    }];
+
+    await processInboundEmail(email({
+      from: 'requester-new-address@customer-b.example',
+      subject: `Re: [${VICTIM_TOKEN}] still waiting`,
+    }));
+
     expect(comments()).toHaveLength(1);
+    expect(comments()[0]!.portalUserId).toBe('pu-requester-login');
+    expect(reopened()).toHaveLength(1);
     expect(inboundOf()[0]!.parseStatus).toBe('matched');
   });
 

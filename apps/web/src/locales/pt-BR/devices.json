@@ -278,7 +278,8 @@
     "loadMore": "Carregar mais",
     "couldnTLoadMore": "Não foi possível carregar mais.",
     "viewAllActivity2": "Ver toda a atividade",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "Ver proposta"
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Falha ao buscar o histórico de alertas",

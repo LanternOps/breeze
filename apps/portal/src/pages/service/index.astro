@@ -1,0 +1,38 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import { ServiceScorecard } from '../../components/portal/ServiceScorecard';
+import { ErrorNotice, PageHeader } from '../../components/portal/ui';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+import { redirectToLoginAfter401 } from '../../lib/session';
+import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
+
+const response = await portalApi.getService(buildServerApiConfig(Astro.request));
+if (response.statusCode === 401) {
+  return redirectToLoginAfter401(Astro);
+}
+
+// enable_service off 403s with PORTAL_SERVICE_DISABLED. A page the org never
+// turned on is a setting, not a fault, so it bounces to the one page no
+// visibility flag can switch off (#4932). Other 403s ("Account is not active")
+// still render inline through the notice below.
+if (isPortalPageDisabled(response)) {
+  return redirectToPortalHomeAfterDisabled(Astro);
+}
+---
+
+<PortalLayout title="Service">
+  {
+    response.data
+      ? <ServiceScorecard client:load overview={response.data} />
+      : (
+          <div data-testid="portal-service-error">
+            <PageHeader
+              title="Service"
+              lede="What we look after for you, and what we delivered."
+            />
+            <ErrorNotice>We couldn't load your service summary just now. Your IT team can help.</ErrorNotice>
+          </div>
+        )
+  }
+</PortalLayout>

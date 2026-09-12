@@ -1,6 +1,7 @@
-import { and, eq, inArray, isNull, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthClients, oauthClientPartnerGrants, oauthGrants, oauthRefreshTokens } from '../db/schema';
+import { revokeGrantsDurablyInCurrentDbContext } from './grantStatus';
 import { writeOAuthRevocationMarkerDurably } from './revocationRetry';
 import { ERROR_IDS, logOauthError } from './log';
 
@@ -172,16 +173,16 @@ async function revokeClientFamiliesInSystemContext(
   const grantIds = grants.map((g) => g.id);
   const refreshIds = refreshRows.map((r) => r.id);
 
-  if (grantIds.length > 0) {
-    await db
-      .update(oauthGrants)
-      .set({
-        revokedAt: now,
-        revokedByUserId: opts.revokedByUserId ?? null,
-        revokedReason: opts.reason ?? null,
-      })
-      .where(inArray(oauthGrants.id, grantIds));
-  }
+  // Consumes every live authorization code for these Grants, then stamps
+  // revoked_at — see revokeGrantsDurablyInCurrentDbContext for why that order.
+  // The explicit refresh rows are revoked separately below because a partner
+  // disconnect revokes only the ids its scope query selected.
+  await revokeGrantsDurablyInCurrentDbContext({
+    grantIds,
+    reason: opts.reason ?? null,
+    revokedByUserId: opts.revokedByUserId ?? null,
+    now,
+  });
 
   if (refreshIds.length > 0) {
     await db

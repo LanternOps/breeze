@@ -123,6 +123,14 @@ export interface ProcessResultsResult {
       kind?: 'symlink' | 'dir';
       linkTarget?: string;
     }>;
+    // D18 (#5429/§3.1): must mirror backupSnapshotSummarySchema, or
+    // agentWs.ts's caller can construct a ProcessResultsResult carrying these
+    // fields (from the parsed WS ingress payload) that TypeScript happily
+    // accepts here, then loses at the very next hop when
+    // backupQueueJobDataSchema.parse(...) strict-validates it.
+    baseSnapshotId?: string;
+    formatVersion?: number;
+    backupIdentity?: string;
   };
   error?: string;
 }

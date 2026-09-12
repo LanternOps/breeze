@@ -379,6 +379,62 @@ const moveAiOperatorTasks: CustomMergeExecutor = async () => ({ moved: 0, droppe
 const moveTicketDrafts: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
 
 // ---------------------------------------------------------------------------
+// script_proposals — FENCE, then leave for erasure (AI script authoring W01b).
+//
+// Same deviation from "every executor leaves ZERO rows behind" as
+// fenceAiOperatorTasks above, for the same reason: a proposal's evidence — its
+// reviews, its intent, its execution — all stays with the loser, so repointing
+// the proposal alone would split one incident's story across two orgs. Its
+// org_id also anchors the composite (proposal_id, org_id) FK from
+// script_proposal_reviews, so a bare repoint would 23503 regardless.
+//
+// Why `custom` rather than plain `leave-for-erasure`: leaving the rows alone is
+// not safe. `devices` is a plain `repoint` table, so every target device moves
+// to the survivor in the move phase — and a proposal still in a non-terminal
+// state with `intent_id IS NULL` remains consumable by a run_script call, which
+// would dispatch a real script to a device that now belongs to someone else,
+// authorised by a tenant that no longer exists.
+//
+// It runs in the RESOLVE phase, which is what makes "before devices repoint"
+// true: resolve completes for every table before move starts for any of them.
+// ---------------------------------------------------------------------------
+
+/** Non-terminal proposal states — the ones the fence stops. */
+const SCRIPT_PROPOSAL_LIVE_STATUSES = sql`('proposed', 'reviewed', 'approved', 'changes_requested', 'review_failed')`;
+
+const fenceScriptProposals: CustomMergeExecutor = async (loser) => {
+  const fenced = await run(sql`
+    UPDATE script_proposals
+       SET status = 'expired',
+           decision_note = left(
+             coalesce(decision_note || E'\n', '')
+             || 'Expired by an organization merge: the owning organization was merged away, so this proposal can no longer be run.',
+             4000)
+     WHERE org_id = ${uuid(loser)}
+       AND status IN ${SCRIPT_PROPOSAL_LIVE_STATUSES}`);
+
+  return {
+    moved: 0,
+    dropped: 0,
+    notes: fenced > 0
+      ? [
+        `script_proposals: expired ${fenced} live AI script proposal(s) from the merged-away org so `
+        + 'none can be dispatched to devices that now belong to the surviving organization. The '
+        + 'proposal records themselves are NOT re-tenanted — proposal and review evidence stays with '
+        + 'the source org and is erased with the loser shell. Re-propose under the surviving '
+        + 'organization if the work still needs doing.',
+      ]
+      : [],
+  };
+};
+
+/**
+ * script_proposals, MOVE half — a no-op. The resolve half did the whole
+ * disposition; the rows stay put on purpose (leave-for-erasure semantics).
+ */
+const moveScriptProposals: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
+
+// ---------------------------------------------------------------------------
 // plugin_installations — `plugin_installations_org_catalog_unique (org_id,
 // catalog_id)`. `plugin_logs.installation_id` is NOT NULL with a NO ACTION FK,
 // so the old dedupe DELETE aborted the merge for any plugin that had ever
@@ -705,6 +761,44 @@ const mergeAuditBaselines: CustomMergeExecutor = async (loser, survivor) => {
 
   const moved = await run(buildRepoint('audit_baselines', loser, survivor));
   return { moved, dropped: 0, notes };
+};
+
+// ---------------------------------------------------------------------------
+// service_deliverables — `service_deliverables_org_contract_name_uq (org_id,
+// COALESCE(contract_id, nil), name)` (2026-10-15-170000, feature #5573). A
+// repoint-dedupe DELETE would take the loser's `service_deliverable_occurrences`
+// and `service_deliverable_evidence` with it (both ON DELETE CASCADE) — that is
+// the delivered/waived history the customer portal shows, so it is never
+// disposable. Rename on collision instead, the audit_baselines move: the
+// suffix is deterministic, fires only on an actual collision, and
+// `left(name, 182)` keeps the result inside varchar(200). Contracts keep their
+// ids across a merge, so the collision key is evaluated on the pre-repoint
+// contract_id and stays correct after the move.
+// ---------------------------------------------------------------------------
+const NIL_UUID = sql`'00000000-0000-0000-0000-000000000000'::uuid`;
+
+const mergeServiceDeliverables: CustomMergeExecutor = async (loser, survivor) => {
+  const renamed = await run(sql`
+    UPDATE service_deliverables AS t
+       SET name = left(t.name, 182) || ' (merged ' || left(${uuid(loser)}::text, 8) || ')',
+           updated_at = now()
+     WHERE t.org_id = ${uuid(loser)}
+       AND EXISTS (
+         SELECT 1 FROM service_deliverables AS s
+          WHERE s.org_id = ${uuid(survivor)}
+            AND s.name = t.name
+            AND COALESCE(s.contract_id, ${NIL_UUID}) = COALESCE(t.contract_id, ${NIL_UUID})
+       )`);
+  const moved = await run(buildRepoint('service_deliverables', loser, survivor));
+  return {
+    moved,
+    dropped: 0,
+    notes: renamed > 0
+      ? [
+        `service_deliverables: renamed ${renamed} deliverable from the merged-away org whose name already existed under the survivor for the same contract (suffixed with the merged org id; occurrences and evidence kept)`,
+      ]
+      : [],
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -1152,6 +1246,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   contacts: mergeContacts,
   backup_configs: mergeBackupConfigs,
   audit_baselines: mergeAuditBaselines,
+  service_deliverables: mergeServiceDeliverables,
   pax8_orders: mergePax8Orders,
   fleet_findings: mergeFleetFindings,
   ai_agents: mergeAiAgents,
@@ -1167,6 +1262,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   reports: mergeReports,
   ticket_drafts: moveTicketDrafts,
   ai_operator_tasks: moveAiOperatorTasks,
+  script_proposals: moveScriptProposals,
 };
 
 /**
@@ -1189,6 +1285,9 @@ export const CUSTOM_RESOLVE_EXECUTORS: Readonly<Record<string, CustomMergeExecut
   // Must run in resolve, not move: ai_agents is a PARENT of ai_operator_tasks
   // and would otherwise repoint first. See fenceAiOperatorTasks' header.
   ai_operator_tasks: fenceAiOperatorTasks,
+  // Must run in resolve, not move: `devices` repoints in the move phase and a
+  // live proposal targeting one of them would still be consumable.
+  script_proposals: fenceScriptProposals,
 };
 
 /**
@@ -1219,6 +1318,10 @@ export const CUSTOM_WOULD_REVOKE_COUNTS: Readonly<Record<string, (loser: string)
     SELECT count(*)::int AS n FROM ai_operator_tasks
      WHERE org_id = ${uuid(loser)}
        AND state IN ${AI_OPERATOR_LIVE_TASK_STATES}`,
+  script_proposals: (loser) => sql`
+    SELECT count(*)::int AS n FROM script_proposals
+     WHERE org_id = ${uuid(loser)}
+       AND status IN ${SCRIPT_PROPOSAL_LIVE_STATUSES}`,
 };
 
 /**

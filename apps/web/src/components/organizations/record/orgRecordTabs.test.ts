@@ -100,3 +100,39 @@ describe('TAB_PERMISSION registry', () => {
     for (const tab of ORG_RECORD_TABS) expect(TAB_PERMISSION[tab]).toBeDefined();
   });
 });
+
+describe('Service tab (#5573 W01)', () => {
+  it('sits directly after Contracts & Billing in declaration order', () => {
+    const billingAt = ORG_RECORD_TABS.indexOf('billing');
+    expect(billingAt).toBeGreaterThanOrEqual(0);
+    expect(ORG_RECORD_TABS[billingAt + 1]).toBe('service');
+  });
+
+  it('is gated on contracts:read only', () => {
+    expect(TAB_PERMISSION.service).toEqual([{ resource: 'contracts', action: 'read' }]);
+    expect(visibleTabs(grants(['contracts', 'read']), 'native')).toContain('service');
+    expect(visibleTabs(grants(['invoices', 'read']), 'native')).not.toContain('service');
+    expect(tabFromHash('#service')).toBe('service');
+  });
+});
+
+describe('Documents tab (#5573 W03)', () => {
+  it('declares Documents after Service and before Activity', () => {
+    expect([...ORG_RECORD_TABS]).toEqual([
+      'overview', 'contacts', 'sites', 'devices', 'tickets', 'billing', 'service', 'documents', 'activity',
+    ]);
+  });
+
+  it('gates Documents on documents:read', () => {
+    expect(TAB_PERMISSION.documents).toEqual([{ resource: 'documents', action: 'read' }]);
+    expect(visibleTabs(grants(['documents', 'read']), 'native')).toContain('documents');
+    expect(visibleTabs(grants(['organizations', 'read']), 'native')).not.toContain('documents');
+    expect(tabFromHash('#documents')).toBe('documents');
+  });
+
+  it('stays visible in every service-management mode — a runbook outlives the PSA choice', () => {
+    for (const mode of ['native', 'off', 'external'] as const) {
+      expect(visibleTabs(grants(['documents', 'read']), mode)).toContain('documents');
+    }
+  });
+});

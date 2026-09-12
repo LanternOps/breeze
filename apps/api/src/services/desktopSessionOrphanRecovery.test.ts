@@ -36,6 +36,10 @@ function dependencies(): DesktopOrphanRecoveryDependencies {
     loadSession: vi.fn(async () => session),
     observeSharedState: vi.fn(async () => ({
       ownerPresent: false,
+      // Default fixture models a session that once held the desktop WS owner
+      // lease and then lost it (the genuine orphan shape). Never-owned P2P
+      // sessions are covered explicitly below.
+      everOwned: true,
       finalizationId: null,
       canonicalPayload: null,
       consistent: true,
@@ -72,18 +76,21 @@ describe('desktop orphan recovery', () => {
     for (const observed of [
       {
         ownerPresent: true,
+        everOwned: true,
         finalizationId: null,
         canonicalPayload: null,
         consistent: true,
       },
       {
         ownerPresent: false,
+        everOwned: true,
         finalizationId: '55555555-5555-4555-8555-555555555555',
         canonicalPayload: null,
         consistent: false,
       },
       {
         ownerPresent: false,
+        everOwned: true,
         finalizationId: null,
         canonicalPayload: null,
         consistent: false,
@@ -98,6 +105,106 @@ describe('desktop orphan recovery', () => {
       await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
       expect(deps.claimOrphanIntent).not.toHaveBeenCalled();
     }
+  });
+
+  it('never finalizes a desktop session that never bound a WebSocket owner (P2P viewer transport)', async () => {
+    // A WebRTC peer-to-peer desktop session only polls
+    // GET /desktop-ws/:id/viewer/session; it never opens the desktop
+    // WebSocket, so `remote:ws:{desktop:<id>}:owner` is never acquired and the
+    // `:generation` key is never INCR'd. To the sweeper that looks exactly
+    // like a lost owner lease, and every P2P session was finalized with
+    // error_message='orphan_recovery' ~30-60s after going active -- the same
+    // bug class as the terminal-session reaping in #2871.
+    const deps = dependencies();
+    vi.mocked(deps.observeSharedState).mockResolvedValue({
+      ownerPresent: false,
+      everOwned: false,
+      finalizationId: null,
+      canonicalPayload: null,
+      consistent: true,
+    });
+    const service = createDesktopSessionOrphanRecoveryService(deps);
+
+    // Two passes separated by more than a full lease TTL -- the exact cadence
+    // that claims and finalizes a genuine orphan.
+    await expect(service.recover(session.id, 'background')).resolves.toBe('not_orphaned');
+    deps.setNow!(31_000);
+    await expect(service.recover(session.id, 'background')).resolves.toBe('not_orphaned');
+    deps.setNow!(120_000);
+    await expect(service.recover(session.id, 'admission')).resolves.toBe('not_orphaned');
+
+    expect(deps.claimOrphanIntent).not.toHaveBeenCalled();
+    expect(deps.finalize).not.toHaveBeenCalled();
+    expect(deps.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('still finalizes a session that once held the owner lease and lost it (positive control)', async () => {
+    const deps = dependencies();
+    vi.mocked(deps.observeSharedState).mockResolvedValue({
+      ownerPresent: false,
+      everOwned: true,
+      finalizationId: null,
+      canonicalPayload: null,
+      consistent: true,
+    });
+    const service = createDesktopSessionOrphanRecoveryService(deps);
+
+    await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
+    deps.setNow!(31_000);
+    await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
+
+    expect(deps.claimOrphanIntent).toHaveBeenCalledTimes(1);
+    expect(deps.claimOrphanIntent).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: session.id,
+      reason: 'orphan_recovery',
+      terminalStatus: 'failed',
+    }));
+    expect(deps.finalize).toHaveBeenCalledTimes(1);
+  });
+
+  it('still drives a persisted finalization intent on a never-owned session', async () => {
+    // The never-owned guard only applies to the "no intent at all" branch. A
+    // persisted intent on a session whose generation key is absent (e.g. the
+    // key was lost, or an operator-driven intent) must still be driven to
+    // completion exactly as before.
+    const deps = dependencies();
+    const persistedInput = {
+      version: 1 as const,
+      finalizationId: '66666666-6666-4666-8666-666666666666',
+      sessionId: session.id,
+      connection: {
+        connectionId: '77777777-7777-4777-8777-777777777777',
+        generation: 4,
+        instanceId: '88888888-8888-4888-8888-888888888888',
+        leaseToken: '99999999-9999-4999-8999-999999999999',
+      },
+      orgId: session.orgId,
+      userId: session.userId,
+      deviceId: session.deviceId,
+      reason: 'socket_error' as const,
+      terminalStatus: 'failed' as const,
+      endedAt: '2026-07-25T12:01:00.000Z',
+      startedAt: '2026-07-25T12:00:00.000Z',
+      inputEvents: 4,
+      frameBytes: 128,
+    };
+    vi.mocked(deps.observeSharedState).mockResolvedValue({
+      ownerPresent: false,
+      everOwned: false,
+      finalizationId: persistedInput.finalizationId,
+      canonicalPayload: JSON.stringify(persistedInput),
+      consistent: true,
+    });
+    const service = createDesktopSessionOrphanRecoveryService(deps);
+
+    await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
+
+    expect(deps.claimOrphanIntent).not.toHaveBeenCalled();
+    expect(deps.finalize).toHaveBeenCalledWith(persistedInput);
+    expect(deps.enqueue).toHaveBeenCalledWith({
+      sessionId: session.id,
+      finalizationId: persistedInput.finalizationId,
+    });
   });
 
   it('finalizes and releases only after the exact durable stop is confirmed', async () => {
@@ -205,6 +312,7 @@ describe('desktop orphan recovery', () => {
     };
     vi.mocked(deps.observeSharedState).mockResolvedValue({
       ownerPresent: false,
+      everOwned: true,
       finalizationId: persistedInput.finalizationId,
       canonicalPayload: JSON.stringify(persistedInput),
       consistent: true,
@@ -257,6 +365,7 @@ describe('desktop orphan recovery', () => {
     };
     vi.mocked(deps.observeSharedState).mockResolvedValue({
       ownerPresent: false,
+      everOwned: true,
       finalizationId: persistedInput.finalizationId,
       canonicalPayload: JSON.stringify(persistedInput),
       consistent: true,
@@ -318,6 +427,7 @@ describe('desktop orphan recovery', () => {
     };
     vi.mocked(deps.observeSharedState).mockResolvedValue({
       ownerPresent: false,
+      everOwned: true,
       finalizationId: persistedInput.finalizationId,
       canonicalPayload: JSON.stringify(persistedInput),
       consistent: true,
@@ -360,6 +470,7 @@ describe('desktop orphan recovery', () => {
     };
     vi.mocked(deps.observeSharedState).mockResolvedValue({
       ownerPresent: false,
+      everOwned: true,
       finalizationId: persistedInput.finalizationId,
       canonicalPayload: JSON.stringify(persistedInput),
       consistent: true,
@@ -421,6 +532,7 @@ describe('desktop orphan recovery', () => {
     // First episode: escalate past the threshold.
     vi.mocked(deps.observeSharedState).mockResolvedValue({
       ownerPresent: false,
+      everOwned: true,
       finalizationId: resolvedFinalizationId,
       canonicalPayload: JSON.stringify(resolvedInput),
       consistent: true,
@@ -442,6 +554,7 @@ describe('desktop orphan recovery', () => {
     );
     vi.mocked(deps.observeSharedState).mockResolvedValue({
       ownerPresent: false,
+      everOwned: true,
       finalizationId: newFinalizationId,
       canonicalPayload: JSON.stringify(newInput),
       consistent: true,
@@ -454,6 +567,7 @@ describe('desktop orphan recovery', () => {
     const deps = dependencies();
     vi.mocked(deps.observeSharedState).mockResolvedValue({
       ownerPresent: false,
+      everOwned: true,
       finalizationId: '66666666-6666-4666-8666-666666666666',
       // Not valid JSON -- exercises the JSON.parse failure branch of the
       // bare `catch { return 'retained' }` this used to be (#3945). A

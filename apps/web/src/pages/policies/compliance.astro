@@ -6,7 +6,7 @@ import Breadcrumbs from '../../components/layout/Breadcrumbs';
 const policyId = Astro.url.searchParams.get('policyId') ?? undefined;
 ---
 
-<DashboardLayout title="Compliance Dashboard">
+<DashboardLayout titleKey="titles.policiesCompliance">
   <Breadcrumbs client:load items={[
     { label: 'Policies', href: '/policies' },
     { label: 'Compliance' }

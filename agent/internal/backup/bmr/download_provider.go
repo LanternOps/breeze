@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/httputil"
 )
 
@@ -74,6 +75,25 @@ func (e *downloadStatusError) Error() string {
 		return fmt.Sprintf("bmr: download failed with status %d: %s", e.statusCode, e.message)
 	}
 	return fmt.Sprintf("bmr: download failed with status %d", e.statusCode)
+}
+
+// Is reports a 404 downloadStatusError as providers.ErrObjectNotFound so
+// every caller that distinguishes "confirmed absent" from "some other
+// download failure" via errors.Is(err, providers.ErrObjectNotFound) —
+// DownloadSystemState's soft ErrNoSystemState skip is the one that
+// surfaced this via the QEMU end-to-end proof (W04b Task 4): a recovery
+// token's HTTP download path returned this error's un-translated 404
+// straight through, so a snapshot with no system state failed preflight
+// hard instead of taking the intended soft-skip path — never wrapped
+// providers.ErrObjectNotFound at all, unlike LocalProvider/S3Provider's
+// own Download implementations — was ALWAYS unreachable for a
+// token/HTTP-driven recovery (every BMR token recovery goes through this
+// provider, never LocalProvider/S3Provider directly: see
+// newRecoveryDownloadProvider). A 401/403/5xx/etc. still does not satisfy
+// this — those are exactly the "not confirmed absent" cases
+// ErrObjectNotFound's own doc comment says must never match.
+func (e *downloadStatusError) Is(target error) bool {
+	return e.statusCode == http.StatusNotFound && target == providers.ErrObjectNotFound
 }
 
 // isRetryableDownloadStatus reports whether a status is a transient

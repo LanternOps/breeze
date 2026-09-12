@@ -69,10 +69,15 @@ import type { PostToolUseCallback, PreToolUseCallback } from '../aiAgentSdkTools
 import { calculateCostCents, recordSessionlessSdkUsage } from '../aiCostTracker';
 import type { AiBillingSource } from '../aiCostTracker';
 import {
+  markAiBudgetReservationIndeterminate,
+  reserveAiBudget,
+} from '../aiBudgetReservations';
+import {
   checkAgentGuardrails,
   TOOL_ACTION_INPUT_KEYS,
   type AgentGuardrailPolicy,
 } from '../aiGuardrails';
+import { loadProposalGuardrailContext } from '../scriptProposals';
 import { publishEvent } from '../eventBus';
 import { resolveLlmConfigForOrg } from '../llm/llmConfigResolver';
 import type { UsableLlmConfig } from '../llm/llmConfigResolver';
@@ -760,7 +765,8 @@ export function createAgentRunPreToolUse(args: {
       return { allowed: true };
     }
 
-    const check = checkAgentGuardrails(toolName, input, guardrailPolicy);
+    const guardrailContext = await loadProposalGuardrailContext(input, run.orgId);
+    const check = checkAgentGuardrails(toolName, input, guardrailPolicy, guardrailContext);
 
     if (check.disposition === 'deny') {
       const reason = check.reason ?? 'Denied by agent guardrails';
@@ -1548,6 +1554,21 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     onlyTools ? { onlyTools } : undefined);
 
   const prompt = promptContext(ctx, effective);
+  // S8: the ONE surface with a genuinely stable request identity — the agent
+  // run's own id. Re-driving a run therefore rejoins its existing reservation
+  // instead of taking a second hold on the org's cap.
+  const reservation = await reserveAiBudget({
+    orgId: run.orgId,
+    idempotencyKey: `ai-agent-run:${run.id}`,
+    billingSource,
+  });
+  if (reservation.kind === 'denied') {
+    throw new AgentRunError('org_budget_exceeded', reservation.message);
+  }
+  const reservationId = reservation.reservationId;
+  const maxBudgetCents = reservation.kind === 'reserved'
+    ? Math.min(runLimits.maxBudgetCentsPerRun, reservation.reservedCostCents)
+    : runLimits.maxBudgetCentsPerRun;
   const abortController = new AbortController();
   let wallClockExceeded = false;
   let budgetExceeded = false;
@@ -1563,6 +1584,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   let maxTurnsExceeded = false;
   let costCents = 0;
   let turnCount = 0;
+  let receivedResult = false;
   const usage: SdkUsage = {
     input_tokens: 0,
     output_tokens: 0,
@@ -1580,7 +1602,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
           maxTurns: Math.max(1, runLimits.maxTurnsPerRun),
           // Belt to the mid-stream braces below: the SDK stops itself, and the
           // loop stops the SDK if a result lands over budget anyway.
-          maxBudgetUsd: runLimits.maxBudgetCentsPerRun / 100,
+          maxBudgetUsd: maxBudgetCents / 100,
           tools: [],
           allowedTools: [...new Set(exposedNames)],
           mcpServers: { breeze: mcpServer },
@@ -1602,6 +1624,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
             continue;
           }
           if (message.type !== 'result') continue;
+          receivedResult = true;
 
           turnCount += message.num_turns;
           const messageUsage = message.usage as unknown as SdkUsage;
@@ -1643,7 +1666,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
             break;
           }
 
-          if (costCents > runLimits.maxBudgetCentsPerRun) {
+          if (costCents > maxBudgetCents) {
             budgetExceeded = true;
             abortController.abort();
             break;
@@ -1692,19 +1715,29 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // kept admitting runs after the credits were gone. Best-effort: an accounting
   // failure never redefines the run's outcome.
   try {
-    await recordSessionlessSdkUsage(
-      run.orgId,
-      {
-        costCents,
-        usage,
-        numTurns: turnCount,
-        toolExecutionCount: outcome.toolExecutionCount,
-        model,
-      },
-      billingSource,
-    );
+    if (receivedResult) {
+      await recordSessionlessSdkUsage(
+        run.orgId,
+        {
+          costCents,
+          usage,
+          numTurns: turnCount,
+          toolExecutionCount: outcome.toolExecutionCount,
+          model,
+        },
+        billingSource,
+        reservationId,
+      );
+    } else {
+      await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId });
+    }
   } catch (error) {
     console.error('[aiAgentRunLoop] failed to record org AI usage', { runId: run.id, error });
+    await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId })
+      .catch((markError) => console.error('[aiAgentRunLoop] failed to retain indeterminate AI reservation', {
+        runId: run.id,
+        error: markError,
+      }));
   }
 
   return {
