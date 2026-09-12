@@ -17,10 +17,18 @@ import { Aside } from '@astrojs/starlight/components';
 **Fix**: Ensure all required variables are set:
 
 ```bash
-# Required variables:
-BREEZE_DOMAIN, ACME_EMAIL, POSTGRES_PASSWORD, JWT_SECRET,
-AGENT_ENROLLMENT_SECRET, METRICS_SCRAPE_TOKEN, PUBLIC_API_URL,
-GRAFANA_ADMIN_PASSWORD
+# Required in every deployment:
+BREEZE_DOMAIN, DATABASE_URL, BREEZE_VERSION, BREEZE_API_IMAGE_DIGEST,
+BREEZE_WEB_IMAGE_DIGEST, BREEZE_BINARIES_IMAGE_DIGEST, CADDY_IMAGE_REF,
+CLOUDFLARED_IMAGE_REF, REDIS_IMAGE_REF, COTURN_IMAGE_REF, BILLING_IMAGE_REF,
+REDIS_PASSWORD, JWT_SECRET, AGENT_ENROLLMENT_SECRET, APP_ENCRYPTION_KEY,
+MFA_ENCRYPTION_KEY, ENROLLMENT_KEY_PEPPER, MFA_RECOVERY_CODE_PEPPER,
+RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS, PUBLIC_API_URL,
+REMOTE_ACCESS_ADMISSION_MODE, REMOTE_WS_AUTH_MODE, REMOTE_WS_REDIS_TOPOLOGY,
+REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT, REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT
+
+# Additionally required when ENABLE_MONITORING=true:
+METRICS_SCRAPE_TOKEN, GRAFANA_ADMIN_PASSWORD, POSTGRES_EXPORTER_DSN
 ```
 
 ### API refuses to boot: `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS must be set in production`
@@ -307,24 +315,6 @@ for WebSocket/firewall causes.
        PUBLIC_API_URL: ${PUBLIC_API_URL}
    ```
 3. `docker compose up -d api` to recreate the container.
-
-### "Generate Link" fails with `MSI build pipeline not reachable. Retry`
-
-**Cause**: The release-manifest verifier is rejecting the live MSI because the manifest's `repository` field is `LanternOps/breeze` but the code default expects `lanternops/breeze` (case mismatch). Fix is on `main` ([#867](https://github.com/LanternOps/breeze/pull/867)) and will ship in the next release after v0.67.0.
-
-**Fix** (workaround on v0.67.0): add to `.env` and map into the `api` service.
-
-```
-BINARY_GITHUB_REPOSITORY=LanternOps/breeze
-```
-
-```yaml
-api:
-  environment:
-    BINARY_GITHUB_REPOSITORY: ${BINARY_GITHUB_REPOSITORY}
-```
-
-Then `docker compose up -d api`. Same workaround unblocks **Download Installer**, which hits the same code path silently.
 
 ## Reporting an Issue
 

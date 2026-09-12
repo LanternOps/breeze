@@ -18,6 +18,13 @@ vi.mock('../services/redis', () => ({
   isBullMQAvailable: vi.fn(() => true),
 }));
 
+const { dbSelectMock } = vi.hoisted(() => ({ dbSelectMock: vi.fn() }));
+vi.mock('../db', () => ({
+  db: { select: dbSelectMock },
+  assertOutsideHeldDbContext: vi.fn(),
+}));
+vi.mock('../db/schema', () => ({ backupConfigs: { id: 'id', approvalGeneration: 'approvalGeneration' } }));
+
 import {
   closeBackupQueue,
   enqueueBackupDispatch,
@@ -28,7 +35,11 @@ describe('backup enqueue helpers', () => {
   beforeEach(async () => {
     addMock.mockReset();
     closeMock.mockReset();
+    dbSelectMock.mockReset();
     addMock.mockResolvedValue({ id: 'queue-job-1' });
+    dbSelectMock.mockReturnValue({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([{ approvalGeneration: 4 }]) }) }),
+    });
     await closeBackupQueue();
   });
 
@@ -39,6 +50,16 @@ describe('backup enqueue helpers', () => {
       'dispatch-backup',
       expect.objectContaining({ jobId: 'job-123' }),
       expect.objectContaining({ jobId: 'backup-dispatch-job-123' }),
+    );
+  });
+
+  it('snapshots the config approval_generation onto the dispatch payload (site-ceiling gate contract §3)', async () => {
+    await enqueueBackupDispatch('job-123', 'cfg-1', 'org-1', 'dev-1');
+
+    expect(addMock).toHaveBeenCalledWith(
+      'dispatch-backup',
+      expect.objectContaining({ configId: 'cfg-1', configGeneration: 4 }),
+      expect.anything(),
     );
   });
 
@@ -81,5 +102,24 @@ describe('backup enqueue helpers', () => {
     const opts = addMock.mock.calls[0]![2] as Record<string, unknown>;
     expect(opts.attempts).toBe(3);
     expect(opts.backoff).toEqual({ type: 'exponential', delay: 1_000 });
+  });
+
+  // D18 W01 (#5429/§3.1): baseSnapshotId/formatVersion/backupIdentity must
+  // survive the enqueueBackupResults -> backupQueueJobDataSchema.parse round
+  // trip -- both backupSnapshotSummarySchema (queueSchemas.ts) and
+  // ProcessResultsResult.snapshot (backupEnqueue.ts) were widened to declare
+  // them; a regression here would silently strip/reject the lineage fields
+  // before backupWorker.ts's process-results handler ever sees them.
+  it('round-trips baseSnapshotId/formatVersion/backupIdentity through enqueueBackupResults', async () => {
+    await enqueueBackupResults('job-1', 'org-1', 'device-1', {
+      status: 'completed',
+      snapshotId: 'snap-1',
+      snapshot: { id: 'snap-1', baseSnapshotId: 'snap-0', formatVersion: 2, backupIdentity: 's3::e::b' },
+    });
+
+    const payload = addMock.mock.calls[0]![1] as { result: { snapshot?: Record<string, unknown> } };
+    expect(payload.result.snapshot?.baseSnapshotId).toBe('snap-0');
+    expect(payload.result.snapshot?.formatVersion).toBe(2);
+    expect(payload.result.snapshot?.backupIdentity).toBe('s3::e::b');
   });
 });

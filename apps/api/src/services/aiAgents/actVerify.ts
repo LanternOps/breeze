@@ -194,6 +194,42 @@ async function verifyServiceRunning(
   return { verification: 'failed', detail: match ? `service status is "${match.status}"` : 'service not found in read-back' };
 }
 
+/**
+ * W03 (#5612): the script-proposal `process_absent { name }` claim. Same
+ * independent `list_processes` read as the pid-pinned act-lane check below,
+ * matched by NAME (case-insensitive, `.exe` tolerant) because a proposal
+ * names a process it expects to be gone, not a pid it observed. Same
+ * conservative rule: an unparseable read-back is inconclusive, never a pass.
+ */
+export async function verifyProcessAbsentByNameForTask(
+  target: { processName: string },
+  device: { deviceId: string; orgId: string },
+  agentUserId: string,
+): Promise<{ verification: ActVerificationVerdict; detail?: string }> {
+  const { executeCommandWithSystemPrecheck } = await getCommandQueue();
+  const result = await executeCommandWithSystemPrecheck(
+    device.deviceId, 'list_processes', { search: target.processName, limit: 200 }, {
+      userId: agentUserId, timeoutMs: VERIFY_READ_TIMEOUT_MS,
+      expectedOrgId: device.orgId,
+    });
+  if (result.status !== 'completed') {
+    return { verification: 'inconclusive', detail: `process list read did not complete (${result.status})` };
+  }
+  const parsed = parseCommandResult(result.stdout ?? '');
+  if (!parsed || !Array.isArray(parsed.processes)) {
+    return { verification: 'inconclusive', detail: 'process list read-back was not parseable' };
+  }
+  const normalize = (name: string) => name.trim().toLowerCase().replace(/\.exe$/, '');
+  const wanted = normalize(target.processName);
+  const stillPresent = (parsed.processes as unknown[]).some((p) =>
+    typeof p === 'object' && p !== null
+    && typeof (p as { name?: unknown }).name === 'string'
+    && normalize((p as { name: string }).name) === wanted);
+  return stillPresent
+    ? { verification: 'failed', detail: `process "${target.processName}" is still present` }
+    : { verification: 'passed' };
+}
+
 async function verifyProcessAbsent(
   target: Extract<ActTarget, { kind: 'process' }>,
   run: VerifyActExecutionArgs['run'],

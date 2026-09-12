@@ -2,6 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import { Hono } from 'hono';
 import { createHash } from 'node:crypto';
 
+const { admitPartnerDeviceCapacityMock } = vi.hoisted(() => ({
+  admitPartnerDeviceCapacityMock: vi.fn(),
+}));
+
+vi.mock('../../services/partnerDeviceCapacity', () => ({
+  admitPartnerDeviceCapacity: admitPartnerDeviceCapacityMock,
+  PartnerDeviceCapacityError: class PartnerDeviceCapacityError extends Error {},
+}));
+
 // ---------- mocks ----------
 
 vi.mock('../../db', () => ({
@@ -29,6 +38,15 @@ vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
+const { disconnectAgentCredentialGenerationMock, publishAgentCredentialRevocationMock } = vi.hoisted(() => ({
+  disconnectAgentCredentialGenerationMock: vi.fn().mockReturnValue('closed'),
+  publishAgentCredentialRevocationMock: vi.fn().mockResolvedValue('published'),
+}));
+vi.mock('../agentWs', () => ({
+  disconnectAgentCredentialGeneration: disconnectAgentCredentialGenerationMock,
+  publishAgentCredentialRevocation: publishAgentCredentialRevocationMock,
+}));
+
 vi.mock('../../services/anomalyMetrics', () => ({
   recordAgentEnrollment: vi.fn(),
 }));
@@ -47,6 +65,7 @@ vi.mock('../../db/schema', () => ({
   },
   devices: {
     id: 'id',
+    agentId: 'agentId',
     hostname: 'hostname',
     orgId: 'orgId',
     siteId: 'siteId',
@@ -171,6 +190,7 @@ import { enqueueIpClassify } from '../../services/ipClassify';
 import { raiseDeviceIdentityCollisionAlert } from '../../services/deviceIdentityCollisionAlert';
 import { partnerTrustMode } from '../../config/partnerTrustMode';
 import { evaluateCapability, unresolvedPartnerDecision } from '../../services/partnerTrust';
+import { issueMtlsCertForDevice } from './helpers';
 import {
   devices as devicesTable,
   enrollmentKeys as enrollmentKeysTable,
@@ -308,7 +328,6 @@ async function enrollOk(): Promise<Record<string, unknown>> {
     usageCount: 0,
   });
   mockSelectRows([{ partnerId: 'partner-backup-url' }]);
-  mockSelectRows([{ maxDevices: null }]);
   mockSelectRows([]);
 
   vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
@@ -357,6 +376,12 @@ async function enrollOk(): Promise<Record<string, unknown>> {
 describe('POST /agents/enroll — backup server URL delivery (#2288)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    admitPartnerDeviceCapacityMock.mockResolvedValue({
+      allowed: true,
+      partnerId: 'partner-active',
+      maxDevices: null,
+      activeCount: null,
+    });
     delete process.env.AGENT_ENROLLMENT_SECRET;
     delete process.env.AGENT_BACKUP_SERVER_URL;
     process.env.NODE_ENV = 'test';
@@ -421,7 +446,6 @@ describe('POST /agents/enroll — partner trust probation enrollment counter (Ta
       supportSessionId: null,
     });
     mockSelectRows([{ partnerId: 'partner-trust' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([]);
   }
 
@@ -557,7 +581,7 @@ describe('POST /agents/enroll — partner trust probation enrollment counter (Ta
     expect(tx.updateCalls.some((call) => call.table === partnersTable)).toBe(false);
   });
 
-  it('does not issue the partner SELECT FOR UPDATE when trust mode is off', async () => {
+  it('still performs licensed-device admission when partner trust mode is off', async () => {
     vi.mocked(partnerTrustMode).mockReturnValue('off');
     arrangeEnrollment();
     const tx = installTrustTransaction({ trustState: 'probation', probationEnrollments: 5 });
@@ -569,6 +593,11 @@ describe('POST /agents/enroll — partner trust probation enrollment counter (Ta
     });
 
     expect(resp.status).toBe(201);
+    expect(admitPartnerDeviceCapacityMock).toHaveBeenCalledWith(
+      expect.anything(),
+      { orgId: 'org-trust', expectedPartnerId: 'partner-trust' },
+    );
+    // The separate probation-policy lookup remains disabled in off mode.
     expect(tx.select).not.toHaveBeenCalled();
     expect(tx.forUpdate).not.toHaveBeenCalled();
     expect(evaluateCapability).not.toHaveBeenCalled();
@@ -777,7 +806,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
 
     mockSelectRows([{ partnerId: 'partner-3' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([]); // no existing device
 
     // Inside the transaction: device INSERT succeeds, then the consume-key
@@ -851,7 +879,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
 
     mockSelectRows([{ partnerId: 'partner-4' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([{
       id: 'device-existing',
       status: 'online',
@@ -931,7 +958,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
 
     mockSelectRows([{ partnerId: 'partner-5' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([{
       id: 'device-existing',
       status: 'online',
@@ -976,7 +1002,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
 
     mockSelectRows([{ partnerId: 'partner-alert-on' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([{
       id: 'device-online-collider',
       status: 'online',
@@ -1022,7 +1047,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
 
     mockSelectRows([{ partnerId: 'partner-alert-off' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([{
       id: 'device-offline-collider',
       status: 'offline',
@@ -1063,7 +1087,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
 
     mockSelectRows([{ partnerId: 'partner-alert-fail' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([{
       id: 'device-collider',
       status: 'online',
@@ -1101,7 +1124,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
 
     mockSelectRows([{ partnerId: 'partner-multi' }]);
-    mockSelectRows([{ maxDevices: null }]);
     // Oldest-first. The oldest is offline; the online one is the live
     // lookalike the operator needs pointed at.
     mockSelectRows([
@@ -1174,7 +1196,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
 
     mockSelectRows([{ partnerId: 'partner-susp-active' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([{
       id: 'device-susp-active',
       status: 'online',
@@ -1229,9 +1250,9 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
 
     mockSelectRows([{ partnerId: 'partner-inplace' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([{
       id: 'device-inplace',
+      agentId: 'agent-id-before-reenroll',
       status: 'offline',
       agentTokenHash: validHash,
       previousTokenHash: null,
@@ -1264,6 +1285,16 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     expect(tx.deviceUpdateValues).toHaveLength(1);
     expect(tx.deviceUpdateValues[0]).toMatchObject({ status: 'pending' });
     expect(tx.deviceUpdateValues[0]).not.toHaveProperty('lastSeenAt');
+    expect(disconnectAgentCredentialGenerationMock).toHaveBeenCalledWith(
+      'agent-id-before-reenroll',
+      [validHash],
+      'Agent credentials replaced by re-enrollment',
+    );
+    expect(publishAgentCredentialRevocationMock).toHaveBeenCalledWith({
+      agentId: 'agent-id-before-reenroll',
+      revokedTokenHashes: [validHash],
+    });
+    expect(admitPartnerDeviceCapacityMock).not.toHaveBeenCalled();
     expect(raiseDeviceIdentityCollisionAlert).not.toHaveBeenCalled();
   });
 
@@ -1286,7 +1317,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
 
     mockSelectRows([{ partnerId: 'partner-stack' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([
       {
         id: 'device-stale-first',
@@ -1345,7 +1375,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
 
     mockSelectRows([{ partnerId: 'partner-decom-shadow' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([
       {
         id: 'device-decommissioned-oldest',
@@ -1423,7 +1452,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
 
     mockSelectRows([{ partnerId: 'partner-decom-susp-shadow' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([
       {
         id: 'device-decom-suspended',
@@ -1485,7 +1513,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
 
     mockSelectRows([{ partnerId: 'partner-q-multi' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([
       {
         id: 'device-q-clean-oldest',
@@ -1545,7 +1572,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
 
     mockSelectRows([{ partnerId: 'partner-q-sibling' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([
       {
         id: 'device-q-sibling-quarantined',
@@ -1636,7 +1662,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     } as any);
 
     mockSelectRows([{ partnerId: 'partner-decom' }]);
-    mockSelectRows([{ maxDevices: null }]);
     // Existing row is DECOMMISSIONED — no token attached to the request
     mockSelectRows([{
       id: 'device-decom-existing',
@@ -1771,7 +1796,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
 
     mockSelectRows([{ partnerId: 'partner-offline' }]);
-    mockSelectRows([{ maxDevices: null }]);
     // Existing row is OFFLINE (the normal "device hasn't checked in" state),
     // NOT decommissioned — no token attached to request.
     mockSelectRows([{
@@ -1845,7 +1869,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     } as any);
 
     mockSelectRows([{ partnerId: 'partner-suspended-decom' }]);
-    mockSelectRows([{ maxDevices: null }]);
     // Existing row: DECOMMISSIONED AND token-suspended.
     mockSelectRows([{
       id: 'device-suspended-decom',
@@ -1924,7 +1947,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     } as any);
 
     mockSelectRows([{ partnerId: 'partner-quarantined' }]);
-    mockSelectRows([{ maxDevices: null }]);
     // Existing row: QUARANTINED, token NOT suspended, with a matching token —
     // i.e. the device would otherwise authenticate and be flipped online.
     mockSelectRows([{
@@ -2039,18 +2061,22 @@ describe('POST /agents/enroll — resolved-key denials are org-attributable', ()
     });
 
     mockSelectRows([{ partnerId: 'partner-limit-1' }]);
-    mockSelectRows([{ maxDevices: 2 }]);
     mockSelectRows([]); // no existing device
 
+    admitPartnerDeviceCapacityMock.mockResolvedValueOnce({
+      allowed: false,
+      partnerId: 'partner-limit-1',
+      maxDevices: 2,
+      activeCount: 2,
+    });
+
+    const insert = vi.fn();
+    const update = vi.fn();
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
       const fakeTx = {
-        select: vi.fn().mockReturnValue({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ count: 2 }]), // at cap
-          }),
-        }),
-        insert: vi.fn(),
-        update: vi.fn(),
+        select: vi.fn(),
+        insert,
+        update,
         delete: vi.fn(),
       };
       return fn(fakeTx);
@@ -2065,6 +2091,10 @@ describe('POST /agents/enroll — resolved-key denials are org-attributable', ()
     expect(resp.status).toBe(403);
     const body = (await resp.json()) as Record<string, unknown>;
     expect(body.code).toBe('DEVICE_LIMIT_REACHED');
+    expect(insert).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(issueMtlsCertForDevice).not.toHaveBeenCalled();
+    expect(requestDeviceGroupReevaluationMock).not.toHaveBeenCalled();
     expect(writeAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -2304,14 +2334,12 @@ describe('POST /agents/enroll — manifestTrustKeys delivery (#639)', () => {
       })),
     } as any);
 
-    // Step 3: org lookup → no partner constraint
+    // Step 3: org lookup resolves the expected partner for in-transaction admission.
     mockSelectRows([{ partnerId: 'partner-happy' }]);
-    // Step 4: partner.maxDevices lookup
-    mockSelectRows([{ maxDevices: null }]);
-    // Step 5: existing-device lookup → empty (fresh enrollment)
+    // Step 4: existing-device lookup → empty (fresh enrollment)
     mockSelectRows([]);
 
-    // Step 6: db.transaction runs device INSERT then the in-tx key-consume
+    // Step 5: db.transaction runs device INSERT then the in-tx key-consume
     // UPDATE (#946). The fake tx supports both chains:
     //   - tx.insert(devices).values(...).returning() → new device row
     //   - tx.update(enrollmentKeys).set(...).where(...).returning() → [{id}]
@@ -2426,7 +2454,6 @@ describe('POST /agents/enroll — manifestKeyDelegations delivery (Wave 6 Task 7
       })),
     } as any);
     mockSelectRows([{ partnerId: 'partner-happy' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([]);
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
       const fakeTx = {
@@ -2600,7 +2627,6 @@ describe('POST /agents/enroll — enrollment key not consumed on failed device i
     });
 
     mockSelectRows([{ partnerId: 'partner-once' }]);
-    mockSelectRows([{ maxDevices: null }]);
     // Existing device row that collides on hostname
     mockSelectRows([{
       id: 'device-collision',
@@ -2647,7 +2673,6 @@ describe('POST /agents/enroll — enrollment key not consumed on failed device i
     });
 
     mockSelectRows([{ partnerId: 'partner-suspended' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([{
       id: 'device-suspended',
       status: 'decommissioned',
@@ -2685,7 +2710,6 @@ describe('POST /agents/enroll — enrollment key not consumed on failed device i
     });
 
     mockSelectRows([{ partnerId: 'partner-success' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([]); // no existing device
 
     let txUpdateCalls = 0;
@@ -2756,7 +2780,6 @@ describe('POST /agents/enroll — enrollment key not consumed on failed device i
     });
 
     mockSelectRows([{ partnerId: 'partner-race' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([]); // no existing device
 
     let txUpdateReturnedZero = false;
@@ -2864,7 +2887,6 @@ describe('POST /agents/enroll — virtualization attribute persistence (#1387)',
       })),
     } as any);
     mockSelectRows([{ partnerId: 'partner-virt' }]); // org lookup
-    mockSelectRows([{ maxDevices: null }]); // partner.maxDevices
     mockSelectRows([]); // existing-device lookup → fresh
 
     const deviceInsertValues = vi.fn().mockReturnValue({
@@ -2960,7 +2982,6 @@ describe('POST /agents/enroll — virtualization attribute persistence (#1387)',
       })),
     } as any);
     mockSelectRows([{ partnerId: 'partner-decom-virt' }]);
-    mockSelectRows([{ maxDevices: null }]);
     // Existing row is DECOMMISSIONED, no token on the request → decom-bypass-fresh-id.
     mockSelectRows([{
       id: 'device-decom-existing',
@@ -3039,7 +3060,6 @@ describe('POST /agents/enroll — enrollment IP persistence', () => {
       })),
     } as any);
     mockSelectRows([{ partnerId: 'partner-ip' }]); // org lookup
-    mockSelectRows([{ maxDevices: null }]); // partner.maxDevices
     mockSelectRows([]); // existing-device lookup → fresh
 
     const deviceInsertValues = vi.fn().mockReturnValue({
@@ -3196,13 +3216,9 @@ describe('POST /agents/enroll — Quick Support ephemeral enrollment', () => {
   }
 
   /** Full select sequence for an accepted support enrollment. */
-  function arrangeSupportEnroll(
-    session: { status: string; hardExpiresAt: Date },
-    maxDevices: number | null = null,
-  ) {
+  function arrangeSupportEnroll(session: { status: string; hardExpiresAt: Date }) {
     arrangeSupportKey(session);
     mockSelectRows([{ partnerId: 'partner-support' }]); // org lookup
-    mockSelectRows([{ maxDevices }]); // partner.maxDevices
     mockSelectRows([]); // no colliding device
   }
 
@@ -3279,13 +3295,14 @@ describe('POST /agents/enroll — Quick Support ephemeral enrollment', () => {
   });
 
   it('enrolls even when the partner is at its device limit — a support session is not a licensed endpoint', async () => {
-    arrangeSupportEnroll({ status: 'claimed', hardExpiresAt: new Date(Date.now() + 3600_000) }, 2);
+    arrangeSupportEnroll({ status: 'claimed', hardExpiresAt: new Date(Date.now() + 3600_000) });
     const spy = mockSupportTransaction(2); // fleet already at the cap
 
     const resp = await enroll();
 
     expect(resp.status).toBe(201);
-    // The cap block is skipped wholesale, so the count query never runs.
+    // Ephemeral support devices never enter licensed-device admission.
+    expect(admitPartnerDeviceCapacityMock).not.toHaveBeenCalled();
     expect(spy.countWhere).toHaveLength(0);
     expect(spy.deviceInsertValues[0]).toEqual(
       expect.objectContaining({ isEphemeral: true }),
@@ -3304,7 +3321,6 @@ describe('POST /agents/enroll — Quick Support ephemeral enrollment', () => {
       supportSessionId: null,
     });
     mockSelectRows([{ partnerId: 'partner-normal' }]);
-    mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([]);
     const spy = mockSupportTransaction();
 
@@ -3317,7 +3333,7 @@ describe('POST /agents/enroll — Quick Support ephemeral enrollment', () => {
     expect(spy.updates.some((u) => u.table === supportSessionsTable)).toBe(false);
   });
 
-  it('excludes ephemeral rows from the partner licence count', async () => {
+  it('routes ordinary fresh enrollment through shared licensed-device admission', async () => {
     mockKeyLookup({
       id: 'key-count',
       orgId: 'org-count',
@@ -3329,18 +3345,15 @@ describe('POST /agents/enroll — Quick Support ephemeral enrollment', () => {
       supportSessionId: null,
     });
     mockSelectRows([{ partnerId: 'partner-count' }]);
-    mockSelectRows([{ maxDevices: 5 }]); // cap set, so the count actually runs
     mockSelectRows([]);
-    const spy = mockSupportTransaction(1);
+    mockSupportTransaction(1);
 
     const resp = await enroll();
 
     expect(resp.status).toBe(201);
-    // [0] is the partnerOrgIds subquery's where, [1] the fleet count itself.
-    expect(spy.countWhere).toHaveLength(2);
-    // The mocked schema names the column 'devices.isEphemeral', so its presence
-    // in the serialized condition proves the exclusion reached the SQL — a
-    // regression here silently re-bills every Quick Support session.
-    expect(JSON.stringify(spy.countWhere[1])).toContain('devices.isEphemeral');
+    expect(admitPartnerDeviceCapacityMock).toHaveBeenCalledWith(
+      expect.anything(),
+      { orgId: 'org-count', expectedPartnerId: 'partner-count' },
+    );
   });
 });

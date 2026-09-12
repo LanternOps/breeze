@@ -24,6 +24,7 @@ export type BindingWithUser = {
     userId: string;
     partnerId: string;
     boundAuthEpoch: number;
+    boundMfaEpoch: number;
     mfaVerifiedAt: Date;
   };
   user: {
@@ -32,6 +33,7 @@ export type BindingWithUser = {
     name: string;
     status: BoundUserStatus;
     authEpoch: number;
+    mfaEpoch: number;
     partnerId: string;
   };
 };
@@ -42,12 +44,14 @@ type BindingWithUserRow = {
   bindingUserId: string;
   bindingPartnerId: string;
   boundAuthEpoch: number;
+  boundMfaEpoch: number;
   mfaVerifiedAt: Date;
   userId: string;
   userEmail: string;
   userName: string;
   userStatus: BoundUserStatus;
   userAuthEpoch: number;
+  userMfaEpoch: number;
   userPartnerId: string;
 };
 
@@ -58,6 +62,7 @@ function toBindingWithUser(row: BindingWithUserRow): BindingWithUser {
       userId: row.bindingUserId,
       partnerId: row.bindingPartnerId,
       boundAuthEpoch: row.boundAuthEpoch,
+      boundMfaEpoch: row.boundMfaEpoch,
       mfaVerifiedAt: row.mfaVerifiedAt,
     },
     user: {
@@ -66,6 +71,7 @@ function toBindingWithUser(row: BindingWithUserRow): BindingWithUser {
       name: row.userName,
       status: row.userStatus,
       authEpoch: row.userAuthEpoch,
+      mfaEpoch: row.userMfaEpoch,
       partnerId: row.userPartnerId,
     },
   };
@@ -89,7 +95,10 @@ export function vetBinding(bound: BindingWithUser): BindingVetResult {
   if (bound.user.status !== 'active') {
     return { ok: false, reason: 'user_inactive' };
   }
-  if (bound.user.authEpoch !== bound.binding.boundAuthEpoch) {
+  if (
+    bound.user.authEpoch !== bound.binding.boundAuthEpoch ||
+    bound.user.mfaEpoch !== bound.binding.boundMfaEpoch
+  ) {
     return { ok: false, reason: 'epoch_advanced' };
   }
   if (bound.user.partnerId !== bound.binding.partnerId) {
@@ -109,12 +118,14 @@ export async function findActiveBinding(
       bindingUserId: officeAddinUserBindings.userId,
       bindingPartnerId: officeAddinUserBindings.partnerId,
       boundAuthEpoch: officeAddinUserBindings.boundAuthEpoch,
+      boundMfaEpoch: officeAddinUserBindings.boundMfaEpoch,
       mfaVerifiedAt: officeAddinUserBindings.mfaVerifiedAt,
       userId: users.id,
       userEmail: users.email,
       userName: users.name,
       userStatus: users.status,
       userAuthEpoch: users.authEpoch,
+      userMfaEpoch: users.mfaEpoch,
       userPartnerId: users.partnerId,
     })
     .from(officeAddinUserBindings)
@@ -147,12 +158,14 @@ export async function findActiveBindingById(bindingId: string): Promise<BindingW
       bindingUserId: officeAddinUserBindings.userId,
       bindingPartnerId: officeAddinUserBindings.partnerId,
       boundAuthEpoch: officeAddinUserBindings.boundAuthEpoch,
+      boundMfaEpoch: officeAddinUserBindings.boundMfaEpoch,
       mfaVerifiedAt: officeAddinUserBindings.mfaVerifiedAt,
       userId: users.id,
       userEmail: users.email,
       userName: users.name,
       userStatus: users.status,
       userAuthEpoch: users.authEpoch,
+      userMfaEpoch: users.mfaEpoch,
       userPartnerId: users.partnerId,
     })
     .from(officeAddinUserBindings)
@@ -174,8 +187,10 @@ export type BindCandidateUser = {
   partnerId: string | null;
   passwordHash: string | null;
   mfaEnabled: boolean;
+  mfaMethod: string | null;
   mfaSecret: string | null;
   authEpoch: number;
+  mfaEpoch: number;
 };
 
 /**
@@ -194,8 +209,10 @@ export async function findUserForBind(email: string): Promise<BindCandidateUser 
       partnerId: users.partnerId,
       passwordHash: users.passwordHash,
       mfaEnabled: users.mfaEnabled,
+      mfaMethod: users.mfaMethod,
       mfaSecret: users.mfaSecret,
       authEpoch: users.authEpoch,
+      mfaEpoch: users.mfaEpoch,
     })
     .from(users)
     .where(eq(users.email, email.toLowerCase()))
@@ -262,6 +279,7 @@ export async function createBinding(input: {
   userId: string;
   partnerId: string;
   boundAuthEpoch: number;
+  boundMfaEpoch: number;
   mfaVerifiedAt: Date;
 }): Promise<{ id: string }> {
   try {
@@ -281,6 +299,7 @@ export async function createBinding(input: {
           userId: input.userId,
           partnerId: input.partnerId,
           boundAuthEpoch: input.boundAuthEpoch,
+          boundMfaEpoch: input.boundMfaEpoch,
           mfaVerifiedAt: input.mfaVerifiedAt,
         })
         .returning({ id: officeAddinUserBindings.id });

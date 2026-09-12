@@ -12,7 +12,6 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/breeze-rmm/agent/internal/remote/clipboard"
-	"github.com/breeze-rmm/agent/internal/remote/filedrop"
 )
 
 const (
@@ -35,25 +34,24 @@ const (
 
 // Session represents a remote desktop WebRTC session with H264 encoding.
 type Session struct {
-	id              string
-	peerConn        *webrtc.PeerConnection
-	videoTrack      *webrtc.TrackLocalStaticSample
-	dataChannel     *webrtc.DataChannel
-	inputHandler    InputHandler
-	capturer        ScreenCapturer
-	encoder         atomic.Pointer[VideoEncoder]
-	encoderPF       PixelFormat // cached encoder input format for CPU Encode() path
-	clipboardSync   *clipboard.ClipboardSync
-	fileDropHandler *filedrop.FileDropHandler
-	cursorDC        *webrtc.DataChannel
-	controlDC       *webrtc.DataChannel
-	audioTrack      *webrtc.TrackLocalStaticSample
-	audioCapturer   AudioCapturer
-	audioEnabled    atomic.Bool
-	done            chan struct{}
-	mu              sync.RWMutex
-	isActive        bool
-	fps             int
+	id            string
+	peerConn      *webrtc.PeerConnection
+	videoTrack    *webrtc.TrackLocalStaticSample
+	dataChannel   *webrtc.DataChannel
+	inputHandler  InputHandler
+	capturer      ScreenCapturer
+	encoder       atomic.Pointer[VideoEncoder]
+	encoderPF     PixelFormat // cached encoder input format for CPU Encode() path
+	clipboardSync *clipboard.ClipboardSync
+	cursorDC      *webrtc.DataChannel
+	controlDC     *webrtc.DataChannel
+	audioTrack    *webrtc.TrackLocalStaticSample
+	audioCapturer AudioCapturer
+	audioEnabled  atomic.Bool
+	done          chan struct{}
+	mu            sync.RWMutex
+	isActive      bool
+	fps           int
 	// stopReason is the short, technician-facing text describing why teardown
 	// happened, set by StopWithReason (#5300). Empty for a plain Stop() call
 	// (operator-initiated stop, lifetime policy, peer disconnect) — callers
@@ -162,6 +160,11 @@ type Session struct {
 	// viewer would never idle out and the idle timeout would be defeated.
 	// Updated via recordInputActivity().
 	lastInputUnixNano atomic.Int64
+
+	// leaseState tracks this session's revocation lease: the latest expiry and
+	// hard deadline, plus whether the control plane revoked it. Never nil for a
+	// session created by StartSession (a start without a lease is refused).
+	leaseState *revocationLeaseState
 }
 
 // SessionManager manages remote desktop sessions
@@ -183,6 +186,13 @@ type SessionManager struct {
 	// mode the helper sets this to route the request via IPC to the SCM service
 	// which can call SendSAS(FALSE). In direct mode it defaults to InvokeSAS().
 	OnSASRequest func() error
+
+	// RequestRevocationLeaseRenew, if set, asks the control plane to renew the
+	// revocation lease for a session. Set by the layer that owns the agent's
+	// command WebSocket (the heartbeat), because this package has no transport
+	// of its own. Fire-and-forget: the answer arrives asynchronously and is
+	// applied via ApplyRevocationLease / RevokeSession.
+	RequestRevocationLeaseRenew func(sessionID string)
 
 	// OnSessionStopped is called when a WebRTC peer connection transitions to
 	// Failed or Closed. Used to notify the API so it can mark the session as
@@ -531,9 +541,6 @@ func (s *Session) doCleanup() {
 		}
 		if s.clipboardSync != nil {
 			s.clipboardSync.Stop()
-		}
-		if s.fileDropHandler != nil {
-			s.fileDropHandler.Close()
 		}
 		if s.cursorDC != nil {
 			s.cursorDC.Close()

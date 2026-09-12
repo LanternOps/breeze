@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { oauthAuthorizationCodes } from '../db/schema';
 import { revokeGrant, revokeJti } from './revocationCache';
 import { revokeClientFamilies } from './revocationService';
 
@@ -64,6 +65,18 @@ const PARTNER = '22222222-2222-2222-2222-222222222222';
 const USER = '11111111-1111-1111-1111-111111111111';
 
 describe('revokeClientFamilies', () => {
+  it('invalidates every still-live authorization code for a revoked grant before it can restart authority', async () => {
+    mockSelectRows([{ id: 'grant-with-live-code', accountId: USER }]);
+    mockSelectRows([]);
+
+    await revokeClientFamilies(CLIENT, { kind: 'partner', partnerId: PARTNER });
+
+    expect(updateMock).toHaveBeenCalledWith(oauthAuthorizationCodes);
+    expect(updateSetCalls).toContainEqual(expect.objectContaining({
+      consumedAt: expect.any(Date),
+    }));
+  });
+
   it('revokes a code-only grant (no refresh row) under partner scope and deletes only the join row', async () => {
     mockSelectRows([{ id: 'grant-code-only', accountId: USER }]); // grants
     mockSelectRows([]); // refresh rows (none — code-only)

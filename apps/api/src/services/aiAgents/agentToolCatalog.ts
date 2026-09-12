@@ -28,13 +28,17 @@ import { ACT_MANIFEST, SCRIPT_GATED_ACT_TOOLS } from './actManifest';
 export type AgentCapabilityId =
   | 'alerts_monitoring' | 'services_startup' | 'files_disk' | 'scripts_commands' | 'tickets'
   | 'patching_software' | 'security_response' | 'backup_recovery' | 'config_policies' | 'network'
-  | 'remote_access' | 'endpoint_agent' | 'automations_reports' | 'business' | 'tenancy';
+  | 'remote_access' | 'endpoint_agent' | 'automations_reports' | 'business' | 'tenancy'
+  | 'author_scripts';
 
 export const AGENT_CAPABILITIES: readonly { id: AgentCapabilityId; tone: 'standard' | 'high' }[] = [
   { id: 'alerts_monitoring', tone: 'standard' },
   { id: 'services_startup', tone: 'standard' },
   { id: 'files_disk', tone: 'standard' },
   { id: 'scripts_commands', tone: 'standard' },
+  // 'high' tone: authoring novel code is a qualitatively different grant from
+  // running a reviewed library script, and the picker must say so.
+  { id: 'author_scripts', tone: 'high' },
   { id: 'tickets', tone: 'standard' },
   { id: 'patching_software', tone: 'standard' },
   { id: 'security_response', tone: 'high' },
@@ -83,6 +87,9 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   disk_cleanup: 'files_disk',
   analyze_disk_usage: 'files_disk',
 
+  // ---- author_scripts ----
+  propose_script: 'author_scripts',
+  get_script_proposal: 'author_scripts',
   // ---- scripts_commands ----
   run_script: 'scripts_commands',
   execute_command: 'scripts_commands',
@@ -242,7 +249,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   query_audit_log: 'automations_reports',
   query_change_log: 'automations_reports',
   search_documentation: 'automations_reports',
-  get_fleet_status: 'automations_reports', // deployment/enrollment funnel report
+  get_invite_funnel: 'automations_reports', // deployment/enrollment funnel report
   get_fleet_health: 'automations_reports', // device reliability scoring/reporting
   analyze_metrics: 'automations_reports',
   analyze_fleet_metrics: 'automations_reports',
@@ -259,7 +266,18 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   get_invoice: 'business',
   manage_contracts: 'business',
   list_contracts: 'business',
+  manage_org_documents: 'business',
+  list_org_documents: 'business',
   get_contract: 'business',
+  // Service deliverables W02 (#5573): the recurring service obligations a
+  // contract promises, and the org key dates beside them — same commercial
+  // capability as the contracts they hang off.
+  list_deliverables: 'business',
+  // Deliverable template sets W05 (#5573): the reusable service tier behind
+  // those deliverables - same commercial capability.
+  list_deliverable_templates: 'business',
+  manage_deliverables: 'business',
+  manage_key_dates: 'business',
   manage_catalog: 'business',
   search_catalog: 'business',
   lookup_distributor_product: 'business',

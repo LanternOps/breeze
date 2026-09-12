@@ -6,6 +6,9 @@
  */
 
 import { Queue } from 'bullmq';
+import { eq } from 'drizzle-orm';
+import { db } from '../db';
+import { backupConfigs } from '../db/schema';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import {
   backupQueueJobDataSchema,
@@ -97,6 +100,10 @@ export interface ProcessResultsResult {
   // forward them or the snapshot loses its type label + BMR restore manifest.
   backupType?: 'file' | 'system_image' | 'database' | 'application';
   systemStateManifest?: Record<string, unknown> | null;
+  // Bare-metal recovery (W01): disk layout + guard verdict, same forwarding
+  // rationale as systemStateManifest above.
+  layoutManifest?: Record<string, unknown> | null;
+  bareMetal?: { restorable: boolean; reasons: string[] } | null;
   // Windows VSS diagnostics (#3027). Must ride the queue payload for the same
   // reason the manifest does: the persistence layer only writes what arrives
   // here, and dropping it leaves backup_jobs.vss_metadata permanently NULL.
@@ -111,7 +118,19 @@ export interface ProcessResultsResult {
       backupPath: string;
       size?: number;
       modTime?: string;
+      // W02 fidelity: content-less entries (symlinks/directories) — see
+      // backupSnapshotFileResultSchema / backupSnapshotFileSchema.
+      kind?: 'symlink' | 'dir';
+      linkTarget?: string;
     }>;
+    // D18 (#5429/§3.1): must mirror backupSnapshotSummarySchema, or
+    // agentWs.ts's caller can construct a ProcessResultsResult carrying these
+    // fields (from the parsed WS ingress payload) that TypeScript happily
+    // accepts here, then loses at the very next hop when
+    // backupQueueJobDataSchema.parse(...) strict-validates it.
+    baseSnapshotId?: string;
+    formatVersion?: number;
+    backupIdentity?: string;
   };
   error?: string;
 }
@@ -138,12 +157,24 @@ export async function enqueueBackupDispatch(
   meta: QueueActorMeta = SYSTEM_DISPATCH_META,
 ): Promise<string> {
   const queue = getBackupQueue();
+  // Site-ceiling gate contract §3: snapshot the config's CURRENT
+  // approval_generation at enqueue time. backupWorker's dispatch precheck
+  // compares this against the freshly-reloaded row and fails the job closed
+  // (backup_config_changed) if the config was edited after this job was
+  // queued — the scheduler's next tick then re-enqueues against the new
+  // generation.
+  const [configRow] = await db
+    .select({ approvalGeneration: backupConfigs.approvalGeneration })
+    .from(backupConfigs)
+    .where(eq(backupConfigs.id, configId))
+    .limit(1);
   const payload = backupQueueJobDataSchema.parse(withQueueMeta({
     type: 'dispatch-backup' as const,
     jobId,
     configId,
     orgId,
     deviceId,
+    configGeneration: configRow?.approvalGeneration,
   }, meta));
   const job = await queue.add(
     'dispatch-backup',

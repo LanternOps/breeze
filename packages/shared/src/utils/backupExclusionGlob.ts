@@ -26,6 +26,13 @@
  *     agent splits on `/` and calls `path.Match` on each segment, so `a[x/y]b`
  *     — a legal glob as one string — splits into the malformed segments `a[x`
  *     and `y]b` and is rejected.
+ *  3. **A leading '/' (or '\\', which folds to '/') root-anchors the
+ *     pattern.** `/proc/**` matches only from the selection root — it does
+ *     NOT get the implicit leading `**\/` that an unanchored path pattern
+ *     gets — so it excludes `/proc` without also excluding a nested
+ *     `home/alice/proc`. This lets a whole-machine backup preset exclude
+ *     `/proc`, `/sys`, `/dev` etc. without over-excluding user directories
+ *     that happen to contain a same-named subdirectory.
  *
  * ## Conservative by construction
  *
@@ -284,6 +291,22 @@ export function normalizeExclusionPattern(raw: string): string {
   return folded.replace(/^\/+/, '').replace(/\/+$/, '');
 }
 
+/**
+ * Like `normalizeExclusionPattern`, but also reports whether the raw pattern
+ * was root-anchored (its folded form started with '/' — gitignore
+ * semantics). Mirrors the agent's `anchored := strings.HasPrefix(p, "/")`
+ * check in `newExcludeMatcherForOS`, which runs BEFORE the leading '/' is
+ * trimmed.
+ */
+export function normalizeExclusionPatternAnchored(raw: string): {
+  normalized: string;
+  anchored: boolean;
+} {
+  const folded = raw.trim().replaceAll('\\', '/');
+  const anchored = folded.startsWith('/');
+  return { normalized: folded.replace(/^\/+/, '').replace(/\/+$/, ''), anchored };
+}
+
 /** Why the agent would not use a pattern. */
 export type ExclusionPatternProblem =
   | 'empty' // normalizes away to nothing — agent skips it silently
@@ -483,17 +506,24 @@ export function compileExcludeMatcher(
   const relPath: string[][] = [];
 
   for (const raw of patterns) {
-    let p = normalizeExclusionPattern(raw);
+    const { normalized, anchored } = normalizeExclusionPatternAnchored(raw);
+    let p = normalized;
     if (p === '') continue;
     if (caseInsensitive) p = p.toLowerCase();
 
-    if (p.includes('/')) {
+    if (anchored || p.includes('/')) {
       const segs = p.split('/');
       if (!segs.every((s) => s === '**' || (s !== '' && isValidGlobSegment(s)))) {
         continue; // agent logs + skips
       }
-      // Implicit leading '**/' — patterns match at any depth (gitignore-style).
-      relPath.push(['**', ...segs]);
+      if (anchored) {
+        // Root-anchored: match only from the selection root, so no implicit
+        // leading '**/'.
+        relPath.push(segs);
+      } else {
+        // Implicit leading '**/' — patterns match at any depth (gitignore-style).
+        relPath.push(['**', ...segs]);
+      }
     } else {
       if (!isValidGlobSegment(p)) continue;
       baseName.push(p);

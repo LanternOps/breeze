@@ -104,12 +104,23 @@ restoreRoutes.get(
         return c.json({ data: [] });
       }
       conditions.push(inArray(restoreJobs.deviceId, allowedDeviceIds));
-      conditions.push(sql`exists (
-        select 1
-        from ${backupSnapshots}
-        where ${backupSnapshots.id} = ${restoreJobs.snapshotId}
-          and ${backupSnapshots.orgId} = ${restoreJobs.orgId}
-          and ${inArray(backupSnapshots.deviceId, allowedDeviceIds)}
+      // D17 (2026-10-15-140004): restore_jobs.snapshot_id is now ON DELETE
+      // SET NULL, so a retention-expired snapshot leaves the job row behind
+      // with snapshot_id: null. A bare EXISTS keyed off snapshot_id can never
+      // match a NULL join key, so without the `is null` arm this predicate
+      // silently dropped every null-snapshot job from site-scoped listings —
+      // even though the `inArray(restoreJobs.deviceId, allowedDeviceIds)`
+      // condition just above it already fully bounds the row to an allowed
+      // device on its own.
+      conditions.push(sql`(
+        ${restoreJobs.snapshotId} is null
+        or exists (
+          select 1
+          from ${backupSnapshots}
+          where ${backupSnapshots.id} = ${restoreJobs.snapshotId}
+            and ${backupSnapshots.orgId} = ${restoreJobs.orgId}
+            and ${inArray(backupSnapshots.deviceId, allowedDeviceIds)}
+        )
       )`);
     }
     if (query.snapshotId) {

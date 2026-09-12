@@ -70,7 +70,23 @@ const push = vi.hoisted(() => ({
   loadUserCandidate: vi.fn(async (id: string) => ({ userId: id, partnerId: 'p-1', status: 'active', email: 'tech@msp.example' })),
   loadTicketPushPrefs: vi.fn(async () => ({ assignedEnabled: true, slaScope: 'owned' as 'off' | 'owned' | 'any' })),
   listAnySlaSubscribers: vi.fn(async () => ({ users: [] as unknown[], truncated: false })),
-  isAuthorisedForTicket: vi.fn(async () => true),
+  isAuthorisedForTicket: vi.fn(async (_userId: string, _partnerId: string, _orgId: string, _deviceId?: string | null) => true),
+  // The worker's gate is the canonical `isEligibleTicketRecipient`. `../db` is
+  // mocked in this suite, so the real predicate cannot run here: this seam
+  // delegates its permission arm to the `isAuthorisedForTicket` mock the suite
+  // already steers, so every existing knob and assertion keeps its meaning.
+  // The predicate's OWN contract (active status, same partner, current
+  // device-site ceiling) is proven against real code in
+  // services/ticketPush.test.ts and end-to-end against Postgres in
+  // __tests__/integration/ticketPushFanout.integration.test.ts.
+  isEligibleTicketRecipient: vi.fn(async (
+    c: { userId: string; partnerId: string; status: string },
+    partnerId: string,
+    orgId: string,
+    deviceId?: string | null
+  ) => c.status === 'active'
+    && c.partnerId === partnerId
+    && await push.isAuthorisedForTicket(c.userId, partnerId, orgId, deviceId)),
   admitPush: vi.fn(async (pending: { userId: string; spec: unknown }[]) => pending),
   resolvePushJobs: vi.fn(async (pending: { userId: string; spec: unknown }[]) =>
     pending.map((p) => ({ tokens: [{ token: 'tok', platform: 'ios', provider: 'apns' }], spec: p.spec }))),
@@ -86,6 +102,7 @@ vi.mock('../services/ticketPush', async (orig) => {
     loadTicketPushPrefs: push.loadTicketPushPrefs,
     listAnySlaSubscribers: push.listAnySlaSubscribers,
     isAuthorisedForTicket: push.isAuthorisedForTicket,
+    isEligibleTicketRecipient: push.isEligibleTicketRecipient,
     admitPush: (...a: [never]) => { push.order.push('admit'); return push.admitPush(...a); },
     resolvePushJobs: (...a: [never]) => { push.order.push('tokens'); return push.resolvePushJobs(...a); },
   };
@@ -588,7 +605,7 @@ describe('handleTicketEvent', () => {
 // W07 (#3901): ticket push fan-out
 // ---------------------------------------------------------------------------
 
-const TICKET = { id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', subject: 'Printer', submitterEmail: null };
+const TICKET = { id: 't-1', orgId: 'o-1', partnerId: 'p-1', deviceId: null, assignedTo: 'u-2', deletedAt: null, internalNumber: 'T-2026-0042', subject: 'Printer', submitterEmail: null };
 
 const assigned = (over: Record<string, unknown> = {}) => ({
   type: 'ticket.assigned' as const, ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1', actorUserId: 'u-1',
@@ -604,6 +621,14 @@ function resetPushMocks(): void {
   push.loadTicketPushPrefs.mockResolvedValue({ assignedEnabled: true, slaScope: 'owned' });
   push.listAnySlaSubscribers.mockResolvedValue({ users: [], truncated: false });
   push.isAuthorisedForTicket.mockResolvedValue(true);
+  push.isEligibleTicketRecipient.mockImplementation(async (
+    c: { userId: string; partnerId: string; status: string },
+    partnerId: string,
+    orgId: string,
+    deviceId?: string | null
+  ) => c.status === 'active'
+    && c.partnerId === partnerId
+    && await push.isAuthorisedForTicket(c.userId, partnerId, orgId, deviceId));
   push.admitPush.mockImplementation(async (pending: { userId: string; spec: unknown }[]) => pending);
   push.resolvePushJobs.mockImplementation(async (pending: { userId: string; spec: unknown }[]) =>
     pending.map((p) => ({ tokens: [{ token: 'tok', platform: 'ios', provider: 'apns' }], spec: p.spec })));
@@ -670,10 +695,11 @@ describe('ticket push fan-out (W07)', () => {
     expect(push.admitPush).toHaveBeenCalledWith([]);
   });
 
-  it('assignee lacking org access is not pushed (row still written)', async () => {
+  it('assignee lacking current ticket access receives no row, email, or push', async () => {
     push.isAuthorisedForTicket.mockResolvedValueOnce(false);
     await handleTicketEvent(assigned() as never);
-    expect(push.createNotification).toHaveBeenCalled();
+    expect(push.createNotification).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
     expect(push.admitPush).toHaveBeenCalledWith([]);
   });
 
@@ -684,11 +710,11 @@ describe('ticket push fan-out (W07)', () => {
    * unconditionally. Account status is a PUSH precondition (a device cannot be
    * registered without a login), never a reason to withhold the inbox row.
    */
-  it('invited assignee still gets the in-app row and the email — only the push is gated', async () => {
+  it('invited assignee receives no subject-bearing notification channel', async () => {
     push.loadUserCandidate.mockResolvedValueOnce({ userId: 'u-2', partnerId: 'p-1', status: 'invited', email: 'invited@msp.example' });
     await handleTicketEvent(assigned() as never);
-    expect(push.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-2' }));
-    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    expect(push.createNotification).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
     expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
   });
 
@@ -701,14 +727,23 @@ describe('ticket push fan-out (W07)', () => {
    * framed as a forgery signal. A missing event partner gates the PUSH (already
    * conditional on event.partnerId) — never the row or the email.
    */
-  it('legacy ticket with a null event partner: row + email still written, push withheld, nothing reported', async () => {
+  it('legacy null event partner is resolved from the current ticket before every channel', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await handleTicketEvent({ ...assigned(), partnerId: null } as never);
     expect(push.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-2' }));
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
-    expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
+    expect(push.isAuthorisedForTicket).toHaveBeenCalledWith('u-2', 'p-1', 'o-1', null);
     expect(sentry.captureException).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('stale assignment event cannot notify a user who is no longer assigned', async () => {
+    selectMock.mockReset();
+    selectMock.mockResolvedValueOnce([{ ...TICKET, assignedTo: 'u-3' }]);
+    await handleTicketEvent(assigned() as never);
+    expect(push.loadUserCandidate).not.toHaveBeenCalled();
+    expect(push.createNotification).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
   /**
@@ -759,14 +794,15 @@ describe('sla_breached fan-out (W07)', () => {
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
     expect(push.admitPush).toHaveBeenCalledWith([]);
     expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
-    // Short-circuit: 'off' must not cost a permission round-trip.
-    expect(push.isAuthorisedForTicket).not.toHaveBeenCalled();
+    // Channel preference is evaluated only after the security boundary.
+    expect(push.isAuthorisedForTicket).toHaveBeenCalledWith('u-2', 'p-1', 'o-1', null);
   });
 
-  it('owner who cannot access the org keeps the row but is not pushed', async () => {
+  it('owner who cannot access the current ticket receives no SLA channel', async () => {
     push.isAuthorisedForTicket.mockResolvedValueOnce(false);
     await handleTicketEvent(breach('u-2') as never);
-    expect(push.createNotification).toHaveBeenCalledTimes(1);
+    expect(push.createNotification).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
     expect(push.admitPush).toHaveBeenCalledWith([]);
   });
 
@@ -818,20 +854,20 @@ describe('sla_breached fan-out (W07)', () => {
     expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
   });
 
-  it('invited owner keeps the in-app row and the SLA email; only the push is gated', async () => {
+  it('invited owner receives no subject-bearing SLA channel', async () => {
     push.loadUserCandidate.mockResolvedValueOnce({ userId: 'u-2', partnerId: 'p-1', status: 'invited', email: 'tech@msp.example' });
     await handleTicketEvent(breach('u-2') as never);
-    expect(push.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-2' }));
-    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    expect(push.createNotification).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
     expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
   });
 
-  it('null event partner: the owner still gets the SLA row and email, push withheld, nothing reported', async () => {
+  it('null event partner: current ticket partner authorizes every SLA channel', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await handleTicketEvent({ ...breach('u-2'), partnerId: null } as never);
     expect(push.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-2' }));
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
-    expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
+    expect(push.dispatchPushToTokens).toHaveBeenCalledTimes(1);
     expect(sentry.captureException).not.toHaveBeenCalled();
     warn.mockRestore();
   });

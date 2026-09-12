@@ -11,7 +11,7 @@ Privileged Access Management (PAM) lets you take admin rights *away* from everyd
 
 This page is the operator's guide. For the trust model behind PAM -- how credentials are minted on the endpoint and never transmitted, what PAM does and does not defend against -- see the [PAM Security Model](/security/pam/). For the REST endpoints, see the [PAM API](/reference/pam-api/).
 
-Open **Privileged Access** from the Security section of the left sidebar to work the console.
+Open **PAM** from the Security section of the left sidebar to work the console.
 
 PAM covers three kinds of elevation, all of which land in the same queue:
 
@@ -23,6 +23,21 @@ PAM covers three kinds of elevation, all of which land in the same queue:
 
 <Aside type="tip">
   PAM never lets a request self-approve. An AI- or Helper-initiated elevation always defaults to **pending** -- waiting on a person -- so automation can never quietly relax its own approval. A UAC prompt with no matching rule follows the org's **Default verdict** (require approval by default; optionally auto-deny), never an auto-approval.
+</Aside>
+
+### Who Can Approve and Manage PAM
+
+PAM decisions are gated by two dedicated permissions, separate from the general device permissions a technician holds for day-to-day work:
+
+| Permission | Grants |
+|---|---|
+| **Approve** (`pam:approve`) | Decide (approve/deny/revoke) elevation requests, on the web console, in Helper, on mobile, or via the AI agent's `revoke_elevation` tool. |
+| **Manage policy** (`pam:manage_policy`) | Create, edit, and delete PAM rules, signer groups, and the org's PAM config (Rules, Signer Groups tabs, Default verdict). |
+
+**Org Admin** holds both by default, as does **Partner Admin** (through its full-access grant). An ordinary technician role does **not** -- holding the general "execute commands on devices" or "manage devices" permission is *not* enough to approve an elevation or author a rule, even though that same technician can carry out the eventual authorized elevation once someone else has approved it. If your MSP uses a custom role and wants specific staff to approve elevations or manage rules, grant `pam:approve` and/or `pam:manage_policy` explicitly on the Roles page.
+
+<Aside type="caution">
+  **Upgrading from an older release?** Org Admin roles gain both PAM permissions automatically during the upgrade migration -- no action needed for admins. But any **custom role** that previously relied on a technician's device permissions to approve elevations does **not** pick up the new permissions automatically; review your custom roles after upgrading and grant `pam:approve` / `pam:manage_policy` to any role that needs them. Elevation requests already sitting in the pending queue at upgrade time, fanned out to a technician who doesn't hold the new permission, will be denied with a "permission required" error if that technician tries to decide them -- reassign or re-approve those requests via someone who holds `pam:approve`.
 </Aside>
 
 ---
@@ -96,6 +111,10 @@ Any criterion can be **negated** — turn on "does not match" beneath a field to
 
 Evaluation order is: a **Software Policy** allowlist/blocklist match decides first; if nothing there applies, PAM rules run in priority order and the first match wins. Use the enable/disable switch to retire a rule without deleting it, or **Add rule** to create one from scratch.
 
+<Aside type="caution">
+  **Upgrade note: existing auto-approve rules require re-approval.** If your organization had a rule with verdict **Auto-approve** at the time of an upgrade that introduced the dedicated PAM permissions above, that rule is automatically switched to **Require approval** and badged "**Auto-approve suspended**" on the Rules tab -- it keeps matching the same requests (so nothing bypasses your rule chain unnoticed), but every match now waits for a human decision instead of auto-granting. An admin holding `pam:manage_policy` restores the original auto-approve behavior with one click on **Re-approve**. This is a one-time, one-directional migration: it never re-suspends a rule you've already re-approved, and it does not affect the separate Software Policy allowlist/blocklist auto-approval path (evaluated before PAM rules, described above).
+</Aside>
+
 The Rules tab also carries a **Default verdict** control — what happens to an elevation that matches no software policy and no rule. The default is **Require approval** (the request waits for a human); you can switch it to **Auto-deny** to fail unmatched elevations closed instead.
 
 ### Signer Groups
@@ -148,7 +167,7 @@ The flagship PAM flow turns a standard Windows UAC consent prompt into a governe
 </Steps>
 
 <Aside type="caution">
-  The approver is always a separate identity from the requester. A user can't approve their own elevation, and an AI agent or Helper session can't sign off on the action it proposed -- approval requires a human with the right permission, confirmed with MFA.
+  The approver is always a separate identity from the requester. A user can't approve their own elevation, and an AI agent or Helper session can't sign off on the action it proposed -- approval requires a human holding `pam:approve` (see [Who Can Approve and Manage PAM](#who-can-approve-and-manage-pam)), confirmed with MFA.
 </Aside>
 
 ---
@@ -217,7 +236,7 @@ The **Audit** tab is the permanent, immutable record of every elevation decision
 
 <Steps>
 
-1. Open **Privileged Access** and select the **Audit** tab.
+1. Open **PAM** from the sidebar and select the **Audit** tab.
 
 2. Filter by status, flow type, and date range to scope the report (for example, all approvals in the previous quarter).
 

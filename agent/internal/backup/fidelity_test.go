@@ -175,7 +175,7 @@ func TestTestRestore_ChecksumMismatchFails(t *testing.T) {
 		Size: 11,
 	})
 
-	result, err := TestRestore(provider, snapshotID, nil)
+	result, err := TestRestore(provider, snapshotID, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestTestRestore_SizeMismatchFails(t *testing.T) {
 		Size:  999,
 	})
 
-	result, err := TestRestore(provider, snapshotID, nil)
+	result, err := TestRestore(provider, snapshotID, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

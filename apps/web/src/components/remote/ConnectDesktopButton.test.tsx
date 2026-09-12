@@ -379,3 +379,72 @@ describe('ConnectDesktopButton — session creation (#4090)', () => {
     expect(staleCalls).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Revocation-lease capability gate (503 agent_upgrade_required)
+// ---------------------------------------------------------------------------
+
+describe('ConnectDesktopButton — agent upgrade required', () => {
+  beforeEach(() => {
+    _resetToastQueueForTests();
+    fetchMock.mockReset();
+    toastMock.mockReset();
+  });
+
+  function rigUpgradeRequired() {
+    // GET /devices/:id — no third-party launcher, so the flow proceeds to
+    // POST /remote/sessions.
+    fetchMock.mockResolvedValueOnce(jsonRes({
+      desktopAccess: null,
+      hasRemoteAccessLauncher: false,
+      remoteAccessLaunchSkipReason: null,
+    }));
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      json: vi.fn().mockResolvedValue({
+        error: 'Remote desktop needs an agent update on this device',
+        code: 'agent_upgrade_required',
+      }),
+    } as unknown as Response);
+  }
+
+  it('renders the pending-agent-update reason, distinct from a generic failure', async () => {
+    rigUpgradeRequired();
+
+    render(<ConnectDesktopButton deviceId="dev-1" />);
+    fireEvent.click(screen.getByRole('button', { name: /connect desktop/i }));
+
+    await waitFor(() => {
+      expect(toastMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'error',
+          message: expect.stringContaining('agent update'),
+        }),
+      );
+    });
+    // Distinct from "device is offline" and from the generic
+    // "Failed to create desktop session": the operator must know this clears
+    // on its own within a heartbeat interval.
+    const message = toastMock.mock.calls
+      .map((call) => (call[0] as { message?: string }).message ?? '')
+      .join(' ');
+    expect(message).not.toMatch(/offline/i);
+    expect(message).not.toMatch(/Failed to create desktop session/i);
+    expect(message).toMatch(/Terminal and file transfer are unaffected/i);
+  });
+
+  it('does not go on to mint a connect code after the gate refuses', async () => {
+    rigUpgradeRequired();
+
+    render(<ConnectDesktopButton deviceId="dev-1" />);
+    fireEvent.click(screen.getByRole('button', { name: /connect desktop/i }));
+
+    await waitFor(() => {
+      expect(toastMock).toHaveBeenCalled();
+    });
+    const calledPaths = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(calledPaths.some((path) => path.includes('desktop-connect-code'))).toBe(false);
+  });
+});

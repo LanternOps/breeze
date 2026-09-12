@@ -49,7 +49,8 @@ diagnosticLogsRoutes.get(
       conditions.push(eq(agentLogs.component, query.component));
     }
 
-    // Time range: ?since=ISO&until=ISO
+    // Explicit ranges are event-time investigations. Default recency below is
+    // receipt-time so an agent clock cannot pin a row ahead of newer evidence.
     if (query.since) {
       const d = new Date(query.since);
       if (isNaN(d.getTime())) {
@@ -87,7 +88,11 @@ diagnosticLogsRoutes.get(
           .select()
           .from(agentLogs)
           .where(and(...conditions))
-          .orderBy(desc(agentLogs.timestamp), desc(agentLogs.id))
+          // Receipt time dominates. Ingest writes up to 100 rows in one INSERT,
+          // so a whole batch shares created_at to the microsecond and the random
+          // uuid id would shuffle it; agent event time only breaks ties WITHIN a
+          // single receipt instant, which cannot reorder rows across receipts.
+          .orderBy(desc(agentLogs.createdAt), desc(agentLogs.timestamp), desc(agentLogs.id))
           .limit(limit)
           .offset(offset),
         db

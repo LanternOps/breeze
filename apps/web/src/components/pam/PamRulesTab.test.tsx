@@ -3,10 +3,20 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import PamRulesTab from './PamRulesTab';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 import type { PamRule } from './types';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // usePermissions() (PAM RBAC UI gating, PR review fix) reads grants off the
+  // store; grant the admin wildcard here so this file's existing tests (which
+  // predate the gating) keep exercising full functionality. Negative gating
+  // is covered in the sibling PamRulesTab.permissions.test.tsx-style suite.
+  useAuthStore: Object.assign(
+    (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
+      selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+    { getState: () => ({ tokens: null }) },
+  ),
 }));
 
 vi.mock('../shared/Toast', () => ({
@@ -18,6 +28,7 @@ vi.mock('@/lib/navigation', () => ({
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
+const showToastMock = vi.mocked(showToast);
 
 function makeJsonResponse(payload: unknown, ok = true, status = ok ? 200 : 500): Response {
   return {
@@ -227,6 +238,107 @@ describe('PamRulesTab', () => {
       render(<PamRulesTab />);
       await waitFor(() => screen.getByTestId('pam-rule-row-rule-1'));
       expect(screen.queryByTestId('pam-rule-stale-tier-rule-1')).toBeNull();
+    });
+  });
+
+  describe('suspended auto_approve rule — re-approval (§6B, fix/pam-dedicated-permissions)', () => {
+    const suspendedRule: PamRule = {
+      ...signedRule,
+      id: 'rule-suspended',
+      name: 'Auto-elevate installer',
+      verdict: 'require_approval',
+      suspendedVerdict: 'auto_approve',
+      reapprovedAt: null,
+      reapprovedByUserId: null,
+    };
+
+    it('shows the "suspended pending re-approval" badge and a Re-approve action', async () => {
+      installFetchRoutes({ rules: [suspendedRule] });
+      render(<PamRulesTab />);
+      await waitFor(() => screen.getByTestId('pam-rule-row-rule-suspended'));
+      expect(screen.getByTestId('pam-rule-suspended-badge-rule-suspended')).toBeInTheDocument();
+      expect(screen.getByTestId('pam-rule-reapprove-rule-suspended')).toBeInTheDocument();
+    });
+
+    it('does NOT show the badge for an ordinary require_approval rule (no suspendedVerdict)', async () => {
+      const ordinaryRule: PamRule = { ...signedRule, id: 'rule-ordinary', verdict: 'require_approval' };
+      installFetchRoutes({ rules: [ordinaryRule] });
+      render(<PamRulesTab />);
+      await waitFor(() => screen.getByTestId('pam-rule-row-rule-ordinary'));
+      expect(screen.queryByTestId('pam-rule-suspended-badge-rule-ordinary')).toBeNull();
+      expect(screen.queryByTestId('pam-rule-reapprove-rule-ordinary')).toBeNull();
+    });
+
+    it('does NOT show the badge once reapprovedAt is stamped (already handled)', async () => {
+      const reapprovedRule: PamRule = {
+        ...suspendedRule,
+        id: 'rule-reapproved',
+        verdict: 'auto_approve',
+        suspendedVerdict: null,
+        reapprovedAt: '2026-10-16T00:00:00.000Z',
+      };
+      installFetchRoutes({ rules: [reapprovedRule] });
+      render(<PamRulesTab />);
+      await waitFor(() => screen.getByTestId('pam-rule-row-rule-reapproved'));
+      expect(screen.queryByTestId('pam-rule-suspended-badge-rule-reapproved')).toBeNull();
+    });
+
+    // PR review fix: `suspendedVerdict` alone is the live signal — it is
+    // nulled out by the PATCH { reapprove: true } handler AND by an explicit
+    // verdict edit (decideApprovalRequest/pam.ts's `payload.verdict !==
+    // undefined` branch). `reapprovedAt` is a permanent historical stamp
+    // that is never cleared, so a rule that was re-approved once before and
+    // later got a fresh suspendedVerdict set (e.g. quarantined again) must
+    // still show the badge/action — gating on `!rule.reapprovedAt` as well
+    // would wrongly hide it forever after the first re-approval.
+    it('shows the badge/action based on suspendedVerdict alone, even when a stale reapprovedAt is still stamped from an earlier cycle', async () => {
+      const reQuarantinedRule: PamRule = {
+        ...suspendedRule,
+        id: 'rule-requarantined',
+        suspendedVerdict: 'auto_approve',
+        reapprovedAt: '2026-09-01T00:00:00.000Z',
+      };
+      installFetchRoutes({ rules: [reQuarantinedRule] });
+      render(<PamRulesTab />);
+      await waitFor(() => screen.getByTestId('pam-rule-row-rule-requarantined'));
+      expect(screen.getByTestId('pam-rule-suspended-badge-rule-requarantined')).toBeInTheDocument();
+      expect(screen.getByTestId('pam-rule-reapprove-rule-requarantined')).toBeInTheDocument();
+    });
+
+    it('clicking Re-approve PATCHes { reapprove: true } through runAction and refetches', async () => {
+      installFetchRoutes({ rules: [suspendedRule] });
+      render(<PamRulesTab />);
+      await waitFor(() => screen.getByTestId('pam-rule-reapprove-rule-suspended'));
+
+      fireEvent.click(screen.getByTestId('pam-rule-reapprove-rule-suspended'));
+
+      await waitFor(() => {
+        expect(findMutationCall('/pam/rules/rule-suspended', 'PATCH')).toBeDefined();
+      });
+      expect(bodyOf(findMutationCall('/pam/rules/rule-suspended', 'PATCH'))).toEqual({ reapprove: true });
+    });
+
+    it('surfaces a failed re-approve via a toast (runAction error path)', async () => {
+      fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        if (url === '/pam/rules/rule-suspended' && method === 'PATCH') {
+          return makeJsonResponse({ error: 'Rule is not suspended pending re-approval' }, false, 400);
+        }
+        if (url === '/pam/config' && method === 'GET') {
+          return makeJsonResponse({ success: true, config: { orgId: 'org-1', defaultUnmatchedVerdict: 'require_approval' } });
+        }
+        return makeJsonResponse({ success: true, rules: [suspendedRule] });
+      });
+      render(<PamRulesTab />);
+      await waitFor(() => screen.getByTestId('pam-rule-reapprove-rule-suspended'));
+
+      fireEvent.click(screen.getByTestId('pam-rule-reapprove-rule-suspended'));
+
+      await waitFor(() => {
+        expect(showToastMock).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error' }),
+        );
+      });
     });
   });
 

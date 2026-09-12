@@ -36,7 +36,7 @@ The central table for managed endpoints:
 | `agentVersion` | varchar(20) | Installed agent version |
 | `status` | enum | `online`, `offline`, `maintenance`, `updating`, `pending`, `decommissioned`, `quarantined` |
 | `lastSeenAt` | timestamp | Last telemetry received |
-| `lastSeenIp` | inet | Source IP recorded on the most recent heartbeat; changes raise an `agent.source.ip.changed` audit event. |
+| `lastSeenIp` | varchar(45) | Source IP recorded on the most recent heartbeat; changes raise an `agent.source.ip.changed` audit event. |
 | `mainAgentSilentSince` | timestamp | Set by the server when the main agent stops heartbeating but the watchdog is still online. Cleared when the agent resumes. |
 | `watchdogStatus` | enum | `connected`, `failover`, `offline` — last reported watchdog state. |
 | `watchdogLastSeenAt` | timestamp | Last watchdog check-in. |
@@ -91,6 +91,16 @@ partners (MSP)
 | `permissions` | Resource + action pairs (e.g., `devices:read`) |
 | `rolePermissions` | Maps roles to permissions |
 | `partnerUsers` | Maps users to partners with roles |
+
+### Other Core Tables
+
+| Table | Purpose |
+|---|---|
+| `alerts` | Fired alert instances: device, org, severity, status (`active`, `acknowledged`, `resolved`, `suppressed`, `dismissed`), and ack/resolve/dismiss metadata. Related: `alertRules`, `alertTemplates`. |
+| `scripts` | Reusable script definitions: language, content, parameter definitions, timeout, run-as. Related: `scriptExecutions` (per-device runs), `scriptExecutionBatches`. |
+| `automations` | Trigger → conditions → actions definitions, owned by an org or a partner (partner-wide). Related: `automationRuns`, `automationDeviceResults`, `automationResourceBindings`. |
+| `tickets` | Service-desk tickets: subject, status, priority, assignment, requester. Defined in `db/schema/portal.ts`. Related: `ticketCategories`, `ticketAlertLinks`. |
+| `apiKeys` | Organization-scoped API keys (`brz_…`) with hashed secret, key prefix, scopes, rate limit, and human/service-principal linkage. |
 
 ### Default Roles
 

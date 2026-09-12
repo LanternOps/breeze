@@ -108,7 +108,8 @@ const claims = (over: Partial<ClientAiEntraClaims> = {}): ClientAiEntraClaims =>
     ...over,
   }) as ClientAiEntraClaims;
 
-const redis = { setex: vi.fn(), sadd: vi.fn(), expire: vi.fn() } as never;
+const redisMock = { setex: vi.fn(), sadd: vi.fn(), expire: vi.fn() };
+const redis = redisMock as never;
 
 /** mapping row, then the portal-user lookup row(s). */
 const seedSelects = (user: Array<Record<string, unknown>>) => {
@@ -123,6 +124,8 @@ const activeUser = (over: Record<string, unknown> = {}) => ({
   email: EMAIL,
   name: 'Jane',
   status: 'active',
+  authMethod: 'entra',
+  authEpoch: 1,
   contactId: null,
   ...over,
 });
@@ -144,6 +147,15 @@ beforeEach(() => {
 });
 
 describe('resolveAndMintClientSession — contact linkage (#3258)', () => {
+  it('binds the minted Redis session to the live portal auth epoch', async () => {
+    seedSelects([activeUser({ authEpoch: 7, contactId: 'ct-existing' })]);
+
+    await resolveAndMintClientSession(claims(), redis);
+
+    const payload = JSON.parse(redisMock.setex.mock.calls[0]![2] as string);
+    expect(payload).toMatchObject({ portalUserId: 'pu-1', orgId: ORG_ID, authEpoch: 7 });
+  });
+
   it('links a contact on the FIRST exchange and writes it onto the new login', async () => {
     seedSelects([]);
     insertReturning.mockResolvedValueOnce([activeUser()]);
@@ -206,6 +218,17 @@ describe('resolveAndMintClientSession — contact linkage (#3258)', () => {
     // No `contactId` in the .set() either — the pre-gate write is lastLoginAt only.
     expect(setSpy.mock.calls.every((c) => !('contactId' in (c[0] as object)))).toBe(true);
     expect(outcome.audit.details).toMatchObject({ reason: 'account_inactive', contactLink: 'not-attempted' });
+  });
+
+  it('fails closed when an Entra identity was reclassified as a password login', async () => {
+    seedSelects([activeUser({ authMethod: 'password' })]);
+
+    const outcome = await resolveAndMintClientSession(claims(), redis);
+
+    expect(outcome.kind).toBe('denied');
+    expect(linkLoginToContactMock).not.toHaveBeenCalled();
+    expect(resolveAddressMock).not.toHaveBeenCalled();
+    expect(outcome.audit.details).toMatchObject({ reason: 'identity_method_mismatch' });
   });
 
   // ---- S1: only an address the customer demonstrably owns may link ----
@@ -383,6 +406,20 @@ describe('resolveAndMintClientSession — contact linkage (#3258)', () => {
     expect(outcome.kind).toBe('resolved');
     // The winner already linked it, so the loser keeps that link untouched.
     expect(outcome.audit.details).toMatchObject({ contactLink: 'kept', contactId: 'ct-1' });
+  });
+
+  it('rejects a concurrent provisioning winner with the wrong identity method', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ orgId: ORG_ID, partnerId: PARTNER_ID, partnerEnabled: true }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([activeUser({ id: 'pu-winner', authMethod: 'password' })]);
+    insertReturning.mockRejectedValueOnce(Object.assign(new Error('dup'), { cause: { code: '23505' } }));
+
+    const outcome = await resolveAndMintClientSession(claims(), redis);
+
+    expect(outcome.kind).toBe('denied');
+    expect(outcome.audit.details).toMatchObject({ reason: 'identity_method_mismatch' });
+    expect(linkLoginToContactMock).not.toHaveBeenCalled();
   });
 
   it('records not-attempted on the partner-entitlement denial', async () => {

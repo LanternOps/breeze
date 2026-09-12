@@ -19,14 +19,14 @@ Breeze RMM ships with **optional** Sentry integration on the API and web app. Bo
 ### API (`SENTRY_DSN`)
 
 - Unhandled exceptions in Hono route handlers and OAuth flows
-- Tagged with HTTP method and path; user-agent header
+- Tagged with HTTP method and `route_template` (the templated route, e.g. `/devices/:id` — never the raw request path, which could carry tenant or device identifiers); user-agent header
 - No request bodies, query strings, cookies, or auth headers
 - See `apps/api/src/services/sentry.ts`
 
 ### Web (`PUBLIC_SENTRY_DSN_WEB`)
 
 - Unhandled exceptions in React islands and SSR
-- **Session replays only on error** — `replaysOnErrorSampleRate: 1.0`, `replaysSessionSampleRate: 0`. The SDK buffers ~60s of activity in the browser and only uploads it when an error fires.
+- **Session replays only on error** — `replaysOnErrorSampleRate: 0.5`, `replaysSessionSampleRate: 0`. The SDK buffers ~60s of activity in the browser and only uploads it when an error fires.
 - Replay defaults: `maskAllText: true`, `maskAllInputs: true`, `blockAllMedia: true`. Tenant data (hostnames, IPs, usernames, customer org names) rendered as text or in inputs is masked in the recording.
 - URLs are reduced to path-only (origin dropped to avoid leaking tenant subdomains) and have UUIDs and long hex IDs replaced with `:id` / `:hash` before send.
 - Cookies, request headers, query strings, request bodies, user emails/usernames/IPs are stripped in `beforeSend`. The scrub functions are wrapped in `try/catch` so a future shape change can't silently drop every event.

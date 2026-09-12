@@ -99,3 +99,55 @@ describe('manage_peripheral_policy — priority contract', () => {
     expect(result.error).toContain('priority');
   });
 });
+
+describe('manage_peripheral_policy — site-ceiling gate (contract-site-ceiling-gate §2/§7A)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it.each(['create', 'update', 'disable', 'add_exception', 'remove_exception'])(
+    'action=%s: site-restricted caller (allowedSiteIds set) is denied before any DB access',
+    async (action) => {
+      const result = JSON.parse(await handlerFor('manage_peripheral_policy')({
+        action,
+        policy_id: 'policy-1',
+        name: 'Block USB Storage',
+        device_class: 'storage',
+        policy_action: 'block',
+        target_type: 'organization',
+        exception: { vendor: '0x1234' },
+        match: { vendor: '0x1234' },
+      }, makeAuth(['s1'])));
+
+      expect(result.error).toMatch(/site-restricted/i);
+      expect(mockDb.select).not.toHaveBeenCalled();
+    }
+  );
+
+  it('empty allowedSiteIds ([]) is also denied', async () => {
+    const result = JSON.parse(await handlerFor('manage_peripheral_policy')({
+      action: 'create',
+      name: 'Block USB Storage',
+      device_class: 'storage',
+      policy_action: 'block',
+      target_type: 'organization',
+    }, makeAuth([])));
+
+    expect(result.error).toMatch(/site-restricted/i);
+  });
+
+  it('unrestricted caller (allowedSiteIds undefined) is unaffected by this gate', async () => {
+    (db.insert as any).mockReturnValue({
+      values: vi.fn(() => ({
+        returning: vi.fn(() => Promise.resolve([{ id: 'policy-1', orgId: 'org-1', partnerId: null, name: 'p', deviceClass: 'storage', action: 'block', targetType: 'organization' }])),
+      })),
+    });
+    const result = JSON.parse(await handlerFor('manage_peripheral_policy')({
+      action: 'create',
+      name: 'Block USB Storage',
+      device_class: 'storage',
+      policy_action: 'block',
+      target_type: 'organization',
+    }, makeAuth(undefined)));
+
+    expect(result.error).toBeUndefined();
+  });
+});

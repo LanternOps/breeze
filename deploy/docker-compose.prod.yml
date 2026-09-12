@@ -92,6 +92,15 @@ x-api-env: &api-env
   ENROLLMENT_KEY_PURGE_AFTER_DAYS: ${ENROLLMENT_KEY_PURGE_AFTER_DAYS:-7}
   MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER:?Set MFA_RECOVERY_CODE_PEPPER in .env}
   PATCH_REPORT_STORAGE_PATH: /data/patch-reports
+  # Scratch directory for bare-metal-recovery bundle/ISO builds (a 45-65MB
+  # helper binary plus a tarball or ISO, written under mkdtemp). Both the api
+  # and worker containers below mount /tmp as a 64MB tmpfs, so building
+  # straight under os.tmpdir() fails with ENOSPC (D7) — default it under the
+  # already-mounted api_data volume instead. Mapped here explicitly (not just
+  # set in .env) per the compose-interpolation rule above.
+  RECOVERY_MEDIA_WORK_DIR: ${RECOVERY_MEDIA_WORK_DIR:-/data/recovery-work}
+  # Backup GC per-object grace (ms). Lab/test knob only; leave unset in production (48h).
+  BACKUP_GC_GRACE_MS: ${BACKUP_GC_GRACE_MS:-}
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_JSON: "true"
   # Agent diagnostic log retention (worker role; all optional, see .env.example).
@@ -116,6 +125,12 @@ x-api-env: &api-env
   SMTP_TIMEOUT_MS: ${SMTP_TIMEOUT_MS:-}
   MAILGUN_TIMEOUT_MS: ${MAILGUN_TIMEOUT_MS:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  # Hardware warranty lookups (all optional, OFF unless set). See
+  # https://docs.breezermm.com/deploy/environment/#warranty-lookups
+  DELL_CLIENT_ID: ${DELL_CLIENT_ID:-}
+  DELL_CLIENT_SECRET: ${DELL_CLIENT_SECRET:-}
+  LENOVO_API_KEY: ${LENOVO_API_KEY:-}
+  LENOVO_WARRANTY_ENABLED: ${LENOVO_WARRANTY_ENABLED:-}
   # Breeze AI for Office (Excel add-in). Entra app-registration client ID that
   # gates the /client-ai exchange + admin surface. Empty/unmapped = surface
   # stays dark (env.ts defaults to ''). Threaded through compose so the feature

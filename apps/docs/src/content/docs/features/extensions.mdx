@@ -72,3 +72,7 @@ will fail to start with `extension "vector" is not available`. See
 [Production deployment](/deploy/production/) for the database details,
 including the upgrade caveat about swapping images over an existing data
 volume.
+
+### Who can use Workspace
+
+Since v0.112.0, Workspace administration is gated by four dedicated permissions rather than the general device permissions: **`workspace:read`** (view sources and processing status), **`workspace:write`** (configure sources and settings), **`workspace:credentials`** (manage source credentials) and **`workspace:execute`** (run crawling and content processing). Partner Admin holds all four through its full-access grant and the built-in Org Admin is granted them on upgrade; **any other role, including custom roles, must be granted the keys in Settings → Roles** before its users can open or operate Workspace. Workspace is administered from a partner-scope session.

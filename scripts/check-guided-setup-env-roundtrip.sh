@@ -62,6 +62,10 @@ VALUES
   # developer's real ./.env on every iteration. Re-assert ENV_FILE afterward as
   # belt-and-suspenders in case that derivation logic ever changes.
   export BREEZE_SETUP_DIR="${TMP_DIR}"
+  # Belt-and-suspenders with the sed strip above: guided-setup.sh only skips
+  # its own `main "$@"` call when this is set, so sourcing here never runs the
+  # real installer even if the sed pattern stops matching main's call site.
+  export BREEZE_GUIDED_SETUP_LIBRARY_ONLY=true
   # shellcheck source=/dev/null
   source "${FUNCTIONS_FILE}" >/dev/null 2>&1
   ENV_FILE="${TMP_DIR}/.env"

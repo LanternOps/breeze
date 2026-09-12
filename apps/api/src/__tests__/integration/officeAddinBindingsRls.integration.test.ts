@@ -135,6 +135,7 @@ describe('office_addin_user_bindings RLS — cross-partner forge (breeze_app rol
           userId: b.userId, // forged: belongs to partner B
           partnerId: b.partnerId, // forged: belongs to partner B
           boundAuthEpoch: 1,
+          boundMfaEpoch: 1,
           mfaVerifiedAt: new Date(),
         })
       )
@@ -159,6 +160,7 @@ describe('office_addin_user_bindings RLS — cross-partner forge (breeze_app rol
           userId: b.userId,
           partnerId: b.partnerId,
           boundAuthEpoch: 1,
+          boundMfaEpoch: 1,
           mfaVerifiedAt: new Date(),
         })
         .returning({ id: officeAddinUserBindings.id })
@@ -200,6 +202,7 @@ describe('office_addin_user_bindings RLS — cross-partner forge (breeze_app rol
           userId: b.userId,
           partnerId: b.partnerId,
           boundAuthEpoch: 1,
+          boundMfaEpoch: 1,
           mfaVerifiedAt: new Date(),
         })
         .returning({ id: officeAddinUserBindings.id })
@@ -237,6 +240,7 @@ describe('office_addin_user_bindings RLS — cross-partner forge (breeze_app rol
           userId: b.userId,
           partnerId: b.partnerId,
           boundAuthEpoch: 1,
+          boundMfaEpoch: 1,
           mfaVerifiedAt: new Date(),
         })
         .returning({ id: officeAddinUserBindings.id })
@@ -253,6 +257,7 @@ describe('office_addin_user_bindings RLS — cross-partner forge (breeze_app rol
           userId: a.userId,
           partnerId: a.partnerId,
           boundAuthEpoch: 1,
+          boundMfaEpoch: 1,
           mfaVerifiedAt: new Date(),
         })
         .returning({ id: officeAddinUserBindings.id })

@@ -15,9 +15,7 @@
 import { and, eq } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { webhooks as webhooksTable } from '../db/schema';
-import { toWebhookConfig } from './webhookConfig';
 import { recordWebhookDelivery } from './webhookDeliveryRecord';
-import { captureException } from './sentry';
 import type { WebhookFanoutDeps } from '../workers/webhookDelivery';
 
 const { db } = dbModule;
@@ -31,7 +29,12 @@ export function buildWebhookFanoutDeps(): WebhookFanoutDeps {
     getWebhooksForEvent: async (orgId, eventType) => {
       return runWithSystemDbAccess(async () => {
         const rows = await db
-          .select()
+          .select({
+            id: webhooksTable.id,
+            orgId: webhooksTable.orgId,
+            approvalGeneration: webhooksTable.approvalGeneration,
+            events: webhooksTable.events,
+          })
           .from(webhooksTable)
           .where(
             and(
@@ -40,34 +43,24 @@ export function buildWebhookFanoutDeps(): WebhookFanoutDeps {
             )
           );
 
+        // Site-ceiling gate contract §7E: no decryption here. `events` is a
+        // plain (non-encrypted) column, and the fan-out/dedupe path never
+        // needed url/secret/headers — only `queueDelivery` and
+        // `recordWebhookDelivery` consume this, and both only ever read
+        // `.id`/`.orgId`/`.approvalGeneration`. Decryption now happens
+        // exactly once, inside the delivery worker at send time
+        // (resolveDeliveryWebhookConfig), which is what closes the window
+        // where a decrypted secret used to sit in the Redis queue payload.
         return rows
-          .filter((webhook) => {
-            const events = webhook.events ?? [];
+          .filter((row) => {
+            const events = row.events ?? [];
             return events.includes(eventType) || events.includes('*');
           })
-          // Decrypt PER ROW inside a try/catch. url/secret/headers are encrypted
-          // at rest (encryptedColumnRegistry); decryptForColumn THROWS on a row
-          // that looks encrypted but can't be decrypted (key/AAD mismatch,
-          // partial migration, corruption). Without per-row isolation a single
-          // bad row would abort the whole .map and silently drop delivery for
-          // EVERY webhook in the org. Skip only the offending webhook (delivering
-          // with unusable credentials is worse) and surface it to Sentry. Legacy
-          // plaintext rows pass through decryptForColumn unchanged.
-          .flatMap((webhook) => {
-            try {
-              // Shared with the recovery sweep (services/webhookConfig): one
-              // decrypt/normalise path, so the two cannot drift the next time an
-              // encrypted column is added to `webhooks`.
-              return [toWebhookConfig(webhook)];
-            } catch (err) {
-              console.error(
-                `[webhookDelivery] failed to decrypt webhook ${webhook.id} (org ${webhook.orgId}); skipping delivery for this webhook only`,
-                err
-              );
-              captureException(err instanceof Error ? err : new Error(String(err)));
-              return [];
-            }
-          });
+          .map((row) => ({
+            id: row.id,
+            orgId: row.orgId,
+            approvalGeneration: row.approvalGeneration,
+          }));
       });
     },
     createDeliveryRecord: recordWebhookDelivery,

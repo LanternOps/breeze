@@ -1,5 +1,20 @@
 package providers
 
+import "errors"
+
+// ErrObjectNotFound is a sentinel a BackupProvider's Download should wrap
+// (via fmt.Errorf("%w: ...", ErrObjectNotFound, ...)) ONLY when it can
+// POSITIVELY confirm the requested remote object does not exist — never for
+// any other failure (network, permission, decode, timeout). Callers use
+// errors.Is(err, ErrObjectNotFound) to distinguish "confirmed absent, safe
+// to proceed" from "unknown, must fail closed" — see backup.fetchPublished
+// Manifest, whose entire correctness depends on this distinction never
+// being blurred. LocalProvider and S3Provider (the two providers reachable
+// via the backup_run payload today, per exec_backup.go) implement this;
+// other providers are not wired to it yet and any caller depending on it
+// must treat their errors as "not confirmed absent" (the safe default).
+var ErrObjectNotFound = errors.New("backup provider: object not found")
+
 // BackupProvider defines the interface for backup storage providers.
 type BackupProvider interface {
 	Upload(localPath, remotePath string) error

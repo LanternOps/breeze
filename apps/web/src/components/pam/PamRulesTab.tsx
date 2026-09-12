@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, ListChecks, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
+import { usePermissions } from '../../lib/permissions';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
@@ -49,6 +50,8 @@ function ruleCriteriaSummary(rule: PamRule, signerGroupNames: Record<string, str
 
 export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
   const { t } = useTranslation('security');
+  const { can } = usePermissions();
+  const canManage = can('pam', 'manage_policy');
   const [rules, setRules] = useState<PamRule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -208,6 +211,37 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
     }
   };
 
+  // §6B (fix/pam-dedicated-permissions): re-approve a legacy auto_approve
+  // rule the 2026-10-15-150200 migration quarantined to require_approval.
+  const reapproveRule = async (rule: PamRule) => {
+    try {
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/pam/rules/${rule.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ reapprove: true }),
+          }),
+        errorFallback: t('pamPamRulesTab.errors.reapproveRule', {
+          defaultValue: 'Failed to re-approve rule',
+        }),
+        successMessage: t('pamPamRulesTab.toasts.ruleReapproved', {
+          defaultValue: 'Rule "{{name}}" re-approved — auto-approve restored',
+          name: rule.name,
+        }),
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+      });
+      void fetchRules();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        showToast({
+          type: 'error',
+          message: t('pamPamRulesTab.errors.reapproveRule', { defaultValue: 'Failed to re-approve rule' }),
+        });
+      }
+    }
+  };
+
   const confirmDeleteRule = async () => {
     if (!deleteTarget || deleting) return;
     const rule = deleteTarget;
@@ -248,15 +282,17 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
               'Software policies are evaluated first — an allowlist/blocklist match decides before these rules. Rules then run in priority order (lowest first); the first match decides.',
           })}
         </p>
-        <button
-          type="button"
-          onClick={() => setCreating(true)}
-          data-testid="pam-add-rule-btn"
-          className={btnPrimaryClass}
-        >
-          <Plus className="h-4 w-4" aria-hidden="true" />
-          {t('pamPamRulesTab.actions.addRule', { defaultValue: 'Add rule' })}
-        </button>
+        {canManage && (
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            data-testid="pam-add-rule-btn"
+            className={btnPrimaryClass}
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            {t('pamPamRulesTab.actions.addRule', { defaultValue: 'Add rule' })}
+          </button>
+        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border bg-card px-4 py-3 shadow-xs">
@@ -267,7 +303,7 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
           id="pam-default-unmatched-verdict"
           value={defaultVerdict}
           onChange={(e) => void changeDefaultVerdict(e.target.value as PamUnmatchedVerdict)}
-          disabled={savingDefault}
+          disabled={savingDefault || !canManage}
           data-testid="pam-default-unmatched-verdict"
           className={`${selectClass} disabled:opacity-50`}
         >
@@ -363,7 +399,26 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
                       ? siteNames[rule.siteId] ?? rule.siteId
                       : t('pamPamRulesTab.table.orgWide', { defaultValue: 'Org-wide' })}
                   </td>
-                  <td className={`${tdClass} whitespace-nowrap`}>{VERDICT_LABELS[rule.verdict]}</td>
+                  <td className={`${tdClass} whitespace-nowrap`}>
+                    <div className="flex items-center gap-1.5">
+                      <span>{VERDICT_LABELS[rule.verdict]}</span>
+                      {rule.suspendedVerdict && (
+                        <span
+                          data-testid={`pam-rule-suspended-badge-${rule.id}`}
+                          title={t('pamPamRulesTab.suspendedBadge.tooltip', {
+                            defaultValue:
+                              'This rule auto-approved matching requests before an upgrade. It now requires manual approval until an admin re-approves it.',
+                          })}
+                          className="inline-flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                        >
+                          <AlertTriangle className="h-2.5 w-2.5" aria-hidden="true" />
+                          {t('pamPamRulesTab.suspendedBadge.label', {
+                            defaultValue: 'Auto-approve suspended — re-approve',
+                          })}
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className={tdClass}>
                     <Switch
                       checked={rule.enabled}
@@ -373,22 +428,36 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
                   </td>
                   <td className={`${tdClass} whitespace-nowrap text-right`}>
                     <div className="inline-flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setEditing(rule)}
-                        data-testid={`pam-rule-edit-${rule.id}`}
-                        className={btnOutlineClass}
-                      >
-                        {t('common:actions.edit', { defaultValue: 'Edit' })}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDeleteTarget(rule)}
-                        data-testid={`pam-rule-delete-${rule.id}`}
-                        className={btnOutlineDestructiveClass}
-                      >
-                        {t('common:actions.delete', { defaultValue: 'Delete' })}
-                      </button>
+                      {rule.suspendedVerdict && canManage && (
+                        <button
+                          type="button"
+                          onClick={() => void reapproveRule(rule)}
+                          data-testid={`pam-rule-reapprove-${rule.id}`}
+                          className={btnPrimaryClass}
+                        >
+                          {t('pamPamRulesTab.actions.reapprove', { defaultValue: 'Re-approve' })}
+                        </button>
+                      )}
+                      {canManage && (
+                        <button
+                          type="button"
+                          onClick={() => setEditing(rule)}
+                          data-testid={`pam-rule-edit-${rule.id}`}
+                          className={btnOutlineClass}
+                        >
+                          {t('common:actions.edit', { defaultValue: 'Edit' })}
+                        </button>
+                      )}
+                      {canManage && (
+                        <button
+                          type="button"
+                          onClick={() => setDeleteTarget(rule)}
+                          data-testid={`pam-rule-delete-${rule.id}`}
+                          className={btnOutlineDestructiveClass}
+                        >
+                          {t('common:actions.delete', { defaultValue: 'Delete' })}
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>

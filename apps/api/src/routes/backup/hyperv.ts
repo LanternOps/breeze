@@ -17,6 +17,11 @@ import {
   markBackupJobFailedIfInFlight,
 } from '../../services/backupResultPersistence';
 import {
+  resolveBackupWriteCommandDestination,
+  resolveBackupProviderConfig,
+  resolveBackupDestinationError,
+} from '../../services/backupProviderConfig';
+import {
   hypervBackupSchema,
   hypervRestoreSchema,
   hypervCheckpointSchema,
@@ -26,6 +31,8 @@ import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
 } from './resilienceAuthorization';
+import { parseAgentJsonStdout } from '../../services/agentCommandStdout';
+import { applyBackupStartedAck, isBackupQueuedAck, isBackupStartedAck } from '../../services/backupProgress';
 
 const deviceIdParamSchema = z.object({
   deviceId: z.string().guid(),
@@ -203,12 +210,16 @@ hypervRoutes.post(
       );
     }
 
-    // Parse discovered VMs and upsert into the database.
+    // Parse discovered VMs and upsert into the database. D20-A: the manual
+    // "parse once, unwrap again if it's still a string" here is exactly what
+    // parseAgentJsonStdout does — replaced with the shared implementation so
+    // every forwarded-helper route (mssql.ts too) tolerates a double-encoded
+    // stdout from any agent still on a pre-D20-B build the same way.
     let discoveredVMs: any[] = [];
     try {
       if (result.stdout) {
-        const parsed = JSON.parse(result.stdout);
-        discoveredVMs = typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
+        const parsed = parseAgentJsonStdout(result.stdout);
+        discoveredVMs = Array.isArray(parsed) ? parsed : [];
       }
     } catch {
       return c.json({ data: result.stdout });
@@ -293,6 +304,22 @@ hypervRoutes.post(
       return c.json({ error: 'A provider-backed backup configuration is required on this device' }, 400);
     }
 
+    // D20b item A: the helper only builds a manager from the command payload
+    // when it has no agent.yaml backup config (mgr == nil — the normal state
+    // for every policy-managed device); without provider/providerConfig here
+    // the helper fails every on-demand hyperv_backup with "backup not
+    // configured on this device", even though a provider-backed config
+    // resolved just above. Same builder backupWorker.ts's
+    // prepareBackupDispatchTargets uses for a profile-scheduled run.
+    const destinationResult = await resolveBackupWriteCommandDestination(resolvedConfig.configId, orgId);
+    if (!destinationResult.ok) {
+      return c.json(
+        { error: destinationResult.message, reason: destinationResult.reason },
+        destinationResult.reason === 'encryption_unsupported' ? 422 : 400
+      );
+    }
+    const { destination } = destinationResult;
+
     const [backupJob] = await db
       .insert(backupJobs)
       .values({
@@ -316,6 +343,15 @@ hypervRoutes.post(
       payload.deviceId,
       CommandTypes.HYPERV_BACKUP,
       {
+        // D20-E: lets agentWs.ts's processCommandResult (and
+        // handleProviderBackedBackupResult) correlate the REAL terminal
+        // result — which arrives as a second, unsolicited command_result
+        // frame after a queue-admission ack — back to this backup_jobs row.
+        jobId: backupJob.id,
+        configId: resolvedConfig.configId,
+        provider: destination.provider,
+        providerConfig: destination.providerConfig,
+        storageEncryption: destination.storageEncryption,
         vmName: payload.vmName,
         consistencyType: payload.consistencyType,
       },
@@ -326,7 +362,23 @@ hypervRoutes.post(
     let providerSnapshotId: string | null = null;
     let parsedData: unknown = null;
     try {
-      parsedData = result.stdout ? JSON.parse(result.stdout) : {};
+      // D20-A: tolerates a double-encoded stdout from an agent still on a
+      // pre-D20-B build.
+      parsedData = parseAgentJsonStdout(result.stdout);
+
+      // D20-C: a queued/starting agent acks admission with
+      // {"queued":true}/{"started":true} instead of the real outcome — that
+      // is not a parse failure, and must not fail the job. Report it as still
+      // running; the real result is applied later when it actually arrives
+      // (agentWs.ts processCommandResult / handleProviderBackedBackupResult).
+      if (isBackupQueuedAck(parsedData) || isBackupStartedAck(parsedData)) {
+        const queued = isBackupQueuedAck(parsedData);
+        await applyBackupStartedAck({ jobId: backupJob.id, deviceId: payload.deviceId, queued });
+        return c.json({
+          data: { backupJobId: backupJob.id, status: 'running', queued },
+        }, 202);
+      }
+
       const parsedBackup = backupCommandResultSchema.safeParse(parsedData);
       if (!parsedBackup.success) {
         throw new Error(describeZodIssues(parsedBackup.error));
@@ -417,6 +469,7 @@ hypervRoutes.post(
         id: backupSnapshots.id,
         providerSnapshotId: backupSnapshots.snapshotId,
         metadata: backupSnapshots.metadata,
+        configId: backupSnapshots.configId,
       })
       .from(backupSnapshots)
       .where(
@@ -439,6 +492,19 @@ hypervRoutes.post(
       return c.json({ error: 'Snapshot is not a Hyper-V export artifact' }, 400);
     }
 
+    // D20b item D: the helper builds its read provider from the RESTORE
+    // command's own payload (restoreProviderForCommand), the same way
+    // backup_restore already does (routes/backup/restore.ts) — mirroring the
+    // destination the BACKUP command wrote this snapshot to, not whatever the
+    // device's CURRENT config happens to be.
+    const backupProviderConfig = snapshot.configId
+      ? await resolveBackupProviderConfig(snapshot.configId, orgId)
+      : null;
+    if (!backupProviderConfig) {
+      const { reason, message } = resolveBackupDestinationError(snapshot.configId);
+      return c.json({ error: message, reason }, 422);
+    }
+
     const result = await executeCommand(
       payload.deviceId,
       CommandTypes.HYPERV_RESTORE,
@@ -446,6 +512,8 @@ hypervRoutes.post(
         snapshotId: snapshot.providerSnapshotId,
         vmName: payload.vmName,
         generateNewId: payload.generateNewId,
+        provider: backupProviderConfig.provider,
+        providerConfig: backupProviderConfig.providerConfig,
       },
       { userId: auth?.user?.id, timeoutMs: 600000 }
     );
@@ -469,7 +537,7 @@ hypervRoutes.post(
     });
 
     try {
-      const data = result.stdout ? JSON.parse(result.stdout) : null;
+      const data = result.stdout ? parseAgentJsonStdout(result.stdout) : null;
       return c.json({ data });
     } catch {
       return c.json({ data: result.stdout });
@@ -550,7 +618,7 @@ hypervRoutes.post(
     });
 
     try {
-      const data = result.stdout ? JSON.parse(result.stdout) : null;
+      const data = result.stdout ? parseAgentJsonStdout(result.stdout) : null;
       return c.json({ data });
     } catch {
       return c.json({ data: result.stdout });
@@ -629,7 +697,7 @@ hypervRoutes.post(
     });
 
     try {
-      const data = result.stdout ? JSON.parse(result.stdout) : null;
+      const data = result.stdout ? parseAgentJsonStdout(result.stdout) : null;
       return c.json({ data });
     } catch {
       return c.json({ data: result.stdout });

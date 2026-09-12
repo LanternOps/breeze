@@ -52,7 +52,7 @@ import { mintRefreshTokenFamily } from '../../services/refreshTokenFamily';
 import { createPendingRegistration } from '../../services/pendingRegistration';
 import { handleAuthEmailJob } from '../../jobs/authEmailWorker';
 import { recordAccountFailure } from '../../services/rate-limit';
-import { createPartner, createUser } from './db-utils';
+import { bootstrapAuthBinding, createPartner, createUser } from './db-utils';
 import { getTestDb, getTestRedis } from './setup';
 
 // Only the email BOUNDARY is stubbed (no SMTP in CI); DB + Redis are real. The
@@ -355,10 +355,12 @@ describe('SR2-17 pending email — real Postgres', () => {
     });
     expect(oldRes.status).toBe(401);
 
-    // NEW address is the live account -> success with tokens.
+    // NEW address is the live account -> success with tokens. Login mints a
+    // session, so it now requires a durable session-binding cookie.
+    const binding = await bootstrapAuthBinding();
     const newRes = await app.request('/auth/login', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie: binding.cookie },
       body: JSON.stringify({ email: newEmail, password }),
     });
     expect(newRes.status).toBe(200);
@@ -423,10 +425,20 @@ describe('SR2-21 pending registration — real Postgres + real Redis', () => {
     });
   }
 
-  function verify(token: string, userAgent = CLICK_UA) {
+  // /auth/verify-email mints the auto-login session on success, so it now
+  // requires a durable session-binding cookie. Each call bootstraps its OWN
+  // binding by default: beginAuthIssuance takes a per-transition row lock, so
+  // two genuinely concurrent clicks sharing the SAME binding would serialize
+  // on that lock and the loser would see 409 "Authentication temporarily
+  // unavailable" instead of the reconciliation behaviour under test — two
+  // distinct bindings model the real-world equivalent (two separate clicks,
+  // e.g. a user and a mail-scanner prefetch) without that unrelated
+  // contention.
+  async function verify(token: string, userAgent = CLICK_UA) {
+    const binding = await bootstrapAuthBinding();
     return app.request('/auth/verify-email', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'user-agent': userAgent },
+      headers: { 'content-type': 'application/json', 'user-agent': userAgent, cookie: binding.cookie },
       body: JSON.stringify({ token }),
     });
   }

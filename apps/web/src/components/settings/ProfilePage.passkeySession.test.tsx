@@ -65,6 +65,7 @@ const USER = {
   name: 'Casey Admin',
   email: 'casey@example.com',
   mfaEnabled: true,
+  mfaMethod: 'totp' as const,
   hasPassword: true,
 };
 
@@ -141,6 +142,7 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
       .mockResolvedValueOnce(makeJsonResponse({
         passkeys: [{ id: 'credential-1', name: 'MacBook Touch ID', lastUsedAt: null }],
       }))
+      .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: '20000000-0000-4000-8000-000000000009' }))
       .mockResolvedValueOnce(makeJsonResponse({ success: true, tokens: REPLACEMENT }));
 
     render(<ProfilePage initialUser={USER} />);
@@ -148,6 +150,7 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
+    fireEvent.change(screen.getByLabelText(/Current MFA code/i), { target: { value: '123456' } });
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     // #5314: the passkey Delete now opens a confirmation first.
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
@@ -167,6 +170,7 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
       .mockResolvedValueOnce(makeJsonResponse({
         passkeys: [{ id: 'credential-1', name: 'MacBook Touch ID', lastUsedAt: null }],
       }))
+      .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: '20000000-0000-4000-8000-000000000009' }))
       .mockResolvedValueOnce(makeJsonResponse({ success: true, tokens: REPLACEMENT }));
 
     render(<ProfilePage initialUser={USER} />);
@@ -174,6 +178,7 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
+    fireEvent.change(screen.getByLabelText(/Current MFA code/i), { target: { value: '123456' } });
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     // #5314: the passkey Delete now opens a confirmation first.
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
@@ -189,6 +194,7 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
       .mockResolvedValueOnce(makeJsonResponse({
         passkeys: [{ id: 'credential-1', name: 'MacBook Touch ID', lastUsedAt: null }],
       }))
+      .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: '20000000-0000-4000-8000-000000000009' }))
       .mockResolvedValueOnce(makeJsonResponse({ success: true }));
 
     render(<ProfilePage initialUser={USER} />);
@@ -196,6 +202,7 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
+    fireEvent.change(screen.getByLabelText(/Current MFA code/i), { target: { value: '123456' } });
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     // #5314: the passkey Delete now opens a confirmation first.
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));

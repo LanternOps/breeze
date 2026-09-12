@@ -1,7 +1,8 @@
-import { and, eq, sql, inArray, lte, or } from 'drizzle-orm';
-import { createHmac, randomBytes } from 'crypto';
+import { and, eq, sql, inArray } from 'drizzle-orm';
+import { createHmac, randomBytes, randomUUID } from 'crypto';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { captureException } from '../../services/sentry';
+import { remoteSessionStaleCondition } from '../../services/remoteSessionStaleness';
 import {
   remoteSessions,
   devices,
@@ -166,10 +167,6 @@ export async function getSessionWithOrgCheck(sessionId: string, auth: { canAcces
 // Auto-expire stale sessions that were never properly connected
 export async function expireStaleSessions(orgId: string) {
   const now = new Date();
-  // Pending sessions older than 5 minutes were never picked up
-  const pendingCutoff = new Date(now.getTime() - 5 * 60 * 1000);
-  // Connecting sessions older than 2 minutes failed to negotiate
-  const connectingCutoff = new Date(now.getTime() - 2 * 60 * 1000);
 
   // Kill viewer tokens for sessions we just force-ended so a still-valid token
   // can't resurrect them via /viewer/offer (#5). Revocation must ALWAYS run, so
@@ -182,10 +179,7 @@ export async function expireStaleSessions(orgId: string) {
         inArray(remoteSessions.deviceId,
           db.select({ id: devices.id }).from(devices).where(eq(devices.orgId, orgId))
         ),
-        or(
-          and(eq(remoteSessions.status, 'pending'), lte(remoteSessions.createdAt, pendingCutoff)),
-          and(eq(remoteSessions.status, 'connecting'), lte(remoteSessions.createdAt, connectingCutoff))
-        )
+        remoteSessionStaleCondition(now)
       )
     )
     .returning({ id: remoteSessions.id });
@@ -194,8 +188,6 @@ export async function expireStaleSessions(orgId: string) {
 
 export async function expireStaleSessionsForUser(userId: string) {
   const now = new Date();
-  const pendingCutoff = new Date(now.getTime() - 5 * 60 * 1000);
-  const connectingCutoff = new Date(now.getTime() - 2 * 60 * 1000);
 
   // Kill viewer tokens for sessions we just force-ended so a still-valid token
   // can't resurrect them via /viewer/offer (#5). Revocation must ALWAYS run, so
@@ -206,10 +198,7 @@ export async function expireStaleSessionsForUser(userId: string) {
     .where(
       and(
         eq(remoteSessions.userId, userId),
-        or(
-          and(eq(remoteSessions.status, 'pending'), lte(remoteSessions.createdAt, pendingCutoff)),
-          and(eq(remoteSessions.status, 'connecting'), lte(remoteSessions.createdAt, connectingCutoff))
-        )
+        remoteSessionStaleCondition(now)
       )
     )
     .returning({ id: remoteSessions.id });
@@ -287,14 +276,15 @@ export async function logSessionAudit(
   actorId: string,
   orgId: string,
   details: Record<string, unknown>,
-  ipAddress?: string
+  ipAddress?: string,
+  actorType: 'user' | 'agent' | 'system' = 'user'
 ) {
   try {
     await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
         await db.insert(auditLogs).values({
           orgId,
-          actorType: 'user',
+          actorType,
           actorId,
           action,
           resourceType: 'remote_session',
@@ -325,9 +315,8 @@ export type ConsentDenyAuditAction = 'session_consent_denied' | 'session_consent
  * or a consent timeout is a real "denied" decision; any other reason (no user
  * present, helper absent, a malformed helper reply, or an operator policy
  * choosing proceed-then-block) is a bypass/unavailable outcome, audited
- * distinctly. Single source of truth shared by the agent's WS command-result
- * path (agentWs.ts) and the operator deny route (sessions.ts) so the two cannot
- * drift on how the same reason is classified.
+ * distinctly. The authenticated agent WS command-result path is the sole
+ * caller allowed to report this endpoint decision.
  */
 export function classifyConsentDenyAction(reason: string): ConsentDenyAuditAction {
   return reason === 'user' || reason === 'timeout'
@@ -348,6 +337,23 @@ export function resolveConsentMarkerSessionId(
   if (!expected) return null;
   if (fromResult && fromResult !== expected) return null;
   return expected;
+}
+
+const DESKTOP_START_COMMAND_RE = /^desk-start-(.+)-([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
+
+/** Create a one-off command identity for one exact desktop offer generation. */
+export function createDesktopStartCommandId(sessionId: string): string {
+  return `desk-start-${sessionId}-${randomUUID()}`;
+}
+
+/**
+ * Parse only generation-bound start command identities. Legacy
+ * `desk-start-<sessionId>` results intentionally fail closed after upgrade.
+ */
+export function parseDesktopStartCommandId(commandId: string): { sessionId: string; commandId: string } | null {
+  const match = DESKTOP_START_COMMAND_RE.exec(commandId);
+  if (!match?.[1]) return null;
+  return { sessionId: match[1], commandId };
 }
 
 export type SessionPromptMode = 'off' | 'notify' | 'consent';

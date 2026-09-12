@@ -60,6 +60,7 @@ describe('permissions catalog routes', () => {
       expect(keys).toContain('audit:read');
       expect(keys).toContain('alerts:acknowledge');
       expect(keys).toContain('backup:cross_site_restore');
+      expect(keys).toContain('workspace:credentials');
 
       // Labels are present and cover every resource/action used.
       expect(typeof body.resourceLabels).toBe('object');
@@ -69,6 +70,8 @@ describe('permissions catalog routes', () => {
         expect(body.actionLabels[p.action]).toBeTruthy();
       }
       expect(body.actionLabels.cross_site_restore).toBe('Cross-Site Restore');
+      expect(body.resourceLabels.workspace).toBe('Workspace');
+      expect(body.actionLabels.credentials).toBe('Manage Credentials');
     });
 
     it('rejects unauthenticated requests', async () => {

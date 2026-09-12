@@ -9,14 +9,16 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 
 The Product Catalog is your reusable catalog for everything you sell -- hardware, software licenses, and services. Each item has a price book with one sell price per currency, so invoices and recurring contracts pull consistent pricing instead of requiring you to retype it.
 
-The catalog is **partner-scoped**: it belongs to your MSP and is shared across all of your customers. Open it from **Settings → Product Catalog**.
+The catalog is **partner-scoped**: it belongs to your MSP and is shared across all of your customers. Open it from **Billing → Product Catalog**.
+
+The Billing section, including Product Catalog, is only available when the **Service Management** module is enabled for your account; without it Breeze is RMM-only and quotes, invoices, and contracts have no system of record.
 
 ## Catalog Items
 
 Each item represents one thing you sell. Items can be billed **one-time** (a piece of hardware, a project) or **recurring** (a monthly service), and are typed as **hardware**, **software**, or **service**.
 
 <Steps>
-1. Go to **Settings → Product Catalog**.
+1. Go to **Billing → Product Catalog**.
 2. Click **Add item**.
 3. Enter a name, choose the item type, and set whether it's one-time or recurring.
 4. In **Price book**, add a sell price and currency. You can add more currencies after saving.

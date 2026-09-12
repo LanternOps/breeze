@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useEventStream } from '../../hooks/useEventStream';
 import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
-import { List, Grid, Plus, AlertCircle, ChevronDown } from 'lucide-react';
+import { List, Grid, Plus, AlertCircle, ChevronDown, RefreshCw } from 'lucide-react';
 import { showToast } from '../shared/Toast';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import type { FilterConditionGroup } from '@breeze/shared';
@@ -276,9 +276,9 @@ export default function DevicesPage() {
   // fetchOrganizations. A fetch fired at mount therefore went out with no
   // orgId — the API reads that as "every accessible org" — and nothing ever
   // refetched, so the list stayed fleet-wide while the switcher pill showed a
-  // single org. (Re-picking an org only "fixed" it because applyOrgSwitch does
-  // a full window.location.reload, by which point the org IS persisted and
-  // rehydrates synchronously.)
+  // single org. (Re-picking an org only "fixed" it because applyOrgSwitch
+  // re-navigates — historically a full window.location.reload, now a soft
+  // remount of the page island — by which point the org IS in the store.)
   //
   // So key the fetch on the RESOLVED scope rather than on mount: hold while the
   // context is still loading, then fetch — and refetch — whenever the scope
@@ -311,6 +311,11 @@ export default function DevicesPage() {
   const [deviceGroups, setDeviceGroups] = useState<DeviceGroup[]>([]);
   const [groupMembershipMap, setGroupMembershipMap] = useState<Map<string, Set<string>>>(new Map());
   const [loading, setLoading] = useState(true);
+  // True while a user-initiated (header button) refetch is in flight. Kept
+  // separate from `loading` so the rendered list stays mounted instead of
+  // swapping to the skeleton — the whole point of the button is to avoid a
+  // full-page-reload feel.
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [actionInProgress, setActionInProgress] = useState(false);
@@ -615,9 +620,11 @@ export default function DevicesPage() {
   const hiddenDecommissionedCount = includeDecommissioned ? 0 : decommissionedCount;
   const shownDecommissionedCount = includeDecommissioned ? decommissionedCount : 0;
 
-  const fetchDevices = useCallback(async (signal?: AbortSignal) => {
+  const fetchDevices = useCallback(async (signal?: AbortSignal, opts?: { background?: boolean }) => {
+    const background = opts?.background === true;
     try {
-      setLoading(true);
+      if (background) setRefreshing(true);
+      else setLoading(true);
       setError(null);
 
       // Devices walk the cursor (Discussion #742 PR 3); orgs/sites/groups
@@ -946,13 +953,24 @@ export default function DevicesPage() {
       // Aborts are expected when the component unmounts mid-walk — drop
       // them silently rather than rendering a misleading error banner.
       if (err instanceof Error && err.name === 'AbortError') return;
+      if (background) {
+        // The whole point of a background refresh is to keep the last-good
+        // list on screen. Swapping it for the full-page error card would
+        // throw away data the user was already looking at over a transient
+        // blip, so report the failure without tearing the page down.
+        showToast({ type: 'error', message: t('devicesPage.toasts.refreshFailed') });
+        return;
+      }
       setError(err);
     } finally {
       // setLoading(false) is harmless after unmount (React 18 ignores
       // setState on unmounted components for hook-based components) but
       // we still skip it when we know the call aborted, to avoid a
       // brief flicker if the component remounts on the same key.
-      if (!signal?.aborted) setLoading(false);
+      if (!signal?.aborted) {
+        if (background) setRefreshing(false);
+        else setLoading(false);
+      }
     }
   }, [t]);
 
@@ -971,12 +989,25 @@ export default function DevicesPage() {
    *
    * The mount effect below deliberately keeps calling `fetchDevices` directly:
    * the hook resolves the filter itself on mount, so going through here would
-   * just fire a second, redundant /filters/preview.
+   * just fire a second, redundant /filters/preview. `handleManualRefresh` also
+   * calls `fetchDevices` directly, only to pass the `background` flag; it
+   * re-applies the same id-set pairing.
    */
   const refreshDevices = useCallback(async () => {
     await fetchDevices();
     refetchAdvancedFilterIds();
   }, [fetchDevices, refetchAdvancedFilterIds]);
+
+  /**
+   * Header "Refresh" button. Same pairing as `refreshDevices` (rows + server-
+   * resolved filter ids) but runs in the background so the list stays on
+   * screen while the new page set streams in.
+   */
+  const handleManualRefresh = useCallback(async () => {
+    if (refreshing) return;
+    await fetchDevices(undefined, { background: true });
+    refetchAdvancedFilterIds();
+  }, [fetchDevices, refetchAdvancedFilterIds, refreshing]);
 
   useEffect(() => {
     // Org context not usable for scoping yet (#4147). A request now would go
@@ -2174,6 +2205,18 @@ export default function DevicesPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            data-testid="devices-page-refresh"
+            onClick={() => { void handleManualRefresh(); }}
+            disabled={refreshing}
+            aria-busy={refreshing ? 'true' : 'false'}
+            title={t('devicesPage.refresh')}
+            aria-label={t('devicesPage.refresh')}
+            className="flex h-10 w-10 items-center justify-center rounded-md border transition hover:bg-muted disabled:cursor-default disabled:opacity-60"
+          >
+            <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+          </button>
           <div className="flex rounded-md border">
             <button
               type="button"

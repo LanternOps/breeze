@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -10,9 +10,11 @@ import { createGuardedS3Client } from '../../services/guardedS3Client';
 import { assertSafeUrl, SsrfBlockedError } from '../../services/urlSafety';
 import { selfHostAllowsPrivateNetwork } from '../../config/env';
 import { db } from '../../db';
-import { backupConfigs } from '../../db/schema';
+import { backupConfigs, backupSnapshots } from '../../db/schema';
+import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import {
   assertBackupStorageEncryptionSupported,
   buildBackupStorageEncryptionResponse,
@@ -246,6 +248,9 @@ configsRoutes.post(
   zValidator('json', configSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
@@ -360,6 +365,9 @@ configsRoutes.patch(
   zValidator('json', configUpdateSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
@@ -383,7 +391,13 @@ configsRoutes.patch(
       return c.json({ error: 'Config not found' }, 404);
     }
 
-    const updateData: Record<string, unknown> = { updatedAt: new Date() };
+    const updateData: Record<string, unknown> = {
+      updatedAt: new Date(),
+      // Site-ceiling gate contract §3: bump on every PATCH so a queued
+      // dispatch job carrying the OLD generation can tell it has been
+      // superseded and fail closed instead of dispatching stale config.
+      approvalGeneration: sql`${backupConfigs.approvalGeneration} + 1`,
+    };
     if (payload.name !== undefined) updateData.name = payload.name;
     if (payload.enabled !== undefined) updateData.isActive = payload.enabled;
     if (payload.encryption !== undefined) updateData.encryption = payload.encryption;
@@ -455,6 +469,20 @@ configsRoutes.patch(
       return c.json({ error: 'Config not found' }, 404);
     }
 
+    const warnings: string[] = [];
+    const priorIdentity = normalizeStorageIdentity(current.provider, (current.providerConfig ?? {}) as Record<string, unknown>);
+    const nextIdentity = normalizeStorageIdentity(row.provider, (row.providerConfig ?? {}) as Record<string, unknown>);
+    if (priorIdentity !== nextIdentity) {
+      const [existingSnapshot] = await db
+        .select({ id: backupSnapshots.id })
+        .from(backupSnapshots)
+        .where(eq(backupSnapshots.configId, configId))
+        .limit(1);
+      if (existingSnapshot) {
+        warnings.push('storage_identity_changed');
+      }
+    }
+
     writeRouteAudit(c, {
       orgId,
       action: 'backup.config.update',
@@ -464,7 +492,9 @@ configsRoutes.patch(
       details: { changedFields: Object.keys(payload) },
     });
 
-    return c.json(toConfigResponse(row));
+    // Always present (possibly empty) -- a stable response shape, per
+    // coordinator decision, rather than an optional field callers must guard.
+    return c.json({ ...toConfigResponse(row), warnings });
   }
 );
 
@@ -476,6 +506,9 @@ configsRoutes.delete(
   zValidator('param', configIdParamSchema),
   async (c) => {
   const auth = c.get('auth');
+  if (!canMutateOrgWideGovernance(auth)) {
+    return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+  }
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);
@@ -510,6 +543,9 @@ configsRoutes.post(
   zValidator('param', configIdParamSchema),
   async (c) => {
   const auth = c.get('auth');
+  if (!canMutateOrgWideGovernance(auth)) {
+    return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+  }
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
   if (!orgId) {
     return c.json({ error: 'orgId is required for this scope' }, 400);

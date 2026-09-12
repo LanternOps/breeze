@@ -71,6 +71,10 @@ fi
   # WORK_DIR="${BREEZE_SETUP_DIR:-$(pwd)}". Point it at the sandbox BEFORE the
   # source so nothing touches the developer's real ./.env.
   export BREEZE_SETUP_DIR="${TMP_DIR}"
+  # Belt-and-suspenders with the sed strip above: guided-setup.sh only skips
+  # its own `main "$@"` call when this is set, so sourcing here never runs the
+  # real installer even if the sed pattern stops matching main's call site.
+  export BREEZE_GUIDED_SETUP_LIBRARY_ONLY=true
   # shellcheck source=/dev/null
   source "${FUNCTIONS_FILE}" >/dev/null 2>&1
   ENV_FILE="${TMP_DIR}/.env"

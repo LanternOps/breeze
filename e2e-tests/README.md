@@ -201,6 +201,14 @@ Bring the local stack up:
 docker compose -f docker-compose.yml -f docker-compose.override.yml.dev up --build -d
 ```
 
+When you're done, tear it down with the same `-f` files (nothing does this for you):
+```bash
+docker compose -f docker-compose.yml -f docker-compose.override.yml.dev down -v --remove-orphans
+pnpm wt-stack down     # if you used `pnpm wt-stack up` instead
+docker compose ls -a   # confirm nothing is still listed
+```
+Full checklist for stacks left behind by other worktrees: `.claude/skills/worktree-stack/SKILL.md` → "Tear down when done".
+
 ### Login 429 (rate limited)
 
 `globalSetup` clears the per-email rate-limit window before it logs in, and now

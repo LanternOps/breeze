@@ -738,8 +738,13 @@ func TestCreateSnapshot_SourceGoneWithoutJournal_PublishesPartialManifest(t *tes
 	if len(snap.Files) != 2 {
 		t.Fatalf("want the 2 files that landed before the loss, got %d", len(snap.Files))
 	}
-	if len(backing.deleteCalls) != 0 {
-		t.Fatalf("uploaded backup data was DELETED on abort: %v", backing.deleteCalls)
+	// The only legitimate delete is this run's own upload.lease heartbeat
+	// (Task 7), removed after the partial manifest publishes successfully —
+	// never any of the actual uploaded backup data.
+	for _, key := range backing.deleteCalls {
+		if !strings.HasSuffix(key, "/upload.lease") {
+			t.Fatalf("uploaded backup data was DELETED on abort: %s (all: %v)", key, backing.deleteCalls)
+		}
 	}
 	manifests := countManifestUploads(backing)
 	if manifests != 1 {

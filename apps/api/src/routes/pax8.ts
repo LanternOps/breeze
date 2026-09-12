@@ -26,6 +26,7 @@ import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../services/partnerWideAccess';
+import { urlOriginChanged } from '../services/credentialOriginBinding';
 
 export const pax8Routes = new Hono();
 
@@ -65,8 +66,8 @@ const upsertIntegrationSchema = z.object({
   name: z.string().min(1).max(200),
   clientId: z.string().min(1).max(5000).optional(),
   clientSecret: z.string().min(1).max(5000).optional(),
-  apiBaseUrl: z.string().url().max(300).optional().default(DEFAULT_PAX8_API_BASE_URL),
-  tokenUrl: z.string().url().max(300).optional().default(DEFAULT_PAX8_TOKEN_URL),
+  apiBaseUrl: z.string().url().max(300).optional(),
+  tokenUrl: z.string().url().max(300).optional(),
   webhookSecret: z.string().min(1).max(5000).optional(),
   isActive: z.boolean().optional(),
 });
@@ -190,6 +191,24 @@ pax8Routes.post('/integration', partnerScopes, writePerm, requireMfa(), zValidat
     return c.json({ error: 'clientId and clientSecret are required when creating a Pax8 integration' }, 400);
   }
 
+  const apiBaseUrl = body.apiBaseUrl ?? existing?.apiBaseUrl ?? DEFAULT_PAX8_API_BASE_URL;
+  const tokenUrl = body.tokenUrl ?? existing?.tokenUrl ?? DEFAULT_PAX8_TOKEN_URL;
+  const originChanged = existing && (
+    urlOriginChanged(existing.apiBaseUrl, apiBaseUrl)
+    || urlOriginChanged(existing.tokenUrl, tokenUrl)
+  );
+  const tokenConfigurationChanged = Boolean(existing && (
+    existing.apiBaseUrl !== apiBaseUrl
+    || existing.tokenUrl !== tokenUrl
+    || body.clientId !== undefined
+    || body.clientSecret !== undefined
+  ));
+  if (originChanged && (!body.clientId || !body.clientSecret)) {
+    return c.json({
+      error: 'clientId and clientSecret must be re-entered when changing a Pax8 API or token origin',
+    }, 400);
+  }
+
   const clientIdEncrypted = body.clientId ? encryptSecret(body.clientId) : existing?.clientIdEncrypted ?? null;
   const clientSecretEncrypted = body.clientSecret ? encryptSecret(body.clientSecret) : existing?.clientSecretEncrypted ?? null;
   if (!clientIdEncrypted || !clientSecretEncrypted) {
@@ -204,10 +223,16 @@ pax8Routes.post('/integration', partnerScopes, writePerm, requireMfa(), zValidat
     name: body.name,
     clientIdEncrypted,
     clientSecretEncrypted,
-    apiBaseUrl: body.apiBaseUrl,
-    tokenUrl: body.tokenUrl,
+    apiBaseUrl,
+    tokenUrl,
     webhookSecretEncrypted,
     isActive: body.isActive ?? existing?.isActive ?? true,
+    // A cached bearer token belongs to the endpoint/client tuple that minted
+    // it. Clear it in the same row update so neither the test route nor a new
+    // sync can carry an old tuple's token to a replacement API origin.
+    ...(tokenConfigurationChanged
+      ? { accessTokenEncrypted: null, accessTokenExpiresAt: null }
+      : {}),
     updatedAt: new Date(),
   };
 

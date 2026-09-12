@@ -33,6 +33,7 @@ const authState = vi.hoisted(() => ({
   scope: 'organization' as 'organization' | 'partner' | 'system',
   partnerId: 'partner-1' as string | null,
   accessibleOrgIds: ['11111111-1111-4111-8111-111111111111'] as string[],
+  allowedSiteIds: undefined as string[] | undefined,
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -43,6 +44,7 @@ vi.mock('../../middleware/auth', () => ({
       orgId: authState.scope === 'organization' ? ORG_A : null,
       partnerId: authState.partnerId,
       accessibleOrgIds: authState.accessibleOrgIds,
+      allowedSiteIds: authState.allowedSiteIds,
       canAccessOrg: (orgId: string) => authState.accessibleOrgIds.includes(orgId),
       token: { mfa: true },
     });
@@ -79,6 +81,7 @@ vi.mock('../../services/deviceLifecycle', () => ({
 
 vi.mock('../../jobs/deviceBulkPurge', () => ({
   enqueueDeviceBulkPurge: vi.fn(async () => ({ id: 'job' })),
+  deviceBulkPurgeJobId: vi.fn((jobId: string) => `device-bulk-purge-v2-${jobId}`),
   getDeviceBulkPurgeQueue: vi.fn(),
 }));
 
@@ -127,6 +130,7 @@ beforeEach(() => {
   authState.scope = 'organization';
   authState.partnerId = 'partner-1';
   authState.accessibleOrgIds = [ORG_A];
+  authState.allowedSiteIds = undefined;
   // The batched lookup is what POST /bulk/permanent-delete calls. Route tests
   // script `getDeviceWithOrgAndSiteCheck` (used by bulk restore), so mirror its
   // verdicts here rather than making every test rig two mocks.
@@ -325,6 +329,10 @@ describe('POST /devices/bulk/permanent-delete', () => {
     // The status route denies another partner's run; the job payload is the
     // only place that ownership is recorded.
     expect(sent.partnerId).toBe('partner-1');
+    expect(sent.authorization).toEqual({
+      version: 1,
+      siteAccess: { mode: 'unrestricted' },
+    });
     expect(sent.jobId).toBe(body.jobId);
   });
 
@@ -375,6 +383,7 @@ describe('POST /devices/bulk/permanent-delete', () => {
    * cannot see, and the enqueue is a permanent delete.
    */
   it('rejects a device outside the caller site allowlist and enqueues only the rest', async () => {
+    authState.scope = 'organization';
     vi.mocked(getDevicesWithOrgAndSiteCheck).mockResolvedValue(
       new Map<string, unknown>([
         [DEV_1, accessibleDevice(DEV_1)],
@@ -395,6 +404,21 @@ describe('POST /devices/bulk/permanent-delete', () => {
     ]);
     expect(vi.mocked(enqueueDeviceBulkPurge).mock.calls[0]![0].targets.map(t => t.deviceId))
       .toEqual([DEV_1]);
+  });
+
+  it('serializes the request-time site ceiling for the system-scoped worker', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(accessibleDevice(DEV_1));
+    // AuthContext carries this independently of the permissions test double;
+    // production auth derives both from the same live role assignment.
+    authState.allowedSiteIds = ['site-1'];
+
+    const res = await post(app, '/devices/bulk/permanent-delete', { deviceIds: [DEV_1] });
+
+    expect(res.status).toBe(202);
+    expect(vi.mocked(enqueueDeviceBulkPurge).mock.calls[0]![0].authorization).toEqual({
+      version: 1,
+      siteAccess: { mode: 'restricted', allowedSiteIds: ['site-1'] },
+    });
   });
 });
 
@@ -433,7 +457,7 @@ describe('GET /devices/bulk/purge-runs/:jobId', () => {
       failedReason: null,
     });
     expect(vi.mocked(getDeviceBulkPurgeQueue).mock.results[0]!.value.getJob).toHaveBeenCalledWith(
-      `device-bulk-purge-${JOB_ID}`,
+      `device-bulk-purge-v2-${JOB_ID}`,
     );
   });
 
@@ -508,8 +532,8 @@ describe('GET /devices/bulk/purge-runs/:jobId', () => {
    * The gap partnerId-equality alone leaves open. A partner member with
    * `org_access = 'selected'` shares the partner id with every org under it,
    * so the partner arm passes — but their selection may exclude the orgs this
-   * run touched. Same case routes/orgMerge.ts:126 adds its own canAccessOrg
-   * check for, and the same reason.
+   * run touched. For the same reason, routes/orgMerge.ts adds its own fresh
+   * raw partner-member selection check.
    */
   it('returns 404 for a partner-scope caller whose org selection excludes a target org', async () => {
     authState.scope = 'partner';

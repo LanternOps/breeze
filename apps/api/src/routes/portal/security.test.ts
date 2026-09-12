@@ -39,8 +39,10 @@ vi.mock('../../db', () => ({
                   email: 'customer@example.com',
                   name: 'Customer',
                   contactId: null,
+                  authMethod: 'password',
                   receiveNotifications: true,
                   status: 'active',
+                  authEpoch: 1,
                 }],
           ),
         }),
@@ -93,6 +95,7 @@ function seedSession() {
     token: TOKEN,
     portalUserId: 'pu-1',
     orgId: ORG_ID,
+    authEpoch: 1,
     createdAt: new Date(),
     expiresAt: new Date(Date.now() + 60_000),
   });

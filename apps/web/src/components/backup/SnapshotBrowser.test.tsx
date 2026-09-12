@@ -170,4 +170,67 @@ describe('SnapshotBrowser', () => {
 
     expect(await screen.findByText(/System image/i)).toBeTruthy();
   });
+
+  it('shows the bare-metal verdict badge with reasons for a not-restorable snapshot', async () => {
+    fetchMock.mockImplementationOnce(async () => makeJsonResponse({
+      data: [
+        {
+          id: 'snap-1',
+          label: 'Whole machine',
+          createdAt: '2026-04-01T00:00:00Z',
+          backupType: 'system_image',
+          sizeBytes: 5000000000,
+          fileCount: 120000,
+          location: 'snapshots/provider-snap-1',
+          expiresAt: null,
+          legalHold: false,
+          legalHoldReason: null,
+          isImmutable: false,
+          immutableUntil: null,
+          immutabilityEnforcement: null,
+          requestedImmutabilityEnforcement: null,
+          immutabilityFallbackReason: null,
+          bareMetalRestorable: false,
+          bareMetalReasons: ['LVM volumes are not supported'],
+        },
+      ],
+    }));
+
+    render(<SnapshotBrowser />);
+
+    const badge = await screen.findByTestId('snapshot-bare-metal-no');
+    expect(badge).toHaveAttribute('title', 'LVM volumes are not supported');
+    expect(screen.queryByTestId('snapshot-bare-metal-ok')).toBeNull();
+  });
+
+  it('shows the bare-metal restorable badge for a restorable snapshot', async () => {
+    fetchMock.mockImplementationOnce(async () => makeJsonResponse({
+      data: [
+        {
+          id: 'snap-1',
+          label: 'Whole machine',
+          createdAt: '2026-04-01T00:00:00Z',
+          backupType: 'system_image',
+          sizeBytes: 5000000000,
+          fileCount: 120000,
+          location: 'snapshots/provider-snap-1',
+          expiresAt: null,
+          legalHold: false,
+          legalHoldReason: null,
+          isImmutable: false,
+          immutableUntil: null,
+          immutabilityEnforcement: null,
+          requestedImmutabilityEnforcement: null,
+          immutabilityFallbackReason: null,
+          bareMetalRestorable: true,
+          bareMetalReasons: [],
+        },
+      ],
+    }));
+
+    render(<SnapshotBrowser />);
+
+    expect(await screen.findByTestId('snapshot-bare-metal-ok')).toBeTruthy();
+    expect(screen.queryByTestId('snapshot-bare-metal-no')).toBeNull();
+  });
 });

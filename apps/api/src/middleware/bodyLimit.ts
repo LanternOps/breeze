@@ -34,6 +34,7 @@ export type BodyLimitRule =
   | 'contract-template'
   | 'agent-ingest'
   | 'ticket-attachment'
+  | 'org-document'
   // Route-level limits TIGHTER than the global default, so `bodyLimitForPath`
   // never returns them — the route's own gate is the one that answers. They
   // share this namespace so all body-limit 413s group on one tag.
@@ -86,6 +87,22 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
       rule: 'ticket-attachment',
       maxSize: 10 * 1024 * 1024 + 64 * 1024,
       error: 'Attachment too large (max 10 MB)',
+    };
+  }
+  // Org document library uploads (service deliverables W03): one multipart
+  // file per request, capped at 10 MiB (TICKET_ATTACHMENT_LIMITS.maxBytes) by
+  // orgDocumentService. Upload, replace, and the occurrence evidence upload
+  // (which files an org document). Same #3482-class reason and slack as the
+  // ticket-attachment carve-out above. The JSON siblings stay at the default.
+  if (
+    path.match(/^\/api\/v1\/orgs\/[^/]+\/documents$/) ||
+    path.match(/^\/api\/v1\/orgs\/[^/]+\/documents\/[^/]+\/replace$/) ||
+    path.match(/^\/api\/v1\/orgs\/[^/]+\/deliverables\/occurrences\/[^/]+\/evidence\/upload$/)
+  ) {
+    return {
+      rule: 'org-document',
+      maxSize: 10 * 1024 * 1024 + 64 * 1024,
+      error: 'Document too large (max 10 MB)',
     };
   }
   // Agent command results submitted via the heartbeat/REST fallback leg (used

@@ -55,7 +55,14 @@ export async function advanceUserEpochs(
   tx: Tx,
   userId: string,
   fields: { auth?: boolean; mfa?: boolean; email?: boolean; passwordReset?: boolean },
-  expected?: { authEpoch?: number; mfaEpoch?: number; mfaEnabled?: boolean; status?: 'active' },
+  expected?: {
+    authEpoch?: number;
+    mfaEpoch?: number;
+    passwordResetEpoch?: number;
+    email?: string;
+    mfaEnabled?: boolean;
+    status?: 'active';
+  },
 ): Promise<EpochRow> {
   const set: Record<string, unknown> = { updatedAt: new Date() };
   if (fields.auth) set.authEpoch = sql`${users.authEpoch} + 1`;
@@ -66,6 +73,10 @@ export async function advanceUserEpochs(
   const conditions = [eq(users.id, userId)];
   if (expected?.authEpoch !== undefined) conditions.push(eq(users.authEpoch, expected.authEpoch));
   if (expected?.mfaEpoch !== undefined) conditions.push(eq(users.mfaEpoch, expected.mfaEpoch));
+  if (expected?.passwordResetEpoch !== undefined) {
+    conditions.push(eq(users.passwordResetEpoch, expected.passwordResetEpoch));
+  }
+  if (expected?.email !== undefined) conditions.push(eq(users.email, expected.email));
   if (expected?.mfaEnabled !== undefined) conditions.push(eq(users.mfaEnabled, expected.mfaEnabled));
   if (expected?.status !== undefined) conditions.push(eq(users.status, expected.status));
 
@@ -133,6 +144,29 @@ export async function revokeRefreshFamilyById(tx: Tx, familyId: string, reason: 
       revokedReason: sql`COALESCE(revoked_reason, ${r})`,
     })
     .where(eq(refreshTokenFamilies.familyId, familyId));
+}
+
+/** Durably revoke only the active families minted for one signed mobile installation. */
+export async function revokeMobileDeviceRefreshFamilies(
+  tx: Pick<Tx, 'update'>,
+  userId: string,
+  mobileDeviceId: string,
+  reason: string,
+): Promise<string[]> {
+  const r = truncateReason(reason);
+  const rows = await tx
+    .update(refreshTokenFamilies)
+    .set({
+      revokedAt: sql`COALESCE(revoked_at, now())`,
+      revokedReason: sql`COALESCE(revoked_reason, ${r})`,
+    })
+    .where(and(
+      eq(refreshTokenFamilies.userId, userId),
+      eq(refreshTokenFamilies.mobileDeviceId, mobileDeviceId),
+      isNull(refreshTokenFamilies.revokedAt),
+    ))
+    .returning({ familyId: refreshTokenFamilies.familyId });
+  return rows.map((row) => row.familyId);
 }
 
 export interface PostCommitCleanupResult {

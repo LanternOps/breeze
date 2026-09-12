@@ -70,6 +70,7 @@ async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly strin
   ));
 }
 import type { AiTool } from './aiTools';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import type { UserPermissions } from './permissions';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { filterWindowsToSiteScope, scopeWindowForRead } from './maintenanceSiteScope';
@@ -968,6 +969,15 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'setup_auto_approval') {
+        // NOTE: this whole action is currently unreachable (see the disabled
+        // early-return above) — defense-in-depth, kept correct so the block is
+        // not a trap if the gate is ever lifted (same convention as the
+        // canManagePartnerWidePolicies check a few lines below). This path
+        // inserts an org configuration_policies row + feature link, which is
+        // exactly the org-wide governance object this contract protects.
+        if (!canMutateOrgWideGovernance(auth)) {
+          return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+        }
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
         const patchSettings = {

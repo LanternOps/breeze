@@ -13,6 +13,7 @@ const mockState = vi.hoisted(() => ({
   fkEdges: [] as Array<{ child_table: string; parent_table: string }>,
   /** rows the W08 attachment object pre-clear SELECT returns (default: none). */
   attachmentKeyRows: [] as Array<{ storage_key: string }>,
+  softwareKeyRows: [] as Array<{ storageKey: string | null }>,
 }));
 
 function sqlToText(q: unknown): string {
@@ -60,6 +61,21 @@ vi.mock('../db', () => ({
       if (text.includes('SELECT storage_key')) {
         return Promise.resolve(mockState.attachmentKeyRows);
       }
+      if (text.includes('SELECT v.s3_key')) {
+        return Promise.resolve(mockState.softwareKeyRows);
+      }
+      if (text.includes('FROM software_deployments d')) {
+        return Promise.resolve([{ count: 0 }]);
+      }
+      if (text.includes('FROM software_inventory i')) {
+        return Promise.resolve([{ count: 0 }]);
+      }
+      if (text.includes('SELECT m.id FROM software_install_methods')) {
+        return Promise.resolve([]);
+      }
+      if (/^\s*SELECT id FROM software_catalog/i.test(text)) {
+        return Promise.resolve([]);
+      }
       const next = mockState.executeResponses.shift();
       if (next === undefined) {
         return Promise.resolve({ rowCount: 0 });
@@ -75,6 +91,11 @@ vi.mock('../db', () => ({
 const { deleteObjectKeysMock } = vi.hoisted(() => ({ deleteObjectKeysMock: vi.fn() }));
 vi.mock('./ticketAttachmentStorage', () => ({
   deleteObjectKeys: deleteObjectKeysMock,
+}));
+
+const { deleteSoftwareObjectsMock } = vi.hoisted(() => ({ deleteSoftwareObjectsMock: vi.fn() }));
+vi.mock('./s3Storage', () => ({
+  deleteObjects: deleteSoftwareObjectsMock,
 }));
 
 // W08 #3902: the erasure-failed forensic audit is asserted directly, so the
@@ -406,9 +427,12 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
     mockState.executedSql = [];
     mockState.fkEdges = [];
     mockState.attachmentKeyRows = [];
+    mockState.softwareKeyRows = [];
     vi.mocked(db.execute).mockClear();
     deleteObjectKeysMock.mockReset();
     deleteObjectKeysMock.mockResolvedValue(undefined);
+    deleteSoftwareObjectsMock.mockReset();
+    deleteSoftwareObjectsMock.mockResolvedValue(undefined);
     createAuditLogMock.mockClear();
   });
 
@@ -434,7 +458,11 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
       }
       if (text.includes('SELECT storage_key')) {
         order.push('select-keys');
-        return Promise.resolve([{ storage_key: 'ticket-attachments/a1' }]);
+        return Promise.resolve(
+          text.includes('org_documents')
+            ? [{ storage_key: 'org-documents/d1' }]
+            : [{ storage_key: 'ticket-attachments/a1' }],
+        );
       }
       if (/^\s*delete/i.test(text)) order.push(`delete:${text.slice(0, 60)}`);
       return Promise.resolve({ rowCount: 0 });
@@ -442,19 +470,52 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
 
     await cascadeDeleteOrg(ORG, BY);
 
-    expect(order[0]).toBe('select-keys');
-    expect(order[1]).toBe('objects');
-    expect(order.slice(2).every((s) => s.startsWith('delete:'))).toBe(true);
-    expect(deleteObjectKeysMock).toHaveBeenCalledWith(['ticket-attachments/a1']);
+    // W03: one key READ per byte table (so a missing table cannot blind the
+    // other), then still exactly ONE object-delete batch, and only then rows.
+    const objectsAt = order.indexOf('objects');
+    expect(objectsAt).toBeGreaterThan(0);
+    expect(order.slice(0, objectsAt).every((s) => s === 'select-keys')).toBe(true);
+    expect(order.filter((s) => s === 'objects')).toHaveLength(1);
+    expect(order.slice(objectsAt + 1).every((s) => s.startsWith('delete:'))).toBe(true);
+    expect(deleteObjectKeysMock).toHaveBeenCalledTimes(1);
+    expect(deleteObjectKeysMock).toHaveBeenCalledWith(['ticket-attachments/a1', 'org-documents/d1']);
   });
 
-  it('scopes the key read to this org and to s3-backed rows only', async () => {
+  it('scopes the key read to this org and to s3-backed rows only, for every byte table', async () => {
     rigKeys([]);
     await cascadeDeleteOrg(ORG, BY);
-    const keyQuery = mockState.executedSql.find((t) => t.includes('SELECT storage_key'))!;
-    expect(keyQuery).toContain('ticket_attachments');
-    expect(keyQuery).toContain('org_id');
-    expect(keyQuery).toContain("storage_backend = 's3'");
+    const keyQueries = mockState.executedSql.filter((t) => t.includes('SELECT storage_key'));
+    // W03: one read PER byte table, not a UNION. A union means a missing table
+    // blinds the read for the other one too (a 42P01 on either is tolerated),
+    // which would skip the object pre-clear for a table that does exist.
+    expect(keyQueries.some((q) => q.includes('ticket_attachments'))).toBe(true);
+    expect(keyQueries.some((q) => q.includes('org_documents'))).toBe(true);
+    for (const q of keyQueries) {
+      expect(q).toContain('org_id');
+      expect(q).toContain("storage_backend = 's3'");
+    }
+  });
+
+  it('an absent org_documents table does NOT blind the ticket-attachment pre-clear', async () => {
+    // A partial-schema fixture (or a not-yet-migrated deployment) raises 42P01
+    // for one table. The other table's keys must still be read and deleted
+    // BEFORE any row goes — otherwise those objects are orphaned forever.
+    const undefinedTable = Object.assign(new Error('relation "org_documents" does not exist'), { code: '42P01' });
+    vi.mocked(db.execute).mockImplementation(((q: unknown) => {
+      const text = sqlToText(q);
+      if (text.includes('pg_constraint') || text.includes('contype')) {
+        return Promise.resolve(mockState.fkEdges);
+      }
+      if (text.includes('SELECT storage_key')) {
+        if (text.includes('org_documents')) return Promise.reject(undefinedTable);
+        return Promise.resolve([{ storage_key: 'ticket-attachments/a1' }]);
+      }
+      return Promise.resolve({ rowCount: 0 });
+    }) as any);
+
+    await cascadeDeleteOrg(ORG, BY);
+    expect(deleteObjectKeysMock).toHaveBeenCalledTimes(1);
+    expect(deleteObjectKeysMock).toHaveBeenCalledWith(['ticket-attachments/a1']);
   });
 
   it('issues ZERO object deletes for an org with only db-backend attachments', async () => {
@@ -486,9 +547,82 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
       expect.objectContaining({
         action: 'tenant.erasure.failed',
         result: 'failure',
-        details: expect.objectContaining({ failedTable: 'ticket_attachments_objects' }),
+        details: expect.objectContaining({ failedTable: 'tenant_object_preclear' }),
       }),
     );
+  });
+});
+
+describe('software package object lifecycle pre-clear', () => {
+  const ORG = '00000000-0000-0000-0000-000000000011';
+  const BY = '00000000-0000-0000-0000-000000000012';
+
+  beforeEach(() => {
+    mockState.executeResponses = [];
+    mockState.executedSql = [];
+    mockState.fkEdges = [];
+    mockState.attachmentKeyRows = [];
+    mockState.softwareKeyRows = [];
+    deleteObjectKeysMock.mockReset();
+    deleteObjectKeysMock.mockResolvedValue(undefined);
+    deleteSoftwareObjectsMock.mockReset();
+    deleteSoftwareObjectsMock.mockResolvedValue(undefined);
+    createAuditLogMock.mockClear();
+  });
+
+  it('locks the owned catalog/version rows and deletes objects before locator rows', async () => {
+    mockState.softwareKeyRows = [
+      { storageKey: 'software/org/a.msi' },
+      { storageKey: null },
+    ];
+    const order: string[] = [];
+    deleteSoftwareObjectsMock.mockImplementation(async () => { order.push('objects'); });
+    vi.mocked(db.execute).mockImplementation(((q: unknown) => {
+      const text = sqlToText(q);
+      mockState.executedSql.push(text);
+      if (text.includes('pg_constraint') || text.includes('contype')) return Promise.resolve([]);
+      if (text.includes('SELECT storage_key')) return Promise.resolve([]);
+      if (text.includes('SELECT v.s3_key')) {
+        order.push('lock-keys');
+        return Promise.resolve(mockState.softwareKeyRows);
+      }
+      if (text.includes('FROM software_deployments d')) return Promise.resolve([{ count: 0 }]);
+      if (text.includes('FROM software_inventory i')) return Promise.resolve([{ count: 0 }]);
+      if (text.includes('SELECT m.id FROM software_install_methods')) {
+        order.push('lock-methods');
+        return Promise.resolve([]);
+      }
+      if (/DELETE FROM software_versions/i.test(text)) order.push('delete-rows');
+      if (/DELETE FROM software_catalog/i.test(text)) order.push('delete-catalogs');
+      if (/^\s*SELECT id FROM software_catalog/i.test(text)) {
+        order.push('lock-catalogs');
+        return Promise.resolve([{ id: 'catalog-1' }]);
+      }
+      return Promise.resolve({ rowCount: 0 });
+    }) as any);
+
+    await cascadeDeleteOrg(ORG, BY);
+
+    expect(order).toEqual([
+      'lock-catalogs', 'lock-keys', 'lock-methods', 'objects', 'delete-rows', 'delete-catalogs',
+    ]);
+    expect(deleteSoftwareObjectsMock).toHaveBeenCalledWith(['software/org/a.msi']);
+    const lockSql = mockState.executedSql.find((text) => text.includes('SELECT v.s3_key'))!;
+    expect(lockSql).toMatch(/software_catalog WHERE org_id/i);
+    expect(lockSql).toMatch(/FOR UPDATE/i);
+  });
+
+  it('keeps locator rows and records the object step when storage deletion fails', async () => {
+    mockState.softwareKeyRows = [{ storageKey: 'software/org/a.msi' }];
+    deleteSoftwareObjectsMock.mockRejectedValueOnce(new Error('synthetic bucket outage'));
+
+    await expect(cascadeDeleteOrg(ORG, BY)).rejects.toThrow(/software package object\/catalog delete/i);
+    const softwareDeletes = mockState.executedSql.filter((text) => /DELETE FROM software_versions/i.test(text));
+    expect(softwareDeletes).toHaveLength(0);
+    expect(createAuditLogMock).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'tenant.erasure.failed',
+      details: expect.objectContaining({ failedTable: 'software_version_objects' }),
+    }));
   });
 });
 

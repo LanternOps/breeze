@@ -44,10 +44,16 @@ vi.mock('../services/viewerTokenRevocation', () => ({
   isViewerSessionRevoked: vi.fn().mockResolvedValue(false),
 }));
 
+vi.mock('../services/remoteWsAuthorization', () => ({
+  authorizeConsumedRemoteWsTicket: vi.fn(),
+  revalidateRemoteWsAuthorityBounded: vi.fn(async () => ({ ok: true, context: {} })),
+}));
+
 import { db } from '../db';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { isViewerSessionRevoked } from '../services/viewerTokenRevocation';
+import { revalidateRemoteWsAuthorityBounded } from '../services/remoteWsAuthorization';
 import {
   getActiveTerminalSession,
   createTerminalWsRoutes,
@@ -224,7 +230,37 @@ describe('terminal ping loop — mid-session revocation', () => {
     await closeTerminalSession(sessionId);
   });
 
-  it('makes a captured timer from an old generation inert after reopen', async () => {
+  it('closes without a ping when live authority is denied', async () => {
+    const sessionId = nextSessionId();
+    const { ws } = await openLiveSession(sessionId);
+    vi.mocked(revalidateRemoteWsAuthorityBounded).mockResolvedValueOnce({
+      ok: false, status: 403, reason: 'permission_denied',
+    });
+    ws.send.mockClear();
+
+    await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS);
+
+    expect(revalidateRemoteWsAuthorityBounded).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId, sessionType: 'terminal', userId: expect.any(String),
+    }));
+    expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('"ping"'));
+    expect(ws.close).toHaveBeenCalledWith(4003, 'Session revoked');
+  });
+
+  it('does not overlap a slow live-authority check', async () => {
+    const sessionId = nextSessionId();
+    await openLiveSession(sessionId);
+    vi.mocked(revalidateRemoteWsAuthorityBounded).mockImplementationOnce(
+      async () => new Promise(() => undefined),
+    );
+
+    await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS * 2);
+
+    expect(revalidateRemoteWsAuthorityBounded).toHaveBeenCalledTimes(1);
+    await closeTerminalSession(sessionId);
+  });
+
+  it('makes an in-flight denial from an old generation inert after reopen', async () => {
     const sessionId = nextSessionId();
     // Select the PING timer by its interval, not by creation order — the
     // session also installs a lease-renewal timer, and picking index 0 would
@@ -236,19 +272,26 @@ describe('terminal ping loop — mid-session revocation', () => {
       return realSetInterval(callback, delay);
     }) as typeof setInterval);
 
+    let resolveAuthority!: (result: any) => void;
+    vi.mocked(revalidateRemoteWsAuthorityBounded).mockImplementationOnce(
+      async () => new Promise((resolve) => { resolveAuthority = resolve; }),
+    );
+    vi.mocked(isViewerSessionRevoked).mockResolvedValue(false);
     const { ws: staleWs, handlers: staleHandlers } = await openLiveSession(sessionId);
     const staleTimer = intervalCallbacks.find(entry => entry.delay === PING_INTERVAL_MS)?.callback;
     expect(staleTimer).toBeDefined();
+    staleTimer!();
+    await Promise.resolve();
+    expect(revalidateRemoteWsAuthorityBounded).toHaveBeenCalledTimes(1);
     await staleHandlers.onClose({}, staleWs);
 
     const { ws: replacementWs } = await openLiveSession(sessionId);
     const replacement = getActiveTerminalSession(sessionId);
     expect(replacement).toBeDefined();
 
-    vi.mocked(isViewerSessionRevoked).mockResolvedValue(true);
     vi.mocked(sendCommandToAgent).mockClear();
     staleWs.send.mockClear();
-    staleTimer!();
+    resolveAuthority({ ok: false, status: 403, reason: 'permission_denied' });
     await Promise.resolve();
     await Promise.resolve();
 

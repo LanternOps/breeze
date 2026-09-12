@@ -1,4 +1,4 @@
-import { Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 
 import { useApprovalTheme, spacing, type } from '../../../theme';
@@ -6,6 +6,7 @@ import { useApprovalTheme, spacing, type } from '../../../theme';
 interface Props {
   orgName: string;
   count: number;
+  onPress: () => void;
   showDivider?: boolean;
   dividerColor?: string;
 }
@@ -15,11 +16,15 @@ interface Props {
  * (#5139 / #5117 decision 1) — VSS/Universal Print/Intel ME/SCEP failures,
  * the same findings `get_fleet_findings` reports to the AI. Visually
  * distinct from `IssueRow` (alerts): a "Finding" label instead of a severity
- * dot, and no swipe-to-acknowledge or selection — findings are acted on from
- * the AI/web flow today. Display-only; tap-through to a findings detail
- * screen is a later item (#5117).
+ * dot, and no swipe-to-acknowledge or selection — a finding is acted on one at
+ * a time on its own detail screen, not in bulk from this list.
+ *
+ * #5365 made the row tappable: it opens the org's findings list, and from
+ * there a finding's detail with acknowledge / dismiss / reopen. Before that it
+ * was display-only and a tech could see something was wrong without being able
+ * to find out what.
  */
-export function FindingsRow({ orgName, count, showDivider, dividerColor }: Props) {
+export function FindingsRow({ orgName, count, onPress, showDivider, dividerColor }: Props) {
   const theme = useApprovalTheme('dark');
 
   return (
@@ -28,13 +33,18 @@ export function FindingsRow({ orgName, count, showDivider, dividerColor }: Props
       exiting={FadeOut.duration(180)}
       layout={LinearTransition.duration(220)}
     >
-      <View
-        style={{
+      <Pressable
+        testID={`findings-row-${orgName}`}
+        accessibilityRole="button"
+        accessibilityLabel={`${count} open ${count === 1 ? 'finding' : 'findings'} for ${orgName}`}
+        onPress={onPress}
+        style={({ pressed }) => ({
           paddingHorizontal: spacing[6],
           paddingVertical: spacing[3],
           flexDirection: 'row',
           alignItems: 'center',
-        }}
+          backgroundColor: pressed ? theme.bg1 : 'transparent',
+        })}
       >
         <View
           accessibilityRole="text"
@@ -59,7 +69,7 @@ export function FindingsRow({ orgName, count, showDivider, dividerColor }: Props
             {orgName}
           </Text>
         </View>
-      </View>
+      </Pressable>
       {showDivider ? (
         <View
           style={{

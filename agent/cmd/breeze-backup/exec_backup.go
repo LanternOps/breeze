@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 	"github.com/breeze-rmm/agent/internal/backup/vss"
 	"github.com/breeze-rmm/agent/internal/backupipc"
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
@@ -27,6 +29,10 @@ type commandStorageEncryption struct {
 
 type sseConfigurableProvider interface {
 	SetServerSideEncryption(algorithm, kmsKeyID string)
+}
+
+var backupRestoreWorkRoot = func() string {
+	return filepath.Join(config.GetDataDir(), "backup")
 }
 
 func applyCommandStorageEncryption(provider providers.BackupProvider, payload json.RawMessage) error {
@@ -79,20 +85,30 @@ type backupRunProviderConfig struct {
 }
 
 // defaultVSS decides whether VSS shadow-copy defaults on for a backup_run,
-// given the target OS and whether this is a system_image run. VSS is a
-// Windows-only feature; it stays off for system_image mode, which manages its
-// own consistency via system-state collection. Extracted as a pure function of
-// goos so the OS decision is table-testable on EVERY platform — the
-// internal/backup package (and this command's VSS-by-default flip) is excluded
-// from the Windows CI job, so a runtime.GOOS-only assertion would be vacuous on
-// the Linux runners that actually run these tests.
-func defaultVSS(goos string, systemImage bool) bool {
-	return goos == "windows" && !systemImage
+// given the target OS, whether this is a system_image run, and whether that
+// run also carries file paths to walk. VSS is a Windows-only feature; it
+// stays off for a system_image run with NO paths, which manages its own
+// consistency via system-state collection alone. A wholeMachine system_image
+// run (#5493) DOES carry paths — it walks the OS root in the same run that
+// collects system state — so it needs VSS on Windows the same as a plain
+// file-mode run; systemImage alone must not suppress it once paths are
+// present. Extracted as a pure function of goos so the OS decision is
+// table-testable on EVERY platform — the internal/backup package (and this
+// command's VSS-by-default flip) is excluded from the Windows CI job, so a
+// runtime.GOOS-only assertion would be vacuous on the Linux runners that
+// actually run these tests.
+func defaultVSS(goos string, systemImage bool, hasPaths bool) bool {
+	return goos == "windows" && (!systemImage || hasPaths)
 }
 
 // managerFromBackupRunPayload builds a BackupManager from the backup_run command
 // payload's provider + providerConfig + paths. Returns (nil,nil) when the payload
 // carries no provider config so the caller falls back to the agent.yaml manager.
+// helperAgentID is the enrolled agent id loaded from agent.yaml at startup
+// (main.go). It is stamped into every manifest's BackupIdentity so incremental
+// dedupe only ever references this device's own previous snapshot (D6).
+var helperAgentID string
+
 func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager, error) {
 	if len(payload) == 0 {
 		return nil, nil
@@ -101,7 +117,21 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		Provider       string                   `json:"provider"`
 		ProviderConfig *backupRunProviderConfig `json:"providerConfig"`
 		Paths          []string                 `json:"paths"`
-		SystemImage    bool                     `json:"systemImage"`
+		// Excludes is only consumed here for the wholeMachine system_image
+		// branch below. Plain file-mode runs ignore this field on the
+		// manager config — their excludes flow through main.go's separate
+		// parseBackupRunExcludes + RunBackupContext(ctx, excludes) call,
+		// which takes precedence whenever the payload's top-level "excludes"
+		// key is present (see RunBackupContext's excludes==nil fallback).
+		Excludes    []string `json:"excludes"`
+		SystemImage bool     `json:"systemImage"`
+		// BaseSnapshotID/PublishLeaseExpiresAt implement the D18 §3.1
+		// server-owned-base protocol. BaseSnapshotID's presence in the JSON
+		// (vs. entirely absent) is the protocol switch: a *string stays nil
+		// when the field is omitted (older server, legacy bucket-listing
+		// mode) and becomes non-nil (possibly pointing at "") when present.
+		BaseSnapshotID        *string `json:"baseSnapshotId"`
+		PublishLeaseExpiresAt string  `json:"publishLeaseExpiresAt"`
 		// Vss lets the server force VSS on/off for this run. Not currently sent
 		// by apps/api/src/jobs/backupWorker.ts (a future policy toggle can); when
 		// absent the agent defaults it itself below.
@@ -113,6 +143,38 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	if p.ProviderConfig == nil || p.Provider == "" {
 		return nil, nil
 	}
+	var publishLeaseExpiresAt time.Time
+	if p.PublishLeaseExpiresAt != "" {
+		parsed, parseErr := time.Parse(time.RFC3339, p.PublishLeaseExpiresAt)
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid backup_run payload: publishLeaseExpiresAt %q: %w", p.PublishLeaseExpiresAt, parseErr)
+		}
+		publishLeaseExpiresAt = parsed
+	}
+	// D18 §3.1 (P1 fix): publishLeaseExpiresAt is sent for EVERY
+	// server-owned-mode run — base or an explicit full run — never only
+	// when a base was actually chosen. A present baseSnapshotId (server-
+	// owned mode is ON, even if it points at "") with a missing, empty, or
+	// unparseable-to-zero lease means the dispatching server is violating
+	// its own protocol. Reject the WHOLE payload here rather than silently
+	// running server-owned mode ungated: main.go's caller turns this error
+	// into `fail(err.Error())`, so the backup_run command fails outright
+	// and uploads nothing.
+	if p.BaseSnapshotID != nil && publishLeaseExpiresAt.IsZero() {
+		return nil, fmt.Errorf("invalid backup_run payload: baseSnapshotId is present (server-owned mode) but publishLeaseExpiresAt is missing, empty, or zero")
+	}
+	// Symmetric defense-in-depth (review finding): the leaseGate installs
+	// on BaseSnapshotID != nil alone (backup.go), never on the lease value,
+	// so a payload that sent a non-zero lease WITHOUT baseSnapshotId would
+	// otherwise silently fall back to fully-unfenced legacy mode instead of
+	// getting the publish fence its own lease implies it wants. This can
+	// only happen if a dispatching server has a bug (the protocol ties the
+	// two together — baseSnapshotId's presence, even as "", IS the
+	// server-owned-mode switch per D18 §3.1), but reject it loudly here
+	// rather than silently downgrading to legacy/ungated.
+	if p.BaseSnapshotID == nil && !publishLeaseExpiresAt.IsZero() {
+		return nil, fmt.Errorf("invalid backup_run payload: publishLeaseExpiresAt is present but baseSnapshotId is absent (server-owned mode requires both fields together)")
+	}
 	// vssEnabled defaults to on for server-dispatched Windows file backups so
 	// locked files (open documents, DB files) aren't silently skipped — VSS
 	// failure is already non-fatal (backup.go's RunBackupWithExcludes proceeds
@@ -121,7 +183,7 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	// state collection, so it stays off there unless the payload overrides it.
 	// The server can force it either way via the optional `vss` field (not
 	// currently sent by apps/api/src/jobs/backupWorker.ts).
-	vssEnabled := defaultVSS(runtime.GOOS, p.SystemImage)
+	vssEnabled := defaultVSS(runtime.GOOS, p.SystemImage, len(p.Paths) > 0)
 	if p.Vss != nil {
 		vssEnabled = *p.Vss
 	}
@@ -146,11 +208,25 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		// server-owns-retention invariant as the file-mode path below (which
 		// sets it explicitly): the agent must never prune remote storage itself
 		// and race the server's GFS/legal-hold/immutability authority.
-		return backup.NewBackupManager(backup.BackupConfig{
-			Provider:           provider,
-			SystemStateEnabled: true,
-			VSSEnabled:         vssEnabled,
-		}), nil
+		cfg := backup.BackupConfig{
+			Provider:              provider,
+			SystemStateEnabled:    true,
+			VSSEnabled:            vssEnabled,
+			AgentID:               helperAgentID,
+			AgentVersion:          version,
+			BaseSnapshotID:        p.BaseSnapshotID,
+			PublishLeaseExpiresAt: publishLeaseExpiresAt,
+		}
+		// #5493: a wholeMachine system_image selection fans out with Paths
+		// set (backupWorker.ts resolveBackupTargets), so this run ALSO walks
+		// the OS root — one snapshot carrying files + layout.json + system
+		// state, instead of the files-less system_image-only snapshot a
+		// plain systemImage:true payload (no paths) still produces below.
+		if len(p.Paths) > 0 {
+			cfg.Paths = p.Paths
+			cfg.Excludes = p.Excludes
+		}
+		return backup.NewBackupManager(cfg), nil
 	}
 	if len(p.Paths) == 0 {
 		return nil, fmt.Errorf("backup_run payload has no paths")
@@ -163,10 +239,14 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	// Retention: 0 makes DeleteSnapshotContext a no-op (it returns early on
 	// retention <= 0), leaving the server as the sole retention authority.
 	return backup.NewBackupManager(backup.BackupConfig{
-		Provider:   provider,
-		Paths:      p.Paths,
-		Retention:  0,
-		VSSEnabled: vssEnabled,
+		Provider:              provider,
+		Paths:                 p.Paths,
+		Retention:             0,
+		VSSEnabled:            vssEnabled,
+		AgentID:               helperAgentID,
+		AgentVersion:          version,
+		BaseSnapshotID:        p.BaseSnapshotID,
+		PublishLeaseExpiresAt: publishLeaseExpiresAt,
 	}), nil
 }
 
@@ -216,6 +296,46 @@ func restoreProviderFromPayload(payload json.RawMessage) (providers.BackupProvid
 	default:
 		return nil, fmt.Errorf("unsupported backup provider %q", p.Provider)
 	}
+}
+
+// managerFromProviderPayload builds an ephemeral BackupManager carrying only a
+// provider (no paths/retention/VSS) from a provider-backed command payload's
+// provider + providerConfig, reusing restoreProviderFromPayload's parsing.
+//
+// D20b item B: mssql_backup/hyperv_backup/hyperv_restore only ever call
+// mgr.GetProvider() and mgr.GetStagingDir() (see execMSSQLBackup,
+// execHypervRestore, etc.) — never mgr.RunBackupContext — so unlike
+// managerFromBackupRunPayload (which requires paths, or systemImage,
+// because backup_run actually drives a full backup through the manager)
+// this builder needs nothing but a provider. GetStagingDir() on a
+// zero-value StagingDir returns "", and every remaining GetStagingDir()
+// caller already passes that straight to os.MkdirTemp, which treats "" as
+// "use the OS default temp dir" — so an unset StagingDir here is safe, not
+// a bug.
+//
+// mssql_restore/mssql_verify are the one exception as of D23b:
+// resolveMSSQLBackupArtifact no longer touches GetStagingDir() at all — it
+// downloads into mssql.ResolveRestoreTargetDir's directory instead, the
+// same SQL-Server-writable location RunBackup writes into (D23), since
+// RESTORE/RESTORE VERIFYONLY are read by the SQL Server service account,
+// not the Breeze helper. This builder is still fine for them: they only
+// need mgr.GetProvider().
+//
+// Returns (nil, nil) when the payload carries no provider config, so the
+// caller can produce its own command-specific "not configured" message
+// instead of a generic one.
+func managerFromProviderPayload(payload json.RawMessage) (*backup.BackupManager, error) {
+	provider, err := restoreProviderFromPayload(payload)
+	if err != nil {
+		return nil, err
+	}
+	if provider == nil {
+		return nil, nil
+	}
+	return backup.NewBackupManager(backup.BackupConfig{
+		Provider: provider,
+		AgentID:  helperAgentID,
+	}), nil
 }
 
 // restoreProviderForCommand resolves the provider to use for restore/verify/
@@ -292,6 +412,7 @@ func execBackupRestoreWithProgress(ctx context.Context, commandID string, payloa
 		SnapshotID:    p.SnapshotID,
 		TargetPath:    p.TargetPath,
 		SelectedPaths: p.SelectedPaths,
+		WorkRoot:      backupRestoreWorkRoot(),
 	}
 
 	var progressFn backup.ProgressFunc
@@ -350,7 +471,7 @@ func execBackupTestRestore(payload json.RawMessage, mgr *backup.BackupManager, v
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid test restore payload: " + err.Error())
 	}
-	result, err := backup.TestRestore(restoreProvider, p.SnapshotID, nil)
+	result, err := backup.TestRestore(restoreProvider, p.SnapshotID, backupRestoreWorkRoot(), nil)
 	return marshalResult(result, err)
 }
 
@@ -361,7 +482,7 @@ func execBackupCleanup(payload json.RawMessage) backupipc.BackupCommandResult {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid cleanup payload: " + err.Error())
 	}
-	if err := backup.CleanupRestoreDir(p.RestorePath); err != nil {
+	if err := backup.CleanupRestoreDir(p.RestorePath, backupRestoreWorkRoot()); err != nil {
 		return fail(err.Error())
 	}
 	return ok(`{"cleaned":true}`)

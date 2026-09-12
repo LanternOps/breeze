@@ -26,6 +26,21 @@ vi.mock('../jobs/networkBaselineWorker', () => ({
   enqueueBaselineScan: vi.fn().mockResolvedValue('job-123'),
 }));
 
+// SEC-2026-09-05-146: these suites cover route/tool behaviour, not the authority
+// envelope. Arming is asserted directly in networkBaselineAuthority.arming.test.ts.
+vi.mock('../services/networkBaselineAuthority', () => ({
+  BaselineAuthorityUnsupportedError: class extends Error {},
+  buildBaselineAuthorityEnvelope: vi.fn(async () => ({
+    authorityUserId: 'authority-user',
+    authoritySiteIds: null,
+    authorityPermissionsEpoch: 1,
+    authorityMfaEpoch: 1,
+    authorityFingerprint: 'fingerprint',
+    authorityArmedAt: new Date('2026-10-15T00:00:00.000Z'),
+    scheduleBlockedReason: null,
+  })),
+}));
+
 vi.mock('../services/networkBaseline', () => ({
   normalizeBaselineScanSchedule: vi.fn((s) => s ?? { enabled: false, intervalHours: 24 }),
   normalizeBaselineAlertSettings: vi.fn((s) => s ?? { newDevice: true, disappeared: true, changed: true, rogueDevice: true }),

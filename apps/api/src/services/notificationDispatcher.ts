@@ -5,7 +5,7 @@
  * Handles channel routing, escalation policies, and delivery tracking.
  */
 
-import { Queue, Worker, Job } from 'bullmq';
+import { Queue, Worker, Job, UnrecoverableError } from 'bullmq';
 import * as dbModule from '../db';
 import {
   alerts,
@@ -31,6 +31,7 @@ import {
   sendInAppNotification,
   sendPagerDutyNotification,
   sendPushoverNotification,
+  webhookTotalAttempts,
   type WebhookConfig,
   type PagerDutyConfig,
   type PushoverConfig,
@@ -43,6 +44,14 @@ import { decryptNotificationChannelConfig } from './notificationChannelSecrets';
 import { attachWorkerObservability } from '../jobs/workerObservability';
 
 const { db } = dbModule;
+
+const DEFAULT_NOTIFICATION_RETRIES = 2;
+
+/** Configured retry count excludes the initial attempt; BullMQ uses totals. */
+export function notificationJobAttempts(type: string, config: unknown): number {
+  if (type !== 'webhook') return DEFAULT_NOTIFICATION_RETRIES + 1;
+  return webhookTotalAttempts(config);
+}
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
@@ -314,7 +323,7 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
   }
 
   const validChannels = await db
-    .select({ id: notificationChannels.id })
+    .select({ id: notificationChannels.id, type: notificationChannels.type, config: notificationChannels.config })
     .from(notificationChannels)
     .where(
       and(
@@ -332,15 +341,15 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
 
   // Queue notification jobs for each channel with retry + exponential backoff (Phase 4a)
   const queue = getNotificationQueue();
-  const jobs = channelIds.map(channelId => ({
+  const jobs = validChannels.map(channel => ({
     name: 'send',
     data: {
       type: 'send' as const,
       alertId: data.alertId,
-      channelId
+      channelId: channel.id
     },
     opts: {
-      attempts: 3,
+      attempts: notificationJobAttempts(channel.type, channel.config),
       backoff: { type: 'exponential' as const, delay: 30_000 }, // 30s, 60s (2 retries)
       removeOnComplete: true,
       removeOnFail: { count: 100 },
@@ -359,7 +368,7 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
       // reaches 'failed'. Task 8's durable (alertId, channelId, escalationStep)
       // row identity in `alert_notifications` (unique index; see
       // `buildAlertNotificationClaimCas`) is the actual double-send backstop.
-      jobId: `alert-send-${data.alertId}-${channelId}-0`
+      jobId: `alert-send-${data.alertId}-${channel.id}-0`
     }
   }));
 
@@ -754,6 +763,7 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
   // Send notification based on channel type — OUTSIDE any DB context (#1105).
   let success = false;
   let error: string | undefined;
+  let retryable: boolean | undefined;
 
   try {
     const channelConfig = decryptNotificationChannelConfig(channel.type, channel.config);
@@ -778,6 +788,7 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
         );
         success = webhookResult.success;
         error = webhookResult.error;
+        retryable = webhookResult.retryable;
         break;
 
       case 'sms':
@@ -801,6 +812,7 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
         );
         success = slackResult.success;
         error = slackResult.error;
+        retryable = slackResult.retryable;
         break;
 
       case 'teams':
@@ -813,6 +825,7 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
         );
         success = teamsResult.success;
         error = teamsResult.error;
+        retryable = teamsResult.retryable;
         break;
 
       case 'pagerduty':
@@ -908,7 +921,9 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
   // as a completed job and never retries (#4085 — codex-flagged defect: with
   // attempts:3, transport failures were never actually retried). The row is
   // reclaimed on the next attempt via the send-identity claim path above.
-  throw new Error(error || `Unknown error sending ${channel.type} notification`);
+  const failureMessage = error || `Unknown error sending ${channel.type} notification`;
+  if (retryable === false) throw new UnrecoverableError(failureMessage);
+  throw new Error(failureMessage);
 }
 
 /**
@@ -950,7 +965,7 @@ async function sendWebhookChannelNotification(
   alert: typeof alerts.$inferSelect,
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; retryable?: boolean }> {
   // Get rule for additional context (ruleId may be null for config policy alerts).
   // This now runs during the outbound-send phase (#1105), with no ambient DB
   // context, so it must open its own short one rather than assume `db` is
@@ -991,10 +1006,10 @@ async function sendChatWebhookChannelNotification(
   alert: typeof alerts.$inferSelect,
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; retryable?: boolean }> {
   const webhookUrl = typeof config.webhookUrl === 'string' ? config.webhookUrl.trim() : '';
   if (!webhookUrl) {
-    return { success: false, error: `${channelType} channel missing webhookUrl` };
+    return { success: false, error: `${channelType} channel missing webhookUrl`, retryable: false };
   }
 
   const dashboardUrl = process.env.DASHBOARD_URL
@@ -1267,7 +1282,7 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
   )];
   const validChannels = requestedChannelIds.length > 0
     ? await db
-      .select({ id: notificationChannels.id })
+      .select({ id: notificationChannels.id, type: notificationChannels.type, config: notificationChannels.config })
       .from(notificationChannels)
       .where(
         and(
@@ -1278,6 +1293,7 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
       )
     : [];
   const validChannelIdSet = new Set(validChannels.map((channel) => channel.id));
+  const validChannelById = new Map(validChannels.map((channel) => [channel.id, channel]));
 
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
@@ -1288,6 +1304,7 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
     const stepChannelIds = (step.channelIds || []).filter((channelId) => validChannelIdSet.has(channelId));
 
     for (const channelId of stepChannelIds) {
+      const channel = validChannelById.get(channelId)!;
       const job = await queue.add(
         'send',
         {
@@ -1306,7 +1323,7 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
           // permanently-retained failed job hash with ZERO retries — the
           // stable jobId then stays occupied forever and nothing ever
           // re-fires that escalation step.
-          attempts: 3,
+          attempts: notificationJobAttempts(channel.type, channel.config),
           backoff: { type: 'exponential', delay: 30_000 },
           removeOnComplete: true,
           removeOnFail: { age: 3600 }

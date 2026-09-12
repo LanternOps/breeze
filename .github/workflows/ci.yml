@@ -105,7 +105,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -155,6 +155,7 @@ jobs:
           bash scripts/check-guided-setup-local-certs-backfill.sh
           bash scripts/check-guided-setup-placeholders.sh
           bash scripts/check-guided-setup-systemd-unit.sh
+          bash scripts/check-guided-setup-signed-image-floor.sh
 
       # docker/Caddyfile.prod is shared by hosted production and every
       # self-hosted install, so the CADDY_LOCAL_CERTS opt-in must be a strict
@@ -173,7 +174,7 @@ jobs:
         run: bash scripts/security/check-env-example-version-pin.sh
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -194,6 +195,9 @@ jobs:
 
       - name: Test CI build reuse contract
         run: node --test .github/scripts/ci-build-reuse.test.mjs
+
+      - name: Verify temporary CI apt source isolation
+        run: node --test .github/scripts/prepare-ci-apt-sources.test.mjs
 
       - name: Guard retired AI documentation automation
         run: pnpm test:docs-automation
@@ -232,7 +236,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -264,7 +268,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -382,7 +386,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -410,7 +414,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -452,7 +456,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -512,7 +516,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -595,7 +599,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -623,7 +627,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -655,7 +659,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -734,7 +738,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -796,7 +800,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -831,7 +835,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -863,7 +867,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -894,7 +898,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -922,7 +926,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -953,7 +957,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -993,7 +997,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1024,7 +1028,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1049,12 +1053,12 @@ jobs:
       # resolved that, and the tree is now clean at every severity, so the scan
       # covers dev dependencies too.
       #
-      # Follow-up: tighten AUDIT_THRESHOLD to HIGH once we're comfortable that a
-      # new dev-only advisory blocking PRs is an acceptable trade.
+      # Gate is HIGH+CRITICAL as of 2026-09-03 (SOC 2 CC7.1). A new dev-only
+      # HIGH advisory blocks PRs until patched or an exception is recorded.
       - name: Install osv-scanner
         run: bash scripts/security/install-osv-scanner.sh
 
-      - name: Run dependency audit (critical gate)
+      - name: Run dependency audit (high+critical gate)
         run: bash scripts/security/check-npm-audit.sh
 
       - name: Run supply-chain hardening guard
@@ -1119,7 +1123,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1164,7 +1168,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1198,7 +1202,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1234,7 +1238,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1270,7 +1274,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1313,7 +1317,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1385,6 +1389,11 @@ jobs:
       - name: Download Go dependencies
         working-directory: agent
         run: go mod download
+
+      - name: Test macOS installer
+        if: matrix.goos == 'darwin' && matrix.goarch == 'arm64'
+        working-directory: agent/installer/macos-app
+        run: swift test
 
       - name: Build Agent
         shell: bash
@@ -1514,6 +1523,23 @@ jobs:
       - name: Run Go tests
         working-directory: agent
         run: CGO_ENABLED=0 go test -v -coverprofile=coverage.out ./...
+
+      - name: Rebuild engine loopback test (root)
+        if: runner.os == 'Linux'
+        run: |
+          set -o pipefail
+          sudo apt-get install -y --no-install-recommends gdisk dosfstools e2fsprogs xfsprogs parted util-linux udev
+          sudo udevadm settle || true
+          cd agent
+          sudo -E env "PATH=$PATH" BREEZE_REBUILD_LOOP_TEST=1 go test -count=1 -run TestRun_LoopbackRealSystem ./internal/backup/rebuild/ -v 2>&1 | tee /tmp/rebuild-loopback.log
+          # A t.Skip (missing root, missing BREEZE_REBUILD_LOOP_TEST, or a
+          # missing tool) must never read as a pass here — the whole point
+          # of this step is to prove provisioning against a real loop
+          # device, not merely that `go test` exited 0.
+          if grep -q -- '--- SKIP' /tmp/rebuild-loopback.log; then
+            echo "::error::TestRun_LoopbackRealSystem was SKIPPED, not proven — see the skip reason logged above. Fix the environment (root/BREEZE_REBUILD_LOOP_TEST/missing tool), don't let this step go green on a skip."
+            exit 1
+          fi
 
       - name: Test build-edition.sh (edition fail-closed matrix + real build)
         run: agent/scripts/build-edition_test.sh
@@ -1653,7 +1679,7 @@ jobs:
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/executor ./internal/winsvcinstall ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/executor ./internal/securefs ./internal/winsvcinstall ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two
@@ -1678,6 +1704,30 @@ jobs:
           $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the absent-account tests SKIPPED - the runner could not reach the never-provisioned state they assert against, so the #4587 netapi32 fix has no live coverage here" }
           if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # securefs's Windows implementation is the SEC-121 privileged-staging
+      # boundary: handle-relative NtCreateFile walks, reparse-point rejection at
+      # every component, the atomic FILE_RENAME_INFO publish, and symlink entry
+      # restore. Its reparse-point cases plant a junction with `mklink /J` and
+      # its symlink cases need SeCreateSymbolicLinkPrivilege; if either stops
+      # working on the runner the assertions would silently evaporate, so —
+      # like the elevaccount step above — assert PASS counts and zero skips
+      # rather than trusting a bare exit code. The symlink helper is written to
+      # FAIL rather than skip for the same reason.
+      - name: Run Windows secure-staging reparse-point tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/securefs -run '^Test(InstallFileRejectsReparsePointAtEveryDepth|InstallFileResistsConcurrentComponentSwap|RenameRelativePublishesUnderThePinnedParent|InstallDirOnWindows|InstallSymlinkOnWindows|InstallSymlinkRefusesToReplaceAJunction|BuildSymlinkReparseBufferLayout|TargetIsDirectoryRefusesToProbeRemoteShapes|VerifyPrivateDirRejectsAReparsePoint|EnsurePrivateDirRepairsAnExistingInheritedDACL|EnsurePrivateDirTightensAPermissiveProtectedDACL|VerifyPrivateDirRejectsAnInheritedDACL)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the secure-staging boundary tests SKIPPED - the SEC-121 Windows reparse-point/DACL boundary has no live coverage here" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 12) { throw "expected exactly 12 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # The policy-state registry collector decides whether a batch uploads with
       # `replace: true` — which deletes every prior row for the device. That
@@ -1762,7 +1812,7 @@ jobs:
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
-          if ($passes -ne 14) { throw "expected exactly 14 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 13) { throw "expected exactly 13 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # -race requires cgo, which remote/desktop cannot satisfy on Windows, so
       # this covers only packages that do not import it (heartbeat, agentapp and
@@ -1784,6 +1834,101 @@ jobs:
       - name: Run Windows race tests
         working-directory: agent
         run: go test -race ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
+
+  # Bare-metal recovery media end-to-end proof (W04b Task 4): builds the
+  # recovery ISO from the current tree, seeds a real (mmdebstrap-built,
+  # bootable) Debian snapshot, boots the ISO in QEMU against a fake
+  # recovery server in CI-unattended mode (breeze.ci=1), lets the console +
+  # rebuild engine partition/restore/reboot a fresh disk image, asserts
+  # every expected progress phase was reported, then boots that disk alone
+  # and asserts it reaches a login prompt. This is the assurance gate for
+  # the whole recovery-media surface — required, not continue-on-error.
+  recovery-media-e2e:
+    name: Recovery media E2E (QEMU)
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    # ~7 min ISO build + up to 40 min QEMU rebuild cycle (see run-qemu.sh).
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agent/go.sum
+
+      - name: Toolchain
+        run: |
+          # live-build/debootstrap are NOT installed here — `lb config`/
+          # `lb build` now run inside a debian:bookworm container (see
+          # "Build helper + ISO" below), so the runner never invokes them
+          # directly. Everything else here is used by the host-side
+          # scripts (run-qemu.sh's own xorriso extraction, seed-snapshot.sh's
+          # mmdebstrap, python3's json comparison, qemu-system-x86/ovmf for
+          # the actual QEMU boots). debian-archive-keyring is for
+          # mmdebstrap specifically: it bootstraps a Debian bookworm chroot
+          # directly on this ubuntu-latest runner (unlike the ISO build,
+          # this one isn't containerized), and ubuntu-latest's own trusted
+          # keyring doesn't include Debian's release signing keys, so
+          # `apt-get update` inside the new chroot fails signature
+          # verification (NO_PUBKEY) without it — found running this job
+          # for the first time ever past the ISO-build stage (PR #5588).
+          # qemu-utils is qemu-img (creates run-qemu.sh's raw target.img) —
+          # a separate package from qemu-system-x86, not pulled in by it.
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends squashfs-tools xorriso grub-efi-amd64-bin mtools dosfstools qemu-system-x86 qemu-utils ovmf mmdebstrap python3 debian-archive-keyring
+
+      - name: Build helper + ISO
+        run: |
+          cd agent
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o breeze-backup-linux-amd64 ./cmd/breeze-backup
+          go build -o breeze-recovery-fakeserver ./cmd/breeze-recovery-fakeserver
+          # ubuntu-latest's `live-build` is Ubuntu's own old fork
+          # (3.0~a57-based, not Debian's) and rejects flags Debian's
+          # live-build accepts — e.g. `lb config: unrecognized option
+          # '--bootloaders'`, which reddened PR #5588's first CI run even
+          # though the identical build.sh invocation passed locally under
+          # Docker's debian:bookworm. So the ISO build, AND its structural
+          # check (build_test.sh needs a matching xorriso too), both run
+          # inside a real debian:bookworm container instead of directly on
+          # the runner.
+          # This job only ever builds the amd64 leg, so only
+          # grub-efi-amd64-bin is needed — grub-efi-arm64-bin is a
+          # foreign-architecture package (Debian ships it under an arm64
+          # apt architecture, not as arch-agnostic content) that needs
+          # `dpkg --add-architecture arm64` before apt can even see it;
+          # see release.yml's build-recovery-media job, which builds both
+          # legs and does need it.
+          docker run --rm --privileged -v "$PWD":/src -w /src debian:bookworm bash -c '
+            apt-get update -qq &&
+            apt-get install -y -qq --no-install-recommends live-build debootstrap squashfs-tools xorriso grub-efi-amd64-bin mtools dosfstools ca-certificates cpio >/dev/null &&
+            ./recovery-media/build.sh --arch amd64 --breeze-backup ./breeze-backup-linux-amd64 --version ci --out out/ &&
+            bash recovery-media/build_test.sh out/breeze-recovery-linux-amd64.iso
+          '
+          sudo chown -R "$(id -u):$(id -g)" out/
+
+      - name: Seed snapshot + boot + rebuild + reboot
+        run: |
+          cd agent
+          export BREEZE_BACKUP_BIN="$PWD/breeze-backup-linux-amd64"
+          sudo -E env "PATH=$PATH" ./recovery-media/e2e/seed-snapshot.sh e2e-store
+          sudo -E env "PATH=$PATH" ./recovery-media/e2e/run-qemu.sh out/breeze-recovery-linux-amd64.iso e2e-store e2e-out
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: recovery-media-e2e-logs
+          path: |
+            agent/e2e-out/*.log
+            agent/e2e-out/progress.json
+            agent/e2e-out/fakeserver.log
+          retention-days: 14
 
   # ─── Go agent lint ────────────────────────────────────────────────────
   # The `lint` job above is JS/TS + compose guards only; the Go agent was
@@ -2091,10 +2236,15 @@ jobs:
             /etc/apt/sources.list \
             /etc/apt/sources.list.d/*.list \
             /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          CI_APT_DIR=$(mktemp -d)
+          trap 'rm -rf -- "$CI_APT_DIR"' EXIT
+          node .github/scripts/prepare-ci-apt-sources.mjs /etc/apt "$CI_APT_DIR"
+          APT_SOURCES=(-o "Dir::Etc::sourcelist=$CI_APT_DIR/sources.list"
+                       -o "Dir::Etc::sourceparts=$CI_APT_DIR/sources.list.d")
           install_deps() {
-            sudo timeout --kill-after=30s 2m apt-get update \
+            sudo timeout --kill-after=30s 2m apt-get update "${APT_SOURCES[@]}" \
               -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 && \
-            sudo timeout --kill-after=30s 5m apt-get install -y --no-install-recommends \
+            sudo timeout --kill-after=30s 5m apt-get install -y --no-install-recommends "${APT_SOURCES[@]}" \
               -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 \
               libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
           }
@@ -2250,7 +2400,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -2638,7 +2788,22 @@ jobs:
       - name: Login and export token
         id: login
         run: |
+          # Every session-issuance route now requires a durable browser
+          # binding cookie (breeze_auth_binding) and 428s
+          # auth_binding_rotation_required without one — see
+          # routes/auth/binding.ts and services/authBrowserTransition.ts.
+          # Bootstrap one first, the way a real browser client does, and
+          # carry it through the login call via a cookie jar.
+          COOKIE_JAR=$(mktemp)
+          BOOTSTRAP_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -c "${COOKIE_JAR}" \
+            -X POST http://localhost:3001/api/v1/auth/browser-binding/bootstrap)
+          echo "auth binding bootstrap -> ${BOOTSTRAP_STATUS}"
+          if [ "${BOOTSTRAP_STATUS}" != "204" ]; then
+            echo "ERROR: auth binding bootstrap failed with ${BOOTSTRAP_STATUS} (expected 204)"
+            exit 1
+          fi
           RESPONSE=$(curl -sf -X POST http://localhost:3001/api/v1/auth/login \
+            -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" \
             -H 'Content-Type: application/json' \
             -d '{"email":"ci-admin@breeze.local","password":"ci-smoke-bootstrap-credential-32-chars"}')
           TOKEN=$(echo "${RESPONSE}" | jq -r '.tokens.accessToken // .token // .accessToken // empty')
@@ -2841,8 +3006,13 @@ jobs:
 
       - name: Install socat (stands in for the quickstart's `ssh -L 8443:127.0.0.1:443`)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq socat
+          CI_APT_DIR=$(mktemp -d)
+          trap 'rm -rf -- "$CI_APT_DIR"' EXIT
+          node .github/scripts/prepare-ci-apt-sources.mjs /etc/apt "$CI_APT_DIR"
+          APT_SOURCES=(-o "Dir::Etc::sourcelist=$CI_APT_DIR/sources.list"
+                       -o "Dir::Etc::sourceparts=$CI_APT_DIR/sources.list.d")
+          sudo apt-get update -qq "${APT_SOURCES[@]}"
+          sudo apt-get install -y -qq socat "${APT_SOURCES[@]}"
 
       # The installer uses the same run-specific local tags as Smoke Test.
       # Registry pulls cannot substitute a published release for this checkout.
@@ -2874,7 +3044,19 @@ jobs:
           if [ -z "${SEEDED_DEVICE}" ]; then
             DEVICE_ID=00000000-0000-4000-8000-000000000000
           fi
+          # Session issuance requires the durable browser binding; bootstrap one
+          # first (as the guided smoke's own login() helper does) and carry it
+          # through the login via a cookie jar.
+          COOKIE_JAR=$(mktemp)
+          BOOTSTRAP_STATUS=$(curl -sk -o /dev/null -w '%{http_code}' -c "${COOKIE_JAR}" \
+            -H 'Origin: https://localhost' \
+            -X POST https://localhost/api/v1/auth/browser-binding/bootstrap)
+          if [ "${BOOTSTRAP_STATUS}" != "204" ]; then
+            echo "ERROR: auth binding bootstrap failed with ${BOOTSTRAP_STATUS} (expected 204)"
+            exit 1
+          fi
           LOGIN_BODY=$(curl -skf -X POST https://localhost/api/v1/auth/login \
+            -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" \
             -H 'Content-Type: application/json' \
             -H 'Origin: https://localhost' \
             --data '{"email":"ci-admin@breeze.local","password":"ci-smoke-bootstrap-credential-32-chars"}')
@@ -2950,7 +3132,6 @@ jobs:
       AUTO_MIGRATE: 'false'
       API_PORT: '3005'
       FORCE_HTTPS: 'false'
-      AUTH_BROWSER_TRANSITIONS_ENFORCED: 'true'
       AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: 'true'
       CF_ACCESS_TRUST_ENABLED: 'true'
       CF_ACCESS_TEAM_DOMAIN: ci-browser-contract.cloudflareaccess.com
@@ -2967,7 +3148,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -3049,7 +3230,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -3155,7 +3336,17 @@ jobs:
       - name: Verify hydration fixture MFA posture
         run: |
           BASE=$(jq -er '.baseUrl' .breeze-stack.json)
+          # Session issuance requires the durable browser binding; bootstrap
+          # one first and carry it through the login via a cookie jar.
+          COOKIE_JAR=$(mktemp)
+          BOOTSTRAP_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -c "${COOKIE_JAR}" \
+            -X POST "${BASE}/api/v1/auth/browser-binding/bootstrap")
+          if [ "${BOOTSTRAP_STATUS}" != "204" ]; then
+            echo "ERROR: auth binding bootstrap failed with ${BOOTSTRAP_STATUS} (expected 204)"
+            exit 1
+          fi
           LOGIN=$(curl -fsS -X POST "${BASE}/api/v1/auth/login" \
+            -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" \
             -H 'Content-Type: application/json' \
             --data "$(jq -c '.admin' .breeze-stack.json)")
           jq -e '.mfaEnrollmentRequired == false' <<<"${LOGIN}" >/dev/null || {
@@ -3221,7 +3412,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [changes, docs-check, lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
+    needs: [changes, docs-check, lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -3258,6 +3449,7 @@ jobs:
           BUILD_AGENT_RESULT: ${{ needs.build-agent.result }}
           TEST_AGENT_RESULT: ${{ needs.test-agent.result }}
           TEST_AGENT_WINDOWS_RESULT: ${{ needs.test-agent-windows.result }}
+          RECOVERY_MEDIA_E2E_RESULT: ${{ needs.recovery-media-e2e.result }}
           WINDOWS_RUNTIME_SMOKE_RESULT: ${{ needs.windows-runtime-smoke.result }}
           INTEGRATION_TEST_RESULT: ${{ needs.integration-test.result }}
           CHECK_MIGRATIONS_NONSUPERUSER_RESULT: ${{ needs.check-migrations-nonsuperuser.result }}
@@ -3311,6 +3503,7 @@ jobs:
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \
              [[ "${TEST_AGENT_RESULT}" != "success" ]] || \
              [[ "${TEST_AGENT_WINDOWS_RESULT}" != "success" ]] || \
+             [[ "${RECOVERY_MEDIA_E2E_RESULT}" != "success" ]] || \
              [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]] || \
              [[ "${INTEGRATION_TEST_RESULT}" != "success" ]] || \
              [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "success" ]] || \

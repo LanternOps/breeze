@@ -39,6 +39,8 @@ export function buildPortalNavItems(
     | 'enableBackups'
     | 'enableReports'
     | 'enableSupportUsage'
+    | 'enableService'
+    | 'enableDocuments'
   >
 ): PortalNavItem[] {
   return [
@@ -61,6 +63,15 @@ export function buildPortalNavItems(
       : null,
     branding.enableReports === true
       ? { href: '/reports', label: 'Reports' }
+      : null,
+    // W04 (#5573): both are new fail-closed surfaces with no legacy nav
+    // expectation, so appending them after the existing visibility block
+    // leaves every org's current nav order untouched.
+    branding.enableService === true
+      ? { href: '/service', label: 'Service' }
+      : null,
+    branding.enableDocuments === true
+      ? { href: '/documents', label: 'Documents' }
       : null,
     branding.enableAssetCheckout === true
       ? { href: '/assets', label: 'Equipment' }

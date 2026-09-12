@@ -61,7 +61,10 @@ import { isValidIpOrCidr } from '../services/ipMatch';
 import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
-import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../services/partnerWideAccess';
 import { clearPartnerAllowlistCache, ipAllowlistMode, readPartnerAllowlist } from '../services/ipAllowlist';
 import { commitOrgImport, previewOrgImport, MAX_IMPORT_ROWS } from '../services/orgImport';
 import { writeOrgImportAudits } from '../services/orgImport/audit';
@@ -883,6 +886,12 @@ orgRoutes.patch(
   requirePartner,
   requireOrgWrite,
   requireMfa(),
+  async (c, next) => {
+    if (!canManagePartnerWidePolicies(c.get('auth'))) {
+      return c.json({ error: 'Full partner access required' }, 403);
+    }
+    await next();
+  },
   zValidator('json', updatePartnerSettingsSchema, (result, c) => {
     if (!result.success && result.error.issues.some((issue) => issue.path[0] === 'inboundLocalPart')) {
       return c.json({ error: 'Use lowercase letters, numbers, and hyphens only' }, 422);
@@ -1822,8 +1831,18 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
 //
 // Preview → commit pipeline over services/orgImport. CSV is parsed client-side;
 // the API takes JSON only, so the migration-toolkit scripts can call these
-// directly. Gating matches the single-record write routes this composes
-// (POST /organizations, POST /sites): partner/system scope + orgs:write + MFA.
+// directly. Unlike the single-record routes this composes, the import seam
+// enumerates and can mutate ANY organization in the resolved partner while
+// running under system DB context. Selected/none partner members therefore
+// need an additional full-partner capability gate on both preview and commit.
+
+const requireFullPartnerOrgImportAccess = async (c: Context, next: Next) => {
+  const auth = c.get('auth') as AuthContext;
+  if (!canManagePartnerWidePolicies(auth)) {
+    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+  }
+  return next();
+};
 
 // Row shape lives in services/orgImport/schemas.ts so the PSA company-import
 // route (#3246) accepts the byte-identical row contract.
@@ -1842,7 +1861,7 @@ const commitOrgImportSchema = z.object({
 // The import creates SITES as well as orgs, so it is gated on sites:write in
 // addition to orgs:write (#3242). Preview carries the same gate for an early,
 // honest failure — a preview a caller could never commit is a trap.
-orgRoutes.post('/import/preview', requireScope('partner', 'system'), requireOrgWrite, requireSiteWrite, requireMfa(), zValidator('json', previewOrgImportSchema), async (c) => {
+orgRoutes.post('/import/preview', requireScope('partner', 'system'), requireOrgWrite, requireSiteWrite, requireMfa(), requireFullPartnerOrgImportAccess, zValidator('json', previewOrgImportSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { rows, partnerId: bodyPartnerId } = c.req.valid('json');
 
@@ -1855,7 +1874,7 @@ orgRoutes.post('/import/preview', requireScope('partner', 'system'), requireOrgW
   return c.json({ rows: annotated });
 });
 
-orgRoutes.post('/import', requireScope('partner', 'system'), requireOrgWrite, requireSiteWrite, requireMfa(), zValidator('json', commitOrgImportSchema), async (c) => {
+orgRoutes.post('/import', requireScope('partner', 'system'), requireOrgWrite, requireSiteWrite, requireMfa(), requireFullPartnerOrgImportAccess, zValidator('json', commitOrgImportSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { rows, mode, partnerId: bodyPartnerId } = c.req.valid('json');
 

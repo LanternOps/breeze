@@ -35,6 +35,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { sql } from 'drizzle-orm';
 import { getTestDb, getTestRedis } from './setup';
+import { bootstrapAuthBinding } from './db-utils';
 
 import './setup';
 
@@ -122,9 +123,16 @@ async function parkAndVerify(companyName: string): Promise<MintedRegistration> {
     signupUserAgent: 'integration-signup/1.0',
   });
 
+  // /auth/verify-email mints the auto-login session, so it now requires a
+  // durable session-binding cookie the way a real browser client would send.
+  const binding = await bootstrapAuthBinding();
   const res = await app.request('/auth/verify-email', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'user-agent': 'mail-scanner/9.9 (link-prefetch)' },
+    headers: {
+      'content-type': 'application/json',
+      'user-agent': 'mail-scanner/9.9 (link-prefetch)',
+      cookie: binding.cookie,
+    },
     body: JSON.stringify({ token: rawToken }),
   });
   const body = await res.json();
@@ -274,16 +282,17 @@ describe('SR2-21 email-first partner registration (real DB)', () => {
       signupUserAgent: 'integration-signup/1.0',
     });
 
+    const binding = await bootstrapAuthBinding();
     const first = await app.request('/auth/verify-email', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie: binding.cookie },
       body: JSON.stringify({ token: rawToken }),
     });
     expect(first.status).toBe(200);
 
     const second = await app.request('/auth/verify-email', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie: binding.cookie },
       body: JSON.stringify({ token: rawToken }),
     });
     expect(second.status).toBe(400);

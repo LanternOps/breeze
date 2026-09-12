@@ -122,6 +122,16 @@ describe('getEffectiveMfaPolicy', () => {
 
   // I5: control gates (self-disable, last-factor removal) pass { failClosed: true }
   // so a transient settings-read error cannot relax org/partner-required MFA.
+  it('fails closed for tenant-disableable methods when failClosedMethods is set', async () => {
+    roleRows.push({ forceMfa: false });
+    effectiveThrows = true;
+    const p = await getEffectiveMfaPolicy(
+      { scope: 'organization', userId: 'u1', orgId: 'o1', partnerId: null },
+      { failClosedMethods: true },
+    );
+    expect(p.allowedMethods).toEqual({ totp: false, sms: false, passkey: true });
+  });
+
   it('I5: fails CLOSED (required) on settings read error when opts.failClosed is set', async () => {
     roleRows.push({ forceMfa: false });
     effectiveThrows = true;
@@ -130,6 +140,27 @@ describe('getEffectiveMfaPolicy', () => {
       { failClosed: true },
     );
     expect(p.required).toBe(true);
+  });
+
+  it('denies configurable methods on a real settings read error in strict method mode', async () => {
+    roleRows.push({ forceMfa: false });
+    effectiveThrows = true;
+    const p = await getEffectiveMfaPolicy(
+      { scope: 'organization', userId: 'u1', orgId: 'o1', partnerId: null },
+      { failClosed: true, failClosedMethods: true },
+    );
+    expect(p.required).toBe(true);
+    expect(p.allowedMethods).toEqual({ totp: false, sms: false, passkey: true });
+  });
+
+  it('strict method mode preserves resolved method policy when the settings read succeeds', async () => {
+    roleRows.push({ forceMfa: false });
+    effectiveSecurity = { allowedMethods: { totp: true, sms: false } };
+    const p = await getEffectiveMfaPolicy(
+      { scope: 'organization', userId: 'u1', orgId: 'o1', partnerId: null },
+      { failClosed: true, failClosedMethods: true },
+    );
+    expect(p.allowedMethods).toEqual({ totp: true, sms: false, passkey: true });
   });
 
   it('I5: failClosed does NOT force required when the settings read SUCCEEDS and requireMfa is false', async () => {

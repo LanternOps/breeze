@@ -31,6 +31,7 @@
     "dismiss": "Schließen",
     "downloadFor": "Für {{platform}} herunterladen",
     "errors": {
+      "agentUpgradeRequired": "Remote-Desktop erfordert auf diesem Gerät ein Agent-Update (Unterstützung für Sitzungs-Widerrufsleases). Der Agent aktualisiert sich automatisch – das ist in der Regel innerhalb einer Minute erledigt. Terminal und Dateiübertragung sind nicht betroffen.",
       "connectionFailed": "Verbindung fehlgeschlagen",
       "createDesktopCode": "Desktop-Verbindungscode konnte nicht erstellt werden",
       "createDesktopSession": "Die Desktop-Sitzung konnte nicht erstellt werden",

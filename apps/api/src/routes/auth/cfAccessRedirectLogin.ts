@@ -26,13 +26,10 @@ import {
   finishAuthIssuance,
 } from '../../services/authBrowserTransition';
 import {
-  authBrowserTransitionsEnforced,
   bindIssuedUserSession,
   issueUserSession,
-  issueUserSessionLegacyDuringTransition,
   type UserSessionIdentity,
 } from '../../services/userSession';
-import { recordAuthTransitionLegacyIssuer } from '../../services/authTransitionMetrics';
 import { createAuditLogAsync } from '../../services/auditService';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
@@ -44,10 +41,7 @@ import {
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
   resolveRefreshToken,
-  authClientUpgradeRequiredResponse,
   installAuthorizedUserSessionCookies,
-  installLegacyUserSessionCookiesDuringTransition,
-  isAuthTransitionV1Request,
   validateStrictCookieCsrfRequest,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
@@ -61,6 +55,7 @@ import {
   verifyTerminalLogoutTicket,
   type TerminalLogoutTicketClaims,
 } from '../../services/terminalLogoutTicket';
+import { enforceIpAllowlist, isBlocked } from '../../services/ipAllowlist';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -90,19 +85,21 @@ function loginErrorRedirect(reason: string): Response {
 export const cfAccessRedirectLoginRoutes = new Hono();
 
 function cfAccessIssuanceError(c: Parameters<typeof installAuthBindingReplacement>[0], error: unknown): Response | null {
+  // This handler backs a top-level browser navigation (CF Access redirects
+  // the browser here, not an XHR/fetch call). A raw JSON 428/409 body
+  // renders as plain text in the browser instead of landing the user
+  // anywhere useful — every failure mode below must 302 back to /login
+  // instead, same as every other error branch in this route.
   if (error instanceof AuthBindingRotationRequiredError) {
     installAuthBindingReplacement(c, error.replacement);
-    return c.json({
-      error: 'Authentication binding refresh required',
-      reason: 'binding_refresh',
-    }, 428);
+    return loginErrorRedirect('binding');
   }
   if (
     error instanceof AuthBindingUnavailableError
     || error instanceof AuthIssuanceConflictError
     || error instanceof AuthIssuanceCapabilityError
   ) {
-    return c.json({ error: 'Authentication temporarily unavailable' }, 409);
+    return loginErrorRedirect('binding');
   }
   return null;
 }
@@ -203,6 +200,22 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
     return loginErrorRedirect(err instanceof NoTenantMembershipError ? 'inactive' : 'tenant-inactive');
   }
 
+  let ipDecision;
+  try {
+    ipDecision = await enforceIpAllowlist(c, {
+      partnerId: context.partnerId,
+      isPlatformAdmin: user.isPlatformAdmin === true,
+      actorId: user.id,
+      actorEmail: user.email,
+    });
+  } catch (err) {
+    console.error('[cf-access-redirect] IP allowlist check failed', err);
+    return loginErrorRedirect('ip-check-failed');
+  }
+  if (isBlocked(ipDecision)) {
+    return loginErrorRedirect('ip-not-allowed');
+  }
+
   const trustsMfa = cfAccessTrustsMfa();
   if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey') && !trustsMfa) {
     // POC: MFA flow over redirect is deferred. For now, surface a clear
@@ -258,17 +271,12 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
     mfa: mfaSatisfied,
   };
   const binding = requestAuthBinding(c);
-  const guarded = binding.value.length > 0 || isAuthTransitionV1Request(c);
-  if (!guarded && authBrowserTransitionsEnforced()) {
-    return authClientUpgradeRequiredResponse(c);
-  }
 
-  if (guarded) {
-    let capability;
-    try {
-      capability = await beginAuthIssuance(binding);
-      const guardedCapability = capability;
-      const issued = await finishAuthIssuance(guardedCapability, async (tx) => {
+  let capability;
+  try {
+    capability = await beginAuthIssuance(binding);
+    const guardedCapability = capability;
+    const issued = await finishAuthIssuance(guardedCapability, async (tx) => {
         await tx
           .update(users)
           .set({ lastLoginAt: new Date() })
@@ -278,22 +286,14 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
           capability: guardedCapability,
           expectedEpochs: { authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch },
         });
-      });
-      await bindIssuedUserSession(issued);
-      installAuthorizedUserSessionCookies(c, issued);
-    } catch (error) {
-      if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
-      const response = cfAccessIssuanceError(c, error);
-      if (response) return response;
-      throw error;
-    }
-  } else {
-    recordAuthTransitionLegacyIssuer('cf_access_redirect', 'web');
-    const issued = await issueUserSessionLegacyDuringTransition(identity);
-    await withSystemDbAccessContext(() =>
-      db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id))
-    );
-    installLegacyUserSessionCookiesDuringTransition(c, issued);
+    });
+    await bindIssuedUserSession(issued);
+    installAuthorizedUserSessionCookies(c, issued);
+  } catch (error) {
+    if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+    const response = cfAccessIssuanceError(c, error);
+    if (response) return response;
+    throw error;
   }
 
   createAuditLogAsync({

@@ -11,6 +11,7 @@ import { backupVerificationRoutes } from './verification';
 import { vssRoutes } from './vss';
 import { encryptionRoutes } from './encryption';
 import { bmrRoutes, bmrPublicRoutes } from './bmr';
+import { bmrRecoveryRoutes, bmrRecoveryPublicRoutes } from './bmrRecoveries';
 import { vmRestoreRoutes } from './vmrestore';
 import { mssqlRoutes } from './mssql';
 import { hypervRoutes } from './hyperv';
@@ -22,6 +23,9 @@ export const backupRoutes = new Hono();
 // Public recovery endpoints (token-based auth, no JWT required).
 // Must be mounted BEFORE the authMiddleware wildcard.
 backupRoutes.route('/', bmrPublicRoutes);
+// Bare-metal recovery W04a: code-exchange and phase-progress are also
+// token-less/token-authed public endpoints — same placement requirement.
+backupRoutes.route('/', bmrRecoveryPublicRoutes);
 
 backupRoutes.use('*', authMiddleware);
 backupRoutes.use('*', requireScope('organization', 'partner', 'system'));
@@ -35,6 +39,7 @@ backupRoutes.route('/', restoreRoutes);
 backupRoutes.route('/', dashboardRoutes);
 backupRoutes.route('/', backupVerificationRoutes);
 backupRoutes.route('/', bmrRoutes);
+backupRoutes.route('/', bmrRecoveryRoutes);
 backupRoutes.route('/', vmRestoreRoutes);
 backupRoutes.route('/', mssqlRoutes);
 backupRoutes.route('/hyperv', hypervRoutes);

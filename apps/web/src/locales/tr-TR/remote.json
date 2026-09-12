@@ -31,6 +31,7 @@
     "dismiss": "Kapat",
     "downloadFor": "{{platform}} için indirin",
     "errors": {
+      "agentUpgradeRequired": "Uzak masaüstü için bu cihazda aracı güncellemesi gerekiyor (oturum iptal kirası desteği). Aracı kendini otomatik olarak günceller; bu genellikle bir dakika içinde çözülür. Terminal ve dosya aktarımı etkilenmez.",
       "connectionFailed": "Bağlantı başarısız oldu",
       "createDesktopCode": "Masaüstü bağlantı kodu oluşturulamadı",
       "createDesktopSession": "Masaüstü oturumu oluşturulamadı",

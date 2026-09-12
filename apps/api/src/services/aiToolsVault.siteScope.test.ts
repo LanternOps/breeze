@@ -106,7 +106,7 @@ describe('trigger_vault_sync — site scoping (vault → device)', () => {
     let call = 0;
     mockDb.select.mockImplementation(() => {
       call++;
-      if (call === 1) return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'v1', deviceId: 'd1', isActive: true }]) }) }) };
+      if (call === 1) return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'v1', orgId: 'org-1', deviceId: 'd1', isActive: true }]) }) }) };
       return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ siteId: 'site-B' }]) }) }) };
     });
     mockDb.update.mockReturnValue({ set: () => ({ where: () => Promise.resolve() }) });
@@ -116,7 +116,7 @@ describe('trigger_vault_sync — site scoping (vault → device)', () => {
 
   it('unrestricted caller is unaffected', async () => {
     mockDb.select.mockReturnValue({
-      from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'v1', deviceId: 'd1', isActive: true }]) }) }),
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'v1', orgId: 'org-1', deviceId: 'd1', isActive: true }]) }) }),
     });
     mockDb.update.mockReturnValue({ set: () => ({ where: () => Promise.resolve() }) });
     const result = await handlerFor('trigger_vault_sync')({ vaultId: 'v1' }, makeAuth(undefined));

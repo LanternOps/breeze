@@ -19,7 +19,7 @@
  * group row can only be deleted once every member's `link_group_id` is cleared,
  * which is exactly the order these helpers use.
  */
-import { eq } from 'drizzle-orm';
+import { asc, eq, inArray, or } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceLinkGroups, devices } from '../db/schema';
 import { captureException } from './sentry';
@@ -32,6 +32,53 @@ export const MIN_LINK_GROUP_SIZE = 2;
 
 /** Upper bound on members in one physical-machine group (generous headroom). */
 export const MAX_LINK_GROUP_SIZE = 10;
+
+/** A restricted caller may not mutate a group containing an inaccessible member. */
+export class LinkGroupSiteAccessError extends Error {
+  constructor() {
+    super('Access to a link-group member site denied');
+    this.name = 'LinkGroupSiteAccessError';
+  }
+}
+
+/**
+ * Lock and authorize the complete membership affected by a group mutation.
+ *
+ * A null group id locks only `extraDeviceIds`, which lets creation revalidate
+ * its targets before the group row exists. `allowedSiteIds === undefined`
+ * means unrestricted. A defined allowlist is fail-closed for null/unassigned
+ * sites. Extra ids cover PATCH add/remove
+ * targets, whose site or membership can change after the route's friendly
+ * preflight check. Ordering by device id gives every competing group mutation
+ * the same row-lock order.
+ */
+export async function lockAndAuthorizeLinkGroupMutation(
+  exec: DbExecutor,
+  groupId: string | null,
+  allowedSiteIds: readonly string[] | undefined,
+  extraDeviceIds: readonly string[] = [],
+): Promise<Array<{ id: string; siteId: string | null }>> {
+  const uniqueExtraIds = [...new Set(extraDeviceIds)];
+  const predicate = groupId === null
+    ? inArray(devices.id, uniqueExtraIds)
+    : uniqueExtraIds.length > 0
+      ? or(eq(devices.linkGroupId, groupId), inArray(devices.id, uniqueExtraIds))
+      : eq(devices.linkGroupId, groupId);
+  const rows = await exec
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(predicate)
+    .orderBy(asc(devices.id))
+    .for('update');
+
+  if (
+    allowedSiteIds !== undefined
+    && rows.some((row) => typeof row.siteId !== 'string' || !allowedSiteIds.includes(row.siteId))
+  ) {
+    throw new LinkGroupSiteAccessError();
+  }
+  return rows;
+}
 
 /**
  * Clear `link_group_id` on the given devices (unlink), leaving the group row.
@@ -60,7 +107,9 @@ export async function unlinkDevices(exec: DbExecutor, deviceIds: string[]): Prom
 export async function dissolveLinkGroupIfBelowMinimum(
   exec: DbExecutor,
   groupId: string,
+  allowedSiteIds?: readonly string[],
 ): Promise<boolean> {
+  await lockAndAuthorizeLinkGroupMutation(exec, groupId, allowedSiteIds);
   const members = await exec
     .select({ id: devices.id, role: devices.linkGroupRole })
     .from(devices)
@@ -98,7 +147,12 @@ export async function dissolveLinkGroupIfBelowMinimum(
 }
 
 /** Delete a group outright: unlink all members, then remove the group row. */
-export async function deleteLinkGroup(exec: DbExecutor, groupId: string): Promise<void> {
+export async function deleteLinkGroup(
+  exec: DbExecutor,
+  groupId: string,
+  allowedSiteIds?: readonly string[],
+): Promise<void> {
+  await lockAndAuthorizeLinkGroupMutation(exec, groupId, allowedSiteIds);
   const members = await exec
     .select({ id: devices.id })
     .from(devices)

@@ -1,19 +1,43 @@
 import { Hono } from 'hono';
+import type { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { and, eq } from 'drizzle-orm';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
 import { oauthClients, oauthClientPartnerGrants } from '../db/schema';
 import { revokeClientFamilies } from '../oauth/revocationService';
 import { ERROR_IDS, logOauthError } from '../oauth/log';
 import { MCP_OAUTH_ENABLED } from '../config/env';
+import { PERMISSIONS } from '../services/permissions';
+import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 
 export const connectedAppsRoutes = new Hono();
 
+const requireConnectedAppsRead = requirePermission(
+  PERMISSIONS.CONNECTED_APPS_READ.resource,
+  PERMISSIONS.CONNECTED_APPS_READ.action,
+);
+const requireConnectedAppsManage = requirePermission(
+  PERMISSIONS.CONNECTED_APPS_MANAGE.resource,
+  PERMISSIONS.CONNECTED_APPS_MANAGE.action,
+);
+
+async function requireFullPartnerConnectedAppAuthority(c: Context, next: Next) {
+  const auth = c.get('auth');
+  if (!auth.partnerId || !canManagePartnerWidePolicies(auth)) {
+    throw new HTTPException(403, {
+      message: 'Connected-app administration requires full partner organization access',
+    });
+  }
+  await next();
+}
+
 if (MCP_OAUTH_ENABLED) {
   connectedAppsRoutes.use('*', authMiddleware);
+  connectedAppsRoutes.use('*', requireScope('partner'));
+  connectedAppsRoutes.use('*', requireFullPartnerConnectedAppAuthority);
 
-  connectedAppsRoutes.get('/', async (c) => {
+  connectedAppsRoutes.get('/', requireConnectedAppsRead, async (c) => {
     const partnerId = c.get('auth').partnerId;
     if (!partnerId) throw new HTTPException(403, { message: 'partner scope required' });
 
@@ -47,10 +71,11 @@ if (MCP_OAUTH_ENABLED) {
     });
   });
 
-  connectedAppsRoutes.delete('/:clientId', async (c) => {
+  connectedAppsRoutes.delete('/:clientId', requireConnectedAppsManage, requireMfa(), async (c) => {
     const partnerId = c.get('auth').partnerId;
     if (!partnerId) throw new HTTPException(403, { message: 'partner scope required' });
     const clientId = c.req.param('clientId');
+    if (!clientId) throw new HTTPException(400, { message: 'client id required' });
 
     // Look up the join row, not the client row. A DCR client is shared
     // across partners; "is this app connected for me?" is answered by the

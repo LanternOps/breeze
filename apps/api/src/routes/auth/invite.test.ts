@@ -313,23 +313,24 @@ describe('POST /accept-invite guarded issuance', () => {
     expect(routeState.replacement).toBe('b'.repeat(64));
   });
 
-  it('keeps enforcement-false legacy issuance on the branded legacy boundary', async () => {
+  it('uses guarded issuance for a headerless client', async () => {
     const response = await accept();
 
     expect(response.status).toBe(200);
-    expect(transitionState.beginCalls).toBe(0);
-    expect(routeState.cookieKind).toBe('legacy');
-    expect(routeState.legacyMetric).toEqual(['invite']);
+    expect(transitionState.beginCalls).toBe(1);
+    expect(routeState.cookieKind).toBe('guarded');
+    expect(routeState.legacyMetric).toEqual([]);
   });
 
-  it('rejects a legacy client before mutation when enforcement is enabled', async () => {
+  it('cannot restore legacy issuance with the retired enforcement setting', async () => {
     transitionState.enforcement = true;
 
     const response = await accept();
 
-    expect(response.status).toBe(426);
-    expect(routeState.user.status).toBe('invited');
-    expect(routeState.familyCount).toBe(0);
-    expect(routeState.redis.get(tokenKey)).toBe(routeState.user.id);
+    expect(response.status).toBe(200);
+    expect(routeState.user.status).toBe('active');
+    expect(routeState.familyCount).toBe(1);
+    expect(routeState.cookieKind).toBe('guarded');
+    expect(routeState.legacyMetric).toEqual([]);
   });
 });

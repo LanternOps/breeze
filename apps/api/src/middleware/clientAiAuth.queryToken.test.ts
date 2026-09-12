@@ -36,7 +36,7 @@ const TOKEN = 'tok_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJK';
 
 const USER_ROW = {
   id: PORTAL_USER_ID, orgId: ORG_ID, email: 'finance.user@contoso.com',
-  name: 'Finance User', status: 'active', partnerAiForOfficeEnabled: true,
+  name: 'Finance User', status: 'active', authEpoch: 1, partnerAiForOfficeEnabled: true,
 };
 
 function buildApp() {
@@ -51,7 +51,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   getRedisMock.mockReturnValue(redisMock);
   redisMock.get.mockResolvedValue(
-    JSON.stringify({ portalUserId: PORTAL_USER_ID, orgId: ORG_ID, createdAt: new Date().toISOString() }),
+    JSON.stringify({ portalUserId: PORTAL_USER_ID, orgId: ORG_ID, authEpoch: 1, createdAt: new Date().toISOString() }),
   );
   dbSelectMock.mockImplementation(() => ({
     from: vi.fn(() => ({

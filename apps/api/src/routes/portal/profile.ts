@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { portalUsers } from '../../db/schema';
 import { hashPassword, isPasswordStrong, verifyPassword } from '../../services/password';
 import { getRedis } from '../../services/redis';
 import { rejectProof, INVALID_CREDENTIALS_CODE } from '../auth/helpers';
+import { purgeClientAiSessionsForUsers } from '../../services/clientAiSessionStore';
 import {
   updateProfileSchema,
   changePasswordSchema,
@@ -57,7 +58,6 @@ profileRoutes.patch('/profile', zValidator('json', updateProfileSchema), async (
   const updates: {
     name?: string;
     receiveNotifications?: boolean;
-    passwordHash?: string;
     updatedAt: Date;
   } = { updatedAt: new Date() };
 
@@ -67,14 +67,6 @@ profileRoutes.patch('/profile', zValidator('json', updateProfileSchema), async (
 
   if (payload.receiveNotifications !== undefined) {
     updates.receiveNotifications = payload.receiveNotifications;
-  }
-
-  if (payload.password) {
-    const passwordCheck = isPasswordStrong(payload.password);
-    if (!passwordCheck.valid) {
-      return c.json({ error: passwordCheck.errors[0] }, 400);
-    }
-    updates.passwordHash = await hashPassword(payload.password);
   }
 
   const userResult = await db
@@ -106,7 +98,6 @@ profileRoutes.patch('/profile', zValidator('json', updateProfileSchema), async (
     resourceName: user.name ?? user.email,
     details: {
       updatedFields: Object.keys(payload),
-      passwordUpdated: Boolean(payload.password),
     },
   });
 
@@ -176,6 +167,7 @@ profileRoutes.post('/profile/password', zValidator('json', changePasswordSchema)
     .update(portalUsers)
     .set({
       passwordHash: await hashPassword(newPassword),
+      authEpoch: sql`${portalUsers.authEpoch} + 1`,
       updatedAt: new Date()
     })
     .where(eq(portalUsers.id, auth.user.id));
@@ -197,6 +189,9 @@ profileRoutes.post('/profile/password', zValidator('json', changePasswordSchema)
       portalSessions.delete(sessionToken);
     }
   }
+
+  const passwordRedis = getRedis();
+  if (passwordRedis) await purgeClientAiSessionsForUsers(passwordRedis, [auth.user.id]);
 
   writePortalAudit(c, {
     orgId: auth.user.orgId,

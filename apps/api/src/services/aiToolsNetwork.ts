@@ -17,14 +17,20 @@ import {
   networkBaselines,
   networkChangeEvents,
   sites,
+  type NetworkBaselineScanSchedule,
 } from '../db/schema';
-import { eq, and, desc, gte, lte, SQL } from 'drizzle-orm';
+import { eq, and, desc, gte, inArray, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import {
   normalizeBaselineAlertSettings,
   normalizeBaselineScanSchedule,
 } from './networkBaseline';
+import {
+  BaselineAuthorityUnsupportedError,
+  buildBaselineAuthorityEnvelope,
+  type BaselineAuthorityEnvelope,
+} from './networkBaselineAuthority';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -66,6 +72,16 @@ async function verifyDeviceAccess(
   return { device };
 }
 
+/**
+ * Site is an application-layer authorization axis; organization RLS does not
+ * enforce it. `allowedSiteIds === undefined` is the explicit unrestricted
+ * sentinel. Any restricted context that cannot prove access fails closed.
+ */
+function siteAccessDenied(auth: AuthContext, siteId: string | null | undefined): boolean {
+  if (auth.allowedSiteIds === undefined) return false;
+  return !auth.canAccessSite || !auth.canAccessSite(siteId);
+}
+
 let _commandQueue: typeof import('./commandQueue') | null = null;
 async function getCommandQueue() {
   if (!_commandQueue) _commandQueue = await import('./commandQueue');
@@ -75,6 +91,20 @@ async function getCommandQueue() {
 // ============================================
 // Registration
 // ============================================
+
+/**
+ * SEC-2026-09-05-146 — same arming contract as the REST routes: an enabled
+ * recurring schedule created or changed through the AI/MCP tool is bound to the
+ * calling principal's live authority. Returns null when the schedule is
+ * disabled (nothing dispatches, so nothing needs an owner).
+ */
+async function armScheduleAuthority(
+  auth: AuthContext,
+  effect: { orgId: string; siteId: string; subnet: string; scanSchedule: NetworkBaselineScanSchedule },
+): Promise<BaselineAuthorityEnvelope | null> {
+  if (!effect.scanSchedule.enabled) return null;
+  return buildBaselineAuthorityEnvelope(auth, effect);
+}
 
 export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
@@ -117,9 +147,19 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       const orgCondition = auth.orgCondition(networkChangeEvents.orgId);
       if (orgCondition) conditions.push(orgCondition);
 
+      if (auth.allowedSiteIds !== undefined) {
+        if (auth.allowedSiteIds.length === 0) {
+          return JSON.stringify({ events: [], count: 0 });
+        }
+        conditions.push(inArray(networkChangeEvents.siteId, auth.allowedSiteIds));
+      }
+
       if (orgId) conditions.push(eq(networkChangeEvents.orgId, orgId));
 
       const siteId = typeof input.site_id === 'string' ? input.site_id : undefined;
+      if (siteId && siteAccessDenied(auth, siteId)) {
+        return JSON.stringify({ error: 'Site not found or access denied' });
+      }
       if (siteId) conditions.push(eq(networkChangeEvents.siteId, siteId));
 
       const baselineId = typeof input.baseline_id === 'string' ? input.baseline_id : undefined;
@@ -180,6 +220,12 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       const conditions: SQL[] = [eq(networkChangeEvents.id, eventId)];
       const orgCondition = auth.orgCondition(networkChangeEvents.orgId);
       if (orgCondition) conditions.push(orgCondition);
+      if (auth.allowedSiteIds !== undefined) {
+        if (auth.allowedSiteIds.length === 0) {
+          return JSON.stringify({ error: 'Event not found or access denied' });
+        }
+        conditions.push(inArray(networkChangeEvents.siteId, auth.allowedSiteIds));
+      }
 
       const [event] = await db
         .select()
@@ -188,6 +234,11 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
 
       if (!event) {
+        return JSON.stringify({ error: 'Event not found or access denied' });
+      }
+
+      // Defense in depth for malformed/stale fixtures and future query edits.
+      if (siteAccessDenied(auth, event.siteId)) {
         return JSON.stringify({ error: 'Event not found or access denied' });
       }
 
@@ -247,9 +298,15 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       };
 
       if (baselineId) {
+        if (auth.allowedSiteIds !== undefined && auth.allowedSiteIds.length === 0) {
+          return JSON.stringify({ error: 'Baseline not found or access denied' });
+        }
         const conditions: SQL[] = [eq(networkBaselines.id, baselineId)];
         const orgCondition = auth.orgCondition(networkBaselines.orgId);
         if (orgCondition) conditions.push(orgCondition);
+        if (auth.allowedSiteIds !== undefined) {
+          conditions.push(inArray(networkBaselines.siteId, auth.allowedSiteIds));
+        }
 
         const [baseline] = await db
           .select()
@@ -258,6 +315,11 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           .limit(1);
 
         if (!baseline) {
+          return JSON.stringify({ error: 'Baseline not found or access denied' });
+        }
+
+        // Defense in depth: never mutate a row outside the current site ceiling.
+        if (siteAccessDenied(auth, baseline.siteId)) {
           return JSON.stringify({ error: 'Baseline not found or access denied' });
         }
 
@@ -278,11 +340,31 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           ...(alertOverrides.rogueDevice !== undefined ? { rogueDevice: alertOverrides.rogueDevice } : {})
         });
 
+        // SEC-146: re-arm the authority envelope and bump the generation for the
+        // changed schedule. Also the re-approval path for a legacy row.
+        let envelope: BaselineAuthorityEnvelope | null;
+        try {
+          envelope = await armScheduleAuthority(auth, {
+            orgId: baseline.orgId,
+            siteId: baseline.siteId,
+            subnet: baseline.subnet,
+            scanSchedule: nextSchedule,
+          });
+        } catch (error) {
+          if (error instanceof BaselineAuthorityUnsupportedError) {
+            return JSON.stringify({ error: error.message });
+          }
+          throw error;
+        }
+
         await db
           .update(networkBaselines)
           .set({
             scanSchedule: nextSchedule,
             alertSettings: nextAlertSettings,
+            ...(envelope ?? {}),
+            authorityGeneration: (baseline.authorityGeneration ?? 0) + 1,
+            scheduleBlockedReason: null,
             updatedAt: new Date()
           })
           .where(eq(networkBaselines.id, baseline.id));
@@ -300,6 +382,10 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
       if (!auth.canAccessOrg(orgId)) {
         return JSON.stringify({ error: 'Access to this organization denied' });
+      }
+
+      if (siteAccessDenied(auth, siteId)) {
+        return JSON.stringify({ error: 'Site not found or access denied' });
       }
 
       const [site] = await db
@@ -329,6 +415,22 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       // createCatalogItem in catalogService.ts). Suppressing the conflict at the
       // statement level keeps the transaction healthy; zero returned rows means
       // a baseline already exists for this org/site/subnet.
+      // SEC-146: bind the new recurring schedule to the calling principal.
+      let createEnvelope: BaselineAuthorityEnvelope | null;
+      try {
+        createEnvelope = await armScheduleAuthority(auth, {
+          orgId,
+          siteId,
+          subnet,
+          scanSchedule: nextSchedule,
+        });
+      } catch (error) {
+        if (error instanceof BaselineAuthorityUnsupportedError) {
+          return JSON.stringify({ error: error.message });
+        }
+        throw error;
+      }
+
       const [created] = await db
         .insert(networkBaselines)
         .values({
@@ -338,6 +440,9 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           knownDevices: [],
           scanSchedule: nextSchedule,
           alertSettings: nextAlertSettings,
+          ...(createEnvelope ?? {}),
+          authorityGeneration: createEnvelope ? 1 : 0,
+          scheduleBlockedReason: null,
           updatedAt: new Date()
         })
         .onConflictDoNothing()
@@ -462,6 +567,19 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           gte(deviceIpHistory.lastSeen, targetTime),
         ];
 
+        if (auth.allowedSiteIds !== undefined) {
+          if (auth.allowedSiteIds.length === 0) {
+            return JSON.stringify({
+              mode: 'reverse_lookup',
+              ip_address: ipAddress,
+              at_time: atTime,
+              results: [],
+              count: 0,
+            });
+          }
+          conditions.push(inArray(devices.siteId, auth.allowedSiteIds));
+        }
+
         const orgCondition = auth.orgCondition(deviceIpHistory.orgId);
         if (orgCondition) {
           conditions.push(orgCondition);
@@ -486,11 +604,13 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(deviceIpHistory.firstSeen))
           .limit(limit);
 
+        const visibleResults = results.filter((row) => !siteAccessDenied(auth, row.device.siteId));
+
         return JSON.stringify({
           mode: 'reverse_lookup',
           ip_address: ipAddress,
           at_time: atTime,
-          results: results.map((row) => ({
+          results: visibleResults.map((row) => ({
             device: {
               id: row.device.id,
               hostname: row.device.hostname,
@@ -504,7 +624,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
               isActive: row.ipHistory.isActive,
             },
           })),
-          count: results.length,
+          count: visibleResults.length,
         });
       }
 

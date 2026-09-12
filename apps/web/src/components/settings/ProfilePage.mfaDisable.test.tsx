@@ -64,7 +64,7 @@ const MFA_USER = {
   name: 'Casey Admin',
   email: 'casey@example.com',
   mfaEnabled: true,
-  mfaMethod: 'totp',
+  mfaMethod: 'totp' as const,
   hasPassword: true,
 };
 

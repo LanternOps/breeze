@@ -1,4 +1,4 @@
-import { eq, inArray } from 'drizzle-orm';
+import { eq, getTableColumns, inArray } from 'drizzle-orm';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { db } from '../../db';
@@ -10,30 +10,57 @@ import { PG_UUID_REGEX } from '../../utils/uuid';
 export { getPagination } from '../../utils/pagination';
 
 /**
- * SR-008 (systemic twin of the MCP breeze://devices/{id} leak): device-detail
- * endpoints spread the full `devices` row to the client. These columns are
- * credential verifiers / mTLS material and must never be serialized to any
- * client. `getDeviceWithOrgCheck` still returns the full row so internal
- * handler logic keeps working; strip only at the response boundary.
+ * Device columns that may cross a human or AI response boundary.
+ *
+ * This is deliberately an allowlist. The old denylist repeatedly became stale
+ * when a new credential or internal lifecycle column was added to `devices`.
+ * A future schema column is now private until it is consciously reviewed and
+ * added here. Internal handlers still receive the full row.
  */
-const SENSITIVE_DEVICE_FIELDS = [
-  'agentTokenHash', 'tokenIssuedAt',
-  'previousTokenHash', 'previousTokenExpiresAt',
-  'watchdogTokenHash', 'watchdogTokenIssuedAt',
-  'previousWatchdogTokenHash', 'previousWatchdogTokenExpiresAt',
-  'helperTokenHash', 'helperTokenIssuedAt',
-  'previousHelperTokenHash', 'previousHelperTokenExpiresAt',
-  'mtlsCertSerialNumber', 'mtlsCertExpiresAt', 'mtlsCertIssuedAt', 'mtlsCertCfId',
-] as const;
+export const PUBLIC_DEVICE_FIELDS = [
+  'id', 'orgId', 'siteId',
+  'quarantinedAt', 'quarantinedReason',
+  'lastSeenIp', 'enrollmentIp', 'enrollmentIpClass', 'enrollmentIpAsn',
+  'enrollmentIpClassifiedAt',
+  'hostname', 'displayName', 'osType', 'deviceRole', 'deviceRoleSource',
+  'isVirtual', 'virtualizationPlatform', 'osVersion', 'osBuild', 'architecture',
+  'agentVersion', 'helperLifecycleMode', 'status', 'isEphemeral',
+  'maintenanceStartedAt', 'maintenanceUntil', 'maintenanceReason', 'maintenanceStartedBy',
+  'lastSeenAt', 'enrolledAt', 'enrolledBy', 'linkGroupId', 'linkGroupRole',
+  'tags', 'customFields', 'managementPosture', 'tccPermissions', 'desktopAccess',
+  'lastUser', 'uptimeSeconds', 'isHeadless', 'pendingReboot',
+  'rebootScheduledAt', 'rebootDeadline', 'rebootSource', 'rebootDeferralsUsed',
+  'rebootMaxDeferrals', 'batteryStatus', 'activeVpns',
+  'watchdogStatus', 'watchdogLastSeen', 'watchdogVersion', 'backupVersion',
+  'agentServerUrl', 'mainAgentSilentSince',
+  'outboundNetworkPolicyVersion', 'scriptSecretEnvVersion',
+  'peripheralPolicyProtocolVersion', 'rollbackProtocolVersion',
+  'pamLifetimeProtocolVersion', 'rollbackComponentVersions',
+  'agentEdition', 'migrationRequired', 'editionMigrationDispatchedAt',
+  'uninstallIntentAt', 'possibleReplacementOfDeviceId', 'decommissionedAt',
+  'createdAt', 'updatedAt', 'partnerExportUpdatedAt',
+] as const satisfies readonly (keyof typeof devices.$inferSelect)[];
 
-export function stripSensitiveDeviceFields<T extends Record<string, unknown>>(
+export type PublicDeviceField = (typeof PUBLIC_DEVICE_FIELDS)[number];
+export type PublicDevice = Pick<typeof devices.$inferSelect, PublicDeviceField>;
+
+export function buildPublicDeviceProjection() {
+  const columns = getTableColumns(devices);
+  return Object.fromEntries(
+    PUBLIC_DEVICE_FIELDS.map((field) => [field, columns[field]])
+  ) as Pick<typeof columns, PublicDeviceField>;
+}
+
+export function projectPublicDevice<T extends Record<string, unknown>>(
   device: T
-): Omit<T, (typeof SENSITIVE_DEVICE_FIELDS)[number]> {
-  const clone = { ...device };
-  for (const field of SENSITIVE_DEVICE_FIELDS) {
-    delete clone[field];
+): Pick<T, Extract<keyof T, PublicDeviceField>> {
+  const projected: Record<string, unknown> = {};
+  for (const field of PUBLIC_DEVICE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(device, field)) {
+      projected[field] = device[field];
+    }
   }
-  return clone;
+  return projected as Pick<T, Extract<keyof T, PublicDeviceField>>;
 }
 
 /**

@@ -25,10 +25,7 @@ import {
   AuthIssuanceConflictError,
   AuthIssuanceCapabilityError,
   issueUserSession,
-  issueUserSessionLegacyDuringTransition,
   bindIssuedUserSession,
-  authBrowserTransitionsEnforced,
-  recordAuthTransitionLegacyIssuer,
   type AuthIssuanceCapability,
   type AuthorizedUserSession,
   type UserSessionIdentity,
@@ -44,15 +41,13 @@ import {
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
   installAuthorizedUserSessionCookies,
-  installLegacyUserSessionCookiesDuringTransition,
   toPublicTokens,
   userRequiresSetup,
   userHasUsablePasskey,
-  isAuthTransitionV1Request,
-  authClientUpgradeRequiredResponse,
 } from '../routes/auth/helpers';
 import { readMobileDeviceId } from '../services/mobileDeviceBinding';
 import { installAuthBindingReplacement, requestAuthBinding } from '../routes/auth/binding';
+import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../services/ipAllowlist';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -73,10 +68,7 @@ function authIssuanceAdmissionError(c: Context, error: unknown): Response | null
   return null;
 }
 
-async function beginCfIssuance(c: Context): Promise<AuthIssuanceCapability | Response | null> {
-  if (!isAuthTransitionV1Request(c)) {
-    return authBrowserTransitionsEnforced() ? authClientUpgradeRequiredResponse(c) : null;
-  }
+async function beginCfIssuance(c: Context): Promise<AuthIssuanceCapability | Response> {
   try {
     return await beginAuthIssuance(requestAuthBinding(c));
   } catch (error) {
@@ -186,6 +178,22 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     return next();
   }
 
+  let ipDecision;
+  try {
+    ipDecision = await enforceIpAllowlist(c, {
+      partnerId: context.partnerId,
+      isPlatformAdmin: user.isPlatformAdmin === true,
+      actorId: user.id,
+      actorEmail: user.email,
+    });
+  } catch (err) {
+    console.error('[cf-access-login] IP allowlist check failed:', err);
+    return c.json({ code: 'ip_check_failed', error: 'Access temporarily unavailable' }, 503);
+  }
+  if (isBlocked(ipDecision)) {
+    return c.json(IP_NOT_ALLOWED_BODY, 403);
+  }
+
   // CF Access JWT cannot tell us whether the user satisfied MFA at the
   // edge — that's an operator-level assertion via CF_ACCESS_TRUSTS_MFA.
   // If the user has Breeze MFA enrolled and we don't trust CF Access as
@@ -226,22 +234,20 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     const admission = await beginCfIssuance(c);
     if (admission instanceof Response) return admission;
     const capability = admission;
-    let pendingTransition = { transitionId: 'legacy', browserGeneration: 0 };
-    if (capability) {
-      try {
-        pendingTransition = await finishAuthIssuance(capability, async (tx) => {
+    let pendingTransition;
+    try {
+      pendingTransition = await finishAuthIssuance(capability, async (tx) => {
           await assertAuthIssuanceCapability(tx, capability);
           return {
             transitionId: capability.transitionId,
             browserGeneration: capability.generation,
           };
-        });
-      } catch (error) {
-        await cancelAuthIssuance(capability).catch(() => undefined);
-        const response = authIssuanceAdmissionError(c, error);
-        if (!response) throw error;
-        return response;
-      }
+      });
+    } catch (error) {
+      await cancelAuthIssuance(capability).catch(() => undefined);
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      return response;
     }
     const PENDING_TTL_SECONDS = 300;
     await redis.setex(
@@ -324,12 +330,9 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
       mobileDeviceId: readMobileDeviceId(c) ?? undefined,
   };
 
-  let tokens: ReturnType<typeof toPublicTokens>;
-  let installSessionCookies: () => void;
-  if (capability) {
-    let issued: AuthorizedUserSession;
-    try {
-      issued = await finishAuthIssuance(capability, async (tx) => {
+  let issued: AuthorizedUserSession;
+  try {
+    issued = await finishAuthIssuance(capability, async (tx) => {
         const session = await issueUserSession(identity, {
           tx,
           capability,
@@ -337,25 +340,16 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
         });
         await tx.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
         return session;
-      });
-    } catch (error) {
-      await cancelAuthIssuance(capability).catch(() => undefined);
-      const response = authIssuanceAdmissionError(c, error);
-      if (!response) throw error;
-      return response;
-    }
-    await bindIssuedUserSession(issued);
-    tokens = toPublicTokens(issued);
-    installSessionCookies = () => installAuthorizedUserSessionCookies(c, issued);
-  } else {
-    recordAuthTransitionLegacyIssuer('cf_access', readMobileDeviceId(c) ? 'native' : 'web');
-    const issued = await issueUserSessionLegacyDuringTransition(identity);
-    await withSystemDbAccessContext(() =>
-      db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id))
-    );
-    tokens = toPublicTokens(issued);
-    installSessionCookies = () => installLegacyUserSessionCookiesDuringTransition(c, issued);
+    });
+  } catch (error) {
+    await cancelAuthIssuance(capability).catch(() => undefined);
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
   }
+  await bindIssuedUserSession(issued);
+  const tokens = toPublicTokens(issued);
+  const installSessionCookies = () => installAuthorizedUserSessionCookies(c, issued);
 
   createAuditLogAsync({
     orgId: context.orgId ?? undefined,

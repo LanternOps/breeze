@@ -35,6 +35,10 @@ function harness(authContext: WorkspaceAuthContext = auth()) {
   const app = new Hono<WorkspaceRouteEnv>();
   app.use('*', async (c, next) => {
     c.set('auth', authContext);
+    c.set('extensionAuthorization', {
+      hasPermission: () => true,
+      mfaSatisfied: true,
+    });
     await next();
   });
   app.route('/', createDeviceSummaryRoutes({ deviceSummaryService }));

@@ -50,3 +50,26 @@ export function reportInternalError(err: unknown, area: string): void {
       : { extra: { apiError: err } }),
   });
 }
+
+/**
+ * `reportInternalError` for a catch block that still has state to resolve.
+ *
+ * `Sentry.captureException` has no no-throw guard of its own, so reporting
+ * from a catch block BEFORE the state update that clears a spinner or
+ * re-enables a button lets a throwing reporter skip that update entirely —
+ * turning a handled failure into a permanently stuck screen, since callers
+ * discard the promise. `useSystemsData` learned this the hard way and guards
+ * its own reporting call; this is that guard, named, so a call site does not
+ * have to re-derive it.
+ *
+ * Resolve state first and call this, or call this and resolve state after —
+ * either order is safe with this wrapper. There is nothing left to report to
+ * if the reporter itself is what failed.
+ */
+export function safeReportInternalError(err: unknown, area: string): void {
+  try {
+    reportInternalError(err, area);
+  } catch {
+    // nothing left to report to
+  }
+}

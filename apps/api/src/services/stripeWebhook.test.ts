@@ -7,9 +7,10 @@ vi.mock('../config/validate', () => ({ getConfig: () => ({ STRIPE_WEBHOOK_SECRET
 
 // Dispatch-handler collaborators (Task 12). Declared via vi.hoisted so the mock
 // factories (which vitest hoists above the imports) can reference them.
-const { recordStripePayment, reflectStripeRefund, markDisconnectedByAccount, getConnectionByAccount, emit, dbResults } = vi.hoisted(() => ({
+const { recordStripePayment, normalizeFinancialEvent, ingestFinancialEvent, markDisconnectedByAccount, getConnectionByAccount, emit, dbResults } = vi.hoisted(() => ({
   recordStripePayment: vi.fn().mockResolvedValue({ invoiceId: 'inv_1' }),
-  reflectStripeRefund: vi.fn().mockResolvedValue(undefined),
+  normalizeFinancialEvent: vi.fn(),
+  ingestFinancialEvent: vi.fn().mockResolvedValue({ state: 'applied' }),
   markDisconnectedByAccount: vi.fn().mockResolvedValue(undefined),
   // Default: a livemode-matching connected account exists for any account id.
   getConnectionByAccount: vi.fn().mockResolvedValue({ partnerId: 'p_1', livemode: true, status: 'connected' }),
@@ -17,7 +18,9 @@ const { recordStripePayment, reflectStripeRefund, markDisconnectedByAccount, get
   dbResults: [] as unknown[][]
 }));
 
-vi.mock('./stripeReconcile', () => ({ recordStripePayment, reflectStripeRefund }));
+vi.mock('./stripeReconcile', () => ({ recordStripePayment }));
+vi.mock('./stripeFinancialEventPoller', () => ({ normalizeStripeFinancialEvent: normalizeFinancialEvent }));
+vi.mock('./stripeReversalState', () => ({ ingestStripeFinancialEvent: ingestFinancialEvent }));
 vi.mock('./stripeConnectService', () => ({ markDisconnectedByAccount, getConnectionByAccount }));
 vi.mock('./invoiceEvents', () => ({ emitInvoiceEvent: emit }));
 
@@ -59,7 +62,13 @@ describe('verifyStripeEvent', () => {
 describe('handleStripeEvent', () => {
   beforeEach(() => {
     recordStripePayment.mockClear();
-    reflectStripeRefund.mockClear();
+    normalizeFinancialEvent.mockReset();
+    ingestFinancialEvent.mockClear();
+    normalizeFinancialEvent.mockImplementation(async ({ event, partnerId, stripeAccountId }: any) => ({
+      partnerId, stripeAccountId, stripeEventId: event.id, eventType: event.type,
+      livemode: event.livemode, providerCreated: event.created,
+      paymentIntentId: String(event.data.object.payment_intent), currency: event.data.object.currency,
+    }));
     markDisconnectedByAccount.mockClear();
     getConnectionByAccount.mockClear();
     getConnectionByAccount.mockResolvedValue({ partnerId: 'p_1', livemode: true, status: 'connected' });
@@ -120,10 +129,17 @@ describe('handleStripeEvent', () => {
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'payment.failed' }));
   });
 
-  it('charge.refunded → reflects refund (currency-aware)', async () => {
-    await handleStripeEvent({ type: 'charge.refunded', account: 'acct_1', livemode: true,
+  it('charge.refunded → durably ingests the normalized account-bound event', async () => {
+    await handleStripeEvent({ id: 'evt_refund', created: 123, type: 'charge.refunded', account: 'acct_1', livemode: true,
       data: { object: { payment_intent: 'pi_1', amount: 10000, amount_refunded: 4000, currency: 'usd' } } } as any);
-    expect(reflectStripeRefund).toHaveBeenCalledWith({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 4000, chargeAmountCents: 10000, currency: 'usd', stripeAccountId: 'acct_1' });
+    expect(normalizeFinancialEvent).toHaveBeenCalledWith(expect.objectContaining({ partnerId: 'p_1', stripeAccountId: 'acct_1' }));
+    expect(ingestFinancialEvent).toHaveBeenCalledWith(expect.objectContaining({ stripeEventId: 'evt_refund' }));
+  });
+
+  it('charge.dispute.funds_withdrawn → enters the same durable financial inbox', async () => {
+    await handleStripeEvent({ id: 'evt_dispute', created: 124, type: 'charge.dispute.funds_withdrawn', account: 'acct_1', livemode: true,
+      data: { object: { payment_intent: 'pi_1', amount: 10000, currency: 'usd' } } } as any);
+    expect(ingestFinancialEvent).toHaveBeenCalledWith(expect.objectContaining({ stripeEventId: 'evt_dispute' }));
   });
 
   it('account.application.deauthorized → marks disconnected (exempt from livemode guard)', async () => {

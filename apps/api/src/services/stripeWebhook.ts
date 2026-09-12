@@ -6,10 +6,12 @@ import { getConfig } from '../config/validate';
 import { db, withSystemDbAccessContext } from '../db';
 import { invoices } from '../db/schema/invoices';
 import { invoiceStripePayments } from '../db/schema/stripePayments';
-import { recordStripePayment, reflectStripeRefund } from './stripeReconcile';
+import { recordStripePayment } from './stripeReconcile';
 import { markDisconnectedByAccount, getConnectionByAccount } from './stripeConnectService';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { fromMinorUnits } from './stripeMoney';
+import { normalizeStripeFinancialEvent } from './stripeFinancialEventPoller';
+import { ingestStripeFinancialEvent } from './stripeReversalState';
 
 export function verifyStripeEvent(rawBody: string, signatureHeader: string): Stripe.Event {
   const secret = getConfig().STRIPE_WEBHOOK_SECRET;
@@ -33,14 +35,20 @@ export async function handleStripeEvent(event: Stripe.Event): Promise<void> {
     'checkout.session.completed',
     'checkout.session.async_payment_succeeded',
     'charge.refunded',
+    'charge.dispute.created',
+    'charge.dispute.updated',
+    'charge.dispute.closed',
+    'charge.dispute.funds_withdrawn',
+    'charge.dispute.funds_reinstated',
     'payment_intent.payment_failed',
   ]);
+  let moneyConnection: Awaited<ReturnType<typeof getConnectionByAccount>> = null;
   if (MONEY_MOVING.has(event.type)) {
-    const connection = event.account ? await getConnectionByAccount(event.account) : null;
-    if (!connection || connection.livemode !== Boolean(event.livemode)) {
+    moneyConnection = event.account ? await getConnectionByAccount(event.account) : null;
+    if (!moneyConnection || moneyConnection.livemode !== Boolean(event.livemode)) {
       console.warn('[stripeWebhook] ignoring event — unknown account or livemode mismatch', {
         type: event.type, account: event.account, eventLivemode: event.livemode,
-        connectionLivemode: connection?.livemode ?? null,
+        connectionLivemode: moneyConnection?.livemode ?? null,
       });
       return; // 202, no processing
     }
@@ -99,16 +107,22 @@ export async function handleStripeEvent(event: Stripe.Event): Promise<void> {
       });
       return;
     }
-    case 'charge.refunded': {
-      const ch = event.data.object as Stripe.Charge;
-      if (!ch.payment_intent) return;
-      await reflectStripeRefund({
-        stripePaymentIntentId: String(ch.payment_intent),
-        amountRefundedCents: Number(ch.amount_refunded ?? 0),
-        chargeAmountCents: Number(ch.amount ?? 0),
-        currency: String(ch.currency ?? 'usd'),
-        stripeAccountId: event.account ?? '' // account-binding guard in reflectStripeRefund
+    case 'charge.refunded':
+    case 'charge.dispute.created':
+    case 'charge.dispute.updated':
+    case 'charge.dispute.closed':
+    case 'charge.dispute.funds_withdrawn':
+    case 'charge.dispute.funds_reinstated': {
+      if (!moneyConnection || !event.account) return;
+      const stripe = getStripe();
+      const normalized = await normalizeStripeFinancialEvent({
+        event,
+        partnerId: moneyConnection.partnerId,
+        stripeAccountId: event.account,
+        stripe,
+        requestOptions: { stripeAccount: event.account },
       });
+      if (normalized) await ingestStripeFinancialEvent(normalized);
       return;
     }
     case 'account.application.deauthorized': {

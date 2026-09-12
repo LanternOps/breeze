@@ -46,6 +46,10 @@ export const installerBootstrapTokens = pgTable(
     parentEnrollmentKeyId: uuid("parent_enrollment_key_id")
       .notNull()
       .references(() => enrollmentKeys.id, { onDelete: "cascade" }),
+    /** Exact parent credential epoch from which this token was derived. */
+    parentCredentialGeneration: integer("parent_credential_generation")
+      .notNull()
+      .default(1),
     siteId: uuid("site_id").references(() => sites.id, {
       onDelete: "set null",
     }),

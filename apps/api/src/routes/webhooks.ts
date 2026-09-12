@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { db } from '../db';
 import { webhookDeliveries, webhooks as webhooksTable } from '../db/schema';
@@ -18,6 +18,9 @@ import {
   redactWebhookHeaders,
 } from '../services/notificationChannelSecrets';
 import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders } from '../services/outboundHeaders';
+import { urlOriginChanged } from '../services/credentialOriginBinding';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
+import { bumpApprovalGeneration } from '../services/approvalGeneration';
 
 export const webhookRoutes = new Hono();
 
@@ -28,10 +31,11 @@ type WebhookDeliveryStatus = 'pending' | 'delivered' | 'failed' | 'retrying';
 type WebhookHeaders = Array<{ key: string; value: unknown }>;
 
 type RouteAuth = {
-  scope: 'organization' | 'partner' | 'system' | string;
+  scope: 'organization' | 'partner' | 'system';
   partnerId: string | null;
   orgId: string | null;
   accessibleOrgIds: string[] | null;
+  allowedSiteIds?: string[];
   canAccessOrg: (orgId: string) => boolean;
   user: { id: string; email?: string };
 };
@@ -374,6 +378,9 @@ webhookRoutes.post(
   zValidator('json', createWebhookSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const data = c.req.valid('json');
 
     let orgId = data.orgId;
@@ -475,6 +482,9 @@ webhookRoutes.patch(
   zValidator('json', updateWebhookSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id: webhookId } = c.req.valid('param');
     const data = c.req.valid('json');
 
@@ -494,6 +504,23 @@ webhookRoutes.patch(
     // form. Mirrors the isMaskedIntegrationSecret no-clobber guard for `secret`.
     const urlUnchanged =
       data.url !== undefined && data.url === redactUrlForLogs(decryptWebhookUrl(webhook));
+    const changedOrigin = data.url !== undefined
+      && !urlUnchanged
+      && urlOriginChanged(decryptWebhookUrl(webhook), data.url);
+
+    if (changedOrigin) {
+      const storedHeaders = normalizeHeaders(decryptWebhookHeaders(webhook.headers));
+      if (storedHeaders.length > 0 && data.headers === undefined) {
+        return c.json({
+          error: 'Custom headers must be re-entered or explicitly cleared when changing the webhook origin',
+        }, 400);
+      }
+      if (data.headers?.some((header) => isMaskedIntegrationSecret(header.value))) {
+        return c.json({
+          error: 'Custom headers must be re-entered or explicitly cleared when changing the webhook origin',
+        }, 400);
+      }
+    }
 
     if (data.url && !urlUnchanged) {
       const urlErrors = await validateWebhookUrlSafetyWithDns(data.url);
@@ -502,8 +529,13 @@ webhookRoutes.patch(
       }
     }
 
-    const updatePayload: Partial<typeof webhooksTable.$inferInsert> = {
-      updatedAt: new Date()
+    const updatePayload: Omit<Partial<typeof webhooksTable.$inferInsert>, 'approvalGeneration'> & { approvalGeneration?: SQL } = {
+      updatedAt: new Date(),
+      // Site-ceiling gate contract §3: bump on every PATCH so a queued
+      // delivery carrying the OLD generation can tell it has been
+      // superseded (edited or disabled) and drop rather than deliver
+      // against stale config.
+      approvalGeneration: bumpApprovalGeneration(webhooksTable.approvalGeneration),
     };
 
     if (data.name !== undefined) updatePayload.name = data.name;
@@ -517,14 +549,26 @@ webhookRoutes.patch(
     if (data.headers !== undefined) updatePayload.headers = encryptWebhookHeaders(data.headers, webhook.headers);
     if (data.status !== undefined) updatePayload.status = mapApiStatusToDb(data.status);
 
+    // Bind the endpoint and its outbound headers as one optimistic tuple. DNS
+    // validation above may be slow, so do not hold a row lock across it; the
+    // expected-state predicates instead make a concurrent URL/header editor
+    // lose cleanly rather than attaching one origin's authorization to the
+    // other's destination.
+    const expectedHeaders = webhook.headers === null
+      ? isNull(webhooksTable.headers)
+      : eq(webhooksTable.headers, webhook.headers);
     const [updated] = await db
       .update(webhooksTable)
       .set(updatePayload)
-      .where(eq(webhooksTable.id, webhookId))
+      .where(and(
+        eq(webhooksTable.id, webhookId),
+        eq(webhooksTable.url, webhook.url),
+        expectedHeaders,
+      ))
       .returning();
 
     if (!updated) {
-      return c.json({ error: 'Webhook not found' }, 404);
+      return c.json({ error: 'Webhook changed concurrently; reload and retry' }, 409);
     }
 
     writeRouteAudit(c, {
@@ -552,6 +596,9 @@ webhookRoutes.delete(
   zValidator('param', webhookIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id: webhookId } = c.req.valid('param');
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
@@ -639,12 +686,22 @@ webhookRoutes.post(
   zValidator('json', testWebhookSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id: webhookId } = c.req.valid('param');
     const data = c.req.valid('json');
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
     if (!webhook) {
       return c.json({ error: 'Webhook not found' }, 404);
+    }
+
+    // A non-active webhook's delivery would just be dropped by the worker's
+    // own generation/status check and recorded as superseded — reject up
+    // front with a clear message instead of queueing a job doomed to no-op.
+    if (webhook.status !== 'active') {
+      return c.json({ error: 'Cannot test a webhook that is not active' }, 409);
     }
 
     const eventType = data.event ?? 'webhook.test';
@@ -688,7 +745,7 @@ webhookRoutes.post(
     };
 
     try {
-      await getWebhookWorker().queueDelivery(toWorkerWebhookConfig(webhook), event as any, delivery.id);
+      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, event as any, delivery.id);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
       const [failedDelivery] = await db
@@ -737,11 +794,20 @@ webhookRoutes.post(
   zValidator('param', webhookRetryParamSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
 const { id: webhookId, deliveryId } = c.req.valid('param');
 
     const webhook = await getWebhookWithOrgCheck(webhookId, auth);
     if (!webhook) {
       return c.json({ error: 'Webhook not found' }, 404);
+    }
+
+    // Same rationale as /test: a non-active webhook's retry would just be
+    // dropped by the worker as superseded — reject up front.
+    if (webhook.status !== 'active') {
+      return c.json({ error: 'Cannot retry delivery for a webhook that is not active' }, 409);
     }
 
     const [delivery] = await db
@@ -797,7 +863,7 @@ const { id: webhookId, deliveryId } = c.req.valid('param');
     };
 
     try {
-      await getWebhookWorker().queueDelivery(toWorkerWebhookConfig(webhook), retryEvent as any, retryDelivery.id);
+      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, retryEvent as any, retryDelivery.id);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
       const [failedRetry] = await db

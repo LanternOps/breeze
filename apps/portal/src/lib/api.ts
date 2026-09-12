@@ -9,6 +9,7 @@ import { navigateTo } from './navigation';
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
 import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
 import type { PortalRunDto, PortalRunsDto } from '@breeze/shared';
+import type { PortalDocumentsDto, PortalOccurrencesDto, PortalServiceOverviewDto } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
 // (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
@@ -351,8 +352,15 @@ export interface TicketCommentAttachment {
 export interface TicketComment {
   id: string;
   authorName: string;
-  /** 'portal' is the customer's own reply; anything else came from the IT team. */
+  /** 'portal' is the customer's own reply; 'email' is any email-authored comment. */
   authorType: string | null;
+  /**
+   * The portal login the inbound email resolved to, or null. `authorType` alone
+   * cannot tell a customer's emailed reply from a technician's own reply linked
+   * through the Outlook add-in — both are stored as 'email'. A non-null sender
+   * on an 'email' comment is the only signal that the CUSTOMER wrote it.
+   */
+  senderPortalUserId?: string | null;
   content: string;
   createdAt: string;
   /** Absent on a reply the customer just posted locally. */
@@ -718,6 +726,8 @@ export interface BrandingConfig {
   enableBackups?: boolean;
   enableReports?: boolean;
   enableSupportUsage?: boolean;
+  enableService?: boolean;
+  enableDocuments?: boolean;
 }
 
 export interface ListParams {
@@ -937,7 +947,7 @@ export const portalApi = {
   },
 
   updateProfile: async (
-    data: { name?: string; receiveNotifications?: boolean; password?: string; email?: string },
+    data: { name?: string; receiveNotifications?: boolean },
     config: ApiRequestConfig = {}
   ): Promise<ApiResponse<Profile>> => {
     const response = await apiPatch<{ user: Profile }>('/portal/profile', data, config);
@@ -1238,4 +1248,30 @@ export const portalApi = {
     format: 'pdf' | 'csv',
   ): PublicApiPath =>
     publicApiPath(`/portal/reports/runs/${runId}/${format}`),
+
+  // W04 — service deliverables
+  getService: (
+    config: ApiRequestConfig = {},
+  ): Promise<ApiResponse<PortalServiceOverviewDto>> =>
+    apiGet<PortalServiceOverviewDto>('/portal/service', config),
+
+  getServiceOccurrences: (
+    deliverableId: string,
+    config: ApiRequestConfig = {},
+  ): Promise<ApiResponse<PortalOccurrencesDto>> =>
+    apiGet<PortalOccurrencesDto>(
+      `/portal/service/${encodeURIComponent(deliverableId)}/occurrences`,
+      config,
+    ),
+
+  getDocuments: (
+    config: ApiRequestConfig = {},
+  ): Promise<ApiResponse<PortalDocumentsDto>> =>
+    apiGet<PortalDocumentsDto>('/portal/documents', config),
+
+  // A browser-navigable path, not a fetch: the session cookie authenticates the
+  // download and the API streams the bytes. Never a signed object-store URL
+  // (spec §8).
+  documentContentUrl: (documentId: string): PublicApiPath =>
+    publicApiPath(`/portal/documents/${documentId}/content`),
 };

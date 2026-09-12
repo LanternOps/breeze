@@ -24,7 +24,7 @@
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { findVariableTokens } from '@breeze/shared';
 import { db } from '../../db';
-import { scripts, scriptTags, scriptToTags, scriptVersions, tenantVariables } from '../../db/schema';
+import { scripts, scriptTags, scriptToTags, tenantVariables } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import {
   isScriptScopeError,
@@ -35,6 +35,7 @@ import {
   type ScriptWriteAuth
 } from '../scriptWrite';
 import { clearedScriptSecurityAcknowledgementColumns } from '../scriptSecurityAcknowledgement';
+import { cutScriptVersion } from '../scriptVersions';
 import { loadTenantVariableScope, resolveForOrg } from '../tenantVariableResolution';
 import {
   SCRIPT_BUNDLE_VERSION,
@@ -775,16 +776,13 @@ export async function importBundle(
       }
 
       if (existing && options.mode === 'new-version') {
-        // Snapshot the current content into scriptVersions FIRST, so the
-        // import appends to history rather than replacing it.
-        await db.insert(scriptVersions).values({
-          scriptId: existing.id,
-          version: existing.version,
-          content: existing.content,
-          changelog: 'Superseded by bundle import',
-          createdBy: auth.user.id
-        });
-        await db
+        // AFTER-image, not before. A version row is the definition of an
+        // execution (spec §4.1), so the row that matters is the one holding
+        // the body that will actually run. The previous body already has its
+        // own row — cut at creation or by the 2026-10-16-100000 head backfill.
+        // cutScriptVersion owns scripts.version, so this SET must not carry it.
+        await db.transaction(async (tx) => {
+        await tx
           .update(scripts)
           .set({
             description: entry.description ?? existing.description,
@@ -805,10 +803,19 @@ export async function importBundle(
             // design exists to prevent, through a different door. Whoever
             // imported it must re-acknowledge in the script editor.
             ...clearedScriptSecurityAcknowledgementColumns(),
-            version: existing.version + 1,
             updatedAt: new Date()
           })
           .where(eq(scripts.id, existing.id));
+
+          await cutScriptVersion(tx, {
+            scriptId: existing.id,
+            provenance: {
+              origin: 'imported',
+              changelog: `Imported from bundle "${entry.name}"`,
+              createdBy: auth.user.id
+            }
+          });
+        });
 
         const tagIds = await ensureTagIds(scope, entry.tags ?? []);
         await linkTags(existing.id, tagIds, true);
@@ -848,7 +855,7 @@ export async function importBundle(
         timeoutSeconds: entry.timeoutSeconds,
         runAs: entry.runAs,
         exitCodeSeverityMapping: entry.exitCodeSeverityMapping ?? null
-      });
+      }, { origin: 'imported' });
       if (!created) {
         result.errors.push({ index, name: entry.name, error: 'Insert returned no row' });
         continue;

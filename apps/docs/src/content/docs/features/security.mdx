@@ -540,7 +540,7 @@ The posture worker runs on an hourly schedule via BullMQ. If no posture data is 
 3. Check that Redis is connected and the `security-posture` queue is processing jobs.
 
 <Aside type="note">
-  You can trigger an immediate posture recomputation for a specific organization by calling `triggerSecurityPostureRecompute(orgId)` from the API. This enqueues a `compute-org` job that runs outside the normal hourly schedule.
+  An immediate posture recomputation for a specific organization can be triggered internally (enqueuing a `compute-org` job that runs outside the normal hourly schedule), but this is not exposed through a public API route today — recomputation currently only happens on the hourly schedule.
 </Aside>
 
 ### Threats not appearing after scan

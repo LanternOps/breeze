@@ -256,6 +256,62 @@ describe('manage_software_policy delete — writes both audit stores (#3543)', (
   });
 });
 
+// Site-ceiling gate contract §3/finding 2: this AI-tool write path bypasses
+// routes/softwarePolicies.ts entirely, so it needs its own generation bump —
+// centralizing the write behind bumpApprovalGeneration() means it can't be
+// forgotten the way the plain PATCH route's bump once was (finding 1).
+describe('manage_software_policy update/delete — approval_generation bump (site-ceiling gate contract §3)', () => {
+  it('update includes an approvalGeneration bump in the .set() payload, excluded from the audited updatedFields', async () => {
+    const existing = policyRow();
+    let capturedSet: Record<string, unknown> | undefined;
+    mockDb.select.mockImplementation(() => chain([existing]));
+    mockDb.update.mockImplementation(() => ({
+      set: (payload: Record<string, unknown>) => {
+        capturedSet = payload;
+        return chain([{ ...existing, ...ARMED }]);
+      },
+    }));
+
+    const result = JSON.parse(await handlerFor('manage_software_policy')({
+      action: 'update',
+      policyId: POLICY_ID,
+      enforceMode: true,
+      remediationOptions: { autoUninstall: true },
+    }, makeAuth()));
+
+    expect(result.success).toBe(true);
+    expect(capturedSet).toBeDefined();
+    expect(capturedSet!.approvalGeneration).toBeDefined();
+
+    const [policyAudit] = policyAuditCalls();
+    const updatedFields = (policyAudit!.details as any).updatedFields as string[];
+    expect(updatedFields).not.toContain('approvalGeneration');
+  });
+
+  it('delete (soft-delete via isActive: false) also bumps approvalGeneration', async () => {
+    let capturedSet: Record<string, unknown> | undefined;
+    mockDb.select.mockImplementation(() => chain([policyRow()]));
+    mockDb.transaction.mockImplementation(async (fn: any) =>
+      fn({
+        update: () => ({
+          set: (payload: Record<string, unknown>) => {
+            capturedSet = payload;
+            return chain([]);
+          },
+        }),
+        delete: () => chain([]),
+      }));
+
+    const result = JSON.parse(await handlerFor('manage_software_policy')({
+      action: 'delete', policyId: POLICY_ID,
+    }, makeAuth()));
+
+    expect(result.success).toBe(true);
+    expect(capturedSet).toBeDefined();
+    expect(capturedSet!.approvalGeneration).toBeDefined();
+  });
+});
+
 describe('remediate_software_violation — arming gate (#3543 / incident #3381)', () => {
   it('refuses a detect-only policy (enforceMode false) and queues NOTHING', async () => {
     mockDb.select.mockImplementation(() => chain([policyRow({ enforceMode: false })]));

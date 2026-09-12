@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { Context, Next } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
@@ -46,8 +46,11 @@ import {
   validatePortalCookieCsrfRequest,
   consumePortalInviteToken,
   buildPortalUrl,
+  purgePortalSessionsForUsers,
 } from './helpers';
 import { isSelfManagedDbContextRoute } from '../../middleware/selfManagedDbContextRoutes';
+import { purgeClientAiSessionsForUsers } from '../../services/clientAiSessionStore';
+import { ANONYMOUS_ACTOR_ID, writeAuditEventAsync } from '../../services/auditEvents';
 
 export const authRoutes = new Hono();
 const ALLOW_IN_MEMORY_PORTAL_STATE = !PORTAL_USE_REDIS;
@@ -65,6 +68,57 @@ export const PORTAL_ACCOUNT_INACTIVE_CODE = 'PORTAL_ACCOUNT_INACTIVE';
 function isPortalAuthGateExemptPath(path: string): boolean {
   return path.endsWith('/auth/logout');
 }
+
+const PORTAL_AUTH_AUDIT_ACTIONS = new Map<string, string>([
+  ['/auth/login', 'portal.auth.login'],
+  ['/auth/forgot-password', 'portal.auth.password_reset.request'],
+  ['/auth/reset-password', 'portal.auth.password_reset.complete'],
+  ['/auth/accept-invite', 'portal.auth.invite.accept'],
+  ['/auth/logout', 'portal.auth.logout'],
+]);
+
+function setPortalAuthAuditIdentity(
+  c: Context,
+  user: { id: string; orgId: string; email: string },
+): void {
+  c.set('portalAuthAuditIdentity', { userId: user.id, orgId: user.orgId, email: user.email });
+}
+
+// These public/session-auth endpoints sit outside the staff mutation fallback.
+// Wrap validation and the handler so every terminal response (including a
+// validator rejection or thrown failure) receives one secret-safe event.
+authRoutes.use('/auth/*', async (c, next) => {
+  const action = PORTAL_AUTH_AUDIT_ACTIONS.get(c.req.path.replace(/^\/api\/v1\/portal/, ''));
+  if (!action || c.req.method !== 'POST') return next();
+
+  let threw = false;
+  try {
+    await next();
+  } catch (error) {
+    threw = true;
+    throw error;
+  } finally {
+    const portalAuth = c.get('portalAuth');
+    const identity = c.get('portalAuthAuditIdentity') ?? (portalAuth ? {
+      userId: portalAuth.user.id,
+      orgId: portalAuth.user.orgId,
+      email: portalAuth.user.email,
+    } : undefined);
+    const status = threw ? 500 : c.res.status;
+    await writeAuditEventAsync(c, {
+      orgId: identity?.orgId,
+      actorType: identity ? 'user' : 'system',
+      actorId: identity?.userId ?? ANONYMOUS_ACTOR_ID,
+      actorEmail: identity?.email,
+      initiatedBy: 'manual',
+      action,
+      resourceType: 'portal_auth',
+      resourceId: identity?.userId,
+      result: threw || status >= 500 ? 'failure' : status >= 400 ? 'denied' : 'success',
+      details: { httpStatus: status },
+    });
+  }
+});
 
 async function isPortalPasswordResetEnabled(orgId: string): Promise<boolean> {
   const [row] = await withSystemDbAccessContext(() =>
@@ -94,7 +148,7 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
     return c.json({ error: 'Missing or invalid authorization header' }, 401);
   }
 
-  let sessionData: { portalUserId: string; orgId: string } | null = null;
+  let sessionData: { portalUserId: string; orgId: string; authEpoch: number } | null = null;
 
   if (PORTAL_USE_REDIS) {
     const redis = getRedis();
@@ -107,7 +161,18 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
       if (raw) {
         try {
           const parsed = JSON.parse(raw);
-          sessionData = { portalUserId: parsed.portalUserId, orgId: parsed.orgId };
+          if (
+            typeof parsed.portalUserId === 'string'
+            && typeof parsed.orgId === 'string'
+            && Number.isSafeInteger(parsed.authEpoch)
+            && parsed.authEpoch > 0
+          ) {
+            sessionData = {
+              portalUserId: parsed.portalUserId,
+              orgId: parsed.orgId,
+              authEpoch: parsed.authEpoch,
+            };
+          }
         } catch (err) {
           console.error('[portal] Failed to parse Redis session data:', (err as Error).message);
         }
@@ -118,7 +183,11 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
   if (!sessionData && ALLOW_IN_MEMORY_PORTAL_STATE) {
     const session = portalSessions.get(token);
     if (session && session.expiresAt.getTime() > Date.now()) {
-      sessionData = { portalUserId: session.portalUserId, orgId: session.orgId };
+      sessionData = {
+        portalUserId: session.portalUserId,
+        orgId: session.orgId,
+        authEpoch: session.authEpoch,
+      };
     } else if (session) {
       portalSessions.delete(token);
     }
@@ -135,7 +204,7 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
   // but the portal_users row lives behind org-forced RLS. Run this lookup
   // under system scope so it resolves under the unprivileged breeze_app pool —
   // the same pattern authMiddleware uses for its pre-auth users lookup.
-  const { user, timezone } = await withSystemDbAccessContext(async () => {
+  const user = await withSystemDbAccessContext(async () => {
     const [user] = await db
       .select({
         id: portalUsers.id,
@@ -148,28 +217,34 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
         // and then logged in would see none of their own tickets, because an
         // emailed ticket has no `submitted_by` at all.
         contactId: portalUsers.contactId,
+        authMethod: portalUsers.authMethod,
         receiveNotifications: portalUsers.receiveNotifications,
-        status: portalUsers.status
+        status: portalUsers.status,
+        authEpoch: portalUsers.authEpoch,
       })
       .from(portalUsers)
       .where(and(eq(portalUsers.id, sessionData.portalUserId), eq(portalUsers.orgId, sessionData.orgId)))
       .limit(1);
-
-    return {
-      user,
-      // Resolved here (not per-route/per-read-model) so every portal read
-      // model can consume `auth.timezone` without its own DB round trip —
-      // see services/portal/timezone.ts.
-      timezone: user
-        ? await resolveOrgTimezone(sessionData.orgId)
-        : null,
-    };
+    return user;
   });
 
-  if (!user) {
+  // Browser portal sessions are password-ceremony sessions. Entra JIT uses a
+  // separate Client-AI session and must never inherit browser access merely
+  // because a historical recovery/invite path populated password_hash.
+  if (!user || user.authMethod !== 'password') {
     if (PORTAL_USE_REDIS) {
       const redis = getRedis();
-      if (redis) await redis.del(PORTAL_REDIS_KEYS.session(token));
+      if (redis) {
+        if (user) {
+          await redis
+            .multi()
+            .del(PORTAL_REDIS_KEYS.session(token))
+            .srem(PORTAL_REDIS_KEYS.userSessions(user.id), token)
+            .exec();
+        } else {
+          await redis.del(PORTAL_REDIS_KEYS.session(token));
+        }
+      }
     }
     if (ALLOW_IN_MEMORY_PORTAL_STATE) {
       portalSessions.delete(token);
@@ -178,6 +253,19 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
       clearPortalSessionCookies(c);
     }
     return c.json({ error: 'Portal user not found' }, 401);
+  }
+
+  if (user.authEpoch !== sessionData.authEpoch) {
+    if (PORTAL_USE_REDIS) {
+      const redis = getRedis();
+      if (redis) {
+        await redis.del(PORTAL_REDIS_KEYS.session(token));
+        await redis.srem(PORTAL_REDIS_KEYS.userSessions(user.id), token);
+      }
+    }
+    if (ALLOW_IN_MEMORY_PORTAL_STATE) portalSessions.delete(token);
+    if (cookieToken) clearPortalSessionCookies(c);
+    return c.json({ error: 'Invalid or expired session' }, 401);
   }
 
   if (user.status !== 'active') {
@@ -195,7 +283,11 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
       // "access disabled" page instead of rendering the outage copy.
       return c.json({ error: 'Account is not active', code: PORTAL_ACCOUNT_INACTIVE_CODE }, 403);
     }
-    c.set('portalAuth', { user, token, authMethod, timezone: timezone ?? 'UTC' });
+    // Timezone is resolved further down, only after the durable session/org
+    // checks pass (see the comment there) — this exempt path returns before
+    // that point by design (pure teardown, no DB reads), and logout is the
+    // only handler reachable here, which never consumes `auth.timezone`.
+    c.set('portalAuth', { user, token, authMethod, timezone: 'UTC' });
     if (authMethod === 'cookie') {
       setPortalSessionCookies(c, token);
     }
@@ -228,6 +320,10 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
     }
     return c.json({ error: 'Organization is not available' }, 403);
   }
+
+  // Resolve only after the durable session checks. A stale/legacy generation
+  // must not trigger even a secondary tenant read, much less route work.
+  const timezone = await withSystemDbAccessContext(() => resolveOrgTimezone(sessionData.orgId));
 
   // Sliding session timeout: any authenticated activity pushes expiry forward.
   if (PORTAL_USE_REDIS) {
@@ -329,14 +425,16 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
         email: portalUsers.email,
         name: portalUsers.name,
         passwordHash: portalUsers.passwordHash,
+        authMethod: portalUsers.authMethod,
         receiveNotifications: portalUsers.receiveNotifications,
-        status: portalUsers.status
+        status: portalUsers.status,
+        authEpoch: portalUsers.authEpoch,
       })
       .from(portalUsers)
       .where(
         orgId
-          ? and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, normalizedEmail))
-          : eq(portalUsers.email, normalizedEmail)
+          ? and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, normalizedEmail), eq(portalUsers.authMethod, 'password'))
+          : and(eq(portalUsers.email, normalizedEmail), eq(portalUsers.authMethod, 'password'))
       )
       .limit(orgId ? 1 : 2)
   );
@@ -346,6 +444,8 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
   }
 
   const user = userRows[0];
+
+  if (user) setPortalAuthAuditIdentity(c, user);
 
   if (!user || !user.passwordHash) {
     return c.json({ error: 'Invalid email or password' }, 401);
@@ -374,6 +474,7 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
       const sessionPayload = JSON.stringify({
         portalUserId: user.id,
         orgId: user.orgId,
+        authEpoch: user.authEpoch,
         createdAt: now.toISOString(),
       });
       const results = await redis
@@ -401,6 +502,7 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
       token,
       portalUserId: user.id,
       orgId: user.orgId,
+      authEpoch: user.authEpoch,
       createdAt: now,
       expiresAt
     });
@@ -454,17 +556,19 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
 
   const [user] = await withSystemDbAccessContext(() =>
     db
-      .select({ id: portalUsers.id, email: portalUsers.email, orgId: portalUsers.orgId })
+      .select({ id: portalUsers.id, email: portalUsers.email, orgId: portalUsers.orgId, authMethod: portalUsers.authMethod })
       .from(portalUsers)
       .where(
         orgId
-          ? and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, normalizedEmail))
-          : eq(portalUsers.email, normalizedEmail)
+          ? and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, normalizedEmail), eq(portalUsers.authMethod, 'password'))
+          : and(eq(portalUsers.email, normalizedEmail), eq(portalUsers.authMethod, 'password'))
       )
       .limit(1)
   );
 
-  if (user && await isPortalPasswordResetEnabled(user.orgId)) {
+  if (user) setPortalAuthAuditIdentity(c, user);
+
+  if (user?.authMethod === 'password' && await isPortalPasswordResetEnabled(user.orgId)) {
     const resetToken = nanoid(48);
     const tokenHash = createHash('sha256').update(resetToken).digest('hex');
     const expiresAt = new Date(Date.now() + RESET_TTL_MS);
@@ -560,12 +664,16 @@ authRoutes.post('/auth/reset-password', zValidator('json', resetPasswordSchema),
 
   const [resetUser] = await withSystemDbAccessContext(() =>
     db
-      .select({ orgId: portalUsers.orgId })
+      .select({ id: portalUsers.id, orgId: portalUsers.orgId, email: portalUsers.email, authMethod: portalUsers.authMethod })
       .from(portalUsers)
       .where(eq(portalUsers.id, storedUserId))
       .limit(1)
   );
   if (!resetUser) {
+    return c.json({ error: 'Invalid or expired reset token' }, 400);
+  }
+  setPortalAuthAuditIdentity(c, resetUser);
+  if (resetUser.authMethod !== 'password') {
     return c.json({ error: 'Invalid or expired reset token' }, 400);
   }
   if (!await isPortalPasswordResetEnabled(resetUser.orgId)) {
@@ -575,12 +683,16 @@ authRoutes.post('/auth/reset-password', zValidator('json', resetPasswordSchema),
   const passwordHash = await hashPassword(password);
   const now = new Date();
 
-  await withSystemDbAccessContext(() =>
+  const updated = await withSystemDbAccessContext(() =>
     db
       .update(portalUsers)
-      .set({ passwordHash, updatedAt: now })
-      .where(eq(portalUsers.id, storedUserId))
+      .set({ passwordHash, authEpoch: sql`${portalUsers.authEpoch} + 1`, updatedAt: now })
+      .where(and(eq(portalUsers.id, storedUserId), eq(portalUsers.authMethod, 'password')))
+      .returning({ id: portalUsers.id })
   );
+  if (updated.length !== 1) {
+    return c.json({ error: 'Invalid or expired reset token' }, 400);
+  }
 
   await clearRateLimitKeys([ipRateKey, tokenRateKey]);
 
@@ -603,6 +715,9 @@ authRoutes.post('/auth/reset-password', zValidator('json', resetPasswordSchema),
       }
     }
   }
+
+  const resetRedis = getRedis();
+  if (resetRedis) await purgeClientAiSessionsForUsers(resetRedis, [storedUserId]);
 
   return c.json({ success: true, message: 'Password reset successfully' });
 });
@@ -644,8 +759,10 @@ authRoutes.post('/auth/accept-invite', zValidator('json', acceptInviteSchema), a
         email: portalUsers.email,
         name: portalUsers.name,
         passwordHash: portalUsers.passwordHash,
+        authMethod: portalUsers.authMethod,
         receiveNotifications: portalUsers.receiveNotifications,
-        status: portalUsers.status
+        status: portalUsers.status,
+        authEpoch: portalUsers.authEpoch,
       })
       .from(portalUsers)
       .where(eq(portalUsers.id, portalUserId))
@@ -653,6 +770,10 @@ authRoutes.post('/auth/accept-invite', zValidator('json', acceptInviteSchema), a
   );
 
   if (!user) {
+    return c.json({ error: 'Invalid or expired invite' }, 400);
+  }
+  setPortalAuthAuditIdentity(c, user);
+  if (user.authMethod !== 'password') {
     return c.json({ error: 'Invalid or expired invite' }, 400);
   }
   // Disable is terminal — a disabled account may not be resurrected via an
@@ -670,12 +791,21 @@ authRoutes.post('/auth/accept-invite', zValidator('json', acceptInviteSchema), a
   const passwordHash = await hashPassword(password);
   const resolvedName = user.name ?? (name ?? null);
 
-  await withSystemDbAccessContext(() =>
+  const [activated] = await withSystemDbAccessContext(() =>
     db
       .update(portalUsers)
-      .set({ passwordHash, name: resolvedName, status: 'active', lastLoginAt: now, updatedAt: now })
-      .where(eq(portalUsers.id, user.id))
+      .set({ passwordHash, name: resolvedName, status: 'active', authEpoch: sql`${portalUsers.authEpoch} + 1`, lastLoginAt: now, updatedAt: now })
+      // The invite was checked against this exact durable generation. A
+      // concurrent disable/status or credential transition advances it, so
+      // this activation must lose instead of resurrecting the account.
+      .where(and(eq(portalUsers.id, user.id), eq(portalUsers.authEpoch, user.authEpoch), eq(portalUsers.authMethod, 'password')))
+      .returning({ authEpoch: portalUsers.authEpoch })
   );
+  if (!activated) return c.json({ error: 'Invalid or expired invite' }, 400);
+
+  await purgePortalSessionsForUsers([user.id]);
+  const inviteRedis = getRedis();
+  if (inviteRedis) await purgeClientAiSessionsForUsers(inviteRedis, [user.id]);
 
   const sessionToken = nanoid(48);
   const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
@@ -685,13 +815,13 @@ authRoutes.post('/auth/accept-invite', zValidator('json', acceptInviteSchema), a
     if (redis) {
       await redis
         .multi()
-        .setex(PORTAL_REDIS_KEYS.session(sessionToken), SESSION_TTL_SECONDS, JSON.stringify({ portalUserId: user.id, orgId: user.orgId, createdAt: now.toISOString() }))
+        .setex(PORTAL_REDIS_KEYS.session(sessionToken), SESSION_TTL_SECONDS, JSON.stringify({ portalUserId: user.id, orgId: user.orgId, authEpoch: activated.authEpoch, createdAt: now.toISOString() }))
         .sadd(PORTAL_REDIS_KEYS.userSessions(user.id), sessionToken)
         .expire(PORTAL_REDIS_KEYS.userSessions(user.id), SESSION_TTL_SECONDS * 2)
         .exec();
     }
   } else {
-    portalSessions.set(sessionToken, { token: sessionToken, portalUserId: user.id, orgId: user.orgId, createdAt: now, expiresAt });
+    portalSessions.set(sessionToken, { token: sessionToken, portalUserId: user.id, orgId: user.orgId, authEpoch: activated.authEpoch, createdAt: now, expiresAt });
     capMapByOldest(portalSessions, PORTAL_SESSION_CAP, (s) => s.createdAt.getTime());
   }
 

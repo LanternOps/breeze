@@ -35,6 +35,56 @@ function reportUnresolvedDeviceId(source: 'signed-claim' | 'header'): void {
   );
 }
 
+export type MobileDeviceBlock = Readonly<{ reason: string | null }>;
+
+async function lookupMobileDevice(
+  deviceId: string,
+  userId: string | null,
+): Promise<{ status: 'active' | 'blocked'; blockedReason: string | null } | null> {
+  const whereClause = userId !== null
+    ? and(eq(mobileDevices.deviceId, deviceId), eq(mobileDevices.userId, userId))
+    : eq(mobileDevices.deviceId, deviceId);
+
+  const [row] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ status: mobileDevices.status, blockedReason: mobileDevices.blockedReason })
+        .from(mobileDevices)
+        .where(whereClause)
+        .limit(1)
+    )
+  );
+  return row ?? null;
+}
+
+/**
+ * Resolve the live block state for an already-verified signed mobile binding.
+ * This is the authoritative check used by ordinary bearer authentication and
+ * refresh, so coverage cannot drift as new mobile-used route prefixes appear.
+ */
+export async function getBoundMobileDeviceBlock(
+  userId: string,
+  deviceId: string,
+): Promise<MobileDeviceBlock | null> {
+  const row = await lookupMobileDevice(deviceId, userId);
+  if (!row) {
+    reportUnresolvedDeviceId('signed-claim');
+    return null;
+  }
+  return row.status === 'blocked' ? { reason: row.blockedReason } : null;
+}
+
+export function mobileDeviceBlockedResponse(c: Context, block: MobileDeviceBlock): Response {
+  return c.json(
+    {
+      error: 'This device has been deactivated. Please re-pair to continue.',
+      code: 'device_blocked',
+      reason: block.reason,
+    },
+    403
+  );
+}
+
 /** Test seam: clears the report rate limiter between cases. */
 export function _resetUnresolvedDeviceReportsForTests(): void {
   unresolvedReportThrottle.reset();
@@ -84,20 +134,7 @@ export async function mobileDeviceBlockedMiddleware(c: Context, next: Next): Pro
     return next();
   }
   const scopeByUser = signedDeviceId !== null && tokenUserId !== null;
-
-  const whereClause = scopeByUser
-    ? and(eq(mobileDevices.deviceId, deviceId), eq(mobileDevices.userId, tokenUserId as string))
-    : eq(mobileDevices.deviceId, deviceId);
-
-  const [row] = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() =>
-      db
-        .select({ status: mobileDevices.status, blockedReason: mobileDevices.blockedReason })
-        .from(mobileDevices)
-        .where(whereClause)
-        .limit(1)
-    )
-  );
+  const row = await lookupMobileDevice(deviceId, scopeByUser ? tokenUserId : null);
 
   if (!row) {
     reportUnresolvedDeviceId(scopeByUser ? 'signed-claim' : 'header');
@@ -105,14 +142,7 @@ export async function mobileDeviceBlockedMiddleware(c: Context, next: Next): Pro
   }
 
   if (row.status === 'blocked') {
-    return c.json(
-      {
-        error: 'This device has been deactivated. Please re-pair to continue.',
-        code: 'device_blocked',
-        reason: row.blockedReason ?? null,
-      },
-      403
-    );
+    return mobileDeviceBlockedResponse(c, { reason: row.blockedReason ?? null });
   }
 
   return next();

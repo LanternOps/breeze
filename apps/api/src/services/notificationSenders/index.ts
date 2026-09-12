@@ -16,6 +16,8 @@ export {
   sendWebhookNotification,
   validateWebhookConfig,
   testWebhook,
+  MAX_WEBHOOK_RETRIES,
+  webhookTotalAttempts,
   type WebhookNotificationPayload,
   type WebhookConfig,
   type SendResult as WebhookSendResult

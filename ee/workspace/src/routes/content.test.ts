@@ -83,6 +83,10 @@ function makeApp(overrides: Partial<ContentRouteDeps> = {}, auth?: object | null
       c.set('auth', (auth ?? {
         user: { id: 'admin-1' }, scope: 'partner', accessibleOrgIds: [ORG_ID],
       }) as WorkspaceRouteEnv['Variables']['auth']);
+      c.set('extensionAuthorization', {
+        hasPermission: () => true,
+        mfaSatisfied: true,
+      });
     }
     await next();
   });

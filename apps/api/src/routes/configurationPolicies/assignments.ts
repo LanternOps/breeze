@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import type { AuthContext } from '../../middleware/auth';
-import { requirePermission, requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
 import {
@@ -66,6 +66,7 @@ assignmentRoutes.post(
   '/:id/assignments',
   requireScope('organization', 'partner', 'system'),
   requireConfigPolicyWrite,
+  requireMfa(),
   zValidator('param', idParamSchema),
   zValidator('json', assignPolicySchema),
   async (c) => {
@@ -162,6 +163,7 @@ assignmentRoutes.delete(
   '/:id/assignments/:aid',
   requireScope('organization', 'partner', 'system'),
   requireConfigPolicyWrite,
+  requireMfa(),
   zValidator('param', assignmentIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;

@@ -148,4 +148,41 @@ describe.skipIf(!SHOULD_RUN)('mfaStepUpGrant real-Redis chain (#2707)', () => {
     );
     expect(outcomes.filter(Boolean)).toHaveLength(1);
   });
+
+  it('purpose-isolates recovery-code rotation and permits exactly one parallel terminal write', async () => {
+    const rotateBind = bind('rotate_recovery_codes');
+    const id = await mintStepUpGrant(rotateBind);
+    expect(id).toBeTruthy();
+
+    await expect(validateStepUpGrant(id!, { ...rotateBind, operation: 'add_factor' })).resolves.toBe(false);
+    await expect(validateStepUpGrant(id!, rotateBind)).resolves.toBe(true);
+
+    const outcomes = await Promise.all(
+      Array.from({ length: 16 }, () => consumeStepUpGrant(id!, rotateBind)),
+    );
+    expect(outcomes.filter(Boolean)).toHaveLength(1);
+    await expect(validateStepUpGrant(id!, rotateBind)).resolves.toBe(false);
+  });
+
+  it('resource-isolates passkey deletion and permits exactly one parallel terminal write', async () => {
+    const deleteBind = {
+      ...bind('delete_passkey'),
+      resourceDigest: `sha256:${'c'.repeat(64)}`,
+    };
+    const id = await mintStepUpGrant(deleteBind);
+    expect(id).toBeTruthy();
+
+    await expect(validateStepUpGrant(id!, {
+      ...deleteBind,
+      resourceDigest: `sha256:${'d'.repeat(64)}`,
+    })).resolves.toBe(false);
+    await expect(validateStepUpGrant(id!, { ...deleteBind, operation: 'rotate_recovery_codes' })).resolves.toBe(false);
+    await expect(validateStepUpGrant(id!, deleteBind)).resolves.toBe(true);
+
+    const outcomes = await Promise.all(
+      Array.from({ length: 16 }, () => consumeStepUpGrant(id!, deleteBind)),
+    );
+    expect(outcomes.filter(Boolean)).toHaveLength(1);
+    await expect(validateStepUpGrant(id!, deleteBind)).resolves.toBe(false);
+  });
 });

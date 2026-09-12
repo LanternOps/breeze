@@ -206,7 +206,7 @@ Breeze uses Redis-backed sliding window rate limiting. The implementation is **f
 | Password reset | 3 | 1 hour | Per email |
 | MFA verification | 5 | 5 minutes | Per user |
 | SMS verification | 3 | 1 hour | Per phone |
-| SMS login | 3 | 5 minutes | Per email |
+| SMS login | 3 | 5 minutes | Per login attempt |
 | Agent requests | 120 | 60 seconds | Per device |
 | API key requests | Configurable | 1 hour | Per key |
 
@@ -245,15 +245,17 @@ Referrer-Policy:           strict-origin-when-cross-origin
 Permissions-Policy:        camera=(), microphone=(), geolocation=()
 Content-Security-Policy:
     default-src 'self';
-    script-src 'self' 'unsafe-inline';
-    style-src 'self' 'unsafe-inline';
+    script-src 'self';
+    style-src 'self';
     img-src 'self' data: blob:;
     font-src 'self';
-    connect-src 'self' ws: wss:;
+    connect-src 'self' wss://*.2breeze.app;
     frame-ancestors 'none';
     base-uri 'self';
     form-action 'self'
 ```
+
+`script-src`/`style-src` never carry `'unsafe-inline'` in production, regardless of `CSP_ALLOW_UNSAFE_INLINE` — that override only applies outside production. The `connect-src` allowlist comes from `CSP_CONNECT_HOSTS` (comma-separated `wss://` hosts, e.g. `wss://*.2breeze.app,wss://us.2breeze.app`); self-hosters should set it to their own domain(s) — it falls back to Breeze's own `wss://*.2breeze.app` wildcard if unset.
 
 ### CORS
 
@@ -278,7 +280,7 @@ Every security-relevant operation is recorded in the `audit_logs` table:
 | `action` | Specific operation (e.g., `device.command.execute`) |
 | `resourceType` | Target entity type |
 | `resourceId` | Target entity UUID |
-| `result` | `success`, `failure`, or `denied` |
+| `result` | `success`, `failure`, `denied`, or `dispatched` |
 | `ipAddress` | Source IP (IPv4/IPv6) |
 | `userAgent` | Client identifier |
 | `details` | JSONB metadata (command type, exit codes, etc.) |
@@ -346,8 +348,9 @@ Caddy reverse proxy handles TLS termination with automatic Let's Encrypt certifi
 |---------|----------------|---------|
 | **CodeQL** | Static analysis (SAST) for JS/TS vulnerabilities | Every push and PR to main |
 | **Gitleaks** | Hardcoded secrets in source code | Every push and PR to main |
-| **npm audit** | Node.js dependency vulnerabilities (high+) | Every push and PR to main + weekly |
+| **osv-scanner** | Node.js dependency vulnerabilities via `pnpm-lock.yaml` (replaces `npm audit`, which npm/pnpm no longer supports) | Every push and PR to main + weekly |
 | **govulncheck** | Go dependency vulnerabilities | Every push and PR to main + weekly |
+| **cargo-audit** | Rust dependency vulnerabilities (helper and viewer) | Every push and PR to main + weekly |
 | **Trivy** | Filesystem CVE scan (high + critical) | Every push and PR to main + weekly |
 
 All scanners run in CI and **block merges** on failure.
@@ -378,7 +381,7 @@ All scanners run in CI and **block merges** on failure.
 
 Breeze validates environment configuration on startup:
 
-- Rejects 24 known placeholder/default values
+- Rejects 6 known placeholder values from `.env.example` plus 10 insecure substring patterns (e.g. `changeme`, `password`, `generate-a-random`)
 - Requires explicit `CORS_ALLOWED_ORIGINS` (no wildcards)
 - Enforces minimum secret strength
 - Logs warnings for non-critical misconfigurations
@@ -439,7 +442,7 @@ Breeze's security controls align with SOC 2 Trust Service Criteria.
 |----------|----------------|
 | CC7.1 — Infrastructure monitoring | Agent health checks, heartbeat monitoring, configurable alerting |
 | CC7.2 — Anomaly detection | Rate limit violation tracking, audit log analysis |
-| CC7.3 — Vulnerability management | CodeQL SAST, Trivy CVE scanning, npm audit, govulncheck |
+| CC7.3 — Vulnerability management | CodeQL SAST, Trivy CVE scanning, osv-scanner, govulncheck, cargo-audit |
 | CC7.4 — Incident response | Disaster recovery runbook, security incident procedures |
 
 ### CC8 — Change Management
@@ -452,7 +455,7 @@ Breeze's security controls align with SOC 2 Trust Service Criteria.
 
 | Criteria | Implementation |
 |----------|----------------|
-| CC9.1 — Risk identification | Automated security scanning (5 scanners), AI risk classification engine |
+| CC9.1 — Risk identification | Automated security scanning (6 scanners), AI risk classification engine |
 | CC9.2 — Vendor risk management | Dependency lock files, supply chain scanning, known vulnerability databases |
 
 ### A1 — Availability
@@ -535,7 +538,7 @@ a fix has shipped and rolled out, so details are never public while operators ar
 | CSRF protection | Header-based validation on state changes | Implemented |
 | Agent security | Token hashing + optional mTLS + file permissions | Implemented |
 | AI safety | Risk classification engine with human approval gates | Implemented |
-| Supply chain | 5 automated scanners blocking on failure | Implemented |
+| Supply chain | 6 automated scanners blocking on failure | Implemented |
 | Docker hardening | Multi-stage, non-root, Alpine base | Implemented |
 | Secret management | Rotation procedures, production validation, no plaintext | Implemented |
 | Disaster recovery | Documented runbooks, defined RTO/RPO | Implemented |

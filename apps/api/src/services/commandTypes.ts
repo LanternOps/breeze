@@ -182,3 +182,23 @@ export const CommandTypes = {
 
 
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
+
+/**
+ * `device_commands.type` values whose FIRST reply from the agent may be a
+ * non-terminal queue-admission/started ack rather than the real outcome
+ * (D20). Mirrors the agent's own `backupipc.IsQueuedWorkload`
+ * (agent/internal/backupipc/types.go) MINUS `backup_run`: a backup_run
+ * command is dispatched with a non-UUID commandId and never creates a
+ * `device_commands` row at all (see routes/agentWs.ts's
+ * processOrphanedCommandResult backup-job branch), so it never reaches the
+ * device_commands-keyed code this constant gates
+ * (services/commandResultAcceptance.ts, routes/agentWs.ts,
+ * routes/agents/commands.ts). mssql_backup and hyperv_backup DO create a
+ * device_commands row (routes/backup/mssql.ts, hyperv.ts call
+ * executeCommand()), so they are the only two types that can actually reach
+ * that CAS with a queue ack as the first frame.
+ */
+export const QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES = [
+  CommandTypes.MSSQL_BACKUP,
+  CommandTypes.HYPERV_BACKUP,
+] as const;

@@ -151,3 +151,30 @@ export function stopOutcomeEffects(outcome: StopOutcome): TimerEffects {
   // The server is authoritative: nothing was running, so neither is the bar.
   return failure(outcome, { clearRunning: outcome.reason === 'not-running' });
 }
+
+/**
+ * The ticket whose internal-note composer a finished stop should open, or
+ * `null` for a stop that has nothing to annotate (#5366).
+ *
+ * Lives beside the effects table for the same reason that table exists: the
+ * two surfaces that stop timers were deciding this independently — inline, in
+ * `.tsx` files the node-only Vitest config can never import — which is exactly
+ * how the earlier drift documented above went unnoticed.
+ *
+ * Deliberately NOT a field on `TimerEffects`: this answers "which ticket",
+ * which `stopOutcomeEffects` cannot know on the queued path (that outcome
+ * carries no entry), so it needs the pre-stop running timer as a second input.
+ *
+ * Gated on the OUTCOME rather than on `clearRunning`: an unusable-clock or
+ * not-running stop clears the bar too, but nothing was recorded to annotate
+ * and the error notice is what the technician needs to read.
+ */
+export function stopComposerTicketId(
+  outcome: StopOutcome,
+  running: Pick<RunningTimer, 'ticketId'> | null
+): string | null {
+  if (outcome.ok !== true && outcome.ok !== 'queued') return null;
+  // The server is authoritative about the entry it just closed; the queued
+  // path has no entry, so the pre-stop running timer is the only record.
+  return (outcome.ok === true ? outcome.entry.ticketId : null) ?? running?.ticketId ?? null;
+}

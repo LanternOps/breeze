@@ -85,6 +85,7 @@ function seedSession() {
     token: TOKEN,
     portalUserId: USER_ID,
     orgId: ORG_ID,
+    authEpoch: 1,
     createdAt: new Date(),
     expiresAt: new Date(Date.now() + 60 * 60 * 1000),
   });
@@ -101,6 +102,8 @@ beforeEach(() => {
     contactId: null,
     receiveNotifications: true,
     status: 'active',
+    authMethod: 'password',
+    authEpoch: 1,
   };
   activeOrgResult.current = { orgId: ORG_ID, partnerId: 'partner-1' };
 });

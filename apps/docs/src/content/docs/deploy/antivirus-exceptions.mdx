@@ -11,11 +11,11 @@ import { Tabs, TabItem, Steps, Aside } from '@astrojs/starlight/components';
 Endpoint protection software may flag, quarantine, or block the Breeze agent. This guide covers the exclusions needed for each platform, and what to do when a *signed* binary is flagged.
 
 <Aside type="caution">
-  Unsigned binaries are common during development, self-hosted builds, and early deployments, and are the most common cause of AV interference. For production fleets, consider signing your binaries to avoid the need for broad AV exclusions. See [Building from Source](/agents/building/) for build instructions.
+  Unsigned binaries are common during development, self-hosted builds, and early deployments, and are the most common cause of AV interference. As of v0.105.0, this includes the **public release's Windows agent artifacts** — see the note below. For production fleets, consider signing your binaries to avoid the need for broad AV exclusions. See [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/) for the supported path.
 </Aside>
 
 <Aside type="note">
-  Agent binaries from official Breeze releases **are** code-signed. If one of those is being quarantined, exclusions are a workaround rather than the fix. See [Signed Binaries Flagged as Malware](#signed-binaries-flagged-as-malware) below.
+  **Not every Breeze binary is signed the same way.** macOS agent binaries are codesigned and notarized by Breeze. On Windows, the **Viewer and Helper** installers are Authenticode-signed by LanternOps, but as of v0.105.0 the **Agent** artifacts (`breeze-agent.exe`, `breeze-agent.msi`, and the backup/watchdog/user-helper `.exe`s bundled with it) are published **unsigned** in the public self-host release, as signing inputs for deployments that sign under their own certificate — `Get-AuthenticodeSignature` reporting `NotSigned` on those is expected, not a red flag. See [Code Signing](/deploy/code-signing/) for the full breakdown. If a **signed** binary (macOS agent, or the Windows Viewer/Helper) is being quarantined, exclusions are a workaround rather than the fix — see [Signed Binaries Flagged as Malware](#signed-binaries-flagged-as-malware) below.
 </Aside>
 
 ## Why Exclusions Are Needed
@@ -32,24 +32,24 @@ These behaviors overlap with patterns that heuristic-based antivirus engines fla
 
 ## Signed Binaries Flagged as Malware
 
-Agent binaries published in official Breeze releases are Authenticode-signed on Windows and codesigned/notarized on macOS. A signed binary being quarantined is a **false positive**, and adding an exclusion treats the symptom rather than the cause.
+Agent binaries published in official Breeze releases are codesigned and notarized on macOS. On Windows, the **Viewer and Helper** installers are Authenticode-signed by LanternOps; the **Agent** installer and executables are published **unsigned** in the public release as of v0.105.0 (self-host signing inputs), unless you've signed them under your own certificate — see [Code Signing](/deploy/code-signing/) and [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/). A signed binary being quarantined is a **false positive**, and adding an exclusion treats the symptom rather than the cause.
 
 ### Step 1: Confirm the binary is actually signed
 
-Do this before anything else. A binary from a development build, a fork, or a self-hosted build pipeline will not be signed, and the rest of this section does not apply to it.
+Do this before anything else. This applies to macOS agent binaries and the Windows Viewer/Helper installers. A publicly-released Windows **Agent** binary is expected to report `NotSigned` unless you've signed it yourself — that's normal, not a broken build.
 
 ```powershell
-# Windows
-Get-AuthenticodeSignature "C:\Program Files\Breeze\breeze-agent.exe" | Format-List Status, SignerCertificate
+# Windows Helper (the Windows component Breeze itself signs alongside the Viewer)
+Get-AuthenticodeSignature "C:\Program Files\Breeze Helper\breeze-helper.exe" | Format-List Status, SignerCertificate
 ```
 
 ```bash
-# macOS
+# macOS agent
 codesign --verify --deep --strict --verbose=2 /usr/local/bin/breeze-agent
 spctl --assess --type execute --verbose /usr/local/bin/breeze-agent
 ```
 
-If Windows reports `NotSigned`, or macOS reports the binary is not signed, that binary did not come from an official release. Reinstall from an official release before pursuing a false-positive report.
+If the Windows Helper/Viewer reports `NotSigned`, or macOS reports the binary is not signed, that binary did not come from an official release. Reinstall from an official release before pursuing a false-positive report.
 
 ### Step 2: Read the detection name
 
@@ -88,6 +88,17 @@ Use the platform sections below to unblock the fleet while the vendor submission
 | macOS | `/usr/local/bin/breeze-agent` |
 | Windows | `C:\Program Files\Breeze\breeze-agent.exe` |
 
+### Companion Windows Executables
+
+The agent installer also stages a watchdog, a per-user helper, and a backup binary in the **same directory** as the agent (`C:\Program Files\Breeze\`). Exclude these by process name alongside `breeze-agent.exe`:
+
+| Binary | Purpose |
+|---|---|
+| `breeze-watchdog.exe` | Runs as its own service (`BreezeWatchdog`) and restarts the agent if it stops responding |
+| `breeze-user-helper.exe` | GUI-subsystem sibling of the agent, spawned into the interactive user session for prompts and remote-desktop UI |
+| `breeze-desktop-helper.exe` | Per-user desktop-session helper process used by remote access |
+| `breeze-backup.exe` | Enterprise backup binary (Hyper-V, MSSQL, system image) — see [Binary Distribution](/deploy/binaries/#backup-binary) |
+
 ### Configuration Directory
 
 | OS | Path |
@@ -109,8 +120,8 @@ Use the platform sections below to unblock the fleet while the vendor submission
 | OS | Path |
 |---|---|
 | Linux | `/usr/local/bin/breeze-helper` |
-| macOS | `/usr/local/bin/breeze-helper` |
-| Windows | `C:\Program Files\Breeze\breeze-helper.exe` |
+| macOS | `/Applications/Breeze Helper.app/Contents/MacOS/breeze-helper` |
+| Windows | `C:\Program Files\Breeze Helper\breeze-helper.exe` |
 
 ## Windows
 
@@ -123,10 +134,15 @@ Use the platform sections below to unblock the fleet while the vendor submission
     ```powershell
     # Process exclusions
     Add-MpPreference -ExclusionProcess "C:\Program Files\Breeze\breeze-agent.exe"
-    Add-MpPreference -ExclusionProcess "C:\Program Files\Breeze\breeze-helper.exe"
+    Add-MpPreference -ExclusionProcess "C:\Program Files\Breeze\breeze-watchdog.exe"
+    Add-MpPreference -ExclusionProcess "C:\Program Files\Breeze\breeze-user-helper.exe"
+    Add-MpPreference -ExclusionProcess "C:\Program Files\Breeze\breeze-desktop-helper.exe"
+    Add-MpPreference -ExclusionProcess "C:\Program Files\Breeze\breeze-backup.exe"
+    Add-MpPreference -ExclusionProcess "C:\Program Files\Breeze Helper\breeze-helper.exe"
 
     # Path exclusions (config, logs, working directories)
     Add-MpPreference -ExclusionPath "C:\Program Files\Breeze"
+    Add-MpPreference -ExclusionPath "C:\Program Files\Breeze Helper"
     Add-MpPreference -ExclusionPath "C:\ProgramData\Breeze"
 
     # Verify
@@ -142,10 +158,15 @@ Use the platform sections below to unblock the fleet while the vendor submission
       2. Navigate to **Computer Configuration → Administrative Templates → Windows Components → Microsoft Defender Antivirus → Exclusions**.
       3. Under **Path Exclusions**, add:
          - `C:\Program Files\Breeze`
+         - `C:\Program Files\Breeze Helper`
          - `C:\ProgramData\Breeze`
       4. Under **Process Exclusions**, add:
          - `C:\Program Files\Breeze\breeze-agent.exe`
-         - `C:\Program Files\Breeze\breeze-helper.exe`
+         - `C:\Program Files\Breeze\breeze-watchdog.exe`
+         - `C:\Program Files\Breeze\breeze-user-helper.exe`
+         - `C:\Program Files\Breeze\breeze-desktop-helper.exe`
+         - `C:\Program Files\Breeze\breeze-backup.exe`
+         - `C:\Program Files\Breeze Helper\breeze-helper.exe`
       5. Run `gpupdate /force` on target machines or wait for the next policy refresh.
     </Steps>
   </TabItem>
@@ -160,8 +181,13 @@ Use the platform sections below to unblock the fleet while the vendor submission
          | Type | Value |
          |---|---|
          | Process | `C:\Program Files\Breeze\breeze-agent.exe` |
-         | Process | `C:\Program Files\Breeze\breeze-helper.exe` |
+         | Process | `C:\Program Files\Breeze\breeze-watchdog.exe` |
+         | Process | `C:\Program Files\Breeze\breeze-user-helper.exe` |
+         | Process | `C:\Program Files\Breeze\breeze-desktop-helper.exe` |
+         | Process | `C:\Program Files\Breeze\breeze-backup.exe` |
+         | Process | `C:\Program Files\Breeze Helper\breeze-helper.exe` |
          | Folder | `C:\Program Files\Breeze` |
+         | Folder | `C:\Program Files\Breeze Helper` |
          | Folder | `C:\ProgramData\Breeze` |
 
       4. Assign the policy to the appropriate device groups.
@@ -185,8 +211,13 @@ For products like CrowdStrike, SentinelOne, Sophos, Bitdefender, etc., add **bot
 | Exclusion Type | Value |
 |---|---|
 | Process / Application | `C:\Program Files\Breeze\breeze-agent.exe` |
-| Process / Application | `C:\Program Files\Breeze\breeze-helper.exe` |
+| Process / Application | `C:\Program Files\Breeze\breeze-watchdog.exe` |
+| Process / Application | `C:\Program Files\Breeze\breeze-user-helper.exe` |
+| Process / Application | `C:\Program Files\Breeze\breeze-desktop-helper.exe` |
+| Process / Application | `C:\Program Files\Breeze\breeze-backup.exe` |
+| Process / Application | `C:\Program Files\Breeze Helper\breeze-helper.exe` |
 | Directory | `C:\Program Files\Breeze\` |
+| Directory | `C:\Program Files\Breeze Helper\` |
 | Directory | `C:\ProgramData\Breeze\` |
 
 <Aside>
@@ -238,8 +269,9 @@ For products like CrowdStrike, SentinelOne, or Jamf Protect, add these exclusion
 | Exclusion Type | Value |
 |---|---|
 | Process | `/usr/local/bin/breeze-agent` |
-| Process | `/usr/local/bin/breeze-helper` |
+| Process | `/Applications/Breeze Helper.app/Contents/MacOS/breeze-helper` |
 | Directory | `/Library/Application Support/Breeze/` |
+| Directory | `/Applications/Breeze Helper.app/` |
 | Directory | `/etc/breeze/` (if symlinked) |
 
 ### MDM Configuration Profile
@@ -363,19 +395,25 @@ For quick reference, here are the minimum exclusions needed per platform:
   <TabItem label="Windows">
     **Processes:**
     - `C:\Program Files\Breeze\breeze-agent.exe`
-    - `C:\Program Files\Breeze\breeze-helper.exe`
+    - `C:\Program Files\Breeze\breeze-watchdog.exe`
+    - `C:\Program Files\Breeze\breeze-user-helper.exe`
+    - `C:\Program Files\Breeze\breeze-desktop-helper.exe`
+    - `C:\Program Files\Breeze\breeze-backup.exe`
+    - `C:\Program Files\Breeze Helper\breeze-helper.exe`
 
     **Directories:**
     - `C:\Program Files\Breeze\`
+    - `C:\Program Files\Breeze Helper\`
     - `C:\ProgramData\Breeze\`
   </TabItem>
   <TabItem label="macOS">
     **Processes:**
     - `/usr/local/bin/breeze-agent`
-    - `/usr/local/bin/breeze-helper`
+    - `/Applications/Breeze Helper.app/Contents/MacOS/breeze-helper`
 
     **Directories:**
     - `/Library/Application Support/Breeze/`
+    - `/Applications/Breeze Helper.app/`
   </TabItem>
   <TabItem label="Linux">
     **Processes:**

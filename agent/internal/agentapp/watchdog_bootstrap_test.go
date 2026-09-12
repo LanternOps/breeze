@@ -1,8 +1,6 @@
 package agentapp
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,11 +8,6 @@ import (
 	"runtime"
 	"testing"
 )
-
-func testSHA256Hex(body []byte) string {
-	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:])
-}
 
 func TestWatchdogBinaryName(t *testing.T) {
 	tests := []struct {
@@ -59,14 +52,6 @@ func TestWatchdogDownloadURL(t *testing.T) {
 	}
 }
 
-func TestWatchdogChecksumsURL(t *testing.T) {
-	got := releaseChecksumsURL("0.62.24")
-	want := "https://github.com/LanternOps/breeze/releases/download/v0.62.24/checksums.txt"
-	if got != want {
-		t.Errorf("releaseChecksumsURL() = %q, want %q", got, want)
-	}
-}
-
 func TestLocateSiblingWatchdog_Found(t *testing.T) {
 	dir := t.TempDir()
 	agentPath := filepath.Join(dir, "breeze-agent")
@@ -100,147 +85,6 @@ func TestLocateSiblingWatchdog_NotFound(t *testing.T) {
 	_, ok := locateSiblingWatchdog(agentPath)
 	if ok {
 		t.Errorf("locateSiblingWatchdog returned ok=true, want false")
-	}
-}
-
-func TestDownloadWatchdog_Success(t *testing.T) {
-	body := make([]byte, 2*1024*1024)
-	for i := range body {
-		body[i] = byte(i % 256)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
-	}))
-	defer srv.Close()
-
-	destDir := t.TempDir()
-	destPath := filepath.Join(destDir, "breeze-watchdog")
-
-	if err := downloadReleaseAsset(srv.URL, destPath, testSHA256Hex(body)); err != nil {
-		t.Fatalf("downloadReleaseAsset: %v", err)
-	}
-
-	got, err := os.ReadFile(destPath)
-	if err != nil {
-		t.Fatalf("read downloaded file: %v", err)
-	}
-	if len(got) != len(body) {
-		t.Errorf("downloaded size = %d, want %d", len(got), len(body))
-	}
-	if runtime.GOOS != "windows" {
-		info, err := os.Stat(destPath)
-		if err != nil {
-			t.Fatalf("stat: %v", err)
-		}
-		if info.Mode().Perm()&0100 == 0 {
-			t.Errorf("downloaded file is not executable: mode=%v", info.Mode())
-		}
-	}
-}
-
-func TestDownloadWatchdog_404(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-
-	destPath := filepath.Join(t.TempDir(), "breeze-watchdog")
-	err := downloadReleaseAsset(srv.URL, destPath, testSHA256Hex([]byte("unused")))
-	if err == nil {
-		t.Fatalf("downloadReleaseAsset: expected error on 404, got nil")
-	}
-	if _, statErr := os.Stat(destPath); statErr == nil {
-		t.Errorf("downloadReleaseAsset: dest file should not exist after failure")
-	}
-}
-
-func TestDownloadWatchdog_TooSmall(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("not a real binary"))
-	}))
-	defer srv.Close()
-
-	destPath := filepath.Join(t.TempDir(), "breeze-watchdog")
-	err := downloadReleaseAsset(srv.URL, destPath, testSHA256Hex([]byte("not a real binary")))
-	if err == nil {
-		t.Fatalf("downloadReleaseAsset: expected error on too-small body, got nil")
-	}
-	if _, statErr := os.Stat(destPath); statErr == nil {
-		t.Errorf("downloadReleaseAsset: dest file should not exist after failure")
-	}
-}
-
-func TestDownloadWatchdog_ChecksumMismatch(t *testing.T) {
-	body := make([]byte, 2*1024*1024)
-	for i := range body {
-		body[i] = byte(i % 251)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
-	}))
-	defer srv.Close()
-
-	destPath := filepath.Join(t.TempDir(), "breeze-watchdog")
-	err := downloadReleaseAsset(srv.URL, destPath, testSHA256Hex([]byte("different body")))
-	if err == nil {
-		t.Fatalf("downloadReleaseAsset: expected checksum mismatch, got nil")
-	}
-	if _, statErr := os.Stat(destPath); statErr == nil {
-		t.Errorf("downloadReleaseAsset: dest file should not exist after checksum failure")
-	}
-}
-
-func TestFetchWatchdogChecksum(t *testing.T) {
-	body := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  breeze-watchdog-linux-amd64\n" +
-		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb *breeze-watchdog-linux-arm64\n"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(body))
-	}))
-	defer srv.Close()
-
-	got, err := fetchReleaseAssetChecksum(srv.URL, "breeze-watchdog-linux-arm64")
-	if err != nil {
-		t.Fatalf("fetchReleaseAssetChecksum: %v", err)
-	}
-	want := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	if got != want {
-		t.Errorf("fetchReleaseAssetChecksum = %q, want %q", got, want)
-	}
-}
-
-func TestBootstrapWatchdog_SiblingFound_RunsInstall(t *testing.T) {
-	dir := t.TempDir()
-	agentPath := filepath.Join(dir, "breeze-agent")
-	if err := os.WriteFile(agentPath, []byte("fake"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	siblingPath := filepath.Join(dir, watchdogBinaryName(runtime.GOOS))
-	marker := filepath.Join(dir, "invoked")
-	var script string
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping exec-sibling test on Windows (need real .exe)")
-	} else {
-		script = "#!/bin/sh\necho invoked > \"" + marker + "\"\n"
-	}
-	if err := os.WriteFile(siblingPath, []byte(script), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	opts := bootstrapOptions{
-		agentPath: agentPath,
-		version:   "0.62.24",
-		goos:      runtime.GOOS,
-		goarch:    runtime.GOARCH,
-	}
-	if err := bootstrapWatchdog(opts); err != nil {
-		t.Fatalf("bootstrapWatchdog: %v", err)
-	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Errorf("expected sibling watchdog to be invoked (marker %q not found): %v", marker, err)
 	}
 }
 
@@ -279,40 +123,17 @@ func TestBootstrapWatchdog_DownloadFailure(t *testing.T) {
 	}
 
 	opts := bootstrapOptions{
-		agentPath:        agentPath,
-		version:          "0.62.24",
-		goos:             runtime.GOOS,
-		goarch:           runtime.GOARCH,
-		urlOverride:      srv.URL,
-		checksumOverride: testSHA256Hex([]byte("unused")),
+		agentPath:            agentPath,
+		version:              "0.62.24",
+		goos:                 runtime.GOOS,
+		goarch:               runtime.GOARCH,
+		urlOverride:          srv.URL,
+		manifestURLOverride:  srv.URL,
+		signatureURLOverride: srv.URL,
+		clientOverride:       srv.Client(),
 	}
 	err := bootstrapWatchdog(opts)
 	if err == nil {
 		t.Fatalf("bootstrapWatchdog: expected error on download 404, got nil")
-	}
-}
-
-func TestBootstrapWatchdog_SiblingExitsNonZero(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping exec-sibling test on Windows (need real .exe)")
-	}
-	dir := t.TempDir()
-	agentPath := filepath.Join(dir, "breeze-agent")
-	if err := os.WriteFile(agentPath, []byte("fake"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	siblingPath := filepath.Join(dir, watchdogBinaryName(runtime.GOOS))
-	if err := os.WriteFile(siblingPath, []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	opts := bootstrapOptions{
-		agentPath: agentPath,
-		version:   "0.62.24",
-		goos:      runtime.GOOS,
-		goarch:    runtime.GOARCH,
-	}
-	if err := bootstrapWatchdog(opts); err == nil {
-		t.Fatalf("bootstrapWatchdog: expected error when sibling exits non-zero, got nil")
 	}
 }

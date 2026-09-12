@@ -7,6 +7,7 @@
 #   ./scripts/backup.sh --db
 #   ./scripts/backup.sh --storage
 #   ./scripts/backup.sh --config
+#   ./scripts/backup.sh --data          # api_data volume (patch compliance reports)
 #   ./scripts/backup.sh --db --config
 #
 # Environment variables:
@@ -14,6 +15,7 @@
 #   BACKUP_DIR              Destination directory (default: /var/backups/breeze)
 #   BACKUP_RETENTION_DAYS   Delete backups older than N days (default: 30)
 #   BACKUP_ENCRYPTION_KEY   Passphrase for config encryption (required for --config)
+#   API_DATA_VOLUME         Docker volume holding /data (default: auto-detect *_api_data)
 #   S3_ENDPOINT             MinIO/S3 endpoint (required for --storage)
 #   S3_BUCKET               Bucket name (default: breeze)
 #   S3_ACCESS_KEY           S3 access key (required for --storage)
@@ -71,9 +73,10 @@ ensure_dir() {
 DO_DB=false
 DO_STORAGE=false
 DO_CONFIG=false
+DO_DATA=false
 
 if [ $# -eq 0 ]; then
-  echo "Usage: $0 [--all | --db] [--storage] [--config]"
+  echo "Usage: $0 [--all | --db] [--storage] [--config] [--data]"
   echo "At least one flag is required."
   exit 2
 fi
@@ -84,12 +87,14 @@ while [ $# -gt 0 ]; do
       DO_DB=true
       DO_STORAGE=true
       DO_CONFIG=true
+      DO_DATA=true
       ;;
     --db)       DO_DB=true ;;
     --storage)  DO_STORAGE=true ;;
     --config)   DO_CONFIG=true ;;
+    --data)     DO_DATA=true ;;
     -h|--help)
-      echo "Usage: $0 [--all | --db] [--storage] [--config]"
+      echo "Usage: $0 [--all | --db] [--storage] [--config] [--data]"
       exit 0
       ;;
     *)
@@ -141,6 +146,20 @@ if $DO_CONFIG; then
   fi
   if ! command -v openssl &>/dev/null; then
     die "openssl is not installed or not in PATH"
+  fi
+fi
+
+if $DO_DATA; then
+  TASKS_REQUESTED=$((TASKS_REQUESTED + 1))
+  if ! command -v docker &>/dev/null; then
+    die "docker is required for --data backups"
+  fi
+  API_DATA_VOLUME="${API_DATA_VOLUME:-}"
+  if [ -z "$API_DATA_VOLUME" ]; then
+    API_DATA_VOLUME="$(docker volume ls --format '{{.Name}}' | grep -E '(^|_)api_data$' | head -1 || true)"
+  fi
+  if [ -z "$API_DATA_VOLUME" ]; then
+    die "Could not find an api_data docker volume; set API_DATA_VOLUME explicitly"
   fi
 fi
 
@@ -275,6 +294,29 @@ backup_config() {
 }
 
 # ---------------------------------------------------------------------------
+# api_data volume backup (patch compliance reports at /data/patch-reports)
+# ---------------------------------------------------------------------------
+
+backup_api_data() {
+  log "Starting api_data volume backup (${API_DATA_VOLUME})..."
+  local dest="${BACKUP_DIR}/api_data_${TIMESTAMP}.tar.gz"
+
+  if docker run --rm \
+       -v "${API_DATA_VOLUME}:/data:ro" \
+       -v "${BACKUP_DIR}:/backup" \
+       alpine:3 tar -czf "/backup/$(basename "${dest}")" -C /data . 2>&1; then
+    local size
+    size=$(du -h "${dest}" | cut -f1)
+    log "api_data backup complete: ${dest} (${size})"
+    TASKS_SUCCEEDED=$((TASKS_SUCCEEDED + 1))
+  else
+    log "ERROR: api_data backup failed"
+    rm -f "${dest}"
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Retention cleanup
 # ---------------------------------------------------------------------------
 
@@ -321,6 +363,12 @@ fi
 if $DO_CONFIG; then
   if ! backup_config; then
     log "ERROR: backup_config returned non-zero exit status"
+  fi
+fi
+
+if $DO_DATA; then
+  if ! backup_api_data; then
+    log "ERROR: backup_api_data returned non-zero exit status"
   fi
 fi
 

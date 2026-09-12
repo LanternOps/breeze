@@ -47,7 +47,8 @@ const {
   }
   const authState = {
     scope: 'partner' as 'partner' | 'system' | 'organization',
-    permissions: new Set<string>(['invoices:write']),
+    partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
+    permissions: new Set<string>(['accounting:read', 'accounting:manage', 'invoices:write']),
     mfa: true,
   };
   return {
@@ -117,6 +118,7 @@ vi.mock('../../middleware/auth', () => ({
     c.set('auth', {
       scope: authState.scope,
       partnerId: authState.scope === 'organization' ? null : 'p1',
+      partnerOrgAccess: authState.partnerOrgAccess,
       user: { id: 'u1' },
     });
     await next();
@@ -197,7 +199,7 @@ function pushOutcome(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   authState.scope = 'partner';
-  authState.permissions = new Set(['invoices:write']);
+  authState.permissions = new Set(['accounting:read', 'accounting:manage', 'invoices:write']);
   authState.mfa = true;
   // The enqueue helper reports whether the queue ACCEPTED the job; the bulk
   // route counts on that, so the default must be a real acceptance.
@@ -279,7 +281,7 @@ describe('POST /accounting/:provider/invoices/:invoiceId/push', () => {
   });
 
   it('denies a partner-scoped caller without INVOICES_WRITE (403) before calling the coordinator', async () => {
-    authState.permissions = new Set();
+    authState.permissions = new Set(['accounting:read', 'accounting:manage']);
     const res = await pushInvoice();
     expect(res.status).toBe(403);
     expect(pushInvoiceToAccountingMock).not.toHaveBeenCalled();
@@ -287,7 +289,7 @@ describe('POST /accounting/:provider/invoices/:invoiceId/push', () => {
 
   it('allows a SYSTEM-scope caller that holds no per-partner role (bypasses the permission check)', async () => {
     authState.scope = 'system';
-    authState.permissions = new Set();
+    authState.permissions = new Set(['accounting:read', 'accounting:manage']);
     pushInvoiceToAccountingMock.mockResolvedValue(pushOutcome());
     const res = await pushInvoice(INVOICE_ID, `?partnerId=${OTHER_PARTNER_ID}`);
     expect(res.status).toBe(200);
@@ -389,7 +391,7 @@ describe('POST /accounting/:provider/invoices/push-bulk', () => {
   });
 
   it('denies a partner-scoped caller without INVOICES_WRITE (403)', async () => {
-    authState.permissions = new Set();
+    authState.permissions = new Set(['accounting:read', 'accounting:manage']);
     const res = await pushBulk([INVOICE_ID]);
     expect(res.status).toBe(403);
     expect(enqueueAccountingInvoicePushMock).not.toHaveBeenCalled();
@@ -397,7 +399,7 @@ describe('POST /accounting/:provider/invoices/push-bulk', () => {
 
   it('allows a SYSTEM-scope caller that holds no per-partner role', async () => {
     authState.scope = 'system';
-    authState.permissions = new Set();
+    authState.permissions = new Set(['accounting:read', 'accounting:manage']);
     selectMock.mockReturnValue({
       from: () => ({ where: () => Promise.resolve([{ id: INVOICE_ID }]) }),
     });
@@ -465,7 +467,7 @@ describe('GET /accounting/:provider/remote-candidates', () => {
   });
 
   it('is read-only: no MFA/permission gate blocks a plain partner-scoped caller', async () => {
-    authState.permissions = new Set();
+    authState.permissions = new Set(['accounting:read', 'accounting:manage']);
     resolveConnectionAndTokenMock.mockResolvedValue({ conn: { provider: 'quickbooks' }, liveConn: { accessToken: 'tok' } });
     listRemoteCustomersMock.mockResolvedValue([]);
     const res = await getCandidates('?entityType=org');

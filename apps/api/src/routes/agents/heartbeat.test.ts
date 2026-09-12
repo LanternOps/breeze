@@ -72,6 +72,18 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('../../db/schema', () => ({
+  bareMetalRecoveries: {
+    id: 'bare_metal_recoveries.id',
+    orgId: 'bare_metal_recoveries.org_id',
+    deviceId: 'bare_metal_recoveries.device_id',
+    snapshotId: 'bare_metal_recoveries.snapshot_id',
+    identity: 'bare_metal_recoveries.identity',
+    nonceHash: 'bare_metal_recoveries.nonce_hash',
+    status: 'bare_metal_recoveries.status',
+    rebootedAt: 'bare_metal_recoveries.rebooted_at',
+    checkedInAt: 'bare_metal_recoveries.checked_in_at',
+    updatedAt: 'bare_metal_recoveries.updated_at',
+  },
   devices: {
     id: 'devices.id',
     status: 'devices.status',
@@ -287,7 +299,8 @@ vi.mock('../../jobs/deviceGroupJobs', () => ({
 
 import { and, eq, notInArray } from 'drizzle-orm';
 import { heartbeatRoutes } from './heartbeat';
-import { devices } from '../../db/schema';
+import { devices, bareMetalRecoveries } from '../../db/schema';
+import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 
 // Builds a thenable mock-chain so any `.from().where().limit()` access
 // resolves to the given value.
@@ -5520,4 +5533,161 @@ describe('POST /agents/:id/heartbeat — reboot status (#3207 W5)', () => {
   // mocks '@hono/zod-validator' so the handler reads the raw body. They live in
   // schemas.heartbeatTolerance.test.ts, and what reaches this route once a
   // field has been dropped is exactly the "absent" case covered above.
+});
+
+// ---------------------------------------------------------------------
+// Bare-metal recovery W04a — heartbeat recovery-marker check-in.
+// ---------------------------------------------------------------------
+describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
+  const baselineDevice = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'linux',
+    osVersion: 'Ubuntu 22.04',
+    osBuild: null,
+    architecture: 'amd64',
+    agentVersion: '0.65.10',
+    deviceRole: 'server',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date(),
+    status: 'online',
+  };
+
+  const NONCE = 'a'.repeat(64);
+  const RECOVERY_ID = '11111111-1111-4111-8111-111111111111';
+
+  let recoverySetCalls: Record<string, unknown>[];
+  let deviceSetCalls: Record<string, unknown>[];
+
+  function arrange(recoveryRows: unknown[]) {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    recoverySetCalls = [];
+    deviceSetCalls = [];
+
+    selectMock
+      .mockReturnValueOnce(selectChainResolving([baselineDevice])) // device lookup
+      .mockReturnValueOnce(selectChainResolving(recoveryRows)); // bare_metal_recoveries lookup
+    selectMock.mockReturnValue(selectChainResolving([]));
+
+    updateMock.mockImplementation((table: unknown) => {
+      if (table === bareMetalRecoveries) {
+        return {
+          set: vi.fn((values: Record<string, unknown>) => {
+            recoverySetCalls.push(values);
+            return { where: vi.fn(() => Promise.resolve(undefined)) };
+          }),
+        };
+      }
+      return {
+        set: vi.fn((values: Record<string, unknown>) => {
+          deviceSetCalls.push(values);
+          return { where: vi.fn(() => whereResultWithReturning([{ id: 'device-1' }])) };
+        }),
+      };
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  }
+
+  async function beat(body: Record<string, unknown>) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('completes a rebooted recovery when the nonce matches and acks', async () => {
+    arrange([{
+      id: RECOVERY_ID, orgId: 'org-1', deviceId: 'device-1', snapshotId: 'snap-1',
+      identity: 'original', status: 'rebooted', nonceHash: hashRecoveryNonce(NONCE), rebootedAt: null,
+    }]);
+
+    const res = await beat({
+      ...minimalHeartbeatBody,
+      recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.recoveryMarkerAck).toBe(true);
+    expect(recoverySetCalls).toHaveLength(1);
+    expect(recoverySetCalls[0]!.status).toBe('checked_in');
+    expect(recoverySetCalls[0]!.checkedInAt).toBeInstanceOf(Date);
+    expect(deviceSetCalls[0]!.recoveredAt).toBeInstanceOf(Date);
+    expect(deviceSetCalls[0]!.recoveredFromSnapshotId).toBe('snap-1');
+  });
+
+  it('ignores a marker whose nonce does not match (no ack, no update, audit failure)', async () => {
+    arrange([{
+      id: RECOVERY_ID, orgId: 'org-1', deviceId: 'device-1', snapshotId: 'snap-1',
+      identity: 'original', status: 'rebooted', nonceHash: hashRecoveryNonce('b'.repeat(64)), rebootedAt: null,
+    }]);
+
+    const res = await beat({
+      ...minimalHeartbeatBody,
+      recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.recoveryMarkerAck).toBeUndefined();
+    expect(recoverySetCalls).toHaveLength(0);
+    const { writeAuditEvent } = await import('../../services/auditEvents');
+    const failureCall = vi.mocked(writeAuditEvent).mock.calls.find(
+      (c) => (c[1] as { action?: string })?.action === 'bmr.recovery.checked_in',
+    );
+    expect(failureCall?.[1]).toMatchObject({ result: 'failure' });
+  });
+
+  it('ignores a marker for a recovery in a terminal failed state', async () => {
+    arrange([{
+      id: RECOVERY_ID, orgId: 'org-1', deviceId: 'device-1', snapshotId: 'snap-1',
+      identity: 'original', status: 'failed', nonceHash: hashRecoveryNonce(NONCE), rebootedAt: null,
+    }]);
+
+    const res = await beat({
+      ...minimalHeartbeatBody,
+      recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).recoveryMarkerAck).toBeUndefined();
+    expect(recoverySetCalls).toHaveLength(0);
+  });
+
+  it('re-acks an already checked_in recovery without writing again', async () => {
+    arrange([{
+      id: RECOVERY_ID, orgId: 'org-1', deviceId: 'device-1', snapshotId: 'snap-1',
+      identity: 'original', status: 'checked_in', nonceHash: hashRecoveryNonce(NONCE), rebootedAt: new Date(),
+    }]);
+
+    const res = await beat({
+      ...minimalHeartbeatBody,
+      recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).recoveryMarkerAck).toBe(true);
+    expect(recoverySetCalls).toHaveLength(0);
+    expect(deviceSetCalls[0]?.recoveredAt).toBeUndefined();
+  });
+
+  it('ignores a marker for a recovery belonging to another device (query filters it out)', async () => {
+    // The lookup filters on deviceId server-side; simulate "not found" since a
+    // recovery scoped to a different device would never match this device's row.
+    arrange([]);
+
+    const res = await beat({
+      ...minimalHeartbeatBody,
+      recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).recoveryMarkerAck).toBeUndefined();
+    expect(recoverySetCalls).toHaveLength(0);
+  });
 });

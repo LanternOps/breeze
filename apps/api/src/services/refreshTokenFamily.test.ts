@@ -15,6 +15,7 @@ const columns = vi.hoisted(() => ({
   absoluteExpiresAt: 'absoluteExpiresAt',
   revokedAt: 'revokedAt',
   currentRefreshJtiDigest: 'currentRefreshJtiDigest',
+  mobileDeviceId: 'mobileDeviceId',
   lastUsedAt: 'lastUsedAt',
 }));
 
@@ -157,11 +158,24 @@ describe('mintRefreshTokenFamily rollout overloads', () => {
     });
   });
 
-  it('writes the domain-separated digest with guarded initial issuance', async () => {
-    const tx = fakeExecutor();
-    await mintRefreshTokenFamily(USER_ID, PRESENTED_JTI, { tx: tx as never });
+  it('binds a legacy-created family to the signed mobile installation when supplied', async () => {
+    await mintRefreshTokenFamily(USER_ID, { mobileDeviceId: 'installation-legacy' });
     expect(harness.inserts[0]).toMatchObject({
       userId: USER_ID,
+      mobileDeviceId: 'installation-legacy',
+      currentRefreshJtiDigest: null,
+    });
+  });
+
+  it('writes the domain-separated digest with guarded initial issuance', async () => {
+    const tx = fakeExecutor();
+    await mintRefreshTokenFamily(USER_ID, PRESENTED_JTI, {
+      tx: tx as never,
+      mobileDeviceId: 'installation-1',
+    });
+    expect(harness.inserts[0]).toMatchObject({
+      userId: USER_ID,
+      mobileDeviceId: 'installation-1',
       currentRefreshJtiDigest: expectedDigest(PRESENTED_JTI),
     });
     expect(digestRefreshTokenJti(PRESENTED_JTI)).toBe(expectedDigest(PRESENTED_JTI));

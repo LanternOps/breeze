@@ -4,7 +4,6 @@ import * as dbModule from '../db';
 import { webhookDeliveries, webhooks } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
-import { toWebhookConfig } from '../services/webhookConfig';
 import { getWebhookWorker } from '../workers/webhookDelivery';
 import { attachWorkerObservability } from './workerObservability';
 import type { BreezeEvent, EventType } from '../services/eventBus';
@@ -276,13 +275,8 @@ export async function runWebhookDeliveryRecoverySweep(
         recoveryAttempts: webhookDeliveries.recoveryAttempts,
         createdAt: webhookDeliveries.createdAt,
         webhookOrgId: webhooks.orgId,
-        webhookName: webhooks.name,
         webhookStatus: webhooks.status,
-        webhookUrl: webhooks.url,
-        webhookSecret: webhooks.secret,
-        webhookEvents: webhooks.events,
-        webhookHeaders: webhooks.headers,
-        webhookRetryPolicy: webhooks.retryPolicy
+        webhookApprovalGeneration: webhooks.approvalGeneration
       })
       .from(webhookDeliveries)
       .innerJoin(webhooks, eq(webhooks.id, webhookDeliveries.webhookId))
@@ -412,38 +406,13 @@ export async function runWebhookDeliveryRecoverySweep(
         continue;
       }
 
-      let config;
-      try {
-        config = toWebhookConfig({
-          id: candidate.webhookId,
-          orgId: candidate.webhookOrgId,
-          name: candidate.webhookName,
-          url: candidate.webhookUrl,
-          secret: candidate.webhookSecret,
-          events: candidate.webhookEvents,
-          headers: candidate.webhookHeaders,
-          retryPolicy: candidate.webhookRetryPolicy
-        });
-      } catch (decryptError) {
-        // Delivering with unusable credentials is worse than not delivering.
-        captureException(decryptError instanceof Error ? decryptError : new Error(String(decryptError)));
-        await resolveTerminally(
-          summary,
-          candidate,
-          leaseUntil,
-          'Never claimed by a delivery worker; webhook credentials could not be decrypted',
-          () => {
-            summary.undeliverable += 1;
-            console.error(`[WebhookDeliveryRecovery] decrypt-failed ${JSON.stringify({
-              errorId: 'WEBHOOK_DELIVERY_RECOVERY_DECRYPT_FAILED',
-              deliveryId: candidate.id,
-              webhookId: candidate.webhookId,
-              orgId: candidate.webhookOrgId
-            })}`);
-          }
-        );
-        continue;
-      }
+      // Site-ceiling gate contract §7E: no decryption here. The recovery
+      // sweep enqueues by webhookId + the row's CURRENT approval_generation
+      // — the worker reloads and decrypts at send time (the sole point of
+      // decryption on this path). A decrypt failure there is recorded as a
+      // superseded/failed delivery (never retried), which is the same
+      // terminal outcome this sweep used to resolve directly; it now
+      // surfaces one hop later, inside the worker, rather than here.
 
       // The original event, reconstructed from the row. `id` MUST stay the
       // original `event_id`: it goes out as `X-Breeze-Event-Id`, which is the
@@ -464,7 +433,7 @@ export async function runWebhookDeliveryRecoverySweep(
       try {
         // Outside any DB context: this is a Redis LPUSH, and holding a pooled
         // Postgres connection across it is the pattern that exhausts the pool.
-        await getWebhookWorker().queueDelivery(config, event, candidate.id);
+        await getWebhookWorker().queueDelivery(candidate.webhookId, candidate.webhookApprovalGeneration, event, candidate.id);
       } catch (enqueueError) {
         // Still no job. Hand the attempt BACK: the claim charged one before the
         // enqueue, but this enqueue never used it. Without the refund a Redis

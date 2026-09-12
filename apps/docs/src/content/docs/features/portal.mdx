@@ -91,6 +91,16 @@ You need the **Organizations: write** permission and a multi-factor confirmation
 | `active` | User can log in and access portal features |
 | Any other value | Login is blocked with a 403 response |
 
+#### When an account is disabled mid-session
+
+If your MSP disables a portal user's account while that user is still signed in, Breeze does not wait for their session to expire. The next request they make is redirected to a dedicated **Account disabled** page, instead of every other page failing with a raw "Account is not active" error.
+
+- The page reads: "Your portal access has been disabled. Contact your IT provider," with a mailto link to the org's support email when one is configured.
+- **Sign out** still works from this page — a disabled account is not locked out of clearing its own session.
+- Every other signed-in page (Dashboard, Devices, Tickets, Invoices, Assets, Security, Backups, Reports, Profile) redirects here first, before rendering any data.
+
+This is a presentation-layer redirect on top of an access control the API already enforces on its own — a disabled account's API calls are rejected independently, so the redirect only changes what the user sees, not what they can reach.
+
 ---
 
 ## Authentication

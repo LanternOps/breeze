@@ -5,9 +5,9 @@ import ContractWorkspace from '../../components/contracts/ContractWorkspace';
 // `id` is a contract UUID, or the literal `new` for the create form
 // (ContractWorkspace switches on it, mirroring pages/billing/invoices/[id].astro).
 const { id } = Astro.params;
-const title = id === 'new' ? 'New contract' : 'Contract';
+const titleKey = id === 'new' ? 'titles.contractsNew' : 'titles.contractsDetail';
 ---
 
-<DashboardLayout title={title}>
+<DashboardLayout titleKey={titleKey}>
   <ContractWorkspace contractId={id} client:load />
 </DashboardLayout>

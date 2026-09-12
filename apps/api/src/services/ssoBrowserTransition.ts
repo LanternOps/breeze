@@ -40,6 +40,15 @@ export type SsoExchangeTokenHandoff = Readonly<{
   expiresInSeconds: number;
 }>;
 
+export type SsoExchangeGrantHandoff = SsoExchangeTokenHandoff & Readonly<{
+  identity: Readonly<{
+    userId: string;
+    email: string;
+    partnerId: string | null;
+    isPlatformAdmin: boolean;
+  }>;
+}>;
+
 function isSsoExchangeTokenHandoff(value: unknown): value is SsoExchangeTokenHandoff {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<SsoExchangeTokenHandoff>;
@@ -308,7 +317,7 @@ function instantMillis(value: Date | string): number {
 /** Consume one durable grant under transition -> user -> family -> grant locks. */
 export async function consumeDurableSsoExchangeGrant(
   code: string,
-): Promise<SsoExchangeTokenHandoff | null> {
+): Promise<SsoExchangeGrantHandoff | null> {
   let payload: SsoExchangeTokenHandoff;
   try {
     payload = openSsoExchangeCode(code);
@@ -325,7 +334,7 @@ export async function consumeDurableSsoExchangeGrant(
   );
   if (!candidate) return null;
 
-  const consumed = await withSsoSystemTransaction(async (tx) => {
+  const identity = await withSsoSystemTransaction(async (tx) => {
     const [transition] = await tx
       .select({
         id: authBrowserTransitions.id,
@@ -343,15 +352,21 @@ export async function consumeDurableSsoExchangeGrant(
       || transition.state !== 'active'
       || transition.generation !== candidate.browserGeneration
       || transition.currentUserId !== candidate.userId
-      || transition.currentFamilyId !== candidate.familyId) return false;
+      || transition.currentFamilyId !== candidate.familyId) return null;
 
     const [user] = await tx
-      .select({ id: users.id, status: users.status })
+      .select({
+        id: users.id,
+        status: users.status,
+        email: users.email,
+        partnerId: users.partnerId,
+        isPlatformAdmin: users.isPlatformAdmin,
+      })
       .from(users)
       .where(eq(users.id, candidate.userId))
       .for('update')
       .limit(1);
-    if (!user || user.status !== 'active') return false;
+    if (!user || user.status !== 'active') return null;
 
     const [family] = await tx
       .select({
@@ -367,7 +382,7 @@ export async function consumeDurableSsoExchangeGrant(
     if (!family
       || family.userId !== candidate.userId
       || family.revokedAt !== null
-      || instantMillis(family.absoluteExpiresAt) <= instantMillis(transition.databaseNow)) return false;
+      || instantMillis(family.absoluteExpiresAt) <= instantMillis(transition.databaseNow)) return null;
 
     const [grant] = await tx
       .select()
@@ -382,7 +397,7 @@ export async function consumeDurableSsoExchangeGrant(
       || grant.browserGeneration !== transition.generation
       || grant.userId !== user.id
       || grant.familyId !== family.familyId
-      || instantMillis(grant.expiresAt) <= instantMillis(transition.databaseNow)) return false;
+      || instantMillis(grant.expiresAt) <= instantMillis(transition.databaseNow)) return null;
 
     const updated = await tx
       .update(ssoTokenExchangeGrants)
@@ -392,7 +407,13 @@ export async function consumeDurableSsoExchangeGrant(
         isNull(ssoTokenExchangeGrants.consumedAt),
       ))
       .returning({ id: ssoTokenExchangeGrants.id });
-    return updated.length === 1;
+    if (updated.length !== 1) return null;
+    return {
+      userId: user.id,
+      email: user.email,
+      partnerId: user.partnerId,
+      isPlatformAdmin: user.isPlatformAdmin === true,
+    };
   });
-  return consumed ? payload : null;
+  return identity ? { ...payload, identity } : null;
 }

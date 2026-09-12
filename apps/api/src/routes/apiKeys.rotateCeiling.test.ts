@@ -57,6 +57,12 @@ vi.mock('../db/schema', () => ({ apiKeys: {}, organizations: {} }));
 
 vi.mock('../services/auditService', () => ({ createAuditLogAsync: vi.fn() }));
 
+vi.mock('../services/tenantStatus', () => ({
+  // The mutation/rotation ceiling resolves the key ORG's owning partner here
+  // (mirroring middleware/apiKeyAuth.ts) before re-authorizing the creator.
+  getActiveOrgTenant: vi.fn(async (orgId: string) => ({ orgId, partnerId: 'partner-1' })),
+}));
+
 vi.mock('../services/apiKeyAuthorization', () => ({
   authorizeHumanApiKeyCreator: vi.fn(async () => creatorAuthzRef.current),
 }));
@@ -188,7 +194,7 @@ describe('POST /api-keys/:id/rotate — delegation ceiling (§1.4)', () => {
     const res = await rotate(app);
     expect(res.status).toBe(403);
     const body = await res.json();
-    expect(body.error).toMatch(/revoke it instead of rotating it/);
+    expect(body.error).toMatch(/revoke it instead/);
   });
 
   it('denies when the request carries no resolved permissions at all (fail closed)', async () => {

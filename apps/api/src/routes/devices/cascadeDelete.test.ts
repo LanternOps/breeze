@@ -25,6 +25,7 @@ vi.mock('../../db', () => ({
 
 vi.mock('../../services/deviceLinkGroups', () => ({
   dissolveLinkGroupIfBelowMinimum: vi.fn(async () => false),
+  LinkGroupSiteAccessError: class LinkGroupSiteAccessError extends Error {},
 }));
 
 vi.mock('../../middleware/auth', () => ({

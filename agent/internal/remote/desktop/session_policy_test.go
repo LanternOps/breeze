@@ -16,8 +16,12 @@ func TestResolveSessionPolicyFromIPCNilPermissive(t *testing.T) {
 	if !p.ClipboardHostToViewer || !p.ClipboardViewerToHost {
 		t.Fatalf("nil clipboard fields must resolve permissive, got %+v", p)
 	}
-	if p.IdleTimeout != 0 || p.MaxDuration != 0 {
-		t.Fatalf("unset timeouts must be 0, got %+v", p)
+	if p.IdleTimeout != 0 {
+		t.Fatalf("unset idle timeout must be 0, got %+v", p)
+	}
+	// An unset max duration resolves to the 12h cap, never to "unlimited".
+	if p.MaxDuration != MaxSessionDurationCap {
+		t.Fatalf("unset max duration must be the 12h cap, got %+v", p)
 	}
 }
 

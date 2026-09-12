@@ -81,7 +81,7 @@ All filters are additive — a log entry must match all active filters to appear
 
 ### Log retention
 
-Diagnostic logs are retained for **7 days** by default. A cleanup job runs every 24 hours (starting from server startup) and removes entries older than the retention window.
+Diagnostic logs are retained for **7 days** by default. A cleanup job runs once per day at a fixed scheduled time (not tied to server startup) and removes entries older than the retention window.
 
 To change the retention period, set the `AGENT_LOG_RETENTION_DAYS` environment variable on the API server:
 
@@ -145,13 +145,17 @@ GET /api/v1/devices/DEVICE_ID/diagnostic-logs?level=error&component=websocket&li
 
 ## Agent Service Commands
 
-The Breeze agent binary includes a `service` subcommand for managing itself as a Windows system service. These commands are run directly on the endpoint, not via the Breeze API.
+The Breeze agent binary includes a `service` subcommand for managing itself as a system service. These commands are run directly on the endpoint, not via the Breeze API, and are available on **Windows, macOS, and Linux** — each platform registers with its own native service manager (the Windows Service Control Manager, launchd on macOS, systemd on Linux) under the covers, but the `install`/`uninstall`/`start`/`stop` subcommands are the same everywhere.
 
 <Aside>
-  **Windows only.** The `service` subcommand is not available on macOS or Linux. On those platforms, manage the agent process using your system's normal service manager (launchd on macOS, systemd on Linux).
+  **Elevated privileges required.** On Windows, run the command from an **Administrator** command prompt or PowerShell session. On macOS and Linux, prefix the command with `sudo`.
 </Aside>
 
-All `service` commands require the terminal to be running as **Administrator** because they interact with the Windows Service Control Manager (SCM).
+macOS and Linux also expose a `service status` subcommand (`sudo breeze-agent service status`), which prints the native service manager's status output. This subcommand does not exist on Windows.
+
+<Aside type="note">
+  The examples below use Windows syntax (`breeze-agent.exe`, run from an Administrator prompt). On macOS and Linux, drop the `.exe` and prefix each command with `sudo` — for example `sudo breeze-agent service install`. The specific restart-backoff timings and Service Control Manager (SCM) details below are Windows-specific; macOS (launchd) and Linux (systemd) restart the agent automatically on failure using their own native restart policies.
+</Aside>
 
 ### Commands
 

@@ -1,4 +1,5 @@
 import { EVENT_SUBSCRIBER_IDS, isSubscriberId, type SubscriberId } from '../services/eventSubscriberIds';
+import { resolveDefaultModel } from '../services/aiModel';
 
 // The single truthy/falsey vocabulary for boolean-ish env vars. Kept as two
 // named sets rather than inline literals so a reader that must distinguish
@@ -111,6 +112,30 @@ export const AI_AGENTS_ENABLED = envFlag('BREEZE_AI_AGENTS_ENABLED', false);
 export function policyDecideEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
 }
+
+/**
+ * AI script authoring, review, and reviewer-gated execution (spec
+ * 2026-09-11-ai-script-authoring-and-review-design.md §8).
+ *
+ * W01b shipped this dark. W03 (#5612) turns it ON by default: the human loop,
+ * the review card and the verification job are all in place, so a proposal can
+ * no longer reach a device without a human reading a truthful summary of it.
+ * W05 removes the flag. Call-time, not a module const: the flag is read per
+ * tool-registration and per run_script call, and tests flip it without
+ * vi.resetModules(). The compose template's `:-true` default must agree.
+ */
+export function aiScriptAuthoringEnabled(): boolean {
+  return envFlag('BREEZE_AI_SCRIPT_AUTHORING_ENABLED', true);
+}
+
+// W02 (#5612): the script-proposal reviewer's PLATFORM DEFAULT model.
+// `resolveReviewerModel(orgId)` in services/scriptProposals/reviewer.ts
+// reads the effective `ai_script_policies.reviewer_model` (org override, else
+// partner — W04) first and falls back to this constant. Unset ⇒ the platform
+// default model (which itself honours ANTHROPIC_MODEL for self-hosted
+// gateways, #1412).
+export const AI_SCRIPT_REVIEWER_MODEL =
+  process.env.BREEZE_AI_SCRIPT_REVIEWER_MODEL?.trim() || resolveDefaultModel();
 
 // AI Operator durable tasks (#5205 W06, spec §11.2 "Feature controls").
 //
@@ -635,13 +660,9 @@ export function cfAccessTrustsMfa(): boolean {
   return envFlag('CF_ACCESS_TRUSTS_MFA');
 }
 
-// Browser authentication transition rollout. Both switches are deliberately
-// read at call time and default off; validation prevents terminal preparation
-// from being enabled before transition enforcement.
-export function authBrowserTransitionsEnforced(): boolean {
-  return envFlag('AUTH_BROWSER_TRANSITIONS_ENFORCED', false);
-}
-
+// Browser authentication transition enforcement is unconditional. Terminal
+// logout preparation remains independently staged until every supported
+// client has adopted that separate completion protocol.
 export function authBrowserTerminalPreparationEnabled(): boolean {
   return envFlag('AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED', false);
 }

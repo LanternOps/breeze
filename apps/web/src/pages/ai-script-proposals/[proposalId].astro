@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import ScriptProposalDetail from '../../components/scripts/ScriptProposalDetail';
+
+const { proposalId } = Astro.params;
+---
+
+<DashboardLayout title="AI Script Proposal">
+  <ScriptProposalDetail proposalId={proposalId!} client:load />
+</DashboardLayout>

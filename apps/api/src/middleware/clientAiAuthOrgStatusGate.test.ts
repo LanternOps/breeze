@@ -91,15 +91,68 @@ beforeEach(() => {
     email: 'finance.user@contoso.com',
     name: 'Finance User',
     status: 'active',
+    authEpoch: 1,
     partnerAiForOfficeEnabled: true,
   };
   setupUserSelect(userRow.current);
   redisMock.get.mockResolvedValue(
-    JSON.stringify({ portalUserId: PORTAL_USER_ID, orgId: ORG_ID, createdAt: new Date().toISOString() }),
+    JSON.stringify({ portalUserId: PORTAL_USER_ID, orgId: ORG_ID, authEpoch: 1, createdAt: new Date().toISOString() }),
   );
 });
 
 describe('clientAiAuthMiddleware org-status gate', () => {
+  it('fails closed without opening org context when the durable epoch lookup is uncertain', async () => {
+    dbSelectMock.mockImplementation(() => ({
+      from: () => ({
+        innerJoin: () => ({
+          innerJoin: () => ({
+            where: () => ({ limit: () => Promise.reject(new Error('synthetic database uncertainty')) }),
+          }),
+        }),
+      }),
+    }));
+
+    const res = await call();
+
+    expect(res.status).toBe(500);
+    expect(capturedDbContexts).toHaveLength(0);
+    expect(getActiveOrgTenant).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for a legacy session that has no durable epoch snapshot', async () => {
+    redisMock.get.mockResolvedValue(JSON.stringify({ portalUserId: PORTAL_USER_ID, orgId: ORG_ID }));
+
+    const res = await call();
+
+    expect(res.status).toBe(401);
+    expect(redisMock.del).toHaveBeenCalledWith(`clientai:session:${TOKEN}`);
+    expect(getActiveOrgTenant).not.toHaveBeenCalled();
+  });
+
+  it('rejects a session minted before the durable portal auth epoch advanced', async () => {
+    userRow.current = { ...userRow.current, authEpoch: 2 };
+    setupUserSelect(userRow.current);
+
+    const res = await call();
+
+    expect(res.status).toBe(401);
+    expect(redisMock.del).toHaveBeenCalledWith(`clientai:session:${TOKEN}`);
+    expect(getActiveOrgTenant).not.toHaveBeenCalled();
+    expect(capturedDbContexts).toHaveLength(0);
+  });
+
+  it('still fails closed when stale-session Redis cleanup fails', async () => {
+    userRow.current = { ...userRow.current, authEpoch: 2 };
+    setupUserSelect(userRow.current);
+    redisMock.del.mockRejectedValueOnce(new Error('synthetic Redis fault'));
+
+    const res = await call();
+
+    expect(res.status).toBe(500);
+    expect(getActiveOrgTenant).not.toHaveBeenCalled();
+    expect(capturedDbContexts).toHaveLength(0);
+  });
+
   it('admits an add-in session whose org is usable', async () => {
     const res = await call();
     expect(res.status).toBe(200);

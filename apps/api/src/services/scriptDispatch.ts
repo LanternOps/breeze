@@ -1,9 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { canonicalizeScriptParameters, hasVariableTokens } from '@breeze/shared';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, organizations, scriptExecutions, scripts, sites, users } from '../db/schema';
+import type { ScriptProposalRow } from '../db/schema/scriptProposals';
+import type { ScriptApprovalMethod } from '@breeze/shared';
+import { sha256Content } from './scriptVersions';
+import type { ProposalDispatchSnapshot } from './scriptProposals/dispatchSnapshot';
 import {
   claimPendingCommandForDelivery,
   releaseClaimedCommandDelivery,
@@ -17,6 +21,7 @@ import {
 } from './sensitiveCommandPayload';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
+import { createAuditLogAsync } from './auditService';
 import { checkScriptMaintenanceSuppression } from './scriptMaintenanceGate';
 import {
   describeVariableFailure,
@@ -60,9 +65,30 @@ import {
  * Inserts run in the caller's ambient DB context — request paths stay under
  * RLS; system-context callers must validate ownership before calling.
  */
+// Matches the fallback actor id commandQueue.ts uses for a non-user dispatch
+// (commandQueue.ts's own system-actor literal) — kept as a local literal
+// rather than importing that module's internal, since this file already
+// avoids depending on commandQueue for anything but queueCommand/CommandTypes.
+const SYSTEM_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
+
 export type ScriptDispatchSource =
   | { kind: 'saved'; script: typeof scripts.$inferSelect; automationRunId?: string | null }
-  | { kind: 'raw'; content: string; language: string; provenance: string };
+  | { kind: 'raw'; content: string; language: string; provenance: string }
+  // AI-authored, reviewed, immutable content. NOT a hidden library script
+  // (spec D11): a phantom `scripts` row created only to satisfy the FK would
+  // contradict D5's "promotion is an explicit human action after a verified
+  // run" and would pollute the library with one-offs.
+  | { kind: 'proposal'; proposal: ScriptProposalRow; snapshot: ProposalDispatchSnapshot };
+
+/** Written onto the execution row so "who authorised this, and on what evidence" survives erasure. */
+export interface ScriptDispatchProvenance {
+  scriptVersionId?: string | null;
+  reviewId?: string | null;
+  approvedBy?: string | null;
+  approvalMethod?: ScriptApprovalMethod | null;
+  reviewRiskTier?: string | null;
+  reviewSummary?: string | null;
+}
 
 export type DispatchScriptInput = {
   // `hostname`, `siteId`, and `customFields` are carried for #3409 PR3's
@@ -93,6 +119,8 @@ export type DispatchScriptInput = {
    * done in practice.
    */
   offlinePolicy?: OfflinePolicy;
+  /** AI script authoring: review/approval evidence stamped on the execution row. */
+  provenance?: ScriptDispatchProvenance;
   // A snapshot preloaded ONCE per fan-out by the caller (#3409 PR2 Task 4) —
   // see tenantVariableResolution.ts. Required only when `source.kind ===
   // 'saved'` and the script content actually contains a {{var.*}} token; the
@@ -304,11 +332,23 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   }
 
   const parameters = input.parameters ?? {};
-  const language = source.kind === 'saved' ? source.script.language : source.language;
-  let content = source.kind === 'saved' ? source.script.content : source.content;
-  const runAs = input.runAs ?? (source.kind === 'saved' ? source.script.runAs : 'system');
-  const timeoutSeconds = input.timeoutSeconds ?? (source.kind === 'saved' ? source.script.timeoutSeconds : 300);
-  const payloadScriptId = source.kind === 'saved' ? source.script.id : source.provenance;
+  // The payload SHAPE is identical for every source kind — handlers_script.go
+  // receives the same fields, so the Go agent is untouched by proposals.
+  const language = source.kind === 'saved' ? source.script.language
+    : source.kind === 'proposal' ? source.proposal.language
+      : source.language;
+  let content = source.kind === 'saved' ? source.script.content
+    : source.kind === 'proposal' ? source.proposal.content
+      : source.content;
+  const runAs = input.runAs ?? (source.kind === 'saved' ? source.script.runAs
+    : source.kind === 'proposal' ? source.proposal.runAs
+      : 'system');
+  const timeoutSeconds = input.timeoutSeconds ?? (source.kind === 'saved' ? source.script.timeoutSeconds
+    : source.kind === 'proposal' ? source.proposal.timeoutSeconds
+      : 300);
+  const payloadScriptId = source.kind === 'saved' ? source.script.id
+    : source.kind === 'proposal' ? `proposal:${source.proposal.id}`
+      : source.provenance;
   // #5129 — the agent STRICT-pattern descriptions a human acknowledged on the
   // script record. Server-decided and delivered over the authenticated command
   // channel; the agent never supplies it.
@@ -318,8 +358,16 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   // suggestions) keeps the pre-#5129 behaviour exactly: any Strict match is
   // refused on the device. That is deliberate — there is no human decision on
   // file for content that exists only for the duration of one dispatch.
+  //
+  // W03 (#5612): a `proposal` source carries the set the APPROVER ticked on
+  // the card, resolved server-side as (submitted ∩ strict_hits) at decide time
+  // (services/approvals/strictAcknowledgement.ts) and persisted on
+  // script_proposals.acknowledged_patterns. Same wire field, so the Go agent
+  // is unchanged.
   const acknowledgedSecurityPatterns =
-    source.kind === 'saved' ? (source.script.acknowledgedSecurityPatterns ?? []) : [];
+    source.kind === 'saved' ? (source.script.acknowledgedSecurityPatterns ?? [])
+    : source.kind === 'proposal' ? (source.proposal.acknowledgedPatterns ?? [])
+    : [];
 
   // #3409 PR2 Task 4: resolve {{var.*}} tokens for this device's org before
   // anything else happens with `content`. `hasVariableTokens` comes first so
@@ -483,17 +531,13 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   const degradedActorId = actorIsRealUser ? null : actorCandidateId;
 
   let executionId: string | null = null;
-  if (source.kind === 'saved') {
-    // Child rows always take the DEVICE's org (partner-wide fan-out rule).
+  if (source.kind === 'saved' || source.kind === 'proposal') {
     const [execution] = await db
       .insert(scriptExecutions)
-      .values({
-        scriptId: source.script.id,
-        deviceId: device.id,
-        orgId: device.orgId,
-        triggeredBy: safeTriggeredBy,
-        triggerType: input.triggerType ?? 'manual',
-        ...(source.automationRunId ? { automationRunId: source.automationRunId } : {}),
+      .values(buildExecutionValues({
+        device,
+        source,
+        runAs,
         // #3409 PR3 P4: the CALLER's raw parameters, never the resolved map.
         // A resolved bound value must not be persisted — in PR4 that would
         // mean writing a resolved SECRET into execution history, exactly the
@@ -503,13 +547,11 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
         // can answer "which variable fed this run" without carrying what it
         // was worth.
         parameters: buildExecutionParameters(parameters, parameterBindings, degradedActorId),
-        // #4888 — stamp the RESOLVED run context onto the execution row so
-        // history can answer "SYSTEM or the logged-in user?" without reading
-        // the (sanitised, independently reaped) command payload.
-        runAs,
+        triggerType: input.triggerType,
+        safeTriggeredBy,
         targetSessionId: input.targetSessionId ?? null,
-        status: 'pending',
-      })
+        provenance: input.provenance,
+      }) as typeof scriptExecutions.$inferInsert)
       .returning({ id: scriptExecutions.id });
     if (!execution) {
       return { ok: false, code: 'insert_failed', error: 'Failed to create execution' };
@@ -726,6 +768,41 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     }
   }
 
+  // #5022 / W05: an AI-authored (proposal-backed) run writes its own audit
+  // row here, sourced ONLY from the same `provenance` snapshot that
+  // `buildExecutionValues` just wrote onto this execution's
+  // approval_method/review_risk_tier/review_summary columns above (line
+  // ~855) — never a live join to script_proposals, and deliberately not a
+  // re-read of script_executions either (that would just re-fetch the same
+  // values this function already holds, and would collide with every
+  // existing proposal-dispatch test's own `db.select` mock). This is why the
+  // device activity feed that reads this row back (W05 Task 3) survives
+  // erasure of the source proposal. Fire-and-forget like every other
+  // createAuditLogAsync caller: a lost audit row must never fail the dispatch
+  // that already succeeded.
+  if (source.kind === 'proposal' && executionId) {
+    void createAuditLogAsync({
+      orgId: device.orgId,
+      actorType: source.proposal.authorKind === 'agent_run' ? 'ai_agent' : 'user',
+      actorId: safeCreatedBy ?? safeTriggeredBy ?? SYSTEM_ACTOR_ID,
+      action: 'ai.script.executed',
+      resourceType: 'device',
+      resourceId: device.id,
+      resourceName: device.hostname,
+      initiatedBy: 'ai',
+      result: 'dispatched',
+      details: {
+        executionId,
+        commandId: command.id,
+        proposalId: source.proposal.id,
+        sourceKind: 'proposal',
+        approvalMethod: input.provenance?.approvalMethod ?? null,
+        reviewRiskTier: input.provenance?.reviewRiskTier ?? null,
+        reviewSummary: input.provenance?.reviewSummary ?? null,
+      },
+    });
+  }
+
   return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, deliverBy, ignoredParameters, runAs, targetSessionId: input.targetSessionId ?? null };
 }
 
@@ -754,6 +831,75 @@ const EXECUTION_PARAMETER_ACTOR_KEY = '$actor';
  * real one; when there are no bindings and no degraded actor, the stored
  * value is byte-identical to what PR2 wrote.
  */
+/**
+ * The `script_executions` values for one dispatch.
+ *
+ * Snapshot columns (`language`, `timeout_seconds`, `content_digest`) are
+ * written for BOTH kinds, not just proposals. That is the whole point of the
+ * change: the stale reaper INNER JOINed `scripts` for `timeout_seconds`
+ * (staleCommandReaper.ts), so a parentless row was previously impossible.
+ * Filling the snapshot for library runs too means the readers can stop joining
+ * altogether instead of carrying two code paths forever.
+ */
+function buildExecutionValues(input: {
+  device: { id: string; orgId: string };
+  source: ScriptDispatchSource;
+  runAs: 'system' | 'user' | 'elevated';
+  /** Already shaped by buildExecutionParameters (raw caller map + sidecar). */
+  parameters?: unknown;
+  triggerType?: DispatchScriptInput['triggerType'];
+  safeTriggeredBy?: string | null;
+  targetSessionId?: number | null;
+  provenance?: ScriptDispatchProvenance;
+}): Record<string, unknown> {
+  const { device, source, provenance } = input;
+  const isProposal = source.kind === 'proposal';
+  const script = source.kind === 'saved' ? source.script : null;
+  // The head version id for a library run, so the execution says exactly
+  // which immutable definition ran (W01a cut it). Resolved as a subquery on
+  // the row's own `scripts.version` (the same predicate as headScriptVersion)
+  // rather than a second round trip before the insert.
+  const headVersionId = script
+    ? sql`(SELECT sv.id FROM script_versions sv WHERE sv.script_id = ${script.id} AND sv.version = ${script.version ?? null})`
+    : null;
+
+  return {
+    sourceKind: isProposal ? 'proposal' : 'library',
+    scriptId: script?.id ?? null,
+    proposalId: isProposal ? source.proposal.id : null,
+    // Child rows always take the DEVICE's org (partner-wide fan-out rule).
+    deviceId: device.id,
+    orgId: device.orgId,
+    triggeredBy: input.safeTriggeredBy ?? null,
+    triggerType: input.triggerType ?? 'manual',
+    ...(source.kind === 'saved' && source.automationRunId
+      ? { automationRunId: source.automationRunId }
+      : {}),
+    // A proposal has no parameter contract (its digest pins literal content),
+    // so nothing is ever persisted for it.
+    parameters: isProposal ? null : (input.parameters ?? null),
+    // #4888 — stamp the RESOLVED run context onto the execution row so
+    // history can answer "SYSTEM or the logged-in user?" without reading
+    // the (sanitised, independently reaped) command payload.
+    runAs: input.runAs,
+    targetSessionId: input.targetSessionId ?? null,
+    status: 'pending',
+    // --- snapshot ---
+    language: isProposal ? source.proposal.language : script!.language,
+    timeoutSeconds: isProposal ? source.proposal.timeoutSeconds : script!.timeoutSeconds,
+    contentDigest: isProposal ? source.proposal.contentDigest : sha256Content(script!.content),
+    // --- provenance ---
+    scriptVersionId: provenance?.scriptVersionId ?? headVersionId,
+    reviewId: provenance?.reviewId ?? null,
+    approvedBy: provenance?.approvedBy ?? null,
+    approvalMethod: provenance?.approvalMethod ?? null,
+    reviewRiskTier: provenance?.reviewRiskTier ?? null,
+    reviewSummary: provenance?.reviewSummary?.slice(0, 600) ?? null,
+  };
+}
+
+export const __testOnly = { buildExecutionValues };
+
 function buildExecutionParameters(
   callerParameters: Record<string, unknown>,
   bindings: ScriptParameterBindingDescriptor[],

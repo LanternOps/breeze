@@ -20,10 +20,8 @@ import {
   finishAuthIssuance,
 } from '../../services/authBrowserTransition';
 import {
-  authBrowserTransitionsEnforced,
   bindIssuedUserSession,
   issueUserSession,
-  issueUserSessionLegacyDuringTransition,
   type UserSessionIdentity,
 } from '../../services/userSession';
 import {
@@ -31,7 +29,6 @@ import {
   lockActiveRefreshFamiliesForUsers,
   revokeAllRefreshFamilies,
 } from '../../services/authLifecycle';
-import { recordAuthTransitionLegacyIssuer } from '../../services/authTransitionMetrics';
 import { acceptInviteSchema, invitePreviewSchema } from './schemas';
 import {
   getClientRateLimitKey,
@@ -42,10 +39,7 @@ import {
   hashInviteToken,
   inviteRedisKey,
   inviteUserRedisKey,
-  isAuthTransitionV1Request,
-  authClientUpgradeRequiredResponse,
   installAuthorizedUserSessionCookies,
-  installLegacyUserSessionCookiesDuringTransition,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 
@@ -184,11 +178,6 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
     return c.json({ error: 'This invite has already been accepted' }, 400);
   }
 
-  const transitionV1 = isAuthTransitionV1Request(c);
-  if (!transitionV1 && authBrowserTransitionsEnforced()) {
-    return authClientUpgradeRequiredResponse(c);
-  }
-
   const context = await resolveCurrentUserTokenContext(userId);
   const identity: UserSessionIdentity = {
     userId: user.id,
@@ -200,64 +189,6 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
     mfa: false,
   };
   const passwordHash = await hashPassword(password);
-
-  if (!transitionV1) {
-    try {
-      await withSystemDbAccessContext(() => db.transaction(async (tx) => {
-        const activated = await tx
-          .update(users)
-          .set({
-            passwordHash,
-            status: 'active',
-            passwordChangedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(and(eq(users.id, userId), eq(users.status, 'invited')))
-          .returning({ id: users.id });
-        if (activated.length !== 1) throw new Error('Invite is no longer available');
-        await advanceUserEpochs(tx, userId, { auth: true, passwordReset: true });
-        await lockActiveRefreshFamiliesForUsers(tx, [userId]);
-        await revokeAllRefreshFamilies(tx, userId, 'invite_accepted');
-      }));
-
-      recordAuthTransitionLegacyIssuer('invite', 'web');
-      const issued = await issueUserSessionLegacyDuringTransition(identity);
-      installLegacyUserSessionCookiesDuringTransition(c, issued);
-
-      await redis.del(inviteRedisKey(tokenHash)).catch((err: unknown) => {
-        console.error('[AcceptInvite] Failed to delete invite token after commit:', err);
-      });
-      await redis.del(inviteUserRedisKey(userId)).catch((err: unknown) => {
-        console.error('[AcceptInvite] Failed to delete invite-user key after commit:', err);
-      });
-
-      const auditOrgId = await resolveUserAuditOrgId(userId);
-      writeAuthAudit(c, {
-        orgId: auditOrgId ?? undefined,
-        action: 'user.invite.accepted',
-        result: 'success',
-        userId: user.id,
-        email: user.email,
-        name: user.name,
-      });
-      writeAuthAudit(c, {
-        orgId: auditOrgId ?? undefined,
-        action: 'user.password.set',
-        result: 'success',
-        userId: user.id,
-        email: user.email,
-        name: user.name,
-      });
-
-      return c.json({
-        user: { id: user.id, email: user.email, name: user.name, mfaEnabled: false },
-        tokens: toPublicTokens(issued),
-      });
-    } catch (err) {
-      console.error(`[AcceptInvite] Failed to activate user ${userId}:`, err);
-      return c.json({ error: 'Failed to activate account. Please try again.' }, 500);
-    }
-  }
 
   let capability;
   try {

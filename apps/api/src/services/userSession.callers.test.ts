@@ -33,7 +33,7 @@ const expectedSingleBoundaryFiles = new Map([
   ['routes/auth/invite.ts', 1],
   ['routes/auth/cfAccessRedirectLogin.ts', 1],
 ]);
-const expectedLegacyIssuerFiles = new Map(expectedSingleBoundaryFiles);
+const expectedLegacyIssuerFiles = new Map<string, number>();
 const expectedGuardedCookieInstallerFiles = new Map([
   ...expectedSingleBoundaryFiles,
   // /mfa/verify (two issuance branches), /mfa/setup confirm, /mfa/enable,
@@ -41,13 +41,15 @@ const expectedGuardedCookieInstallerFiles = new Map([
   // its own caller bounced the user to /login?reason=session-expired, so it now
   // installs a replacement too).
   ['routes/auth/mfa.ts', 6],
+  // Login/registration transition sites plus passkey deletion, which advances
+  // mfa_epoch and installs the actor's post-removal replacement session.
   ['routes/auth/passkeys.ts', 3],
   // Initial verification plus the #5198 replacement branch, which installs a
   // replacement session so a phone-number swap doesn't evict its own caller.
   ['routes/auth/phone.ts', 2],
   ['routes/sso.ts', 1],
 ]);
-const expectedLegacyCookieInstallerFiles = new Map(expectedSingleBoundaryFiles);
+const expectedLegacyCookieInstallerFiles = new Map<string, number>();
 
 function productionTypeScriptFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((entry) => {
@@ -166,7 +168,7 @@ describe('frozen authentication issuer inventory', () => {
     expect(calls.get('routes/sso.ts')).toBe(1);
   });
 
-  it('freezes the guarded issuer, rollout seam, and branded installer callers', () => {
+  it('freezes the guarded issuer and leaves no legacy issuance or cookie path', () => {
     expect(frozenInventory.issueUserSession).toEqual(expectedGuardedIssuerFiles);
     expect(frozenInventory.issueUserSessionLegacyDuringTransition).toEqual(expectedLegacyIssuerFiles);
     expect(frozenInventory.installAuthorizedUserSessionCookies).toEqual(expectedGuardedCookieInstallerFiles);
@@ -174,7 +176,17 @@ describe('frozen authentication issuer inventory', () => {
     expect(frozenInventory.recordAuthTransitionLegacyIssuer).toEqual(expectedLegacyIssuerFiles);
   });
 
-  it('keeps the rollout seam exact and one-argument', () => {
+  it('has no caller-selectable rollout control that can restore legacy issuance', () => {
+    const productionSource = productionTypeScriptFiles(SRC_DIR)
+      .map((file) => readFileSync(file, 'utf8'))
+      .join('\n');
+    expect(productionSource).not.toContain('AUTH_BROWSER_TRANSITIONS_ENFORCED');
+    expect(productionSource).not.toContain('authBrowserTransitionsEnforced');
+    expect(productionSource).not.toContain('isAuthTransitionV1Request');
+    expect(productionSource).not.toContain('authClientUpgradeRequiredResponse');
+  });
+
+  it('removes the legacy rollout issuer', () => {
     const source = readFileSync(join(SRC_DIR, 'services/userSession.ts'), 'utf8');
     const ast = ts.createSourceFile('userSession.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     const declarations: ts.FunctionDeclaration[] = [];
@@ -185,13 +197,10 @@ describe('frozen authentication issuer inventory', () => {
       ts.forEachChild(node, visit);
     };
     visit(ast);
-    expect(declarations).toHaveLength(1);
-    expect(declarations[0]?.parameters).toHaveLength(1);
-    expect(declarations[0]?.parameters[0]?.name.getText(ast)).toBe('identity');
-    expect(declarations[0]?.type?.getText(ast)).toBe('Promise<LegacyUserSessionDuringTransition>');
+    expect(declarations).toHaveLength(0);
   });
 
-  it('keeps the legacy cookie boundary exact and branded', () => {
+  it('removes the legacy cookie installer', () => {
     const source = readFileSync(join(SRC_DIR, 'routes/auth/helpers.ts'), 'utf8');
     const ast = ts.createSourceFile('helpers.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     const declarations: ts.FunctionDeclaration[] = [];
@@ -202,11 +211,7 @@ describe('frozen authentication issuer inventory', () => {
       ts.forEachChild(node, visit);
     };
     visit(ast);
-    expect(declarations).toHaveLength(1);
-    expect(declarations[0]?.parameters).toHaveLength(2);
-    expect(declarations[0]?.parameters[0]?.name.getText(ast)).toBe('c');
-    expect(declarations[0]?.parameters[1]?.name.getText(ast)).toBe('issued');
-    expect(declarations[0]?.parameters[1]?.type?.getText(ast)).toBe('LegacyUserSessionDuringTransition');
+    expect(declarations).toHaveLength(0);
   });
 
   it('has no assertion bypass around either branded cookie boundary', () => {
@@ -217,7 +222,7 @@ describe('frozen authentication issuer inventory', () => {
       const visit = (node: ts.Node): void => {
         if (
           ts.isAsExpression(node)
-          && /^(AuthorizedUserSession|LegacyUserSessionDuringTransition)$/.test(node.type.getText(ast))
+          && node.type.getText(ast) === 'AuthorizedUserSession'
         ) {
           assertions.push(`${rel}:${ast.getLineAndCharacterOfPosition(node.getStart(ast)).line + 1}`);
         }

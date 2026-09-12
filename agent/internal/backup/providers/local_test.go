@@ -3,6 +3,7 @@ package providers
 import (
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -353,5 +354,16 @@ func TestLocalProvider_List_EmptyPrefix(t *testing.T) {
 	}
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d: %v", len(items), items)
+	}
+}
+
+func TestLocalProvider_Download_MissingFileWrapsErrObjectNotFound(t *testing.T) {
+	p := NewLocalProvider(t.TempDir())
+	err := p.Download("snapshots/does-not-exist/manifest.json", filepath.Join(t.TempDir(), "out.json"))
+	if err == nil {
+		t.Fatal("expected an error for a missing object")
+	}
+	if !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("err = %v, want it to wrap ErrObjectNotFound", err)
 	}
 }

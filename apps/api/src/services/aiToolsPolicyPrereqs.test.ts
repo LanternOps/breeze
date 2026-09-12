@@ -554,6 +554,28 @@ describe('manage_backup_configs S3 endpoint validation (Sentry BREEZE-P residual
     const setArg = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
     expect(setArg.providerConfig.endpoint).toBe('https://minio.internal.example.com:9000/');
   });
+
+  // Site-ceiling gate contract §3/finding 2: this AI-tool write is a second
+  // (non-route) write path to backup_configs and needs its own bump.
+  it('bumps approvalGeneration on update (site-ceiling gate contract §3)', async () => {
+    mockSelectReturns({
+      id: BACKUP_CONFIG_ID,
+      orgId: ORG_ID,
+      name: 'S3 backup',
+      provider: 's3',
+      providerConfig: { bucket: 'backups', region: 'us-east-1' },
+    });
+    mockUpdate();
+    const tool = getBackupConfigsTool();
+    const output = await tool.handler(
+      { action: 'update', configId: BACKUP_CONFIG_ID, name: 'Renamed backup' },
+      makeOrgAuth()
+    );
+
+    expect(JSON.parse(output).success).toBe(true);
+    const setArg = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
+    expect(setArg.approvalGeneration).toBeDefined();
+  });
 });
 
 /**

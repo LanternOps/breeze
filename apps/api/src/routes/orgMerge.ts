@@ -17,15 +17,10 @@
  * `computeAccessibleOrgIds` filters to `status IN ('active','trial')`. A
  * suspended org — a perfectly legal merge LOSER — is therefore never in that
  * list, so `canAccessOrg(loserId)` would 404 every legal suspended-loser
- * merge. `authorizeMergePair` below instead checks the loaded row's own
- * `partner_id` against the caller's resolved partner for the loser, which is
- * the tenancy check that actually matters (and is exactly what RLS itself
- * checks). The survivor — always active/trial by the time it reaches the
- * engine (`validateMergePair`) — IS covered by `accessibleOrgIds`, so it gets
- * both the partner-id check AND `canAccessOrg`: a partner member with
- * `org_access='selected'` can share the caller's partner yet still lack
- * write access to this specific org, and partner-id equality alone can't
- * catch that.
+ * merge. `authorizeMergePair` instead checks both loaded rows against the
+ * caller's partner and then consults the member's raw, freshly-read
+ * `partner_users.org_ids` selection. That selection survives lifecycle status
+ * changes and is the authority source for both the loser and survivor.
  */
 import { Hono } from 'hono';
 import { z } from 'zod';
@@ -36,6 +31,7 @@ import { organizations } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
+import { resolvePartnerOrgReach, type PartnerOrgReach } from '../services/partnerOrgSelection';
 import { MergeValidationError, previewOrgMerge } from '../services/orgMerge';
 import { enqueueOrgMerge, getOrgMergeQueue, type OrgMergeJobPayload } from '../jobs/orgMerge';
 
@@ -68,6 +64,16 @@ interface MergeOrgRow {
 type MergeAuthzResult =
   | { ok: true; partnerId: string; loser: MergeOrgRow; survivor: MergeOrgRow }
   | { ok: false; status: 400 | 403 | 404; error: string };
+
+function reachIncludesBoth(reach: PartnerOrgReach, firstOrgId: string, secondOrgId: string): boolean {
+  if (reach.kind === 'allOfPartner') return true;
+  if (reach.kind === 'none') return false;
+  return reach.orgIds.includes(firstOrgId) && reach.orgIds.includes(secondOrgId);
+}
+
+function reachIncludes(reach: PartnerOrgReach, orgId: string): boolean {
+  return reach.kind === 'allOfPartner' || (reach.kind === 'selection' && reach.orgIds.includes(orgId));
+}
 
 /**
  * Load both orgs (system context — the request's own ambient RLS context may
@@ -117,14 +123,19 @@ async function authorizeMergePair(
     return { ok: false, status: 404, error: 'Surviving organization not found' };
   }
   if (survivor.partnerId !== partnerId) {
-    return { ok: false, status: 403, error: 'Access denied to the surviving organization' };
+    return { ok: false, status: 404, error: 'Organization not found' };
   }
-  // The survivor is always active/trial (enforced by validateMergePair
-  // inside the engine), so — unlike the loser — it IS covered by
-  // accessibleOrgIds. This catches a 'selected'-access partner member whose
-  // selection excludes this org even though it shares their partner.
-  if (auth.scope === 'partner' && !auth.canAccessOrg(survivor.id)) {
-    return { ok: false, status: 403, error: 'Access denied to the surviving organization' };
+
+  // Partner equality is necessary but not sufficient: selected/none partner
+  // members share the same partner id while lacking authority over some or
+  // every organization. Read the raw current membership once and require BOTH
+  // merge participants. This also admits an explicitly selected suspended
+  // loser, which accessibleOrgIds/canAccessOrg intentionally cannot represent.
+  if (auth.scope === 'partner') {
+    const reach = await resolvePartnerOrgReach(auth);
+    if (!reachIncludesBoth(reach, loser.id, survivor.id)) {
+      return { ok: false, status: 404, error: 'Organization not found' };
+    }
   }
 
   return { ok: true, partnerId, loser, survivor };
@@ -269,8 +280,26 @@ orgMergeRoutes.get(
     if (auth.scope === 'partner' && payload?.partnerId !== auth.partnerId) {
       return c.json({ error: 'Merge run not found' }, 404);
     }
+    let state: Awaited<ReturnType<typeof job.getState>> | undefined;
+    if (auth.scope === 'partner') {
+      if (!payload?.loserOrgId || !payload.survivorOrgId) {
+        return c.json({ error: 'Merge run not found' }, 404);
+      }
+      const reach = await resolvePartnerOrgReach(auth);
+      if (!reachIncludesBoth(reach, payload.loserOrgId, payload.survivorOrgId)) {
+        // A successful merge rewrites raw partner selections from loser to
+        // survivor. Once complete, the loser's data belongs to the survivor,
+        // so current survivor authority is the correct read boundary. Before
+        // completion (including failed jobs, where the loser is restored),
+        // both original participants remain mandatory.
+        state = await job.getState();
+        if (state !== 'completed' || !reachIncludes(reach, payload.survivorOrgId)) {
+          return c.json({ error: 'Merge run not found' }, 404);
+        }
+      }
+    }
 
-    const state = await job.getState();
+    state ??= await job.getState();
     return c.json({
       state,
       result: job.returnvalue,

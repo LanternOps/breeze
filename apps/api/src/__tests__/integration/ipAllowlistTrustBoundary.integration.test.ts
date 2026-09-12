@@ -170,8 +170,8 @@ describe('SR2-16 — partner IP allowlist trust boundary (real DB)', () => {
     });
   });
 
-  describe('Generic / no-trust mode — fail closed with no proxy trust configured', () => {
-    it('denies with untrusted_ip regardless of headers when TRUST_PROXY_HEADERS is false', async () => {
+  describe('Direct mode — trust only the immediate socket peer', () => {
+    it('denies with not_in_list and ignores forged headers when the direct peer is outside the allowlist', async () => {
       process.env.TRUST_PROXY_HEADERS = 'false';
       delete process.env.TRUSTED_PROXY_CIDRS;
 
@@ -184,8 +184,25 @@ describe('SR2-16 — partner IP allowlist trust boundary (real DB)', () => {
       );
       const decision = await enforceIpAllowlist(c, { partnerId: partner.id, isPlatformAdmin: false });
 
-      expect(decision).toEqual({ decision: 'deny', reason: 'untrusted_ip' });
+      expect(decision).toEqual({ decision: 'deny', reason: 'not_in_list' });
       expect(isBlocked(decision)).toBe(true);
+    });
+
+    it('allows an allowlisted immediate socket peer without trusting forwarded headers', async () => {
+      process.env.TRUST_PROXY_HEADERS = 'false';
+      delete process.env.TRUSTED_PROXY_CIDRS;
+
+      const partner = await createPartner();
+      await setPartnerAllowlist(partner.id, [ALLOWLISTED_IP]);
+
+      const c = makeContext(
+        { 'cf-connecting-ip': UNTRUSTED_PEER, 'x-forwarded-for': UNTRUSTED_PEER, 'x-real-ip': UNTRUSTED_PEER },
+        '203.0.113.5',
+      );
+      const decision = await enforceIpAllowlist(c, { partnerId: partner.id, isPlatformAdmin: false });
+
+      expect(decision).toEqual({ decision: 'allow' });
+      expect(isBlocked(decision)).toBe(false);
     });
   });
 
@@ -239,8 +256,8 @@ describe('SR2-16 — partner IP allowlist trust boundary (real DB)', () => {
     });
   });
 
-  describe('Audit — untrusted_ip deny writes an audit event with no leaked spoofed IP', () => {
-    it('writes ip_allowlist.denied with details.reason=untrusted_ip and details.clientIp=null', async () => {
+  describe('Audit — direct peer attribution and missing-peer fail-closed behavior', () => {
+    it('writes not_in_list with the socket peer and never attributes a forged forwarded IP', async () => {
       process.env.TRUST_PROXY_HEADERS = 'false';
       delete process.env.TRUSTED_PROXY_CIDRS;
 
@@ -255,6 +272,34 @@ describe('SR2-16 — partner IP allowlist trust boundary (real DB)', () => {
         actorId,
         actorEmail: 'attacker@example.com',
       });
+      expect(decision).toEqual({ decision: 'deny', reason: 'not_in_list' });
+
+      const row = await waitForAuditRow('ip_allowlist.denied', partner.id);
+      expect(row).toBeDefined();
+      expect(row?.result).toBe('denied');
+      const details = row?.details as Record<string, unknown> | null;
+      expect(details?.reason).toBe('not_in_list');
+      // The forged CF-Connecting-IP value (203.0.113.5) must NOT leak into
+      // the audit log as if it were a trusted observation.
+      expect(details?.clientIp).toBe(UNTRUSTED_PEER);
+      expect(JSON.stringify(details)).not.toContain('203.0.113.5');
+    });
+
+    it('fails closed with untrusted_ip and a null audit IP when socket metadata is absent', async () => {
+      process.env.TRUST_PROXY_HEADERS = 'false';
+      delete process.env.TRUSTED_PROXY_CIDRS;
+
+      const partner = await createPartner();
+      await setPartnerAllowlist(partner.id, [ALLOWLISTED_IP]);
+
+      const actorId = randomUUID();
+      const c = makeContext({ 'cf-connecting-ip': '203.0.113.5' });
+      const decision = await enforceIpAllowlist(c, {
+        partnerId: partner.id,
+        isPlatformAdmin: false,
+        actorId,
+        actorEmail: 'attacker@example.com',
+      });
       expect(decision).toEqual({ decision: 'deny', reason: 'untrusted_ip' });
 
       const row = await waitForAuditRow('ip_allowlist.denied', partner.id);
@@ -262,8 +307,6 @@ describe('SR2-16 — partner IP allowlist trust boundary (real DB)', () => {
       expect(row?.result).toBe('denied');
       const details = row?.details as Record<string, unknown> | null;
       expect(details?.reason).toBe('untrusted_ip');
-      // The forged CF-Connecting-IP value (203.0.113.5) must NOT leak into
-      // the audit log as if it were a trusted observation.
       expect(details?.clientIp).toBeNull();
       expect(JSON.stringify(details)).not.toContain('203.0.113.5');
     });

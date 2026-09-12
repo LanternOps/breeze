@@ -11,6 +11,19 @@ The system operates on three interconnected pillars: **baselines** that define w
 
 ---
 
+## In the console
+
+Two of the three pillars have a console UI today:
+
+- **Known Guests** -- Settings > Partner > Regional (`/settings/partner#regional`). Lists guest MAC addresses, with a form to add one (MAC, label, optional notes) and a remove action per row. This is partner-level and applies across every managed organization.
+- **IP History** -- open a device's detail page and select the **IP History** tab. Shows every IP address ever assigned to that device (interface, IP, assignment type, MAC, first/last seen, active status), with search and paging.
+
+<Aside type="caution">
+  Baselines and change events (create/scan a baseline, view or acknowledge change events) have no console UI yet -- everything under "Network Baselines" and "Change Detection" below is done through the API.
+</Aside>
+
+---
+
 ## Network Baselines
 
 A network baseline represents the expected state of a specific subnet at a specific site. Baselines are scoped to an organization, site, and CIDR subnet (one baseline per unique combination, enforced by a unique index). Each baseline maintains a list of known devices that have been observed during periodic scans, along with scheduling and alert configuration.

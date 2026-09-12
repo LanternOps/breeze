@@ -9,14 +9,15 @@ set -euo pipefail
 # `pnpm audit` fails closed on every release line. osv-scanner reads the
 # lockfile directly and needs no npm audit endpoint.
 #
-# Gate: fail on CRITICAL only, matching the previous `--audit-level=critical`.
-# Lower severities are reported but do not block. The tree is currently clean at
-# every severity, so tightening this to HIGH is viable if we want it.
+# Gate: fail on HIGH and CRITICAL (raised from CRITICAL-only on 2026-09-03 for
+# SOC 2 CC7.1; the tree was clean at every severity at the time). MODERATE and
+# below are reported but do not block. Override with AUDIT_THRESHOLD=CRITICAL
+# only for an emergency hotfix, and record the exception.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-THRESHOLD="${AUDIT_THRESHOLD:-CRITICAL}"
+THRESHOLD="${AUDIT_THRESHOLD:-HIGH}"
 LOCKFILE="pnpm-lock.yaml"
 
 fail() {
@@ -61,12 +62,28 @@ if [ "$total_vulns" -gt 0 ]; then
         "$report" | sort -u
 fi
 
-blocking="$(jq --arg t "$THRESHOLD" \
+# Severities at or above the threshold block. Ranks: CRITICAL=4 HIGH=3
+# MODERATE=2 LOW=1 UNSPECIFIED=0.
+rank_of() {
+  case "$(echo "$1" | tr '[:lower:]' '[:upper:]')" in
+    CRITICAL) echo 4 ;;
+    HIGH) echo 3 ;;
+    MODERATE|MEDIUM) echo 2 ;;
+    LOW) echo 1 ;;
+    *) echo 0 ;;
+  esac
+}
+threshold_rank="$(rank_of "$THRESHOLD")"
+[ "$threshold_rank" -gt 0 ] || fail "unknown AUDIT_THRESHOLD '$THRESHOLD' (use CRITICAL, HIGH, MODERATE, or LOW)"
+
+blocking="$(jq --argjson min "$threshold_rank" \
   '[.results[]?.packages[]?.vulnerabilities[]?
-    | select((.database_specific.severity // "") == $t)] | length' "$report")"
+    | (.database_specific.severity // "" | ascii_upcase) as $s
+    | ({"CRITICAL":4,"HIGH":3,"MODERATE":2,"MEDIUM":2,"LOW":1}[$s] // 0) as $r
+    | select($r >= $min)] | length' "$report")"
 
 if [ "$blocking" -gt 0 ]; then
-  fail "found ${blocking} ${THRESHOLD} advisory/advisories — see detail above"
+  fail "found ${blocking} advisory/advisories at or above ${THRESHOLD} — see detail above"
 fi
 
-echo "OK: no ${THRESHOLD} advisories in $LOCKFILE"
+echo "OK: no advisories at or above ${THRESHOLD} in $LOCKFILE"

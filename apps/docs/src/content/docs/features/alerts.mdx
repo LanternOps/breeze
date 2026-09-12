@@ -115,7 +115,7 @@ Alert rules define what conditions to watch for and which devices to monitor.
 
 <Steps>
 
-1. Navigate to **Alerts > Rules** and click **Create Rule** (or open a Configuration Policy and go to the **Alert Rules** tab).
+1. Open a [Configuration Policy](/features/configuration-policies/) and go to its **Alert Rules** tab, then click **Add Alert Rule**. (The **Alerts > Rules** nav item redirects here -- rules are managed on the policy, not on a standalone rules page.)
 
 2. Give the rule a **name** and choose a **severity** level.
 
@@ -157,13 +157,13 @@ Alert rules define what conditions to watch for and which devices to monitor.
 
 ### Testing a Rule
 
-Before deploying a rule to production, you can test it against a specific device. From the rule list, click the **Test** button, select a target device, and Breeze will simulate condition evaluation and show you whether the rule would trigger.
+Before deploying a rule to production, you can test it against a specific device. On the rule's card in the **Alert Rules** tab, click the **Test** button, select a target device, and Breeze will simulate condition evaluation and show you whether the rule would trigger.
 
 The verdict is the rule's real evaluation result against that device's current data — not an approximation — and it reflects the rule **as you have it open in the editor**, including unsaved edits. Previously the test could report on the last saved version, so a threshold you had just changed appeared to behave in a way it no longer would.
 
 ### Partner-wide Rules
 
-A partner-scoped user with access to every organization can create an alert rule as **partner-wide** ("All organizations") instead of scoping it to one org, so the same threshold or condition applies fleet-wide across every organization the partner manages. Choose the owner scope when creating the rule -- it's set once at creation and can't be changed afterward. Partner-wide rules show an **All orgs** badge in the rule list.
+A partner-scoped user with access to every organization can create the **Configuration Policy** itself as **partner-wide** ("All organizations") instead of scoping it to one org, so every Alert Rule on that policy applies fleet-wide across every organization the partner manages. The owner scope is chosen when the Configuration Policy is created -- it applies to the whole policy, not to individual rules, and can't be changed afterward. Alert Rules on a partner-wide policy show an **All orgs** badge.
 
 ## Notification Channels
 
@@ -227,19 +227,7 @@ Routing rules are evaluated from lowest priority number to highest, and org-owne
 
 ## Escalation Policies
 
-For critical alerts that need a guaranteed response, create escalation policies that notify progressively broader audiences if no one acknowledges within a given time.
-
-<Steps>
-
-1. Go to **Alerts > Policies** and click **Create Policy**.
-
-2. Give the policy a **name** and define escalation **steps**. Each step specifies:
-   - Which notification channels to contact
-   - How long to wait before escalating to the next step
-
-3. Attach the policy to alert rules by selecting it in the rule's **Escalation Policy** field.
-
-</Steps>
+Breeze can notify progressively broader audiences if a critical alert goes unacknowledged for a given time, but escalation policies are API-only today -- there is no **Alerts > Policies** page and no **Escalation Policy** field on the rule editor to attach one from. An escalation policy is created via the `/alerts/policies` API with a **name** and a list of escalation **steps** (which notification channels to contact and how long to wait before moving to the next step), and attached to a rule by setting its `escalationPolicyId`.
 
 Like notification channels, escalation policies can be created partner-wide (`ownerScope: "partner"` via the API) so one escalation chain applies across every organization the partner manages. Creating, updating, or deleting a partner-wide escalation policy requires partner-wide management access.
 

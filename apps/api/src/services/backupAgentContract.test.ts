@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { backupCommandResultSchema } from '../routes/backup/resultSchemas';
+import { BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS } from '../jobs/backupRetention';
 import { sanitizeVssMetadata } from './backupResultPersistence';
 import {
   BACKUP_SNAPSHOT_ROOT_DIR,
@@ -239,5 +240,62 @@ describe('backup Go<->TS contract — VSS metadata (#3027)', () => {
     // a clean run.
     expect(persisted.unprotectedVolumes).toBeUndefined();
     expect(persisted.warnings).toBeUndefined();
+  });
+});
+
+describe('backup Go<->TS contract — D18 server-owned base payload fields', () => {
+  it('agent exec_backup.go decodes baseSnapshotId/publishLeaseExpiresAt and rejects server-owned mode without a lease', () => {
+    const src = readRepoFile('agent/cmd/breeze-backup/exec_backup.go');
+    expect(src).toMatch(/BaseSnapshotID\s*\*string\s*`json:"baseSnapshotId"`/);
+    expect(src).toMatch(/PublishLeaseExpiresAt\s*string\s*`json:"publishLeaseExpiresAt"`/);
+    expect(src).toMatch(/BaseSnapshotID != nil && publishLeaseExpiresAt\.IsZero\(\)/);
+  });
+
+  // Gated on W01 having landed: apps/api/src/jobs/backupWorker.ts does not
+  // send these fields yet (confirmed 2026-09-09, no baseSnapshotId/
+  // publishLeaseExpiresAt in that file). Once W01 adds them, this
+  // assertion activates automatically — it is not skipped by name, it is
+  // skipped by content, so no follow-up edit is needed here when W01 lands.
+  const workerSrc = readRepoFile('apps/api/src/jobs/backupWorker.ts');
+  const workerHasBaseFields = /baseSnapshotId/.test(workerSrc);
+
+  it.skipIf(!workerHasBaseFields)(
+    'backupWorker.ts dispatch payload uses the exact field names baseSnapshotId/publishLeaseExpiresAt (matches the Go json tags)',
+    () => {
+      expect(workerSrc).toMatch(/baseSnapshotId/);
+      expect(workerSrc).toMatch(/publishLeaseExpiresAt/);
+    },
+  );
+
+  it('agent publishMargin is 1 hour', () => {
+    const src = readRepoFile('agent/internal/backup/snapshot.go');
+    expect(src).toMatch(/publishMargin\s*=\s*1\s*\*\s*time\.Hour/);
+  });
+
+  // BACKUP_PUBLISH_MARGIN_MS is W02's constant (spec §3.4) and does not
+  // exist in apps/api yet as of this wave (confirmed 2026-09-09) — it
+  // CANNOT be imported here (an import of a non-existent export fails
+  // TypeScript compilation outright, unlike a runtime skip), so this is
+  // gated by source-text regex, mirroring this file's existing
+  // BACKUP_GC_AGENT_JOURNAL_MAX_AGE_MS pattern. When W02 adds the real
+  // export, switch this to a real import + direct equality check (see
+  // Open Questions) — until then this only proves the AGENT side.
+  const retentionSrc = readRepoFile('apps/api/src/jobs/backupRetention.ts');
+  const apiHasPublishMargin = /BACKUP_PUBLISH_MARGIN_MS/.test(retentionSrc);
+  it.skipIf(!apiHasPublishMargin)(
+    'API BACKUP_PUBLISH_MARGIN_MS equals 1 hour (3,600,000 ms), matching the agent publishMargin',
+    () => {
+      expect(retentionSrc).toMatch(/BACKUP_PUBLISH_MARGIN_MS\s*=\s*60\s*\*\s*60\s*\*\s*1000\b/);
+    },
+  );
+
+  it('agent uploadLeaseInterval (15 min) stays well under the ACTUAL API manifest-less GC window', () => {
+    const agentSrc = readRepoFile('agent/internal/backup/snapshot.go');
+    expect(agentSrc).toMatch(/uploadLeaseInterval\s*=\s*15\s*\*\s*time\.Minute/);
+    const FIFTEEN_MIN_MS = 15 * 60 * 1000;
+    // Real comparison against the imported constant (currently 9 days:
+    // journalMaxAge 7d + BACKUP_GC_GRACE_MS 48h) — not two independent
+    // literals that happen to agree today.
+    expect(FIFTEEN_MIN_MS).toBeLessThan(BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS / 100);
   });
 });

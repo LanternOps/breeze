@@ -115,6 +115,7 @@ vi.mock('./notificationSenders', () => ({
   sendEmailNotification: vi.fn(),
   getEmailRecipients: vi.fn(),
   sendWebhookNotification: sendWebhookNotificationMock,
+  webhookTotalAttempts: vi.fn(() => 3),
   sendInAppNotification: vi.fn(),
   sendPagerDutyNotification: vi.fn(),
   sendPushoverNotification: vi.fn()
@@ -375,11 +376,14 @@ describe('processSendNotification send-identity state machine', () => {
     const record = makeNotificationRow();
     insertReturningMock.mockResolvedValueOnce([record]);
     queueDeviceOrgSelects();
-    sendWebhookNotificationMock.mockResolvedValue({ success: false, error: 'endpoint unreachable' });
+    sendWebhookNotificationMock.mockResolvedValue({ success: false, error: 'endpoint unreachable', retryable: true });
     // The CAS matches (this attempt still holds the claim) — one row written.
     updateReturningMock.mockResolvedValueOnce([{ ...record, status: 'failed' }]);
 
-    await expect(processSendNotification(baseData)).rejects.toThrow('endpoint unreachable');
+    await expect(processSendNotification(baseData)).rejects.toMatchObject({
+      name: 'Error',
+      message: 'endpoint unreachable',
+    });
 
     // sentAt: null guards against a failed row reading as failed-with-sentAt
     // (only relevant if it was ever set, but keeps the row's shape honest).
@@ -419,6 +423,29 @@ describe('processSendNotification send-identity state machine', () => {
       channelType: 'webhook',
       error: undefined,
       durationMs: expect.any(Number)
+    });
+  });
+
+  it('(d3) marks a non-retryable webhook response unrecoverable after persisting failure', async () => {
+    queuePrepareSelects();
+    const record = makeNotificationRow();
+    insertReturningMock.mockResolvedValueOnce([record]);
+    queueDeviceOrgSelects();
+    sendWebhookNotificationMock.mockResolvedValue({
+      success: false,
+      error: 'HTTP 404: not found',
+      retryable: false,
+    });
+    updateReturningMock.mockResolvedValueOnce([{ ...record, status: 'failed' }]);
+
+    await expect(processSendNotification(baseData)).rejects.toMatchObject({
+      name: 'UnrecoverableError',
+      message: 'HTTP 404: not found',
+    });
+    expect(updateSetMock).toHaveBeenCalledWith({
+      status: 'failed',
+      sentAt: null,
+      errorMessage: 'HTTP 404: not found',
     });
   });
 

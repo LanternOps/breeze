@@ -14,7 +14,7 @@ Together, these systems let you answer questions like "which devices are running
 </Aside>
 
 <Aside type="tip">
-  Software packages can be uploaded with SHA-256 checksum verification and deployed silently to endpoints. In the sidebar, these features appear as **App Library** (`/software`) and **App Policies** (`/software-inventory`).
+  Software packages can be uploaded with SHA-256 checksum verification and deployed silently to endpoints. In the sidebar, this is a single **Software** item (under Fleet Management) with **Inventory** and **Policies** tabs; `/software-inventory` and `/software-policies` are aliases that open the corresponding tab.
 </Aside>
 
 ---
@@ -396,8 +396,8 @@ Returns all per-device results for a given deployment. Use this to understand wh
 
 ## Device Software Inventory
 
-<Aside type="caution">
-  The `/devices/:id/software` endpoint returns persisted agent-reported data from the database. The `/software/inventory/*` endpoints currently serve from an in-memory layer that does not persist across server restarts. If you see different results between the two, this is expected. A future release will unify both endpoints against the database.
+<Aside type="note">
+  Both the `/devices/:id/software` endpoint and the `/software/inventory/*` endpoints read from the same persisted `software_inventory` database table, so results between them stay consistent.
 </Aside>
 
 The device software inventory records what is actually installed on each endpoint. This data is reported by the Breeze agent during periodic scans and is stored in the `software_inventory` database table.
@@ -486,6 +486,27 @@ An alternative endpoint mounted under the devices route that queries the `softwa
 | `search` | string | Filter by software name (partial match). |
 
 Results are sorted alphabetically by software name.
+
+---
+
+## Fleet Inventory: Approve, Deny, and Clear
+
+**Fleet Management → Software → Inventory** tab (`/software-inventory`) lists every distinct application seen anywhere in the fleet, aggregated across devices -- the console's fleet-wide view of the same `software_inventory` data described above, not a per-device list.
+
+Each row shows the software's name and vendor, how many devices have it installed, up to three installed versions with a per-version device count, and a **Policy Status** badge (**Allowed**, **Blocked**, **Audit**, or **No policy** -- see [Software Policies](/features/software-policies/) for what a policy's mode and enforcement setting mean). Selecting the name or the device-count badge opens a drawer listing the individual devices.
+
+The **Actions** menu on each row is a shortcut into policy management without leaving the Inventory tab:
+
+| Action | What it does |
+|---|---|
+| **Approve** | Adds the software (by name and vendor) to the organization's **Default Allowlist** policy, creating that policy on first use and linking it to a configuration policy so it reaches devices. |
+| **Deny** | Same, but adds it to the organization's **Default Blocklist** policy. |
+| **Clear status** | Only shown once a row is Allowed or Blocked. Removes the entry from both default policies, returning it to **No policy**. |
+| **Create policy** | Switches to the **Policies** tab with the software's name, vendor, and blocklist mode pre-filled, for building a full custom policy instead of using the quick defaults above. |
+
+<Aside type="tip">
+  Approve, Deny, and Clear write to the same auto-managed **Default Allowlist** / **Default Blocklist** policies every organization gets on first use -- they are ordinary software policies, editable or deletable from the **Policies** tab like any other. See [Software Policies](/features/software-policies/) for how policy mode, enforcement, and configuration-policy linking work.
+</Aside>
 
 ---
 

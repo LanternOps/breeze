@@ -314,6 +314,41 @@ describe('backupProcessResultSchema — system_image manifest passthrough', () =
       backupProcessResultSchema.parse({ status: 'completed', systemStateManifest: null }),
     ).not.toThrow();
   });
+
+  it('accepts layoutManifest + bareMetal (strict schema must declare them)', () => {
+    const result = backupProcessResultSchema.parse({
+      status: 'completed',
+      snapshotId: 'snap-1',
+      layoutManifest: { schemaVersion: 1, platform: 'linux', disks: [] },
+      bareMetal: { restorable: true, reasons: [] },
+    });
+    expect(result.bareMetal).toEqual({ restorable: true, reasons: [] });
+    expect((result.layoutManifest as { platform: string }).platform).toBe('linux');
+  });
+});
+
+describe('backupProcessResultSchema — W02 content-less entries (symlink/dir)', () => {
+  it('accepts symlink/dir file entries with an empty backupPath and rejects an empty backupPath on a plain file', () => {
+    const result = backupProcessResultSchema.parse({
+      status: 'completed',
+      snapshotId: 'snap-1',
+      snapshot: {
+        id: 'snap-1',
+        files: [
+          { sourcePath: '/bin', backupPath: '', kind: 'symlink', linkTarget: 'usr/bin' },
+          { sourcePath: '/var/empty', backupPath: '', kind: 'dir' },
+          { sourcePath: '/etc/hosts', backupPath: 'snapshots/snap-1/files/path_0/etc/hosts' },
+        ],
+      },
+    });
+    expect(result.snapshot?.files?.[0]).toMatchObject({ kind: 'symlink', linkTarget: 'usr/bin' });
+    expect(() =>
+      backupProcessResultSchema.parse({
+        status: 'completed',
+        snapshot: { id: 'snap-1', files: [{ sourcePath: '/x', backupPath: '' }] },
+      }),
+    ).toThrow();
+  });
 });
 
 describe('backupProcessResultSchema — incremental dedup + partial-success passthrough', () => {
@@ -584,3 +619,28 @@ describe('deliverEventJobDataSchema', () => {
     ).toThrow();
   });
 });
+
+describe('backupProcessResultSchema snapshot files (D12)', () => {
+  it('accepts the originalPath a VSS-backed Windows agent sends alongside the shadow sourcePath', async () => {
+    const { backupProcessResultSchema } = await import('./queueSchemas');
+    const parsed = backupProcessResultSchema.safeParse({
+      status: 'completed',
+      snapshot: {
+        id: 'snapshot-20260909T191123Z-4faf7e45',
+        timestamp: '2026-09-09T19:11:23.000Z',
+        size: 10,
+        files: [{
+          sourcePath: '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\assure\\src\\x',
+          originalPath: 'C:\\assure\\src\\x',
+          backupPath: 'snapshots/snapshot-20260909T191123Z-4faf7e45/files/path_0/assure/src/x.gz',
+          size: 10,
+          modTime: '2026-09-09T19:11:23.000Z',
+        }],
+      },
+    });
+    // originalPath (D12) must not be rejected by the strict queue schema — a
+    // rejection here silently leaves the job running forever.
+    expect(parsed.success, JSON.stringify(parsed.success ? null : parsed.error.issues)).toBe(true);
+  });
+});
+

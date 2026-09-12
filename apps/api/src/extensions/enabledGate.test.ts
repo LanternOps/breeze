@@ -10,9 +10,27 @@ vi.mock('../middleware/auth', () => ({
     c: { set(key: string, value: unknown): void },
     next: () => Promise<void>,
   ) => {
-    c.set('auth', { user: { id: 'user-1' } });
+    c.set('auth', {
+      user: { id: 'user-1', isPlatformAdmin: false },
+      token: { mfa: true },
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      scope: 'organization',
+    });
     await next();
   }),
+  hasSatisfiedMfa: vi.fn(() => true),
+}));
+
+vi.mock('../services/permissions', () => ({
+  getUserPermissions: vi.fn(async () => ({
+    permissions: [{ resource: '*', action: '*' }],
+    roleId: 'role-1',
+    scope: 'organization',
+    partnerId: 'partner-1',
+    orgId: 'org-1',
+  })),
+  hasPermission: vi.fn(() => true),
 }));
 
 vi.mock('../middleware/agentAuth', () => ({

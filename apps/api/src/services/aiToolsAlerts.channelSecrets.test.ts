@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   dbDelete: vi.fn(),
   encryptNotificationChannelConfig: vi.fn(),
   decryptNotificationChannelConfig: vi.fn(),
+  isMaskedIntegrationSecret: vi.fn((value: unknown) => typeof value === 'string' && /^\*+$/.test(value)),
   validateNotificationChannelConfig: vi.fn(),
   publishEvent: vi.fn().mockResolvedValue('event-1'),
   emitAlertStateFeedback: vi.fn().mockResolvedValue(undefined),
@@ -36,6 +37,7 @@ vi.mock('../db', () => ({
 vi.mock('./notificationChannelSecrets', () => ({
   encryptNotificationChannelConfig: mocks.encryptNotificationChannelConfig,
   decryptNotificationChannelConfig: mocks.decryptNotificationChannelConfig,
+  isMaskedIntegrationSecret: mocks.isMaskedIntegrationSecret,
 }));
 
 vi.mock('../routes/alerts/helpers', () => ({
@@ -252,6 +254,110 @@ describe('manage_notification_channels — update action', () => {
     expect(mocks.dbUpdate).not.toHaveBeenCalled();
     expect(result.error).toMatch(/invalid/i);
     expect(result.details).toContain('webhookUrl must be a non-empty string');
+  });
+
+  it('does not carry stored webhook authorization to a changed origin', async () => {
+    const existing = {
+      ...EXISTING_CHANNEL,
+      type: 'webhook',
+      config: { url: 'encrypted-url', authToken: 'encrypted-token' },
+    };
+    mockChannelLookup(existing);
+    mocks.decryptNotificationChannelConfig.mockReturnValueOnce({
+      url: 'https://hooks.example.com/notify',
+      authType: 'bearer',
+      authToken: 'stored-token',
+    });
+
+    const result = JSON.parse(
+      await handler(
+        {
+          action: 'update',
+          channelId: 'chan-1',
+          config: { url: 'https://attacker.example/notify', authType: 'bearer' },
+        },
+        makeAuth(),
+      ) as string,
+    );
+
+    expect(result.error).toMatch(/authorization.*re-entered/i);
+    expect(mocks.encryptNotificationChannelConfig).not.toHaveBeenCalled();
+    expect(mocks.dbUpdate).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before encryption when assigning a first URL to stored authorization', async () => {
+    const existing = {
+      ...EXISTING_CHANNEL,
+      type: 'webhook',
+      config: { authToken: 'encrypted-token', headers: { Authorization: 'encrypted-header' } },
+    };
+    mockChannelLookup(existing);
+    mocks.decryptNotificationChannelConfig.mockReturnValueOnce({
+      authType: 'bearer',
+      authToken: 'stored-token',
+      headers: { Authorization: 'stored-header' },
+    });
+
+    const result = JSON.parse(
+      await handler(
+        {
+          action: 'update',
+          channelId: 'chan-1',
+          config: { url: 'https://replacement.example/notify', authType: 'bearer' },
+        },
+        makeAuth(),
+      ) as string,
+    );
+
+    expect(result.error).toMatch(/authorization.*re-entered/i);
+    expect(mocks.encryptNotificationChannelConfig).not.toHaveBeenCalled();
+    expect(mocks.dbUpdate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: 'explicit clear',
+      patch: {
+        url: 'https://replacement.example/notify',
+        authType: 'none',
+        authToken: null,
+        headers: {},
+      },
+    },
+    {
+      label: 'complete re-entry',
+      patch: {
+        url: 'https://replacement.example/notify',
+        authType: 'bearer',
+        authToken: 'replacement-token',
+        headers: { Authorization: 'replacement-header' },
+      },
+    },
+  ])('allows a first URL after $label', async ({ patch }) => {
+    const existing = {
+      ...EXISTING_CHANNEL,
+      type: 'webhook',
+      config: { authToken: 'encrypted-token', headers: { Authorization: 'encrypted-header' } },
+    };
+    mockChannelLookup(existing);
+    mocks.decryptNotificationChannelConfig
+      .mockReturnValueOnce({
+        authType: 'bearer',
+        authToken: 'stored-token',
+        headers: { Authorization: 'stored-header' },
+      })
+      .mockReturnValueOnce(patch);
+    mocks.encryptNotificationChannelConfig.mockReturnValueOnce({ encrypted: true });
+    mocks.validateNotificationChannelConfig.mockReturnValueOnce([]);
+    mockUpdateChain();
+
+    const result = JSON.parse(
+      await handler({ action: 'update', channelId: 'chan-1', config: patch }, makeAuth()) as string,
+    );
+
+    expect(result.success).toBe(true);
+    expect(mocks.encryptNotificationChannelConfig).toHaveBeenCalled();
+    expect(mocks.dbUpdate).toHaveBeenCalled();
   });
 
   it('rejects a channel type change before any crypto runs (would corrupt the row)', async () => {

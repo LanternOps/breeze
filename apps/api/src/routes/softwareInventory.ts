@@ -16,6 +16,8 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthC
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { recordSoftwarePolicyAudit } from '../services/softwarePolicyService';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
+import { bumpApprovalGeneration } from '../services/approvalGeneration';
 import { escapeLike } from '../utils/sql';
 
 export const softwareInventoryRoutes = new Hono();
@@ -396,6 +398,9 @@ softwareInventoryRoutes.get('/names', requireSoftwareInventoryRead, zValidator('
 
 softwareInventoryRoutes.post('/approve', requireSoftwareInventoryWrite, requireMfa(), zValidator('json', approveSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
+  if (!canMutateOrgWideGovernance(auth)) {
+    return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+  }
   const { softwareName, vendor } = c.req.valid('json');
 
   const orgResult = resolveOrgId(auth, c.req.query('orgId'));
@@ -429,7 +434,14 @@ softwareInventoryRoutes.post('/approve', requireSoftwareInventoryWrite, requireM
       rules.software.push({ name: softwareName, vendor: vendor || undefined });
       await db
         .update(softwarePolicies)
-        .set({ rules, updatedAt: new Date() })
+        .set({
+          rules,
+          updatedAt: new Date(),
+          // Site-ceiling gate contract §3: editing the default allowlist/
+          // blocklist rules is a governing edit a queued compliance job
+          // needs to detect.
+          approvalGeneration: bumpApprovalGeneration(softwarePolicies.approvalGeneration),
+        })
         .where(eq(softwarePolicies.id, existing.id));
     }
 
@@ -517,6 +529,9 @@ softwareInventoryRoutes.post('/approve', requireSoftwareInventoryWrite, requireM
 
 softwareInventoryRoutes.post('/deny', requireSoftwareInventoryWrite, requireMfa(), zValidator('json', denySchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
+  if (!canMutateOrgWideGovernance(auth)) {
+    return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+  }
   const { softwareName, vendor } = c.req.valid('json');
 
   const orgResult = resolveOrgId(auth, c.req.query('orgId'));
@@ -549,7 +564,14 @@ softwareInventoryRoutes.post('/deny', requireSoftwareInventoryWrite, requireMfa(
       rules.software.push({ name: softwareName, vendor: vendor || undefined });
       await db
         .update(softwarePolicies)
-        .set({ rules, updatedAt: new Date() })
+        .set({
+          rules,
+          updatedAt: new Date(),
+          // Site-ceiling gate contract §3: editing the default allowlist/
+          // blocklist rules is a governing edit a queued compliance job
+          // needs to detect.
+          approvalGeneration: bumpApprovalGeneration(softwarePolicies.approvalGeneration),
+        })
         .where(eq(softwarePolicies.id, existing.id));
     }
 
@@ -635,6 +657,9 @@ softwareInventoryRoutes.post('/deny', requireSoftwareInventoryWrite, requireMfa(
 
 softwareInventoryRoutes.post('/clear', requireSoftwareInventoryWrite, requireMfa(), zValidator('json', approveSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
+  if (!canMutateOrgWideGovernance(auth)) {
+    return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+  }
   const { softwareName, vendor } = c.req.valid('json');
 
   const orgResult = resolveOrgId(auth, c.req.query('orgId'));
@@ -671,7 +696,14 @@ softwareInventoryRoutes.post('/clear', requireSoftwareInventoryWrite, requireMfa
       cleared = true;
       await db
         .update(softwarePolicies)
-        .set({ rules, updatedAt: new Date() })
+        .set({
+          rules,
+          updatedAt: new Date(),
+          // Site-ceiling gate contract §3: editing the default allowlist/
+          // blocklist rules is a governing edit a queued compliance job
+          // needs to detect.
+          approvalGeneration: bumpApprovalGeneration(softwarePolicies.approvalGeneration),
+        })
         .where(eq(softwarePolicies.id, policy.id));
 
       recordSoftwarePolicyAudit({

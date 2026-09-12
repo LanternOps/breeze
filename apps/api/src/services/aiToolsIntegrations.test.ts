@@ -18,7 +18,6 @@ const mocks = vi.hoisted(() => ({
   decryptForColumn: vi.fn(),
   redactUrlForLogs: vi.fn(),
   queueDelivery: vi.fn(),
-  toWorkerWebhookConfig: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -30,14 +29,13 @@ vi.mock('../db', () => ({
 }));
 
 // test_webhook now mirrors routes/webhooks.ts POST /:id/test and actually
-// dispatches to the worker (D.1 fix) — mock the worker + config mapper so
-// these tests exercise the dispatch call without touching Redis/eventBus.
+// dispatches to the worker (D.1 fix) — mock the worker so these tests
+// exercise the dispatch call without touching Redis/eventBus. Site-ceiling
+// gate contract §7E: queueDelivery no longer takes a decrypted config —
+// there is nothing left to map here; the worker resolves and decrypts the
+// row itself at send time.
 vi.mock('../workers/webhookDelivery', () => ({
   getWebhookWorker: () => ({ queueDelivery: mocks.queueDelivery }),
-}));
-
-vi.mock('../routes/webhooks', () => ({
-  toWorkerWebhookConfig: mocks.toWorkerWebhookConfig,
 }));
 
 // Mock the schema so Drizzle column references resolve without a real DB.
@@ -303,7 +301,6 @@ describe('aiToolsIntegrations — test_webhook credential masking', () => {
 
     mocks.decryptForColumn.mockImplementation((_table: string, _col: string, val: string) => val);
     mocks.redactUrlForLogs.mockImplementation((url: string) => realRedact(url));
-    mocks.toWorkerWebhookConfig.mockImplementation((w: unknown) => w);
     mocks.queueDelivery.mockResolvedValue('worker-delivery-id');
   });
 
@@ -312,7 +309,7 @@ describe('aiToolsIntegrations — test_webhook credential masking', () => {
 
     // First select: fetch the webhook row.
     mocks.dbSelect.mockReturnValueOnce(makeSelectChain([
-      { id: WEBHOOK_ID, orgId: ORG_ID, name: 'Test Hook', url: credentialUrl },
+      { id: WEBHOOK_ID, orgId: ORG_ID, name: 'Test Hook', url: credentialUrl, approvalGeneration: 1 },
     ]));
 
     // Insert: create delivery record.
@@ -334,10 +331,14 @@ describe('aiToolsIntegrations — test_webhook credential masking', () => {
     expect(result).not.toContain('mysecret');
     expect(parsed.webhookUrl).toBe('https://hooks.example.com/test');
     // D.1: the delivery must actually be dispatched to the worker, not just
-    // inserted as a permanently-'pending' row.
+    // inserted as a permanently-'pending' row. Site-ceiling gate contract
+    // §7E: the dispatch call carries only the webhook's identity + generation
+    // snapshot — never the decrypted config — so the credential can't leak
+    // into the Redis queue payload either.
     expect(mocks.queueDelivery).toHaveBeenCalledTimes(1);
     expect(mocks.queueDelivery).toHaveBeenCalledWith(
-      expect.objectContaining({ id: WEBHOOK_ID, orgId: ORG_ID }),
+      WEBHOOK_ID,
+      1,
       expect.objectContaining({ orgId: ORG_ID }),
       DELIVERY_ID,
     );

@@ -113,6 +113,48 @@ describe('approval_required — selfApprovalRequestId passthrough', () => {
   });
 });
 
+/**
+ * #5600 — the SSE event carries `approvalScope` ('supervised' | 'four_eyes'),
+ * and the card uses it to decide whether a self-approve needs the WebAuthn
+ * ceremony at all. Dropping it here silently forces every supervised approve
+ * through a passkey prompt the server stopped requiring.
+ */
+describe('approval_required — approvalScope passthrough (#5600)', () => {
+  it('carries approvalScope into pendingApproval', () => {
+    const state = makeState();
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      {
+        type: 'approval_required', executionId: 'e1', toolName: 'file_operations',
+        input: { action: 'read' }, description: 'Read a file',
+        intentBacked: true, selfApprovalRequestId: 'ap-1', approvalScope: 'supervised',
+      },
+      (fn) => { patch = { ...patch, ...fn({ ...state, ...patch }) }; },
+      () => ({ ...state, ...patch }),
+      null,
+    );
+    expect(patch.pendingApproval).toMatchObject({ approvalScope: 'supervised' });
+  });
+
+  it('leaves approvalScope undefined when the event omits it', () => {
+    // An absent scope must never be defaulted to 'supervised': the
+    // ceremony-skip branch keys off exactly this value, and inventing one
+    // would drop the proof from a four_eyes self-approve.
+    const state = makeState();
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      {
+        type: 'approval_required', executionId: 'e1', toolName: 'file_operations',
+        input: { action: 'read' }, description: 'Read a file', intentBacked: true,
+      },
+      (fn) => { patch = { ...patch, ...fn({ ...state, ...patch }) }; },
+      () => ({ ...state, ...patch }),
+      null,
+    );
+    expect(patch.pendingApproval?.approvalScope).toBeUndefined();
+  });
+});
+
 describe('plan-mode step sequencing under approval-gated ordering', () => {
   // API sequence for an approval-gated step is now:
   //   approval_required -> (possibly multi-minute wait) -> plan_step_start -> execute -> plan_step_complete
@@ -264,5 +306,37 @@ describe('tool_result clears a pendingApproval decided elsewhere', () => {
       { type: 'tool_result', toolUseId: 'tu-0', output: 'ctx', isError: false },
     ]);
     expect(patch.pendingApproval).toMatchObject({ executionId: 'e1' });
+  });
+});
+
+/**
+ * #5612 W04 — an intent approved at creation by the unattended lane has no
+ * approval row. The event replaces the card with an inline note and must
+ * clear any pending card left over from an earlier tool call.
+ */
+describe('unattended_release (#5612 W04)', () => {
+  it('appends an inline tool_result note and clears pendingApproval', () => {
+    const state = {
+      ...makeState(),
+      pendingApproval: { executionId: 'stale', toolName: 'run_script', input: {}, description: 'x' } as never,
+    };
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      {
+        type: 'unattended_release', executionId: 'e9', intentId: 'int-9', toolName: 'run_script',
+        description: 'Run script on 1 device(s)',
+      },
+      (fn) => { patch = { ...patch, ...fn({ ...state, ...patch }) }; },
+      () => ({ ...state, ...patch }),
+      null,
+    );
+    expect(patch.pendingApproval).toBeNull();
+    expect(patch.messages).toHaveLength(1);
+    expect(patch.messages?.[0]).toMatchObject({
+      id: 'unattended-release-int-9',
+      role: 'tool_result',
+      toolName: 'unattended_release',
+      toolOutput: expect.objectContaining({ intentId: 'int-9', executionId: 'e9' }),
+    });
   });
 });

@@ -1149,6 +1149,14 @@
         "enableSupportUsage": {
           "label": "Utilisation du support",
           "description": "Affiche le total du temps de support facturable du mois en cours."
+        },
+        "enableService": {
+          "label": "Service",
+          "description": "Affiche les livrables planifiés, ce qui a été livré et les dates clés."
+        },
+        "enableDocuments": {
+          "label": "Documents",
+          "description": "Permet aux clients de télécharger les documents partagés."
         }
       }
     },
@@ -2236,6 +2244,10 @@
           "label": "Scripts et commandes",
           "description": "Exécuter des scripts, des playbooks et des commandes système, et gérer les processus, tâches planifiées et entrées de registre concernés."
         },
+        "author_scripts": {
+          "label": "Rédiger des scripts",
+          "description": "Rédiger un nouveau script sous forme de proposition soumise à une relecture indépendante. Rien de ce qu'un agent rédige ne s'exécute avant d'avoir été relu et approuvé."
+        },
         "tickets": {
           "label": "Tickets d'assistance",
           "description": "Examiner les tickets du support et proposer des réponses ou les prochaines étapes."
@@ -2313,9 +2325,9 @@
         "get_effective_configuration": "Configuration effective",
         "get_fleet_findings": "Constats du parc",
         "get_fleet_health": "Santé du parc",
-        "get_fleet_status": "État du parc",
         "get_huntress_incidents": "Incidents Huntress",
         "get_huntress_status": "État de Huntress",
+        "get_invite_funnel": "Entonnoir d'invitations de déploiement",
         "get_invoice": "Détails de la facture",
         "get_log_trends": "Tendances des journaux",
         "get_playbook_history": "Historique d'exécution du playbook",
@@ -3215,6 +3227,10 @@
     "enterYourPhoneNumberInE164FormatToReceiveAVerificationCo": "Saisissez votre numéro de téléphone au format E.164 pour recevoir un code de vérification.",
     "phoneNumber": "Numéro de téléphone",
     "currentPassword": "Mot de passe actuel",
+    "currentMfaCode": "Code MFA actuel",
+    "currentMfaCodeRequired": "Un code MFA actuel est requis",
+    "currentPasskeyRequired": "Votre clé d’accès actuelle sera demandée",
+    "sendVerificationCode": "Envoyer le code de vérification",
     "verificationCode": "Code de vérification",
     "enterThe6DigitCodeSentToYourPhone": "Saisissez le code à 6 chiffres envoyé sur votre téléphone.",
     "cancel": "Annuler",
@@ -3348,6 +3364,9 @@
     "failedToEnableMFA": "Impossible d’activer MFA",
     "failedToDisableMFA": "Impossible de désactiver MFA",
     "failedToGenerateRecoveryCodes": "Impossible de générer des codes de récupération",
+    "failedToSendVerificationCode": "Impossible d’envoyer le code de vérification",
+    "failedToVerifyCurrentFactor": "Impossible de vérifier le facteur MFA actuel",
+    "verificationCodeSent": "Code de vérification envoyé",
     "failedToAddPasskey": "Impossible d’ajouter une clé d’accès",
     "failedToRenamePasskey": "Impossible de renommer la clé d’accès",
     "failedToDeletePasskey": "Impossible de supprimer la clé d’accès",
@@ -5298,5 +5317,81 @@
       "conflict": "Conflit",
       "orgNotFound": "Organisation introuvable"
     }
+  },
+  "scriptAuthoringPage": {
+    "title": "Rédaction de scripts",
+    "subtitle": "Permettez à l'assistant et à vos agents d'écrire, de vérifier et — lorsque vous l'autorisez — d'exécuter des scripts sans carte d'approbation.",
+    "partnerCard": {
+      "title": "Plafond du partenaire",
+      "description": "Le paramètre le plus large que toute organisation de ce partenaire peut utiliser. Chaque organisation ne peut que le restreindre.",
+      "readOnly": "Seul un administrateur partenaire disposant d'un accès complet aux organisations peut modifier le plafond.",
+      "missing": "Votre partenaire n'a pas encore défini de plafond ; la voie non supervisée ne peut donc pas être activée ici."
+    },
+    "orgCard": {
+      "title": "Cette organisation",
+      "description": "Une autorisation explicite. La voie non supervisée reste désactivée tant que le plafond du partenaire et cet interrupteur ne l'autorisent pas tous les deux.",
+      "noOrgSelected": "Sélectionnez une organisation pour gérer ses paramètres de rédaction de scripts."
+    },
+    "fields": {
+      "proposingEnabled": "Autoriser l'IA à proposer des scripts",
+      "unattendedAllowed": "Autoriser les organisations à utiliser la voie non supervisée",
+      "unattendedEnabled": "Exécuter les scripts approuvés à faible risque sans carte d'approbation",
+      "maxRiskTier": "Niveau de risque maximal autorisé en mode non supervisé",
+      "allowedClasses": "Ce qu'un script non supervisé peut toucher",
+      "perHour": "Nombre maximal d'exécutions non supervisées par heure",
+      "reviewerModel": "Modèle de vérification",
+      "reviewerModelHint": "Laissez vide pour utiliser la valeur par défaut de la plateforme.",
+      "protectedResources": "Ne jamais toucher à ceci",
+      "protectedServices": "Services",
+      "protectedPaths": "Chemins",
+      "protectedRegistryKeys": "Clés de registre",
+      "protectedDeviceTags": "Balises d'appareil"
+    },
+    "tier": {
+      "low": "Faible",
+      "medium": "Moyen"
+    },
+    "class": {
+      "registry": "Registre",
+      "services": "Services",
+      "processes": "Processus",
+      "files_system": "Fichiers système",
+      "files_user": "Fichiers utilisateur",
+      "temp_files": "Fichiers temporaires",
+      "network_egress": "Trafic réseau sortant",
+      "firewall": "Pare-feu",
+      "credentials": "Identifiants",
+      "users_groups": "Utilisateurs et groupes",
+      "packages": "Paquets",
+      "scheduled_tasks": "Tâches planifiées",
+      "disk": "Disque",
+      "boot": "Configuration de démarrage",
+      "security_tooling": "Outils de sécurité",
+      "dns_cache": "Cache DNS",
+      "printing": "Impression",
+      "browser": "Navigateurs",
+      "shell_eval": "Code dynamique"
+    },
+    "windowsOnly": "Windows uniquement",
+    "hardDenied": "Jamais disponible en mode non supervisé, quel que soit le plafond.",
+    "aboveCeiling": "Votre partenaire n'autorise pas cela.",
+    "lane": {
+      "closedTitle": "La voie non supervisée fonctionne normalement",
+      "openTitle": "La voie non supervisée est en pause",
+      "openBody": "{{reason}} Les exécutions non supervisées sont refusées tant qu'un approbateur n'a pas réinitialisé la voie. Les approbations continuent de fonctionner normalement.",
+      "reset": "Réinitialiser la voie",
+      "resetSuccess": "La voie non supervisée fonctionne de nouveau.",
+      "resetFailed": "Impossible de réinitialiser la voie."
+    },
+    "stepUp": {
+      "title": "Confirmez que c'est bien vous",
+      "body": "L'activation des exécutions non supervisées nécessite une nouvelle vérification de sécurité."
+    },
+    "save": "Enregistrer",
+    "saving": "Enregistrement…",
+    "saved": "Paramètres de rédaction de scripts enregistrés.",
+    "saveFailed": "Ces paramètres n'ont pas pu être enregistrés.",
+    "loading": "Chargement…",
+    "loadFailed": "Les paramètres de rédaction de scripts n'ont pas pu être chargés."
   }
 }

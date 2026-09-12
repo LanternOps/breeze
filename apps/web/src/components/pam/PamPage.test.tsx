@@ -5,6 +5,15 @@ import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // usePermissions() (PAM RBAC UI gating, PR review fix) is read by the tab
+  // components PamPage renders (PamRulesTab, PamSignerGroupsTab,
+  // PamRequestsTab) — grant the admin wildcard so this file's tab-switching
+  // tests keep exercising full functionality regardless of gating.
+  useAuthStore: Object.assign(
+    (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
+      selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+    { getState: () => ({ tokens: null }) },
+  ),
 }));
 
 vi.mock('../shared/Toast', () => ({

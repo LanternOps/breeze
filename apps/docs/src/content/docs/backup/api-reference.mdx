@@ -37,6 +37,8 @@ This page lists all backup API endpoints for teams building integrations or auto
 | GET | `/backup/jobs/:id` | Get job details |
 | POST | `/backup/jobs/run/:deviceId` | Trigger manual backup |
 | POST | `/backup/jobs/:id/cancel` | Cancel a running/queued job |
+| GET | `/backup/jobs/run-all/preview` | Preview a run-all: counts of eligible, offline, and already-running devices |
+| POST | `/backup/jobs/run-all` | Trigger a manual backup on every device with an assigned backup policy |
 
 ---
 
@@ -97,8 +99,8 @@ This page lists all backup API endpoints for teams building integrations or auto
 | GET | `/backup/hyperv/vms/:deviceId` | List VMs on a host |
 | POST | `/backup/hyperv/backup` | Export a VM (`deviceId`, `vmName`, `exportPath`, optional `consistencyType`) |
 | POST | `/backup/hyperv/restore` | Import a VM from backup |
-| POST | `/backup/hyperv/checkpoint` | Manage VM checkpoints |
-| POST | `/backup/hyperv/vm-state` | Control VM power state |
+| POST | `/backup/hyperv/checkpoints/:deviceId/:vmId` | Manage VM checkpoints |
+| POST | `/backup/hyperv/vm-state/:deviceId/:vmId` | Control VM power state |
 
 ---
 
@@ -115,8 +117,20 @@ This page lists all backup API endpoints for teams building integrations or auto
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/backup/bmr/token` | Generate recovery token (`snapshotId`, optional `expiresInHours`, `restoreType`, `targetConfig`) |
-| GET | `/backup/bmr/token/:id` | Get recovery token metadata |
+| POST | `/backup/bmr/tokens` | Generate recovery token (`snapshotId`, optional `expiresInHours`, `restoreType`, `targetConfig`) |
+| GET | `/backup/bmr/tokens/:id` | Get recovery token metadata |
+
+### Boot Media
+
+Bootable ISO images for BMR, built from a recovery token. Currently `linux`/`amd64`/`iso` only.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/backup/bmr/boot-media` | List boot media artifacts (filter: `tokenId`, `snapshotId`, `status`) |
+| POST | `/backup/bmr/boot-media` | Request boot media for a token (`tokenId`, optional `bundleArtifactId`) |
+| GET | `/backup/bmr/boot-media/:id` | Get boot media artifact details and status |
+| GET | `/backup/bmr/boot-media/:id/download` | Download the boot media ISO |
+| GET | `/backup/bmr/boot-media/:id/signature` | Download the boot media's detached signature |
 
 ---
 
@@ -139,6 +153,7 @@ This page lists all backup API endpoints for teams building integrations or auto
 | POST | `/backup/encryption/keys` | Create encryption key |
 | GET | `/backup/encryption/keys/:id` | Get key metadata |
 | POST | `/backup/encryption/keys/:id/rotate` | Rotate key |
+| DELETE | `/backup/encryption/keys/:id` | Deactivate a key (soft delete; blocked if a snapshot still references it) |
 
 ---
 
@@ -149,7 +164,9 @@ This page lists all backup API endpoints for teams building integrations or auto
 | GET | `/backup/vault` | List vaults |
 | POST | `/backup/vault` | Create vault |
 | PATCH | `/backup/vault/:id` | Update vault |
+| DELETE | `/backup/vault/:id` | Delete a vault (soft delete) |
 | POST | `/backup/vault/:id/sync` | Trigger sync |
+| GET | `/backup/vault/:id/status` | Get vault sync status (last sync time, status, size, error) |
 
 ---
 
@@ -159,11 +176,18 @@ This page lists all backup API endpoints for teams building integrations or auto
 |--------|------|-------------|
 | POST | `/backup/sla/configs` | Create SLA configuration |
 | GET | `/backup/sla/configs` | List SLA configurations |
+| PATCH | `/backup/sla/configs/:id` | Update an SLA configuration |
+| DELETE | `/backup/sla/configs/:id` | Delete an SLA configuration and its events |
 | GET | `/backup/sla/events` | Query SLA events and breaches |
+| GET | `/backup/sla/dashboard` | Compliance dashboard: active configs, breach counts, average RPO/RTO |
 
 ---
 
 ## Cloud-to-Cloud (C2C)
+
+<Aside type="caution">
+  Sync and restore execution are not yet implemented. `POST /c2c/configs/:id/run` creates a job that immediately fails with `c2c_sync_not_implemented`, and restore jobs fail the same way with `c2c_restore_not_implemented`. Connection and config setup below work today.
+</Aside>
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -173,9 +197,15 @@ This page lists all backup API endpoints for teams building integrations or auto
 | GET | `/c2c/connections` | List C2C connections |
 | POST | `/c2c/connections` | Create connection (manual mode) |
 | GET | `/c2c/connections/:id` | Get connection details |
+| DELETE | `/c2c/connections/:id` | Revoke a connection |
+| POST | `/c2c/connections/:id/test` | Test a connection; for a platform-app connection this also refreshes (re-authorizes) its access token |
 | GET | `/c2c/configs` | List C2C backup configs |
 | POST | `/c2c/configs` | Create/update backup scope and schedule |
-| POST | `/c2c/configs/:id/run` | Trigger immediate sync |
+| POST | `/c2c/configs/:id/run` | Trigger a sync (fails immediately — not yet implemented) |
+| GET | `/c2c/items` | Search/browse backed-up items (filter: `configId`, `userEmail`, `itemType`, `search`) |
+| GET | `/c2c/dashboard` | Connection, item, and storage summary stats |
+| POST | `/c2c/restore` | Restore items by id (fails immediately — not yet implemented, see caution above) |
+| GET | `/c2c/restore/:id` | Get a restore job's status |
 
 ---
 

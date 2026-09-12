@@ -90,11 +90,17 @@ async function assertChildren(suffix: string, owner: { orgId: string | null; par
   expect(one?.partnerId ?? null).toBe(owner.partnerId);
   expect(one?.content).toBe('echo v2');
   expect(one?.version).toBe(2);
-  // One snapshot per script, holding the v1 content, created by the caller.
-  const oneVersions = versions.filter((v) => v.scriptId === one!.id);
-  const twoVersions = versions.filter((v) => v.scriptId === two!.id);
-  expect(oneVersions.map((v) => [v.version, v.content])).toEqual([[1, 'echo v1']]);
-  expect(twoVersions.map((v) => [v.version, v.content])).toEqual([[1, 'echo v1']]);
+  // One version per import: v1 is the script's own creation cut
+  // (insertScriptRow), v2 is the after-image of the bundle's replacement body.
+  // Before 2026-10-16-100000 the importer wrote a BEFORE-image and creation cut
+  // nothing, so a script that had been imported once had exactly one row
+  // holding the OLD content — which meant the current body was never in the
+  // history at all.
+  const oneVersions = versions.filter((v) => v.scriptId === one!.id).sort((a, b) => a.version - b.version);
+  const twoVersions = versions.filter((v) => v.scriptId === two!.id).sort((a, b) => a.version - b.version);
+  expect(oneVersions.map((v) => [v.version, v.content])).toEqual([[1, 'echo v1'], [2, 'echo v2']]);
+  expect(twoVersions.map((v) => [v.version, v.content])).toEqual([[1, 'echo v1'], [2, 'echo v2']]);
+  expect(oneVersions.map((v) => v.origin)).toEqual(['imported', 'imported']);
   // Tags: two links on One, one on Two, all owned by the same scope as the script.
   expect(links.filter((l) => l.scriptId === one!.id).map((l) => l.tagName).sort()).toEqual(['alpha', 'beta']);
   expect(links.filter((l) => l.scriptId === two!.id).map((l) => l.tagName)).toEqual(['alpha']);

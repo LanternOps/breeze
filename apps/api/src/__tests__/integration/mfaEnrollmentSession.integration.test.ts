@@ -4,12 +4,13 @@ import { eq, sql } from 'drizzle-orm';
 import postgres, { type Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { withSystemDbAccessContext } from '../../db';
-import { refreshTokenFamilies, users } from '../../db/schema';
+import { refreshTokenFamilies, userPasskeys, users } from '../../db/schema';
 import { authBindingRoutes } from '../../routes/auth/binding';
 import { beginAuthIssuance } from '../../services/authBrowserTransition';
 import {
   completeInitialMfaEnrollment,
   completeMfaFactorReplacement,
+  completeMfaFactorRemoval,
   replaceSessionOnMfaFactorWrite,
 } from '../../services/mfaEnrollmentSession';
 import { mintRefreshTokenFamily } from '../../services/refreshTokenFamily';
@@ -245,6 +246,68 @@ describe('completeInitialMfaEnrollment — real-PG atomicity', () => {
       .where(eq(refreshTokenFamilies.userId, value.user.id));
     expect(families).toHaveLength(1);
     expect(families[0]).toMatchObject({ familyId: value.oldFamilyId, revokedAt: null });
+  });
+});
+
+describe('completeMfaFactorRemoval — real-PG passkey concurrency', () => {
+  runDb('allows exactly one same-epoch concurrent passkey removal', async () => {
+    const value = await fixture();
+    await getTestDb().update(users).set({ mfaEnabled: true, mfaMethod: 'passkey' })
+      .where(eq(users.id, value.user.id));
+    const passkeys = await getTestDb().insert(userPasskeys).values([
+      {
+        userId: value.user.id,
+        credentialId: `credential-a-${randomUUID()}`,
+        publicKey: 'synthetic-public-key-a',
+        deviceType: 'singleDevice',
+      },
+      {
+        userId: value.user.id,
+        credentialId: `credential-b-${randomUUID()}`,
+        publicKey: 'synthetic-public-key-b',
+        deviceType: 'singleDevice',
+      },
+    ]).returning({ id: userPasskeys.id });
+    expect(passkeys).toHaveLength(2);
+
+    const [capabilityA, capabilityB] = await Promise.all([
+      freshBrowserCapability(),
+      freshBrowserCapability(),
+    ]);
+    const remove = (passkeyId: string, capability: Awaited<ReturnType<typeof freshBrowserCapability>>) =>
+      withSystemDbAccessContext(() => completeMfaFactorRemoval({
+        userId: value.user.id,
+        identity: value.identity,
+        capability,
+        expectedAuthEpoch: value.user.authEpoch,
+        expectedMfaEpoch: value.user.mfaEpoch,
+        revokeReason: 'integration-passkey-delete',
+        persistFactor: async (tx) => {
+          const deleted = await tx.delete(userPasskeys)
+            .where(eq(userPasskeys.id, passkeyId))
+            .returning({ id: userPasskeys.id });
+          if (deleted.length !== 1) throw new Error('passkey delete lost ownership');
+          return passkeyId;
+        },
+      }));
+
+    const settled = await Promise.allSettled([
+      remove(passkeys[0]!.id, capabilityA),
+      remove(passkeys[1]!.id, capabilityB),
+    ]);
+    expect(settled.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(settled.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(settled.find((result) => result.status === 'rejected')?.reason)
+      .toMatchObject({ name: 'AuthIssuanceConflictError' });
+
+    const remaining = await getTestDb().select({ id: userPasskeys.id })
+      .from(userPasskeys)
+      .where(eq(userPasskeys.userId, value.user.id));
+    expect(remaining).toHaveLength(1);
+    const [after] = await getTestDb().select({ mfaEpoch: users.mfaEpoch })
+      .from(users)
+      .where(eq(users.id, value.user.id));
+    expect(after?.mfaEpoch).toBe(value.user.mfaEpoch + 1);
   });
 });
 

@@ -88,3 +88,46 @@ describe('manage_alerts list — site narrowing', () => {
     expect(parsed.total).toBe(0);
   });
 });
+
+describe('manage_notification_channels — site-ceiling gate (contract-site-ceiling-gate §2/§7A)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it.each(['test', 'create', 'update', 'delete'])(
+    'action=%s: site-restricted caller is denied before any DB access',
+    async (action) => {
+      const result = JSON.parse(await handlerFor('manage_notification_channels')({
+        action,
+        channelId: 'chan-1',
+        name: 'Slack',
+        type: 'slack',
+        config: { webhookUrl: 'https://hooks.slack.com/x' },
+      }, makeAuth(['s1'])));
+
+      expect(result.error).toMatch(/site-restricted/i);
+      expect(mockDb.select).not.toHaveBeenCalled();
+    }
+  );
+
+  it('empty allowedSiteIds ([]) is also denied', async () => {
+    const result = JSON.parse(await handlerFor('manage_notification_channels')({
+      action: 'create', name: 'Slack', type: 'slack', config: {},
+    }, makeAuth([])));
+    expect(result.error).toMatch(/site-restricted/i);
+  });
+
+  it('"list" action is a read and NOT gated for a site-restricted caller', async () => {
+    mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) }) });
+    const result = JSON.parse(await handlerFor('manage_notification_channels')({ action: 'list' }, makeAuth(['s1'])));
+    expect(result.error).toBeUndefined();
+  });
+
+  it('unrestricted caller (allowedSiteIds undefined) is unaffected', async () => {
+    (db.insert as any).mockReturnValue({
+      values: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: 'chan-1', orgId: 'org-1', name: 'Slack', type: 'slack' }])) })),
+    });
+    const result = JSON.parse(await handlerFor('manage_notification_channels')({
+      action: 'create', name: 'Slack', type: 'slack', config: { webhookUrl: 'https://hooks.slack.com/x' },
+    }, makeAuth(undefined)));
+    expect(result.error).toBeUndefined();
+  });
+});

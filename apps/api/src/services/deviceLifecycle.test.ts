@@ -1,7 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./deviceDeletion', () => ({ deleteDeviceCascade: vi.fn(async () => undefined) }));
-vi.mock('./deviceLinkGroups', () => ({ dissolveLinkGroupIfBelowMinimum: vi.fn(async () => true) }));
+vi.mock('./deviceLinkGroups', () => ({
+  dissolveLinkGroupIfBelowMinimum: vi.fn(async () => true),
+  LinkGroupSiteAccessError: class LinkGroupSiteAccessError extends Error {
+    constructor() {
+      super('site denied');
+      this.name = 'LinkGroupSiteAccessError';
+    }
+  },
+}));
 vi.mock('./deviceUninstallDrain', async (orig) => {
   const actual = await orig<typeof import('./deviceUninstallDrain')>();
   return {
@@ -225,9 +233,54 @@ describe('purgeRemovedDevice', () => {
     });
     const r = await purgeRemovedDevice(tx, DEV);
     expect(deleteDeviceCascade).toHaveBeenCalledWith(tx, DEV);
-    expect(dissolveLinkGroupIfBelowMinimum).toHaveBeenCalledWith(tx, 'lg-1');
+    expect(dissolveLinkGroupIfBelowMinimum).toHaveBeenCalledWith(tx, 'lg-1', undefined);
     expect(r.linkGroupDissolved).toBe(true);
     expect(calls.filter((c) => c !== 'tighten-lock-timeout')[0]).toBe('lock');
+  });
+
+  it('converts a hidden-survivor refusal into an opaque state conflict', async () => {
+    const { LinkGroupSiteAccessError } = await import('./deviceLinkGroups');
+    vi.mocked(dissolveLinkGroupIfBelowMinimum).mockRejectedValueOnce(
+      new LinkGroupSiteAccessError(),
+    );
+    const { tx } = makeTx({
+      lockRow: {
+        id: DEV,
+        status: 'decommissioned',
+        site_id: 'site-visible',
+        link_group_id: 'lg-1',
+      },
+    });
+
+    await expect(purgeRemovedDevice(tx, DEV, ['site-visible'])).rejects.toMatchObject({
+      code: 'STATE_CHANGED',
+      message: 'Device access or linked state changed before deletion',
+      status: 409,
+    });
+    expect(dissolveLinkGroupIfBelowMinimum).toHaveBeenCalledWith(
+      tx,
+      'lg-1',
+      ['site-visible'],
+    );
+  });
+
+  it('re-checks the target site under its row lock before starting the cascade', async () => {
+    const { tx, calls } = makeTx({
+      lockRow: {
+        id: DEV,
+        status: 'decommissioned',
+        site_id: 'site-hidden',
+        link_group_id: null,
+      },
+    });
+
+    await expect(purgeRemovedDevice(tx, DEV, ['site-visible'])).rejects.toMatchObject({
+      code: 'SITE_ACCESS_DENIED',
+      status: 403,
+    });
+    expect(calls).not.toContain('pending-check');
+    expect(deleteDeviceCascade).not.toHaveBeenCalled();
+    expect(dissolveLinkGroupIfBelowMinimum).not.toHaveBeenCalled();
   });
 
   it('does not touch link groups when the purged device was unlinked', async () => {
@@ -241,8 +294,10 @@ describe('purgeRemovedDevice', () => {
 });
 
 describe('DeviceLifecycleError', () => {
-  it('maps NOT_FOUND to 404 and every other code to 409', () => {
+  it('maps not-found, site-denied, and state conflicts to their HTTP domains', () => {
     expect(new DeviceLifecycleError('NOT_FOUND', 'x').status).toBe(404);
+    expect(new DeviceLifecycleError('SITE_ACCESS_DENIED', 'x').status).toBe(403);
+    expect(new DeviceLifecycleError('STATE_CHANGED', 'x').status).toBe(409);
     expect(new DeviceLifecycleError('NOT_REMOVED', 'x').status).toBe(409);
     expect(new DeviceLifecycleError('UNINSTALL_PENDING', 'x').status).toBe(409);
   });

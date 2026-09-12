@@ -106,6 +106,12 @@ vi.mock('../services/eventDispatcher', () => {
   };
 });
 
+let blockedMobileDevice = false;
+vi.mock('../middleware/mobileDeviceBlocked', () => ({
+  getBoundMobileDeviceBlock: vi.fn(async () =>
+    blockedMobileDevice ? { reason: 'lost' } : null),
+}));
+
 // Mock auth middleware as a pass-through (tests inject auth context manually)
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn(async (_c: any, next: any) => { await next(); }),
@@ -146,6 +152,7 @@ beforeEach(() => {
   setPartnerMembership({ roleId: 'partner-role-1', orgAccess: 'all', orgIds: null });
   partnerOrganizationRows = [{ id: 'org-1' }, { id: 'org-2' }, { id: 'org-3' }];
   setThrowOnSelect(false);
+  blockedMobileDevice = false;
 });
 
 // -------------------------------------------------------------------
@@ -183,8 +190,10 @@ describe('event WS mid-session revocation (handler interval)', () => {
     } as any;
   }
 
-  async function openConnection(ws: any) {
-    const { ticket } = await createEventWsTicket('user-1', 'org-1');
+  async function openConnection(ws: any, mobileDeviceId?: string) {
+    const { ticket } = await createEventWsTicket('user-1', 'org-1', null, {
+      mobileDeviceId,
+    });
     const handlers = createEventWsHandlers(ticket, { jitterMs: () => 0 });
     await handlers.onOpen(undefined, ws);
     return handlers;
@@ -215,6 +224,41 @@ describe('event WS mid-session revocation (handler interval)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('closes and unregisters when the bound mobile device becomes blocked mid-session', async () => {
+    const { getEventDispatcher } = await import('../services/eventDispatcher');
+    const dispatcher = getEventDispatcher() as any;
+
+    vi.useFakeTimers();
+    try {
+      const ws = makeWs();
+      await openConnection(ws, 'mobile-install-1');
+      expect(dispatcher.register).toHaveBeenCalledWith('org-1', expect.anything());
+
+      blockedMobileDevice = true;
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Access revoked');
+      expect(dispatcher.unregister).toHaveBeenCalledWith('org-1', expect.anything());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('denies a bound mobile device blocked between ticket mint and socket upgrade', async () => {
+    const { getEventDispatcher } = await import('../services/eventDispatcher');
+    const dispatcher = getEventDispatcher() as any;
+    const ws = makeWs();
+    const { ticket } = await createEventWsTicket('user-1', 'org-1', null, {
+      mobileDeviceId: 'mobile-install-1',
+    });
+    blockedMobileDevice = true;
+
+    await createEventWsHandlers(ticket).onOpen(undefined, ws);
+
+    expect(dispatcher.register).not.toHaveBeenCalled();
+    expect(ws.close).toHaveBeenCalled();
   });
 
   it('retries one failed DB check shortly, then closes on the second failure', async () => {
@@ -330,6 +374,16 @@ describe('createEventWsTicket', () => {
     expect(result.expiresInSeconds).toBe(30);
   });
 
+  it('binds a signed mobile installation into a version-three ticket', async () => {
+    const { ticket } = await createEventWsTicket('user-1', 'org-1', null, {
+      mobileDeviceId: 'mobile-install-1',
+    });
+    await expect(consumeTicket(ticket)).resolves.toMatchObject({
+      version: 3,
+      mobileDeviceId: 'mobile-install-1',
+    });
+  });
+
   it('creates unique tickets on each call', async () => {
     const a = await createEventWsTicket('user-1', 'org-1');
     const b = await createEventWsTicket('user-1', 'org-1');
@@ -341,7 +395,7 @@ describe('createEventWsTicket', () => {
     const { ticket } = await createEventWsTicket('user-1', ['org-1', 'org-2', 'org-3']);
     const identity = await consumeTicket(ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-1',
       allowedOrgIds: ['org-1', 'org-2', 'org-3'],
       permissionsEpoch: 7,
@@ -357,7 +411,7 @@ describe('createEventWsTicket', () => {
     const { ticket } = await createEventWsTicket('user-1', 'org-1', ['site-a', 'site-b']);
     const identity = await consumeTicket(ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-1',
       allowedOrgIds: ['org-1'],
       allowedSiteIds: ['site-a', 'site-b'],
@@ -476,7 +530,7 @@ describe('consumeTicket', () => {
     const { ticket } = await createEventWsTicket('user-1', 'org-1');
     const identity = await consumeTicket(ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-1',
       allowedOrgIds: ['org-1'],
       permissionsEpoch: 7,
@@ -511,7 +565,7 @@ describe('consumeTicket', () => {
 });
 
 describe('event ticket permission epoch compatibility', () => {
-  it('mints a version-two ticket with the current permission epoch and authority axes', async () => {
+  it('mints a version-three ticket with the current permission epoch and authority axes', async () => {
     setUserStatusRow({
       status: 'active',
       permissionsEpoch: 41,
@@ -523,7 +577,7 @@ describe('event ticket permission epoch compatibility', () => {
     const identity = await consumeTicket(ticket);
 
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-1',
       partnerId: 'partner-1',
       orgId: 'org-1',
@@ -551,7 +605,7 @@ describe('event ticket permission epoch compatibility', () => {
     const identity = await consumeTicket(ticket, 'compat');
 
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       permissionsEpoch: 12,
       allowedSiteIds: ['fresh-site'],
     });
@@ -595,6 +649,17 @@ describe('resolveLiveEventAuthorization', () => {
     await expect(resolveLiveEventAuthorization(identity)).resolves.toEqual({
       ok: true,
       identity,
+    });
+  });
+
+  it('returns a distinct revocation reason for a blocked bound mobile device', async () => {
+    const identity = await mintIdentity();
+    const boundIdentity = { ...identity, mobileDeviceId: 'mobile-install-1' };
+    blockedMobileDevice = true;
+
+    await expect(resolveLiveEventAuthorization(boundIdentity)).resolves.toEqual({
+      ok: false,
+      reason: 'mobile_device_blocked',
     });
   });
 
@@ -687,6 +752,29 @@ describe('createEventWsTicketRoute', () => {
     expect(body.expiresInSeconds).toBe(30);
   });
 
+  it('copies only the signed mobile binding from auth into the ticket', async () => {
+    const { Hono } = await import('hono');
+    const app = new Hono();
+    setUserStatusRow({ orgId: 'org-xyz' });
+
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        user: { id: 'user-abc', email: 'a@b.com', name: 'A' },
+        orgId: 'org-xyz',
+        token: { mdid: 'signed-mobile-installation' },
+      } as any);
+      await next();
+    });
+    app.route('/events', createEventWsTicketRoute());
+
+    const res = await app.request('/events/ws-ticket', { method: 'POST' });
+    const body = await res.json();
+    await expect(consumeTicket(body.ticket)).resolves.toMatchObject({
+      version: 3,
+      mobileDeviceId: 'signed-mobile-installation',
+    });
+  });
+
   it('returns 401 when auth context is missing', async () => {
     const { Hono } = await import('hono');
     const app = new Hono();
@@ -747,7 +835,7 @@ describe('createEventWsTicketRoute', () => {
 
     const identity = await consumeTicket(body.ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-abc',
       allowedOrgIds: ['org-from-query'],
     });
@@ -786,7 +874,7 @@ describe('createEventWsTicketRoute', () => {
     const body = await res.json();
     const identity = await consumeTicket(body.ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-abc',
       allowedOrgIds: ['org-a', 'org-b'],
     });
@@ -831,7 +919,7 @@ describe('createEventWsTicketRoute', () => {
     const body = await res.json();
     const identity = await consumeTicket(body.ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-abc',
       allowedOrgIds: ['org-a', 'org-b', 'org-c'],
     });
@@ -872,7 +960,7 @@ describe('createEventWsTicketRoute', () => {
     const body = await res.json();
     const identity = await consumeTicket(body.ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-abc',
       allowedOrgIds: ['org-x'],
     });
@@ -924,7 +1012,7 @@ describe('createEventWsTicketRoute', () => {
 
     const identity = await consumeTicket(body.ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-abc',
       allowedOrgIds: ['org-xyz'],
     });
@@ -968,7 +1056,7 @@ describe('createEventWsTicketRoute', () => {
     const body = await res.json();
     const identity = await consumeTicket(body.ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-abc',
       allowedOrgIds: ['org-xyz'],
       allowedSiteIds: ['site-a'],
@@ -998,7 +1086,7 @@ describe('createEventWsTicketRoute', () => {
     const body = await res.json();
     const identity = await consumeTicket(body.ticket);
     expect(identity).toMatchObject({
-      version: 2,
+      version: 3,
       userId: 'user-abc',
       allowedOrgIds: ['org-xyz'],
       allowedSiteIds: null,

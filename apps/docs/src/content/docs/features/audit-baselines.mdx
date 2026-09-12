@@ -11,6 +11,28 @@ The system works in three phases: first, baselines define what the audit policy 
 
 ---
 
+## Using the Console
+
+Open **Compliance Baselines** from the Security section of the left sidebar. The page has three tabs:
+
+| Tab | What it shows |
+|-----|---------------|
+| **Dashboard** | Fleet-wide compliance totals and a per-baseline breakdown (device counts, compliant/non-compliant, average score) |
+| **Baselines** | The list of configured baselines, with create, edit, and delete controls |
+| **Approvals** | Pending, approved, and rejected apply requests, with **Approve**/**Reject** actions on pending rows |
+
+Clicking a baseline opens its detail page with **Overview**, **Compliance**, and **Apply** tabs -- Compliance shows per-device drift for that baseline, and Apply is where you push it to devices:
+
+<Steps>
+1. From a baseline's **Apply** tab, select the target devices.
+2. Run the preview (dry run) to see which devices are eligible and what would change.
+3. Submit the request. It appears in the **Approvals** tab as pending.
+4. A different user than the requester approves or rejects it -- Breeze rejects a self-approval attempt.
+5. Once approved, the apply executes against the selected devices; the approval record tracks when it was consumed.
+</Steps>
+
+---
+
 ## Key Concepts
 
 ### Profiles

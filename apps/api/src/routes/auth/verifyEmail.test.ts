@@ -424,15 +424,19 @@ describe('POST /verify-email', () => {
     consoleError.mockRestore();
   });
 
-  it('rejects a non-v1 registration client before account creation when enforcement is enabled', async () => {
+  it('uses guarded issuance for a headerless registration client regardless of the retired setting', async () => {
     transitionState.enforcement = true;
     vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'x' });
+    primeFinalizeSelects([]);
 
     const res = await postJson('/verify-email', { token: 'x' });
 
-    expect(res.status).toBe(426);
-    expect(createPartner).not.toHaveBeenCalled();
-    expect(consumePendingRegistration).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(createPartner).toHaveBeenCalledOnce();
+    expect(transitionState.cookieKind).toBe('guarded');
+    expect(transitionState.events).toContain('finish-commit');
+    expect(transitionState.issuedFamilies).toEqual(['guarded-family-1']);
+    expect(consumePendingRegistration).toHaveBeenCalledOnce();
   });
 
   it('returns 503 when redis is unavailable', async () => {
@@ -742,7 +746,7 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
     expect(transitionState.familyCount).toBe(0);
   });
 
-  it('activates and invalidates before the legacy seam so no pre-activation family is installed', async () => {
+  it('revokes and replaces the initial guarded family after headerless hook activation', async () => {
     vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
     primeFinalizeSelects([]);
     vi.mocked(dispatchHook).mockResolvedValueOnce({ status: 'active' } as never);
@@ -750,12 +754,12 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
     const response = await postJson('/verify-email', { token: 'raw' });
 
     expect(response.status).toBe(200);
-    expect(transitionState.activationObservedFamilyCount).toBe(0);
-    expect(transitionState.events.indexOf('activate:partner')).toBeLessThan(
-      transitionState.events.indexOf('issue:legacy-family-1'),
-    );
-    expect(transitionState.issuedFamilies).toEqual(['legacy-family-1']);
-    expect(transitionState.installedFamilyId).toBe('legacy-family-1');
+    expect(transitionState.activationObservedFamilyCount).toBe(1);
+    expect(transitionState.issuedFamilies).toEqual(['guarded-family-1', 'guarded-family-2']);
+    expect(transitionState.revokedFamilies).toContain('guarded-family-1');
+    expect(transitionState.revokedFamilies).not.toContain('guarded-family-2');
+    expect(transitionState.installedFamilyId).toBe('guarded-family-2');
+    expect(transitionState.cookieKind).toBe('guarded');
   });
 
   it('revokes the initial guarded family and installs only its replacement after hook activation', async () => {

@@ -1,8 +1,11 @@
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 
+import { and } from 'drizzle-orm';
+
 import {
   buildLogSearchKeysetCondition,
+  buildSearchConditions,
   decodeSearchCursor,
   encodeSearchCursor,
   mergeSavedLogSearchFilters,
@@ -205,5 +208,31 @@ describe('resolveSingleOrgId', () => {
       canAccessOrg: () => true,
     } as any;
     expect(resolveSingleOrgId(auth)).toBeNull();
+  });
+});
+
+describe('current-device authorization predicate', () => {
+  const dialect = new PgDialect();
+  const auth = { orgCondition: () => undefined } as any;
+  const timeRange = { start: new Date('2026-01-01T00:00:00.000Z'), end: new Date('2026-01-02T00:00:00.000Z') };
+  const render = (allowedSiteIds: string[] | null | undefined) => dialect.sqlToQuery(
+    and(...buildSearchConditions(auth, { allowedSiteIds }, timeRange, 'like'))!,
+  );
+
+  it('omits the authorized_log_device subquery for an unrestricted caller and emits it for a restricted one', () => {
+    // Unrestricted: the EXISTS probe could only ever be true (device_id is a
+    // NOT NULL FK, org_id is the denormalized copy) but costs a non-LEAKPROOF
+    // RLS check per candidate row, so it must not be emitted at all.
+    expect(render(null).sql).not.toContain('authorized_log_device');
+    expect(render(undefined).sql).not.toContain('authorized_log_device');
+
+    const restricted = render(['33333333-3333-4333-8333-333333333333']);
+    expect(restricted.sql).toContain('authorized_log_device');
+    expect(restricted.sql).toContain('site_id in');
+    expect(restricted.params).toContain('33333333-3333-4333-8333-333333333333');
+
+    // A defined-but-empty ceiling stays deny-all, not unrestricted.
+    expect(render([]).sql).toContain('authorized_log_device');
+    expect(render([]).sql).toContain('and false');
   });
 });

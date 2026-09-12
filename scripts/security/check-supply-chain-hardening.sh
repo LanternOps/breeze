@@ -172,12 +172,21 @@ require_grep 'verify_sha256.*TMPFILE.*EXPECTED_SHA256' apps/api/src/routes/agent
 require_grep 'Refusing to install without a trusted checksum' apps/api/src/routes/agents/download.ts \
   "generated Linux installer must fail closed without checksum metadata"
 
-require_grep 'checksums\.txt' agent/internal/agentapp/watchdog_bootstrap.go \
-  "watchdog bootstrap must fetch release checksums.txt"
-require_grep 'verifyFileSHA256' agent/internal/agentapp/watchdog_bootstrap.go \
-  "watchdog bootstrap must verify SHA-256 before install"
-require_grep 'checksum mismatch' agent/internal/agentapp/watchdog_bootstrap_test.go \
-  "watchdog bootstrap tests must cover checksum mismatch"
+# First-install fallback authority is the signed release identity, not an
+# independently fetched unsigned checksum list. Protected packaged siblings
+# retain their explicit provenance path; all other bytes require this stage.
+require_grep 'stageFirstInstallArtifact\(spec\)' agent/internal/agentapp/watchdog_bootstrap.go \
+  "watchdog bootstrap must stage through signed first-install verification"
+require_order 'stageFirstInstallArtifact\(spec\)' 'runner\(watchdogPath\)' agent/internal/agentapp/watchdog_bootstrap.go \
+  "watchdog bootstrap must verify before invoking the installer"
+require_grep 'ed25519\.Verify\(key, manifestBytes, signature\)' agent/internal/agentapp/first_install_release.go \
+  "first-install manifest must verify its signature against trusted keys"
+require_grep 'release manifest identity tuple does not match requested release' agent/internal/agentapp/first_install_release.go \
+  "first-install manifest must bind the requested release identity"
+require_grep 'TestStageFirstInstallArtifact_RejectsUnsignedOrAlteredBytes' agent/internal/agentapp/first_install_release_security_test.go \
+  "first-install tests must retain unsigned and altered-byte denials"
+require_grep 'TestBootstrapWatchdog_VerifiesAndUsesInjectedRunner' agent/internal/agentapp/first_install_release_security_test.go \
+  "watchdog tests must retain verified-byte installer positive controls"
 
 require_grep '"packageManager": "pnpm@10\.34\.5"' package.json \
   "package.json must pin pnpm to a reproducible version"
@@ -313,24 +322,18 @@ require_grep "severity: 'HIGH,CRITICAL'" "$executor_release_block" \
   "release executor scan must block HIGH and CRITICAL findings"
 require_grep "exit-code: '1'" "$executor_release_block" \
   "release executor scan must be blocking"
-require_grep 'docker buildx imagetools create' "$executor_release_block" \
-  "release must promote the scanned executor digest without rebuilding"
-require_grep '--tag "\$\{EXECUTOR_REPOSITORY\}:\$\{VERSION\}"' "$executor_release_block" \
-  "release must publish the exact semver executor tag"
-require_grep '--tag "\$\{EXECUTOR_REPOSITORY\}:sha-\$\{SHORT_SHA\}"' "$executor_release_block" \
-  "release must publish the executor commit-SHA tag"
-[[ "$(grep -o -- '--tag' "$executor_release_block" | wc -l | tr -d ' ')" == 2 ]] || \
-  fail "executor release must publish only exact semver and commit-SHA tags"
+reject_grep 'docker buildx imagetools create|--tag' "$executor_release_block" \
+  "executor build must not promote any tag before the image inventory is signed"
+require_grep 'release-image-manifest\.mjs record' "$executor_release_block" \
+  "executor build must emit validated signed-manifest metadata"
 reject_grep 'type=raw,value=latest|pattern=\{\{major\}\}|pattern=\{\{major\}\}\.\{\{minor\}\}' "$executor_release_block" \
   "executor release must not publish latest, major, or minor mutable tags"
 [[ "$(grep -c 'docker/build-push-action@' "$executor_release_block")" == 1 ]] || \
   fail "executor release must build the image exactly once"
 require_order 'id: push-executor-digest' 'name: Scan exact executor digest' "$executor_release_block" \
   "executor release must build before scanning"
-require_order 'name: Scan exact executor digest' 'name: Promote scanned executor digest' "$executor_release_block" \
-  "executor release promotion must occur only after its exact digest passes scanning"
-require_order 'name: Promote scanned executor digest' 'name: Upload executor digest' "$executor_release_block" \
-  "executor digest artifact must describe the promoted image"
+require_order 'name: Scan exact executor digest' 'name: Upload executor digest' "$executor_release_block" \
+  "executor signed-manifest metadata must describe a digest that passed scanning"
 require_grep 'dockerfile: apps/m365-graph-read-executor/Dockerfile' .github/workflows/security.yml \
   "security workflow's trivy-image-scan matrix must build and scan the executor image"
 [[ -x scripts/security/check-m365-graph-read-runtime.sh ]] || \
@@ -350,18 +353,18 @@ require_grep "severity: 'HIGH,CRITICAL'" "$actions_release_block" \
   "release actions-executor scan must block HIGH and CRITICAL findings"
 require_grep "exit-code: '1'" "$actions_release_block" \
   "release actions-executor scan must be blocking"
-require_grep 'docker buildx imagetools create' "$actions_release_block" \
-  "release must promote the scanned actions-executor digest without rebuilding"
-[[ "$(grep -o -- '--tag' "$actions_release_block" | wc -l | tr -d ' ')" == 2 ]] || \
-  fail "actions-executor release must publish only exact semver and commit-SHA tags"
+reject_grep 'docker buildx imagetools create|--tag' "$actions_release_block" \
+  "actions-executor build must not promote any tag before signing"
+require_grep 'release-image-manifest\.mjs record' "$actions_release_block" \
+  "actions-executor build must emit validated signed-manifest metadata"
 reject_grep 'type=raw,value=latest|pattern=\{\{major\}\}|pattern=\{\{major\}\}\.\{\{minor\}\}' "$actions_release_block" \
   "actions-executor release must not publish latest, major, or minor mutable tags"
 [[ "$(grep -c 'docker/build-push-action@' "$actions_release_block")" == 1 ]] || \
   fail "actions-executor release must build the image exactly once"
 require_order 'id: push-executor-digest' 'name: Scan exact executor digest' "$actions_release_block" \
   "actions-executor release must build before scanning"
-require_order 'name: Scan exact executor digest' 'name: Promote scanned executor digest' "$actions_release_block" \
-  "actions-executor release promotion must occur only after its exact digest passes scanning"
+require_order 'name: Scan exact executor digest' 'name: Upload executor digest' "$actions_release_block" \
+  "actions-executor signed-manifest metadata must describe a digest that passed scanning"
 
 # The ACTIONS executor's Dockerfile gets the same shape block as its read
 # sibling. It holds Microsoft Graph *mutation* credentials — the highest
@@ -398,24 +401,29 @@ require_grep "severity: 'HIGH,CRITICAL'" "$comms_release_block" \
   "release communications-executor scan must block HIGH and CRITICAL findings"
 require_grep "exit-code: '1'" "$comms_release_block" \
   "release communications-executor scan must be blocking"
-require_grep 'docker buildx imagetools create' "$comms_release_block" \
-  "release must promote the scanned communications-executor digest without rebuilding"
-require_grep '--tag "\$\{EXECUTOR_REPOSITORY\}:\$\{VERSION\}"' "$comms_release_block" \
-  "release must publish the exact semver communications-executor tag"
-require_grep '--tag "\$\{EXECUTOR_REPOSITORY\}:sha-\$\{SHORT_SHA\}"' "$comms_release_block" \
-  "release must publish the communications-executor commit-SHA tag"
-[[ "$(grep -o -- '--tag' "$comms_release_block" | wc -l | tr -d ' ')" == 2 ]] || \
-  fail "communications-executor release must publish only exact semver and commit-SHA tags"
+reject_grep 'docker buildx imagetools create|--tag' "$comms_release_block" \
+  "communications-executor build must not promote any tag before signing"
+require_grep 'release-image-manifest\.mjs record' "$comms_release_block" \
+  "communications-executor build must emit validated signed-manifest metadata"
 reject_grep 'type=raw,value=latest|pattern=\{\{major\}\}|pattern=\{\{major\}\}\.\{\{minor\}\}' "$comms_release_block" \
   "communications-executor release must not publish latest, major, or minor mutable tags"
 [[ "$(grep -c 'docker/build-push-action@' "$comms_release_block")" == 1 ]] || \
   fail "communications-executor release must build the image exactly once"
 require_order 'id: push-executor-digest' 'name: Scan exact executor digest' "$comms_release_block" \
   "communications-executor release must build before scanning"
-require_order 'name: Scan exact executor digest' 'name: Promote scanned executor digest' "$comms_release_block" \
-  "communications-executor release promotion must occur only after its exact digest passes scanning"
-require_order 'name: Promote scanned executor digest' 'name: Upload executor digest' "$comms_release_block" \
-  "communications-executor digest artifact must describe the promoted image"
+require_order 'name: Scan exact executor digest' 'name: Upload executor digest' "$comms_release_block" \
+  "communications-executor signed-manifest metadata must describe a digest that passed scanning"
+
+promotion_release_block="$GUARD_TMP_DIR/signed-image-promotion.yml"
+extract_yaml_job promote-signed-release-images .github/workflows/release.yml "$promotion_release_block"
+require_grep 'needs: \[create-release\]' "$promotion_release_block" \
+  "image tag promotion must occur only after create-release signs the image inventory"
+require_grep 'release-image-manifest\.mjs verify' "$promotion_release_block" \
+  "image tag promotion must verify the signed image inventory"
+require_grep 'docker buildx imagetools create' "$promotion_release_block" \
+  "image tag promotion must retag exact signed digests without rebuilding"
+reject_grep 'docker/build-push-action@' "$promotion_release_block" \
+  "post-signature image promotion must never rebuild image bytes"
 require_grep 'dockerfile: apps/m365-communications-executor/Dockerfile' .github/workflows/security.yml \
   "security workflow's trivy-image-scan matrix must build and scan the communications-executor image"
 require_grep 'directory: "/apps/m365-communications-executor"' .github/dependabot.yml \
@@ -558,8 +566,10 @@ require_grep "severity: 'HIGH,CRITICAL'" .github/workflows/security.yml \
   "Trivy must fail on HIGH and CRITICAL vulnerabilities"
 require_grep '^  trivy-image-scan:' .github/workflows/security.yml \
   "security workflow must scan built Docker images"
-# The scan must target the Dockerfiles release.yml and hosted-images.yml
-# actually publish. It previously built the docker/Dockerfile.api|web compose
+# The scan must target the Dockerfiles release.yml actually publishes
+# (emergency manual builds go through `docker buildx` + a GHCR push from a
+# maintainer machine instead of a workflow). It previously built the
+# docker/Dockerfile.api|web compose
 # variants, which ship to nobody, so the two most widely deployed images in the
 # product were never scanned at all (issues #4273 / #4260). Note this makes the
 # images visible, not merge-blocking: main's ruleset requires only `CI Success`,
@@ -592,6 +602,34 @@ require_grep '^BREEZE_WEB_IMAGE_DIGEST=sha256:' deploy/.env.example \
   "deploy env example must require digest-pinned Web image digests"
 require_grep '^BREEZE_BINARIES_IMAGE_DIGEST=sha256:' deploy/.env.example \
   "deploy env example must require digest-pinned binaries image digests"
+require_grep '^BREEZE_PORTAL_IMAGE_DIGEST=sha256:' deploy/.env.example \
+  "deploy env example must require digest-pinned portal image digests"
+require_grep 'release-image-manifest\.mjs.*verify' scripts/prod/deploy.sh \
+  "production deploy must verify configured first-party images against the signed release manifest"
+require_grep 'verify-release-images\.sh' scripts/guided-setup.sh \
+  "guided self-host setup must verify and resolve signed first-party image refs"
+require_grep 'require_sha256_digest BREEZE_PORTAL_IMAGE_DIGEST' scripts/prod/deploy.sh \
+  "production deploy must validate the portal image digest before Compose"
+require_grep '"schemaVersion": 1' .github/workflows/release.yml \
+  "release manifest must retain its backward-compatible schema while adding image bindings"
+require_grep '"images": images' .github/workflows/release.yml \
+  "release manifest must bind the complete first-party image inventory"
+require_grep '^  promote-signed-release-images:' .github/workflows/release.yml \
+  "release workflow must isolate post-signature image tag promotion"
+require_grep 'release-image-manifest\.test\.mjs.*verify-release-images\.test\.mjs.*release-image-consumers\.test\.mjs' package.json \
+  "CI release-lineage suite must retain signed-image producer and consumer regressions"
+for image_ref_var in BREEZE_API_IMAGE_REF BREEZE_WEB_IMAGE_REF BREEZE_PORTAL_IMAGE_REF BREEZE_BINARIES_IMAGE_REF; do
+  require_grep "^${image_ref_var}=.*@sha256:" .env.example \
+    "self-host env example must require signed digest refs for ${image_ref_var}"
+done
+reject_grep '^BREEZE_(API|WEB|PORTAL|BINARIES)_IMAGE_REF=.*:\$\{BREEZE_VERSION\}' .env.example \
+  "self-host env example must not derive first-party image authority from mutable version tags"
+require_grep './guided-setup\.sh --download --no-up' README.md \
+  "documented manual self-host starts must first run signed image resolution"
+require_grep 'verify-release-images\.sh.*m365-graph-read-executor=' docs/deploy/m365-customer-graph-read-executor.md \
+  "Graph-read executor deployments must verify the signed repository/digest tuple"
+require_grep 'verify-release-images\.sh.*m365-graph-actions-executor=' docs/deploy/m365-customer-graph-actions-executor.md \
+  "Graph-actions executor deployments must verify the signed repository/digest tuple"
 for image_ref_var in CADDY_IMAGE_REF CLOUDFLARED_IMAGE_REF REDIS_IMAGE_REF COTURN_IMAGE_REF BILLING_IMAGE_REF; do
   require_grep "^${image_ref_var}=.*@sha256:" deploy/.env.example \
     "deploy env example must digest-pin ${image_ref_var}"

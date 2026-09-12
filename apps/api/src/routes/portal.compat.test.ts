@@ -80,6 +80,7 @@ vi.mock('../db/schema', () => ({
     email: 'portalUsers.email',
     name: 'portalUsers.name',
     passwordHash: 'portalUsers.passwordHash',
+    authMethod: 'portalUsers.authMethod',
     receiveNotifications: 'portalUsers.receiveNotifications',
     status: 'portalUsers.status',
     lastLoginAt: 'portalUsers.lastLoginAt',
@@ -100,6 +101,7 @@ const portalUser = {
   email: 'portal@example.com',
   name: 'Portal User',
   passwordHash: 'hash',
+  authMethod: 'password',
   receiveNotifications: true,
   status: 'active'
 };

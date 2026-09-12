@@ -26,7 +26,7 @@ A signed-in user requests deletion of their own account from the dashboard accou
 
 </Steps>
 
-Password re-entry is rate limited (5 attempts per 5 minutes). Only **one pending request per user** is allowed at a time — submitting again while one is pending is rejected.
+Password re-entry is rate limited (5 attempts per 5 minutes). Only **one pending request per user** is allowed at a time — submitting again while one is already pending is idempotent: it returns the existing pending request (`200`) rather than creating a second one or returning an error.
 
 After submission the user sees the process-by date and can cancel any time before it:
 
@@ -36,11 +36,17 @@ After submission the user sees the process-by date and can cancel any time befor
 Submitting a request does not disable the account. The user keeps full access for the entire grace period unless an administrator approves the request and the back-office deletion completes.
 </Aside>
 
+### The standalone deletion page
+
+The same flow is also served as a standalone page at **`/account/delete`** on whichever Breeze server the user is signed into (e.g. `https://us.2breeze.app/account/delete`), reachable directly by URL rather than only through the dashboard's Account nav. The user must still be signed in — the page prompts for login first if the session isn't active.
+
+This is the page the **mobile app** links out to: mobile has no native deletion screen, so its Settings → Delete account action opens this URL in the browser (resolved against the server the user selected at sign-in, not a hardcoded domain) and tracks only that the user tapped through, since the actual request is submitted on the web page.
+
 ---
 
 ## Reviewing requests (administrator)
 
-Administrators with the **`users:write`** permission review pending requests at **Admin → Account deletion requests**. Approving and rejecting both require the administrator to pass an **MFA challenge**.
+Administrators with the **`users:write`** permission review pending requests at **Administration → Deletion Requests**. That nav item, and the rest of the Administration section, only appears for **platform admins** (`isPlatformAdmin: true`) — other `users:write` holders can still call the review endpoint directly but have no dashboard entry point. Approving and rejecting both require the administrator to pass an **MFA challenge**.
 
 | Decision | Effect |
 |----------|--------|

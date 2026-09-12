@@ -1,531 +1,171 @@
 ---
 title: AI Computer Control
-description: Use the AI assistant to execute commands, run scripts, manage services, browse files, and perform security operations on managed devices.
+description: The screenshot, screen-analysis, and mouse/keyboard control tools the AI assistant can use on a device's desktop, plus the AI Operator task-delegation preview.
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-The Breeze AI assistant is not limited to answering questions about your fleet. It can take real actions on managed devices: execute system commands, run scripts, start and stop services, browse and modify files, analyze disk usage, perform cleanup, run security scans, and discover new devices on the network. Every action is governed by the [AI Risk Engine](/features/ai/) tier system and RBAC permissions, so destructive operations always require explicit human approval before they reach a device.
+Beyond querying your fleet and running scripts, the Breeze AI assistant can look at and interact with a device's own desktop: it can capture a screenshot, analyze what's on screen against a description you give it, and — with a second person's approval — move the mouse and type on the device directly. This page covers those three tools, plus the two remote-session tools that sit in the same part of the codebase, and the separate **AI Operator** preview for handing off a longer-running task.
 
-This page documents every tool the AI can use to control devices, the safety mechanisms that protect against unintended actions, and the permissions required at each level.
+<Aside type="note">
+  This page does **not** cover the AI's broader device-management toolset — running commands and scripts, managing services, file operations, disk cleanup, security scans, and so on. Those are documented on [AI Features](/features/ai/#tool-tiers), along with the full tier system and approval workflow this page relies on.
+</Aside>
 
 ---
 
 ## Available Tools
 
-The table below lists every device-control tool, its tier classification, and whether it requires human approval. Tools with action-level escalation show the effective tier per action.
-
-| Tool | Description | Base Tier | Approval Required |
-|------|-------------|-----------|-------------------|
-| `query_devices` | Search and filter devices by status, OS, site, tags | Tier 1 | No |
-| `get_device_details` | Comprehensive device info: hardware, network, disks, metrics | Tier 1 | No |
-| `analyze_metrics` | Time-series CPU, RAM, disk, and network analysis | Tier 1 | No |
-| `get_active_users` | Active user sessions with reboot-safety signal | Tier 1 | No |
-| `get_user_experience_metrics` | Login performance and session behavior trends | Tier 1 | No |
-| `manage_alerts` | List/get alerts (Tier 1); acknowledge/resolve (Tier 2) | Tier 1/2 | No |
-| `execute_command` | List processes/files/event-log channels (Tier 2); kill/service control/file read/service list/event-log query (Tier 3) | Tier 2/3 | Tier 3 command types only |
-| `run_script` | Execute a library script on up to 10 devices | Tier 3 | **Yes** |
-| `manage_services` | List services (Tier 2); start/stop/restart (Tier 3) | Tier 2/3 | Start/stop/restart only |
-| `file_operations` | List directories (Tier 2); read/write/delete/mkdir/rename (Tier 3) | Tier 2/3 | Read/write/delete/mkdir/rename |
-| `analyze_disk_usage` | Filesystem usage analysis with cleanup preview | Tier 1 | No |
-| `disk_cleanup` | Preview cleanup (Tier 1); execute cleanup (Tier 3) | Tier 1/3 | Execute only |
-| `security_scan` | Scan/status (Tier 3); quarantine/remove/restore (Tier 3) | Tier 3 | **Yes** |
-| `get_security_posture` | Fleet-wide or per-device security posture scores | Tier 1 | No |
-| `network_discovery` | Network discovery scan from a device | Tier 3 | **Yes** |
-| `query_audit_log` | Search audit log entries | Tier 1 | No |
-| `get_device_context` | Retrieve AI memory/context for a device | Tier 1 | No |
-| `set_device_context` | Record new device context for future conversations | Tier 2 | No |
-| `resolve_device_context` | Mark a context entry as resolved | Tier 2 | No |
-| `search_agent_logs` | Search agent diagnostic logs across the fleet | Tier 1 | No |
-| `set_agent_log_level` | Temporarily adjust agent log verbosity | Tier 2 | No |
-
-<Aside>
-  Tier classification is determined at the **action level**, not the tool level. For example, `file_operations` is Tier 2 when listing a directory, but escalates to Tier 3 when reading, writing, or deleting files. The AI resolves the effective tier at runtime for each specific invocation. See [AI Features](/features/ai/) for full governance details.
-</Aside>
-
----
-
-## Device Query & Analysis
-
-These read-only tools let the AI gather information about your fleet without making any changes. All are Tier 1 and execute automatically.
-
-### query_devices
-
-Search and filter devices across your organization. Supports filtering by status, OS type, site, tags, and hostname search. Returns up to 100 devices with total count.
-
-```
-"Show me all offline Windows devices"
-"Which devices at the Denver site are running macOS?"
-"Find devices tagged 'production' that are online"
-```
-
-### get_device_details
-
-Retrieves comprehensive information about a single device including hardware specifications (CPU, RAM, model), network interfaces, disk partitions, and the five most recent metric data points. The AI uses this to understand a device's full configuration before recommending actions.
-
-```
-"Tell me everything about DESKTOP-A1B2C3"
-"What hardware does the CFO's laptop have?"
-```
-
-### analyze_metrics
-
-Queries time-series metrics for a device over a configurable time range (1-168 hours). Returns summary statistics (min, max, average, current) for CPU, RAM, and disk usage. Supports raw, hourly, or daily aggregation.
-
-```
-"Show me CPU usage trends for this server over the past week"
-"Is RAM usage spiking on DESKTOP-A1B2C3?"
-"Compare disk usage over the last 3 days"
-```
-
-### get_active_users
-
-Returns active user sessions for a specific device or across the entire fleet. Each session includes login time, idle duration, and activity state. The tool also computes a **reboot safety signal** -- it identifies sessions where a user is actively working (not locked, away, or disconnected, and idle time below a configurable threshold) and reports whether it is safe to reboot the device.
-
-```
-"Is anyone logged into SERVER-PROD-01 right now?"
-"Which devices have active users who would be disrupted by a reboot?"
-```
-
-### get_user_experience_metrics
-
-Analyzes login performance and session behavior trends over time (up to 365 days). Returns average login time, session duration, idle time, and per-user breakdowns. Useful for identifying devices with degraded user experience.
-
-```
-"How long does it take users to log into this device?"
-"Show me login performance trends for jsmith over the past month"
-```
-
----
-
-## Command Execution
-
-`run_script` is Tier 3 — every invocation requires human approval before it reaches the device. `execute_command` is split per command type (see below): most command types are Tier 3 and require approval; `list_processes`, `file_list`, and `event_logs_list` are Tier 2 and run without a durable approval step in auto-execute session modes (they're still audit logged, and under the default per-step mode they still take a lightweight inline confirmation).
-
-### execute_command
-
-Executes a system command on a single online device. The AI selects from a set of predefined command types, each with its own payload schema:
-
-| Command Type | What It Does | Tier |
-|--------------|--------------|------|
-| `list_processes` | List running processes | 2 |
-| `kill_process` | Terminate a process by ID or name | 3 |
-| `list_services` | List system services and their status | 3 |
-| `start_service` | Start a stopped service | 3 |
-| `stop_service` | Stop a running service | 3 |
-| `restart_service` | Restart a service | 3 |
-| `file_list` | List files in a directory | 2 |
-| `file_read` | Read file contents | 3 |
-| `event_logs_list` | List available event log channels | 2 |
-| `event_logs_query` | Query event log entries with filters | 3 |
-
-`list_services` and `event_logs_query` stay Tier 3 even though they're reads: service records can carry credentials in their binary path/arguments, and event-log entries (particularly the Security log) can carry a mistyped password or other sensitive text in their message body.
-
-The device must be online (WebSocket connected) to receive commands. Commands have a 30-second timeout.
-
-```
-"What processes are running on SERVER-01?"
-"Kill the process using 98% CPU on the accounting workstation"
-"Show me the last 50 entries from the Windows Application event log"
-```
+| Tool | Description | Tier | Approval |
+|------|-------------|------|----------|
+| `take_screenshot` | Capture a screenshot of the device screen | Tier 3 | Supervised — approve in chat |
+| `analyze_screen` | Capture a screenshot and analyze it against a context you describe | Tier 3 | Supervised — approve in chat |
+| `computer_control` | Send mouse/keyboard input and capture a screenshot after each action | Tier 3 | **Four-eyes** — a second person approves |
+| `list_remote_sessions` | List active and recent remote sessions (terminal, desktop, file transfer) | Tier 1 | No |
+| `create_remote_session` | Open a new remote terminal or file-transfer session to a device | Tier 3 | **Four-eyes** — a second person approves |
 
 <Aside type="caution">
-  When the AI proposes a Tier 3 `execute_command` action, you will see a detailed description of the command in the approval prompt -- for example, "Execute `kill_process` command on device a1b2c3d4...". Review the command type and payload before approving. Tier 2 command types (`list_processes`, `file_list`, `event_logs_list`) skip this durable approval step in auto-execute session modes.
-</Aside>
-
-### run_script
-
-Executes a script from the Breeze script library on one or more devices (up to 10 per invocation). Scripts are referenced by their library UUID, not inline code. Each device receives the script independently with a 60-second timeout.
-
-```
-"Run the disk health check script on all Denver servers"
-"Execute the Windows Update troubleshooter on DESKTOP-FINANCE-01"
-```
-
----
-
-## Service Management
-
-### manage_services
-
-Provides a unified interface for listing and controlling system services on a device. The tier escalates based on the action:
-
-| Action | Tier | Approval |
-|--------|------|----------|
-| `list` | Tier 2 | No (auto-execute + audit) |
-| `start` | Tier 3 | **Yes** |
-| `stop` | Tier 3 | **Yes** |
-| `restart` | Tier 3 | **Yes** |
-
-The `start`, `stop`, and `restart` actions require a `serviceName`. The device must be online.
-
-```
-"List all services on SERVER-01"
-"Restart the nginx service on the web server"
-"Stop the Print Spooler on DESKTOP-RECEPTION"
-```
-
-### manage_alerts
-
-Manages alerts across your organization. Listing and viewing alerts is Tier 1 (auto-execute). Acknowledging and resolving alerts is Tier 2 (auto-execute with audit logging).
-
-| Action | Tier | Description |
-|--------|------|-------------|
-| `list` | Tier 1 | Search alerts by status, severity, device |
-| `get` | Tier 1 | Get full alert details with device info |
-| `acknowledge` | Tier 2 | Mark as seen; publishes `alert.acknowledged` event |
-| `resolve` | Tier 2 | Close the alert with optional resolution note; publishes `alert.resolved` event |
-
-```
-"Show me all critical alerts"
-"Acknowledge the disk space alert on SERVER-DB-02"
-"Resolve the CPU alert -- it was caused by a one-time backup job"
-```
-
----
-
-## File Operations
-
-### file_operations
-
-Performs file system operations on a device. Listing a directory auto-executes (with an audit record); everything that touches file *contents* — including reads — requires approval, because the agent accesses the filesystem with system-level privileges.
-
-| Action | Tier | Approval | Description |
-|--------|------|----------|-------------|
-| `list` | Tier 2 | No (audit logged) | List directory contents |
-| `read` | Tier 3 | **Yes** | Read file contents |
-| `write` | Tier 3 | **Yes** | Write or overwrite a file (max 1 MB) |
-| `delete` | Tier 3 | **Yes** | Delete a file or directory |
-| `mkdir` | Tier 3 | **Yes** | Create a directory |
-| `rename` | Tier 3 | **Yes** | Rename or move a file |
-
-The device must be online for all file operations. Commands have a 30-second timeout.
-
-```
-"List the files in C:\Users\jsmith\Desktop"
-"Read the contents of /etc/nginx/nginx.conf"
-"Create a backup directory at /opt/backups"
-```
-
-<Aside type="danger">
-  File paths are validated before execution. See [Input Validation & Safety](#input-validation--safety) for the list of blocked paths and traversal prevention rules.
+  `computer_control` and `create_remote_session` are classified **four-eyes**, not supervised — the requesting technician cannot approve their own request. Breeze treats direct input control and unattended remote-session creation as surveillance-grade access, so a *different* user has to approve it from **Approval History** (or the mobile app). `take_screenshot` and `analyze_screen` stay supervised: the requester approves their own screenshot request in chat. See [AI Features → Approval workflow](/features/ai/#approval-workflow) for what four-eyes and supervised mean and who can approve each.
 </Aside>
 
 ---
 
-## Disk Management
+## Screen capture & analysis
 
-### analyze_disk_usage
+### take_screenshot
 
-Performs a deep filesystem analysis to identify what is consuming disk space. The tool can return a cached snapshot or run a fresh on-device scan. The analysis identifies:
-
-- Top largest files and directories
-- Temporary file accumulation
-- Old downloads
-- Unrotated logs
-- Trash/recycle bin usage
-- Duplicate file candidates
-
-The tool also generates a **cleanup preview** showing safe-to-remove candidates organized by category, with estimated reclaimable space.
+Captures a screenshot of the device screen and returns the image for visual analysis. The device must be online.
 
 | Parameter | Description |
 |-----------|-------------|
-| `refresh` | Run a fresh filesystem scan (requires device online) |
-| `path` | Root path to scan (defaults to `C:\` on Windows, `/` on Linux/macOS) |
-| `maxDepth` | Maximum traversal depth (1-64) |
-| `topFiles` | Number of largest files to report (1-500) |
-| `topDirs` | Number of largest directories to report (1-200) |
-| `workers` | Parallel directory workers (1-32) |
-| `timeoutSeconds` | Scan timeout (5-900 seconds) |
+| `deviceId` | The device UUID (required) |
+| `monitor` | Monitor index to capture (default: 0 = primary) |
 
 ```
-"What's using all the disk space on SERVER-01?"
-"Analyze disk usage on the file server -- scan fresh"
-"Show me the 20 largest files on this device"
+"Take a screenshot of DESKTOP-A1B2C3"
+"Show me what's currently on the CFO's screen"
 ```
 
-### disk_cleanup
+### analyze_screen
 
-Previews or executes disk cleanup based on the analysis from `analyze_disk_usage`. Preview mode is read-only (Tier 1); execute mode deletes files and requires approval (Tier 3).
+Takes a screenshot and analyzes what's visible against a context you describe — for example, "error dialogs" or "performance issues." Useful for troubleshooting what the user sees without opening a full remote session.
 
-<Tabs>
-  <TabItem label="Preview">
-
-Preview mode returns cleanup candidates organized by category without deleting anything. A `cleanupRunId` is recorded for audit tracking.
-
-```
-"Preview what we could clean up on SERVER-01"
-"Show me cleanup candidates in the temp_files category"
-```
-
-Supported cleanup categories:
-
-| Category | Description |
-|----------|-------------|
-| `temp_files` | OS and application temporary files |
-| `browser_cache` | Browser cache directories |
-| `package_cache` | Package manager caches (npm, pip, etc.) |
-| `trash` | Recycle bin / trash contents |
-
-  </TabItem>
-  <TabItem label="Execute">
-
-Execute mode requires a list of specific file paths to delete. These paths must come from the most recent preview -- the tool validates each path against the preview candidates before deletion.
+| Parameter | Description |
+|-----------|-------------|
+| `deviceId` | The device UUID (required) |
+| `context` | What to look for or analyze on screen |
+| `monitor` | Monitor index to capture (default: 0) |
 
 ```
-"Clean up the temp files and browser cache we previewed"
-"Delete the 5 largest temp files from the preview"
+"Check DESKTOP-FINANCE-01's screen for any error dialogs"
+"Is the user stuck on a Windows Update screen?"
 ```
 
-The tool reports per-path results (success or failure) and total bytes reclaimed. All actions are recorded in a `deviceFilesystemCleanupRuns` audit record.
+---
 
-  </TabItem>
-</Tabs>
+## Computer control
+
+### computer_control
+
+Sends mouse and keyboard input to a device and returns a screenshot after each action by default. The device must be online.
+
+| Action | Requires |
+|--------|----------|
+| `screenshot` | — |
+| `left_click`, `right_click`, `middle_click`, `double_click` | `x`, `y` |
+| `mouse_move` | `x`, `y` |
+| `scroll` | `x`, `y`, `scrollDelta` |
+| `key` | `key` (optionally `modifiers`: `ctrl`, `alt`, `shift`, `meta`) |
+| `type` | `text` |
+
+```
+"Click the 'Retry' button at 640, 480 on SERVER-01"
+"Type the license key into the activation dialog on DESKTOP-A1B2C3"
+```
 
 <Aside>
-  You must run `analyze_disk_usage` before `disk_cleanup`. The cleanup tool requires a recent filesystem snapshot. If no snapshot exists, it will tell you to run an analysis first.
+  Every `computer_control` invocation is **four-eyes**: the AI raises the proposed action, and a different user has to approve it from Approval History before it reaches the device. There is no self-approval path for this tool, even for a sole administrator — see [AI Features → Approving your own request](/features/ai/#approving-your-own-request-when-you-are-the-only-approver) for what happens when an organization has no second eligible approver.
 </Aside>
 
 ---
 
-## Security Operations
+## Remote session tools
 
-### security_scan
+Two tools give the AI limited visibility into and control over [Remote Access](/features/remote-access/) sessions. Full session mechanics (WebRTC, TURN, WebSocket fallback, Quick Support) are documented on that page — this is only what the AI assistant itself can do.
 
-Runs security scans and manages detected threats on a device. All actions are Tier 3 and require approval.
+### list_remote_sessions
 
-| Action | Description |
-|--------|-------------|
-| `scan` | Initiate a security scan on the device |
-| `status` | Check current security/threat status |
-| `quarantine` | Quarantine a detected threat (requires `threatId`) |
-| `remove` | Remove a detected threat (requires `threatId`) |
-| `restore` | Restore a quarantined item (requires `threatId`) |
+Lists active and recent remote sessions, filterable by status, type, and device. A non-system caller only sees their own sessions. Tier 1, read-only, no rate limit.
 
-Scans have a 60-second timeout. Threat management actions (`quarantine`, `remove`, `restore`) require the `threatId` from a previous scan or status check.
+### create_remote_session
+
+Opens a new `terminal` or `file_transfer` session to an online device. `desktop` sessions are not created through this tool. Four-eyes approval, same reasoning as `computer_control`: an unattended session is surveillance-grade access. If the organization is not verified for remote control, the tool returns an error rather than opening a session.
 
 ```
-"Run a security scan on DESKTOP-FINANCE-01"
-"What threats were found on this device?"
-"Quarantine the malware detected in the Downloads folder"
+"Open a terminal session to SERVER-DB-02"
 ```
-
-### get_security_posture
-
-Returns fleet-wide or device-level security posture scores with factor breakdowns and prioritized recommendations. This is a read-only Tier 1 tool that aggregates data from security scans, patch compliance, and configuration analysis.
-
-| Parameter | Description |
-|-----------|-------------|
-| `deviceId` | Get posture for a specific device |
-| `riskLevel` | Filter by risk level: `low`, `medium`, `high`, `critical` |
-| `minScore` / `maxScore` | Filter by score range (0-100) |
-| `includeRecommendations` | Include actionable recommendations (default: true) |
-
-The fleet-level view returns a summary with average score, risk distribution, and the worst-scoring devices.
-
-```
-"What's the security posture of our fleet?"
-"Show me all devices with a critical risk level"
-"What are the security recommendations for SERVER-01?"
-```
-
-### network_discovery
-
-Initiates a network discovery scan from a device to find other devices on the network. The scan runs on the target device and reports discovered hosts. Tier 3 -- requires approval.
-
-| Parameter | Description |
-|-----------|-------------|
-| `subnet` | CIDR subnet to scan (e.g., `192.168.1.0/24`) |
-| `scanType` | `ping` (default), `arp`, or `full` |
-
-The scan has a 120-second timeout. ARP and full scans may require elevated privileges on the scanning device.
-
-```
-"Scan the 192.168.1.0/24 subnet from SERVER-01"
-"Run a full network discovery from the office gateway"
-```
-
-<Aside type="caution">
-  Network discovery has the strictest rate limit: 2 requests per 10 minutes per user. This prevents excessive network scanning.
-</Aside>
 
 ---
 
-## Audit & Device Context
+## Safety & limits
 
-### query_audit_log
+### Timeouts
 
-Searches the audit log for recent actions. Useful for investigating what happened on a device, who made changes, and when. Tier 1, read-only.
+All three device-control tools use a 120-second timeout — the same budget as `execute_command`, since each does an agent round-trip and, for `analyze_screen`, an additional vision pass.
 
-| Parameter | Description |
-|-----------|-------------|
-| `action` | Filter by action type (e.g., `agent.command.script`) |
-| `resourceType` | Filter by resource type (e.g., `device`) |
-| `resourceId` | Filter by specific resource UUID |
-| `actorType` | Filter by `user`, `api_key`, `agent`, `system`, or `ai_agent` |
-| `hoursBack` | Time range: 1-168 hours (default: 24) |
+| Tool | Timeout |
+|------|---------|
+| `take_screenshot` | 120s |
+| `analyze_screen` | 120s |
+| `computer_control` | 120s |
 
-```
-"What commands were run on this device in the last 48 hours?"
-"Show me all agent actions in the audit log"
-```
-
-### Device context tools
-
-The AI maintains persistent per-device memory across conversations. See [AI Device Context Memory](/features/ai/#ai-device-context-memory) for full details.
-
-| Tool | Tier | Description |
-|------|------|-------------|
-| `get_device_context` | Tier 1 | Load known issues, quirks, follow-ups, and preferences for a device |
-| `set_device_context` | Tier 2 | Record a new context entry (issue, quirk, followup, or preference) |
-| `resolve_device_context` | Tier 2 | Mark a context entry as resolved; preserved in history |
-
----
-
-## Input Validation & Safety
-
-Every tool input passes through a Zod validation schema before execution. This provides defense-in-depth against malformed or malicious inputs from the AI model.
-
-### Blocked paths
-
-File operations validate paths against a blocklist of sensitive system locations. The following paths are blocked on all operations:
-
-<Tabs>
-  <TabItem label="Linux / macOS">
-
-| Blocked Path | Reason |
-|--------------|--------|
-| `/etc/shadow` | Password hashes |
-| `/etc/passwd` | User account database |
-| `/etc/sudoers` | Privilege escalation config |
-| `/proc` | Kernel process information |
-| `/sys` | Kernel/hardware interface |
-| `/dev` | Device files |
-| `/root/.ssh` | Root SSH keys |
-| `/home/*/.ssh` | User SSH keys |
-| `/var/run` | Runtime state files |
-| `/var/lib/docker` | Docker internal storage |
-
-  </TabItem>
-  <TabItem label="Windows">
-
-| Blocked Path | Reason |
-|--------------|--------|
-| `C:\Windows\System32\config` | Registry hives (SAM, SECURITY, SYSTEM) |
-| `C:\Windows\SAM` | Security Account Manager |
-| `C:\Users\*\AppData` | Per-user application data |
-
-  </TabItem>
-</Tabs>
-
-### Path traversal prevention
-
-All file paths are validated with the following rules:
-
-- **Null byte rejection** -- paths containing `\0` are rejected
-- **Traversal blocking** -- paths containing `..` are rejected
-- **Path normalization** -- backslashes are normalized to forward slashes, redundant separators are collapsed, and dot components (e.g., `/etc/./shadow`) are resolved before checking against the blocklist
-- **Maximum length** -- paths are limited to 4,096 characters
-
-### Output sanitization
-
-Tool results are compacted before being sent to the AI model to prevent context window overflow:
-
-| Constraint | Limit |
-|------------|-------|
-| Maximum tool result size | 8,000 characters |
-| String truncation | 1,500 characters per string |
-| Array truncation | 60 items per array |
-| Object truncation | 60 keys per object |
-| Maximum nesting depth | 6 levels |
-
-If a result exceeds the limit after initial compaction, a secondary aggressive compaction pass runs (700 chars, 20 items, depth 4). Tool-specific compaction logic applies to disk analysis, cleanup, and command results to preserve the most relevant data within the size budget.
-
-### Guardrails enforcement
-
-The guardrails system enforces multiple layers of protection on every tool invocation:
-
-<Steps>
-
-1. **Tier check** -- the effective tier is resolved based on the tool name and action. Tier 4 tools are blocked outright.
-
-2. **RBAC permission check** -- the user's role is verified against the required permission for the specific tool and action.
-
-3. **Per-tool rate limit** -- a sliding-window rate limiter prevents excessive use of any single tool.
-
-4. **Approval gate** (Tier 3 only) -- the action enters a pending state and an `approval_required` event is sent to the UI. Execution blocks until the user approves, rejects, or the 5-minute timeout expires.
-
-5. **Input validation** -- the Zod schema validates all parameters, rejecting malformed inputs before the handler executes.
-
-6. **Org-scoped isolation** -- every database query includes an organization condition, ensuring users can only access devices in their own organization.
-
-</Steps>
-
----
-
-## Permissions
-
-Each tool requires specific RBAC permissions. The permission check is action-aware -- a single tool may require different permissions depending on what it is doing.
-
-| Tool | Action | Required Permission |
-|------|--------|---------------------|
-| `query_devices` | all | `devices:read` |
-| `get_device_details` | all | `devices:read` |
-| `analyze_metrics` | all | `devices:read` |
-| `execute_command` | all | `devices:execute` |
-| `run_script` | all | `scripts:execute` |
-| `manage_alerts` | list, get | `alerts:read` |
-| `manage_alerts` | acknowledge | `alerts:acknowledge` |
-| `manage_alerts` | resolve | `alerts:write` |
-| `manage_services` | all | `devices:execute` |
-| `security_scan` | all | `devices:execute` |
-| `get_security_posture` | all | (no explicit check) |
-| `file_operations` | all | `devices:execute` |
-| `analyze_disk_usage` | all | `devices:read` |
-| `disk_cleanup` | preview | `devices:read` |
-| `disk_cleanup` | execute | `devices:execute` |
-| `query_audit_log` | all | `audit:read` |
-| `network_discovery` | all | `devices:execute` |
-| `get_device_context` | all | `devices:read` |
-| `set_device_context` | all | `devices:write` |
-| `resolve_device_context` | all | `devices:write` |
-
----
-
-## Rate Limits
-
-Per-tool rate limits prevent excessive use. These apply per user and use a Redis-backed sliding window.
+### Rate limits
 
 | Tool | Limit | Window |
 |------|-------|--------|
-| `execute_command` | 10 requests | 5 minutes |
-| `run_script` | 5 requests | 5 minutes |
-| `manage_services` | 10 requests | 5 minutes |
-| `security_scan` | 3 requests | 10 minutes |
-| `network_discovery` | 2 requests | 10 minutes |
-| `file_operations` | 20 requests | 5 minutes |
-| `analyze_disk_usage` | 10 requests | 5 minutes |
-| `disk_cleanup` | 3 requests | 10 minutes |
-| `set_device_context` | 20 requests | 5 minutes |
-| `resolve_device_context` | 20 requests | 5 minutes |
+| `take_screenshot` | 10 requests | 5 minutes |
+| `analyze_screen` | 10 requests | 5 minutes |
+| `computer_control` | 20 requests | 5 minutes |
+| `create_remote_session` | 10 requests | 5 minutes |
 
-Read-only Tier 1 tools (`query_devices`, `get_device_details`, `analyze_metrics`, `query_audit_log`, `get_device_context`, `get_security_posture`) do not have per-tool rate limits, though they are subject to the global AI session rate limits.
+### Permissions
+
+| Tool | Required Permission |
+|------|---------------------|
+| `take_screenshot` | `devices:execute` |
+| `analyze_screen` | `devices:execute` |
+| `computer_control` | `devices:execute` |
+| `list_remote_sessions` | `devices:read` |
+| `create_remote_session` | `devices:execute` |
+
+### Production allowlist
+
+Screen contents are the most sensitive RMM output there is — credentials, customer data, anything on the display. In production, `take_screenshot`, `analyze_screen`, and `computer_control` additionally require an explicit entry in the `MCP_EXECUTE_TOOL_ALLOWLIST` environment variable, same as any other Tier 3+ tool reached through the MCP server. See [MCP Server → Production allowlist](/features/mcp-server/#production-allowlist-for-destructive-tools).
+
+---
+
+## AI Operator (preview)
+
+**AI Operator** is a different shape of automation from the tools above: instead of a single tool call inside a chat turn, it's a long-running *task* — investigate, act, verify, document — that keeps working after you close the browser, pausing only at the step that needs your approval.
+
+<Aside type="caution">
+  AI Operator ships **disabled**, behind two feature flags plus the main `BREEZE_AI_AGENTS_ENABLED` kill switch, and only one recipe — **service recovery** — currently exists. It's documented in full on [AI Agents → AI Operator (preview)](/features/ai-agents/#ai-operator-preview), including the **Delegate to Operator** button, what the task page shows, and the service-recovery approval flow. See [Environment Variables → AI Operator](/deploy/environment/#ai-operator-preview-off-by-default) for the flags.
+</Aside>
 
 ---
 
 ## Troubleshooting
 
 **Tool execution times out.**
-Device commands have a 30-second default timeout (60 seconds for scripts and security scans, 120 seconds for network discovery). If a device is under heavy load or has a slow network connection, commands may time out. Verify the device is online and responsive, then retry.
+`take_screenshot`, `analyze_screen`, and `computer_control` all use a 120-second timeout. If the device is under heavy load or has a slow connection, retry once it settles.
 
-**"Device not online" error when running a command.**
-The `execute_command`, `manage_services`, `file_operations` (all actions), and `network_discovery` tools require the device to have an active WebSocket connection. Check the device's status in the dashboard. If the device shows as online but commands fail, the agent may need to be restarted.
-
-**"Access to this path is blocked" on file operations.**
-The AI cannot access sensitive system paths such as `/etc/shadow`, `/proc`, `C:\Windows\System32\config`, or SSH key directories. This is intentional. If you need to inspect these files, use a direct remote access session instead.
+**"Device not online" error.**
+All five tools on this page require the device to have an active WebSocket connection. Check the device's status in the dashboard; if it shows online but commands still fail, the agent may need to be restarted.
 
 **Approval request not appearing in the UI.**
-Tier 3 actions emit an `approval_required` SSE event to the AI chat session. If you are not viewing the chat sidebar, the approval prompt will not be visible. Unanswered approvals time out after 5 minutes. Open the AI chat or check **Monitoring > AI Risk Engine > Approval History** for pending requests.
+Tier 3 actions emit an `approval_required` event to the AI chat session. `computer_control` and `create_remote_session` requests don't show a self-approve option even for the requester — a different user has to approve from **Approval History** or the mobile app. See [AI Features → Pending approvals survive a restart](/features/ai/#pending-approvals-survive-a-restart).
 
 **"Tool rate limit exceeded" error.**
-Each tool has a per-user rate limit (see [Rate Limits](#rate-limits)). Wait for the window to reset before retrying. The error message includes the reset time. If you consistently hit rate limits, consider scripting the operation through the standard API instead of the AI assistant.
+Each tool's per-user limit resets on its own window (see [Rate limits](#rate-limits) above). The error message includes the reset time.
+
+**"Not in MCP_EXECUTE_TOOL_ALLOWLIST" error.**
+In production, `take_screenshot`, `analyze_screen`, and `computer_control` must be explicitly listed in `MCP_EXECUTE_TOOL_ALLOWLIST` to be callable through the MCP server. See [MCP Server → Troubleshooting](/features/mcp-server/#tool-returns-not-in-mcp_execute_tool_allowlist).

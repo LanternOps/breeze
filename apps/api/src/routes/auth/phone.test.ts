@@ -211,6 +211,72 @@ describe('phone routes', () => {
     app.route('/auth', phoneRoutes);
   });
 
+  describe('POST /auth/mfa/step-up/sms/send', () => {
+    it('sends only to the authenticated user active SMS factor under allowed policy', async () => {
+      vi.mocked(db.select).mockReturnValue(selectChain([{
+        mfaEnabled: true,
+        mfaMethod: 'sms',
+        phoneVerified: true,
+        phoneNumber: '+15555550100',
+      }]) as any);
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+        required: true,
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+      });
+      const sendVerificationCode = vi.fn().mockResolvedValue({ success: true });
+      vi.mocked(getTwilioService).mockReturnValue({
+        sendVerificationCode,
+        checkVerificationCode: vi.fn(),
+      } as any);
+
+      const res = await app.request('/auth/mfa/step-up/sms/send', { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(sendVerificationCode).toHaveBeenCalledWith('+15555550100');
+      expect(rateLimiter).toHaveBeenNthCalledWith(1, expect.anything(), 'sms:stepup-send:user-1', 5, 300);
+      expect(rateLimiter).toHaveBeenNthCalledWith(2, expect.anything(), 'sms:stepup-global:+15555550100', 100, 300);
+      expect(writeAuthAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'auth.mfa.stepup.sms.sent',
+        userId: 'user-1',
+      }));
+    });
+
+    it('fails closed without sending when the live factor is not SMS', async () => {
+      vi.mocked(db.select).mockReturnValue(selectChain([{
+        mfaEnabled: true,
+        mfaMethod: 'totp',
+        phoneVerified: true,
+        phoneNumber: '+15555550100',
+      }]) as any);
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+        required: true,
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+      });
+      const sendVerificationCode = vi.fn();
+      vi.mocked(getTwilioService).mockReturnValue({ sendVerificationCode } as any);
+
+      const res = await app.request('/auth/mfa/step-up/sms/send', { method: 'POST' });
+
+      expect(res.status).toBe(400);
+      expect(sendVerificationCode).not.toHaveBeenCalled();
+      expect(rateLimiter).not.toHaveBeenCalled();
+    });
+
+    it('fails closed without provider delivery when Redis is unavailable', async () => {
+      vi.mocked(getRedis).mockReturnValueOnce(null);
+      const sendVerificationCode = vi.fn();
+      vi.mocked(getTwilioService).mockReturnValue({ sendVerificationCode } as any);
+
+      const res = await app.request('/auth/mfa/step-up/sms/send', { method: 'POST' });
+
+      expect(res.status).toBe(503);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(sendVerificationCode).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /auth/mfa/sms/enable', () => {
     function mockVerifiedUnenrolledUser() {
       vi.mocked(db.select).mockReturnValue(

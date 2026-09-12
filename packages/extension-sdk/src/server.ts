@@ -108,6 +108,22 @@ export interface ExtensionAiContext {
   invoke(input: ExtensionAiInvokeInput): Promise<ExtensionAiInvokeResult>;
 }
 
+/**
+ * Host-resolved authorization attached to each authenticated extension request.
+ *
+ * Extensions must use this capability instead of treating tenant reachability
+ * (`scope`, `orgId`, or an organization allowlist) as product authority. The
+ * host owns wildcard matching, live role resolution, MFA feature semantics and
+ * permission-cache invalidation; extensions receive only the decisions needed
+ * at their route boundary.
+ */
+export interface ExtensionRequestAuthorization {
+  hasPermission(resource: string, action: string): boolean;
+  mfaSatisfied: boolean;
+  /** Undefined means the resolved role has no site restriction. */
+  allowedSiteIds?: readonly string[];
+}
+
 export interface ExtensionRuntimeContext {
   db: Record<string, unknown> & { execute(query: unknown): Promise<unknown> };
   secrets: {

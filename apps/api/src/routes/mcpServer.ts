@@ -42,6 +42,7 @@ import { writeAuditEvent } from '../services/auditEvents';
 import { sanitizeAuditPayload, summarizePayload, summarizeToolResult } from '../services/auditPayloadSanitizer';
 import { compactToolResultForChat, redactAiToolOutputText } from '../services/aiToolOutput';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
+import { resolveDeprecatedToolAlias } from '../services/aiToolAliases';
 import { MCP_SERVER_INSTRUCTIONS, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
 import {
   beginMcpToolExecutionLedger,
@@ -975,6 +976,12 @@ const MCP_APPROVAL_REQUIRED_ERROR = {
   code: 'MCP_APPROVAL_REQUIRED',
 } as const;
 
+// Bootstrap auth tools are destructive tenant mutations (send invites /
+// configure defaults). They live outside the main aiTools registry, so they
+// do not have a getToolTier entry, but their shared execution ledger has
+// always classified them as Tier 3.
+const BOOTSTRAP_TOOL_TIER = 3;
+
 /**
  * True when `tools/call` must deny this tool/action over MCP instead of
  * executing it: effective tier 3 (see the constant's block comment for why
@@ -1096,21 +1103,13 @@ async function handleToolsList(
     };
   });
 
-  // Surface bootstrap auth tools (send_deployment_invites, configure_defaults)
-  // to authenticated callers with the matching scope. These tools live outside
-  // the main aiTools registry but flow through the authed dispatch path below.
-  if (bootstrapModule) {
-    const authToolsEligible = hasExecute && (!requireExecuteAdmin || hasExecuteAdmin);
-    if (authToolsEligible) {
-      for (const tool of bootstrapModule.authTools) {
-        result.push({
-          name: tool.definition.name,
-          description: tool.definition.description,
-          inputSchema: zodToJsonSchema(tool.definition.inputSchema) as typeof result[number]['inputSchema'],
-        });
-      }
-    }
-  }
+  // Bootstrap auth tools (send_deployment_invites, configure_defaults) live
+  // outside the main registry and carry a FIXED Tier 3 classification, so
+  // `isMcpApprovalRequired(name, 3)` is unconditionally true for every one of
+  // them: they are NEVER advertised over MCP while this transport has no
+  // interactive approval surface. Deliberately not a filtered loop — a loop
+  // that can never push reads as if some bootstrap tool might be listed.
+  // `handleToolsCall` denies them with MCP_APPROVAL_REQUIRED to match.
 
   return jsonRpcResult(id, { tools: result });
 }
@@ -1128,11 +1127,24 @@ async function handleToolsCall(
   c?: Context,
   sessionId?: string,
 ): Promise<JsonRpcResponse> {
-  const toolName = params.name as string;
+  const requestedToolName = params.name as string;
   const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
 
-  if (!toolName) {
+  if (!requestedToolName) {
     return jsonRpcError(id, -32602, 'Missing required parameter: name');
+  }
+
+  // Resolve deprecated tool names ONCE, here, before any name-keyed gate below
+  // (tier lookup, guardrails, MCP approval gate, production execute allowlist,
+  // RBAC permission check, schema validation, dispatch) — so an aliased call is
+  // authorized as the canonical tool and cannot pick up a different gate than
+  // the real name. Aliases are dispatch-only and are never returned by
+  // `tools/list`; see services/aiToolAliases.ts for why (#5362).
+  const toolName = resolveDeprecatedToolAlias(requestedToolName);
+  if (toolName !== requestedToolName) {
+    console.warn(
+      `[MCP] Deprecated tool name "${requestedToolName}" called; dispatching as "${toolName}". Re-run tools/list — the old name is removed next release.`,
+    );
   }
 
   // Bootstrap auth tools (send_deployment_invites, configure_defaults) live
@@ -1141,6 +1153,12 @@ async function handleToolsCall(
     (t) => t.definition.name === toolName,
   );
   if (bootstrapAuthTool) {
+    if (isMcpApprovalRequired(toolName, BOOTSTRAP_TOOL_TIER)) {
+      return jsonRpcResult(id, {
+        content: [{ type: 'text', text: JSON.stringify(MCP_APPROVAL_REQUIRED_ERROR) }],
+        isError: true,
+      });
+    }
     return dispatchBootstrapAuthTool(
       id,
       bootstrapAuthTool,
@@ -1319,7 +1337,18 @@ async function handleToolsCall(
   };
 
   return runTier3ToolLifecycle(
-    { id, c, auth, apiKey, sessionId, orgId: executionOrgId, toolName, tier, toolInput },
+    {
+      id,
+      c,
+      auth,
+      apiKey,
+      sessionId,
+      orgId: executionOrgId,
+      toolName,
+      requestedToolName,
+      tier,
+      toolInput,
+    },
     execute,
   );
 }
@@ -1333,6 +1362,17 @@ async function handleToolsCall(
  */
 export const __handleToolsListForTests = handleToolsList;
 export const __handleToolsCallForTests = handleToolsCall;
+/**
+ * Test-only direct access to the bootstrap authTool dispatcher. `tools/call`
+ * now returns MCP_APPROVAL_REQUIRED before reaching it (bootstrap tools are
+ * fixed Tier 3 and this transport has no interactive approval surface), so the
+ * dispatcher is unreachable over HTTP. Its RBAC-before-ledger ordering,
+ * fail-closed ledger and uniform-audit behaviour are still contracts worth
+ * pinning — both because the code is still shipped and because it is what an
+ * approval surface would re-attach to — so the lifecycle suite drives it here
+ * instead of through a request that can never arrive.
+ */
+export const __dispatchBootstrapAuthToolForTests = dispatchBootstrapAuthTool;
 /**
  * Test-only direct access to `handleJsonRpc` itself (rather than a single
  * handler) — needed to observe its top-level try/catch, which is what turns
@@ -1353,6 +1393,8 @@ function writeMcpToolAuditEvent(
     sessionId?: string;
     orgId?: string | null;
     toolName: string;
+    /** Deprecated alias the client sent, when it differed from `toolName`. */
+    requestedToolName?: string;
     tier: number;
     toolInput: Record<string, unknown>;
     durationMs: number;
@@ -1385,6 +1427,9 @@ function writeMcpToolAuditEvent(
       partnerId: event.auth.partnerId ?? event.apiKey.partnerId ?? null,
       orgId: orgId ?? null,
       toolName: event.toolName,
+      ...(event.requestedToolName && event.requestedToolName !== event.toolName
+        ? { requestedToolName: event.requestedToolName, deprecatedToolAlias: true }
+        : {}),
       tier: event.tier,
       target: summarizePayload(event.toolInput, { maxStringLength: 512 }),
       arguments: sanitizeAuditPayload(event.toolInput, { maxStringLength: 2048 }),
@@ -1399,10 +1444,6 @@ function writeMcpToolAuditEvent(
 // Shared Tier 3 execution lifecycle (MCP-OAUTH-12)
 // ============================================
 
-// Bootstrap tools are destructive tenant mutations (send invites / configure
-// defaults) and always run through the Tier 3 ledger + uniform audit.
-const BOOTSTRAP_TOOL_TIER = 3;
-
 interface Tier3LifecycleContext {
   id: string | number;
   c: Context | undefined;
@@ -1412,6 +1453,14 @@ interface Tier3LifecycleContext {
   /** Authoritative execution org (resolveMcpExecutionContext / bootstrap default). */
   orgId: string | null;
   toolName: string;
+  /**
+   * The name the CLIENT actually sent, when it was a deprecated alias that
+   * resolved to a different `toolName` (see services/aiToolAliases.ts). Audit
+   * records it so "is anyone still calling the old name?" is a query rather
+   * than a grep of ephemeral console output — that is the signal the alias is
+   * safe to delete. Undefined on the overwhelmingly common non-aliased call.
+   */
+  requestedToolName?: string;
   tier: number;
   toolInput: Record<string, unknown>;
 }
@@ -1524,6 +1573,7 @@ async function finalizeTier3ToolLifecycle(
     sessionId: ctx.sessionId,
     orgId: ctx.orgId,
     toolName: ctx.toolName,
+    requestedToolName: ctx.requestedToolName,
     tier: ctx.tier,
     toolInput: ctx.toolInput,
     durationMs,

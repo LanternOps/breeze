@@ -46,17 +46,28 @@ function absoluteTtlDays(): number {
  * the bug this helper exists to prevent).
  */
 // W07-A rollout overload for the frozen pre-guard issuer inventory only.
-export async function mintRefreshTokenFamily(userId: string): Promise<string>;
+type MintRefreshTokenFamilyOptions = { tx?: Tx; mobileDeviceId?: string };
+
 export async function mintRefreshTokenFamily(
   userId: string,
-  currentRefreshJti: string,
-  options?: { tx?: Tx },
+  options?: Pick<MintRefreshTokenFamilyOptions, 'mobileDeviceId'>,
 ): Promise<string>;
 export async function mintRefreshTokenFamily(
   userId: string,
-  currentRefreshJti?: string,
-  options: { tx?: Tx } = {},
+  currentRefreshJti: string,
+  options?: MintRefreshTokenFamilyOptions,
+): Promise<string>;
+export async function mintRefreshTokenFamily(
+  userId: string,
+  currentRefreshJtiOrOptions?: string | Pick<MintRefreshTokenFamilyOptions, 'mobileDeviceId'>,
+  options: MintRefreshTokenFamilyOptions = {},
 ): Promise<string> {
+  const currentRefreshJti = typeof currentRefreshJtiOrOptions === 'string'
+    ? currentRefreshJtiOrOptions
+    : undefined;
+  const normalizedOptions: MintRefreshTokenFamilyOptions = typeof currentRefreshJtiOrOptions === 'object'
+    ? currentRefreshJtiOrOptions
+    : options;
   const familyId = randomUUID();
   const absoluteExpiresAt = new Date(Date.now() + absoluteTtlDays() * 24 * 60 * 60 * 1000);
   const insert = async (executor: Pick<Tx, 'insert'>) => {
@@ -64,13 +75,14 @@ export async function mintRefreshTokenFamily(
       familyId,
       userId,
       absoluteExpiresAt,
+      mobileDeviceId: normalizedOptions.mobileDeviceId ?? null,
       currentRefreshJtiDigest: currentRefreshJti === undefined
         ? null
         : digestRefreshTokenJti(currentRefreshJti),
     });
   };
-  if (options.tx) {
-    await insert(options.tx);
+  if (normalizedOptions.tx) {
+    await insert(normalizedOptions.tx);
   } else {
     await dbModule.runOutsideDbContext(() =>
       dbModule.withSystemDbAccessContext(() => insert(dbModule.db)),

@@ -1,20 +1,48 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
 
 import { ExtensionContributionRegistry } from './contributionRegistry';
 
 const authLifetime = new AsyncLocalStorage<'user' | 'agent' | 'helper'>();
+const permissionState = vi.hoisted(() => ({ missing: false, error: false }));
+const authState = vi.hoisted(() => ({
+  value: {
+    user: { id: 'user-1', isPlatformAdmin: false },
+    token: { mfa: true },
+    partnerId: 'partner-1' as string | null,
+    orgId: 'org-1' as string | null,
+    scope: 'organization' as 'organization' | 'partner' | 'system',
+  },
+}));
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn(async (
     c: { set(key: string, value: unknown): void },
     next: () => Promise<void>,
   ) => {
-    c.set('auth', { user: { id: 'user-1' }, orgId: 'org-1', scope: 'organization' });
-    await authLifetime.run('user', next);
+    c.set('auth', authState.value);
+    return authLifetime.run('user', next);
   }),
+  hasSatisfiedMfa: vi.fn((auth: { token?: { mfa?: boolean } }) => auth.token?.mfa === true),
+}));
+
+vi.mock('../services/permissions', () => ({
+  getUserPermissions: vi.fn(async () => {
+    if (permissionState.error) throw new Error('synthetic permission lookup failure');
+    return permissionState.missing ? null : ({
+      permissions: [{ resource: '*', action: '*' }],
+      roleId: 'role-1',
+      scope: 'organization',
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+    });
+  }),
+  hasPermission: vi.fn((userPermissions: { permissions: Array<{ resource: string; action: string }> }, resource: string, action: string) =>
+    userPermissions.permissions.some((permission) =>
+      (permission.resource === '*' || permission.resource === resource)
+      && (permission.action === '*' || permission.action === action))),
 }));
 
 vi.mock('../middleware/agentAuth', () => ({
@@ -122,6 +150,16 @@ function makeGatewayFixture(options: {
     userId: (c.get('auth') as { user: { id: string } }).user.id,
     authLifetime: authLifetime.getStore(),
   }));
+  routeApp.get('/authorization', (c) => {
+    const authorization = c.get('extensionAuthorization') as {
+      hasPermission(resource: string, action: string): boolean;
+      mfaSatisfied: boolean;
+    };
+    return c.json({
+      workspaceRead: authorization.hasPermission('workspace', 'read'),
+      mfaSatisfied: authorization.mfaSatisfied,
+    });
+  });
   routeApp.get('/agent/:id/config', (c) => c.json({
     deviceId: (c.get('agent') as { deviceId: string }).deviceId,
     authLifetime: authLifetime.getStore(),
@@ -136,6 +174,59 @@ function makeGatewayFixture(options: {
 describe('mountExtensionGateway', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionState.missing = false;
+    permissionState.error = false;
+    authState.value = {
+      user: { id: 'user-1', isPlatformAdmin: false },
+      token: { mfa: true },
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      scope: 'organization',
+    };
+  });
+
+  it('exposes host-resolved wildcard permission and MFA decisions to user routes', async () => {
+    const { app } = makeGatewayFixture();
+    const response = await app.request('/api/v1/ext/demo/authorization');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ workspaceRead: true, mfaSatisfied: true });
+  });
+
+  it('fails closed before extension dispatch when the live role has no permissions', async () => {
+    permissionState.missing = true;
+    const { app } = makeGatewayFixture();
+    const response = await app.request('/api/v1/ext/demo/items/item-42');
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'Permission denied' });
+  });
+
+  it('fails closed when live permission resolution errors', async () => {
+    permissionState.error = true;
+    const routeApp = new Hono();
+    const handler = vi.fn((c: Context) => c.json({ ok: true }));
+    routeApp.get('/protected', handler);
+    const { app } = makeGatewayFixture({ routeApp });
+    const response = await app.request('/api/v1/ext/demo/protected');
+    expect(response.status).toBe(500);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('authorizes only a verified platform admin for system-scope extension requests', async () => {
+    authState.value = {
+      user: { id: 'platform-1', isPlatformAdmin: true },
+      token: { mfa: false },
+      partnerId: null,
+      orgId: null,
+      scope: 'system',
+    };
+    const { app } = makeGatewayFixture();
+    const allowed = await app.request('/api/v1/ext/demo/authorization');
+    expect(allowed.status).toBe(200);
+    expect(await allowed.json()).toEqual({ workspaceRead: true, mfaSatisfied: false });
+
+    authState.value.user.isPlatformAdmin = false;
+    const denied = await app.request('/api/v1/ext/demo/authorization');
+    expect(denied.status).toBe(403);
   });
 
   it('runs user auth and the matched handler in the same context and auth lifetime', async () => {

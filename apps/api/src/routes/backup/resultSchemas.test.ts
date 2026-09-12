@@ -50,6 +50,45 @@ describe('backupCommandResultSchema — system_image manifest', () => {
   });
 });
 
+// D15 Wave 1 finding #1: a state-only system_image run's ordinary manifest
+// must publish `"files":[]`, never `"files":null` — the agent-side fix is at
+// backup.go's state-only Snapshot literal. This documents the API-side half
+// of that contract: `snapshot.files` is `z.array(...).optional()`, which
+// accepts a MISSING key or an empty array, but Zod's `.optional()` rejects an
+// explicit `null` — so a result that regressed back to emitting `null` would
+// 400 and silently drop the whole job result (snapshot id, size, everything).
+describe('backupCommandResultSchema — snapshot.files null-vs-empty contract (D15)', () => {
+  it('parses a system_image result whose snapshot.files is an empty array', () => {
+    const parsed = backupCommandResultSchema.parse({
+      snapshotId: 'snap-1',
+      backupType: 'system_image',
+      systemStateManifest: {
+        platform: 'linux',
+        artifacts: [{ name: 'services_systemd', category: 'services' }],
+      },
+      snapshot: {
+        id: 'snap-1',
+        files: [],
+      },
+    });
+    expect(parsed.snapshot?.files).toEqual([]);
+    expect(parsed.systemStateManifest?.platform).toBe('linux');
+  });
+
+  it('rejects a result whose snapshot.files is null', () => {
+    expect(() =>
+      backupCommandResultSchema.parse({
+        snapshotId: 'snap-1',
+        backupType: 'system_image',
+        snapshot: {
+          id: 'snap-1',
+          files: null,
+        },
+      }),
+    ).toThrow();
+  });
+});
+
 describe('backupCommandResultSchema — incremental-backup referenced stats', () => {
   it('accepts referencedBytes + referencedFiles from an agent that deduped files', () => {
     const parsed = backupCommandResultSchema.parse({
@@ -168,5 +207,83 @@ describe('backupCommandResultSchema — VSS metadata (#3027)', () => {
   it('leaves vssMetadata undefined for a non-Windows / VSS-disabled run', () => {
     const parsed = backupCommandResultSchema.parse({ snapshotId: 'snap-1', filesBackedUp: 3 });
     expect(parsed.vssMetadata).toBeUndefined();
+  });
+});
+
+describe('backupCommandResultSchema — snapshot file manifest originalPath (D12)', () => {
+  it('preserves originalPath on a snapshot file entry instead of stripping it', () => {
+    // Regression: zod strips unrecognized object keys by default, so without a
+    // modeled `originalPath` field the agent's stable, user-facing path for a
+    // Windows VSS-backed file (as opposed to the transient shadow-copy device
+    // path in sourcePath) was silently dropped at this parse — the very first
+    // hop the field crosses — before backupResultPersistence.ts ever saw it.
+    const parsed = backupCommandResultSchema.parse({
+      snapshotId: 'snap-1',
+      snapshot: {
+        id: 'snap-1',
+        files: [
+          {
+            sourcePath: '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\assure\\src\\x',
+            originalPath: 'C:\\assure\\src\\x',
+            backupPath: 'snapshots/snap-1/files/x.gz',
+          },
+        ],
+      },
+    });
+
+    expect(parsed.snapshot?.files?.[0]?.originalPath).toBe('C:\\assure\\src\\x');
+    expect(parsed.snapshot?.files?.[0]?.sourcePath).toBe(
+      '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\assure\\src\\x'
+    );
+  });
+
+  it('leaves originalPath undefined for a non-Windows / non-VSS run that omits it', () => {
+    const parsed = backupCommandResultSchema.parse({
+      snapshotId: 'snap-1',
+      snapshot: {
+        id: 'snap-1',
+        files: [{ sourcePath: '/home/user/file.txt', backupPath: 'snapshots/snap-1/files/file.txt.gz' }],
+      },
+    });
+
+    expect(parsed.snapshot?.files?.[0]?.originalPath).toBeUndefined();
+    expect(parsed.snapshot?.files?.[0]?.sourcePath).toBe('/home/user/file.txt');
+  });
+
+  it('parses layoutManifest (open) and bareMetal (closed) result fields', () => {
+    const parsed = backupCommandResultSchema.parse({
+      snapshotId: 'snap-1',
+      backupType: 'system_image',
+      layoutManifest: {
+        schemaVersion: 1,
+        platform: 'linux',
+        bootMode: 'uefi',
+        disks: [{ name: '/dev/sda' }],
+        futureField: true,
+      },
+      bareMetal: { restorable: false, reasons: ['LVM volumes are not supported'] },
+    });
+    expect(parsed.layoutManifest?.schemaVersion).toBe(1);
+    expect((parsed.layoutManifest as Record<string, unknown>).futureField).toBe(true);
+    expect(parsed.bareMetal).toEqual({ restorable: false, reasons: ['LVM volumes are not supported'] });
+  });
+
+  it('rejects a bareMetal verdict without the restorable flag', () => {
+    expect(() => backupCommandResultSchema.parse({ snapshotId: 's', bareMetal: { reasons: [] } })).toThrow();
+  });
+});
+
+describe('backupCommandResultSchema — W02 content-less entries (symlink/dir)', () => {
+  it('accepts symlink/dir entries with an empty backupPath and rejects an empty backupPath on a file', () => {
+    const parsed = backupCommandResultSchema.parse({
+      snapshotId: 's',
+      snapshot: { id: 's', files: [
+        { sourcePath: '/bin', backupPath: '', kind: 'symlink', linkTarget: 'usr/bin' },
+        { sourcePath: '/var/empty', backupPath: '', kind: 'dir' },
+        { sourcePath: '/etc/hosts', backupPath: 'snapshots/s/files/path_0/etc/hosts', size: 3 },
+      ] },
+    });
+    expect(parsed.snapshot?.files?.[0]).toMatchObject({ kind: 'symlink', linkTarget: 'usr/bin' });
+    expect(() => backupCommandResultSchema.parse({ snapshotId: 's', snapshot: { id: 's', files: [{ sourcePath: '/x', backupPath: '' }] } })).toThrow();
   });
 });

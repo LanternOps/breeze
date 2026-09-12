@@ -129,4 +129,55 @@ describe('execute_command — service payload normalization', () => {
     const [, , payload] = executeCommand.mock.calls[0]!;
     expect(payload).toEqual({ processName: 'foo.exe', pid: '123' });
   });
+
+  const selectedValues: Array<{ label: string; value: unknown }> = [
+    { label: 'empty', value: '' }, { label: 'blank', value: ' ' },
+    { label: 'null', value: null }, { label: 'false', value: false },
+    { label: 'object', value: { nested: 'Chosen' } }, { label: 'array', value: ['Chosen'] },
+    { label: 'zero display-only', value: 0 }, { label: 'finite display-only', value: 42 },
+    { label: 'padded', value: ' Chosen ' }, { label: 'undefined fallback', value: undefined },
+  ];
+  for (const commandType of serviceCommandTypes) {
+    it.each(selectedValues)(`${commandType}: $label preserves defined-name precedence without mutating input`, async ({ value }) => {
+      const payload = Object.freeze({ name: value, serviceName: 'Alternate', extra: 'kept' });
+      const original = structuredClone(payload);
+      const input = Object.freeze({ deviceId: DEVICE_ID, commandType, payload });
+      await toolMap().get('execute_command')!.handler(input, makeAuth());
+      expect(executeCommand).toHaveBeenCalledTimes(1);
+      expect(executeCommand.mock.calls[0]?.[2]).toEqual({ name: value === undefined ? 'Alternate' : value, extra: 'kept' });
+      expect(input.payload).toEqual(original);
+    });
+  }
+
+  it('retains undefined alias keys under the existing no-normalization branch', async () => {
+    const payload = Object.freeze({ name: 'Chosen', serviceName: undefined });
+    await toolMap().get('execute_command')!.handler({ deviceId: DEVICE_ID, commandType: 'restart_service', payload }, makeAuth());
+    expect(executeCommand.mock.calls[0]?.[2]).toEqual(payload);
+    expect(Object.hasOwn(executeCommand.mock.calls[0]?.[2] as object, 'serviceName')).toBe(true);
+  });
+
+  it('does not normalize service-shaped payloads on other command types', async () => {
+    const payload = Object.freeze({ name: 'Chosen', serviceName: 'Alternate', pid: '123' });
+    await toolMap().get('execute_command')!.handler({ deviceId: DEVICE_ID, commandType: 'kill_process', payload }, makeAuth());
+    expect(executeCommand.mock.calls[0]?.[2]).toEqual(payload);
+  });
+
+  it('does not dispatch when device access is denied', async () => {
+    const auth = makeAuth(); auth.canAccessSite = () => false;
+    const input = Object.freeze({ deviceId: DEVICE_ID, commandType: 'restart_service', payload: Object.freeze({ name: 'Chosen', serviceName: 'Alternate' }) });
+    const result = JSON.parse(await toolMap().get('execute_command')!.handler(input, auth));
+    expect(result).toHaveProperty('error');
+    expect(executeCommand).not.toHaveBeenCalled();
+    expect(input.payload).toEqual({ name: 'Chosen', serviceName: 'Alternate' });
+  });
+
+  it('propagates the inert dispatcher failure without mutating approved input', async () => {
+    const failure = new Error('synthetic dispatcher failure');
+    executeCommand.mockRejectedValueOnce(failure);
+    const input = Object.freeze({ deviceId: DEVICE_ID, commandType: 'restart_service', payload: Object.freeze({ name: 'Chosen', serviceName: 'Alternate' }) });
+    await expect(toolMap().get('execute_command')!.handler(input, makeAuth())).rejects.toBe(failure);
+    expect(executeCommand).toHaveBeenCalledTimes(1);
+    expect(input.payload).toEqual({ name: 'Chosen', serviceName: 'Alternate' });
+  });
+
 });

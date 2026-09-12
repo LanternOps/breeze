@@ -109,6 +109,25 @@ export const approvalRequests = pgTable(
     /** The authenticator device that signed the decision (null for session_tap). */
     authenticatorDeviceId: uuid('authenticator_device_id'),
 
+    /**
+     * #5601: TRUE when this decision reused an `approval_decide` step-up grant
+     * (a ceremony completed minutes ago for the same conversation, org and
+     * risk tier) instead of running its own.
+     *
+     * The three columns above stay honest either way — they describe a real
+     * ceremony — but on their own they would make a REUSED L3 decision
+     * byte-identical to a fresh one, which would have this ledger claiming a
+     * ceremony that did not happen. This column is the distinction, and it is
+     * written in the SAME transaction as the decision precisely because the
+     * equivalent audit EVENT is post-commit, gated on winning the intent CAS,
+     * and emitted through a droppable in-memory retry queue.
+     *
+     * NOT NULL DEFAULT false: every pre-#5601 row genuinely was a fresh
+     * ceremony (no grants existed), so the default is a true statement about
+     * history rather than a placeholder.
+     */
+    decidedViaStepUpGrant: boolean('decided_via_step_up_grant').notNull().default(false),
+
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({

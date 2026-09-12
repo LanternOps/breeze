@@ -27,7 +27,11 @@ import {
   type RemoteWsSharedLeaseClaim,
   type RemoteWsSharedLeaseManager,
 } from '../services/remoteWsSharedLease';
-import { authorizeConsumedRemoteWsTicket } from '../services/remoteWsAuthorization';
+import {
+  authorizeConsumedRemoteWsTicket,
+  authorizeRemoteSessionContinuation,
+} from '../services/remoteWsAuthorization';
+import { PERMISSIONS } from '../services/permissions';
 import {
   assertRemoteWsUpgradeRuntimeReady,
   getRemoteWsUpgradeConnection,
@@ -398,13 +402,33 @@ function closeTunnelInBackground(
   });
 }
 
+/** Close the exact live tunnel socket owned by this API instance, if any. */
+export async function closeTunnelSession(tunnelId: string): Promise<boolean> {
+  const conn = activeTunnelConnections.get(tunnelId);
+  if (!conn || !conn.userWs) return false;
+  const ws = conn.userWs;
+  await closeTunnelLifecycle(tunnelId, {
+    expectedWs: ws,
+    connection: conn,
+    notifyAgent: true,
+    reason: 'Access revoked',
+  });
+  try {
+    ws.close(4003, 'Access revoked');
+  } catch {
+    // The exact connection has already been made inert and removed.
+  }
+  return true;
+}
+
 /**
  * Mid-session revalidation: re-check that an active tunnel's user is still
- * active, still owns the session, the device is still online, and the
- * remote-access policy still permits the relay. Mirrors the connect-time
- * checks in `validateTunnelAccess` minus the one-time ticket (already
- * consumed). Returns `{ ok: false, reason }` when access has been revoked
- * so the caller can tear the socket down fail-closed.
+ * active, still has current tenant membership, site scope, role grants, and
+ * ownership, the organization remains active, the device remains online, and
+ * the remote-access policy still permits the relay. This mirrors connect-time
+ * authorization minus the one-time ticket (already consumed). Returns
+ * `{ ok: false, reason }` when access has been revoked so the caller can tear
+ * the socket down fail-closed.
  *
  * Ticket consumption is the only connect-time auth boundary for a tunnel WS,
  * and the user↔agent relay re-checks nothing once forwarding — so without
@@ -416,50 +440,13 @@ export async function revalidateTunnelSession(
   tunnelId: string,
   conn: Pick<TunnelConnection, 'userId' | 'deviceId' | 'tunnelType'>,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  return withSystemDbAccessContext(async () => {
-    const [user] = await db
-      .select({ id: users.id, status: users.status })
-      .from(users)
-      .where(eq(users.id, conn.userId))
-      .limit(1);
-
-    if (!user || user.status !== 'active') {
-      return { ok: false as const, reason: 'User no longer active' };
-    }
-
-    const [result] = await db
-      .select({ session: tunnelSessions, device: devices })
-      .from(tunnelSessions)
-      .innerJoin(devices, eq(tunnelSessions.deviceId, devices.id))
-      .where(eq(tunnelSessions.id, tunnelId))
-      .limit(1);
-
-    if (!result) {
-      return { ok: false as const, reason: 'Tunnel session not found' };
-    }
-
-    const { session, device } = result;
-
-    if (session.userId !== user.id) {
-      return { ok: false as const, reason: 'Tunnel session no longer owned by user' };
-    }
-
-    if (!['pending', 'connecting', 'active'].includes(session.status)) {
-      return { ok: false as const, reason: `Tunnel session is ${session.status}` };
-    }
-
-    if (device.status !== 'online') {
-      return { ok: false as const, reason: 'Device is no longer online' };
-    }
-
-    const tunnelCapability = conn.tunnelType === 'vnc' ? 'vncRelay' as const : 'proxy' as const;
-    const policyCheck = await checkRemoteAccess(device.id, tunnelCapability);
-    if (!policyCheck.allowed) {
-      return { ok: false as const, reason: policyCheck.reason ?? 'Tunnel access disabled by policy' };
-    }
-
-    return { ok: true as const };
-  });
+  const result = await authorizeRemoteSessionContinuation(
+    { sessionId: tunnelId, sessionType: 'tunnel', userId: conn.userId },
+    [PERMISSIONS.REMOTE_ACCESS, PERMISSIONS.DEVICES_EXECUTE],
+  );
+  return result.ok
+    ? { ok: true as const }
+    : { ok: false as const, reason: result.reason };
 }
 
 async function closeRevokedTunnelSocket(

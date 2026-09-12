@@ -37,7 +37,7 @@ vi.mock('../db/schema', () => ({
   },
 }));
 
-vi.mock('../middleware/auth', () => ({
+vi.mock('../middleware/auth', async () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
@@ -53,6 +53,11 @@ vi.mock('../middleware/auth', () => ({
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  // Pull the production pure helper so the security-boundary tests cannot
+  // pass against a stale test-only reimplementation of allowlist semantics.
+  siteAccessCheck: (
+    await vi.importActual<typeof import('../middleware/auth')>('../middleware/auth')
+  ).siteAccessCheck,
 }));
 
 vi.mock('../services/auditService', () => ({
@@ -123,6 +128,34 @@ function mockSelectFromWhere(rows: any[]) {
       where: vi.fn().mockResolvedValue(rows),
     }),
   } as any);
+}
+
+/** Mock for db.select().from().where().limit() — single-row lookups. */
+function mockSelectFromWhereLimit(rows: any[]) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(rows),
+      }),
+    }),
+  } as any);
+}
+
+async function useOrganizationSiteScope(allowedSiteIds: string[] | undefined) {
+  const { authMiddleware } = await import('../middleware/auth');
+  vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+    c.set('auth', {
+      user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
+      scope: 'organization',
+      partnerId: null,
+      orgId: ORG_ID,
+      accessibleOrgIds: [ORG_ID],
+      orgCondition: () => undefined,
+      canAccessOrg: (id: string) => id === ORG_ID,
+      allowedSiteIds,
+    });
+    return next();
+  });
 }
 
 /** Mock for db.select().from().where().orderBy().limit().offset() — paginated lists */
@@ -443,6 +476,33 @@ describe('enrollment key routes — list & create', () => {
       expect(body.data[0].key).toBeUndefined();
     });
 
+    it('returns an empty page without database or capacity work for an empty site ceiling', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-1', email: 'test@example.com' },
+          scope: 'organization',
+          orgId: ORG_ID,
+          accessibleOrgIds: [ORG_ID],
+          allowedSiteIds: [],
+          canAccessOrg: (id: string) => id === ORG_ID,
+        });
+        return next();
+      });
+
+      const res = await app.request('/enrollment-keys', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({
+        data: [],
+        pagination: { page: 1, limit: 50, total: 0 },
+      });
+      expect(db.select).not.toHaveBeenCalled();
+      expect(dbMock.transaction).not.toHaveBeenCalled();
+    });
+
     it('returns empty for partner with no accessible orgs', async () => {
       const { authMiddleware } = await import('../middleware/auth');
       vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
@@ -466,6 +526,33 @@ describe('enrollment key routes — list & create', () => {
       expect(body.data).toEqual([]);
       expect(body.pagination.total).toBe(0);
     });
+
+    it.each(['partner', 'system'] as const)(
+      'keeps site-null rows visible for an unrestricted %s caller',
+      async (scope) => {
+        const { authMiddleware } = await import('../middleware/auth');
+        vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+          c.set('auth', {
+            user: { id: 'user-1', email: 'test@example.com' },
+            scope,
+            orgId: null,
+            accessibleOrgIds: scope === 'system' ? null : [ORG_ID],
+            canAccessOrg: () => true,
+          });
+          return next();
+        });
+        mockSelectFromWhere([{ count: 1 }]);
+        mockSelectFromWhereOrderByLimitOffset([makeEnrollmentKey({ siteId: null })]);
+        mockSelectFromWhereGroupBy([]);
+
+        const res = await app.request('/enrollment-keys', {
+          headers: { Authorization: 'Bearer token' },
+        });
+
+        expect(res.status).toBe(200);
+        expect((await res.json()).data).toHaveLength(1);
+      },
+    );
 
     it('returns 403 for partner accessing denied org', async () => {
       const { authMiddleware } = await import('../middleware/auth');
@@ -530,6 +617,112 @@ describe('enrollment key routes — list & create', () => {
   // POST / — Create enrollment key
   // ============================================
   describe('POST /enrollment-keys', () => {
+    const SITE_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const SITE_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const UNKNOWN_SITE = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+
+    it.each([
+      ['same-org hidden site', [SITE_A], SITE_B, null],
+      ['empty site allowlist', [], SITE_B, null],
+      ['foreign site accidentally present in the allowlist', [SITE_B], SITE_B, []],
+      ['unknown site accidentally present in the allowlist', [UNKNOWN_SITE], UNKNOWN_SITE, []],
+    ])(
+      'denies a restricted organization caller an opaque response for %s before credential minting',
+      async (_name, allowedSiteIds, siteId, siteRows) => {
+        await useOrganizationSiteScope(allowedSiteIds);
+        if (siteRows) mockSelectFromWhereLimit(siteRows);
+
+        const res = await app.request('/enrollment-keys', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ name: 'Denied Key', siteId }),
+        });
+
+        expect(res.status).toBe(403);
+        await expect(res.json()).resolves.toEqual({ error: 'Access to this site denied' });
+        expect(db.insert).not.toHaveBeenCalled();
+        expect(createAuditLogAsync).not.toHaveBeenCalled();
+        const { hashEnrollmentKey } = await import('../services/enrollmentKeySecurity');
+        expect(hashEnrollmentKey).not.toHaveBeenCalled();
+      },
+    );
+
+    it('allows a restricted organization caller to create a key for an allowed current site', async () => {
+      await useOrganizationSiteScope([SITE_A]);
+      mockSelectFromWhereLimit([{ id: SITE_A }]);
+      mockInsertValuesReturning([makeEnrollmentKey({ siteId: SITE_A })]);
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Allowed Key', siteId: SITE_A }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(db.insert).toHaveBeenCalledTimes(1);
+      expect(createAuditLogAsync).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves unrestricted organization access to a current same-org site', async () => {
+      await useOrganizationSiteScope(undefined);
+      mockSelectFromWhereLimit([{ id: SITE_B }]);
+      mockInsertValuesReturning([makeEnrollmentKey({ siteId: SITE_B })]);
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Unrestricted Key', siteId: SITE_B }),
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it.each(['partner', 'system'] as const)(
+      'preserves genuine %s-scope creation for a current site',
+      async (scope) => {
+        const targetOrgId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+        const { authMiddleware } = await import('../middleware/auth');
+        vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+          c.set('auth', {
+            user: { id: `${scope}-user`, email: `${scope}@example.com` },
+            scope,
+            partnerId: scope === 'partner' ? 'partner-1' : null,
+            orgId: null,
+            accessibleOrgIds: scope === 'partner' ? [targetOrgId] : null,
+            canAccessOrg: (id: string) => scope === 'system' || id === targetOrgId,
+          });
+          return next();
+        });
+        mockSelectFromWhereLimit([{ id: SITE_B }]);
+        mockInsertValuesReturning([makeEnrollmentKey({ orgId: targetOrgId, siteId: SITE_B })]);
+
+        const res = await app.request('/enrollment-keys', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ name: `${scope} key`, orgId: targetOrgId, siteId: SITE_B }),
+        });
+
+        expect(res.status).toBe(201);
+      },
+    );
+
+    it('preserves the unrestricted organization validation response for an unknown site', async () => {
+      await useOrganizationSiteScope(undefined);
+      mockSelectFromWhereLimit([]);
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Unknown site', siteId: UNKNOWN_SITE }),
+      });
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toEqual({
+        error: 'siteId does not belong to the specified org',
+      });
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     it('creates a new enrollment key', async () => {
       const created = makeEnrollmentKey();
       // Capture rather than ignore the insert payload: the returned row is a

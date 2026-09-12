@@ -2,6 +2,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import QuickbooksMappingWorkbench from "./QuickbooksMappingWorkbench";
 
+// SEC-2026-09-05-057: every mutating control here is gated on
+// `accounting:manage`. This suite covers the workbench's own behaviour, so it
+// holds the grant throughout; the gate itself is covered by
+// QuickbooksMappingWorkbench.accountingPermissions.test.tsx.
+vi.mock("../../lib/permissions", () => ({
+  usePermissions: () => ({ permissions: [], can: () => true }),
+}));
+
 const fetchWithAuthMock = vi.fn();
 vi.mock("../../stores/auth", () => ({
   fetchWithAuth: (...a: unknown[]) => fetchWithAuthMock(...a),

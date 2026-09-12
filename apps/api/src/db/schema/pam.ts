@@ -243,6 +243,30 @@ export const pamRules = pgTable(
     // stays valid. Null falls back to the org default at decision time.
     approvalDurationMinutes: integer('approval_duration_minutes'),
 
+    /**
+     * Quarantine of a pre-existing auto_approve rule (fix/pam-dedicated-permissions
+     * §6B). Set by the 2026-10-15-150200 migration for every rule that was
+     * `verdict='auto_approve'` at upgrade time, regardless of `enabled` (a
+     * disabled rule is quarantined too, so re-enabling it later can never
+     * skip re-approval): the migration copies the rule's original verdict
+     * here and forces `verdict` itself to
+     * `require_approval`, so the rule KEEPS MATCHING (unlike setting
+     * `enabled=false`, which `pamRuleEngine.ts` skips entirely and falls
+     * through to a lower-priority rule or the org's `default_unmatched_verdict`
+     * — silently turning an intended auto-approve into an auto-deny). While
+     * this is non-null, every matching request waits for a human until an
+     * admin re-approves it (`PATCH /pam/rules/:id` `{ reapprove: true }`,
+     * which restores `verdict` from here and clears it).
+     */
+    suspendedVerdict: pamRuleVerdictEnum('suspended_verdict'),
+    /** Stamped alongside `suspendedVerdict` being cleared by a re-approval. */
+    reapprovedAt: timestamp('reapproved_at', { withTimezone: true }),
+    /** The admin who re-approved a suspended auto_approve rule. ON DELETE SET
+     *  NULL — the stamp is a historical fact and outlives the user account. */
+    reapprovedByUserId: uuid('reapproved_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+
     createdByUserId: uuid('created_by_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),

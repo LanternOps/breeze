@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   // marker-write failure. The service's own behavior is covered in
   // oauth/revocationService.test.ts + the integration suite.
   revokeClientFamilies: vi.fn(async () => ({ grants: 0, refreshTokens: 0 })),
+  permissionDenied: false,
+  mfaDenied: false,
   eq: vi.fn((left: unknown, right: unknown) => ({ op: 'eq', left, right })),
   and: vi.fn((...conditions: unknown[]) => ({ op: 'and', conditions })),
 }));
@@ -30,6 +32,18 @@ vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn(async (c: any, next: any) => {
     c.set('auth', mocks.auth);
     await next();
+  }),
+  requireScope: vi.fn((...scopes: string[]) => async (c: any, next: any) => {
+    if (!scopes.includes(mocks.auth.scope)) return c.json({ error: 'Insufficient scope' }, 403);
+    return next();
+  }),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    if (mocks.permissionDenied) return c.json({ error: 'Permission denied' }, 403);
+    return next();
+  }),
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    if (mocks.mfaDenied) return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+    return next();
   }),
 }));
 
@@ -68,11 +82,13 @@ import { connectedAppsRoutes } from './connectedApps';
 
 function resetAuth(partnerId: string | null = 'current-partner') {
   mocks.auth = {
+    principal: { kind: 'user_session' },
     user: { id: 'u1', email: 'user@example.com', name: 'User One' },
     token: {},
     partnerId,
     orgId: 'current-org',
     scope: partnerId ? 'partner' : 'system',
+    partnerOrgAccess: partnerId ? 'all' : undefined,
     accessibleOrgIds: null,
     orgCondition: vi.fn(),
     canAccessOrg: vi.fn(),
@@ -124,14 +140,40 @@ describe('connectedAppsRoutes', () => {
     mocks.delete.mockReset();
     mocks.revokeClientFamilies.mockReset();
     mocks.revokeClientFamilies.mockResolvedValue({ grants: 0, refreshTokens: 0 });
+    mocks.permissionDenied = false;
+    mocks.mfaDenied = false;
     resetAuth();
+  });
+
+  it.each(['selected', 'none'] as const)(
+    'denies a partner member with orgAccess=%s before listing connected apps',
+    async (partnerOrgAccess) => {
+      mocks.auth.partnerOrgAccess = partnerOrgAccess;
+      const res = await loadApp().request('/api/v1/settings/connected-apps');
+      expect(res.status).toBe(403);
+      expect(mocks.select).not.toHaveBeenCalled();
+    },
+  );
+
+  it('denies system scope because this partner-pinned route has no target partner parameter', async () => {
+    resetAuth(null);
+    const res = await loadApp().request('/api/v1/settings/connected-apps');
+    expect(res.status).toBe(403);
+    expect(mocks.select).not.toHaveBeenCalled();
+  });
+
+  it('requires connected-app read permission before listing', async () => {
+    mocks.permissionDenied = true;
+    const res = await loadApp().request('/api/v1/settings/connected-apps');
+    expect(res.status).toBe(403);
+    expect(mocks.select).not.toHaveBeenCalled();
   });
 
   it('returns 403 when auth has no partner scope', async () => {
     resetAuth(null);
     const res = await loadApp().request('/api/v1/settings/connected-apps');
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ message: 'partner scope required' });
+    expect(await res.json()).toEqual({ error: 'Insufficient scope' });
     expect(mocks.select).not.toHaveBeenCalled();
   });
 
@@ -226,10 +268,44 @@ describe('connectedAppsRoutes', () => {
       method: 'DELETE',
     });
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ message: 'partner scope required' });
+    expect(await res.json()).toEqual({ error: 'Insufficient scope' });
     expect(mocks.select).not.toHaveBeenCalled();
     expect(mocks.update).not.toHaveBeenCalled();
     expect(mocks.delete).not.toHaveBeenCalled();
+  });
+
+  it.each(['selected', 'none'] as const)(
+    'DELETE denies a partner member with orgAccess=%s before lookup or revocation',
+    async (partnerOrgAccess) => {
+      mocks.auth.partnerOrgAccess = partnerOrgAccess;
+      const res = await loadApp().request('/api/v1/settings/connected-apps/client-1', {
+        method: 'DELETE',
+      });
+      expect(res.status).toBe(403);
+      expect(mocks.select).not.toHaveBeenCalled();
+      expect(mocks.revokeClientFamilies).not.toHaveBeenCalled();
+    },
+  );
+
+  it('DELETE requires connected-app management permission before lookup or revocation', async () => {
+    mocks.permissionDenied = true;
+    const res = await loadApp().request('/api/v1/settings/connected-apps/client-1', {
+      method: 'DELETE',
+    });
+    expect(res.status).toBe(403);
+    expect(mocks.select).not.toHaveBeenCalled();
+    expect(mocks.revokeClientFamilies).not.toHaveBeenCalled();
+  });
+
+  it('DELETE requires MFA before lookup or revocation', async () => {
+    mocks.mfaDenied = true;
+    const res = await loadApp().request('/api/v1/settings/connected-apps/client-1', {
+      method: 'DELETE',
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+    expect(mocks.select).not.toHaveBeenCalled();
+    expect(mocks.revokeClientFamilies).not.toHaveBeenCalled();
   });
 
   it('returns 404 when this partner has no join row for the client', async () => {

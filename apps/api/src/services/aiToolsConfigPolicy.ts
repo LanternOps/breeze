@@ -2,7 +2,7 @@ import { db } from '../db';
 import { ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
 import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments, automationPolicyCompliance } from '../db/schema';
 import { eq, and, desc, isNull, isNotNull, inArray, SQL } from 'drizzle-orm';
-import type { AuthContext } from '../middleware/auth';
+import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import {
   alertRuleInlineSettingsSchema,
@@ -10,6 +10,7 @@ import {
   onedriveHelperInlineSettingsSchema,
 } from '@breeze/shared/validators';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { describeFirstZodIssue } from '../lib/zodIssues';
 import {
   resolveEffectiveConfig,
@@ -40,6 +41,32 @@ import {
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+}
+
+const MFA_REQUIRED_ERROR = JSON.stringify({ error: 'MFA required' });
+
+/**
+ * Match the HTTP `requireMfa()` boundary for config-policy mutations reached
+ * through AI or MCP instead of a Hono route: a human session must carry the
+ * live MFA claim before it can change what takes effect across a fleet.
+ *
+ * `ai_agent` principals are EXEMPT, deliberately. `requireMfa()` rejects them
+ * (middleware/auth.ts) because HTTP is not an agent's channel at all — not
+ * because an agent failed an MFA check. An agent never has, and never could
+ * have, a session MFA claim, so deriving its authorization from one would
+ * permanently disable the grantable `config_policies` agent capability
+ * (agentToolCatalog.ts) rather than gate it. An approved agent run's
+ * authorization is the UPSTREAM Tier-3 approval enforced in aiGuardrails; the
+ * maintenance-link machine-principal check below exempts `ai_agent` for exactly
+ * the same reason (RMM-QA-176 D9.3).
+ *
+ * API-key and OAuth MCP callers carry `token: {}` (mcpServer.ts) and so are
+ * denied while `ENABLE_2FA` is on, and retain the product-wide
+ * `ENABLE_2FA=false` behavior through `hasSatisfiedMfa`.
+ */
+function configPolicyMutationMfaError(auth: AuthContext): string | null {
+  if (auth.principal?.kind === 'ai_agent') return null;
+  return hasSatisfiedMfa(auth) ? null : MFA_REQUIRED_ERROR;
 }
 
 /**
@@ -326,6 +353,9 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('apply_configuration_policy', async (input, auth) => {
+      const mfaError = configPolicyMutationMfaError(auth);
+      if (mfaError) return mfaError;
+
       // Dual-axis reader so a partner-scoped caller can reach a partner-OWNED
       // policy (org_id NULL) to assign it — auth.orgCondition alone hid these.
       const conditions: SQL[] = [eq(configurationPolicies.id, input.configPolicyId as string)];
@@ -421,6 +451,9 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('remove_configuration_policy_assignment', async (input, auth) => {
+      const mfaError = configPolicyMutationMfaError(auth);
+      if (mfaError) return mfaError;
+
       // Verify the assignment belongs to a policy the caller can see. The
       // dual-axis reader keeps partner-OWNED policies (org_id NULL) reachable
       // for partner-scoped callers; policyOrgId is selected so the partner-wide
@@ -523,6 +556,13 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('manage_configuration_policy', async (input, auth) => {
+      const mfaError = configPolicyMutationMfaError(auth);
+      if (mfaError) return mfaError;
+
+      if (!canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
+
       const action = input.action as string;
 
       if (action === 'create') {
@@ -805,7 +845,7 @@ Inline settings shapes by feature type:
 - pam: inlineSettings {uacInterceptionEnabled: boolean} — Windows UAC elevation prompt capture (default false / opt-in: capture is OFF when no policy assigns this feature). PAM rules/approvals are managed separately in the /pam console, not via config policies.
 - vulnerability: inlineSettings {enabled: boolean} — per-device CVE correlation / vulnerability scanning (default false / opt-in: devices with no policy are NOT scanned). Findings appear in the /vulnerabilities console; correlation runs daily.
 - device_lifecycle: inlineSettings {purgeRemovedAfterDays: number|null} — permanently delete removed devices N days after removal (1..3650); null/absent = keep forever. Purge is IRREVERSIBLE: it destroys the device record and all of its history. A daily job applies it; devices whose agent uninstall is still queued are skipped until it completes. Closest level wins, so an org-level link with null opts that org out of a partner-wide window.
-- remote_access: { webrtcDesktop: true, vncRelay: false, remoteTools: true, clipboardHostToViewer: true, clipboardViewerToHost: true, enableProxy: false, defaultAllowedPorts: [80,443], autoEnableProxy: false, maxConcurrentTunnels: 5, idleTimeoutMinutes: 5, maxSessionDurationHours: 8, sessionPromptMode?: "off"|"notify"|"consent", consentUnavailableBehavior?: "proceed"|"block", notifyOnSessionEnd?: true, showActiveIndicator?: true, technicianIdentityLevel?: "name_email"|"name"|"generic" } — all fields optional; updates MERGE over the currently stored settings, so send only the fields to change. Unknown keys are stripped, never applied — use exactly these key names.
+- remote_access: { webrtcDesktop: true, vncRelay: false, remoteTools: true, clipboardHostToViewer: true, clipboardViewerToHost: true, enableProxy: false, defaultAllowedPorts: [80,443], autoEnableProxy: false, maxConcurrentTunnels: 5, idleTimeoutMinutes: 5, maxSessionDurationHours: 8 (whole hours, 1..12 — remote desktop sessions are hard-capped at 12h and "unlimited"/0 is rejected), sessionPromptMode?: "off"|"notify"|"consent", consentUnavailableBehavior?: "proceed"|"block", notifyOnSessionEnd?: true, showActiveIndicator?: true, technicianIdentityLevel?: "name_email"|"name"|"generic" } — all fields optional; updates MERGE over the currently stored settings, so send only the fields to change. Unknown keys are stripped, never applied — use exactly these key names.
 - onedrive_helper: { silentAccountConfig?, filesOnDemand?, kfmSilentOptIn?, kfmFolders? (Desktop/Documents/Pictures), kfmBlockOptOut?, tenantAssociationId?, restartOnChange?, libraries?: [{ libraryId, displayName, targetingMode (everyone|graph_group|local_ad_group), groupId?, groupName?, siteUrl? }] }
 
 For link-only types, set featurePolicyId instead of inlineSettings:
@@ -839,6 +879,16 @@ For link-only types, set featurePolicyId instead of inlineSettings:
     handler: safeHandler('manage_policy_feature_link', async (input, auth) => {
       const action = input.action as string;
       const configPolicyId = input.configPolicyId as string;
+
+      if (action === 'add' || action === 'update' || action === 'remove') {
+        const mfaError = configPolicyMutationMfaError(auth);
+        if (mfaError) return mfaError;
+      }
+
+      // Reads (list) are not gated by the site-ceiling — only add/update/remove.
+      if (action !== 'list' && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
 
       // Verify access to the parent policy
       const policy = await getConfigPolicy(configPolicyId, auth);

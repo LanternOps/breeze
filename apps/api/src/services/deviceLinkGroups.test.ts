@@ -13,6 +13,7 @@ vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 import { captureException } from './sentry';
 
 import {
+  deleteLinkGroup,
   dissolveLinkGroupIfBelowMinimum,
   unlinkDevices,
   type DbExecutor,
@@ -30,17 +31,19 @@ interface ExecCalls {
  * their .set() payloads; deletes are counted.
  */
 function makeExec(
-  members: Array<{ id: string; role: string | null }>,
+  members: Array<{ id: string; role: string | null; siteId?: string | null }>,
   group: { kind: string } | undefined,
 ): { exec: DbExecutor; calls: ExecCalls } {
   const calls: ExecCalls = { updateSets: [], deletes: 0, selects: 0 };
   const exec = {
     select: () => {
       calls.selects += 1;
-      const rows = calls.selects === 1 ? members : group ? [group] : [];
+      const rows = calls.selects <= 2 ? members : group ? [group] : [];
       const chain = {
         from: () => chain,
         where: () => chain,
+        orderBy: () => chain,
+        for: () => Promise.resolve(rows),
         limit: () => Promise.resolve(rows),
         then: (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
           Promise.resolve(rows).then(res, rej),
@@ -83,6 +86,32 @@ describe('unlinkDevices', () => {
 });
 
 describe('dissolveLinkGroupIfBelowMinimum', () => {
+  it('rejects a restricted caller before unlinking a hidden survivor', async () => {
+    const { exec, calls } = makeExec(
+      [{ id: 'dev-hidden', role: null, siteId: 'site-hidden' }],
+      { kind: 'multiboot' },
+    );
+
+    await expect(
+      dissolveLinkGroupIfBelowMinimum(exec, 'grp-1', ['site-visible']),
+    ).rejects.toMatchObject({ name: 'LinkGroupSiteAccessError' });
+    expect(calls.updateSets).toHaveLength(0);
+    expect(calls.deletes).toBe(0);
+  });
+
+  it('rejects a null-site survivor for a restricted caller', async () => {
+    const { exec, calls } = makeExec(
+      [{ id: 'dev-unassigned', role: null, siteId: null }],
+      { kind: 'multiboot' },
+    );
+
+    await expect(
+      dissolveLinkGroupIfBelowMinimum(exec, 'grp-1', ['site-visible']),
+    ).rejects.toMatchObject({ name: 'LinkGroupSiteAccessError' });
+    expect(calls.updateSets).toHaveLength(0);
+    expect(calls.deletes).toBe(0);
+  });
+
   it('leaves a multiboot group at the minimum untouched (no group lookup needed beyond kind)', async () => {
     const { exec, calls } = makeExec(
       [
@@ -174,5 +203,22 @@ describe('dissolveLinkGroupIfBelowMinimum', () => {
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('grp-1'));
     expect(vi.mocked(captureException)).toHaveBeenCalledTimes(1);
     errorSpy.mockRestore();
+  });
+});
+
+describe('deleteLinkGroup', () => {
+  it('rejects before unlinking when any member is outside the site ceiling', async () => {
+    const { exec, calls } = makeExec(
+      [
+        { id: 'dev-visible', role: null, siteId: 'site-visible' },
+        { id: 'dev-hidden', role: null, siteId: 'site-hidden' },
+      ],
+      { kind: 'multiboot' },
+    );
+
+    await expect(deleteLinkGroup(exec, 'grp-1', ['site-visible']))
+      .rejects.toMatchObject({ name: 'LinkGroupSiteAccessError' });
+    expect(calls.updateSets).toHaveLength(0);
+    expect(calls.deletes).toBe(0);
   });
 });

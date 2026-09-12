@@ -10,7 +10,7 @@ const { dbResults, insertValuesMock } = vi.hoisted(() => ({
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    for (const m of ['select', 'from', 'where', 'limit']) chain[m] = vi.fn(() => chain);
+    for (const m of ['select', 'from', 'where', 'limit', 'for']) chain[m] = vi.fn(() => chain);
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = dbResults.shift() ?? [];
       return Promise.resolve(rows).then(resolve);
@@ -83,6 +83,7 @@ describe('createInvoicePayLink', () => {
     }]);
     getPartnerStripeClientMock.mockResolvedValue(partnerClient());
     sessionsCreateMock.mockResolvedValue({ id: 'cs_1', url: 'https://checkout.stripe.com/c/cs_1', payment_intent: 'pi_1' });
+    dbResults.push([{ id: 'connection' }]);
 
     const result = await createInvoicePayLink(INV_ID, actor);
     expect(result).toEqual({ url: 'https://checkout.stripe.com/c/cs_1' });
@@ -110,6 +111,7 @@ describe('createInvoicePayLink', () => {
     }]);
     getPartnerStripeClientMock.mockResolvedValue(partnerClient());
     sessionsCreateMock.mockResolvedValue({ id: 'cs_2', url: 'https://checkout.stripe.com/c/cs_2', payment_intent: 'pi_2' });
+    dbResults.push([{ id: 'connection' }]);
 
     await createInvoicePayLink(INV_ID, actor);
 
@@ -136,6 +138,7 @@ describe('createInvoicePayLink', () => {
     }]);
     getPartnerStripeClientMock.mockResolvedValue(partnerClient());
     sessionsCreateMock.mockResolvedValue({ id: 'cs_3', url: 'https://checkout.stripe.com/c/cs_3', payment_intent: 'pi_3' });
+    dbResults.push([{ id: 'connection' }]);
 
     await createInvoicePayLink(INV_ID, actor);
 
@@ -167,6 +170,7 @@ describe('createInvoicePayLink', () => {
     }]);
     getPartnerStripeClientMock.mockResolvedValue(partnerClient());
     sessionsCreateMock.mockResolvedValue({ id: 'cs_dep_eq', url: 'https://checkout.stripe.com/c/cs_dep_eq', payment_intent: 'pi_dep_eq' });
+    dbResults.push([{ id: 'connection' }]);
     await createInvoicePayLink(INV_ID, actor);
     const depositKey = (sessionsCreateMock.mock.calls[0]?.[1] as { idempotencyKey: string }).idempotencyKey;
     expect(depositKey).toBe(`inv_${INV_ID}_500000_dep`);
@@ -181,6 +185,7 @@ describe('createInvoicePayLink', () => {
     }]);
     getPartnerStripeClientMock.mockResolvedValue(partnerClient());
     sessionsCreateMock.mockResolvedValue({ id: 'cs_bal_eq', url: 'https://checkout.stripe.com/c/cs_bal_eq', payment_intent: 'pi_bal_eq' });
+    dbResults.push([{ id: 'connection' }]);
     await createInvoicePayLink(INV_ID, actor);
     const balanceKey = (sessionsCreateMock.mock.calls[0]?.[1] as { idempotencyKey: string }).idempotencyKey;
     expect(balanceKey).toBe(`inv_${INV_ID}_500000_bal`);
@@ -209,6 +214,7 @@ describe('createInvoicePayLink', () => {
     }]);
     getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: 'USD' });
     sessionsCreateMock.mockResolvedValue({ id: 'cs_eur', url: 'https://checkout.stripe.com/c/cs_eur', payment_intent: 'pi_eur' });
+    dbResults.push([{ id: 'connection' }]);
 
     const result = await createInvoicePayLink(INV_ID, actor);
     expect(result).toEqual({
@@ -237,6 +243,7 @@ describe('createInvoicePayLink', () => {
     }]);
     getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: null });
     sessionsCreateMock.mockResolvedValue({ id: 'cs_unk', url: 'https://checkout.stripe.com/c/cs_unk', payment_intent: 'pi_unk' });
+    dbResults.push([{ id: 'connection' }]);
 
     const result = await createInvoicePayLink(INV_ID, actor);
     expect(result).toEqual({
@@ -259,10 +266,29 @@ describe('createInvoicePayLink', () => {
     }]);
     getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: 'eur' });
     sessionsCreateMock.mockResolvedValue({ id: 'cs_eur2', url: 'https://checkout.stripe.com/c/cs_eur2', payment_intent: 'pi_eur2' });
+    dbResults.push([{ id: 'connection' }]);
 
     const result = await createInvoicePayLink(INV_ID, actor);
     expect(result).toEqual({ url: 'https://checkout.stripe.com/c/cs_eur2' });
     expect('warning' in result).toBe(false);
+  });
+
+  it('rejects a Checkout session whose account changed before mapping persistence', async () => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '100.00', depositDue: null, amountPaid: '0.00',
+      currencyCode: 'USD', invoiceNumber: 'INV-RACE',
+    }]);
+    dbResults.push([]); // final FOR SHARE revalidation sees no matching connection
+    getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_old'));
+    sessionsCreateMock.mockResolvedValue({
+      id: 'cs_orphan_candidate', url: 'https://checkout.stripe.com/c/cs_orphan_candidate', payment_intent: 'pi_race',
+    });
+
+    await expect(createInvoicePayLink(INV_ID, actor)).rejects.toMatchObject({
+      code: 'STRIPE_NOT_CONNECTED', status: 409,
+    });
+    expect(insertValuesMock).not.toHaveBeenCalled();
   });
 
   it('maps a Stripe currency_not_supported rejection to STRIPE_CURRENCY_UNSUPPORTED (409) naming the currency', async () => {

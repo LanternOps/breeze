@@ -408,6 +408,9 @@ func runWatchdog(stopCh <-chan struct{}) {
 	// Create health checker with the IPC client as the prober.
 	processChecker := &watchdog.OSProcessChecker{}
 	healthChecker := watchdog.NewHealthChecker(processChecker, ipcClient, wdCfg.HeartbeatStaleThreshold)
+	// Sizes the state_sync recency window for the in-flight-backup IPC veto
+	// (D3) — see HealthChecker.SetIPCProbeInterval.
+	healthChecker.SetIPCProbeInterval(wdCfg.IPCProbeInterval)
 
 	// Create recovery manager.
 	recovery := watchdog.NewRecoveryManager(wdCfg.MaxRecoveryAttempts, wdCfg.RecoveryCooldown)
@@ -657,9 +660,21 @@ func runWatchdog(stopCh <-chan struct{}) {
 					})
 					noteAgentUnhealthy()
 				case watchdog.CheckIPCDegraded:
-					journal.Log(watchdog.LevelWarn, "check.ipc_degraded", map[string]any{
-						"consecutive_failures": healthChecker.IPCFailCount(),
-					})
+					if healthChecker.LastIPCCheckVetoed() {
+						// D3: this degraded verdict is standing in for what
+						// would otherwise be a CheckIPCFailed escalation —
+						// distinct event name so the journal shows the veto
+						// happened instead of reading as an ordinary degraded
+						// tick.
+						journal.Log(watchdog.LevelWarn, "check.ipc_veto_backup_inflight", map[string]any{
+							"consecutive_failures": healthChecker.IPCFailCount(),
+							"veto_count":           healthChecker.IPCVetoCount(),
+						})
+					} else {
+						journal.Log(watchdog.LevelWarn, "check.ipc_degraded", map[string]any{
+							"consecutive_failures": healthChecker.IPCFailCount(),
+						})
+					}
 				}
 			} else {
 				// Try to reconnect.
@@ -963,18 +978,22 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			return nil
 		}
 		journal.Log(watchdog.LevelInfo, "agent.state_sync", map[string]any{
-			"agentVersion":  sync.AgentVersion,
-			"connected":     sync.Connected,
-			"lastHeartbeat": sync.LastHeartbeat,
+			"agentVersion":     sync.AgentVersion,
+			"connected":        sync.Connected,
+			"lastHeartbeat":    sync.LastHeartbeat,
+			"activeBackupRuns": sync.ActiveBackupRuns,
 		})
-		// Feed the staleness check: the agent sends a state_sync only after
-		// a successful server heartbeat, so this is authoritative liveness
-		// even when agent.state on disk is unwritable (AV/EDR sharing
-		// violations). Without this, the file alone drove restart decisions
-		// and a blocked writer read as a dead agent (#2763).
+		// Feed the staleness check AND the D3 in-flight-backup IPC veto: the
+		// agent sends a state_sync only after a successful server heartbeat,
+		// so this is authoritative liveness evidence even when agent.state on
+		// disk is unwritable (AV/EDR sharing violations). Without the
+		// heartbeat half, the file alone drove restart decisions and a
+		// blocked writer read as a dead agent (#2763). Without the backup-run
+		// count half, CheckIPC has no way to know a backup is in flight and
+		// escalates on a transient IPC hiccup mid-run.
 		if health != nil && sync.LastHeartbeat != "" {
 			if hb, perr := time.Parse(time.RFC3339, sync.LastHeartbeat); perr == nil {
-				health.NoteStateSync(hb)
+				health.NoteStateSync(hb, sync.ActiveBackupRuns)
 			} else {
 				journal.Log(watchdog.LevelWarn, "ipc.bad_state_sync_heartbeat", map[string]any{
 					"value": sync.LastHeartbeat, "error": perr.Error(),

@@ -766,6 +766,12 @@ export function SystemsScreen() {
                 key={finding.orgId}
                 orgName={finding.orgName}
                 count={finding.count}
+                onPress={() =>
+                  navigation.navigate('SystemsFindings', {
+                    orgId: finding.orgId,
+                    orgName: finding.orgName,
+                  })
+                }
                 showDivider={idx < activeFindingsSummary.length - 1}
                 dividerColor={theme.border}
               />

@@ -1,6 +1,6 @@
 ---
 title: Encryption Key Management
-description: Create, rotate, and deactivate the AES-256 and RSA-2048 encryption keys that protect Breeze backup snapshots at rest, with key fingerprint handling.
+description: How backup data is actually encrypted at rest today (S3 server-side encryption), and the early-access client-managed key manager for a future client-side encryption model.
 sidebar:
   order: 11
   label: "Encryption"
@@ -8,13 +8,28 @@ sidebar:
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-Backup encryption protects your data at rest. Breeze manages encryption keys that are used when writing snapshots to storage. Each snapshot references the key it was encrypted with, so keys must be available for restore operations.
+Backup data at rest is protected by your storage destination's own encryption, not by a Breeze-managed cipher on the agent. Today that means **S3 server-side encryption (SSE)** — there is no agent-side encryption step, and no client-managed key is currently used to encrypt or decrypt any live backup.
 
 ---
 
-## Managing Keys
+## What's Actually Enforced
 
-Go to **Operations > Backup > Encryption** to see your encryption keys.
+Encryption is a toggle on your [storage configuration](/backup/storage/), and it's only enforceable for **Amazon S3** (or S3-compatible) destinations:
+
+- **SSE-S3 (AES-256)** — set `serverSideEncryption` to `AES256` in the provider config. S3 encrypts every object with an AWS-managed key.
+- **SSE-KMS** — set `serverSideEncryption` to `aws:kms` and provide a `kmsKeyId` (or `keyArn`). S3 encrypts objects using your own KMS key.
+
+If you enable encryption on a **Local/NAS** destination, or on S3 without a recognized `serverSideEncryption` value, Breeze rejects the configuration as unsupported — there is no client-side fallback cipher for those cases.
+
+---
+
+## Encryption Keys Manager (Early Access)
+
+Go to **Backup > Device Backup > Encryption** to see the key manager.
+
+<Aside type="caution">
+  This page is early access and is **not wired to any live backup data**. Creating, rotating, or deactivating a key here does not encrypt, protect, or otherwise affect any actual backup or snapshot today — the agent has no encryption capability of its own to apply these keys to. It exists ahead of a planned client-side (envelope) encryption model.
+</Aside>
 
 The key list shows:
 - Key name
@@ -23,53 +38,20 @@ The key list shows:
 - Created date
 - Expiry date (if set)
 
----
-
-## Creating a Key
-
 <Steps>
 1. Click **Create New Key**.
 2. Enter a descriptive name (e.g., "Production AES Key 2026").
-3. Select the key type:
-   - **AES-256** — symmetric encryption, recommended for most use cases
-   - **RSA-2048** — asymmetric encryption, useful for scenarios where separate encrypt/decrypt permissions are needed
+3. Select the key type (AES-256 or RSA-2048).
 4. Click **Create**.
-5. The key's fingerprint (SHA-256 hash) is displayed. Record this for your records.
+5. The key's fingerprint (SHA-256 hash) is displayed once, at creation time.
 </Steps>
 
-<Aside type="danger">
-  The key fingerprint is shown only at creation time. Store it securely — you'll need it if you ever need to verify which key was used for a specific snapshot.
-</Aside>
+Keys can also be rotated (the old key moves to **Rotated**, a new one becomes **Active**) or deactivated. Rotation is manual only — there is no scheduled or automatic rotation.
 
 ---
 
-## Rotating a Key
-
-Key rotation creates a new key version while keeping the old version available for decrypting existing snapshots. New backups use the rotated key.
-
-<Steps>
-1. Click the **Rotate** action on an active key.
-2. Confirm the rotation.
-3. The old key moves to **Rotated** status. A new active key is created.
-</Steps>
-
-You can configure automatic rotation (every 30, 60, or 90 days) in the [storage configuration](/backup/storage/) wizard.
-
----
-
-## Deactivating a Key
-
-Click **Deactivate** on a key to prevent it from being used for new backups. Deactivated keys remain available for decrypting existing snapshots.
-
-<Aside type="caution">
-  Do not deactivate a key if you still have snapshots encrypted with it that you may need to restore. The key must be active or rotated (not deactivated) for restore operations to work.
-</Aside>
-
----
-
-## How Encryption Works
+## How to Actually Protect Backup Data Today
 
 - **In transit** — all backup data is transferred over HTTPS (TLS 1.2+)
-- **At rest** — snapshots are encrypted using the assigned key before being written to storage
-- Each snapshot stores a reference to its encryption key ID, so the correct key is used automatically during restore
-- Keys themselves are stored encrypted in the Breeze database with access scoped to the organization
+- **At rest** — for S3 destinations, enable server-side encryption (SSE-S3 or SSE-KMS) on the storage configuration, as described above
+- For Local/NAS destinations, rely on your own disk/volume-level encryption — Breeze does not encrypt data written to a local path

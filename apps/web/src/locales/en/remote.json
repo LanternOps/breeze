@@ -31,6 +31,7 @@
     "dismiss": "Dismiss",
     "downloadFor": "Download for {{platform}}",
     "errors": {
+      "agentUpgradeRequired": "Remote desktop needs an agent update on this device (session revocation lease support). The agent updates itself automatically — this usually clears within a minute. Terminal and file transfer are unaffected.",
       "connectionFailed": "Connection failed",
       "createDesktopCode": "Failed to create desktop connect code",
       "createDesktopSession": "Failed to create desktop session",

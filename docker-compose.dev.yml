@@ -84,6 +84,12 @@ services:
       LOG_LEVEL: debug
       ENABLE_API_DOCS: "true"
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # Hardware warranty lookups (all optional, OFF unless set). See
+      # https://docs.breezermm.com/deploy/environment/#warranty-lookups
+      DELL_CLIENT_ID: ${DELL_CLIENT_ID:-}
+      DELL_CLIENT_SECRET: ${DELL_CLIENT_SECRET:-}
+      LENOVO_API_KEY: ${LENOVO_API_KEY:-}
+      LENOVO_WARRANTY_ENABLED: ${LENOVO_WARRANTY_ENABLED:-}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY is required - set in .env}
       MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?MFA_ENCRYPTION_KEY is required - set in .env}
       METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-REDACTED_DEV_TOKEN}

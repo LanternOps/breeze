@@ -16,7 +16,9 @@ import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
-import { checkBudget, checkAiRateLimit, getRemainingBudgetUsd } from './aiCostTracker';
+import { attachProposalToSession, loadProposalGuardrailContext } from './scriptProposals';
+import { ensureLaneCheckpointBeforeRelease } from './actionIntents/laneCheckpoint';
+import { checkBudget, checkAiRateLimit } from './aiCostTracker';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
@@ -26,6 +28,7 @@ import {
   describeScriptRunContext,
   type ScriptApprovalRunContext,
 } from './scriptRunContextApproval';
+import { loadProposalApprovalSummary } from './scriptProposals/approvalSummary';
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
 import { compactToolResultForChat } from './aiToolOutput';
@@ -476,17 +479,10 @@ export async function runPreFlightChecks(
     ? await buildSystemPrompt(auth, sanitizedPageContext)
     : (session.systemPrompt ?? await buildSystemPrompt(auth));
 
-  // Remaining budget
-  let maxBudgetUsd: number | undefined;
-  try {
-    const remaining = await getRemainingBudgetUsd(orgId);
-    if (remaining !== null) maxBudgetUsd = remaining;
-  } catch (err) {
-    console.error('[AI-SDK] Failed to get remaining budget:', err);
-    return { ok: false, error: 'Unable to verify spending budget. Please try again later.' };
-  }
-
-  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd, resolved };
+  // A durable reservation is acquired immediately before provider dispatch by
+  // the route. Returning an advisory remaining-budget snapshot here would
+  // recreate the check-then-spend race this preflight must not authorize.
+  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd: undefined, resolved };
 }
 
 /**
@@ -723,8 +719,11 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       };
     }
 
-    // Guardrails (tier check + action-based escalation)
-    const guardrailCheck = checkGuardrails(toolName, input);
+    // Guardrails (tier check + action-based escalation). A proposal-backed
+    // run_script needs the proposal's reviewed risk tier to pick supervised vs
+    // four_eyes; every other tool call passes `undefined` and is unchanged.
+    const guardrailContext = await loadProposalGuardrailContext(input, session.orgId);
+    const guardrailCheck = checkGuardrails(toolName, input, guardrailContext);
 
     if (!guardrailCheck.allowed) {
       return { allowed: false, error: guardrailCheck.reason ?? 'Blocked by guardrails' };
@@ -1142,6 +1141,13 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         console.error('[AI-SDK] Failed to resolve script run context for approval:', err);
       }
 
+      // W03 (#5612): the helper card has no API client of its own, so a
+      // proposal-backed run_script carries a trimmed summary on the event.
+      // Non-fatal and null for every other tool.
+      const scriptProposal = toolName === 'run_script'
+        ? await loadProposalApprovalSummary(input as Record<string, unknown>, session.orgId)
+        : null;
+
       const baseDescription = guardrailCheck.description ?? `Execute ${toolName}`;
       // Appended to the DESCRIPTION (not only to the SSE field) so it reaches
       // every surface that renders one: the chat card, the durable intent's
@@ -1231,6 +1237,27 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             console.error('[AI-SDK] Failed to stamp intent id onto execution:', approvalExec.id, err);
           }
 
+          // W04 (#5612): an intent that is ALREADY `approved` at creation was
+          // decided by an autonomy path (script_reviewer here; ticket_autonomy
+          // too) and has NO approval_requests row for anyone to act on. Showing
+          // an approval card for it is a lie that resolves itself a second
+          // later. Publish an informational event instead, and fall through to
+          // the same wait/CAS/revalidate path — `waitForIntentDecision` returns
+          // `approved` on its first poll, so the release below is unchanged.
+          // Keyed on `status`, not `decidedVia`: the snapshot exposes `status`,
+          // and "already decided, nothing to approve" is the honest condition.
+          if (intent.status === 'approved') {
+            session.eventBus.publish({
+              type: 'unattended_release',
+              executionId: approvalExec.id,
+              intentId: intent.id,
+              toolName,
+              description,
+              deviceContext,
+              scriptRunContext,
+              ...(scriptProposal ? { scriptProposal } : {}),
+            });
+          } else {
           // Emit approval_required event via session event bus. `intentBacked:
           // true` always means the four-eyes waiting state UNLESS
           // selfApprovalRequestId is also set — in that case the sole-operator
@@ -1260,6 +1287,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // the card can render a localized, always-visible run-context row
             // instead of relying on the English prose.
             scriptRunContext,
+            ...(scriptProposal ? { scriptProposal } : {}),
             // The intent's real server-side deadline, so the self-approve card's
             // countdown reflects actual expiry (created_at + CHAT_EXPIRY_MS)
             // rather than a mount-relative client constant that can silently drift
@@ -1271,6 +1299,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             deviceContext,
             intentBacked: true,
           });
+          }
 
           // Block until an approver decides, OR the cycle's SHARED approval-wait
           // budget (up to 300s — matches the intent's own 5-minute chat expiry)
@@ -1547,6 +1576,50 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             verifiedToolContext = recomputed.context;
           }
 
+          // AI script authoring W04 (#5612), spec §4.6 invariant 11 — the
+          // SAME release precondition the durable worker enforces
+          // (jobs/intentReleaseWorker.ts): a lane intent whose evidence says a
+          // restore checkpoint was required takes one NOW, after the digest
+          // check and before the effect. No-op for every non-lane intent.
+          const laneCheckpoint = await ensureLaneCheckpointBeforeRelease(intentRow);
+          if (!laneCheckpoint.ok) {
+            const checkpointCasWon = await transitionIntentAndPublish(
+              intent.id,
+              'failed',
+              { errorCode: 'checkpoint_unavailable' },
+              session.orgId,
+              'intent_failed',
+            );
+            if (!checkpointCasWon) {
+              reportLostTerminalCas({
+                intentId: intent.id,
+                orgId: session.orgId,
+                toolName,
+                intendedStatus: 'failed',
+                casLabel: 'ai_sdk_inline_checkpoint_unavailable',
+                executed: false,
+              });
+            }
+            console.error(
+              `[AI-SDK] inline release restore checkpoint unavailable for intent ${intent.id}: ${laneCheckpoint.reason}`,
+            );
+            return await failMatchedPlanStep({
+              allowed: false,
+              error: 'A System Restore checkpoint could not be taken before the unattended run; it was not executed.',
+            });
+          }
+
+          // #5645 — the handler gets the released intent's decision record
+          // alongside the verified material, exactly as the durable worker
+          // passes it (jobs/intentReleaseWorker.ts): `run_script`'s proposal
+          // branch derives the execution row's spec §4.1 `approval_method`
+          // from it. Unconditional for the same reason `actionIntentId` is
+          // (see toolExecutionContext.ts).
+          verifiedToolContext = {
+            ...verifiedToolContext,
+            releaseDecision: { approvalScope: intentRow.approvalScope, decidedVia: intentRow.decidedVia ?? null },
+          };
+
           // Won the release: track the intent id so createSessionPostToolUse can
           // CAS it executing -> completed|failed once the inline tool call
           // actually finishes (see pendingIntentBySession above).
@@ -1798,6 +1871,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             description,
             deviceContext,
             scriptRunContext,
+            ...(scriptProposal ? { scriptProposal } : {}),
           });
 
           // Block until user clicks Approve/Reject, the cycle's shared approval
@@ -1925,6 +1999,36 @@ function isScriptApplyTool(toolName: string): boolean {
  * Creates a postToolUse callback that reads auth/auditSnapshot from the active
  * session and publishes tool_result events to the session's event bus.
  */
+/**
+ * Back-fill `script_proposals.session_id` for a chat-authored proposal. The
+ * UPDATE is org-scoped and `session_id IS NULL`-guarded inside
+ * attachProposalToSession, so a foreign-org id in the output cannot be claimed.
+ * Best-effort: a failure here must not break the tool_result the UI already
+ * received. Exported for its unit test.
+ */
+export async function attachChatProposalToSession(
+  session: Pick<ActiveSession, 'orgId' | 'breezeSessionId'>,
+  parsedOutput: Record<string, unknown>,
+): Promise<void> {
+  const proposalId = parsedOutput.proposalId;
+  if (typeof proposalId !== 'string' || proposalId.length === 0) return;
+  try {
+    const attached = await withDbAccessContext(
+      { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+      () => attachProposalToSession(proposalId, session.orgId, session.breezeSessionId),
+    );
+    if (!attached) {
+      // Not an error (an idempotent retry lands here too), but a proposal the
+      // handler just created that is NOT attributable is worth a trace: it
+      // means the id in the output and the session's org disagree.
+      console.warn(`[AI-SDK] script proposal ${proposalId} not attributed to session ${session.breezeSessionId} (foreign org or already attributed)`);
+    }
+  } catch (err) {
+    console.error('[AI-SDK] Failed to attach script proposal to session:', err instanceof Error ? err.message : err);
+    captureException(err, undefined, { service: 'aiAgentSdk', orgId: session.orgId });
+  }
+}
+
 export function createSessionPostToolUse(session: ActiveSession): PostToolUseCallback {
   return async (toolName, input, output, isError, durationMs, sealed, handoff) => {
     // Count this tool call toward the turn's tool_execution_count rollup
@@ -1947,7 +2051,8 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // Canonical session org (always set) — `auth.orgId` is null for partner-
     // scope logins, which left tool audit rows without an org attribution.
     const orgId = session.orgId;
-    const guardrailCheck = checkGuardrails(toolName, input);
+    const guardrailContext = await loadProposalGuardrailContext(input, session.orgId);
+    const guardrailCheck = checkGuardrails(toolName, input, guardrailContext);
 
     // Script-builder "apply" tools deliver their payload (code / metadata) to
     // the editor via this SSE tool_result event, NOT the chat transcript.
@@ -2005,6 +2110,14 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // 2. Persist to DB — best-effort with individual error handling.
     //    If any write fails, we warn but don't block the conversation.
     let persistenceError = false;
+
+    // 2-pre. Chat attribution for an AI script proposal. The propose_script
+    // handler receives `(input, auth)` and never the Breeze session id, so the
+    // row is inserted with session_id NULL and back-filled here, org-scoped,
+    // once the output carries the proposal id (roadmap reconciliation).
+    if (toolName === 'propose_script' && !isError) {
+      await attachChatProposalToSession(session, parsedOutput);
+    }
 
     // 2a. Save tool_result to aiMessages
     try {

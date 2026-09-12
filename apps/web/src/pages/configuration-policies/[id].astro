@@ -5,6 +5,6 @@ import ConfigPolicyDetailPage from '../../components/configurationPolicies/Confi
 const { id } = Astro.params;
 ---
 
-<DashboardLayout title="Configuration Policy">
+<DashboardLayout titleKey="titles.configurationPoliciesDetail">
   <ConfigPolicyDetailPage policyId={id} client:load />
 </DashboardLayout>

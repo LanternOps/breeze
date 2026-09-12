@@ -8,6 +8,15 @@ import type { PamSignerGroup } from './types';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // usePermissions() (PAM RBAC UI gating, PR review fix) reads grants off the
+  // store; grant the admin wildcard here so this file's existing tests (which
+  // predate the gating) keep exercising full functionality. Negative gating
+  // is covered in the sibling PamRulesTab.permissions.test.tsx-style suite.
+  useAuthStore: Object.assign(
+    (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
+      selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+    { getState: () => ({ tokens: null }) },
+  ),
 }));
 
 vi.mock('../shared/Toast', () => ({

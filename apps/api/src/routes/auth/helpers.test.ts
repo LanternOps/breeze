@@ -7,6 +7,7 @@ import {
   parsePendingMfa,
   evaluatePendingMfa,
   evaluatePendingMfaMethod,
+  getClientIP,
   getClientRateLimitKey,
   isRequestConnectionSecure,
   buildRefreshTokenCookie,
@@ -16,8 +17,6 @@ import {
   buildClearAuthBindingCookie,
   setRefreshTokenCookie,
   installAuthorizedUserSessionCookies,
-  isAuthTransitionV1Request,
-  authClientUpgradeRequiredResponse,
   clearRefreshTokenCookie,
   validateCookieCsrfRequest,
   validateStrictCookieCsrfRequest,
@@ -504,6 +503,12 @@ describe('getClientRateLimitKey — spoof-proof per-IP key (SR2-16)', () => {
   beforeEach(() => { process.env.TRUST_PROXY_HEADERS = 'false'; }); // untrusted / no proxy trust
   afterEach(() => { if (origTrust === undefined) delete process.env.TRUST_PROXY_HEADERS; else process.env.TRUST_PROXY_HEADERS = origTrust; delete process.env.TRUST_CF_CONNECTING_IP; });
 
+  it('reports the direct socket peer to authentication audit callers, never a forwarded claim', () => {
+    expect(getClientIP(
+      makeContext({ 'x-forwarded-for': '203.0.113.9' }, '198.51.100.77'),
+    )).toBe('198.51.100.77');
+  });
+
   it('keys on the SOCKET peer, so a rotating spoofed X-Forwarded-For from the same peer yields the SAME key (cannot evade the per-IP limit)', () => {
     // GUARD-BITE: RED today — the fingerprint hashes x-forwarded-for, so the two
     // keys differ and an attacker mints a fresh bucket per request.
@@ -797,30 +802,6 @@ describe('auth cookie Secure flag (#1618 regression)', () => {
     const cleared = buildClearAuthBindingCookie(true);
     expect(cleared).toContain('breeze_auth_binding=;');
     expect(cleared).toContain('Max-Age=0');
-  });
-});
-
-describe('auth transition-v1 client dispatch', () => {
-  it('recognizes only the explicit versioned capability header', () => {
-    const request = (value?: string) => ({
-      req: { header: (name: string) => name === 'x-breeze-auth-transition' ? value : undefined },
-    }) as Context;
-    expect(isAuthTransitionV1Request(request('v1'))).toBe(true);
-    expect(isAuthTransitionV1Request(request(' V1 '))).toBe(true);
-    expect(isAuthTransitionV1Request(request())).toBe(false);
-    expect(isAuthTransitionV1Request(request('v2'))).toBe(false);
-  });
-
-  it('returns the stable upgrade-required response for enforcement-time legacy clients', async () => {
-    const json = vi.fn((body: unknown, status: number) =>
-      new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }));
-    const response = authClientUpgradeRequiredResponse({ json } as unknown as Context);
-
-    expect(response.status).toBe(426);
-    await expect(response.json()).resolves.toEqual({
-      error: 'Authentication client upgrade required',
-      reason: 'auth_client_upgrade_required',
-    });
   });
 });
 

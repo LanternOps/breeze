@@ -70,7 +70,7 @@ vi.mock('../services', () => {
   // tests continue to assert success on the happy path.
   rememberJtiFamily: vi.fn().mockResolvedValue(undefined),
   getFamilyForJti: vi.fn().mockResolvedValue(null),
-  revokeFamily: vi.fn().mockResolvedValue(undefined),
+  revokeFamily: vi.fn().mockResolvedValue({ redis: 'confirmed', database: 'confirmed' }),
   isFamilyRevoked: vi.fn().mockResolvedValue(false),
   touchFamilyLastUsed: vi.fn().mockResolvedValue(undefined),
   // Task 7 follow-up: shared family-mint helper used by every authenticated
@@ -105,7 +105,15 @@ vi.mock('../services', () => {
     del: vi.fn()
   })),
   beginAuthIssuance: vi.fn(async () => ({ transitionId: 'transition-1', generation: 1 })),
-  finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => Promise<unknown>) => callback({})),
+  finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => Promise<unknown>) => callback({
+    update: vi.fn(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn(async () => [{ id: 'user-1' }]),
+        })),
+      })),
+    })),
+  })),
   cancelAuthIssuance: vi.fn(async () => undefined),
   assertAuthIssuanceCapability: vi.fn(async () => undefined),
   AuthBindingRotationRequiredError,
@@ -114,7 +122,11 @@ vi.mock('../services', () => {
   AuthIssuanceCapabilityError,
   RefreshTokenCurrentnessError,
   RecoveryCodeInvalidError,
-  issueUserSession: vi.fn(async (identity: any) => issueLegacy(identity)),
+  issueUserSession: vi.fn(async (identity: any, options?: { familyId?: string }) => ({
+    ...await issueLegacy({ ...identity, legacyFamilyId: options?.familyId }),
+    transitionId: 'transition-1',
+    generation: 1,
+  })),
   completeInitialMfaEnrollment: vi.fn(async (input: any) => ({
     value: undefined,
     recoveryCodes: [...input.recoveryCodes],
@@ -213,6 +225,12 @@ vi.mock('../services/twilio', () => ({
   }))
 }));
 
+vi.mock('../services/ipAllowlist', () => ({
+  enforceIpAllowlist: vi.fn().mockResolvedValue({ decision: 'allow' }),
+  IP_NOT_ALLOWED_BODY: { error: 'IP address is not allowed' },
+  isBlocked: vi.fn((result: { decision: string }) => result.decision === 'deny'),
+}));
+
 // SR2-20: the real './auth/helpers' (used unmocked elsewhere in this suite)
 // calls validateStepUpGrant/consumeStepUpGrant for its existing-factor
 // step-up gate, and mfa.ts's new POST /mfa/step-up calls mintStepUpGrant.
@@ -221,6 +239,7 @@ vi.mock('../services/mfaStepUpGrant', () => ({
   mintStepUpGrant: vi.fn(),
   validateStepUpGrant: vi.fn(),
   consumeStepUpGrant: vi.fn(),
+  passkeyRemovalResourceDigest: vi.fn(() => 'sha256:passkey-credential-row'),
   rollbackResourceDigest: vi.fn(() => 'sha256:600d9bcdbac702fc40c080c8a0dddec84fc2a84564f79ec13410b0f6942edf80'),
   // RMM-QA-176 D11: a DELIBERATELY DIFFERENT constant from the rollback digest
   // above. The mint route dispatches the digest function by operation, so a
@@ -406,6 +425,7 @@ import {
   markRefreshTokenJtiRotated,
   wasRefreshTokenJtiRecentlyRotated,
   revokeFamily,
+  isFamilyRevoked,
   getFamilyForJti,
   getTrustedClientIp,
   rateLimiter,
@@ -417,11 +437,12 @@ import {
   consumeRecoveryCode,
   RecoveryCodeInvalidError,
   finishAuthIssuance,
+  beginAuthIssuance,
   cancelAuthIssuance,
   issueUserSession,
-  issueUserSessionLegacyDuringTransition,
   recordAuthTransitionLegacyIssuer,
   AuthIssuanceCapabilityError,
+  RefreshTokenCurrentnessError,
   AuthIssuanceConflictError,
   completeInitialMfaEnrollment,
   completeMfaFactorRemoval,
@@ -442,6 +463,7 @@ import { createAuditLogAsync } from '../services/auditService';
 import { hashRecoveryCode, encryptMfaSecret } from './auth/helpers';
 import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 import * as mfaPolicyModule from '../services/mfaPolicy';
+import { enforceIpAllowlist } from '../services/ipAllowlist';
 import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest } from '../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { getTwilioService } from '../services/twilio';
@@ -530,8 +552,10 @@ describe('auth routes', () => {
     vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
     vi.mocked(wasRefreshTokenJtiRecentlyRotated).mockResolvedValue(false);
     vi.mocked(getFamilyForJti).mockResolvedValue(null);
+    vi.mocked(revokeFamily).mockResolvedValue({ redis: 'confirmed', database: 'confirmed' });
     vi.mocked(getTrustedClientIp).mockReturnValue('127.0.0.1');
     vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() });
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
     // Task 10: reset lockout-helper mocks to the "not locked" happy path so
     // each test starts from a clean baseline.
     vi.mocked(isAccountLocked).mockResolvedValue(false);
@@ -1540,6 +1564,22 @@ describe('auth routes', () => {
       expect(delMock).toHaveBeenCalledWith('mfa:pending:temp-token');
     });
 
+    it('denies MFA completion when the client moved outside the partner IP allowlist', async () => {
+      getMock.mockResolvedValue(pendingRecord());
+      vi.mocked(enforceIpAllowlist).mockResolvedValueOnce({
+        decision: 'deny',
+        reason: 'not_in_list',
+      });
+
+      const res = await postMfaVerify({ tempToken: 'temp-token', code: '123456' });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'IP address is not allowed' });
+      expect(consumeMFAToken).not.toHaveBeenCalled();
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(delMock).not.toHaveBeenCalled();
+    });
+
     it('honors an explicitly authorized SMS switch instead of the pending primary method', async () => {
       const checkVerificationCode = vi.fn().mockResolvedValue({ valid: true, serviceError: false });
       vi.mocked(getTwilioService).mockReturnValue({
@@ -1732,7 +1772,6 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(409);
       expect(issueUserSession).not.toHaveBeenCalled();
-      expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
       expect(consumeRecoveryCode).not.toHaveBeenCalled();
       expect(db.update).not.toHaveBeenCalled();
       expect(createAuditLogAsync).not.toHaveBeenCalled();
@@ -2438,11 +2477,8 @@ describe('auth routes', () => {
       expect(createTokenPair).not.toHaveBeenCalled();
     });
 
-    it('rejects when a concurrent /refresh already claimed the jti (SET NX miss)', async () => {
-      // revokeRefreshTokenJti returning false means another caller won the
-      // atomic claim. The losing /refresh MUST NOT mint a new pair — exactly
-      // the TOCTOU the SET-NX wiring closes.
-      vi.mocked(revokeRefreshTokenJti).mockResolvedValueOnce(false);
+    it('rejects when a concurrent /refresh wins the durable family CAS', async () => {
+      vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new RefreshTokenCurrentnessError());
       vi.mocked(verifyToken).mockResolvedValue({
         sub: 'user-123',
         email: 'test@example.com',
@@ -2531,6 +2567,7 @@ describe('auth routes', () => {
       expect(body.reason).toBe('refresh_raced');
       // The whole point: the family must survive, and the cookie must NOT be cleared.
       expect(revokeFamily).not.toHaveBeenCalled();
+      expect(createAuditLogAsync).not.toHaveBeenCalled();
       expect(createTokenPair).not.toHaveBeenCalled();
       const setCookie = res.headers.get('set-cookie') ?? '';
       expect(setCookie).not.toContain('breeze_refresh_token=;');
@@ -2569,6 +2606,53 @@ describe('auth routes', () => {
       // Genuine reuse DOES clear the cookie.
       const setCookie = res.headers.get('set-cookie') ?? '';
       expect(setCookie).toContain('breeze_refresh_token=;');
+    });
+
+    it.each((['confirmed', 'unavailable', 'failed'] as const).flatMap((redis) =>
+      (['confirmed', 'not_found', 'failed'] as const).map((database) => ({ redis, database })),
+    ))('records bounded family outcomes redis=$redis database=$database without claiming complete containment', async (outcome) => {
+      vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(true);
+      vi.mocked(wasRefreshTokenJtiRecentlyRotated).mockResolvedValue(false);
+      vi.mocked(revokeFamily).mockResolvedValue(outcome);
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: '11111111-1111-4111-8111-111111111111',
+        email: 'user@example.test',
+        roleId: null, orgId: null, partnerId: null, scope: 'system',
+        type: 'refresh', mfa: false, iat: 123456,
+        jti: 'rejected-jti', fam: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      });
+
+      const res = await app.request('/auth/refresh', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=rejected-token; breeze_csrf_token=test-csrf-token',
+        },
+      });
+
+      // Denial is unconditional: an unacknowledged durable write must never
+      // soften the response, it must only stop the audit row from claiming
+      // containment that was not acknowledged by any store.
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Invalid refresh token' });
+      expect(res.headers.get('set-cookie')).toContain('breeze_refresh_token=;');
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(isFamilyRevoked).not.toHaveBeenCalled();
+      expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'auth.refresh.reuse_detected',
+        result: 'denied',
+        resourceId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        details: {
+          replayedJti: 'rejected-jti',
+          detection: 'revoked_or_unavailable',
+          familyRevocation: outcome,
+          reason: outcome.database === 'confirmed'
+            ? 'Refresh token rejected outside rotation grace; durable family revocation confirmed'
+            : 'Refresh token rejected outside rotation grace; durable family revocation unconfirmed',
+        },
+      }));
+      expect(JSON.stringify(vi.mocked(createAuditLogAsync).mock.calls)).not.toContain('entire family revoked');
     });
 
     it('#1107: a successful refresh records a rotation-grace marker for the old jti', async () => {
@@ -3703,6 +3787,8 @@ describe('auth routes', () => {
       const newRecoveryCodes = ['NEWA-0001', 'NEWB-0002'];
       vi.mocked(generateRecoveryCodes).mockReturnValue(newRecoveryCodes);
       vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(validateStepUpGrant).mockResolvedValueOnce(true);
+      vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(true);
       vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
@@ -3714,7 +3800,21 @@ describe('auth routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ mfaEnabled: true, passkeyCount: 0 }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
               limit: vi.fn().mockResolvedValue([{ mfaEnabled: true }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ mfaEnabled: true, passkeyCount: 0 }])
             })
           })
         } as any)
@@ -3739,7 +3839,7 @@ describe('auth routes', () => {
           'Authorization': 'Bearer valid-token',
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ currentPassword: 'OldStrongPass123' })
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123', stepUpGrantId: 'rotate-grant-1' })
       });
 
       expect(res.status).toBe(200);
@@ -3747,11 +3847,51 @@ describe('auth routes', () => {
       expect(body.success).toBe(true);
       expect(body.recoveryCodes).toEqual(newRecoveryCodes);
       expect(body.message).toBe('Recovery codes generated successfully');
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(validateStepUpGrant).toHaveBeenCalledWith(
+        'rotate-grant-1',
+        expect.objectContaining({ operation: 'rotate_recovery_codes' }),
+      );
+      expect(consumeStepUpGrant).toHaveBeenCalledWith(
+        'rotate-grant-1',
+        expect.objectContaining({ operation: 'rotate_recovery_codes' }),
+      );
     });
 
-    // The three reads /auth/mfa/recovery-codes makes, in order: the password
-    // step-up hash, the mfa_enabled gate, then the audit org lookup.
+    it('POST /auth/mfa/recovery-codes rejects password-only rotation without a fresh current-factor grant', async () => {
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              passwordHash: '$argon2id$hash',
+              mfaEnabled: true,
+              passkeyCount: 0,
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/auth/mfa/recovery-codes', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer valid-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'existing_factor_step_up_required' });
+      expect(replaceSessionOnMfaFactorWrite).not.toHaveBeenCalled();
+    });
+
+    // The five reads /auth/mfa/recovery-codes makes, in order: the password
+    // step-up hash, non-consuming current-factor probe, the mfa_enabled gate,
+    // consuming current-factor probe, then the audit org lookup.
     const mockRecoveryRotateReads = () => {
+      vi.mocked(validateStepUpGrant).mockResolvedValue(true);
+      vi.mocked(consumeStepUpGrant).mockResolvedValue(true);
       vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
@@ -3763,7 +3903,21 @@ describe('auth routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ mfaEnabled: true, passkeyCount: 0 }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
               limit: vi.fn().mockResolvedValue([{ mfaEnabled: true }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ mfaEnabled: true, passkeyCount: 0 }])
             })
           })
         } as any)
@@ -3783,6 +3937,23 @@ describe('auth routes', () => {
       } as any);
     };
 
+    it('does not consume a valid factor grant when issuance admission fails before the write', async () => {
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      mockRecoveryRotateReads();
+      vi.mocked(beginAuthIssuance).mockRejectedValueOnce(new AuthIssuanceConflictError());
+
+      const res = await app.request('/auth/mfa/recovery-codes', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123', stepUpGrantId: 'rotate-grant-1' }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(validateStepUpGrant).toHaveBeenCalledTimes(1);
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(replaceSessionOnMfaFactorWrite).not.toHaveBeenCalled();
+    });
+
     // #4480: rotation bumps mfa_epoch and revokes every refresh family, so
     // WITHOUT a replacement session the 200 that carries the one-time codes
     // lands on a page the very next request signs out — the user never reads
@@ -3800,7 +3971,7 @@ describe('auth routes', () => {
           'Authorization': 'Bearer valid-token',
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ currentPassword: 'OldStrongPass123' })
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123', stepUpGrantId: 'rotate-grant-1' })
       });
 
       expect(res.status).toBe(200);
@@ -3844,7 +4015,7 @@ describe('auth routes', () => {
           'Authorization': 'Bearer valid-token',
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ currentPassword: 'OldStrongPass123' })
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123', stepUpGrantId: 'rotate-grant-1' })
       });
 
       expect(res.status).toBe(200);
@@ -3884,7 +4055,7 @@ describe('auth routes', () => {
           'Content-Type': 'application/json',
           'x-breeze-mobile-device-id': 'forged-device-header'
         },
-        body: JSON.stringify({ currentPassword: 'OldStrongPass123' })
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123', stepUpGrantId: 'rotate-grant-1' })
       });
 
       expect(res.status).toBe(200);
@@ -3915,7 +4086,7 @@ describe('auth routes', () => {
           'Authorization': 'Bearer valid-token',
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ currentPassword: 'OldStrongPass123' })
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123', stepUpGrantId: 'rotate-grant-1' })
       });
 
       expect(res.status).toBe(409);
@@ -4233,6 +4404,46 @@ describe('auth routes', () => {
   // passkey-only user — who has no TOTP/SMS fallback — is never locked out
   // of adding a second factor.
   describe('POST /auth/mfa/step-up', () => {
+		let policySpy: ReturnType<typeof vi.spyOn>;
+
+		beforeEach(() => {
+			vi.mocked(consumeMFAToken).mockReset().mockResolvedValue(false);
+			vi.mocked(mintStepUpGrant).mockReset().mockResolvedValue(null);
+			vi.mocked(verifyStepUpPasskeyAssertion).mockReset().mockResolvedValue(false);
+			vi.mocked(getUserEpochs).mockReset().mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
+			policySpy = vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValue({
+				required: false,
+				allowedMethods: { totp: true, sms: true, passkey: true },
+				source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+			});
+		});
+
+		afterEach(() => {
+			policySpy.mockRestore();
+		});
+
+		it('mints a purpose-bound recovery-code rotation grant only after factor proof', async () => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-recovery-rotate');
+
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					method: 'passkey',
+					credential: { id: 'credential-1' },
+					operation: 'rotate_recovery_codes',
+				}),
+			});
+
+			expect(res.status).toBe(200);
+			expect(res.headers.get('cache-control')).toBe('no-store');
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'rotate_recovery_codes',
+				resourceDigest: '',
+			}));
+		});
+
 		it('mints an agent_rollback grant only with an exact resource binding after factor proof', async () => {
 			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
 			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-rollback');
@@ -4252,6 +4463,33 @@ describe('auth routes', () => {
 				operation: 'agent_rollback',
 				resourceDigest: 'sha256:600d9bcdbac702fc40c080c8a0dddec84fc2a84564f79ec13410b0f6942edf80',
 			}));
+		});
+
+		it('mints delete_passkey only with the exact passkey resource binding', async () => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-passkey-delete');
+			const passkeyId = '10000000-0000-4000-8000-000000000009';
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'delete_passkey', passkeyId }),
+			});
+			expect(res.status).toBe(200);
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'delete_passkey',
+				resourceDigest: 'sha256:passkey-credential-row',
+			}));
+		});
+
+		it('rejects delete_passkey before factor verification when passkeyId is absent', async () => {
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'delete_passkey' }),
+			});
+			expect(res.status).toBe(400);
+			expect(verifyStepUpPasskeyAssertion).not.toHaveBeenCalled();
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
 		});
 
 		it('rejects agent_rollback before factor verification when the resource binding is absent', async () => {
@@ -4375,13 +4613,40 @@ describe('auth routes', () => {
       expect(mintStepUpGrant).not.toHaveBeenCalled();
     });
 
+    it('rejects a policy-prohibited passkey before verifying or minting a rotation grant', async () => {
+      const policySpy = vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValueOnce({
+        required: true,
+        allowedMethods: { totp: true, sms: true, passkey: false },
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+      });
+
+      const res = await app.request('/auth/mfa/step-up', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          method: 'passkey',
+          credential: { id: 'credential-1', response: {} },
+          operation: 'rotate_recovery_codes',
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(verifyStepUpPasskeyAssertion).not.toHaveBeenCalled();
+      expect(mintStepUpGrant).not.toHaveBeenCalled();
+      policySpy.mockRestore();
+    });
+
     it('mints a grant for a valid TOTP code', async () => {
       vi.mocked(consumeMFAToken).mockResolvedValueOnce(true);
       vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-totp');
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ mfaSecret: encryptMfaSecret('PLAINTEXTSECRET') }])
+            limit: vi.fn().mockResolvedValue([{
+              mfaSecret: encryptMfaSecret('PLAINTEXTSECRET'),
+              mfaEnabled: true,
+              mfaMethod: 'totp',
+            }])
           })
         })
       } as any);
@@ -4396,6 +4661,145 @@ describe('auth routes', () => {
       const body = await res.json();
       expect(body).toEqual({ stepUpGrantId: 'grant-totp' });
     });
+
+    it('rejects a policy-prohibited TOTP before consuming or minting a rotation grant', async () => {
+      const policySpy = vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValueOnce({
+        required: true,
+        allowedMethods: { totp: false, sms: true, passkey: true },
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+      });
+
+      const res = await app.request('/auth/mfa/step-up', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'totp', code: '123456', operation: 'rotate_recovery_codes' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(consumeMFAToken).not.toHaveBeenCalled();
+      expect(mintStepUpGrant).not.toHaveBeenCalled();
+      policySpy.mockRestore();
+    });
+
+    it('rejects a stale TOTP secret when TOTP is not the live enrolled method', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              mfaSecret: encryptMfaSecret('STALESECRET'),
+              mfaEnabled: true,
+              mfaMethod: 'sms',
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/auth/mfa/step-up', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'totp', code: '123456', operation: 'rotate_recovery_codes' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(consumeMFAToken).not.toHaveBeenCalled();
+      expect(mintStepUpGrant).not.toHaveBeenCalled();
+    });
+		it('rejects a policy-prohibited TOTP factor before consuming the code or minting a grant', async () => {
+			policySpy.mockResolvedValueOnce({
+				required: true,
+				allowedMethods: { totp: false, sms: true, passkey: true },
+				source: { roleForceMfa: false, settingsRequireMfa: true, killSwitchOff: false },
+			});
+			vi.mocked(consumeMFAToken).mockResolvedValue(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValue('grant-prohibited-totp');
+			vi.mocked(db.select).mockReturnValue({
+				from: vi.fn().mockReturnValue({
+					where: vi.fn().mockReturnValue({
+						limit: vi.fn().mockResolvedValue([{
+							mfaEnabled: true,
+							mfaMethod: 'totp',
+							mfaSecret: encryptMfaSecret('PLAINTEXTSECRET'),
+						}]),
+					}),
+				}),
+			} as any);
+
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'totp', code: '123456' }),
+			});
+
+			expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid credentials', message: 'Invalid credentials', code: 'mfa_proof_invalid' });
+      expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({ action: 'auth.mfa.stepup.failed', details: expect.objectContaining({ reason: 'method_not_allowed' }) }));
+			expect(consumeMFAToken).not.toHaveBeenCalled();
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
+		});
+
+		it('rejects a policy-prohibited SMS factor before calling the provider or minting a grant', async () => {
+			policySpy.mockResolvedValueOnce({
+				required: true,
+				allowedMethods: { totp: true, sms: false, passkey: true },
+				source: { roleForceMfa: false, settingsRequireMfa: true, killSwitchOff: false },
+			});
+			const checkVerificationCode = vi.fn().mockResolvedValue({ valid: true, serviceError: false });
+			vi.mocked(getTwilioService).mockReturnValue({
+				sendVerificationCode: vi.fn().mockResolvedValue({ success: true }),
+				checkVerificationCode,
+			} as any);
+			vi.mocked(mintStepUpGrant).mockResolvedValue('grant-prohibited-sms');
+			vi.mocked(db.select).mockReturnValue({
+				from: vi.fn().mockReturnValue({
+					where: vi.fn().mockReturnValue({
+						limit: vi.fn().mockResolvedValue([{
+							phoneNumber: '+15550000009',
+							mfaEnabled: true,
+							mfaMethod: 'sms',
+							phoneVerified: true,
+						}]),
+					}),
+				}),
+			} as any);
+
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'sms', code: '123456' }),
+			});
+
+			expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid credentials', message: 'Invalid credentials', code: 'mfa_proof_invalid' });
+      expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({ action: 'auth.mfa.stepup.failed', details: expect.objectContaining({ reason: 'method_not_allowed' }) }));
+			expect(checkVerificationCode).not.toHaveBeenCalled();
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
+		});
+
+		it('rejects a lingering TOTP secret when TOTP is not the active factor', async () => {
+			vi.mocked(consumeMFAToken).mockResolvedValue(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValue('grant-stale-totp');
+			vi.mocked(db.select).mockReturnValue({
+				from: vi.fn().mockReturnValue({
+					where: vi.fn().mockReturnValue({
+						limit: vi.fn().mockResolvedValue([{
+							mfaEnabled: true,
+							mfaMethod: 'sms',
+							mfaSecret: encryptMfaSecret('LINGERINGSECRET'),
+						}]),
+					}),
+				}),
+			} as any);
+
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'totp', code: '123456' }),
+			});
+
+			expect(res.status).toBe(400);
+			expect(consumeMFAToken).not.toHaveBeenCalled();
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
+		});
 
     // C1 (exploit-chain half 1 — the SMS factor allowlist): the SMS branch must
     // prove the account's OWN active SMS factor, not merely that some phone sits
@@ -4463,6 +4867,30 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       expect(checkVerificationCode).toHaveBeenCalledWith('+15550000009', '123456');
       expect(await res.json()).toEqual({ stepUpGrantId: 'grant-sms' });
+    });
+
+    it('rejects a policy-prohibited SMS code before provider verification or grant minting', async () => {
+      const checkVerificationCode = vi.fn().mockResolvedValue({ valid: true, serviceError: false });
+      vi.mocked(getTwilioService).mockReturnValue({
+        sendVerificationCode: vi.fn().mockResolvedValue({ success: true }),
+        checkVerificationCode,
+      } as any);
+      const policySpy = vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValueOnce({
+        required: true,
+        allowedMethods: { totp: true, sms: false, passkey: true },
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+      });
+
+      const res = await app.request('/auth/mfa/step-up', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'sms', code: '123456', operation: 'rotate_recovery_codes' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(checkVerificationCode).not.toHaveBeenCalled();
+      expect(mintStepUpGrant).not.toHaveBeenCalled();
+      policySpy.mockRestore();
     });
 
     // I2: /mfa/step-up must be per-user rate-limited like every other MFA
@@ -4551,6 +4979,8 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(400);
       expect(await res.json()).toMatchObject({ code: 'invalid_credentials' });
+      expect(validateStepUpGrant).not.toHaveBeenCalled();
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
     });
 
     it('POST /auth/mfa/disable — a wrong TOTP code is 400 mfa_code_invalid, not 401', async () => {

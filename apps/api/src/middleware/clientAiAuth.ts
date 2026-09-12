@@ -67,6 +67,7 @@ export async function clientAiAuthMiddleware(c: Context, next: Next) {
         email: portalUsers.email,
         name: portalUsers.name,
         status: portalUsers.status,
+        authEpoch: portalUsers.authEpoch,
         partnerAiForOfficeEnabled: partners.aiForOfficeEnabled,
       })
       .from(portalUsers)
@@ -78,6 +79,16 @@ export async function clientAiAuthMiddleware(c: Context, next: Next) {
 
   if (!user) {
     await redis.del(CLIENT_AI_REDIS_KEYS.session(token));
+    return c.json({ error: 'Invalid or expired session' }, 401);
+  }
+
+  if (
+    !Number.isSafeInteger(session.authEpoch)
+    || session.authEpoch <= 0
+    || user.authEpoch !== session.authEpoch
+  ) {
+    await redis.del(CLIENT_AI_REDIS_KEYS.session(token));
+    await redis.srem(CLIENT_AI_REDIS_KEYS.userSessions(user.id), token);
     return c.json({ error: 'Invalid or expired session' }, 401);
   }
 

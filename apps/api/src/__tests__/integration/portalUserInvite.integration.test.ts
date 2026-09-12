@@ -33,7 +33,7 @@
  *   4. bulk-invite must not re-invite a `status='disabled'` row (closes a
  *      gap not covered by the mocked unit test — `bulkWhere` excludes
  *      `disabled` rows at the SQL predicate level, which a mocked
- *      `db.select` can't exercise).
+ *      `db.select` can't exercise), nor an Entra JIT identity.
  */
 import './setup';
 import { Hono } from 'hono';
@@ -94,6 +94,7 @@ async function fetchPortalUser(userId: string) {
         email: portalUsers.email,
         status: portalUsers.status,
         passwordHash: portalUsers.passwordHash,
+        authMethod: portalUsers.authMethod,
         invitedBy: portalUsers.invitedBy,
         invitedAt: portalUsers.invitedAt,
       })
@@ -210,6 +211,41 @@ describe('portal user invite→accept — end-to-end + tenant isolation', () => 
     expect(loginBody.accessToken).toBeTruthy();
   });
 
+  it('never converts an Entra identity through single-invite or invite acceptance', async () => {
+    const envA = await setupTestEnvironment({ scope: 'partner' });
+    const mfaToken = await mfaTokenFor(envA);
+    const admin = getTestDb();
+    const [entraUser] = await admin.insert(portalUsers).values({
+      orgId: envA.organization.id,
+      email: 'entra-invite@acme.example',
+      passwordHash: null,
+      authMethod: 'entra',
+      entraOid: `oid-${Date.now()}`,
+      entraTenantId: `tenant-${Date.now()}`,
+      status: 'active',
+    }).returning();
+
+    const mspApp = buildMspApp();
+    const inviteRes = await mspApp.request(`/organizations/${envA.organization.id}/portal-users/invite`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${mfaToken}`, ...JSON_HEADERS },
+      body: JSON.stringify({ email: entraUser!.email }),
+    });
+    expect(inviteRes.status).toBe(409);
+
+    const rawToken = await storePortalInviteToken(entraUser!.id);
+    const acceptRes = await buildPortalApp().request('/portal/auth/accept-invite', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ token: rawToken, password: NEW_PORTAL_PASSWORD }),
+    });
+    expect(acceptRes.status).toBe(400);
+    const after = await fetchPortalUser(entraUser!.id);
+    expect(after!.authMethod).toBe('entra');
+    expect(after!.passwordHash).toBeNull();
+    expect(after!.status).toBe('active');
+  });
+
   it('bulk-invite skips a disabled portal_users row but re-invites a pending one', async () => {
     const envA = await setupTestEnvironment({ scope: 'partner' });
     const mfaToken = await mfaTokenFor(envA);
@@ -238,6 +274,19 @@ describe('portal user invite→accept — end-to-end + tenant isolation', () => 
       })
       .returning();
 
+    const [entraUser] = await admin
+      .insert(portalUsers)
+      .values({
+        orgId: envA.organization.id,
+        email: 'entra-bulk@acme.example',
+        passwordHash: null,
+        authMethod: 'entra',
+        entraOid: `bulk-oid-${Date.now()}`,
+        entraTenantId: `bulk-tenant-${Date.now()}`,
+        status: 'active',
+      })
+      .returning();
+
     const app = buildMspApp();
     const res = await app.request(`/organizations/${envA.organization.id}/portal-users/bulk-invite`, {
       method: 'POST',
@@ -249,6 +298,7 @@ describe('portal user invite→accept — end-to-end + tenant isolation', () => 
     const invitedIds = body.data.map((r: { id: string }) => r.id);
     expect(invitedIds).toContain(pendingUser!.id);
     expect(invitedIds).not.toContain(disabledUser!.id);
+    expect(invitedIds).not.toContain(entraUser!.id);
 
     const disabledRow = await fetchPortalUser(disabledUser!.id);
     expect(disabledRow!.status).toBe('disabled');
@@ -258,5 +308,10 @@ describe('portal user invite→accept — end-to-end + tenant isolation', () => 
     expect(pendingRow!.status).toBe('invited');
     expect(pendingRow!.invitedBy).toBe(envA.user.id);
     expect(pendingRow!.invitedAt).not.toBeNull();
+
+    const entraRow = await fetchPortalUser(entraUser!.id);
+    expect(entraRow!.authMethod).toBe('entra');
+    expect(entraRow!.status).toBe('active');
+    expect(entraRow!.invitedBy).toBeNull();
   });
 });

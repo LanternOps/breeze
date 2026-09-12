@@ -4,6 +4,11 @@ const lineageRows = vi.hoisted(() => [] as Array<Array<{
   orgId: string;
   deviceId: string | null;
   siteId: string | null;
+  // D17: the row's OWN device id, selected alongside the snapshot-derived
+  // deviceId/siteId so the resolver can fall back to it when the snapshot
+  // has been retention-deleted (recovery_tokens/restore_jobs.snapshot_id are
+  // ON DELETE SET NULL since 2026-10-15-140004). Unused by existing tests.
+  ownDeviceId?: string | null;
 }>>);
 
 vi.mock('../db', () => ({
@@ -33,6 +38,7 @@ const SITE_B = '22222222-2222-4222-8222-222222222222';
 const SOURCE_DEVICE = '33333333-3333-4333-8333-333333333333';
 const TARGET_DEVICE = '44444444-4444-4444-8444-444444444444';
 const RESTORE_JOB = '55555555-5555-4555-8555-555555555555';
+const RECOVERY_TOKEN = '99999999-9999-4999-8999-999999999999';
 
 function principal(
   allowedSiteIds: string[] | undefined,
@@ -221,5 +227,56 @@ describe('authorizeResilienceResources', () => {
       refs: [{ ...sourceRef, id: '88888888-8888-4888-8888-888888888888' }],
       operation: 'read',
     }), 404, 'resource_not_found');
+  });
+
+  // D17 (2026-10-15-140004): restore_jobs.snapshot_id and
+  // recovery_tokens.snapshot_id are now ON DELETE SET NULL, so a still-alive
+  // history row can point at a snapshot retention already deleted. Before the
+  // fix, the SOURCE-role lineage query for these two kinds only ever selected
+  // the SNAPSHOT's device/site (via a leftJoin keyed on snapshot_id) — a gone
+  // snapshot meant deviceId: null -> 403 site_access_denied, even for a
+  // principal who plainly owns the job's/token's own device. The fix falls
+  // back to the row's own device (never anything broader) so siteId can still
+  // resolve.
+  it("falls back to a restore job's own device when its snapshot has been retention-deleted", async () => {
+    lineageRows.push([{ orgId: ORG_ID, deviceId: null, siteId: null, ownDeviceId: SOURCE_DEVICE }]);
+    lineageRows.push([{ orgId: ORG_ID, deviceId: null, siteId: SITE_A }]); // devices fallback lookup
+
+    const result = await authorizeResilienceResources({
+      orgId: ORG_ID,
+      principal: principal([SITE_A]),
+      refs: [{ kind: 'restore_job', id: RESTORE_JOB, role: 'source' }],
+      operation: 'read',
+    });
+
+    expect(result.resources[0]).toMatchObject({ deviceId: SOURCE_DEVICE, siteId: SITE_A });
+  });
+
+  it("falls back to a recovery token's own device when its snapshot has been retention-deleted", async () => {
+    lineageRows.push([{ orgId: ORG_ID, deviceId: null, siteId: null, ownDeviceId: SOURCE_DEVICE }]);
+    lineageRows.push([{ orgId: ORG_ID, deviceId: null, siteId: SITE_A }]); // devices fallback lookup
+
+    const result = await authorizeResilienceResources({
+      orgId: ORG_ID,
+      principal: principal([SITE_A]),
+      refs: [{ kind: 'recovery_token', id: RECOVERY_TOKEN, role: 'source' }],
+      operation: 'read',
+    });
+
+    expect(result.resources[0]).toMatchObject({ deviceId: SOURCE_DEVICE, siteId: SITE_A });
+  });
+
+  it("still denies a restore job when even its own device is outside the principal's site grant", async () => {
+    // Never widens access: the fallback device is still subject to the
+    // ordinary site check.
+    lineageRows.push([{ orgId: ORG_ID, deviceId: null, siteId: null, ownDeviceId: SOURCE_DEVICE }]);
+    lineageRows.push([{ orgId: ORG_ID, deviceId: null, siteId: SITE_B }]); // owns a DIFFERENT site
+
+    await expectDenied(authorizeResilienceResources({
+      orgId: ORG_ID,
+      principal: principal([SITE_A]),
+      refs: [{ kind: 'restore_job', id: RESTORE_JOB, role: 'source' }],
+      operation: 'read',
+    }), 403, 'site_access_denied');
   });
 });

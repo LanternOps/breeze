@@ -38,7 +38,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'search_agent_logs',
       description:
-        'Search agent diagnostic logs across the fleet. Filter by device, log level, component, time range, or message text. Returns matching log entries ordered by timestamp (newest first).',
+        'Search agent diagnostic logs across the fleet. Filter by device, log level, component, event-time range, or message text. Returns matching log entries ordered by server receipt time (newest received first).',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -121,7 +121,11 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           .select()
           .from(agentLogs)
           .where(and(...filters))
-          .orderBy(desc(agentLogs.timestamp))
+          // Receipt time dominates. Ingest writes up to 100 rows in one INSERT,
+          // so a whole batch shares created_at to the microsecond and the random
+          // uuid id would shuffle it; agent event time only breaks ties WITHIN a
+          // single receipt instant, which cannot reorder rows across receipts.
+          .orderBy(desc(agentLogs.createdAt), desc(agentLogs.timestamp), desc(agentLogs.id))
           .limit(maxLimit);
 
         return JSON.stringify({
@@ -131,6 +135,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
               id: r.id,
               deviceId: r.deviceId,
               timestamp: r.timestamp.toISOString(),
+              receivedAt: r.createdAt.toISOString(),
               level: r.level,
               component: r.component,
               message: redacted.message,

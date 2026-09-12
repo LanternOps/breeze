@@ -405,9 +405,34 @@ describe('tenant export + erasure round-trip (live DB)', () => {
 
   it('export manifest reflects only the target org rows', async () => {
     const {
-      orgA, groupId, groupName, quoteId, siteId, siteName, prohibitedSentinels,
+      orgA, orgB, groupId, groupName, quoteId, siteId, siteName, prohibitedSentinels,
       customFieldValueSentinel,
     } = await seedTwoOrgs();
+
+    // Integer epochs are portable lifecycle metadata. Neither they nor a
+    // parent identifier replace the excluded credentials required to redeem.
+    const enrollmentId = crypto.randomUUID();
+    const bootstrapId = crypto.randomUUID();
+    for (const [orgId, keyId, tokenId, epoch] of [
+      [orgA, enrollmentId, bootstrapId, 7],
+      [orgB, crypto.randomUUID(), crypto.randomUUID(), 11],
+    ] as const) {
+      const key = `export-key-${keyId}`;
+      const keyHash = keyId.replaceAll('-', '').repeat(2);
+      const shortCode = `EX${crypto.randomUUID().slice(0, 8)}`;
+      const token = `export-token-${tokenId}`;
+      prohibitedSentinels.push(key, keyHash, shortCode, token);
+      await getTestDb().execute(sql`
+        INSERT INTO enrollment_keys
+          (id, org_id, name, key, key_secret_hash, short_code, credential_generation)
+        VALUES (${keyId}, ${orgId}, 'Export epoch fixture', ${key}, ${keyHash}, ${shortCode}, ${epoch})
+      `);
+      await getTestDb().execute(sql`
+        INSERT INTO installer_bootstrap_tokens
+          (id, org_id, token, parent_enrollment_key_id, parent_credential_generation, expires_at)
+        VALUES (${tokenId}, ${orgId}, ${token}, ${keyId}, ${epoch}, now() + interval '1 hour')
+      `);
+    }
 
     const { manifest, zipBuffer } = await buildOrgExportZip(orgA, PERFORMED_BY, PERFORMED_EMAIL);
 
@@ -441,6 +466,24 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(manifest.orgId).toBe(orgA);
 
     const archive = await JSZip.loadAsync(zipBuffer);
+    expect(byName.get('enrollment_keys.json')?.rowCount).toBe(1);
+    expect(byName.get('installer_bootstrap_tokens.json')?.rowCount).toBe(1);
+    const enrollmentRows = await archiveTable(archive, 'enrollment_keys');
+    expect(enrollmentRows).toEqual([
+      expect.objectContaining({ id: enrollmentId, org_id: orgA, credential_generation: 7 }),
+    ]);
+    const bootstrapRows = await archiveTable(archive, 'installer_bootstrap_tokens');
+    expect(bootstrapRows).toEqual([
+      expect.objectContaining({
+        id: bootstrapId, org_id: orgA,
+        parent_enrollment_key_id: enrollmentId, parent_credential_generation: 7,
+      }),
+    ]);
+    for (const secret of ['key', 'key_secret_hash', 'short_code']) {
+      expect(enrollmentRows[0]).not.toHaveProperty(secret);
+    }
+    expect(bootstrapRows[0]).not.toHaveProperty('token');
+
     // The value must be READABLE in the archive, not just counted: `field_key`
     // is denormalized onto the row precisely because `readOrgRows` is a bare
     // column projection with no joins, so a definition_id-only row would export
@@ -723,5 +766,37 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     // ON DELETE CASCADE — proves the table is genuinely wired into the walk.
     expect(stats.tablesDeleted['device_mtls_certificates']).toBe(1);
     expect(stats.tablesDeleted['devices']).toBe(1);
+  });
+
+  it('aborts erasure before any row when an S3-backed org document cannot be cleared, then completes once the object is gone (W03)', async () => {
+    const db = getTestDb();
+    const { orgA } = await seedTwoOrgs();
+    const docId = crypto.randomUUID();
+    await db.execute(sql`
+      INSERT INTO org_documents (id, org_id, title, category, storage_backend, storage_key,
+                                 content_type, byte_size, sha256, original_filename)
+      VALUES (${docId}, ${orgA}, 'Onboarding baseline', 'baseline', 's3', ${`org-documents/${docId}`},
+              'application/pdf', 1024, ${'a'.repeat(64)}, 'baseline.pdf')
+    `);
+    expect(await rowCount(db, 'org_documents', orgA)).toBe(1);
+
+    // No S3 bucket is configured in the integration environment, so the object
+    // pre-clear faults. The contract is that it faults BEFORE the first row
+    // delete and is rerunnable — nothing may be missing afterwards.
+    await expect(cascadeDeleteOrg(orgA, PERFORMED_BY, PERFORMED_EMAIL)).rejects.toThrow(/rerunnable/i);
+    expect(await rowCount(db, 'org_documents', orgA)).toBe(1);
+    expect(await rowCount(db, 'sites', orgA)).toBe(2);
+    expect(await rowCount(db, 'tickets', orgA)).toBe(1);
+
+    // Operator clears the object out of band (or it was a db-backed row all
+    // along); the same erasure now runs to completion — proving the pre-clear
+    // is a gate, not a one-way failure.
+    await db.execute(sql`
+      UPDATE org_documents SET storage_backend = 'db', storage_key = NULL, data = '\\x00'::bytea
+      WHERE id = ${docId}
+    `);
+    const stats = await cascadeDeleteOrg(orgA, PERFORMED_BY, PERFORMED_EMAIL);
+    expect(await rowCount(db, 'org_documents', orgA)).toBe(0);
+    expect(stats.tablesDeleted['org_documents']).toBe(1);
   });
 });

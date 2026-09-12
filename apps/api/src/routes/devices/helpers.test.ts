@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
-  stripSensitiveDeviceFields,
+  PUBLIC_DEVICE_FIELDS,
+  buildPublicDeviceProjection,
+  projectPublicDevice,
   canAccessDeviceSite,
   getDeviceWithOrgCheck,
   getDeviceWithOrgAndSiteCheck,
@@ -21,8 +23,9 @@ vi.mock('../../db', () => ({
 // client. Credential verifiers + mTLS material must never reach any client,
 // even an authenticated same-tenant dashboard user.
 
-describe('stripSensitiveDeviceFields (SR-008)', () => {
+describe('public device projection', () => {
   const sensitive = {
+    agentId: 'internal-agent-id',
     agentTokenHash: 'a'.repeat(64),
     previousTokenHash: 'b'.repeat(64),
     watchdogTokenHash: 'c'.repeat(64),
@@ -39,6 +42,12 @@ describe('stripSensitiveDeviceFields (SR-008)', () => {
     mtlsCertCfId: 'cf-cert-id',
     mtlsCertExpiresAt: new Date(),
     mtlsCertIssuedAt: new Date(),
+    pendingTokenHash: 'g'.repeat(64),
+    pendingWatchdogTokenHash: 'h'.repeat(64),
+    pendingHelperTokenHash: 'i'.repeat(64),
+    pendingTokenExpiresAt: new Date(),
+    agentTokenSuspendedAt: new Date(),
+    agentTokenSuspendedReason: 'probe-detected',
   };
   const safe = {
     id: 'dev-1',
@@ -50,21 +59,30 @@ describe('stripSensitiveDeviceFields (SR-008)', () => {
   };
 
   it('removes every credential verifier and mTLS field', () => {
-    const out = stripSensitiveDeviceFields({ ...safe, ...sensitive }) as Record<string, unknown>;
+    const out = projectPublicDevice({ ...safe, ...sensitive }) as Record<string, unknown>;
     for (const key of Object.keys(sensitive)) {
       expect(out).not.toHaveProperty(key);
     }
   });
 
   it('preserves all non-sensitive operational fields', () => {
-    const out = stripSensitiveDeviceFields({ ...safe, ...sensitive }) as Record<string, unknown>;
+    const out = projectPublicDevice({ ...safe, ...sensitive }) as Record<string, unknown>;
     expect(out).toEqual(safe);
   });
 
   it('does not mutate the input object (internal logic still needs the full row)', () => {
     const input = { ...safe, ...sensitive };
-    stripSensitiveDeviceFields(input);
+    projectPublicDevice(input);
     expect(input.agentTokenHash).toBe('a'.repeat(64));
+  });
+
+  it('is an allowlist of real schema columns and builds the same SQL projection', () => {
+    expect(Object.keys(buildPublicDeviceProjection())).toEqual([...PUBLIC_DEVICE_FIELDS]);
+  });
+
+  it('drops unknown future columns by default', () => {
+    expect(projectPublicDevice({ ...safe, futureCredential: 'private' }))
+      .not.toHaveProperty('futureCredential');
   });
 });
 

@@ -7,15 +7,23 @@ vi.mock('./redis', () => ({
 
 import { getRedis } from './redis';
 import { VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS } from './jwt';
-import { isViewerJtiRevoked, revokeViewerJti, revokeViewerSession } from './viewerTokenRevocation';
+import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerJti, revokeViewerSession } from './viewerTokenRevocation';
 
 const mockGetRedis = vi.mocked(getRedis);
 
 function makeRedisStore() {
   const store = new Map<string, string>();
+  const connection = {
+    status: 'wait',
+    connect: vi.fn(async function (this: { status: string }) { this.status = 'ready'; }),
+    disconnect: vi.fn(function (this: { status: string }) { this.status = 'end'; }),
+    get: vi.fn(async (k: string) => store.get(k) ?? null),
+  };
   return {
     set: vi.fn(async (k: string, v: string) => { store.set(k, v); return 'OK'; }),
     get: vi.fn(async (k: string) => store.get(k) ?? null),
+    duplicate: vi.fn(() => connection),
+    _connection: connection,
     _store: store,
   };
 }
@@ -95,5 +103,39 @@ describe('viewerTokenRevocation', () => {
       'EX',
       VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS,
     );
+  });
+
+  it('fails closed within a bound when the session revocation lookup never settles', async () => {
+    vi.useFakeTimers();
+    let outstanding = 0;
+    let rejectLookup: ((error: Error) => void) | undefined;
+    const connection = {
+      status: 'ready',
+      connect: vi.fn(),
+      get: vi.fn(() => {
+        outstanding += 1;
+        return new Promise<string | null>((_resolve, reject) => {
+          rejectLookup = (error) => {
+            outstanding -= 1;
+            reject(error);
+          };
+        });
+      }),
+      disconnect: vi.fn(() => {
+        const reject = rejectLookup;
+        rejectLookup = undefined;
+        reject?.(new Error('connection closed'));
+      }),
+    };
+    mockGetRedis.mockReturnValue({ duplicate: vi.fn(() => connection) } as any);
+    const pending = isViewerSessionRevoked('session-hung', 25);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(outstanding).toBe(1);
+    await vi.advanceTimersByTimeAsync(25);
+    await expect(pending).resolves.toBe(true);
+    await vi.runAllTicks();
+    expect(outstanding).toBe(0);
+    expect(connection.disconnect).toHaveBeenCalled();
+    vi.useRealTimers();
   });
 });

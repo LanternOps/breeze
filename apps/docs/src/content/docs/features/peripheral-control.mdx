@@ -13,6 +13,28 @@ A policy can also be created **partner-wide** so it applies to every organizatio
 
 ---
 
+## Using the Console
+
+Open **Peripherals** from the Security section of the left sidebar. The page has two tabs:
+
+| Tab | What it shows |
+|-----|---------------|
+| **Policies** | All peripheral policies, filterable by device class, action, and active state, with create/edit/refresh controls |
+| **Activity** | The connect/disconnect/blocked event log across the fleet, filterable by event type, peripheral type, vendor, and date range |
+
+<Steps>
+1. From the **Policies** tab, click **New Policy** (or the pencil icon on an existing row to edit).
+2. Choose a device class (Storage, All USB, Bluetooth, or Thunderbolt) and an action (Allow, Block, Read Only, or Alert).
+3. Optionally add exception rules -- vendor, product, and/or serial number combinations that override the policy's default action, each with a reason and an optional expiry date.
+4. Save. The policy is distributed to affected agents and takes effect on the next peripheral connect/disconnect evaluation.
+</Steps>
+
+A partner-scope user creating a policy can choose an **All organizations** ownership scope so the same policy applies fleet-wide across every organization the partner manages.
+
+A device's own **Peripherals** tab (on its Device Details page) shows the same activity log and the policies currently in effect, scoped to that one device.
+
+---
+
 ## Key Concepts
 
 ### Device Classes

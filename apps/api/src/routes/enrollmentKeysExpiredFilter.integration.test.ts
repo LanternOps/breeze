@@ -96,6 +96,7 @@ interface SeedOptions {
   /** Minutes in the FUTURE the parent expires (mutually exclusive with the above). */
   parentExpiresInMinutes?: number;
   shortCode?: string;
+  credentialGeneration?: number;
   token?: {
     expiresAt: Date;
     createdAt?: Date;
@@ -108,6 +109,7 @@ interface SeedOptions {
      * would pass for the wrong reason. Every case states it.
      */
     usageKind: "capacity" | "per_download";
+    parentCredentialGeneration?: number;
   };
 }
 
@@ -136,6 +138,9 @@ async function seedKey(opts: SeedOptions): Promise<string> {
         siteId: opts.siteId,
         name: `expired-filter ${opts.unique}`,
         key: `expfilter-key-${opts.unique}`,
+        ...(opts.credentialGeneration
+          ? { credentialGeneration: opts.credentialGeneration }
+          : {}),
         expiresAt,
         maxUsage: 25,
         ...(opts.shortCode ? { shortCode: opts.shortCode } : {}),
@@ -147,6 +152,9 @@ async function seedKey(opts: SeedOptions): Promise<string> {
         token: `expfilter-token-${opts.unique}`,
         orgId: opts.orgId,
         parentEnrollmentKeyId: key!.id,
+        ...(opts.token.parentCredentialGeneration
+          ? { parentCredentialGeneration: opts.token.parentCredentialGeneration }
+          : {}),
         siteId: opts.siteId,
         maxUsage: opts.token.maxUsage,
         consumedCount: opts.token.consumedCount,
@@ -554,6 +562,58 @@ describe('GET /enrollment-keys?expired= — live installer-token liveness (#3191
 
     const visible = await listKeys(env.token, 'false');
     expect(visible.ids).not.toContain(keyId);
+  });
+
+  runDb('superseded-generation capacity is historical, not live, and stays on the expired side', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const staleId = await seedKey({
+      orgId: env.organization.id,
+      siteId: env.site.id,
+      unique: `${unique}-stale-generation`,
+      credentialGeneration: 2,
+      token: {
+        expiresAt: LIVE_UNTIL(),
+        maxUsage: 5,
+        consumedCount: 2,
+        usageKind: 'capacity',
+        parentCredentialGeneration: 1,
+      },
+    });
+    const currentId = await seedKey({
+      orgId: env.organization.id,
+      siteId: env.site.id,
+      unique: `${unique}-current-generation`,
+      credentialGeneration: 2,
+      token: {
+        expiresAt: LIVE_UNTIL(),
+        maxUsage: 5,
+        consumedCount: 2,
+        usageKind: 'capacity',
+        parentCredentialGeneration: 2,
+      },
+    });
+
+    const all = await listKeys(env.token);
+    const visible = await listKeys(env.token, 'false');
+    const expired = await listKeys(env.token, 'true');
+
+    expect(all.tokens.get(staleId)).toEqual({
+      consumed: 2,
+      max: 5,
+      liveConsumed: 0,
+      liveMax: 0,
+    });
+    expect(all.tokens.get(currentId)).toEqual({
+      consumed: 2,
+      max: 5,
+      liveConsumed: 2,
+      liveMax: 5,
+    });
+    expect(visible.ids).not.toContain(staleId);
+    expect(expired.ids).toContain(staleId);
+    expect(visible.ids).toContain(currentId);
+    expect(expired.ids).not.toContain(currentId);
   });
 
   runDb('(g) expired=true is the exact complement of expired=false', async () => {

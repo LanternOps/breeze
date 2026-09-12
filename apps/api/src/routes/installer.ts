@@ -167,24 +167,32 @@ async function redeemBootstrapToken(c: Context, token: string) {
       return null;
     }
 
-    // ── 2. Resolve parent enrollment key; validate it's not expired ───
+    // ── 2. Resolve and lock the exact parent credential epoch ─────────
     const [parent] = await db
       .select()
       .from(enrollmentKeys)
-      .where(eq(enrollmentKeys.id, row.parentEnrollmentKeyId))
-      .limit(1);
+      .where(
+        and(
+          eq(enrollmentKeys.id, row.parentEnrollmentKeyId),
+          eq(enrollmentKeys.credentialGeneration, row.parentCredentialGeneration),
+        ),
+      )
+      .limit(1)
+      // Rotation updates this parent row. SHARE is held through child INSERT
+      // and token consumption, so rotation is a true revocation barrier under
+      // concurrent redemption rather than a check-then-act race.
+      .for('share');
 
     if (!parent) {
-      // Data-integrity anomaly: token references a parent key that no longer exists.
-      console.error(
-        "[installer] bootstrap orphaned parent — data integrity incident",
-        {
-          reason: "orphaned_parent",
-          tokenId: row.id,
-          parentEnrollmentKeyId: row.parentEnrollmentKeyId,
-          ip,
-        },
-      );
+      // Missing and rotated parents intentionally share the public 404 shape.
+      // The token id is safe for private correlation; never log its bearer
+      // value. A generation mismatch is expected after deliberate rotation.
+      console.error("[installer] bootstrap parent unavailable", {
+        reason: "orphaned_or_rotated_parent",
+        tokenId: row.id,
+        parentEnrollmentKeyId: row.parentEnrollmentKeyId,
+        ip,
+      });
       return null;
     }
 

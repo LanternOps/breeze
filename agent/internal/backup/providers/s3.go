@@ -154,6 +154,10 @@ func (s *S3Provider) Download(remotePath, localPath string) error {
 		Key:    aws.String(remotePath),
 	})
 	if err != nil {
+		var noSuchKey *s3types.NoSuchKey
+		if errors.As(err, &noSuchKey) {
+			return fmt.Errorf("%w: %s", ErrObjectNotFound, err)
+		}
 		return fmt.Errorf("failed to get s3 object: %w", err)
 	}
 	defer resp.Body.Close()

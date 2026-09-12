@@ -89,7 +89,11 @@ export async function issueBootstrapTokenForKey(
     .select()
     .from(enrollmentKeys)
     .where(eq(enrollmentKeys.id, input.parentEnrollmentKeyId))
-    .limit(1);
+    .limit(1)
+    // Rotation takes an UPDATE lock on this row. Holding SHARE through the
+    // token INSERT makes issue-vs-rotate linearizable: either this token is
+    // committed in the old epoch before rotation, or it snapshots the new one.
+    .for('share');
   if (!parent) {
     throw new BootstrapTokenIssuanceError('parent_not_found', 'Enrollment key not found');
   }
@@ -174,6 +178,7 @@ export async function issueBootstrapTokenForKey(
     token,
     orgId: parent.orgId,
     parentEnrollmentKeyId: parent.id,
+    parentCredentialGeneration: parent.credentialGeneration,
     siteId: parent.siteId,
     maxUsage: input.maxUsage ?? 1,
     usageKind: input.usageKind,

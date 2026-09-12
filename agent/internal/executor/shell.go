@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 // MaxScriptSize is the maximum allowed script content size
@@ -115,14 +117,19 @@ func WriteScriptFile(content, scriptType string) (string, error) {
 	if strings.ToLower(scriptType) == ScriptTypePowerShell && !strings.HasPrefix(content, utf8BOM) {
 		content = utf8BOM + content
 	}
-	// Get the temp directory
-	tempDir := os.TempDir()
-	scriptDir := filepath.Join(tempDir, "breeze-scripts")
-
-	// Create the script directory if it doesn't exist
-	if err := os.MkdirAll(scriptDir, 0700); err != nil {
-		return "", fmt.Errorf("failed to create script directory: %w", err)
+	// Each execution owns a fresh private directory (see createPrivateScriptDir
+	// — 0700 from the OS on unix, an explicit protected DACL on Windows).
+	securefs.LogLegacyStagingTrees(log.Warn)
+	scriptDir, err := createPrivateScriptDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to create private script directory: %w", err)
 	}
+	cleanupDir := true
+	defer func() {
+		if cleanupDir {
+			_ = os.Remove(scriptDir)
+		}
+	}()
 
 	// Generate a unique filename
 	ext := GetScriptExtension(scriptType)
@@ -136,10 +143,21 @@ func WriteScriptFile(content, scriptType string) (string, error) {
 	}
 
 	// Write the script content
-	if err := os.WriteFile(scriptPath, []byte(content), perm); err != nil {
+	file, err := os.OpenFile(scriptPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
 		return "", fmt.Errorf("failed to write script file: %w", err)
 	}
+	if _, err := file.WriteString(content); err != nil {
+		_ = file.Close()
+		_ = os.Remove(scriptPath)
+		return "", fmt.Errorf("failed to write script file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(scriptPath)
+		return "", fmt.Errorf("failed to close script file: %w", err)
+	}
 
+	cleanupDir = false
 	return scriptPath, nil
 }
 
@@ -149,23 +167,23 @@ func CleanupScript(path string) {
 		return
 	}
 
-	// Verify the path is in the expected temp directory for safety
-	tempDir := os.TempDir()
-	scriptDir := filepath.Join(tempDir, "breeze-scripts")
-
-	// Ensure the path is within our script directory
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return
 	}
-
-	if !strings.HasPrefix(absPath, scriptDir) {
+	scriptDir := filepath.Dir(absPath)
+	rel, err := filepath.Rel(os.TempDir(), scriptDir)
+	if err != nil || rel == "." || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) ||
+		filepath.Dir(rel) != "." || !strings.HasPrefix(filepath.Base(rel), "breeze-scripts-") {
 		return
 	}
 
-	// Remove the file
-	if err := os.Remove(path); err != nil {
+	if err := os.Remove(absPath); err != nil {
 		log.Warn("failed to cleanup script file", "path", path, "error", err)
+		return
+	}
+	if err := os.Remove(scriptDir); err != nil {
+		log.Warn("failed to cleanup script directory", "path", scriptDir, "error", err)
 	}
 }
 

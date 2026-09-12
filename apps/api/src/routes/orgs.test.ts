@@ -15,6 +15,16 @@ vi.mock('../services/sentry', () => ({
   isSentryEnabled: vi.fn().mockReturnValue(false)
 }));
 
+vi.mock('../services/auditEvents', () => ({
+  writeAuditEvent: vi.fn(),
+  writeRouteAudit: vi.fn(),
+}));
+
+vi.mock('../oauth/partnerScopePolicy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../oauth/partnerScopePolicy')>()),
+  clearPartnerScopePolicyCache: vi.fn(),
+}));
+
 vi.mock('../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn()
 }));
@@ -338,6 +348,9 @@ import {
 import { captureException } from '../services/sentry';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { enqueueAiBudgetEvaluationForPartner } from '../jobs/aiBudgetAlertDelivery';
+import { writeRouteAudit } from '../services/auditEvents';
+import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 
 describe('org routes', () => {
   let app: Hono;
@@ -5457,6 +5470,90 @@ describe('org routes', () => {
   });
 
   describe('PATCH /orgs/partners/me', () => {
+    it.each([
+      ['selected', ['org-1']],
+      ['none', []],
+      [null, []],
+      [undefined, []],
+    ] as const)(
+      'rejects partnerOrgAccess=%s before any partner-global side effect',
+      async (partnerOrgAccess, accessibleOrgIds) => {
+        setAuthContext({
+          scope: 'partner',
+          partnerOrgAccess,
+          accessibleOrgIds: [...accessibleOrgIds],
+        });
+
+        const res = await app.request('/orgs/partners/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: { security: { requireMfa: false } } }),
+        });
+
+        expect(res.status).toBe(403);
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+        expect(clearPartnerScopePolicyCache).not.toHaveBeenCalled();
+        expect(clearPartnerAllowlistCache).not.toHaveBeenCalled();
+        expect(enqueueAiBudgetEvaluationForPartner).not.toHaveBeenCalled();
+        expect(writeRouteAudit).not.toHaveBeenCalled();
+      },
+    );
+
+    it('allows full-partner authority to update a partner-global security control', async () => {
+      setAuthContext({ scope: 'partner', partnerOrgAccess: 'all' });
+      const currentPartner = {
+        id: 'partner-123',
+        name: 'Acme MSP',
+        settings: { security: { requireMfa: true, maxSessions: 4 } },
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([currentPartner]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ id: 'org-1' }]),
+              }),
+            }),
+          }),
+        } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              ...currentPartner,
+              settings: { security: { requireMfa: false, maxSessions: 4 } },
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { security: { requireMfa: false } } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        settings: { security: { requireMfa: false, maxSessions: 4 } },
+      });
+      expect(db.update).toHaveBeenCalledTimes(1);
+      expect(clearPartnerScopePolicyCache).toHaveBeenCalledWith('partner-123');
+      expect(clearPartnerAllowlistCache).toHaveBeenCalledWith('partner-123');
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'partner.settings.update',
+        resourceId: 'partner-123',
+      }));
+    });
+
     it.each(['pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT', 'tr-TR'] as const)(
       'accepts %s as the partner default language',
       async (language) => {
@@ -6835,6 +6932,33 @@ describe('org routes', () => {
 
   describe('POST /orgs/import/preview and /orgs/import (#3242)', () => {
     const previewBody = { rows: [{ organization: 'Acme', site: 'HQ' }] };
+
+    it.each([
+      ['selected', '/orgs/import/preview', 'preview'],
+      ['none', '/orgs/import/preview', 'preview'],
+      ['selected', '/orgs/import', 'commit'],
+      ['none', '/orgs/import', 'commit'],
+    ] as const)(
+      'rejects partnerOrgAccess=%s on %s before entering the system-context %s seam',
+      async (partnerOrgAccess, path, seam) => {
+        setAuthContext({
+          scope: 'partner',
+          partnerOrgAccess,
+          accessibleOrgIds: partnerOrgAccess === 'selected' ? ['org-1'] : [],
+        });
+
+        const res = await app.request(path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(previewBody),
+        });
+
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+        expect(orgImportMocks.previewOrgImport).not.toHaveBeenCalled();
+        expect(orgImportMocks.commitOrgImport).not.toHaveBeenCalled();
+      },
+    );
 
     it('preview returns the annotated rows for the partner scope caller', async () => {
       setAuthContext({ scope: 'partner' });

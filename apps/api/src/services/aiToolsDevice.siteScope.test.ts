@@ -67,6 +67,53 @@ describe('query_devices — site narrowing (cross-site enumeration)', () => {
   });
 });
 
+describe('get_device_details — public device projection', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const device = {
+    id: 'd1', orgId: 'org-1', siteId: 'site-A', hostname: 'host-a', status: 'online',
+    agentTokenHash: 'current-agent-hash', previousTokenHash: 'previous-agent-hash',
+    pendingTokenHash: 'pending-agent-hash', pendingWatchdogTokenHash: 'pending-watchdog-hash',
+    pendingHelperTokenHash: 'pending-helper-hash', pendingTokenExpiresAt: new Date('2030-01-01'),
+    mtlsCertCfId: 'internal-cert-id', agentTokenSuspendedReason: 'internal-reason',
+  };
+
+  function limited(rows: unknown[]) {
+    return { from: () => ({ where: () => ({ limit: () => Promise.resolve(rows) }) }) };
+  }
+
+  it('returns operational fields but no verifier, mTLS, or suspension fields for an allowed device', async () => {
+    mockDb.select
+      .mockReturnValueOnce(limited([device]))
+      .mockReturnValueOnce(limited([]))
+      .mockReturnValueOnce({ from: () => ({ where: () => Promise.resolve([]) }) })
+      .mockReturnValueOnce({ from: () => ({ where: () => Promise.resolve([]) }) })
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) }) })
+      .mockReturnValueOnce(limited([{ name: 'Allowed site' }]));
+
+    const parsed = JSON.parse(await handlerFor('get_device_details')({ deviceId: 'd1' }, makeAuth(['site-A'])));
+    expect(parsed.device).toMatchObject({ id: 'd1', hostname: 'host-a', siteName: 'Allowed site' });
+    for (const key of [
+      'agentTokenHash', 'previousTokenHash', 'pendingTokenHash', 'pendingWatchdogTokenHash',
+      'pendingHelperTokenHash', 'pendingTokenExpiresAt', 'mtlsCertCfId', 'agentTokenSuspendedReason',
+    ]) expect(parsed.device).not.toHaveProperty(key);
+  });
+
+  it('returns an opaque denial for a hidden-site device before subsidiary reads', async () => {
+    mockDb.select.mockReturnValueOnce(limited([{ ...device, siteId: 'site-hidden' }]));
+    const result = await handlerFor('get_device_details')({ deviceId: 'd1' }, makeAuth(['site-A']));
+    expect(result).toContain('not found or access denied');
+    expect(mockDb.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the same opaque denial when the org-scoped lookup finds no row', async () => {
+    mockDb.select.mockReturnValueOnce(limited([]));
+    const result = await handlerFor('get_device_details')({ deviceId: 'd1' }, makeAuth(['site-A']));
+    expect(result).toContain('not found or access denied');
+    expect(mockDb.select).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('set_device_context — per-device site gating (write path)', () => {
   beforeEach(() => vi.clearAllMocks());
 

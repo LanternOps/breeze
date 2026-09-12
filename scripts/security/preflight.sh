@@ -151,8 +151,10 @@ fi
 # Builds the shipped API + Web images then scans them. Slow (~5-10 min on a cold
 # cache), skipped under --fast.
 #
-# These are the Dockerfiles release.yml and hosted-images.yml actually publish.
-# This step used to build docker/Dockerfile.api|web instead — files nothing
+# These are the Dockerfiles release.yml actually publishes (emergency manual
+# builds, e.g. `docker buildx build ... --push` to GHCR from a maintainer
+# machine, use the same ones). This step used to build docker/Dockerfile.api|web
+# instead — files nothing
 # ships — so a local green here said nothing about the images customers run
 # (issues #4273 / #4260). CI's matrix covers the compose variants, portal and
 # the three M365 executors as well; this local mirror stays at the two heaviest

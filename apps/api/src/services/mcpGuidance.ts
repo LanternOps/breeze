@@ -37,9 +37,9 @@ export const MCP_PROMPTS: McpPromptDefinition[] = [
     name: 'breeze-fleet-triage',
     description: 'Read-only health sweep of the fleet — what needs attention right now.',
     arguments: [{ name: 'scope', description: 'Optional org or site to scope the sweep', required: false }],
-    referencedTools: ['get_fleet_status', 'get_fleet_health', 'manage_alerts', 'query_devices', 'manage_patches', 'get_sla_breaches'],
+    referencedTools: ['get_fleet_health', 'manage_alerts', 'query_devices', 'manage_patches', 'get_sla_breaches'],
     render: (a) => `Triage the Breeze RMM fleet${scopeSuffix(a.scope)}. Perform a READ-ONLY sweep and produce ONE prioritized "what needs attention now" summary. Steps:
-1. Overall posture: get_fleet_status and get_fleet_health.
+1. Overall posture: get_fleet_health and query_devices (device counts and online/offline).
 2. Active alerts: manage_alerts (action=list).
 3. Offline devices: query_devices (status=offline).
 4. Failed/pending patches: manage_patches (action=list).

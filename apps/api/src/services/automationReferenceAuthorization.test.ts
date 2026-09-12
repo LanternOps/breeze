@@ -48,6 +48,8 @@ const baseScript: ScriptRow = {
   runAs: 'system',
   isSystem: false,
   version: 1,
+  origin: 'human',
+  originProposalId: null,
   exitCodeSeverityMapping: null,
   acknowledgedSecurityPatterns: [],
   securityAcknowledgedBy: null,

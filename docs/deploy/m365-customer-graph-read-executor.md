@@ -22,7 +22,7 @@ Deploy in this order:
 
 1. Deploy the foundation release to every API instance and verify the running revision on each instance.
 2. Provision the dedicated Entra application, certificate, Key Vault version, executor identity, private ingress, and controlled egress.
-3. Deploy the executor dark by exact image digest and verify `/healthz` plus identity, Key Vault, and Microsoft connectivity from a non-customer test path.
+3. Verify the exact executor tuple against the Ed25519-signed release inventory, deploy it dark by that digest, and verify `/healthz` plus identity, Key Vault, and Microsoft connectivity from a non-customer test path.
 4. Apply `apps/api/migrations/2026-07-14-m365-customer-graph-read-consent.sql`, then deploy the Phase 2 API and UI with onboarding disabled.
 5. Verify the fixed application/configuration descriptors agree in the API and executor.
 6. Enable only a disposable internal Breeze organization and complete the [real-tenant checklist](../runbooks/m365-customer-graph-read-real-tenant.md).
@@ -157,9 +157,9 @@ Connection statuses are exactly `pending-consent`, `verifying`, `active`, `degra
 
 ## Exact-digest deployment
 
-Release automation builds the executor image, pushes an unadvertised digest, scans that exact digest for high/critical vulnerabilities, promotes the already-scanned manifest, and uploads `m365-graph-read-executor-image-digest.txt` for 90 days.
+Release automation builds the executor image, pushes an unadvertised digest, scans that exact digest for high/critical vulnerabilities, includes its repository/digest in the signed release manifest, and only then promotes release tags.
 
-Deploy the repository plus the recorded `sha256` digest, not a mutable version or `latest` tag. Record the release tag, Git commit, digest, environment, certificate version, and deployment time in the change ticket. Before promotion and rollback, verify the runtime reports the intended image digest through the platform's workload metadata; do not print runtime secrets.
+Deploy the repository plus the signed `sha256` digest, not a mutable version or `latest` tag. Download `release-artifact-manifest.json` and `.ed25519` from the matching release and run `scripts/release/verify-release-images.sh --manifest <manifest> --signature <signature> --expected-repository LanternOps/breeze --expected-release v<VERSION> --require m365-graph-read-executor=ghcr.io/lanternops/breeze/m365-graph-read-executor@sha256:<digest>` with `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` configured. Record the release tag, Git commit, digest, environment, certificate version, and deployment time in the change ticket. Before promotion and rollback, verify the runtime reports the intended image digest through the platform's workload metadata; do not print runtime secrets.
 
 ## Health, rollout, and rollback
 

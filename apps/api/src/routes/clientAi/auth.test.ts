@@ -125,6 +125,7 @@ const USER_ROW = {
   email: 'finance.user@contoso.com',
   name: 'Finance User',
   status: 'active',
+  authMethod: 'entra',
   // Already linked (#3258), so an ordinary repeat login re-derives nothing.
   contactId: 'c0c0c0c0-1111-4222-8333-444455556666',
 };

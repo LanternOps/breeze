@@ -99,6 +99,21 @@ func (p *LocalProvider) Download(remotePath, localPath string) error {
 	if err != nil {
 		return err
 	}
+	// Positively confirm the SOURCE object is absent before attempting
+	// anything else. copyFileContext/decompressFile also touch the
+	// destination side (os.Create, os.Chtimes) after this point, and their
+	// own fmt.Errorf wrapping would let a DESTINATION-side ENOENT (a
+	// concurrently-removed destination directory, however unlikely) also
+	// satisfy errors.Is(_, fs.ErrNotExist) — which must never be classified
+	// the same as "the requested remote object doesn't exist" (the
+	// fail-open bug ErrObjectNotFound exists to prevent; see
+	// fetchPublishedManifest's three-state contract).
+	if _, statErr := os.Stat(srcPath); statErr != nil {
+		if errors.Is(statErr, fs.ErrNotExist) {
+			return fmt.Errorf("%w: %s", ErrObjectNotFound, statErr)
+		}
+		return fmt.Errorf("failed to stat local backup object: %w", statErr)
+	}
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return fmt.Errorf("failed to create destination directory: %w", err)
 	}

@@ -1412,5 +1412,31 @@
       "pollFailed": "Çalıştırma sonucu okunamadı — silinmiş olabilir veya erişiminiz değişmiş olabilir."
     },
     "devicesLoadFailed": "Cihazlar yüklenemedi"
+  },
+  "provenance": {
+    "origin": "Köken",
+    "originHuman": "İnsan",
+    "originAiProposal": "Yapay zekâ önerisi",
+    "originImported": "İçe aktarıldı",
+    "originSystem": "Yerleşik",
+    "reviewed": "İncelendi",
+    "editedSinceReview": "İncelemeden sonra düzenlendi",
+    "provenanceTitle": "Kaynak geçmişi",
+    "reviewSummary": "İnceleme özeti",
+    "approvedBy": "Onaylayan",
+    "evidenceErased": "İnceleme kanıtı silindi",
+    "allOrigins": "Tüm kökenler"
+  },
+  "scriptProposalDetail": {
+    "loading": "Yükleniyor…",
+    "loadError": "Bu öneri yüklenemedi.",
+    "evidenceErased": "Bu önerinin inceleme kanıtları silindi (kaynak organizasyon birleştirildi veya veri saklama süresi doldu). Bu öneriden doğan komut dosyası çalıştırması cihaz geçmişinde görünmeye devam ediyor.",
+    "statusLabel": "Durum",
+    "riskTierLabel": "Risk düzeyi",
+    "reviewSummaryLabel": "İnceleme özeti",
+    "riskLow": "Düşük",
+    "riskMedium": "Orta",
+    "riskHigh": "Yüksek",
+    "riskCritical": "Kritik"
   }
 }

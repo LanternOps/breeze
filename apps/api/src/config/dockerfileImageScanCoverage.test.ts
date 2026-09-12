@@ -10,8 +10,10 @@ import { describe, expect, it } from 'vitest';
  * (issues #4273 / #4260).
  *
  * `security.yml`'s `Trivy Image Scan` job used to build and scan
- * `docker/Dockerfile.api` and `docker/Dockerfile.web` — two files that neither
- * `release.yml` nor `hosted-images.yml` ever publishes. The images customers
+ * `docker/Dockerfile.api` and `docker/Dockerfile.web` — two files that
+ * `release.yml` never publishes (nor did the since-removed `hosted-images.yml`
+ * manual-dispatch workflow, before it was replaced with an ad hoc
+ * `docker buildx` + GHCR push from a maintainer machine). The images customers
  * actually run are built from `apps/api/Dockerfile` and `apps/web/Dockerfile`,
  * and those were scanned nowhere. A green `Trivy Image Scan` therefore said
  * nothing about the two most widely deployed images in the product, which is
@@ -590,8 +592,6 @@ describe('Trivy image scan covers the images we publish', () => {
     }
 
     expect(coverage).toEqual({
-      '.github/workflows/hosted-images.yml:build-m365-executor-image': 'has a trivy-action step',
-      '.github/workflows/hosted-images.yml:build-server-image': 'NO trivy-action step',
       '.github/workflows/release.yml:build-binaries-image': 'NO trivy-action step',
       '.github/workflows/release.yml:build-docker-api': 'NO trivy-action step',
       '.github/workflows/release.yml:build-docker-m365-communications-executor':

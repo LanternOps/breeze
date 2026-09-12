@@ -56,7 +56,18 @@ export interface MfaSecuritySettings {
 }
 type SecuritySettings = MfaSecuritySettings;
 
-function methodsFromSettings(security: SecuritySettings | undefined): MfaAllowedMethods {
+function methodsFromSettings(
+  security: SecuritySettings | undefined,
+  settingsUnavailable = false,
+  failClosedMethods = false,
+): MfaAllowedMethods {
+  if (settingsUnavailable && failClosedMethods) {
+    // TOTP and SMS are tenant-configurable, so an unreadable policy cannot
+    // authorize either at a sensitive control boundary. Passkeys are always
+    // permitted by policy and remain usable as the phishing-resistant escape
+    // hatch rather than turning a settings outage into a universal lockout.
+    return { totp: false, sms: false, passkey: true };
+  }
   const am = security?.allowedMethods;
   return {
     totp: am?.totp !== false,
@@ -79,14 +90,15 @@ function methodsFromSettings(security: SecuritySettings | undefined): MfaAllowed
  * INSIDE its own transaction, and applies the rule here — so strictest-wins
  * and the kill-switch semantics stay single-sourced.
  *
- * `settingsUnavailable` + `failClosed` reproduce the same disposition
- * getEffectiveMfaPolicy applies to a settings-read error (see opts.failClosed).
+ * `settingsUnavailable` plus the fail-closed flags reproduce the same
+ * disposition getEffectiveMfaPolicy applies to a settings-read error.
  */
 export function combineMfaPolicyFacts(facts: {
   roleForceMfa: boolean;
   security: MfaSecuritySettings | undefined;
   settingsUnavailable?: boolean;
   failClosed?: boolean;
+  failClosedMethods?: boolean;
 }): EffectiveMfaPolicy {
   const killSwitchOff = !mfaForcePartnerAdmin();
   const settingsRequireMfa = facts.security?.requireMfa === true;
@@ -100,13 +112,17 @@ export function combineMfaPolicyFacts(facts: {
 
   return {
     required,
-    allowedMethods: methodsFromSettings(facts.security),
+    allowedMethods: methodsFromSettings(
+      facts.security,
+      facts.settingsUnavailable === true,
+      facts.failClosedMethods === true,
+    ),
     source: { roleForceMfa: facts.roleForceMfa, settingsRequireMfa, killSwitchOff },
   };
 }
 
 /**
- * @param opts.failClosed  Login/enrollment gates FAIL OPEN on a settings-read
+ * @param opts.failClosed  Login gates FAIL OPEN on a settings-read
  *   error (a transient blip must never mass-lock a tenant out of signing in).
  *   CONTROL gates that *relax* protection on a false `required` — self-disable
  *   (`/mfa/disable`) and last-factor removal (`DELETE /passkeys/:id`) — must
@@ -114,10 +130,13 @@ export function combineMfaPolicyFacts(facts: {
  *   org/partner-required MFA. On a read error under `failClosed`, `required`
  *   is forced true (the role-force axis is unaffected — its join is outside
  *   the settings try/catch and already enforces regardless).
+ * @param opts.failClosedMethods Factor enrollment/use gates pass this option.
+ *   If settings cannot be read, tenant-disableable TOTP and SMS are denied;
+ *   passkeys remain allowed because policy cannot disable them.
  */
 export async function getEffectiveMfaPolicy(
   input: MfaPolicyInput,
-  opts?: { failClosed?: boolean },
+  opts?: { failClosed?: boolean; failClosedMethods?: boolean },
 ): Promise<EffectiveMfaPolicy> {
   if (input.scope === 'system') {
     return {
@@ -166,21 +185,28 @@ export async function getEffectiveMfaPolicy(
           security = settings.security as SecuritySettings | undefined;
         }
       } catch (err) {
-        const disposition = opts?.failClosed ? 'failing closed (required)' : 'failing open (not required)';
+        const closedAxes = [
+          opts?.failClosed ? 'required' : null,
+          opts?.failClosedMethods ? 'methods' : null,
+        ].filter(Boolean).join('+');
+        const disposition = closedAxes
+          ? `failing closed (${closedAxes})`
+          : 'failing open (not required; methods allowed)';
         console.error(`[mfa-policy] effective settings read failed — ${disposition}:`, err);
         captureException(err instanceof Error ? err : new Error(String(err)));
         security = undefined;
         settingsReadFailed = true;
       }
 
-      // Control gates (opts.failClosed) treat an unreadable settings row as
-      // "still required" so a transient blip can't strip org/partner-mandated
-      // MFA; login/enrollment gates leave failClosed unset and fail open.
+      // Each control gate opts into the axis it must fail closed. Login leaves
+      // both flags unset for availability; factor enrollment/use denies the
+      // tenant-disableable methods when policy settings are unreadable.
       return combineMfaPolicyFacts({
         roleForceMfa,
         security,
         settingsUnavailable: settingsReadFailed,
         failClosed: opts?.failClosed === true,
+        failClosedMethods: opts?.failClosedMethods === true,
       });
     }),
   );

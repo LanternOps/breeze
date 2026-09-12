@@ -43,6 +43,7 @@ vi.mock('./partnerTrustPromotion', () => ({ tryAutoPromote }));
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import {
   evaluateCapability,
+  evaluateCapabilityContinuation,
   GATED_COMMAND_TYPES,
   isLifecycleCommand,
   LIFECYCLE_COMMAND_TYPES,
@@ -375,6 +376,30 @@ describe('evaluateCapability', () => {
     expect(await evaluateCapability('remote_control', { partnerId: 'p1' })).toEqual({ allow: true });
     expect(audit).not.toHaveBeenCalled();
   });
+});
+
+describe('evaluateCapabilityContinuation', () => {
+  it('denies repeated probation ticks without audit or auto-promotion side effects', async () => {
+    await expect(evaluateCapabilityContinuation('remote_control', { partnerId: 'p1' }))
+      .resolves.toMatchObject({ allow: false, code: 'TRUST_PROBATION' });
+    await expect(evaluateCapabilityContinuation('remote_control', { partnerId: 'p1' }))
+      .resolves.toMatchObject({ allow: false, code: 'TRUST_PROBATION' });
+
+    expect(audit).not.toHaveBeenCalled();
+    expect(tryAutoPromote).not.toHaveBeenCalled();
+  });
+
+  it('returns the shadow decision repeatedly without audit or promotion', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('shadow');
+    await expect(evaluateCapabilityContinuation('remote_control', { partnerId: 'p1' }))
+      .resolves.toMatchObject({ allow: true, shadowDenied: { code: 'TRUST_PROBATION' } });
+    await expect(evaluateCapabilityContinuation('remote_control', { partnerId: 'p1' }))
+      .resolves.toMatchObject({ allow: true, shadowDenied: { code: 'TRUST_PROBATION' } });
+
+    expect(audit).not.toHaveBeenCalled();
+    expect(tryAutoPromote).not.toHaveBeenCalled();
+  });
+
 });
 
 describe('unresolvedPartnerDecision', () => {

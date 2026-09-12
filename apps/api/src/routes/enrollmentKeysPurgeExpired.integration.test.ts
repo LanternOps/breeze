@@ -52,9 +52,9 @@ import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 
 import { db, withSystemDbAccessContext } from '../db';
-import { enrollmentKeys, installerBootstrapTokens } from '../db/schema';
+import { enrollmentKeys, installerBootstrapTokens, organizationUsers } from '../db/schema';
 import { createAccessToken, type TokenPayload } from '../services/jwt';
-import { setupTestEnvironment, type TestEnvironment } from '../__tests__/integration/db-utils';
+import { createSite, setupTestEnvironment, type TestEnvironment } from '../__tests__/integration/db-utils';
 import { enrollmentKeyRoutes } from './enrollmentKeys';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -112,6 +112,7 @@ async function seedKey(opts: {
   siteId: string;
   unique: string;
   expiredMinutesAgo?: number;
+  credentialGeneration?: number;
   token?: {
     expiresAt: Date;
     createdAt?: Date;
@@ -125,6 +126,7 @@ async function seedKey(opts: {
      * names `per_download` explicitly to pin the realistic short-link shape.
      */
     usageKind?: 'capacity' | 'per_download';
+    parentCredentialGeneration?: number;
   };
 }): Promise<{ keyId: string; tokenId: string | null }> {
   const expiredMinutesAgo = opts.expiredMinutesAgo ?? 60;
@@ -136,6 +138,9 @@ async function seedKey(opts: {
         siteId: opts.siteId,
         name: `transient parent ${opts.unique}`,
         key: `purge-key-${opts.unique}`,
+        ...(opts.credentialGeneration
+          ? { credentialGeneration: opts.credentialGeneration }
+          : {}),
         expiresAt: new Date(Date.now() - expiredMinutesAgo * 60 * 1000),
         maxUsage: 1,
       })
@@ -147,6 +152,9 @@ async function seedKey(opts: {
         token: `purge-token-${opts.unique}`,
         orgId: opts.orgId,
         parentEnrollmentKeyId: key!.id,
+        ...(opts.token.parentCredentialGeneration
+          ? { parentCredentialGeneration: opts.token.parentCredentialGeneration }
+          : {}),
         siteId: opts.siteId,
         maxUsage: opts.token.maxUsage,
         consumedCount: opts.token.consumedCount,
@@ -215,6 +223,31 @@ describe('POST /enrollment-keys/purge-expired — live bootstrap token exemption
     expect(await keyRowExists(canaryId)).toBe(false); // the purge really ran
     expect(await keyRowExists(keyId)).toBe(true);
     expect(await tokenRowExists(tokenId!)).toBe(true);
+  });
+
+  runDb('a live but superseded-generation token does not exempt its expired parent from purge', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const token = await mfaSatisfiedToken(env);
+    const { keyId, tokenId } = await seedKey({
+      orgId: env.organization.id,
+      siteId: env.site.id,
+      unique: `${unique}-stale-generation`,
+      credentialGeneration: 2,
+      token: {
+        expiresAt: TOKEN_LIVE_UNTIL(),
+        maxUsage: 25,
+        consumedCount: 0,
+        usageKind: 'capacity',
+        parentCredentialGeneration: 1,
+      },
+    });
+
+    const res = await purgeExpired(makeApp(), token);
+
+    expect(res.status).toBe(200);
+    expect(await keyRowExists(keyId)).toBe(false);
+    expect(await tokenRowExists(tokenId!)).toBe(false);
   });
 
   runDb('(b) an expired key whose token has itself expired is DELETED — liveness is a strict now() boundary', async () => {
@@ -376,5 +409,30 @@ describe('POST /enrollment-keys/purge-expired — live bootstrap token exemption
     expect((await res.json()).deletedCount).toBe(1);
     expect(await keyRowExists(ownKeyId)).toBe(false);
     expect(await keyRowExists(foreignKeyId)).toBe(true);
+  });
+
+  runDb('(h) as breeze_app, a site-restricted caller purges its allowed site and leaves a hidden same-org key untouched', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const hiddenSite = await createSite({ orgId: env.organization.id, name: `hidden-${unique}` });
+    await withSystemDbAccessContext(() => db
+      .update(organizationUsers)
+      .set({ siteIds: [env.site.id] })
+      .where(eq(organizationUsers.userId, env.user.id)));
+    const token = await mfaSatisfiedToken(env);
+
+    const { keyId: allowedKeyId } = await seedKey({
+      orgId: env.organization.id, siteId: env.site.id, unique: `${unique}-allowed`,
+    });
+    const { keyId: hiddenKeyId } = await seedKey({
+      orgId: env.organization.id, siteId: hiddenSite.id, unique: `${unique}-hidden`,
+    });
+
+    const res = await purgeExpired(makeApp(), token);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).deletedCount).toBe(1);
+    expect(await keyRowExists(allowedKeyId)).toBe(false);
+    expect(await keyRowExists(hiddenKeyId)).toBe(true);
   });
 });

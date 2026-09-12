@@ -123,6 +123,7 @@ required_vars=(
   BREEZE_VERSION
   BREEZE_API_IMAGE_DIGEST
   BREEZE_WEB_IMAGE_DIGEST
+  BREEZE_PORTAL_IMAGE_DIGEST
   BREEZE_BINARIES_IMAGE_DIGEST
   CADDY_IMAGE_REF
   CLOUDFLARED_IMAGE_REF
@@ -201,12 +202,45 @@ require_digest_ref() {
 
 require_sha256_digest BREEZE_API_IMAGE_DIGEST
 require_sha256_digest BREEZE_WEB_IMAGE_DIGEST
+require_sha256_digest BREEZE_PORTAL_IMAGE_DIGEST
 require_sha256_digest BREEZE_BINARIES_IMAGE_DIGEST
 require_digest_ref CADDY_IMAGE_REF
 require_digest_ref CLOUDFLARED_IMAGE_REF
 require_digest_ref REDIS_IMAGE_REF
 require_digest_ref COTURN_IMAGE_REF
 require_digest_ref BILLING_IMAGE_REF
+
+release_repository="lanternops/breeze"
+release_version="${BREEZE_VERSION#v}"
+if [[ ! "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+  echo "[deploy] BREEZE_VERSION must be an exact semantic version" >&2
+  exit 1
+fi
+release_tag="v${release_version}"
+release_image_base="ghcr.io/lanternops/breeze"
+release_manifest_dir="$(mktemp -d)"
+trap 'rm -rf "$release_manifest_dir"' EXIT
+release_download_base="https://github.com/${release_repository}/releases/download/${release_tag}"
+
+echo "[deploy] Downloading signed image inventory for ${release_repository} ${release_tag}"
+curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+  --connect-timeout 10 --max-time 30 --retry 2 --max-filesize 1048576 \
+  --output "${release_manifest_dir}/release-artifact-manifest.json" \
+  "${release_download_base}/release-artifact-manifest.json"
+curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+  --connect-timeout 10 --max-time 30 --retry 2 --max-filesize 4096 \
+  --output "${release_manifest_dir}/release-artifact-manifest.json.ed25519" \
+  "${release_download_base}/release-artifact-manifest.json.ed25519"
+
+node "${REPO_ROOT}/scripts/release/release-image-manifest.mjs" verify \
+  --manifest "${release_manifest_dir}/release-artifact-manifest.json" \
+  --signature "${release_manifest_dir}/release-artifact-manifest.json.ed25519" \
+  --expected-repository "${release_repository}" \
+  --expected-release "${release_tag}" \
+  --require-image "api=${release_image_base}/api@${BREEZE_API_IMAGE_DIGEST}" \
+  --require-image "web=${release_image_base}/web@${BREEZE_WEB_IMAGE_DIGEST}" \
+  --require-image "portal=${release_image_base}/portal@${BREEZE_PORTAL_IMAGE_DIGEST}" \
+  --require-image "binaries=${release_image_base}/binaries@${BREEZE_BINARIES_IMAGE_DIGEST}"
 
 COMPOSE_ARGS=(-f "${COMPOSE_FILE}")
 if [[ "${ENABLE_MONITORING}" == "true" ]]; then

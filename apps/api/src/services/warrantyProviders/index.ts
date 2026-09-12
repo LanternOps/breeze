@@ -1,11 +1,15 @@
 import type { WarrantyProvider } from './types';
 import { dellProvider } from './dellProvider';
-import { hpProvider } from './hpProvider';
 import { lenovoProvider } from './lenovoProvider';
 
 export type { WarrantyProvider, WarrantyLookupResult, WarrantyEntitlement } from './types';
 
-const providers: WarrantyProvider[] = [dellProvider, hpProvider, lenovoProvider];
+// hpProvider is deliberately NOT registered: its unofficial support.hp.com
+// endpoint now returns the site's HTML shell (verified 2026-09-09) and HP's real
+// backend is captcha-gated, so enabling it only parks devices in `unknown` with
+// a JSON parse error. HP coverage is coming from the agent instead. The module
+// is kept (and unit-tested) until that lands.
+const providers: WarrantyProvider[] = [dellProvider, lenovoProvider];
 
 export function normalizeManufacturer(raw: string): string {
   const lower = raw.toLowerCase().trim();

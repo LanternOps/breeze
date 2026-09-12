@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const OTHER_ORG_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
@@ -29,7 +29,7 @@ function wherePredicates(): string[] {
  */
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'orderBy']) {
+  for (const method of ['from', 'where', 'limit', 'orderBy', 'leftJoin']) {
     chain[method] = vi.fn((...args: unknown[]) => {
       if (method === 'where') whereArgs.push(args[0]);
       return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -63,11 +63,19 @@ vi.mock('../db/schema', () => ({
     startedAt: 'backup_jobs.started_at',
     completedAt: 'backup_jobs.completed_at',
     createdAt: 'backup_jobs.created_at',
+    errorLog: 'backup_jobs.error_log',
   },
   backupSnapshots: {
+    id: 'backup_snapshots.id',
     jobId: 'backup_snapshots.job_id',
     orgId: 'backup_snapshots.org_id',
     snapshotId: 'backup_snapshots.snapshot_id',
+    storageIdentity: 'backup_snapshots.storage_identity',
+  },
+  backupSnapshotRetirements: {
+    id: 'backup_snapshot_retirements.id',
+    storageIdentity: 'backup_snapshot_retirements.storage_identity',
+    snapshotId: 'backup_snapshot_retirements.snapshot_id',
   },
 }));
 
@@ -101,6 +109,9 @@ const applyBackupCommandResultToJobMock = vi.fn();
 vi.mock('./backupResultPersistence', () => ({
   applyBackupCommandResultToJob: (...args: unknown[]) =>
     applyBackupCommandResultToJobMock(...(args as [])),
+  // D18 W01 review fix: reconcile's late-result-fenced check now imports
+  // this shared pattern instead of a hand-copied regex.
+  LATE_RESULT_FENCE_REASON_PATTERN: /publish_lease_expired|base_retired/,
 }));
 
 const captureExceptionMock = vi.fn();
@@ -141,8 +152,9 @@ function manifest(snapshotId: string, files = 2) {
  *  2. backup_snapshots claim lookup   (system scope, skipped when no snapshots)
  *  3. backup_jobs claim lookup        (system scope, skipped when no snapshots)
  *  4. every backup_configs row        (system scope, shared-destination check)
- *  5. unattributed backup_jobs        (lazy — only if a time-window candidate exists)
- *  6. backup_snapshots rows for those jobs
+ *  5. backup_snapshot_retirements lookup (D18 W01, skipped when no snapshots)
+ *  6. unattributed backup_jobs        (lazy — only if a time-window candidate exists)
+ *  7. backup_snapshots rows for those jobs
  */
 function queueSelects(rowSets: unknown[][]) {
   selectMock.mockReset();
@@ -153,13 +165,14 @@ function queueSelects(rowSets: unknown[][]) {
   selectMock.mockImplementation(() => chainMock([]) as any);
 }
 
-/** The four selects a run issues before any time-window work. */
-function baseSelects(claimJobs: unknown[] = [], restorable: unknown[] = [], otherConfigs?: unknown[]) {
+/** The five selects a run issues before any time-window work. */
+function baseSelects(claimJobs: unknown[] = [], restorable: unknown[] = [], otherConfigs?: unknown[], retirements: unknown[] = []) {
   return [
     [CONFIG_ROW],
     restorable,
     claimJobs,
     otherConfigs ?? [{ orgId: ORG_ID, provider: 's3', providerConfig: CONFIG_ROW.providerConfig }],
+    retirements,
   ];
 }
 
@@ -194,6 +207,17 @@ describe('reconcileOrphanedBackupSnapshots', () => {
       snapshotDbId: 'snap-db-1',
       providerSnapshotId: 'x',
     });
+    // D18 W01 (§3.4): reconcile now refuses to adopt a manifest older than
+    // half the (9-day default) orphan window. This suite's fixtures all use
+    // manifest lastModified times around 2026-08-01 — pin "now" a couple
+    // hours later so none of them spuriously trip that new refusal; the
+    // dedicated orphan-window tests below set their own explicit ages.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-01T12:00:00Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('refuses a config the caller org does not own', async () => {
@@ -517,6 +541,7 @@ describe('reconcileOrphanedBackupSnapshots', () => {
       [],
       [],
       [{ orgId: ORG_ID, provider: 's3', providerConfig: CONFIG_ROW.providerConfig }],
+      [], // D18 W01: backup_snapshot_retirements lookup -- none retired
       [
         {
           id: 'job-legacy',
@@ -549,6 +574,7 @@ describe('reconcileOrphanedBackupSnapshots', () => {
       [],
       [],
       [{ orgId: ORG_ID, provider: 's3', providerConfig: CONFIG_ROW.providerConfig }],
+      [], // D18 W01: backup_snapshot_retirements lookup -- none retired
       [
         {
           id: 'job-a',
@@ -1028,4 +1054,106 @@ describe('reconcileOrphanedBackupSnapshots', () => {
       reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID })
     ).rejects.toMatchObject({ code: 'destination_unreadable' });
   });
+
+  describe('D18 W01 -- retired/orphan-age/base-missing/late-result-fenced refusals', () => {
+    it('refuses to adopt a retired snapshot id', async () => {
+      oneManifest('RETIRED-1');
+      queueSelects(baseSelects([], [], undefined, [{ snapshotId: 'RETIRED-1' }]));
+
+      const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+      const candidate = result.candidates.find((c) => c.snapshotId === 'RETIRED-1');
+      expect(candidate?.skipReason).toBe('retired');
+      expect(candidate?.adopted).toBe(false);
+    });
+
+    it('refuses to adopt a manifest older than half the orphan window', async () => {
+      // Half the 9-day default is 4.5 days; system time is pinned at
+      // 2026-08-01T12:00:00Z (this describe's beforeEach) -- a manifest from
+      // 2026-07-25 is well past that.
+      listBackupObjectsUnderPrefixMock.mockResolvedValue([
+        { key: 'snapshots/OLD-ORPHAN/manifest.json', lastModified: new Date('2026-07-25T00:00:00Z') },
+      ]);
+      queueSelects(baseSelects());
+
+      const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+      const candidate = result.candidates.find((c) => c.snapshotId === 'OLD-ORPHAN');
+      expect(candidate?.skipReason).toBe('orphan-too-old-for-adoption');
+    });
+
+    it('refuses to adopt a manifest whose declared base has no live, unretired row', async () => {
+      oneManifest('HAS-MISSING-BASE');
+      fetchBackupObjectTextMock.mockResolvedValue(
+        JSON.stringify({ id: 'HAS-MISSING-BASE', baseSnapshotId: 'gone-base', files: [] })
+      );
+      queueSelects([
+        ...baseSelects([claimingJob({ snapshotId: 'HAS-MISSING-BASE' })]),
+        [], // base-existence lookup: no live row for 'gone-base'
+      ]);
+
+      const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+      const candidate = result.candidates.find((c) => c.snapshotId === 'HAS-MISSING-BASE');
+      expect(candidate?.skipReason).toBe('base-missing');
+      expect(candidate?.adopted).toBe(false);
+    });
+
+    it('refuses to adopt a job whose late result was already fenced (publish_lease_expired/base_retired)', async () => {
+      oneManifest('FENCED-JOB-SNAP');
+      queueSelects(
+        baseSelects([
+          claimingJob({
+            snapshotId: 'FENCED-JOB-SNAP',
+            status: 'failed',
+            errorLog: 'base_retired: late result rejected — its dedupe base was reclaimed before this result arrived',
+          }),
+        ])
+      );
+
+      const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+      const candidate = result.candidates.find((c) => c.snapshotId === 'FENCED-JOB-SNAP');
+      expect(candidate?.skipReason).toBe('late-result-fenced');
+      expect(candidate?.adopted).toBe(false);
+    });
+  });
 });
+
+describe('manifestToCommandResult originalPath (D12 reconcile path)', () => {
+  it('carries the stable originalPath through when re-adopting a VSS-backed snapshot', async () => {
+    const { manifestToCommandResult } = await import('./backupSnapshotReconcile');
+    const manifest = {
+      id: 'snapshot-20260909T191735Z-9702e203',
+      timestamp: '2026-09-09T19:17:35.000Z',
+      size: 10,
+      files: [{
+        sourcePath: '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\assure\\src\\x',
+        originalPath: 'C:\\assure\\src\\x',
+        backupPath: 'snapshots/snapshot-20260909T191735Z-9702e203/files/path_0/assure/src/x.gz',
+        size: 10,
+        modTime: '2026-09-09T19:17:35.000Z',
+      }],
+    };
+    const result = manifestToCommandResult({
+      snapshotId: manifest.id,
+      manifestText: JSON.stringify(manifest),
+      matchedBy: 'job-snapshot-id',
+    });
+    // Without this the orphan-reconcile path indexes the transient shadow-copy
+    // device path (browse root "?", selective restore rejects real paths).
+    expect(result.snapshot?.files?.[0]?.originalPath).toBe('C:\\assure\\src\\x');
+  });
+
+  it('forwards baseSnapshotId and formatVersion (D18 W01)', async () => {
+    const { manifestToCommandResult } = await import('./backupSnapshotReconcile');
+    const result = manifestToCommandResult({
+      snapshotId: 'snap-1',
+      manifestText: JSON.stringify({ id: 'snap-1', baseSnapshotId: 'snap-0', formatVersion: 2, files: [] }),
+      matchedBy: 'job-snapshot-id',
+    });
+    expect(result.snapshot?.baseSnapshotId).toBe('snap-0');
+    expect(result.snapshot?.formatVersion).toBe(2);
+  });
+});
+

@@ -20,7 +20,16 @@ vi.mock('drizzle-orm', async (importOriginal) => {
 const authMocks = vi.hoisted(() => ({
   authMiddlewareMock: vi.fn(),
   requireScopeMock: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermissionMock: vi.fn(() => async (_c: any, next: any) => next()),
+  // Defaults to "always granted" so every pre-existing test in this file
+  // (which never configures this) keeps behaving exactly as before. The new
+  // permission-gate describe block at the end of this file overrides it per
+  // test to simulate a caller who does/doesn't hold a given resource:action,
+  // and restores the default in its own afterEach.
+  hasPermMock: vi.fn((_resource: string, _action: string) => true),
+  requirePermissionMock: vi.fn(
+    (resource: string, action: string) => async (c: any, next: any) =>
+      authMocks.hasPermMock(resource, action) ? next() : c.json({ error: 'Permission denied' }, 403),
+  ),
   requireMfaMock: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 vi.mock('../middleware/auth', () => ({
@@ -1432,6 +1441,120 @@ describe('PATCH /pam/rules/:id shape validation (Phase 1)', () => {
   });
 });
 
+describe('PATCH /pam/rules/:id — reapprove a suspended auto_approve rule (§6B)', () => {
+  const RULE_ID = '7b41c9a2-0000-4000-8000-00000000000a';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+  });
+
+  const suspendedRule = {
+    id: RULE_ID,
+    orgId: ORG_ID,
+    siteId: null,
+    name: 'auto-elevate installer',
+    matchSigner: 'Acme Corp',
+    matchHash: null,
+    matchPathGlob: null,
+    matchParentImage: null,
+    matchCommandLine: null,
+    matchUser: null,
+    matchAdGroup: null,
+    matchToolName: null,
+    matchRiskTier: null,
+    verdict: 'require_approval',
+    suspendedVerdict: 'auto_approve',
+    reapprovedAt: null,
+    reapprovedByUserId: null,
+  };
+
+  function mockExistingRule(rule: Record<string, unknown>) {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([rule]),
+        })),
+      })),
+    } as any);
+  }
+
+  function rigUpdate() {
+    const setCalls: unknown[] = [];
+    const returning = vi.fn().mockResolvedValue([{ ...suspendedRule, verdict: 'auto_approve', suspendedVerdict: null }]);
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn(() => ({
+          set: vi.fn((arg: unknown) => {
+            setCalls.push(arg);
+            return { where: vi.fn(() => ({ returning })) };
+          }),
+        })),
+      };
+      return fn(tx);
+    });
+    return { setCalls };
+  }
+
+  it('rejects reapprove:true on a rule that is not suspended (400)', async () => {
+    mockExistingRule({ ...suspendedRule, suspendedVerdict: null });
+    const { setCalls } = rigUpdate();
+
+    const res = await app().request(`/pam/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reapprove: true }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(setCalls).toHaveLength(0);
+  });
+
+  it('restores verdict from suspended_verdict, clears it, and stamps reapproved_at/reapproved_by_user_id', async () => {
+    mockExistingRule(suspendedRule);
+    const { setCalls } = rigUpdate();
+
+    const res = await app().request(`/pam/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reapprove: true }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(setCalls[0]).toEqual(
+      expect.objectContaining({
+        verdict: 'auto_approve',
+        suspendedVerdict: null,
+        reapprovedAt: expect.any(Date),
+        reapprovedByUserId: USER_ID,
+      }),
+    );
+  });
+
+  // An explicit verdict edit on a suspended rule supersedes the quarantine:
+  // without clearing suspendedVerdict here, a later plain Re-approve click
+  // (payload.reapprove, no explicit verdict) would restore the STALE
+  // pre-suspension verdict and silently overwrite the admin's fresh edit.
+  it('an explicit verdict edit on a suspended rule also clears suspended_verdict', async () => {
+    mockExistingRule(suspendedRule);
+    const { setCalls } = rigUpdate();
+
+    const res = await app().request(`/pam/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ verdict: 'auto_deny' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(setCalls[0]).toEqual(
+      expect.objectContaining({
+        verdict: 'auto_deny',
+        suspendedVerdict: null,
+      }),
+    );
+  });
+});
+
 // ============================================================
 // Rules CRUD — site-axis enforcement (intra-tenant site privilege escalation).
 // pam_rules is RLS Shape-1 (org_id only), so the SITE axis is app-layer-only.
@@ -2568,5 +2691,124 @@ describe('PAM rules — risk-tier drift (#3128)', () => {
     });
 
     expect(res.status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dedicated pam:approve / pam:manage_policy permission gates
+// (fix/pam-dedicated-permissions). Before this change, respond/revoke/
+// assertion-challenge rode on devices:execute and rules/config/signer-groups
+// writes rode on devices:write — so an Org Technician (who holds both, for
+// ordinary device work) could approve elevations and author PAM policy with
+// no dedicated grant. These tests exercise the REAL requirePermission
+// call-site wiring (via the resource/action-aware mock above), not just that
+// SOME permission check ran.
+// ---------------------------------------------------------------------------
+describe('PAM routes require dedicated pam:approve / pam:manage_policy permissions', () => {
+  // A generic empty-results chain so any db.select()/insert()/update()/delete()
+  // call reaches a clean 404/empty-list rather than crashing — only exercised
+  // on the "not blocked" side of these tests, since the "denied" side never
+  // reaches the handler at all.
+  function chainResolve(value: unknown = []) {
+    const chain: any = Promise.resolve(value);
+    chain.from = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.orderBy = vi.fn(() => chain);
+    chain.limit = vi.fn(() => chain);
+    chain.offset = vi.fn(() => chain);
+    chain.leftJoin = vi.fn(() => chain);
+    chain.values = vi.fn(() => chain);
+    chain.set = vi.fn(() => chain);
+    chain.returning = vi.fn(() => chain);
+    return chain;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+    vi.mocked(db.select).mockImplementation((() => chainResolve([])) as any);
+    vi.mocked(db.insert).mockImplementation((() => chainResolve([])) as any);
+    vi.mocked(db.update).mockImplementation((() => chainResolve([])) as any);
+    vi.mocked(db.delete).mockImplementation((() => chainResolve(undefined)) as any);
+  });
+
+  afterEach(() => {
+    // Never let an override bleed into a describe block that runs after this
+    // one (vi.clearAllMocks() clears call history, not a configured
+    // mockImplementation).
+    authMocks.hasPermMock.mockImplementation(() => true);
+  });
+
+  /** Org Technician shape: broad device/script/alert grants, but NOT pam:*. */
+  function orgTechnicianGrants(resource: string, _action: string): boolean {
+    return resource !== 'pam';
+  }
+
+  type Case = {
+    label: string;
+    method: 'POST' | 'PATCH' | 'DELETE' | 'PUT';
+    path: string;
+    body?: unknown;
+    resource: 'pam';
+    action: 'approve' | 'manage_policy';
+  };
+
+  const CASES: Case[] = [
+    { label: 'assertion-challenge', method: 'POST', path: `/pam/elevation-requests/${REQ_ID}/assertion-challenge`, resource: 'pam', action: 'approve' },
+    { label: 'respond', method: 'POST', path: `/pam/elevation-requests/${REQ_ID}/respond`, body: {}, resource: 'pam', action: 'approve' },
+    { label: 'revoke', method: 'POST', path: `/pam/elevation-requests/${REQ_ID}/revoke`, body: { reason: 'no longer needed' }, resource: 'pam', action: 'approve' },
+    { label: 'rules create', method: 'POST', path: '/pam/rules', body: {}, resource: 'pam', action: 'manage_policy' },
+    { label: 'rules preview', method: 'POST', path: '/pam/rules/preview', body: {}, resource: 'pam', action: 'manage_policy' },
+    { label: 'rules update', method: 'PATCH', path: `/pam/rules/${REQ_ID}`, body: {}, resource: 'pam', action: 'manage_policy' },
+    { label: 'rules delete', method: 'DELETE', path: `/pam/rules/${REQ_ID}`, resource: 'pam', action: 'manage_policy' },
+    { label: 'config put', method: 'PUT', path: '/pam/config', body: {}, resource: 'pam', action: 'manage_policy' },
+    { label: 'signer-groups create', method: 'POST', path: '/pam/signer-groups', body: {}, resource: 'pam', action: 'manage_policy' },
+    { label: 'signer-groups update', method: 'PATCH', path: `/pam/signer-groups/${REQ_ID}`, body: {}, resource: 'pam', action: 'manage_policy' },
+    { label: 'signer-groups delete', method: 'DELETE', path: `/pam/signer-groups/${REQ_ID}`, resource: 'pam', action: 'manage_policy' },
+  ];
+
+  async function fire(tc: Case) {
+    return app().request(tc.path, {
+      method: tc.method,
+      ...(tc.body !== undefined
+        ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tc.body) }
+        : {}),
+    });
+  }
+
+  for (const tc of CASES) {
+    it(`${tc.label}: an Org Technician (devices:* but no pam:*) is denied with 403`, async () => {
+      authMocks.hasPermMock.mockImplementation(orgTechnicianGrants);
+      const res = await fire(tc);
+      expect(res.status).toBe(403);
+    });
+
+    it(`${tc.label}: a caller holding ${tc.resource}:${tc.action} is NOT blocked`, async () => {
+      authMocks.hasPermMock.mockImplementation(
+        (resource: string, action: string) => resource === tc.resource && action === tc.action,
+      );
+      const res = await fire(tc);
+      expect(res.status).not.toBe(403);
+    });
+
+    it(`${tc.label}: a caller holding the '*:*' wildcard is NOT blocked`, async () => {
+      authMocks.hasPermMock.mockImplementation(() => true);
+      const res = await fire(tc);
+      expect(res.status).not.toBe(403);
+    });
+  }
+
+  it('GET routes remain gated on devices:read (unchanged) — an Org Technician can still read', async () => {
+    authMocks.hasPermMock.mockImplementation(
+      (resource: string, action: string) => resource === 'devices' && action === 'read',
+    );
+    vi.mocked(db.select).mockImplementation((sel: unknown) => {
+      const isCount = Boolean(sel && typeof sel === 'object' && 'total' in (sel as Record<string, unknown>));
+      return chainResolve(isCount ? [{ total: 0 }] : []);
+    });
+    const resRules = await app().request('/pam/rules');
+    expect(resRules.status).not.toBe(403);
+    const resActive = await app().request('/pam/active');
+    expect(resActive.status).not.toBe(403);
   });
 });

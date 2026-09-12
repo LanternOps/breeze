@@ -1,9 +1,11 @@
 package agentapp
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 )
@@ -24,7 +26,7 @@ func desktopHelperDownloadURL(version, goos, goarch string) string {
 		ext = ".exe"
 	}
 	return fmt.Sprintf("%s/v%s/%s-%s-%s%s",
-		releasesBase, version, desktopHelperBinaryName, goos, goarch, ext)
+		firstInstallReleaseBase(), version, desktopHelperBinaryName, goos, goarch, ext)
 }
 
 // desktopHelperStageOptions is the input for stageDesktopHelper. Kept as a
@@ -39,14 +41,17 @@ type desktopHelperStageOptions struct {
 	// urlOverride, if non-empty, replaces the full download URL. Test-only.
 	urlOverride string
 
-	// checksumOverride, if non-empty, replaces the checksums.txt lookup. Test-only.
-	checksumOverride string
+	manifestURLOverride      string
+	signatureURLOverride     string
+	clientOverride           *http.Client
+	trustKeysOverride        map[string]ed25519.PublicKey
+	protectedSiblingOverride func(string, string) bool
 }
 
 // stageDesktopHelper installs the real desktop-helper binary at opts.destPath:
 // the copy staged next to the agent (what the .pkg and every build lane ship)
-// if present, otherwise the matching-version, checksum-verified asset from the
-// GitHub release.
+// if present, otherwise the matching-version asset authorized by the signed
+// release manifest.
 //
 // It must NEVER fall back to installing the agent binary under the helper's
 // name, which is what it used to do (#3457). The agent is a multi-call binary,
@@ -62,42 +67,48 @@ type desktopHelperStageOptions struct {
 // so a helper problem never aborts the agent install, matching bootstrapWatchdog.
 func stageDesktopHelper(opts desktopHelperStageOptions) error {
 	sibling := filepath.Join(filepath.Dir(opts.agentPath), desktopHelperBinaryName)
-	data, readErr := os.ReadFile(sibling)
+	info, readErr := os.Stat(sibling)
 	switch {
 	case readErr == nil:
-		if err := writeBinaryAtomically(opts.destPath, data); err != nil {
-			return fmt.Errorf("copy desktop helper to %s: %w", opts.destPath, err)
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("read desktop helper at %s: not a regular file", sibling)
 		}
-		return nil
 	case !errors.Is(readErr, fs.ErrNotExist):
 		// Present but unreadable (permissions, a directory, I/O error). Report
 		// it rather than reaching for the network and masking a local problem.
 		return fmt.Errorf("read desktop helper at %s: %w", sibling, readErr)
 	}
 
-	if isDevBuildVersion(opts.version) {
+	if readErr != nil && isDevBuildVersion(opts.version) {
 		return fmt.Errorf("no desktop helper found at %s and the agent is a dev build (version=%q); build it with `make build` and place it next to the agent binary", sibling, opts.version)
 	}
 
-	url := opts.urlOverride
-	if url == "" {
-		url = desktopHelperDownloadURL(opts.version, opts.goos, opts.goarch)
+	assetURL := opts.urlOverride
+	if assetURL == "" {
+		assetURL = desktopHelperDownloadURL(opts.version, opts.goos, opts.goarch)
 	}
-	checksum := opts.checksumOverride
-	if checksum == "" {
-		if opts.urlOverride != "" {
-			return fmt.Errorf("desktop helper checksum required when urlOverride is set")
-		}
-		var err error
-		checksum, err = fetchReleaseAssetChecksum(releaseChecksumsURL(opts.version), filepath.Base(url))
-		if err != nil {
-			return fmt.Errorf("fetch desktop helper checksum: %w", err)
-		}
+	spec := firstInstallArtifactSpec{
+		component: "desktop-helper", version: opts.version, goos: opts.goos, goarch: opts.goarch,
+		assetURL: assetURL, manifestURL: opts.manifestURLOverride,
+		signatureURL: opts.signatureURLOverride, destPath: opts.destPath,
+		client: opts.clientOverride, trustKeys: opts.trustKeysOverride,
 	}
-
-	fmt.Fprintf(os.Stderr, "Downloading desktop helper from %s ...\n", url)
-	if err := downloadReleaseAsset(url, opts.destPath, checksum); err != nil {
-		return fmt.Errorf("download desktop helper: %w", err)
+	if readErr == nil {
+		protectedSibling := protectedPackagedSibling
+		if opts.protectedSiblingOverride != nil {
+			protectedSibling = opts.protectedSiblingOverride
+		}
+		if protectedSibling(opts.agentPath, sibling) {
+			if filepath.Clean(sibling) == filepath.Clean(opts.destPath) {
+				return nil
+			}
+			return copyProtectedPackagedSibling(sibling, opts.destPath)
+		}
+		spec.sourcePath = sibling
+		spec.assetURL = ""
+	}
+	if err := stageFirstInstallArtifact(spec); err != nil {
+		return fmt.Errorf("verify and stage desktop helper: %w", err)
 	}
 	return nil
 }
@@ -123,22 +134,26 @@ func desktopHelperUnavailableWarning(err error, version, goos, goarch string) st
 
 // writeBinaryAtomically writes data to path via a sibling temp file and an
 // atomic rename, so a failure part-way through can never leave a truncated
-// executable at path. downloadReleaseAsset does the same for the network path;
-// the sibling copy must not be the weaker of the two.
+// executable at path. Signed first-install staging uses the same primitive.
 func writeBinaryAtomically(path string, data []byte) error {
-	// Per-process temp name: two concurrent `service install` runs must not
-	// share a staging file, where one's cleanup would delete the other's
-	// in-flight write.
-	tmpPath := fmt.Sprintf("%s.staging.%d", path, os.Getpid())
-	if err := os.WriteFile(tmpPath, data, 0o755); err != nil {
-		_ = os.Remove(tmpPath)
+	tmp, err := secureTempFor(path)
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	return nil
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 // desktopHelperInstalled reports whether a usable helper binary sits at path.

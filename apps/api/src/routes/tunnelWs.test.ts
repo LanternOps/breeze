@@ -47,6 +47,11 @@ let joinRow:
 };
 let throwOnJoin = false;
 let plainSelectOverride: (() => Promise<unknown[]>) | null = null;
+let partnerRow: { id: string; status: string; deletedAt: Date | null } | undefined = {
+  id: 'partner-1',
+  status: 'active',
+  deletedAt: null,
+};
 
 function setUserRow(row: typeof userRow) {
   userRow = row;
@@ -59,6 +64,9 @@ function setThrowOnJoin(v: boolean) {
 }
 function setPlainSelectOverride(value: typeof plainSelectOverride) {
   plainSelectOverride = value;
+}
+function setPartnerRow(row: typeof partnerRow) {
+  partnerRow = row;
 }
 
 vi.mock('../db', () => ({
@@ -78,6 +86,10 @@ vi.mock('../db', () => ({
                 ? plainSelectOverride()
               : table === 'organizationUsers'
                 ? [{ roleId: 'role-1', siteIds: null }]
+              : table === 'organizations'
+                ? [{ id: 'org-1', partnerId: 'partner-1', status: 'active', deletedAt: null }]
+              : table === 'partners'
+                ? (partnerRow ? [partnerRow] : [])
                 : []
           )),
         })),
@@ -85,7 +97,10 @@ vi.mock('../db', () => ({
         innerJoin: vi.fn(() => ({
           where: vi.fn(() => (
             table === 'rolePermissions'
-              ? Promise.resolve([{ resource: 'remote', action: 'access' }])
+              ? Promise.resolve([
+                  { resource: 'remote', action: 'access' },
+                  { resource: 'devices', action: 'execute' },
+                ])
               : {
                   limit: vi.fn(async () => {
                     if (throwOnJoin) throw new Error('db down');
@@ -105,6 +120,7 @@ vi.mock('../db', () => ({
     })),
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+  runOutsideDbContext: vi.fn(async (fn: () => unknown) => fn()),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -115,6 +131,8 @@ vi.mock('../db/schema', () => ({
   partnerUsers: 'partnerUsers',
   rolePermissions: 'rolePermissions',
   permissions: 'permissions',
+  organizations: 'organizations',
+  partners: 'partners',
 }));
 
 vi.mock('../services/remoteSessionAuth', () => ({
@@ -257,6 +275,7 @@ beforeEach(() => {
   });
   setThrowOnJoin(false);
   setPlainSelectOverride(null);
+  setPartnerRow({ id: 'partner-1', status: 'active', deletedAt: null });
   vi.mocked(checkRemoteAccess).mockResolvedValue({ allowed: true });
   vi.mocked(isViewerSessionRevoked).mockResolvedValue(false);
   vi.mocked(isAgentConnected).mockReturnValue(true);
@@ -435,6 +454,10 @@ describe('revalidateTunnelSession', () => {
   });
 
   it('checks the proxy capability for proxy tunnels', async () => {
+    setJoinRow({
+      session: { userId: 'user-1', status: 'active', deviceId: 'dev-1', orgId: 'org-1', type: 'proxy' },
+      device: { id: 'dev-1', orgId: 'org-1', status: 'online', agentId: 'agent-1' },
+    });
     vi.mocked(checkRemoteAccess).mockResolvedValue({ allowed: false, reason: 'Disabled by policy' });
     await revalidateTunnelSession('tunnel-1', { ...liveConn, tunnelType: 'proxy' });
     expect(checkRemoteAccess).toHaveBeenCalledWith('dev-1', 'proxy');
@@ -600,6 +623,26 @@ describe('enforceTunnelRevocation', () => {
     expect(revokeViewerSession).toHaveBeenCalledWith('tunnel-1');
   });
 
+  it('closes the exact socket and leaves no relay after the owning partner is suspended', async () => {
+    vi.mocked(isViewerSessionRevoked).mockResolvedValue(false);
+    setPartnerRow({ id: 'partner-1', status: 'suspended', deletedAt: null });
+    const ws = makeFakeWs();
+    registerLiveConnection('tunnel-1', ws);
+
+    const closed = await enforceTunnelRevocation('tunnel-1', ws as never);
+
+    expect(closed).toBe(true);
+    expect(ws.close).toHaveBeenCalledWith(4003, 'Access revoked');
+    expect(sendCommandToAgent).toHaveBeenCalledWith(
+      'agent-1',
+      expect.objectContaining({ type: 'tunnel_close', payload: { tunnelId: 'tunnel-1' } }),
+    );
+    expect(revokeViewerSession).toHaveBeenCalledWith('tunnel-1');
+
+    handleTunnelDataFromAgent('tunnel-1', new Uint8Array([1, 2, 3]));
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
   it('FAILS CLOSED: closes 4003 when the revalidation lookup throws', async () => {
     // A DB error mid-check must NOT leave the tunnel relaying.
     vi.mocked(isViewerSessionRevoked).mockResolvedValue(false);
@@ -610,7 +653,7 @@ describe('enforceTunnelRevocation', () => {
     const closed = await enforceTunnelRevocation('tunnel-1', ws as never);
 
     expect(closed).toBe(true);
-    expect(ws.close).toHaveBeenCalledWith(4003, 'Revocation check failed');
+    expect(ws.close).toHaveBeenCalledWith(4003, 'Access revoked');
     // Even on the fail-closed path the lifecycle teardown runs.
     expect(sendCommandToAgent).toHaveBeenCalledWith(
       'agent-1',

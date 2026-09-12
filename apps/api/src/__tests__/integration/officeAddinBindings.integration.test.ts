@@ -82,6 +82,7 @@ describe('createBinding — real-Postgres proof of the 23505 branch (Task 11)', 
         userId: userA.userId,
         partnerId: userA.partnerId,
         boundAuthEpoch: 1,
+        boundMfaEpoch: 1,
         mfaVerifiedAt: new Date(),
       })
     );
@@ -94,6 +95,7 @@ describe('createBinding — real-Postgres proof of the 23505 branch (Task 11)', 
           userId: userB.userId,
           partnerId: userB.partnerId,
           boundAuthEpoch: 1,
+          boundMfaEpoch: 1,
           mfaVerifiedAt: new Date(),
         })
       )
@@ -118,6 +120,7 @@ describe('createBinding — real-Postgres proof of the 23505 branch (Task 11)', 
         userId: user.userId,
         partnerId: user.partnerId,
         boundAuthEpoch: 1,
+        boundMfaEpoch: 1,
         mfaVerifiedAt: new Date(),
       })
     );
@@ -129,6 +132,7 @@ describe('createBinding — real-Postgres proof of the 23505 branch (Task 11)', 
         userId: user.userId,
         partnerId: user.partnerId,
         boundAuthEpoch: 1,
+        boundMfaEpoch: 1,
         mfaVerifiedAt: new Date(),
       })
     );

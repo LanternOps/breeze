@@ -11,6 +11,29 @@ The system supports Windows, macOS, and Linux benchmarks at both Level 1 (essent
 
 ---
 
+## Using the Console
+
+Open **CIS Benchmarks** from the Security section of the left sidebar. Summary cards at the top show fleet compliance, active baselines, and pending remediations, above three tabs:
+
+| Tab | What it shows |
+|-----|---------------|
+| **Compliance** | Every scanned device with its latest compliance score, searchable and filterable by OS |
+| **Baselines** | Configured baselines (benchmark, level, OS, schedule), with create/edit and an on-demand **Scan** action per baseline |
+| **Remediations** | A read-only, status-filterable log of remediation requests and their approval/execution state |
+
+<Steps>
+1. From the **Baselines** tab, click **New Baseline**.
+2. Choose the OS type, CIS level (L1, L2, or Custom), and any check exclusions.
+3. Optionally set a scan schedule (interval or cron).
+4. Save, then click the **play** icon on the baseline row to trigger an immediate scan, or wait for the schedule.
+</Steps>
+
+A partner-scope user can own a baseline **partner-wide** so it applies across every organization the partner manages.
+
+Requesting a remediation and approving or rejecting it are API-only today (see [Remediation](#remediation) below) -- the **Remediations** tab surfaces the resulting queue but has no request or decision buttons.
+
+---
+
 ## Key Concepts
 
 ### Operating System Types

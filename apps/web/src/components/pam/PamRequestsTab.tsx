@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Inbox } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
+import { usePermissions } from '../../lib/permissions';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import PamRespondModal from './PamRespondModal';
@@ -55,6 +56,9 @@ const FLOW_OPTIONS: Array<ElevationFlowType | ''> = ['', 'uac_intercept', 'tech_
 
 export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
   const { t } = useTranslation('security');
+  const { can } = usePermissions();
+  const canApprove = can('pam', 'approve');
+  const canManage = can('pam', 'manage_policy');
   const [requests, setRequests] = useState<ElevationRequest[]>([]);
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 50, total: 0 });
   const [status, setStatus] = useState<ElevationStatus | ''>('pending');
@@ -215,8 +219,8 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
             </thead>
             <tbody className={tbodyClass}>
               {requests.map((r) => {
-                const canRespond = r.status === 'pending';
-                const canRevoke = (ACTIVE_STATUSES as readonly string[]).includes(r.status);
+                const canRespond = r.status === 'pending' && canApprove;
+                const canRevoke = (ACTIVE_STATUSES as readonly string[]).includes(r.status) && canApprove;
                 const attribution = decisionAttribution(r);
                 // Policy/rule denials already name their source — the raw
                 // "Blocked by…" string is then redundant.
@@ -301,17 +305,19 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                             {t('pamPamRequestsTab.actions.revoke', { defaultValue: 'Revoke' })}
                           </button>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => setRuleDraft(r)}
-                          data-testid={`pam-create-rule-btn-${r.id}`}
-                          title={t('pamPamRequestsTab.actions.ruleTitle', {
-                            defaultValue: 'Create a PAM rule pre-filled from this request',
-                          })}
-                          className={btnOutlineClass}
-                        >
-                          {t('pamPamRequestsTab.actions.rule', { defaultValue: 'Rule…' })}
-                        </button>
+                        {canManage && (
+                          <button
+                            type="button"
+                            onClick={() => setRuleDraft(r)}
+                            data-testid={`pam-create-rule-btn-${r.id}`}
+                            title={t('pamPamRequestsTab.actions.ruleTitle', {
+                              defaultValue: 'Create a PAM rule pre-filled from this request',
+                            })}
+                            className={btnOutlineClass}
+                          >
+                            {t('pamPamRequestsTab.actions.rule', { defaultValue: 'Rule…' })}
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>

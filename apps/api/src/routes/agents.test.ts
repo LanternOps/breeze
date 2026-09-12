@@ -33,6 +33,15 @@ vi.mock('../services/auditEvents', () => ({
 vi.mock('../services/tenantStatus', () => ({
   getActiveOrgTenant: vi.fn(async () => ({ orgId: 'org-active', partnerId: 'partner-active' })),
 }));
+vi.mock('../services/partnerDeviceCapacity', () => ({
+  admitPartnerDeviceCapacity: vi.fn(async (_tx: unknown, input: { expectedPartnerId: string }) => ({
+    allowed: true,
+    partnerId: input.expectedPartnerId,
+    maxDevices: null,
+    activeCount: null,
+  })),
+  PartnerDeviceCapacityError: class PartnerDeviceCapacityError extends Error {},
+}));
 vi.mock('../services/filesystemAnalysis', () => ({
   parseFilesystemAnalysisStdout: vi.fn(() => ({ summary: { filesScanned: 1 } })),
   saveFilesystemSnapshot: vi.fn(() => Promise.resolve({ id: 'snapshot-1' })),
@@ -74,6 +83,16 @@ const defaultUpdateChain = () => ({
     }))
   }))
 });
+
+function mockResolvedEnrollmentPartner(partnerId = 'partner-123') {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([{ partnerId }]),
+      }),
+    }),
+  } as any);
+}
 
 vi.mock('../db', () => ({
   db: {
@@ -360,6 +379,8 @@ describe('agent routes', () => {
         })
       } as any);
 
+      mockResolvedEnrollmentPartner();
+
       // Then checks for colliding devices:
       // db.select().from(devices).where(...).orderBy(devices.createdAt) — every
       // match, oldest first, no `.limit` (#2764).
@@ -490,6 +511,8 @@ describe('agent routes', () => {
         })
       } as any);
 
+      mockResolvedEnrollmentPartner();
+
       // Colliding-device lookup: `.orderBy(devices.createdAt)`, no `.limit` (#2764).
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -602,6 +625,8 @@ describe('agent routes', () => {
           })
         })
       } as any);
+
+      mockResolvedEnrollmentPartner();
 
       const tx = {
         insert: vi.fn().mockReturnValue({

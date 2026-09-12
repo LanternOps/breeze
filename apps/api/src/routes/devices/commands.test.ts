@@ -1274,6 +1274,10 @@ describe('device commands routes', () => {
       id: 'device-a', orgId: 'org-123', hostname: 'host-a', siteId: 'site-allowed',
       status: 'online', lastSeenAt: new Date(Date.now() - 60_000),
       maintenanceStartedAt: null, maintenanceUntil: null, maintenanceReason: null, maintenanceStartedBy: null,
+      agentTokenHash: 'current-agent-hash', pendingTokenHash: 'pending-agent-hash',
+      pendingWatchdogTokenHash: 'pending-watchdog-hash', pendingHelperTokenHash: 'pending-helper-hash',
+      pendingTokenExpiresAt: new Date(Date.now() + 60_000), mtlsCertCfId: 'internal-cert-id',
+      agentTokenSuspendedReason: 'internal-reason',
       ...over,
     });
     const enterBody = (over: Record<string, unknown> = {}) => JSON.stringify({
@@ -1338,6 +1342,13 @@ describe('device commands routes', () => {
       const body = await res.json();
       expect(body).toMatchObject({ success: true, action: 'enable' });
       expect(body.maintenance).toMatchObject({ reason: 'scheduled patching' });
+      expect(body.device).not.toHaveProperty('agentTokenHash');
+      expect(body.device).not.toHaveProperty('pendingTokenHash');
+      expect(body.device).not.toHaveProperty('pendingWatchdogTokenHash');
+      expect(body.device).not.toHaveProperty('pendingHelperTokenHash');
+      expect(body.device).not.toHaveProperty('pendingTokenExpiresAt');
+      expect(body.device).not.toHaveProperty('mtlsCertCfId');
+      expect(body.device).not.toHaveProperty('agentTokenSuspendedReason');
       expect(calls).toEqual(['select-for-update', 'update']);
       expect(captured[0]).toMatchObject({ status: 'maintenance', maintenanceReason: 'scheduled patching', maintenanceStartedBy: 'user-123' });
       expect(consumeStepUpGrant).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111', {
@@ -1438,7 +1449,12 @@ describe('device commands routes', () => {
       const { captured } = mockMaintenanceTx(row);
       const res = await post(JSON.stringify({ enable: false }));
       expect(res.status).toBe(200);
-      expect(await res.json()).toMatchObject({ success: true, changed: true });
+      const body = await res.json();
+      expect(body).toMatchObject({ success: true, changed: true });
+      expect(body.device).not.toHaveProperty('agentTokenHash');
+      expect(body.device).not.toHaveProperty('pendingTokenHash');
+      expect(body.device).not.toHaveProperty('pendingTokenExpiresAt');
+      expect(body.device).not.toHaveProperty('mtlsCertCfId');
       expect(captured[0]).toMatchObject({ status: 'offline', maintenanceUntil: null });
       expect(validateStepUpGrant).not.toHaveBeenCalled();
       expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({

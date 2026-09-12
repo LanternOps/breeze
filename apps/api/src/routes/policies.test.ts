@@ -194,50 +194,25 @@ describe('policy routes', () => {
     expect(res.status).toBe(404);
   });
 
-  it('evaluates a policy through policyEvaluationService', async () => {
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([basePolicyRow]),
-        }),
-      }),
-    } as any);
+  // Retired legacy execution routes (security hardening): POST
+  // /:id/activate, /:id/evaluate, and /:id/remediate bypassed the MFA +
+  // automations:write + site-scoped-target authority contract enforced by
+  // the modern manual automation trigger (`POST /automations/:id/trigger`).
+  // They are removed outright — callers migrate to the automation trigger
+  // endpoint.
+  it.each(['activate', 'evaluate', 'remediate'])(
+    'returns 404 for POST /policies/:id/%s (route removed)',
+    async (action) => {
+      const res = await app.request(`/policies/${policyId}/${action}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
 
-    vi.mocked(evaluatePolicy).mockResolvedValue({
-      message: 'Policy evaluation completed',
-      policyId,
-      devicesEvaluated: 1,
-      results: [],
-      summary: { compliant: 1, non_compliant: 0 },
-      evaluatedAt: new Date().toISOString(),
-    });
-
-    const res = await app.request(`/policies/${policyId}/evaluate`, {
-      method: 'POST',
-      headers: { Authorization: 'Bearer token' },
-    });
-
-    expect(res.status).toBe(200);
-    expect(evaluatePolicy).toHaveBeenCalled();
-  });
-
-  it('returns remediation configuration error when no automation is mapped', async () => {
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([basePolicyRow]),
-        }),
-      }),
-    } as any);
-    vi.mocked(resolvePolicyRemediationAutomationId).mockResolvedValue(null);
-
-    const res = await app.request(`/policies/${policyId}/remediate`, {
-      method: 'POST',
-      headers: { Authorization: 'Bearer token' },
-    });
-
-    expect(res.status).toBe(400);
-  });
+      expect(res.status).toBe(404);
+      expect(evaluatePolicy).not.toHaveBeenCalled();
+      expect(resolvePolicyRemediationAutomationId).not.toHaveBeenCalled();
+    }
+  );
 
   it('returns 404 for DELETE (delete removed)', async () => {
     const res = await app.request(`/policies/${policyId}`, {

@@ -93,7 +93,7 @@ Services    (10,000+)
 | **Object storage** | S3 cross-region replication or daily `rclone sync` | Daily | 30 days |
 | **Configuration** | Encrypted backup of `.env`, certs, and secrets | On every change | 90 days |
 | **TLS/mTLS certificates** | Backup private keys and cert files | On every change | Until expiry + 30 days |
-| **`api_data` volume** | `docker run` + `tar` (no script flag) | Daily | Match the database retention |
+| **`api_data` volume** | `scripts/backup.sh --data` (included in `--all`) | Daily | Match the database retention |
 | **`redis_data` volume** | Do not back up | N/A | Rebuildable. Preserve the volume, but never restore a stale snapshot over a live database |
 | **Go agents** | No backup needed | N/A | Agents auto-reconnect and re-sync |
 
@@ -170,7 +170,7 @@ RESTORE_TEST_ALERT_URL=https://hooks.slack.com/services/...   # optional
 > The dumps are gpg-encrypted before they leave the droplet (the dump contains all
 > tenant data in the clear; app-layer field encryption only covers secret columns).
 > `restore-test.sh` decrypts with the same passphrase. Losing the passphrase makes
-> the off-region copies unrecoverable — keep it in an offline vault as well.
+> the off-region copies unrecoverable — it is also held in the 1Password vault "Breeze Compliance".
 
 **Cron (on the droplet):**
 
@@ -708,12 +708,33 @@ If the attacker modified data, perform a targeted or full restore from a backup 
 
 ### Internal Notification Chain
 
-| Priority | Who to Notify | Method | Timeframe |
-|----------|--------------|--------|-----------|
-| **P1** (full outage) | On-call engineer, Engineering lead, CTO | PagerDuty / phone call | Immediately |
-| **P2** (degraded service) | On-call engineer, Engineering lead | Slack #incidents | Within 5 minutes |
-| **P3** (minor issue) | On-call engineer | Slack #ops | Within 15 minutes |
-| **Security incident** | On-call engineer, Security lead, CTO, Legal | Phone call + encrypted channel | Immediately |
+Breeze production is operated by a single on-call operator (the founder). There is no
+separate engineering lead, CTO, security lead, or legal function; the roles below are
+filled as stated. Alerts are delivered by Alertmanager to the operator's phone.
+
+| Priority | Who acts | How they are reached | Timeframe |
+|----------|----------|----------------------|-----------|
+| **P1** (full outage) | Operator | Alertmanager page to phone; automated restore-test and dead-man alerts also page | Immediately |
+| **P2** (degraded service) | Operator | Alertmanager notification | Within 15 minutes |
+| **P3** (minor issue) | Operator | Alertmanager notification, reviewed at next working session | Within 1 business day |
+| **Security incident** | Operator, with Huntress MDR for endpoint/tenant detections | Alertmanager page; Huntress escalation call/email | Immediately |
+
+**Backup contact.** If the operator is unreachable for more than 4 hours during a P1 or
+security incident, the designated backup contact (name, relationship and phone are recorded in the
+1Password vault "Breeze Compliance", next to the break-glass credentials) is authorized to use the
+DigitalOcean console break-glass account to restore service following Scenario 3 of this
+runbook, and to send the customer notifications below. Break-glass credentials are held
+in the 1Password vault "Breeze Compliance" (which also holds the off-region backup GPG passphrases and the LUKS keyfile + header backup for each droplet); use of the break-glass account is alerted on and must be recorded in
+the incident register.
+
+**Outside counsel and disclosure.** For a security incident involving customer data, the
+operator engages outside counsel or the cyber-insurance incident hotline (both recorded
+in the 1Password vault "Breeze Compliance") before customer notification to
+confirm notification obligations and timing.
+
+**Incident register.** Every P1, P2, and security incident is recorded in the incident
+register (`breeze-evidence/soc2/incident-register.md`) with detection time, severity,
+actions, resolution time, and a link to the post-incident review.
 
 ### External Communication
 

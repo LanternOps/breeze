@@ -76,12 +76,12 @@ vi.mock('../../middleware/auth', () => ({
   isInteractiveUserSession: vi.fn(() => true),
 }));
 
-vi.mock('./helpers', () => ({
+vi.mock('./helpers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./helpers')>()),
   getPagination: vi.fn(() => ({ page: 1, limit: 50, offset: 0 })),
   getDeviceWithOrgCheck: vi.fn(),
   getDeviceWithOrgAndSiteCheck: vi.fn(),
   SITE_ACCESS_DENIED: Symbol('SITE_ACCESS_DENIED'),
-  stripSensitiveDeviceFields: vi.fn((d: unknown) => d),
 }));
 
 vi.mock('../../services/deviceUninstallState', () => ({

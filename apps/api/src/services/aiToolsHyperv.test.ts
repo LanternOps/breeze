@@ -38,6 +38,13 @@ import { registerHypervTools } from './aiToolsHyperv';
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const DEVICE_ID = '22222222-2222-2222-2222-222222222222';
 const VM_ID = '33333333-3333-3333-3333-333333333333';
+const CONFIG_ID = '44444444-4444-4444-8444-444444444444';
+
+// D20b follow-up: resolveBackupWriteCommandDestination/resolveBackupProviderConfig
+// (services/backupProviderConfig.ts) run for real against the mocked db, so
+// dispatch-and-restore tests need a backup_configs row queued for the
+// destination-resolution select.
+const DESTINATION_CONFIG_ROW = { provider: 'local', providerConfig: { path: '/tmp/backups' }, encryption: false };
 
 const EXPECTED_TOOLS = [
   'query_hyperv_vms',
@@ -167,8 +174,16 @@ function prepareHandlerMocks(toolName: string) {
       mockSelectSequence([[vmRow]]);
       break;
     case 'manage_hyperv_vm':
-    case 'trigger_hyperv_backup':
       mockSelectSequence([[vmRow]]);
+      break;
+    case 'trigger_hyperv_backup':
+      // D20b follow-up: resolveBackupWriteCommandDestination issues its own
+      // db.select for the backup_configs row (2nd select, after the VM
+      // lookup) — same builder the REST /hyperv/backup route now uses.
+      mockSelectSequence([
+        [vmRow],
+        [DESTINATION_CONFIG_ROW],
+      ]);
       vi.mocked(db.insert).mockImplementationOnce(() =>
         createInsertChain([{ id: 'backup-job-1' }]) as any
       );
@@ -177,9 +192,18 @@ function prepareHandlerMocks(toolName: string) {
       mockSelectSequence([[vmRow]]);
       break;
     case 'restore_hyperv_vm':
+      // D20b follow-up: resolveBackupProviderConfig issues a 3rd db.select
+      // for the backup_configs row the snapshot's configId points at.
       mockSelectSequence([
         [{ id: DEVICE_ID }],
-        [{ id: '66666666-6666-4666-8666-666666666666', providerSnapshotId: 'hyperv-accounting-1', metadata: { backupKind: 'hyperv_export' } }],
+        [{
+          id: '66666666-6666-4666-8666-666666666666',
+          orgId: ORG_ID,
+          providerSnapshotId: 'hyperv-accounting-1',
+          configId: CONFIG_ID,
+          metadata: { backupKind: 'hyperv_export' },
+        }],
+        [DESTINATION_CONFIG_ROW],
       ]);
       break;
     default:
@@ -293,9 +317,45 @@ describe('aiToolsHyperv handlers', () => {
     expect(queueCommandForExecution).toHaveBeenCalledWith(
       DEVICE_ID,
       'hyperv_backup',
-      { backupJobId: 'backup-job-1', vmName: 'Accounting VM', consistencyType: 'crash' },
+      {
+        backupJobId: 'backup-job-1',
+        // D20b follow-up: same provider/providerConfig/storageEncryption
+        // shape the REST /hyperv/backup route now attaches — the helper only
+        // builds a manager from THIS payload when it has no agent.yaml
+        // backup config, the normal state for every policy-managed device.
+        configId: CONFIG_ID,
+        provider: 'local',
+        providerConfig: { path: '/tmp/backups' },
+        storageEncryption: { required: false, mode: 'disabled' },
+        vmName: 'Accounting VM',
+        consistencyType: 'crash',
+      },
       expect.objectContaining({ userId: 'user-1' })
     );
+  });
+
+  // D20b follow-up: a resolved config id whose backup_configs row has since
+  // been deleted must fail clearly and never dispatch a command the helper
+  // can't act on.
+  it('fails the AI-dispatched Hyper-V backup when the destination config no longer resolves', async () => {
+    const vmRow = {
+      id: VM_ID,
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      vmName: 'Accounting VM',
+    };
+    mockSelectSequence([
+      [vmRow],
+      [], // backup_configs row missing
+    ]);
+
+    const result = await toolMap.get('trigger_hyperv_backup')!.handler(
+      { vmId: VM_ID, consistencyType: 'crash' },
+      makeAuth()
+    );
+
+    expect(JSON.parse(result)).toEqual({ error: 'Backup destination configuration not found for this snapshot' });
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
   });
 
   it('queues Hyper-V restore commands using snapshotId', async () => {
@@ -313,8 +373,36 @@ describe('aiToolsHyperv handlers', () => {
         snapshotId: 'hyperv-accounting-1',
         vmName: 'Recovered VM',
         generateNewId: true,
+        // D20b follow-up: the helper builds its read provider from THIS
+        // command's own payload the same way REST /hyperv/restore does.
+        provider: 'local',
+        providerConfig: { path: '/tmp/backups' },
       },
       expect.objectContaining({ userId: 'user-1' })
     );
+  });
+
+  // D20b follow-up: a snapshot that predates destination tracking (configId
+  // NULL) must fail with a clear error rather than silently dispatching a
+  // restore the helper can't act on.
+  it('fails AI-dispatched Hyper-V restore for a snapshot that predates destination tracking', async () => {
+    mockSelectSequence([
+      [{ id: DEVICE_ID }],
+      [{
+        id: '66666666-6666-4666-8666-666666666666',
+        orgId: ORG_ID,
+        providerSnapshotId: 'hyperv-accounting-1',
+        configId: null,
+        metadata: { backupKind: 'hyperv_export' },
+      }],
+    ]);
+
+    const result = await toolMap.get('restore_hyperv_vm')!.handler(
+      { deviceId: DEVICE_ID, snapshotId: '66666666-6666-4666-8666-666666666666', vmName: 'Recovered VM' },
+      makeAuth()
+    );
+
+    expect(JSON.parse(result).error).toMatch(/predates backup destination tracking/);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
   });
 });

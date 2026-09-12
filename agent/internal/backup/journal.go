@@ -91,6 +91,12 @@ type snapshotJournal struct {
 	// journal, so the caller can best-effort clean up that snapshot's
 	// abandoned remote prefix. Empty when Open found no stale journal.
 	staleSnapshotID string
+
+	// createdAt is the journal's original creation time (from its header,
+	// preserved verbatim across a resume — NOT reset on resume). Age()
+	// reports time.Since(createdAt), used at publish time to fence a
+	// resumed run against journalMaxAge (see leaseGate in snapshot.go).
+	createdAt time.Time
 }
 
 // journalFileName returns the deterministic filename for a destination
@@ -171,6 +177,7 @@ func openSnapshotJournal(dir, identity string, maxAge time.Duration) (*snapshotJ
 					entries:           entries,
 					resumedBytesTotal: resumedBytes,
 					resumed:           true,
+					createdAt:         header.CreatedAt,
 				}, true, nil
 			}
 			slog.Warn("failed to reopen backup journal for append, starting fresh",
@@ -292,6 +299,7 @@ func createFreshJournal(path, identity string) (*snapshotJournal, bool, error) {
 		path:       path,
 		snapshotID: header.SnapshotID,
 		identity:   identity,
+		createdAt:  header.CreatedAt,
 	}, false, nil
 }
 
@@ -318,6 +326,12 @@ func (j *snapshotJournal) StaleSnapshotID() (string, bool) {
 // it never fails the backup in progress.
 func (j *snapshotJournal) Record(f SnapshotFile) error {
 	if j == nil {
+		return nil
+	}
+	if !f.HasContent() {
+		// Content-less entries (symlinks/directories) are rebuilt from the
+		// live filesystem on every run, never resumed from a checkpoint —
+		// see contentlessEntry's doc comment (snapshot.go).
 		return nil
 	}
 	line, err := json.Marshal(f)
@@ -369,6 +383,16 @@ func (j *snapshotJournal) ResumedBytes() int64 {
 		return 0
 	}
 	return j.resumedBytesTotal
+}
+
+// Age reports how long ago this journal was originally created (the
+// header's CreatedAt, unaffected by resume — see the createdAt field doc).
+// A nil journal reports zero age.
+func (j *snapshotJournal) Age() time.Duration {
+	if j == nil || j.createdAt.IsZero() {
+		return 0
+	}
+	return time.Since(j.createdAt)
 }
 
 // journalRemoveFn is a test seam over os.Remove so Complete's Remove-failure

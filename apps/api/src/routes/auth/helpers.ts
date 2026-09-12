@@ -23,10 +23,7 @@ import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant } from '../../
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import type { AuthContext } from '../../middleware/auth';
 import type { RequestLike } from '../../services/auditEvents';
-import type {
-  AuthorizedUserSession,
-  LegacyUserSessionDuringTransition,
-} from '../../services/userSession';
+import type { AuthorizedUserSession } from '../../services/userSession';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import {
   decryptMfaTotpSecret,
@@ -41,6 +38,7 @@ import {
   hashRecoveryCodes as hashRecoveryCodesWithKdf,
 } from '../../services/recoveryCodeAuth';
 import { assertActiveTenantContext } from '../../services/tenantStatus';
+import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import type { PublicTokenPayload, UserTokenContext } from './schemas';
 import {
   REFRESH_COOKIE_NAME,
@@ -56,18 +54,6 @@ import {
 const { db } = dbModule;
 
 export const AUTH_BINDING_COOKIE_NAME = 'breeze_auth_binding';
-export const AUTH_TRANSITION_CAPABILITY_HEADER = 'x-breeze-auth-transition';
-
-export function isAuthTransitionV1Request(c: Context): boolean {
-  return c.req.header(AUTH_TRANSITION_CAPABILITY_HEADER)?.trim().toLowerCase() === 'v1';
-}
-
-export function authClientUpgradeRequiredResponse(c: Context): Response {
-  return c.json({
-    error: 'Authentication client upgrade required',
-    reason: 'auth_client_upgrade_required',
-  }, 426);
-}
 
 /**
  * Run `fn` inside the SYSTEM DB access context.
@@ -162,6 +148,14 @@ export function getClientIP(c: RequestLike): string {
 export function getClientRateLimitKey(c: RequestLike): string {
   const trustedIp = getClientIP(c);
   if (trustedIp && trustedIp !== 'unknown') {
+    const peerIp = getImmediatePeerIpOrUndefined(c);
+    if (peerIp === trustedIp) {
+      // Direct mode now exposes the authentic socket peer to audit consumers,
+      // but limiter keys must retain their existing `socket:` namespace. A
+      // deploy must not hand every direct client a fresh parallel bucket merely
+      // because attribution stopped returning the `unknown` sentinel.
+      return `socket:${rateLimitIpKey(peerIp)}`;
+    }
     // rateLimitIpKey, not the raw address: an IPv6 client typically owns its
     // whole /64, so a per-address bucket is free to rotate and the limit means
     // nothing. IPv4 is unchanged. Only the KEY is folded — getClientIP() still
@@ -366,6 +360,21 @@ export async function requireFreshMfaStepUp(
     }, 429);
   }
 
+  const auth = c.get('auth') as AuthContext | undefined;
+  if (!auth || auth.user.id !== userId) {
+    return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
+  }
+  const policy = await getEffectiveMfaPolicy({
+    scope: auth.scope,
+    userId,
+    orgId: auth.orgId ?? null,
+    partnerId: auth.partnerId ?? null,
+  }, { failClosedMethods: true });
+  if (!policy.allowedMethods.totp) {
+    const message = 'This MFA method is not permitted';
+    return c.json({ error: message, message }, 403);
+  }
+
   const [user] = await db
     .select({ mfaEnabled: users.mfaEnabled, mfaSecret: users.mfaSecret, mfaMethod: users.mfaMethod })
     .from(users)
@@ -396,7 +405,7 @@ export async function requireFreshMfaStepUp(
 }
 
 // ============================================
-// Existing-factor step-up for factor addition (SR2-20)
+// Existing-factor step-up for protected-account MFA mutations
 // ============================================
 
 /**
@@ -440,7 +449,8 @@ export async function userIsMfaProtected(userId: string): Promise<boolean> {
 }
 
 /**
- * Enforce the SR2-20 existing-factor step-up on a factor-ADDITION endpoint.
+ * Enforce an operation-bound existing-factor step-up on a protected-account
+ * MFA mutation.
  * No-factor accounts (initial enrollment) pass with password-only (returns
  * null) — this avoids a chicken-and-egg lockout. Already-protected accounts
  * must present a fresh grant bound to the live epochs + this session's
@@ -448,7 +458,7 @@ export async function userIsMfaProtected(userId: string): Promise<boolean> {
  * mint time) so a factor change since the grant was minted (which bumps
  * `mfa_epoch` + revokes refresh families) invalidates it.
  *
- * Every factor-addition route calls this TWICE, in two phases:
+ * Every protected mutation calls this TWICE, in two phases:
  *
  * `opts.consume: false` = non-consuming validate, at the gate. Runs before the
  * factor proof (TOTP/SMS code, WebAuthn assertion) so a missing/bogus/stale
@@ -457,7 +467,7 @@ export async function userIsMfaProtected(userId: string): Promise<boolean> {
  * write, once the factor proof has validated. A wrong code therefore leaves the
  * grant intact for a retry, while a successful add burns it exactly once (the
  * consume re-checks the binding against the LIVE epochs and fails CLOSED, so
- * one grant can never write two factors).
+ * one grant can never authorize two writes).
  *
  * Returns a 403/503 Response to short-circuit the caller, or null to proceed.
  */
@@ -465,7 +475,11 @@ export async function enforceExistingFactorStepUp(
   c: Context,
   auth: AuthContext,
   grantId: string | undefined,
-  opts: { consume: boolean },
+  opts: {
+    consume: boolean;
+    operation?: 'add_factor' | 'rotate_recovery_codes' | 'delete_passkey';
+    resourceDigest?: string;
+  },
 ): Promise<Response | null> {
   if (!(await userIsMfaProtected(auth.user.id))) return null;
 
@@ -476,10 +490,11 @@ export async function enforceExistingFactorStepUp(
 
   const bind = {
     userId: auth.user.id,
-    operation: 'add_factor' as const,
+    operation: opts.operation ?? 'add_factor',
     authEpoch: epochs.authEpoch,
     mfaEpoch: epochs.mfaEpoch,
     sid: auth.token.sid,
+    resourceDigest: opts.resourceDigest,
   };
 
   const ok = grantId
@@ -652,8 +667,9 @@ export async function resolveEnrollmentStepUp(
 /**
  * True when the account holds a re-auth factor STRONGER than a password that
  * the browser register UI can actually exercise: TOTP MFA or an active
- * passkey. Deliberately excludes SMS (no authenticated step-up SMS sender
- * exists; SMS-method users use the password path — see the #2707 spec).
+ * passkey. Deliberately excludes SMS because the authenticator-device
+ * registration UI does not exercise the authenticated SMS sender;
+ * SMS-method users use the password path there (see the #2707 spec).
  * Gates POST /authenticator/register-grant: password re-auth is refused when
  * this returns true, keeping the server tiering identical to the UI tiering.
  */
@@ -1035,14 +1051,6 @@ export function setRefreshTokenCookie(c: Context, refreshToken: string): void {
 }
 
 export function installAuthorizedUserSessionCookies(c: Context, issued: AuthorizedUserSession): void {
-  setRefreshTokenCookie(c, issued.refreshToken);
-}
-
-/** Temporary companion boundary for the source-frozen enforcement-false seam. */
-export function installLegacyUserSessionCookiesDuringTransition(
-  c: Context,
-  issued: LegacyUserSessionDuringTransition,
-): void {
   setRefreshTokenCookie(c, issued.refreshToken);
 }
 

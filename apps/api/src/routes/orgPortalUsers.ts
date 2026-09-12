@@ -1,6 +1,6 @@
 import type { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
-import { and, eq, isNull, desc, ne } from 'drizzle-orm';
+import { and, eq, isNull, desc, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, portalUsers, tickets, ticketComments, assetCheckouts } from '../db/schema';
 import { linkLoginToContact, type LoginContactOutcome } from '../services/contacts/loginLink';
@@ -8,7 +8,9 @@ import { requireMfa, requirePermission, requireScope, type AuthContext } from '.
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { getEmailService } from '../services/email';
-import { storePortalInviteToken, buildPortalUrl } from './portal/helpers';
+import { getRedis } from '../services/redis';
+import { purgeClientAiSessionsForUsers } from '../services/clientAiSessionStore';
+import { storePortalInviteToken, buildPortalUrl, purgePortalSessionsForUsers } from './portal/helpers';
 import { invitePortalUserSchema, bulkInvitePortalUsersSchema, updatePortalUserSchema } from '@breeze/shared';
 
 // MSP-facing customer-portal user management (portal_users): list, invite,
@@ -65,7 +67,7 @@ async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> 
 }
 
 async function getOrgScopedPortalUser(orgId: string, userId: string) {
-  const [row] = await db.select({ id: portalUsers.id, orgId: portalUsers.orgId, email: portalUsers.email, name: portalUsers.name, passwordHash: portalUsers.passwordHash, status: portalUsers.status })
+  const [row] = await db.select({ id: portalUsers.id, orgId: portalUsers.orgId, email: portalUsers.email, name: portalUsers.name, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status })
     .from(portalUsers).where(and(eq(portalUsers.id, userId), eq(portalUsers.orgId, orgId))).limit(1);
   return row ?? null;
 }
@@ -168,8 +170,12 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     const { email, name, message } = c.req.valid('json');
     const normalizedEmail = email.trim().toLowerCase();
 
-    const [existing] = await db.select({ id: portalUsers.id, email: portalUsers.email, passwordHash: portalUsers.passwordHash, status: portalUsers.status, contactId: portalUsers.contactId })
+    const [existing] = await db.select({ id: portalUsers.id, email: portalUsers.email, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status, contactId: portalUsers.contactId })
       .from(portalUsers).where(and(eq(portalUsers.orgId, org.id), eq(portalUsers.email, normalizedEmail))).limit(1);
+
+    if (existing && existing.authMethod !== 'password') {
+      return c.json({ error: 'This identity is managed by an external sign-in provider.' }, 409);
+    }
 
     if (existing && existing.status === 'disabled') {
       return c.json({ error: 'This user is disabled. Reactivate them before inviting.' }, 409);
@@ -202,7 +208,10 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
         contactLink = resolved.link;
         if (resolved.contactId) contactPatch.contactId = resolved.contactId;
       }
-      await db.update(portalUsers).set({ name: name ?? undefined, status: 'invited', invitedBy: auth.user.id, invitedAt: now, updatedAt: now, ...contactPatch }).where(eq(portalUsers.id, existing.id)).returning({ id: portalUsers.id });
+      await db.update(portalUsers).set({ name: name ?? undefined, status: 'invited', authEpoch: sql`${portalUsers.authEpoch} + 1`, invitedBy: auth.user.id, invitedAt: now, updatedAt: now, ...contactPatch }).where(eq(portalUsers.id, existing.id)).returning({ id: portalUsers.id });
+      await purgePortalSessionsForUsers([existing.id]);
+      const redis = getRedis();
+      if (redis) await purgeClientAiSessionsForUsers(redis, [existing.id]);
       userId = existing.id;
     } else {
       const resolved = await resolveInviteContact(org.id, normalizedEmail, name ?? null, auth.user.id);
@@ -230,7 +239,16 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     if (Object.keys(body).length === 0) return c.json({ error: 'No updates provided' }, 400);
     const target = await getOrgScopedPortalUser(org.id, c.req.param('userId')!);
     if (!target) return c.json({ error: 'Portal user not found' }, 404);
-    const [updated] = await db.update(portalUsers).set({ ...body, updatedAt: new Date() }).where(eq(portalUsers.id, target.id)).returning({ id: portalUsers.id, status: portalUsers.status });
+    const [updated] = await db.update(portalUsers).set({
+      ...body,
+      ...(body.status !== undefined ? { authEpoch: sql`${portalUsers.authEpoch} + 1` } : {}),
+      updatedAt: new Date(),
+    }).where(eq(portalUsers.id, target.id)).returning({ id: portalUsers.id, status: portalUsers.status });
+    if (body.status !== undefined) {
+      await purgePortalSessionsForUsers([target.id]);
+      const redis = getRedis();
+      if (redis) await purgeClientAiSessionsForUsers(redis, [target.id]);
+    }
     writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.update', resourceType: 'portal_user', resourceId: target.id, details: { changedFields: Object.keys(body) } });
     return c.json({ data: { id: updated!.id, status: updated!.status } });
   });
@@ -241,6 +259,7 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     const auth = c.get('auth') as AuthContext;
     const target = await getOrgScopedPortalUser(org.id, c.req.param('userId')!);
     if (!target) return c.json({ error: 'Portal user not found' }, 404);
+    if (target.authMethod !== 'password') return c.json({ error: 'This identity is managed by an external sign-in provider.' }, 409);
     if (target.status === 'disabled') return c.json({ error: 'This user is disabled. Reactivate them first.' }, 409);
     if (target.passwordHash && target.status === 'active') return c.json({ error: 'This account is already set up.' }, 409);
     const [orgRow] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, org.id)).limit(1);
@@ -255,14 +274,17 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     const auth = c.get('auth') as AuthContext;
     const { userIds } = c.req.valid('json');
     // "Pending setup" = no password. Invite selected, or all pending in the org.
-    const baseWhere = and(eq(portalUsers.orgId, org.id), isNull(portalUsers.passwordHash), ne(portalUsers.status, 'disabled'));
+    const baseWhere = and(eq(portalUsers.orgId, org.id), eq(portalUsers.authMethod, 'password'), isNull(portalUsers.passwordHash), ne(portalUsers.status, 'disabled'));
     const candidates = await db.select({ id: portalUsers.id, email: portalUsers.email }).from(portalUsers).where(baseWhere);
     const targets = userIds && userIds.length > 0 ? candidates.filter((u) => userIds.includes(u.id)) : candidates;
     const [orgRow] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, org.id)).limit(1);
     const now = new Date();
     const results: Array<{ id: string; emailSent: boolean }> = [];
     for (const t of targets) {
-      await db.update(portalUsers).set({ status: 'invited', invitedBy: auth.user.id, invitedAt: now, updatedAt: now }).where(eq(portalUsers.id, t.id));
+      await db.update(portalUsers).set({ status: 'invited', authEpoch: sql`${portalUsers.authEpoch} + 1`, invitedBy: auth.user.id, invitedAt: now, updatedAt: now }).where(eq(portalUsers.id, t.id));
+      await purgePortalSessionsForUsers([t.id]);
+      const redis = getRedis();
+      if (redis) await purgeClientAiSessionsForUsers(redis, [t.id]);
       const emailSent = await issueAndSendInvite(c, org.id, t, orgRow?.name ?? null, auth.user.name);
       results.push({ id: t.id, emailSent });
     }

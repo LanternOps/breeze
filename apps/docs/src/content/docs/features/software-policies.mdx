@@ -9,6 +9,10 @@ Software Policies let you define what software is permitted or prohibited across
 
 The system consists of three layers: **policy definitions** that describe the rules, **compliance checks** that evaluate device inventories against those rules, and **remediation actions** that respond to detected violations. Compliance checks run automatically through BullMQ workers every 15 minutes and can also be triggered on demand. On Windows endpoints, the winget package manager integration enables automated install and uninstall operations through user-context IPC.
 
+<Aside type="tip">
+  The **Inventory** tab's Approve, Deny, and Clear actions are a shortcut into this system -- they read and write ordinary **Default Allowlist** / **Default Blocklist** policies here. See [Software Inventory](/features/software-inventory/#fleet-inventory-approve-deny-and-clear).
+</Aside>
+
 ---
 
 ## Policy Types

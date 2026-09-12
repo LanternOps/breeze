@@ -15,6 +15,8 @@ import {
   CLIENT_AI_SESSION_TTL_SECONDS,
 } from '../routes/clientAi/schemas';
 
+export { purgeClientAiSessionsForUsers } from './clientAiSessionStore';
+
 /**
  * Resolves a verified Entra ID token's claims to a Breeze client-AI session
  * (tenant mapping → partner entitlement → org policy → portal-user JIT →
@@ -33,6 +35,7 @@ export type ExchangeUser = {
   email: string;
   name: string | null;
   status: string;
+  authEpoch: number;
   /** The `contacts` row this login belongs to (#3258); null until resolved. */
   contactId: string | null;
 };
@@ -140,6 +143,8 @@ const USER_COLUMNS = {
   email: portalUsers.email,
   name: portalUsers.name,
   status: portalUsers.status,
+  authMethod: portalUsers.authMethod,
+  authEpoch: portalUsers.authEpoch,
   contactId: portalUsers.contactId,
 };
 
@@ -375,11 +380,6 @@ export async function resolveAndMintClientSession(
         const stale = orgMismatchDenial(user, mapping.orgId, claims);
         if (stale) return stale;
       }
-    } else {
-      await db
-        .update(portalUsers)
-        .set({ lastLoginAt: now, updatedAt: now, ...(claims.name ? { name: claims.name } : {}) })
-        .where(eq(portalUsers.id, user.id));
     }
 
     if (!user) {
@@ -391,6 +391,26 @@ export async function resolveAndMintClientSession(
           details: { reason: 'provisioning_failed', tid: claims.tid, oid: claims.oid, ...NOT_ATTEMPTED },
         },
       };
+    }
+
+    // The Entra identity tuple must never resolve to a password login. This
+    // also covers the concurrent-insert winner selected in the 23505 branch.
+    if (user.authMethod !== 'entra') {
+      return {
+        denied: {
+          status: 403,
+          error: 'identity_method_mismatch',
+          orgId: mapping.orgId,
+          details: { reason: 'identity_method_mismatch', portalUserId: user.id, ...NOT_ATTEMPTED },
+        },
+      };
+    }
+
+    if (!provisioned) {
+      await db
+        .update(portalUsers)
+        .set({ lastLoginAt: now, updatedAt: now, ...(claims.name ? { name: claims.name } : {}) })
+        .where(eq(portalUsers.id, user.id));
     }
 
     if (user.status !== 'active') {
@@ -460,7 +480,7 @@ export async function resolveAndMintClientSession(
   await redis.setex(
     CLIENT_AI_REDIS_KEYS.session(token),
     CLIENT_AI_SESSION_TTL_SECONDS,
-    JSON.stringify({ portalUserId: user.id, orgId: user.orgId, createdAt: new Date().toISOString() })
+    JSON.stringify({ portalUserId: user.id, orgId: user.orgId, authEpoch: user.authEpoch, createdAt: new Date().toISOString() })
   );
   await redis.sadd(CLIENT_AI_REDIS_KEYS.userSessions(user.id), token);
   await redis.expire(CLIENT_AI_REDIS_KEYS.userSessions(user.id), CLIENT_AI_SESSION_TTL_SECONDS * 2);
@@ -482,47 +502,4 @@ export async function resolveAndMintClientSession(
       details: { tid: claims.tid, oid: claims.oid, provisioned, ...link },
     },
   };
-}
-
-/**
- * Drop every live client-AI (Excel/Word/Outlook add-in) session belonging to a
- * set of portal users. Used by the org-merge fence (`services/orgMerge.ts`) so
- * add-in principals stop writing under an org the moment it is fenced.
- *
- * `/client-ai` is a SECOND portal_users ingress with its own Redis namespace,
- * so the portal purge does not reach it: an add-in user would keep inserting
- * `ai_messages` and updating `ai_sessions` under the loser org through the
- * drain and into Phase B, where those rows are stranded by the re-tenant and
- * then destroyed by the erasure that follows.
- *
- * Lives here, next to `resolveAndMintClientSession` (which is what `sadd`s each
- * token into the `userSessions` index above), so the purge and the mint can
- * never disagree about the key layout.
- *
- * Best-effort by design — the durable control is the org-status gate in
- * `clientAiAuthMiddleware`, which rejects any session surviving this purge on
- * its very next request.
- */
-export async function purgeClientAiSessionsForUsers(
-  redis: Redis,
-  portalUserIds: string[]
-): Promise<number> {
-  let purged = 0;
-  for (const portalUserId of new Set(portalUserIds)) {
-    try {
-      const indexKey = CLIENT_AI_REDIS_KEYS.userSessions(portalUserId);
-      const tokens = await redis.smembers(indexKey);
-      if (tokens.length > 0) {
-        await redis.del(...tokens.map((t) => CLIENT_AI_REDIS_KEYS.session(t)));
-        purged += tokens.length;
-      }
-      await redis.del(indexKey);
-    } catch (err) {
-      console.error('[client-ai] Failed to purge sessions for portal user:', {
-        portalUserId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-  return purged;
 }

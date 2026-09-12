@@ -46,6 +46,23 @@ The file `monitoring/rules/breeze-rules.yml` ships with these rules:
 |---|---|---|
 | `NoAgentHeartbeats` | critical | Zero heartbeats received for 5 minutes |
 | `AlertProcessingBacklog` | warning | Alert queue depth > 100 for 10 minutes |
+| `BackupDispatchFailuresDetected` | warning | Backup, restore, or verification start failures in the last 15 minutes |
+| `RestoreTimeoutsDetected` | critical | Restore command timeouts in the last 15 minutes |
+| `ScheduledVerificationSkipsDetected` | warning | Scheduled backup verification runs skipped in the last hour |
+| `CapacityMetricsMissing` | critical | One of the core capacity series (`http_requests_total`, `http_request_duration_seconds_count`, `agent_heartbeat_total`, `breeze_active_devices`) has no producer. This is a deadman guard: an absent series makes every alert built on it evaluate against an empty vector, which never fires — `up` alone can't catch this, since the scrape itself still succeeds. |
+| `FleetGaugesStale` | warning | `breeze_active_devices` and the organization-count gauge haven't refreshed in over 5 minutes, or have never succeeded. These gauges hold their last value on a failed refresh, so a dead refresher otherwise looks like a perfectly stable fleet. |
+
+### Anomaly Detection Alerts
+
+| Alert | Severity | Condition |
+|---|---|---|
+| `FailedLoginSpike` | warning | More than 50 failed logins in 5 minutes for one tenant — possible credential stuffing or brute force |
+| `EnrollmentSpike` | warning | More than 100 agent enrollments in 10 minutes for one tenant — verify it matches an expected rollout before assuming a leaked enrollment key |
+| `CommandDispatchSpike` | warning | More than 200 commands dispatched in 5 minutes for one tenant — possible compromised account fanning out commands |
+
+<Aside type="tip">
+  These thresholds are deliberately coarse starting points — tune them once you have real production baselines. The `tenant` label collapses to a single series unless `METRICS_INCLUDE_ORG_ID` is enabled; the alerts still fire on the aggregate either way.
+</Aside>
 
 ## Alertmanager Routing
 

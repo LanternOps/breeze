@@ -17,7 +17,6 @@ import { verifyToken } from './jwt';
 import { digestRefreshTokenJti } from './refreshTokenFamily';
 import {
   issueUserSession,
-  issueUserSessionLegacyDuringTransition,
   type UserSessionIdentity,
 } from './userSession';
 
@@ -75,7 +74,6 @@ function transactionHarness(rows: unknown[][]) {
 describe('guarded user-session issuance', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    delete process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED;
   });
 
   it('requires the finalization transaction, branded capability, and verified epoch snapshot', async () => {
@@ -101,6 +99,7 @@ describe('guarded user-session issuance', () => {
     expect(harness.inserted[0]).toMatchObject({
       familyId: issued.familyId,
       userId: identity.userId,
+      mobileDeviceId: identity.mobileDeviceId,
       currentRefreshJtiDigest: digestRefreshTokenJti(issued.refreshJti),
     });
     expect(transitionMocks.bindAuthIssuanceSession).toHaveBeenCalledWith(
@@ -192,11 +191,4 @@ describe('guarded user-session issuance', () => {
     expect(transitionMocks.bindAuthIssuanceSession).not.toHaveBeenCalled();
   });
 
-  it('disables the explicitly named legacy seam once enforcement is enabled', async () => {
-    process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED = 'true';
-
-    await expect(issueUserSessionLegacyDuringTransition(identity)).rejects.toThrow(
-      'Legacy user-session issuance is disabled',
-    );
-  });
 });

@@ -27,6 +27,10 @@ run_rewrite_case() {
 
   (
     set -- --work-dir "${work_dir}" --env-file "${work_dir}/.env" --no-download --no-up -y
+    # Belt-and-suspenders with the sed strip above: guided-setup.sh only skips
+    # its own `main "$@"` call when this is set, so sourcing here never runs
+    # the real installer even if the sed pattern stops matching main's call site.
+    export BREEZE_GUIDED_SETUP_LIBRARY_ONLY=true
     # shellcheck source=/dev/null
     source "${FUNCTIONS_FILE}"
 

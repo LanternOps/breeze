@@ -28,6 +28,16 @@ The list shows a compact set of columns by default — hostname, class, organiza
 
 Your column selection and order are remembered per browser, so each technician can tailor the list to their workflow. Most columns are sortable by clicking the header.
 
+### Agent Version Colouring
+
+With the **Agent version** column enabled, each device's reported version is tinted against the organization's *effective* target version -- an org-level pin if one is set, otherwise the globally promoted release (see [Pinning Agent and Watchdog Versions](/deploy/upgrades/#pinning-agent-and-watchdog-versions)). Hovering the value shows which:
+
+- **Matches** the effective version.
+- **Ahead** of it -- a newer build than the target.
+- **Behind** it -- due for an update.
+
+The version renders in plain text with no tint when the comparison can't be made -- a network or manual row that has never reported an agent version, or an organization whose effective version hasn't resolved yet.
+
 ### Filters
 
 Above the list you can:
@@ -74,6 +84,47 @@ Select a manual asset's row to reopen the same modal for editing. From there you
 ### Filtering and search
 
 The **Manual** segment (and its Devices-list count) is independent of network discovery being enabled — a manual asset still shows up even in an environment with no network-discovered devices at all. Search matches a manual asset's name, serial number, and asset tag. Structured filters apply only where they make sense for a manual asset: name, tags, asset type, organization, site, manufacturer, model, and serial number are supported; anything that depends on reachability or an agent (status, IP/MAC, last-seen, OS, agent version, metrics) is reported as *not applicable* rather than silently hiding the row without explanation.
+
+---
+
+## Removing and Restoring Devices
+
+Removing a device takes it out of the active fleet and stops monitoring it, without deleting its history. A removed device can be restored later, or permanently deleted.
+
+### Removing a device
+
+From a device's **Actions** menu (or the bulk actions bar after selecting several active devices) choose **Remove**. The confirm dialog asks one question: what should happen to the Breeze agent still sitting on the machine.
+
+- **Uninstall the Breeze agent** (the default) -- queues a durable uninstall command. An online device collects it within moments; an offline one runs it the next time it checks in, up to a self-hosted drain window (a few days by default) after which the command is cancelled as expired rather than running late.
+- **Leave the agent installed** -- the machine keeps running the agent, but it can no longer be managed until the device is restored.
+
+Removing a device also cancels its other pending queued work (scripts, patch installs, reboots, and so on) and immediately disconnects any live remote session and the agent's own connection.
+
+### The agent-uninstall badge
+
+Once a device is removed, its detail page shows a badge next to the **Removed** status (and, in compact form, in the device's **Settings** dialog) reporting what became of the queued uninstall:
+
+| Badge | Meaning |
+|---|---|
+| Agent uninstall queued | Waiting for the device to check in. |
+| Agent uninstall delivered | The agent received the command; teardown isn't confirmed yet. |
+| Agent uninstalled | Teardown confirmed complete. |
+| Uninstall expired | The device never checked in before the drain window closed -- it may still be installed. |
+| Agent uninstall failed / cancelled | The command errored, or was cancelled (for example, by a Restore). |
+| Agent was left installed | The device was removed with "Leave the agent installed" selected. |
+
+### Restoring and permanently deleting
+
+A removed device's **Actions** menu offers two choices in place of Remove:
+
+- **Restore** -- returns the device to the active fleet and cancels any still-pending agent uninstall.
+- **Delete permanently** -- deletes the device record and every record that references it (open tickets are kept but detached from the device). This cannot be undone.
+
+Selecting several removed devices at once in the device list adds bulk equivalents: **Restore Selected** applies immediately, while **Delete Permanently…** asks you to type the device count to confirm, then runs as a background job (up to 500 devices per run) with a progress indicator -- deleting a large batch touches too many records to finish inside a single request.
+
+<Aside type="tip">
+  To purge removed devices automatically after a retention window instead of deleting them by hand, add the **Device Lifecycle** feature to a configuration policy (**Fleet Management → Config Policies**). It defaults to off; turning it on and setting a number of days (1-3650) permanently deletes any device still removed after that many days, on a daily schedule. See [Configuration Policies](/features/configuration-policies/).
+</Aside>
 
 ---
 

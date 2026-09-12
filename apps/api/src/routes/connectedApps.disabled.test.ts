@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 vi.mock('../config/env', () => ({ MCP_OAUTH_ENABLED: false }));
-vi.mock('../middleware/auth', () => ({ authMiddleware: vi.fn() }));
+vi.mock('../middleware/auth', () => ({
+  authMiddleware: vi.fn(),
+  requireScope: vi.fn(() => vi.fn()),
+  requirePermission: vi.fn(() => vi.fn()),
+  requireMfa: vi.fn(() => vi.fn()),
+}));
 vi.mock('../db', () => ({ db: {} }));
 vi.mock('../db/schema', () => ({
   oauthClients: {},

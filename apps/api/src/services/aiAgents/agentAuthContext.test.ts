@@ -14,6 +14,7 @@ import {
   agentDbAccessContext,
   buildAgentAuthContext,
 } from './agentAuthContext';
+import { canMutateOrgWideGovernance } from '../siteCeilingAccess';
 
 const agentPartner = {
   id: 'agent-1',
@@ -98,6 +99,36 @@ describe('buildAgentAuthContext', () => {
 
     expect(agentDbAccessContext('org-1', 'partner-A')).toEqual(expected);
     expect(dbAccessContextFromAuth(auth)).toEqual(expected);
+  });
+});
+
+// contract-site-ceiling-gate §7B: the site-ceiling gate applies to ai_agent
+// principals exactly like any other. agentAuthContext.ts sets allowedSiteIds
+// ONLY for device-bound runs, so: a device-bound (alert/device-triggered) run
+// CANNOT mutate org-wide governance objects (correct — an alert-triggered
+// agent must not rewrite org policy); an org-wide run (no device) has no
+// ceiling here and remains governed by agent policy elsewhere.
+describe('buildAgentAuthContext — site-ceiling gate interaction (contract §7B)', () => {
+  it('a device-bound agent run cannot mutate org-wide governance objects', () => {
+    const deviceRun = { id: 'run-2', orgId: 'org-1', deviceId: 'device-1', deviceSiteId: 'site-A' };
+    const auth = buildAgentAuthContext(agentOrg, deviceRun, org1);
+
+    expect(canMutateOrgWideGovernance(auth)).toBe(false);
+  });
+
+  it('a device-bound agent run with no resolvable device site (allowedSiteIds: []) is still denied', () => {
+    const deviceRun = { id: 'run-3', orgId: 'org-1', deviceId: 'device-1', deviceSiteId: null };
+    const auth = buildAgentAuthContext(agentOrg, deviceRun, org1);
+
+    expect(auth.allowedSiteIds).toEqual([]);
+    expect(canMutateOrgWideGovernance(auth)).toBe(false);
+  });
+
+  it('an org-wide (non-device-bound) agent run has no site ceiling here', () => {
+    const auth = buildAgentAuthContext(agentOrg, run, org1);
+
+    expect(auth.allowedSiteIds).toBeUndefined();
+    expect(canMutateOrgWideGovernance(auth)).toBe(true);
   });
 });
 

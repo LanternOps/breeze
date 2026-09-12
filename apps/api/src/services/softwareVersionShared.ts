@@ -4,7 +4,7 @@
  * uploads router never imports routes/software.ts (which mounts it — cycle).
  * Behavior is identical to the pre-extraction definitions.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { SOFTWARE_FILE_TYPES } from '@breeze/shared';
 import { db } from '../db';
 import { softwareVersions } from '../db/schema';
@@ -136,4 +136,16 @@ export async function insertLatestSoftwareVersion(
 
     return setLatestSoftwareVersion(tx, catalogId, inserted.id);
   });
+}
+
+/**
+ * Hold the catalog parent against deletion before writing package bytes.
+ * `DELETE /catalog/:id` takes FOR UPDATE; this KEY SHARE lock therefore makes
+ * upload + version insertion one side of a deterministic serialization point.
+ */
+export async function lockSoftwareCatalogForVersionInsert(catalogId: string): Promise<boolean> {
+  const rows = await db.execute(sql`
+    SELECT id FROM software_catalog WHERE id = ${catalogId}::uuid FOR KEY SHARE
+  `) as unknown as Array<{ id: string }>;
+  return Boolean(rows[0]);
 }

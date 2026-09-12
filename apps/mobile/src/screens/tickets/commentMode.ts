@@ -41,6 +41,27 @@ export const COMMENT_MODES: readonly CommentMode[] = ['reply', 'internal'];
  */
 export const DEFAULT_COMMENT_MODE: CommentMode = 'internal';
 
+/**
+ * The mode a freshly-opened `TicketDetail` should start in (#5366).
+ *
+ * The route may ask for one — stopping a timer opens the ticket in `internal`
+ * so the note about what was just done is not one tap away from mailing the
+ * customer. Anything the route does NOT name, or names with a string that is
+ * not a mode, falls back to `DEFAULT_COMMENT_MODE` rather than being trusted:
+ * params survive a JS-bundle update that a native shell does not, and the
+ * failure modes here are the asymmetric ones documented above.
+ *
+ * Lives here rather than in the screen because TicketDetailScreen is a `.tsx`
+ * the node-only Vitest config can never import — a decision inside it is a
+ * decision no test can see.
+ */
+export function initialCommentMode(params?: { composeMode?: CommentMode }): CommentMode {
+  const requested = params?.composeMode;
+  return requested !== undefined && COMMENT_MODES.includes(requested)
+    ? requested
+    : DEFAULT_COMMENT_MODE;
+}
+
 /** The `isPublic` flag the API takes for a mode. The only mapping there is. */
 export function isPublicForMode(mode: CommentMode): boolean {
   return mode === 'reply';

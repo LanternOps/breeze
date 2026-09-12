@@ -46,12 +46,43 @@ The browser and device negotiate a WebRTC peer-to-peer connection through the Br
 1. `POST /remote/sessions` with `type: "desktop"` — creates the session record.
 2. `GET /remote/ice-servers` — retrieve STUN/TURN server configuration.
 3. `POST /remote/sessions/:id/offer` — send the SDP offer from the browser.
-4. `POST /remote/sessions/:id/answer` — relay the device's SDP answer back.
+4. The authenticated device agent returns its answer and any endpoint consent verdict over its command-result channel.
 5. `POST /remote/sessions/:id/ice` — exchange ICE candidates.
 6. `POST /remote/sessions/:id/ws-ticket` — mint a one-time WebSocket ticket.
 7. Connect via WebSocket using the ticket.
 
 Once the P2P connection is active, screen data flows directly between the browser and the agent.
+
+### Session lease and revocation
+
+Because a desktop session is peer-to-peer, screen and input traffic flows straight between the viewer and the device once the connection is up — the Breeze server is no longer in that path. A **session lease** keeps the server in control anyway.
+
+The agent holds a short lease and renews it about every 25 seconds over its existing control connection. Each renewal re-checks, live, that the technician is still allowed to be there:
+
+- the session is still open and the user account is still active;
+- the user is still a member of the customer organisation the device belongs to;
+- their role, role permissions, and site scope have not changed since the session started;
+- the device is still inside their site scope;
+- multi-factor authentication is still satisfied under the current role policy;
+- the session's hard time limit has not been reached.
+
+If any of those checks fails, the session ends within about half a minute: the agent stops capture and input, the viewer shows **Session ended: access revoked**, and the session record is marked disconnected. Removing a technician's membership or changing their role now ends their live sessions immediately as well, rather than only blocking the next one.
+
+If the server is briefly unreachable, the session is **not** dropped — the agent tolerates about 90 seconds of failed renewals before ending the session on its own. That way a short API or network hiccup does not disconnect anyone, while a device that genuinely cannot reach Breeze cannot hold a remote-control session open indefinitely.
+
+<Aside type="caution">
+  **Agent update required.** Only agents that support session leases can start a remote desktop session. If you click **Connect → Desktop** and see *"Remote desktop needs an agent update on this device"*, the agent has not yet reported lease support — agents update themselves automatically, so this normally clears within one heartbeat interval (about a minute). If you pin agent versions in a self-hosted deployment, update the pinned build before your technicians will be able to start desktop sessions again. Remote Terminal, the Files tab, and every other remote tool are unaffected.
+</Aside>
+
+### Session time limits
+
+Every remote desktop session has a hard limit of **12 hours**, enforced both by the server and independently by the agent. A remote-access configuration policy can shorten it through **Max session duration**, but nothing can extend it past 12 hours.
+
+<Aside type="note">
+  "Unlimited" is no longer a valid setting. A policy that stored `0` (formerly "no maximum") or a value above 12 hours now behaves as 12 hours, and saving a new value outside the 1–12 hour range is rejected. Existing policies keep working — they are simply capped.
+</Aside>
+
+The separate **Idle timeout** setting is unchanged, including `0` meaning "no idle timeout".
 
 ### Windows Session 0 Support
 
@@ -86,7 +117,11 @@ The `list_sessions` command returns available user sessions by merging the WTS s
 
 The same session broker architecture extends to macOS and Linux. When the agent runs as a LaunchDaemon (macOS) or systemd service (Linux), it has no display access. The agent detects this via the `IsHeadless` flag (checked by `hasConsole()` on Unix).
 
-In headless mode, all desktop and screenshot commands are routed through IPC to the Breeze Helper process running in the user's desktop session, rather than attempting direct screen capture which would silently fail. The Helper handles screen capture using platform-native APIs (Core Graphics on macOS, X11/Wayland on Linux).
+In headless mode, all desktop and screenshot commands are routed through IPC to the Breeze Helper process running in the user's desktop session, rather than attempting direct screen capture which would silently fail. The Helper handles screen capture using platform-native APIs (Core Graphics on macOS, X11 on Linux).
+
+<Aside type="caution" title="Wayland sessions are not supported yet">
+  Remote desktop and screenshots on Linux require an X11 session. Wayland-only sessions -- the default GNOME and KDE sessions on current Ubuntu and Fedora releases, and wlroots compositors such as Hyprland and Sway -- cannot be captured. When the device has no X11 display at all, the device page reports **Wayland Unsupported** and the **Connect Desktop** button is disabled. On compositors that run XWayland for legacy apps, the agent may attach to that XWayland display instead, so a session can connect but shows only X11 application windows rather than the desktop. Terminal, scripts, and monitoring are unaffected either way. Where the login screen offers an X11 session, selecting it restores remote desktop. See [Supported Linux Distributions](/agents/installation/#supported-linux-distributions).
+</Aside>
 
 <Aside>
   If no Helper process is connected when a remote desktop session is requested in headless mode, the agent returns an error immediately rather than streaming zero frames.
@@ -371,7 +406,25 @@ pending → connecting → active → disconnected / failed / denied
 | `failed` | Connection could not be established, or an active connection dropped unexpectedly |
 | `denied` | The end user declined the connection at the consent prompt (or the policy's *"When consent can't be asked"* fallback was set to **Block**). The technician sees that the user denied the remote connection. |
 
+A session ended by the lease recheck (see [Session lease and revocation](#session-lease-and-revocation)) becomes `disconnected` with a recorded reason such as `revoked:membership_removed`, `revoked:permissions_changed`, `revoked:site_scope_lost` or `revoked:hard_deadline`, which appears in the session's history entry.
+
 When a session ends (`disconnected` or `failed`), the platform records `durationSeconds` (calculated from start time). The `bytesTransferred` field is available but must be supplied by the caller when ending the session via `POST /remote/sessions/:id/end`.
+
+---
+
+## Session Recording
+
+Breeze does not record sessions itself. What it provides is a place to attach a link to a recording produced elsewhere — for example, a screen-recording pipeline your organization runs alongside remote sessions — and a way for technicians to open that link later from the session's history entry.
+
+If the caller ending a session (`POST /remote/sessions/:id/end`) includes a `recordingUrl` in the request body, it is stored on the session. Only an absolute `http(s)` URL on an allow-listed origin (`RECORDING_URL_ALLOWED_ORIGINS`), or a same-origin path starting with `/`, is accepted — anything else is rejected.
+
+<Steps>
+
+1. Go to **Remote Access → Session History**.
+2. Click a row to open its details panel.
+3. If a recording link was attached when the session ended, a **Recording** section appears with a **View Recording** button that opens the link in a new tab. Sessions ended without a `recordingUrl` show no such section.
+
+</Steps>
 
 ---
 
@@ -421,10 +474,9 @@ To free session capacity, close active sessions from the Active Sessions list on
 | DELETE | `/remote/sessions/stale` | Terminate all pending, connecting, and active sessions |
 | GET | `/remote/ice-servers` | Get ICE/TURN server configuration for WebRTC |
 | POST | `/remote/sessions/:id/offer` | Send SDP offer from browser to device |
-| POST | `/remote/sessions/:id/answer` | Relay device's SDP answer back to browser |
 | POST | `/remote/sessions/:id/ice` | Exchange ICE candidates between browser and device |
 | POST | `/remote/sessions/:id/ws-ticket` | Mint a one-time WebSocket ticket (required for terminal and desktop) |
-| POST | `/remote/sessions/:id/end` | End a session |
+| POST | `/remote/sessions/:id/end` | End a session (optional body: `bytesTransferred`, `recordingUrl` — see [Session Recording](#session-recording)) |
 
 ### Network Proxy Tunnels
 

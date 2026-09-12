@@ -152,7 +152,7 @@ Search queries are matched using SQL `ILIKE` against the following fields:
 
 | Category | Fields searched |
 |---|---|
-| **Devices** | `hostname`, `displayName` |
+| **Devices** | `hostname`, `displayName`, `lastUser` |
 | **Scripts** | `name`, `description` |
 | **Alerts** | `title`, `message` |
 | **Settings** | `title`, `description` (static entries) |
@@ -191,7 +191,7 @@ curl "https://breeze.yourdomain.com/api/v1/search?q=workstation&limit=20" \
 ```
 
 <Aside type="tip">
-  The total result limit (controlled by the `limit` query parameter, default 20, max 50) is distributed across categories. Each category receives roughly `limit / 4` results, ensuring a balanced mix when the query matches broadly.
+  The total result limit (controlled by the `limit` query parameter, default 20, max 50) is distributed across categories. Each category receives roughly `limit / 4` results, capped at **8 per category** regardless of how high `limit` is set, ensuring a balanced mix when the query matches broadly.
 </Aside>
 
 ### Advanced Filtering
@@ -204,7 +204,7 @@ The two systems complement each other:
 |---|---|---|
 | Multi-category results | Yes (devices, scripts, alerts, settings) | No (devices only) |
 | Substring matching | Yes | Yes (via `contains` operator) |
-| Typed field operators | No | Yes (30+ operators) |
+| Typed field operators | No | Yes (24 operators) |
 | Nested AND/OR logic | No | Yes |
 | Hardware/metrics/network fields | No | Yes |
 | Saveable and reusable | No | Yes |
@@ -258,6 +258,20 @@ Groups can be nested to any depth, allowing expressions like `(A AND B) OR (C AN
 | `enrolledAt` | Enrolled At | `datetime` | `equals`, `notEquals`, `before`, `after`, `between`, `withinLast`, `notWithinLast`, `isNull`, `isNotNull` |
 | `lastSeenAt` | Last Seen At | `datetime` | same as `enrolledAt` |
 | `tags` | Tags | `array` | `hasAny`, `hasAll`, `isEmpty`, `isNotEmpty`, `contains` |
+| `deviceRole` | Device Role | `enum` | `equals`, `notEquals`, `in`, `notIn` -- values: `workstation`, `server`, `printer`, `router`, `switch`, `firewall`, `access_point`, `phone`, `iot`, `camera`, `nas`, `unknown` |
+| `lastUser` | Last User | `string` | same as `hostname` |
+| `isHeadless` | Headless | `boolean` | `equals`, `notEquals`, `isNull`, `isNotNull` |
+| `uptimeSeconds` | Uptime (seconds) | `number` | `equals`, `notEquals`, `greaterThan`, `greaterThanOrEquals`, `lessThan`, `lessThanOrEquals`, `between`, `isNull`, `isNotNull` |
+| `watchdogStatus` | Watchdog Status | `enum` | `equals`, `notEquals`, `in`, `notIn` -- values: `connected`, `failover`, `offline` |
+| `quarantinedAt` | Quarantined At | `datetime` | same as `enrolledAt` |
+
+Three additional core fields are capability checks -- they don't read a column directly, but test for a related row's existence:
+
+| Field Key | Label | Type | Description |
+|---|---|---|---|
+| `patches.pending` | Has Pending Patches | `boolean` | `equals`/`notEquals` -- true when the device has at least one pending patch |
+| `alerts.critical` | Has Critical Alerts | `boolean` | `equals`/`notEquals` -- true when the device has an active critical alert |
+| `system.rebootRequired` | Reboot Required | `boolean` | `equals`/`notEquals` -- true when the device's OS reports a reboot is pending |
 
   </TabItem>
   <TabItem label="OS">
@@ -291,6 +305,7 @@ Groups can be nested to any depth, allowing expressions like `(A AND B) OR (C AN
 | `network.ipAddress` | IP Address | `string` |
 | `network.publicIp` | Public IP | `string` |
 | `network.macAddress` | MAC Address | `string` |
+| `lastSeenIp` | Last Seen IP | `string` |
 
   </TabItem>
   <TabItem label="Metrics">
@@ -306,7 +321,7 @@ Groups can be nested to any depth, allowing expressions like `(A AND B) OR (C AN
 
 | Field Key | Label | Description |
 |---|---|---|
-| `software.installed` | Has Software Installed | Check if software name contains value (`contains`, `notContains`) |
+| `software.installed` | Has Software Installed | Match software name: `contains`, `notContains`, `equals`, `in`, `hasAny`, `hasAll` |
 | `software.notInstalled` | Missing Software | Check if software is not installed (`contains`) |
 
   </TabItem>
@@ -570,7 +585,7 @@ The filter engine validates field keys against its known field definitions. If y
 
 ### Search returns no results for a known device
 
-- The search endpoint only matches against `hostname` and `displayName` for devices. It does not search by IP address, serial number, OS version, or other fields. For those, use the filter system.
+- The search endpoint only matches against `hostname`, `displayName`, and `lastUser` for devices. It does not search by IP address, serial number, OS version, or other fields. For those, use the filter system.
 - The query string must be at least 1 character and at most 100 characters. Leading and trailing whitespace is trimmed automatically.
 - Search is case-insensitive, so casing is not the issue.
 

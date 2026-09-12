@@ -192,9 +192,9 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_effective_configuration',
   'get_fleet_findings',
   'get_fleet_health',
-  'get_fleet_status',
   'get_huntress_incidents',
   'get_huntress_status',
+  'get_invite_funnel',
   'get_invoice',
   'get_log_trends',
   'get_playbook_history',
@@ -204,6 +204,10 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_script_details',
   'get_script_execution',
   'get_script_execution_history',
+  // AI script authoring: tier 1 by design — a proposal is inert until a
+  // Tier-3 run_script consumes it, and the handler itself returns
+  // feature_disabled while BREEZE_AI_SCRIPT_AUTHORING_ENABLED is off.
+  'get_script_proposal',
   'get_security_posture',
   'get_service_monitoring_status',
   'get_user_experience_metrics',
@@ -215,7 +219,11 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'google_security_drift',
   'list_configuration_policies',
   'list_contracts',
+  'list_deliverable_templates',
   'list_invoices',
+  // W03: read-only document METADATA, same admission shape as the sibling
+  // business-object list tools; bytes are not reachable from any tool.
+  'list_org_documents',
   'list_organizations',
   'list_playbooks',
   'list_quotes',
@@ -235,6 +243,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'manage_maintenance_windows',
   'manage_service_monitors',
   'preview_configuration_change',
+  'propose_script',
   'query_audit_log',
   'query_change_log',
   'query_devices',

@@ -50,9 +50,11 @@ function logRejections(agentId: string, kind: string, admission: PatchAdmission<
  *   are only hardened against *null downgrades* — a scan that omits a field must
  *   not blank a value an earlier scan established.
  * - **Identity-bearing** (`title`, `vendor`, `package_id`, `version`): these say
- *   *what the row is* and, for `package_id`, what actually gets installed
- *   (`routes/devices/patches.ts` forwards it into the `install_patches` command
- *   payload). Raw agent strings may only **fill** them, never rewrite them;
+ *   *what the row is*. `package_id` is forwarded for package managers whose
+ *   external identity is already provider-qualified. For KB-bearing Microsoft
+ *   rows it is display/catalog metadata only: manual dispatch deliberately
+ *   drops this global first-writer value and WUA resolves the endpoint-observed
+ *   KB instead. Raw agent strings may only **fill** these columns, never rewrite them;
  *   overwriting is reserved for server-side catalog enrichment.
  * - **Authoritative-only** (`severity`): agent scans may fill or *raise* it and
  *   nothing else. See `raiseOnlySeverity`.

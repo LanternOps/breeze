@@ -278,7 +278,8 @@
     "loadMore": "Carregar mais",
     "couldnTLoadMore": "Não foi possível carregar mais.",
     "viewAllActivity2": "Ver toda a atividade",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "Ver proposta"
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Falha ao buscar o histórico de alertas",
@@ -1877,6 +1878,7 @@
       "disablingMaintenance": "Desativando o modo de manutenção",
       "enablingMaintenance": "Ativando o modo de manutenção"
     },
+    "refresh": "Atualizar",
     "selectedOrganization": "a organização selecionada",
     "subtitle": "Gerencie e monitore sua frota.",
     "title": "Dispositivos",
@@ -1931,6 +1933,7 @@
       "permanentDeleteCancelled": "Exclusão permanente cancelada",
       "permanentDeleting": "Excluindo permanentemente {{hostname}}…",
       "permanentlyDeleted": "{{hostname}} excluído permanentemente",
+      "refreshFailed": "Não foi possível atualizar os dispositivos. A lista exibida pode estar desatualizada.",
       "restored": "Restaurado",
       "scriptQueueFailed": "Falha ao colocar o script na fila",
       "scriptQueuedMany": "Scripts colocados na fila",

@@ -13,18 +13,41 @@ export const queueActorMetaSchema = z.object({
   source: z.string().min(1),
 }).strict();
 
-const backupSnapshotFileSchema = z.object({
-  sourcePath: z.string().min(1),
-  backupPath: z.string().min(1),
-  size: z.number().nonnegative().optional(),
-  modTime: z.string().min(1).optional(),
-}).strict();
+const backupSnapshotFileSchema = z
+  .object({
+    sourcePath: z.string().min(1),
+    // Stable pre-VSS path (D12): under a shadow copy sourcePath is the
+    // \\?\GLOBALROOT device path; originalPath is the real C:\ path the index,
+    // browse tree and selective restore must use. Strict schema: a missing entry
+    // here silently drops the whole result and leaves the job running forever.
+    originalPath: z.string().min(1).optional(),
+    // W02: content-less entries (symlinks/directories) never upload an
+    // object, so backupPath is '' for those — see the superRefine below.
+    backupPath: z.string(),
+    size: z.number().nonnegative().optional(),
+    modTime: z.string().min(1).optional(),
+    // W02 fidelity — mirrors resultSchemas.ts's backupSnapshotFileResultSchema.
+    kind: z.enum(['symlink', 'dir']).optional(),
+    linkTarget: z.string().optional(),
+  })
+  .strict()
+  .superRefine((file, ctx) => {
+    if (!file.kind && file.backupPath.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['backupPath'], message: 'backupPath is required for file entries' });
+    }
+  });
 
 const backupSnapshotSummarySchema = z.object({
   id: z.string().min(1),
   timestamp: z.string().min(1).optional(),
   size: z.number().nonnegative().optional(),
   files: z.array(backupSnapshotFileSchema).optional(),
+  // D18 (#5429/§3.1): mirrors resultSchemas.ts's backupSnapshotResultSchema —
+  // must be added here too or `.strict()` drops/rejects these before
+  // backupWorker.ts's process-results handler ever sees them.
+  baseSnapshotId: z.string().optional(),
+  formatVersion: z.number().optional(),
+  backupIdentity: z.string().optional(),
 }).strict();
 
 export const backupProcessResultSchema = z.object({
@@ -50,6 +73,12 @@ export const backupProcessResultSchema = z.object({
   // still must be declared here or the whole job fails validation.
   backupType: z.enum(['file', 'system_image', 'database', 'application']).optional(),
   systemStateManifest: z.record(z.string(), z.unknown()).nullish(),
+  // Bare-metal recovery (W01): disk layout + guard verdict, forwarded the same
+  // way systemStateManifest is — open record for the manifest, closed shape
+  // for the verdict. See routes/backup/resultSchemas.ts's twins for the
+  // rationale.
+  layoutManifest: z.record(z.string(), z.unknown()).nullish(),
+  bareMetal: z.object({ restorable: z.boolean(), reasons: z.array(z.string()) }).nullish(),
   // Windows VSS diagnostics (#3027), forwarded so persistence can write
   // backup_jobs.vss_metadata. `z.unknown()` rather than a record for the same
   // reason as the ingress schema (routes/backup/resultSchemas.ts): this parse
@@ -82,6 +111,11 @@ export const backupQueueJobDataSchema = z.discriminatedUnion('type', [
     configId: z.string().min(1),
     orgId: z.string().min(1),
     deviceId: z.string().min(1),
+    // Site-ceiling gate contract §3: backup_configs.approval_generation
+    // snapshotted at enqueue time; undefined for jobs enqueued before this
+    // field existed (legacy job payloads never re-hydrate this field, so the
+    // dispatch precheck treats undefined as "skip the comparison").
+    configGeneration: z.number().int().optional(),
     meta: queueActorMetaSchema.optional(),
   }).strict(),
   z.object({
@@ -376,12 +410,6 @@ export const recoveryMediaQueueJobDataSchema = z.object({
   meta: queueActorMetaSchema.optional(),
 }).strict();
 
-export const recoveryBootMediaQueueJobDataSchema = z.object({
-  type: z.literal('build-boot-media'),
-  artifactId: z.string().min(1),
-  meta: queueActorMetaSchema.optional(),
-}).strict();
-
 export const vulnSourceSyncSchema = z.object({
   source: z.enum(['msrc', 'nvd', 'sofa', 'kev_epss']),
   month: z.string().optional(),
@@ -464,6 +492,15 @@ export type AiOperatorTaskWakeJobData = z.infer<typeof aiOperatorTaskWakeJobData
 
 export type BackupQueueJobData = z.infer<typeof backupQueueJobDataSchema>;
 export type DiscoveryQueueJobData = z.infer<typeof discoveryQueueJobDataSchema>;
+// W02 (#5612): `script-review` queue — structurally identical to
+// services/scriptProposals/reviewQueue.ts's `ScriptReviewJobData` (the
+// producer's hand-written type); this is the dequeue-boundary parse.
+export const scriptReviewQueueJobDataSchema = z.object({
+  proposalId: z.string().uuid(),
+  orgId: z.string().uuid(),
+  attempt: z.number().int().min(0),
+});
+
 export type FdbEntry = z.infer<typeof fdbEntrySchema>;
 export type MonitorQueueJobData = z.infer<typeof monitorQueueJobDataSchema>;
 export type AutomationQueueJobData = z.infer<typeof automationQueueJobDataSchema>;
@@ -474,8 +511,16 @@ export type AgentNotifyRetryQueueJobData = z.infer<typeof agentNotifyRetryQueueJ
 export type FixWatchQueueJobData = z.infer<typeof fixWatchQueueJobDataSchema>;
 export type DrExecutionQueueJobData = z.infer<typeof drExecutionQueueJobDataSchema>;
 export type RecoveryMediaQueueJobData = z.infer<typeof recoveryMediaQueueJobDataSchema>;
-export type RecoveryBootMediaQueueJobData = z.infer<typeof recoveryBootMediaQueueJobDataSchema>;
 export type VulnSourceSyncJobData = z.infer<typeof vulnSourceSyncSchema>;
+export type ScriptReviewQueueJobData = z.infer<typeof scriptReviewQueueJobDataSchema>;
+// W03 (#5612): `script-verify` queue — the dequeue-boundary parse of
+// services/scriptProposals/verify.ts's `ScriptVerifyJobData`.
+export const scriptVerifyQueueJobDataSchema = z.object({
+  proposalId: z.string().uuid(),
+  executionId: z.string().uuid(),
+  attempt: z.number().int().min(1),
+});
+export type ScriptVerifyQueueJobData = z.infer<typeof scriptVerifyQueueJobDataSchema>;
 export type QueueActorMeta = z.infer<typeof queueActorMetaSchema>;
 // Note: NOT named RouteEventJobData/DeliverEventJobData — those canonical
 // interfaces are hand-written in services/eventDispatchQueue.ts (the

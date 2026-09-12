@@ -83,6 +83,16 @@ export default function QuickbooksIntegration() {
    */
   const canWriteInvoices = usePermissions().can("invoices", "write");
 
+  /**
+   * SEC-2026-09-05-057: the QuickBooks routes now carry dedicated
+   * `accounting:read` / `accounting:manage` capabilities on top of the
+   * full-partner authority check. Every mutating control below is disabled or
+   * hidden without `accounting:manage`, matching the server gate (the panel
+   * itself only renders for a caller holding `accounting:read` — see
+   * IntegrationsPage). UX only; every route re-checks server-side.
+   */
+  const canManageAccounting = usePermissions().can("accounting", "manage");
+
   const [status, setStatus] = useState<QuickbooksStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -510,7 +520,7 @@ export default function QuickbooksIntegration() {
           <button
             type="button"
             onClick={() => void handleConnect()}
-            disabled={connecting}
+            disabled={connecting || !canManageAccounting}
             className="mt-4 inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             data-testid="quickbooks-connect"
           >
@@ -570,7 +580,7 @@ export default function QuickbooksIntegration() {
             </div>
           </dl>
 
-          {canWriteInvoices && (
+          {canWriteInvoices && canManageAccounting && (
           <div>
             <p className="text-sm font-medium">
               {t("quickbooksIntegration.invoicePush")}
@@ -612,7 +622,7 @@ export default function QuickbooksIntegration() {
           {/* Phase D: payment pull-back. Sits beside the push-mode row because
               the two together are the whole direction-of-travel story — push
               invoices out, pull payments back. */}
-          {canWriteInvoices && (
+          {canWriteInvoices && canManageAccounting && (
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-sm font-medium">
@@ -649,7 +659,7 @@ export default function QuickbooksIntegration() {
 
           {/* Phase D2: the outbound half. Sits under the pull toggle so the two
               read as one direction-of-travel pair. */}
-          {canWriteInvoices && (
+          {canWriteInvoices && canManageAccounting && (
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-sm font-medium">
@@ -685,7 +695,7 @@ export default function QuickbooksIntegration() {
           )}
 
           <div className="flex items-center gap-3 border-t pt-4">
-            {canWriteInvoices && (
+            {canWriteInvoices && canManageAccounting && (
             <button
               type="button"
               onClick={() => void handleReconcileNow()}
@@ -741,7 +751,7 @@ export default function QuickbooksIntegration() {
             <button
               type="button"
               onClick={() => void handleRefreshSettings()}
-              disabled={refreshingSettings}
+              disabled={refreshingSettings || !canManageAccounting}
               className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
               data-testid="quickbooks-settings-refresh"
             >
@@ -755,7 +765,7 @@ export default function QuickbooksIntegration() {
             <button
               type="button"
               onClick={() => void handleDisconnect()}
-              disabled={disconnecting}
+              disabled={disconnecting || !canManageAccounting}
               className="inline-flex h-9 items-center gap-2 rounded-md border border-red-200 px-3 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
               data-testid="quickbooks-disconnect"
             >

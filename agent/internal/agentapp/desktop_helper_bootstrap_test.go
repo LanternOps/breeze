@@ -1,8 +1,6 @@
 package agentapp
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,77 +66,6 @@ func (f helperFixture) assertAgentBinaryNotInstalled(t *testing.T) {
 	}
 }
 
-func TestStageDesktopHelper_PrefersSiblingBinary(t *testing.T) {
-	f := newHelperFixture(t)
-	helperBody := []byte("REAL DESKTOP HELPER BINARY")
-	if err := os.WriteFile(filepath.Join(filepath.Dir(f.agentPath), desktopHelperBinaryName), helperBody, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// urlOverride points at a dead address: a sibling hit must not touch the network.
-	err := stageDesktopHelper(desktopHelperStageOptions{
-		agentPath:        f.agentPath,
-		destPath:         f.destPath,
-		version:          "0.109.0",
-		goos:             "darwin",
-		goarch:           "arm64",
-		urlOverride:      "http://127.0.0.1:1/never-called",
-		checksumOverride: strings.Repeat("0", 64),
-	})
-	if err != nil {
-		t.Fatalf("stageDesktopHelper: %v", err)
-	}
-
-	got, err := os.ReadFile(f.destPath)
-	if err != nil {
-		t.Fatalf("read installed helper: %v", err)
-	}
-	if string(got) != string(helperBody) {
-		t.Fatalf("installed helper = %q, want the sibling helper binary", string(got))
-	}
-	f.assertAgentBinaryNotInstalled(t)
-
-	info, err := os.Stat(f.destPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm()&0o111 == 0 {
-		t.Fatalf("installed helper mode = %v, want it executable", info.Mode().Perm())
-	}
-}
-
-func TestStageDesktopHelper_DownloadsWhenNoSibling(t *testing.T) {
-	f := newHelperFixture(t)
-	helperBody := writeLargeBody(7)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(helperBody)
-	}))
-	defer srv.Close()
-
-	err := stageDesktopHelper(desktopHelperStageOptions{
-		agentPath:        f.agentPath,
-		destPath:         f.destPath,
-		version:          "0.109.0",
-		goos:             "darwin",
-		goarch:           "arm64",
-		urlOverride:      srv.URL,
-		checksumOverride: testSHA256Hex(helperBody),
-	})
-	if err != nil {
-		t.Fatalf("stageDesktopHelper: %v", err)
-	}
-
-	got, err := os.ReadFile(f.destPath)
-	if err != nil {
-		t.Fatalf("read installed helper: %v", err)
-	}
-	if len(got) != len(helperBody) {
-		t.Fatalf("installed helper size = %d, want %d", len(got), len(helperBody))
-	}
-	f.assertAgentBinaryNotInstalled(t)
-}
-
 // The table of failure modes. Every one of them must (a) return an error and
 // (b) leave the agent binary uninstalled at the helper path.
 func TestStageDesktopHelper_NeverSubstitutesTheAgentBinary(t *testing.T) {
@@ -146,11 +73,6 @@ func TestStageDesktopHelper_NeverSubstitutesTheAgentBinary(t *testing.T) {
 		name        string
 		version     string
 		wantErrPart string
-		// handler is the release-asset server; nil means "no server, use a
-		// dead address".
-		handler http.HandlerFunc
-		// checksum overrides the checksum handed to the downloader.
-		checksum func(body []byte) string
 		// prepare optionally seeds the staging dir before the call.
 		prepare func(t *testing.T, f helperFixture)
 	}{
@@ -163,31 +85,6 @@ func TestStageDesktopHelper_NeverSubstitutesTheAgentBinary(t *testing.T) {
 			name:        "empty version is treated as a dev build",
 			version:     "",
 			wantErrPart: "dev build",
-		},
-		{
-			name:        "release asset returns 404",
-			version:     "0.109.0",
-			wantErrPart: "download desktop helper",
-			handler: func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusNotFound)
-			},
-		},
-		{
-			name:        "release asset is an error page, not a binary",
-			version:     "0.109.0",
-			wantErrPart: "download desktop helper",
-			handler: func(w http.ResponseWriter, r *http.Request) {
-				_, _ = w.Write([]byte("<html>404 Not Found</html>"))
-			},
-		},
-		{
-			name:        "downloaded asset fails its checksum",
-			version:     "0.109.0",
-			wantErrPart: "download desktop helper",
-			handler: func(w http.ResponseWriter, r *http.Request) {
-				_, _ = w.Write(writeLargeBody(3))
-			},
-			checksum: func([]byte) string { return testSHA256Hex([]byte("something else")) },
 		},
 		{
 			name:        "sibling path exists but is a directory",
@@ -209,25 +106,12 @@ func TestStageDesktopHelper_NeverSubstitutesTheAgentBinary(t *testing.T) {
 				tc.prepare(t, f)
 			}
 
-			url := "http://127.0.0.1:1/unreachable"
-			if tc.handler != nil {
-				srv := httptest.NewServer(tc.handler)
-				defer srv.Close()
-				url = srv.URL
-			}
-			checksum := testSHA256Hex([]byte("placeholder"))
-			if tc.checksum != nil {
-				checksum = tc.checksum(nil)
-			}
-
 			err := stageDesktopHelper(desktopHelperStageOptions{
-				agentPath:        f.agentPath,
-				destPath:         f.destPath,
-				version:          tc.version,
-				goos:             "darwin",
-				goarch:           "arm64",
-				urlOverride:      url,
-				checksumOverride: checksum,
+				agentPath: f.agentPath,
+				destPath:  f.destPath,
+				version:   tc.version,
+				goos:      "darwin",
+				goarch:    "arm64",
 			})
 			if err == nil {
 				t.Fatal("stageDesktopHelper: expected an error, got nil")

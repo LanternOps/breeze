@@ -78,6 +78,8 @@ vi.mock('../agentWs', () => ({
   sendCommandToAgent: vi.fn(),
   isAgentConnected: vi.fn().mockReturnValue(false),
   disconnectAgent: vi.fn().mockReturnValue('closed'),
+  disconnectAgentCredentialGeneration: vi.fn().mockReturnValue('closed'),
+  publishAgentCredentialRevocation: vi.fn().mockResolvedValue('published'),
 }));
 
 vi.mock('../../services/commandQueue', () => ({
@@ -134,6 +136,8 @@ import { coreRoutes } from './core';
 import { db } from '../../db';
 import { terminateDeviceRemoteSessions } from '../../services/remoteSessionTeardown';
 import { disconnectAgent } from '../agentWs';
+import { disconnectAgentCredentialGeneration } from '../agentWs';
+import { publishAgentCredentialRevocation } from '../agentWs';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { queueDeviceUninstall, releaseDeviceRemoveReason } from '../../services/deviceUninstallDrain';
 import { ne } from 'drizzle-orm';
@@ -508,6 +512,59 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
         details: expect.objectContaining({ uninstallQueued: false }),
       }));
     });
+  });
+});
+
+describe('POST /devices/:id/agent-token/rotate — live socket revocation', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/devices', coreRoutes);
+  });
+
+  it('closes the socket authenticated with the replaced credential and audits the outcome', async () => {
+    const device = {
+      ...ONLINE_DEVICE,
+      agentId: 'agent-abc-123',
+      agentTokenHash: 'a'.repeat(64),
+      previousTokenHash: 'b'.repeat(64),
+      pendingTokenHash: 'c'.repeat(64),
+    };
+    const limit = vi.fn().mockResolvedValue([device]);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit }),
+      }),
+    } as never);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([device]),
+        }),
+      }),
+    } as never);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/agent-token/rotate`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(disconnectAgentCredentialGeneration).toHaveBeenCalledWith(
+      'agent-abc-123',
+      ['a'.repeat(64), 'b'.repeat(64), 'c'.repeat(64)],
+      'Agent credentials rotated',
+    );
+    expect(publishAgentCredentialRevocation).toHaveBeenCalledWith({
+      agentId: 'agent-abc-123',
+      revokedTokenHashes: ['a'.repeat(64), 'b'.repeat(64), 'c'.repeat(64)],
+    });
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'device.agent_token.rotate',
+      details: { agentWsDisconnect: 'closed' },
+    }));
   });
 });
 

@@ -181,11 +181,17 @@ export async function reconcilePeripheralPolicyDevice(
         id: devices.id,
         orgId: devices.orgId,
         peripheralPolicyProtocolVersion: devices.peripheralPolicyProtocolVersion,
+        status: devices.status,
       })
       .from(devices)
       .where(eq(devices.id, deviceId))
       .limit(1)
       .for('update');
+    // A decommissioned device can never execute a command, and reconciling it
+    // would reach the partner-trust gate below and spam capability_denied audit
+    // rows every sweep (issue #5590). Bail before any trust check or write.
+    if (device?.status === 'decommissioned') return 'incompatible';
+
     const resolved = device
       ? await loadAndResolveEffectivePeripheralPolicySetInCurrentDbContext(deviceId)
       : null;

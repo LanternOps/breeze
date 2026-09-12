@@ -13,8 +13,8 @@ import ApproverDevicesSection from './ApproverDevicesSection';
 import ThemingSettings from './ThemingSettings';
 import { pickReauthTier, type ReauthTier } from './StepUpPrompt';
 import { mintStepUpGrant, StepUpMintError } from '../../lib/mfaStepUp';
-import { createPasskeyCredential, fetchWithAuth, useAuthStore } from '../../stores/auth';
-import type { PasskeyRegistrationOptions, UserPreferences } from '../../stores/auth';
+import { createPasskeyCredential, fetchWithAuth, getPasskeyCredential, useAuthStore } from '../../stores/auth';
+import type { MfaMethod, PasskeyAuthenticationOptions, PasskeyRegistrationOptions, UserPreferences } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
 import { formatNumber } from '@/lib/i18n/format';
@@ -39,7 +39,7 @@ type User = {
   email: string;
   avatarUrl?: string;
   mfaEnabled?: boolean;
-  mfaMethod?: string | null;
+  mfaMethod?: MfaMethod | null;
   // #4018: surfaced by GET /users/me. `false` means an SSO-provisioned account
   // with no password, which cannot satisfy the password step-up the MFA
   // enrollment endpoints normally demand. Absent = unknown → password road.
@@ -156,6 +156,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
   const [passkeyName, setPasskeyName] = useState('');
   const [passkeyPassword, setPasskeyPassword] = useState('');
+  const [passkeyFactorCode, setPasskeyFactorCode] = useState('');
   const [passkeyError, setPasskeyError] = useState<string | undefined>();
   const [passkeySuccess, setPasskeySuccess] = useState<string | undefined>();
   const [isLoadingPasskeys, setIsLoadingPasskeys] = useState(false);
@@ -775,16 +776,77 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
    * reveals codes when this resolves `true`, so a failed call can never
    * re-display the previous set as though it were the new one.
    */
-  const handleGenerateRecoveryCodes = async (currentPassword: string): Promise<boolean> => {
+  const handleSendRecoveryStepUpCode = async (): Promise<boolean> => {
+    try {
+      const response = await fetchWithAuth('/auth/mfa/step-up/sms/send', { method: 'POST' });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error ?? errorData.message ?? t('profilePage.failedToSendVerificationCode', {
+          defaultValue: 'Failed to send verification code',
+        }));
+      }
+      setMfaSuccess(t('profilePage.verificationCodeSent', { defaultValue: 'Verification code sent' }));
+      return true;
+    } catch (error) {
+      setMfaError(error instanceof Error ? error.message : t('profilePage.failedToSendVerificationCode', {
+        defaultValue: 'Failed to send verification code',
+      }));
+      return false;
+    }
+  };
+
+  const handleGenerateRecoveryCodes = async (
+    currentPassword: string,
+    currentFactorCode: string,
+  ): Promise<boolean> => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
     // Captured before the request so a logout that races it is detectable.
     const generation = useAuthStore.getState().sessionGeneration;
     try {
       setMfaLoading(true);
+      const method = user?.mfaMethod ?? 'totp';
+      let stepUpBody: Record<string, unknown>;
+      if (method === 'passkey') {
+        const optionsResponse = await fetchWithAuth('/auth/mfa/step-up/options', { method: 'POST' });
+        if (!optionsResponse.ok) {
+          const errorData = await optionsResponse.json().catch(() => ({}));
+          throw new Error(errorData.error ?? errorData.message ?? t('profilePage.failedToVerifyCurrentFactor', {
+            defaultValue: 'Failed to verify current MFA factor',
+          }));
+        }
+        const optionsData = await optionsResponse.json();
+        const optionsJSON = (optionsData.options ?? optionsData.optionsJSON ?? optionsData) as PasskeyAuthenticationOptions;
+        const credential = await getPasskeyCredential(optionsJSON);
+        stepUpBody = { method: 'passkey', credential, operation: 'rotate_recovery_codes' };
+      } else if (method === 'totp' || method === 'sms') {
+        stepUpBody = { method, code: currentFactorCode, operation: 'rotate_recovery_codes' };
+      } else {
+        throw new Error(t('profilePage.failedToVerifyCurrentFactor', {
+          defaultValue: 'Failed to verify current MFA factor',
+        }));
+      }
+
+      const stepUpResponse = await fetchWithAuth('/auth/mfa/step-up', {
+        method: 'POST',
+        body: JSON.stringify(stepUpBody),
+      });
+      if (!stepUpResponse.ok) {
+        const errorData = await stepUpResponse.json().catch(() => ({}));
+        throw new Error(errorData.error ?? errorData.message ?? t('profilePage.failedToVerifyCurrentFactor', {
+          defaultValue: 'Failed to verify current MFA factor',
+        }));
+      }
+      const stepUpData = await stepUpResponse.json();
+      if (typeof stepUpData.stepUpGrantId !== 'string' || !stepUpData.stepUpGrantId) {
+        throw new Error(t('profilePage.failedToVerifyCurrentFactor', {
+          defaultValue: 'Failed to verify current MFA factor',
+        }));
+      }
+
       const response = await fetchWithAuth('/auth/mfa/recovery-codes', {
         method: 'POST',
-        body: JSON.stringify({ currentPassword })
+        body: JSON.stringify({ currentPassword, stepUpGrantId: stepUpData.stepUpGrantId })
       });
 
       if (!response.ok) {
@@ -1039,13 +1101,51 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setPasskeyError(t('profilePage.currentPasswordIsRequiredToDeleteAPasskey'));
       return;
     }
+    const method = user?.mfaMethod ?? 'totp';
+    if ((method === 'totp' || method === 'sms') && !passkeyFactorCode.trim()) {
+      setPasskeyError(t('mFASettings.currentMfaCodeRequired', {
+        defaultValue: 'Enter a current MFA code before deleting a passkey',
+      }));
+      return;
+    }
     // Captured before the request so a logout that races it is detectable.
     const generation = useAuthStore.getState().sessionGeneration;
     try {
       setMutatingPasskeyId(passkeyId);
+      let stepUpBody: Record<string, unknown>;
+      if (method === 'passkey') {
+        const optionsResponse = await fetchWithAuth('/auth/mfa/step-up/options', { method: 'POST' });
+        const optionsData = await optionsResponse.json().catch(() => ({}));
+        if (!optionsResponse.ok) {
+          throw new Error(optionsData.error ?? optionsData.message ?? t('profilePage.failedToVerifyCurrentFactor', {
+            defaultValue: 'Failed to verify current MFA factor',
+          }));
+        }
+        const optionsJSON = (optionsData.options ?? optionsData.optionsJSON ?? optionsData) as PasskeyAuthenticationOptions;
+        const credential = await getPasskeyCredential(optionsJSON);
+        stepUpBody = { method: 'passkey', credential, operation: 'delete_passkey', passkeyId };
+      } else if (method === 'totp' || method === 'sms') {
+        stepUpBody = { method, code: passkeyFactorCode.trim(), operation: 'delete_passkey', passkeyId };
+      } else {
+        throw new Error(t('profilePage.failedToVerifyCurrentFactor', {
+          defaultValue: 'Failed to verify current MFA factor',
+        }));
+      }
+
+      const stepUpResponse = await fetchWithAuth('/auth/mfa/step-up', {
+        method: 'POST',
+        body: JSON.stringify(stepUpBody),
+      });
+      const stepUpData = await stepUpResponse.json().catch(() => ({}));
+      if (!stepUpResponse.ok || typeof stepUpData.stepUpGrantId !== 'string' || !stepUpData.stepUpGrantId) {
+        throw new Error(stepUpData.error ?? stepUpData.message ?? t('profilePage.failedToVerifyCurrentFactor', {
+          defaultValue: 'Failed to verify current MFA factor',
+        }));
+      }
+
       const response = await fetchWithAuth(`/auth/passkeys/${encodeURIComponent(passkeyId)}`, {
         method: 'DELETE',
-        body: JSON.stringify({ currentPassword: passkeyPassword })
+        body: JSON.stringify({ currentPassword: passkeyPassword, stepUpGrantId: stepUpData.stepUpGrantId })
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -1059,6 +1159,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       }
       setPasskeys(prev => prev.filter(passkey => passkey.id !== passkeyId));
       setPasskeyPassword('');
+      setPasskeyFactorCode('');
       setPasskeySuccess(withReauthNotice(t('profilePage.passkeyDeleted'), deleteReplacementAdopted));
     } catch (error) {
       setPasskeyError(error instanceof Error ? error.message : t('profilePage.failedToDeletePasskey'));
@@ -1240,6 +1341,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       {/* MFA Settings */}
       <MFASettings
         enabled={user?.mfaEnabled ?? false}
+        mfaMethod={user?.mfaMethod}
         hasPassword={user?.hasPassword}
         onSsoReauth={() => handleSsoReauthStart('totp')}
         ssoSetupReady={ssoSetupReady}
@@ -1251,6 +1353,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         onEnable={handleMfaEnable}
         onDisable={handleMfaDisable}
         onGenerateRecoveryCodes={handleGenerateRecoveryCodes}
+        onSendRecoveryStepUpCode={handleSendRecoveryStepUpCode}
         errorMessage={mfaError}
         successMessage={mfaSuccess}
         loading={mfaLoading || isStartingSsoReauth}
@@ -1448,6 +1551,34 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                   {t('profilePage.passkeyStepUpNoUsableFactor')}
                 </p>
               )}
+            </div>
+          )}
+          {!isPasswordless && (user?.mfaMethod === 'totp' || user?.mfaMethod === 'sms') && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="passkey-factor-code">
+                {t('mFASettings.currentMfaCode', { defaultValue: 'Current MFA code' })}
+              </label>
+              <div className="flex gap-2">
+                <input
+                  id="passkey-factor-code"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={passkeyFactorCode}
+                  onChange={event => setPasskeyFactorCode(event.target.value)}
+                  className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
+                  disabled={isAddingPasskey || !!mutatingPasskeyId}
+                />
+                {user.mfaMethod === 'sms' && (
+                  <button
+                    type="button"
+                    onClick={() => { void handleSendRecoveryStepUpCode(); }}
+                    disabled={isAddingPasskey || !!mutatingPasskeyId}
+                    className="h-10 rounded-md border px-3 text-sm font-medium"
+                  >
+                    {t('mFASettings.sendCode', { defaultValue: 'Send code' })}
+                  </button>
+                )}
+              </div>
             </div>
           )}
           {isPasswordless && !hasSsoReauthGrant ? (

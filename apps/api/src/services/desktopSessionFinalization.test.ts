@@ -148,6 +148,7 @@ describe('finalizeDesktopSessionOnce', () => {
     });
     observeDesktopFinalizationMock.mockResolvedValue({
       ownerPresent: false,
+      everOwned: true,
       finalizationId: input.finalizationId,
       canonicalPayload: JSON.stringify(input),
       consistent: true,

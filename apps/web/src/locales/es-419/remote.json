@@ -31,6 +31,7 @@
     "dismiss": "Descartar",
     "downloadFor": "Descargar para {{platform}}",
     "errors": {
+      "agentUpgradeRequired": "El escritorio remoto necesita una actualización del agente en este dispositivo (compatibilidad con la concesión de revocación de sesión). El agente se actualiza automáticamente; normalmente se resuelve en un minuto. La terminal y la transferencia de archivos no se ven afectadas.",
       "connectionFailed": "La conexión falló",
       "createDesktopCode": "No se pudo crear el código de conexión al escritorio",
       "createDesktopSession": "No se pudo crear la sesión de escritorio",

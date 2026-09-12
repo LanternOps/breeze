@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -151,6 +152,100 @@ func TestRedeemBootstrapToken(t *testing.T) {
 	}
 	if res.EnrollmentKey != "deadbeef" || res.SiteID != "site1" {
 		t.Fatalf("unexpected result: %+v", res)
+	}
+}
+
+func TestRedeemBootstrapTokenRefusesCrossHostRedirects(t *testing.T) {
+	statuses := []int{
+		http.StatusMovedPermanently,
+		http.StatusFound,
+		http.StatusSeeOther,
+		http.StatusTemporaryRedirect,
+		http.StatusPermanentRedirect,
+	}
+
+	for _, status := range statuses {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var attackerHits atomic.Int32
+			var attackerToken string
+			attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attackerHits.Add(1)
+				attackerToken = r.Header.Get("X-Breeze-Bootstrap-Token")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"serverUrl":"http://127.0.0.1","enrollmentKey":"forged-child-key"}`))
+			}))
+			defer attacker.Close()
+
+			// httptest listens on 127.0.0.1. Rewriting only the hostname to
+			// localhost keeps this test wholly local while crossing the hostname
+			// trust boundary that the credentialed agent client enforces.
+			crossHostTarget := strings.Replace(attacker.URL, "127.0.0.1", "localhost", 1)
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, crossHostTarget+"/capture", status)
+			}))
+			defer origin.Close()
+
+			res, err := redeemBootstrapToken(origin.URL, "ABCDE12345")
+			if err == nil {
+				t.Fatalf("redeemBootstrapToken followed cross-host %d redirect and returned %+v", status, res)
+			}
+			if hits := attackerHits.Load(); hits != 0 {
+				t.Fatalf("cross-host %d redirect reached target %d time(s); token observed=%q", status, hits, attackerToken)
+			}
+		})
+	}
+}
+
+func TestRedeemBootstrapTokenChecksEveryRedirectHop(t *testing.T) {
+	var attackerHits atomic.Int32
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attackerHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"serverUrl":"http://127.0.0.1","enrollmentKey":"forged-child-key"}`))
+	}))
+	defer attacker.Close()
+	crossHostTarget := strings.Replace(attacker.URL, "127.0.0.1", "localhost", 1)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/installer/bootstrap", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/same-host-hop", http.StatusTemporaryRedirect)
+	})
+	mux.HandleFunc("/same-host-hop", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, crossHostTarget+"/capture", http.StatusTemporaryRedirect)
+	})
+	origin := httptest.NewServer(mux)
+	defer origin.Close()
+
+	res, err := redeemBootstrapToken(origin.URL, "ABCDE12345")
+	if err == nil {
+		t.Fatalf("redeemBootstrapToken followed a later cross-host redirect and returned %+v", res)
+	}
+	if hits := attackerHits.Load(); hits != 0 {
+		t.Fatalf("later cross-host redirect reached target %d time(s)", hits)
+	}
+}
+
+func TestRedeemBootstrapTokenAllowsSameHostRedirect(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/installer/bootstrap", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/canonical-bootstrap", http.StatusTemporaryRedirect)
+	})
+	mux.HandleFunc("/canonical-bootstrap", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Breeze-Bootstrap-Token"); got != "ABCDE12345" {
+			t.Errorf("bootstrap token header = %q, want synthetic token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"serverUrl":"","enrollmentKey":"child-key"}`))
+	})
+	origin := httptest.NewServer(mux)
+	defer origin.Close()
+
+	res, err := redeemBootstrapToken(origin.URL, "ABCDE12345")
+	if err != nil {
+		t.Fatalf("same-host redirect rejected: %v", err)
+	}
+	if res.EnrollmentKey != "child-key" || res.ServerURL != origin.URL {
+		t.Fatalf("unexpected bootstrap result: %+v", res)
 	}
 }
 

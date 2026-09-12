@@ -31,6 +31,7 @@
     "dismiss": "Fermer",
     "downloadFor": "Télécharger pour {{platform}}",
     "errors": {
+      "agentUpgradeRequired": "Le bureau à distance nécessite une mise à jour de l'agent sur cet appareil (prise en charge du bail de révocation de session). L'agent se met à jour automatiquement — cela se règle généralement en moins d'une minute. Le terminal et le transfert de fichiers ne sont pas concernés.",
       "connectionFailed": "Connexion défaillante",
       "createDesktopCode": "Échec de la création du code de connexion au bureau",
       "createDesktopSession": "Impossible de créer une session de bureau",

@@ -89,7 +89,7 @@ describe('AuthOverlay SSO failure redirect vs. refresh eviction (#3704)', () => 
     useAuthStore.setState({ ...STALE_SESSION, isAuthenticated: false, user: null });
     window.history.replaceState({}, '', '/');
     const { navigateTo } = await import('../../lib/navigation');
-    vi.mocked(navigateTo).mockImplementation(async () => {});
+    vi.mocked(navigateTo).mockImplementation(async () => 'soft' as const);
   });
 
   it('holds the gated refresh until the sso_exchange_failed redirect has committed', async () => {
@@ -104,6 +104,7 @@ describe('AuthOverlay SSO failure redirect vs. refresh eviction (#3704)', () => 
     vi.mocked(navigateTo).mockImplementation(async (path: string) => {
       await navigationCommitted;
       window.history.replaceState({}, '', path);
+      return 'soft' as const;
     });
 
     stubFetch({
@@ -162,6 +163,7 @@ describe('AuthOverlay SSO failure redirect vs. refresh eviction (#3704)', () => 
     vi.mocked(navigateTo).mockImplementation(async (path: string) => {
       await navigationCommitted;
       window.history.replaceState({}, '', path);
+      return 'soft' as const;
     });
 
     stubFetch({ '/auth/refresh': () => json(401, { error: 'invalid refresh token' }) });
@@ -240,6 +242,7 @@ describe('AuthOverlay SSO failure redirect vs. refresh eviction (#3704)', () => 
     const { navigateTo } = await import('../../lib/navigation');
     vi.mocked(navigateTo).mockImplementation(async () => {
       // Resolves without moving the URL, exactly like the fallback branch.
+      return 'hard' as const;
     });
 
     // jsdom refuses real navigations, so swap the whole location object and spy

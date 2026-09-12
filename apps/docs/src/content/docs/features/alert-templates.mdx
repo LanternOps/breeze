@@ -27,17 +27,34 @@ Templates and rules follow the multi-tenant hierarchy. Built-in templates are av
 
 ---
 
+## In the console
+
+Templates are managed at **Settings > Alert Templates** (`/settings/alert-templates`).
+
+- The list shows every built-in and custom template with its category, severity, and scope (organization or partner-wide), and can be filtered by severity or scope.
+- **Add template** opens the template editor to name the template and define its condition (a metric/operator/threshold pair, or an event source), severity, category, and default notification routes.
+- Selecting a template opens the same editor to update those fields; built-in templates open read-only.
+- Deleting a custom template removes it after confirmation; built-in templates cannot be deleted.
+
+<Aside>
+  Alert *rules* -- the org-scoped instances bound to devices or groups -- are created from the **Alert Rules** tab of a Configuration Policy, not from this page. See the Configuration Policies and Alerts documentation.
+</Aside>
+
 ## Built-in Templates
 
-Breeze includes five built-in templates that cover common monitoring scenarios:
+Breeze includes nine built-in templates that cover common monitoring scenarios: five device-metric templates plus four network-discovery templates.
 
 | Template | Category | Severity | Condition | Default Cooldown |
 |----------|----------|----------|-----------|-----------------|
-| CPU High | Performance | high | `cpu.usage` > 90% for 5 min | 15 min |
-| Disk Space Low | Capacity | high | `disk.freePercent` < 10% for 10 min | 30 min |
-| Service Stopped | Availability | critical | `service.status` equals `stopped` for 1 min | 5 min |
-| Memory Pressure | Performance | medium | `memory.availablePercent` < 15% for 5 min | 15 min |
-| Network Latency High | Network | medium | `network.latencyMs` > 200 for 3 min | 10 min |
+| CPU High | Performance | high | `cpuPercent` greater than 90% for 5 min | 15 min |
+| Disk Space Low | Capacity | high | `diskPercent` greater than 90% for 10 min | 30 min |
+| Service Stopped | Availability | critical | monitored service reports 2 consecutive failures | 5 min |
+| Memory Pressure | Performance | medium | `ramPercent` greater than 85% for 5 min | 15 min |
+| Device Offline | Availability | medium | device unreachable for 5 min | 10 min |
+| New Device Detected | Network | medium | a new device is discovered on the network | 5 min |
+| Device Disappeared | Network | low | a known device is missing from a baseline scan (auto-resolves) | 5 min |
+| Device Configuration Changed | Network | medium | a known device's network characteristics change | 5 min |
+| Rogue Device Detected | Network | high | an unauthorized device is detected on the network | 5 min |
 
 Built-in templates cannot be modified or deleted. Any attempt to update or delete a built-in template returns a `403 Forbidden` error.
 

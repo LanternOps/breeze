@@ -293,6 +293,48 @@ describe('agent commands routes', () => {
     }));
   });
 
+  // D20-D (REST twin): mssql_backup/hyperv_backup's FIRST reply can be a
+  // non-terminal queue-admission ack rather than the real outcome. Before
+  // this fix (mirroring the WS twin), a stray HTTP-polling agent's ack would
+  // terminalize the row and, once the command payload carries jobId (D20-E),
+  // would reach handleProviderBackedBackupResult and vacuously "complete" the
+  // backup job with no snapshot at all.
+  it.each(['mssql_backup', 'hyperv_backup'])(
+    'D20: a %s queue-ack over the HTTP path does not fire automation-terminal or the per-type handler',
+    async (commandType) => {
+      const command = {
+        id: commandId,
+        deviceId: 'device-1',
+        type: commandType,
+        status: 'sent',
+        payload: { jobId: '99999999-9999-4999-8999-999999999999', instance: 'MSSQLSERVER', database: 'AppDb' },
+      };
+      selectMock.mockReturnValueOnce(chainMock([command]));
+      const updateChain = chainMock([{ id: 'cmd-1' }]);
+      updateMock.mockReturnValueOnce(updateChain);
+
+      const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          commandId,
+          status: 'completed',
+          exitCode: 0,
+          result: { queued: true },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).success).toBe(true);
+
+      const setArg = updateChain.set.mock.calls[0]![0] as Record<string, unknown>;
+      expect(setArg.status).toBe('completed');
+      expect((setArg.result as Record<string, unknown>).status).toBe('queue_ack');
+
+      expect(applyCommandAutomationTerminalMock).not.toHaveBeenCalled();
+    },
+  );
+
   it('dispatches a peripheral v2 result to the shared handler over the HTTP path', async () => {
     const command = {
       id: commandId,

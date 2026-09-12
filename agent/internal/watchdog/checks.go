@@ -29,6 +29,29 @@ const ipcFailThreshold = 3
 // after the heartbeat stops.
 const staleVetoLimit = 3
 
+// ipcVetoLimit bounds the D3 in-flight-backup veto (see
+// vetoIPCFailureForBackup): after ipcVetoLimit consecutive vetoes, an
+// IPC-failure escalation is let through anyway, so an agent that keeps
+// reporting an active backup run while its IPC transport is genuinely
+// wedged still gets restarted. At the 30s default IPCProbeInterval that is
+// 10 minutes.
+const ipcVetoLimit = 20
+
+// ipcVetoRecencyMultiplier sizes the state_sync recency window
+// vetoIPCFailureForBackup checks against: a state_sync received within this
+// many IPC probe intervals is treated as live corroboration that the agent
+// (and its reported backup run) are still alive right now. Older than that,
+// a wedged IPC transport that has also stopped delivering state_syncs gets
+// no special treatment and escalates normally.
+const ipcVetoRecencyMultiplier = 3
+
+// defaultIPCProbeInterval sizes the veto recency window
+// (ipcVetoRecencyMultiplier * defaultIPCProbeInterval) for a HealthChecker
+// that never calls SetIPCProbeInterval. Matches the shipped default in
+// config.go so behaviour stays sane even if a call site forgets to wire the
+// real configured interval through.
+const defaultIPCProbeInterval = 30 * time.Second
+
 // ProcessChecker abstracts OS-level process liveness queries.
 type ProcessChecker interface {
 	IsAlive(pid int) bool
@@ -54,15 +77,46 @@ type HealthChecker struct {
 	// the file alone is what restart-stormed and stranded a fleet install on
 	// 2026-07-24 (#2763). The freshest of (file, sync) wins.
 	lastSyncedHeartbeat time.Time
+
+	// ipcProbeInterval sizes the state_sync recency window used by
+	// vetoIPCFailureForBackup (D3). Defaults to defaultIPCProbeInterval;
+	// override with SetIPCProbeInterval to match the real configured
+	// IPCProbeInterval.
+	ipcProbeInterval time.Duration
+	// ipcVetoCount is the number of consecutive IPC-failure escalations the
+	// in-flight-backup veto has absorbed. Bounded by ipcVetoLimit.
+	ipcVetoCount int
+	// lastIPCVetoed records whether the most recent CheckIPC call vetoed an
+	// escalation, so the caller (main.go) can log a distinct journal event
+	// for it instead of the ordinary check.ipc_degraded.
+	lastIPCVetoed bool
+	// activeBackupRuns is the freshest ActiveBackupRuns count reported over
+	// IPC (state_sync). See NoteStateSync.
+	activeBackupRuns int
+	// lastStateSyncAt is the wall-clock time the freshest state_sync was
+	// received. Deliberately the RECEIPT time, not the sync's own
+	// LastHeartbeat value: the veto is corroborating that the agent's
+	// IPC/heartbeat channel is alive right now, not that some past
+	// heartbeat was fresh.
+	lastStateSyncAt time.Time
 }
 
 // NewHealthChecker constructs a HealthChecker.
 func NewHealthChecker(process ProcessChecker, ipc IPCProber, staleThreshold time.Duration) *HealthChecker {
 	return &HealthChecker{
-		process:        process,
-		ipc:            ipc,
-		staleThreshold: staleThreshold,
+		process:          process,
+		ipc:              ipc,
+		staleThreshold:   staleThreshold,
+		ipcProbeInterval: defaultIPCProbeInterval,
 	}
+}
+
+// SetIPCProbeInterval overrides the IPC probe cadence used to size the
+// state_sync recency window for the in-flight-backup veto (see
+// vetoIPCFailureForBackup). Call sites that never call this keep
+// defaultIPCProbeInterval.
+func (h *HealthChecker) SetIPCProbeInterval(d time.Duration) {
+	h.ipcProbeInterval = d
 }
 
 // CheckProcess returns CheckOK if the process is alive and not a zombie,
@@ -75,31 +129,96 @@ func (h *HealthChecker) CheckProcess(pid int) string {
 }
 
 // CheckIPC pings the IPC endpoint and tracks consecutive failures.
-// Three or more consecutive failures → CheckIPCFailed.
+// Three or more consecutive failures → CheckIPCFailed, UNLESS a backup run
+// is in flight and a recent state_sync corroborates the agent is alive (D3)
+// — see vetoIPCFailureForBackup — in which case the existing degraded
+// verdict is returned instead and LastIPCCheckVetoed reports true so the
+// caller can journal the veto distinctly.
 // A single failure below threshold → CheckIPCDegraded.
-// A successful ping resets the counter and returns CheckOK.
+// A successful ping resets the counters and returns CheckOK.
 func (h *HealthChecker) CheckIPC() string {
+	h.lastIPCVetoed = false
 	ok, err := h.ipc.Ping()
 	if err != nil || !ok {
 		h.ipcFailCount++
 		if h.ipcFailCount >= ipcFailThreshold {
+			if h.vetoIPCFailureForBackup() {
+				h.lastIPCVetoed = true
+				return CheckIPCDegraded
+			}
 			return CheckIPCFailed
 		}
 		return CheckIPCDegraded
 	}
 	h.ipcFailCount = 0
+	h.ipcVetoCount = 0
 	return CheckOK
 }
 
-// NoteStateSync records the agent-reported LastHeartbeat delivered over IPC
-// (state_sync). The agent only sends a state_sync after a successful HTTP-200
-// heartbeat, so this is authoritative liveness evidence even when the on-disk
-// agent.state cannot be written. Out-of-order or unparsable values never
-// regress the stored timestamp.
-func (h *HealthChecker) NoteStateSync(lastHeartbeat time.Time) {
+// vetoIPCFailureForBackup decides whether a threshold-crossing IPC failure
+// should be suppressed because a backup run is in flight and recent
+// state_sync evidence corroborates the agent is alive (D3: a 10k-file backup
+// on Windows Server 2022 had its IPC ping/pong round trip intermittently
+// exceed IPCProbeInterval under load, and there was no in-flight-backup veto
+// anywhere in the watchdog, so the escalation killed the backup helper mid-run).
+//
+// The veto is bounded by ipcVetoLimit so a genuinely wedged agent that keeps
+// reporting an active run still gets restarted eventually — this must not
+// become a permanent mask the way the stale-heartbeat veto is bounded by
+// staleVetoLimit for the same reason.
+func (h *HealthChecker) vetoIPCFailureForBackup() bool {
+	if h.activeBackupRuns <= 0 || !h.stateSyncRecent() {
+		h.ipcVetoCount = 0
+		return false
+	}
+	if h.ipcVetoCount >= ipcVetoLimit {
+		h.ipcVetoCount = 0
+		return false
+	}
+	h.ipcVetoCount++
+	return true
+}
+
+// stateSyncRecent reports whether a state_sync was received within
+// ipcVetoRecencyMultiplier * ipcProbeInterval of now.
+func (h *HealthChecker) stateSyncRecent() bool {
+	if h.lastStateSyncAt.IsZero() {
+		return false
+	}
+	window := h.ipcProbeInterval * ipcVetoRecencyMultiplier
+	if window <= 0 {
+		return false
+	}
+	return time.Since(h.lastStateSyncAt) <= window
+}
+
+// IPCVetoCount returns the current consecutive IPC-failure veto count (for
+// journal diagnostics).
+func (h *HealthChecker) IPCVetoCount() int {
+	return h.ipcVetoCount
+}
+
+// LastIPCCheckVetoed reports whether the most recent CheckIPC call
+// suppressed a CheckIPCFailed escalation via vetoIPCFailureForBackup.
+func (h *HealthChecker) LastIPCCheckVetoed() bool {
+	return h.lastIPCVetoed
+}
+
+// NoteStateSync records the agent-reported LastHeartbeat and in-flight
+// backup-run count delivered over IPC (state_sync). The agent only sends a
+// state_sync after a successful HTTP-200 heartbeat, so this is authoritative
+// liveness evidence even when the on-disk agent.state cannot be written.
+// Out-of-order or unparsable heartbeat values never regress the stored
+// timestamp. activeBackupRuns and the receipt time always overwrite —
+// unlike the heartbeat, staleness there isn't meaningful to guard against,
+// and vetoIPCFailureForBackup needs the RECEIPT time of the freshest sync,
+// not the freshest value ever seen.
+func (h *HealthChecker) NoteStateSync(lastHeartbeat time.Time, activeBackupRuns int) {
 	if lastHeartbeat.After(h.lastSyncedHeartbeat) {
 		h.lastSyncedHeartbeat = lastHeartbeat
 	}
+	h.activeBackupRuns = activeBackupRuns
+	h.lastStateSyncAt = time.Now()
 }
 
 // LastKnownHeartbeat returns the freshest heartbeat timestamp known from any

@@ -6,6 +6,7 @@ import { db } from '../../db';
 import { securityPolicies } from '../../db/schema';
 import { requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
+import { requireSecurityReadAccess } from './readAuthorization';
 import {
   listPoliciesQuerySchema,
   createPolicySchema,
@@ -36,6 +37,7 @@ function securityPolicyAccessCondition(auth: AuthContext): SQL | undefined {
 policiesRoutes.get(
   '/policies',
   requireScope('organization', 'partner', 'system'),
+  requireSecurityReadAccess,
   zValidator('query', listPoliciesQuerySchema),
   async (c) => {
     const auth = c.get('auth');

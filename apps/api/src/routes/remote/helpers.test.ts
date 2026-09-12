@@ -55,7 +55,18 @@ vi.mock('../../services/sentry', () => ({
   captureException
 }));
 
-import { buildRemoteSessionPromptPayload, buildTechnicianDisplay, classifyConsentDenyAction, generateTurnCredentials, getIceServers, getTurnCredentialTtlSeconds, logSessionAudit, resolveConsentMarkerSessionId } from './helpers';
+import {
+  buildRemoteSessionPromptPayload,
+  buildTechnicianDisplay,
+  classifyConsentDenyAction,
+  createDesktopStartCommandId,
+  generateTurnCredentials,
+  getIceServers,
+  getTurnCredentialTtlSeconds,
+  logSessionAudit,
+  parseDesktopStartCommandId,
+  resolveConsentMarkerSessionId,
+} from './helpers';
 
 describe('buildTechnicianDisplay', () => {
   it('returns name + email + orgName at name_email level', () => {
@@ -203,6 +214,26 @@ describe('resolveConsentMarkerSessionId', () => {
   });
 });
 
+describe('desktop start command generations', () => {
+  it('creates and parses a one-off generation-bound identity', () => {
+    const sessionId = '33333333-3333-4333-8333-333333333333';
+    const first = createDesktopStartCommandId(sessionId);
+    const second = createDesktopStartCommandId(sessionId);
+
+    expect(first).not.toBe(second);
+    expect(parseDesktopStartCommandId(first)).toEqual({ sessionId, commandId: first });
+    expect(parseDesktopStartCommandId(second)).toEqual({ sessionId, commandId: second });
+  });
+
+  it.each([
+    'desk-start-33333333-3333-4333-8333-333333333333',
+    'desk-start-session-not-a-generation',
+    'desk-stop-33333333-3333-4333-8333-333333333333-22222222-2222-4222-8222-222222222222',
+  ])('rejects a legacy or malformed command identity: %s', (commandId) => {
+    expect(parseDesktopStartCommandId(commandId)).toBeNull();
+  });
+});
+
 describe('logSessionAudit', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -267,6 +298,22 @@ describe('logSessionAudit', () => {
     expect(errSpy).toHaveBeenCalledWith('Failed to log session audit:', expect.any(Error));
     expect(captureException).toHaveBeenCalledWith(expect.any(Error));
     errSpy.mockRestore();
+  });
+
+  it('records authenticated endpoint reports with agent provenance', async () => {
+    await logSessionAudit(
+      'session_consent_granted',
+      '22222222-2222-4222-8222-222222222222',
+      '11111111-1111-4111-8111-111111111111',
+      { sessionId: '33333333-3333-4333-8333-333333333333' },
+      undefined,
+      'agent',
+    );
+
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      actorType: 'agent',
+      actorId: '22222222-2222-4222-8222-222222222222',
+    }));
   });
 });
 

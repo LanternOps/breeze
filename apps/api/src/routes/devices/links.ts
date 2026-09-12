@@ -14,8 +14,10 @@ import {
 import { createLinkGroupSchema, updateLinkGroupSchema } from './schemas';
 import {
   MAX_LINK_GROUP_SIZE,
+  LinkGroupSiteAccessError,
   deleteLinkGroup,
   dissolveLinkGroupIfBelowMinimum,
+  lockAndAuthorizeLinkGroupMutation,
 } from '../../services/deviceLinkGroups';
 import { captureException } from '../../services/sentry';
 import type { AuthContext } from '../../middleware/auth';
@@ -134,7 +136,9 @@ linksRoutes.get(
     const members = await loadMembers(groups.map((g) => g.id), auth);
 
     return c.json({
-      data: groups.map((g) => ({
+      data: groups
+        .filter((g) => auth.allowedSiteIds === undefined || members.has(g.id))
+        .map((g) => ({
         id: g.id,
         orgId: g.orgId,
         kind: g.kind,
@@ -194,6 +198,17 @@ linksRoutes.post(
     let groupId: string;
     try {
       await db.transaction(async (tx) => {
+        // The friendly checks above precede this transaction. Lock and
+        // re-authorize every unique target before inserting the group: a site
+        // move committed in that window must not let the subsequent claim run
+        // with stale authority. The insert follows the check so denial leaves
+        // neither an empty group nor partial membership behind.
+        await lockAndAuthorizeLinkGroupMutation(
+          tx,
+          null,
+          auth.allowedSiteIds,
+          uniqueIds,
+        );
         const [group] = await tx
           .insert(deviceLinkGroups)
           .values({ orgId, kind, name: name ?? null, createdBy: auth.user.id })
@@ -229,6 +244,9 @@ linksRoutes.post(
         }
       });
     } catch (err) {
+      if (err instanceof LinkGroupSiteAccessError) {
+        return c.json({ error: 'Access to a device site denied' }, 403);
+      }
       if (err instanceof LinkRaceError) {
         return c.json({ error: 'A device was linked by another request — retry' }, 409);
       }
@@ -277,6 +295,9 @@ linksRoutes.get(
     if (!group) return c.json({ error: 'Link group not found' }, 404);
 
     const members = await loadMembers([groupId], auth);
+    if (auth.allowedSiteIds !== undefined && !members.has(groupId)) {
+      return c.json({ error: 'Link group not found' }, 404);
+    }
     return c.json({
       id: group.id,
       orgId: group.orgId,
@@ -311,7 +332,7 @@ linksRoutes.patch(
     for (const id of toAdd) {
       const device = await getDeviceWithOrgAndSiteCheck(c, id, auth);
       if (device === SITE_ACCESS_DENIED) {
-        return c.json({ error: 'Access to a device site denied' }, 403);
+        return c.json({ error: 'Link group not found' }, 404);
       }
       if (!device) {
         return c.json({ error: `Device ${id} not found` }, 404);
@@ -331,7 +352,7 @@ linksRoutes.patch(
     for (const id of toRemove) {
       const device = await getDeviceWithOrgAndSiteCheck(c, id, auth);
       if (device === SITE_ACCESS_DENIED) {
-        return c.json({ error: 'Access to a device site denied' }, 403);
+        return c.json({ error: 'Link group not found' }, 404);
       }
       if (!device) {
         return c.json({ error: `Device ${id} not found` }, 404);
@@ -359,6 +380,12 @@ linksRoutes.patch(
     let dissolved = false;
     try {
       await db.transaction(async (tx) => {
+        await lockAndAuthorizeLinkGroupMutation(
+          tx,
+          groupId,
+          auth.allowedSiteIds,
+          [...toAdd, ...toRemove],
+        );
         if (name !== undefined || toAdd.length > 0 || toRemove.length > 0) {
           await tx
             .update(deviceLinkGroups)
@@ -408,9 +435,12 @@ linksRoutes.patch(
         // dissolve it (unlink the lone survivor, delete the row). For vm_host
         // this also dissolves a group whose HOST was just removed: guests
         // without their nesting anchor are a headless group (#2308).
-        dissolved = await dissolveLinkGroupIfBelowMinimum(tx, groupId);
+        dissolved = await dissolveLinkGroupIfBelowMinimum(tx, groupId, auth.allowedSiteIds);
       });
     } catch (err) {
+      if (err instanceof LinkGroupSiteAccessError) {
+        return c.json({ error: 'Link group not found' }, 404);
+      }
       if (err instanceof LinkRaceError) {
         return c.json({ error: 'A device was linked by another request — retry' }, 409);
       }
@@ -454,9 +484,16 @@ linksRoutes.delete(
     const group = await getGroupWithOrgCheck(groupId, auth);
     if (!group) return c.json({ error: 'Link group not found' }, 404);
 
-    await db.transaction(async (tx) => {
-      await deleteLinkGroup(tx, groupId);
-    });
+    try {
+      await db.transaction(async (tx) => {
+        await deleteLinkGroup(tx, groupId, auth.allowedSiteIds);
+      });
+    } catch (err) {
+      if (err instanceof LinkGroupSiteAccessError) {
+        return c.json({ error: 'Link group not found' }, 404);
+      }
+      throw err;
+    }
 
     writeRouteAudit(c, {
       orgId: group.orgId,

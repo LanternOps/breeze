@@ -250,8 +250,9 @@ type AgentConfig struct {
 	EnabledCollectors                []string `json:"enabledCollectors,omitempty"`
 }
 
-// refuseUntrustedRedirect is the http.Client.CheckRedirect policy for the agent
-// API client. Every request the client makes carries the device token — Enroll
+// RefuseUntrustedRedirect is the shared http.Client.CheckRedirect policy for
+// credentialed agent requests, including pre-enrollment bootstrap. Every
+// request the normal API client makes carries the device token — Enroll
 // sends it as the custom x-agent-reenrollment-token header, the other calls send
 // it as Authorization: Bearer. Go follows redirects by default and, while it
 // drops Authorization/Cookie once a redirect leaves the original domain (it
@@ -268,7 +269,7 @@ type AgentConfig struct {
 // endpoint — a different path, or an http->https upgrade — are still followed.
 // An https->http downgrade is refused because it would expose the token over
 // cleartext. See #1043.
-func refuseUntrustedRedirect(req *http.Request, via []*http.Request) error {
+func RefuseUntrustedRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) == 0 {
 		return nil
 	}
@@ -293,7 +294,7 @@ func NewClient(baseURL, authToken, agentID string) *Client {
 		agentID:   agentID,
 		httpClient: &http.Client{
 			Timeout:       30 * time.Second,
-			CheckRedirect: refuseUntrustedRedirect,
+			CheckRedirect: RefuseUntrustedRedirect,
 		},
 	}
 }
@@ -311,7 +312,7 @@ func NewClientWithTLS(baseURL, authToken, agentID string, tlsCfg *tls.Config) *C
 		httpClient: &http.Client{
 			Timeout:       30 * time.Second,
 			Transport:     transport,
-			CheckRedirect: refuseUntrustedRedirect,
+			CheckRedirect: RefuseUntrustedRedirect,
 		},
 	}
 }
@@ -399,7 +400,7 @@ func CancelBootstrap(serverURL, childEnrollmentKey string) (*CancelBootstrapResp
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: refuseUntrustedRedirect}
+	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: RefuseUntrustedRedirect}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send cancel-bootstrap request: %w", err)
@@ -475,7 +476,7 @@ func RedeemSupportCode(server, code, hostname, osType string) (*SupportRedeemRes
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: refuseUntrustedRedirect}
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: RefuseUntrustedRedirect}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send support redeem request: %w", err)
@@ -522,7 +523,7 @@ func (c *Client) UninstallIntent() (*UninstallIntentResponse, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+c.authToken)
 
-	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: refuseUntrustedRedirect}
+	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: RefuseUntrustedRedirect}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send uninstall-intent request: %w", err)

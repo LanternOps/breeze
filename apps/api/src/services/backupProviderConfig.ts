@@ -15,6 +15,7 @@
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { backupConfigs } from '../db/schema';
+import { resolveBackupStorageEncryptionPlan } from './backupEncryption';
 
 export type BackupProviderConfig = {
   provider: string;
@@ -78,4 +79,96 @@ export async function resolveBackupProviderConfig(
     provider: config.provider,
     providerConfig: (config.providerConfig as Record<string, unknown> | null) ?? {},
   };
+}
+
+/**
+ * Command-payload shape for a WRITE (backup) command's storage destination —
+ * mirrors the `storageEncryption` block backup_run/mssql_backup/hyperv_backup
+ * payloads already carry (see prepareBackupDispatchTargets below and
+ * applyCommandStorageEncryption on the agent side).
+ */
+export type BackupWriteCommandDestination = {
+  provider: string;
+  providerConfig: Record<string, unknown>;
+  storageEncryption:
+    | { required: false; mode: 'disabled' }
+    | { required: true; mode: 's3-sse-s3' | 's3-sse-kms'; keyReference: string | null };
+};
+
+export type BackupWriteDestinationResult =
+  | { ok: true; destination: BackupWriteCommandDestination }
+  | { ok: false; reason: 'config_not_found'; message: string }
+  | { ok: false; reason: 'encryption_unsupported'; message: string };
+
+/**
+ * Builds the write-command destination payload (provider + providerConfig +
+ * storageEncryption) from an already-fetched backup_configs row — the SAME
+ * encryption-plan logic apps/api/src/jobs/backupWorker.ts's
+ * prepareBackupDispatchTargets applies when it fans a profile out to
+ * backup_run/mssql_backup/hyperv_backup commands (D20b item A). Callers that
+ * already have the full row in hand (backupWorker.ts) should call this
+ * directly; callers that only have a configId (the on-demand mssql/hyperv
+ * backup routes) should use resolveBackupWriteCommandDestination below, which
+ * fetches the row first.
+ *
+ * Pure — no DB access — so it's exercised without a database in tests.
+ */
+export function buildBackupWriteCommandDestination(config: {
+  provider: string;
+  providerConfig: unknown;
+  encryption: boolean | null | undefined;
+}): BackupWriteDestinationResult {
+  const providerConfig = (config.providerConfig as Record<string, unknown> | null) ?? {};
+  const encryptionPlan = resolveBackupStorageEncryptionPlan({
+    encryption: config.encryption,
+    provider: config.provider,
+    providerConfig,
+  });
+
+  if (encryptionPlan.required && encryptionPlan.status === 'unsupported') {
+    return { ok: false, reason: 'encryption_unsupported', message: encryptionPlan.reason };
+  }
+
+  const commandProviderConfig =
+    encryptionPlan.required && encryptionPlan.status === 'enforced'
+      ? { ...providerConfig, ...encryptionPlan.providerConfigPatch }
+      : providerConfig;
+
+  return {
+    ok: true,
+    destination: {
+      provider: config.provider,
+      providerConfig: commandProviderConfig,
+      storageEncryption: encryptionPlan.required
+        ? { required: true, mode: encryptionPlan.mode, keyReference: encryptionPlan.keyReference }
+        : { required: false, mode: 'disabled' },
+    },
+  };
+}
+
+/**
+ * DB-querying counterpart of buildBackupWriteCommandDestination for callers
+ * that only have a configId + orgId (on-demand mssql/hyperv backup routes —
+ * D20b item A). Tenant-safe the same way resolveBackupProviderConfig is: a
+ * mismatched org resolves to config_not_found exactly like a missing row.
+ */
+export async function resolveBackupWriteCommandDestination(
+  configId: string,
+  orgId: string
+): Promise<BackupWriteDestinationResult> {
+  const [config] = await db
+    .select({
+      provider: backupConfigs.provider,
+      providerConfig: backupConfigs.providerConfig,
+      encryption: backupConfigs.encryption,
+    })
+    .from(backupConfigs)
+    .where(and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId)))
+    .limit(1);
+
+  if (!config) {
+    return { ok: false, reason: 'config_not_found', message: BACKUP_DESTINATION_CONFIG_NOT_FOUND_MESSAGE };
+  }
+
+  return buildBackupWriteCommandDestination(config);
 }
