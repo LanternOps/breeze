@@ -24,6 +24,7 @@ import { navigateTo } from '@/lib/navigation';
 import { ActionError, runAction } from '@/lib/runAction';
 import { formatRelativeTime } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import ScriptProposalApprovalCard from '../ai/ScriptProposalApprovalCard';
 import { badgeClass } from '../aiAgents/statusBadge';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { EmptyState } from '../shared/EmptyState';
@@ -237,6 +238,11 @@ export default function ApprovalsInbox() {
   const [groupErrors, setGroupErrors] = useState<Record<string, GroupErrorKind>>({});
   const [denyingId, setDenyingId] = useState<string | null>(null);
   const [denyReason, setDenyReason] = useState('');
+  // W03 (#5612): which row's script-review disclosure is open, if any. The
+  // card fetches the full proposal body — the expensive, sensitive part — so
+  // it must not mount (and fetch) for every row in the list; only the one
+  // row the approver actually expanded gets a ScriptProposalApprovalCard.
+  const [reviewOpenId, setReviewOpenId] = useState<string | null>(null);
   const [denyingGroupIdentity, setDenyingGroupIdentity] = useState<string | null>(null);
   const [groupDenyReason, setGroupDenyReason] = useState('');
   const liveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -608,6 +614,9 @@ export default function ApprovalsInbox() {
     approval: PendingApproval,
     decision: 'approve' | 'deny',
     reason?: string,
+    /** W03 (#5612): STRICT pattern descriptions ticked on the script-review
+     *  disclosure's ScriptProposalApprovalCard. Only ever set on an approve. */
+    opts?: { acknowledgedPatterns?: string[] },
   ) => {
     if (busy) return;
     // The button's own `disabled` attribute is driven by the ticking `now`
@@ -625,9 +634,15 @@ export default function ApprovalsInbox() {
     clearRowErrors([approval.id]);
 
     try {
+      // Extra positional args are only ever appended when actually needed —
+      // the existing single-card approve test asserts the exact 2-arg call
+      // (`'approval-1', 'approve'`), so an unconditional `undefined, undefined`
+      // here would break it despite being semantically a no-op.
       const outcome =
         decision === 'approve'
-          ? await decideIntentApproval(approval.id, 'approve')
+          ? opts?.acknowledgedPatterns
+            ? await decideIntentApproval(approval.id, 'approve', undefined, undefined, opts)
+            : await decideIntentApproval(approval.id, 'approve')
           : await decideIntentApproval(approval.id, 'deny', reason?.trim() || undefined);
       if (outcome === 'needs_device') {
         setDecisionError(approval.id, 'noApproverDevice');
@@ -638,6 +653,7 @@ export default function ApprovalsInbox() {
         return;
       }
       setDenyingId(null);
+      setReviewOpenId((cur) => (cur === approval.id ? null : cur));
       // Critique #7: the row otherwise just vanishes with no confirmation
       // that anything happened. Approve only — a denial's own form already
       // stays open through the click, and the row disappearing IS the
@@ -899,6 +915,12 @@ export default function ApprovalsInbox() {
     // once the next poll removes it.
     const expired = isExpired(approval.expiresAt, now);
     const actionsDisabled = busy || expired;
+    // W03 (#5612): only a run_script row fanned out from a proposal carries
+    // this — every other tool keeps the plain risk-summary line.
+    const proposalId =
+      approval.actionToolName === 'run_script' && typeof approval.actionArguments?.proposalId === 'string'
+        ? (approval.actionArguments.proposalId as string)
+        : null;
     return (
       <article
         key={approval.id}
@@ -969,6 +991,32 @@ export default function ApprovalsInbox() {
               <p className="mt-3 max-w-3xl text-sm text-foreground/80">
                 {approval.riskSummary}
               </p>
+            )}
+            {proposalId && (
+              <div className="mt-3">
+                <button
+                  type="button"
+                  data-testid={`approval-script-review-toggle-${approval.id}`}
+                  aria-expanded={reviewOpenId === approval.id}
+                  onClick={() => setReviewOpenId((cur) => (cur === approval.id ? null : approval.id))}
+                  className="text-xs font-medium text-blue-500 underline hover:text-blue-400"
+                >
+                  {t(/* i18n-dynamic */ 'ai:scriptProposal.title')}
+                </button>
+                {/* Mounted lazily: the card fetches the full script body, and
+                    a list of twenty pending approvals must not fetch twenty
+                    script bodies. */}
+                {reviewOpenId === approval.id && (
+                  <ScriptProposalApprovalCard
+                    proposalId={proposalId}
+                    onApprove={(acknowledgedPatterns) =>
+                      void decide(approval, 'approve', undefined, { acknowledgedPatterns })
+                    }
+                    onReject={() => openDenyForm(approval.id)}
+                    onChanged={() => void loadApprovals({ silent: true, withCount: true })}
+                  />
+                )}
+              </div>
             )}
             {denyingId === approval.id && (
               <div

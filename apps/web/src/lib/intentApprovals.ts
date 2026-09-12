@@ -99,6 +99,16 @@ export function isNotSoleApprover(err: unknown): boolean {
 export function decideErrorCopy(token: string): string | undefined {
   if (token === 'step_up_required') return i18n.t('ai:aiApprovalDialog.noApproverDevice');
   if (token === 'not_sole_approver') return i18n.t('ai:aiApprovalDialog.notSoleApprover');
+  // W03 (#5612): the decide route's 422 refusals of a submitted
+  // acknowledgedPatterns set — the server re-derives (submitted ∩
+  // strict_hits) and refuses either when the viewer may not acknowledge at
+  // all, or when the submitted set doesn't cover every current strict hit.
+  if (token === 'strict_acknowledgement_not_permitted') {
+    return i18n.t('ai:scriptProposal.acknowledgeRequirement');
+  }
+  if (token === 'strict_acknowledgement_incomplete') {
+    return i18n.t('ai:scriptProposal.acknowledgeIncomplete');
+  }
   return undefined;
 }
 
@@ -255,8 +265,23 @@ export async function decideIntentApproval(
   decision: 'approve' | 'deny',
   reason?: string,
   approvalScope?: AiApprovalScope | null,
+  /**
+   * W03 (#5612): the STRICT pattern descriptions ticked on the
+   * ScriptProposalApprovalCard. The server re-derives
+   * (submitted ∩ strict_hits) itself — this is a request, not a grant — and
+   * may answer 422 `strict_acknowledgement_not_permitted` /
+   * `strict_acknowledgement_incomplete` (mapped by `decideErrorCopy` below).
+   * A distinct 5th parameter, not folded into `approvalScope`: that slot is
+   * already a heavily-tested positional argument (intentApprovals.test.ts,
+   * intentApprovals.stepUpGrant.test.ts), so repurposing it would break both
+   * suites for no reason — this is purely additive.
+   */
+  opts?: { acknowledgedPatterns?: string[] },
 ): Promise<IntentDecisionOutcome> {
   const body: Record<string, unknown> = {};
+  if (opts?.acknowledgedPatterns?.length) {
+    body.acknowledgedPatterns = opts.acknowledgedPatterns;
+  }
   // Only an APPROVE of a supervised row may go prooflessly; deny never carries
   // a proof anyway, and an unknown scope must fall back to the strict path.
   const supervisedApprove = decision === 'approve' && approvalScope === 'supervised';

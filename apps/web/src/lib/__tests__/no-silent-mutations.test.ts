@@ -278,6 +278,10 @@ const TARGET_GLOBS = [
   // is a brand-new mutation surface; a bare fetchWithAuth here would silently
   // no-op the operator's "Add network asset" submit.
   'src/components/devices/AddNetworkAssetModal.tsx',
+  // Script proposal request-changes/promote (#5612 W03): both mutations are
+  // runAction-wrapped in this module so no caller — the approval card, the
+  // inbox, or a future surface — can invoke them unwrapped.
+  'src/lib/api/scriptProposals.ts',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -598,8 +602,10 @@ describe('no silent mutations in targeted set', () => {
     // 1 more (AgentCreateFlow.tsx), so the count is now 120 — bump it
     // deliberately on every merge, never by resolving the hunk.
     // #4622 W04 adds ManualAssetModal.tsx and #5213 W02 adds
-    // AddNetworkAssetModal.tsx, so the count is now 125.
-    expect(absoluteFiles.length).toBe(125);
+    // AddNetworkAssetModal.tsx, so the count is now 125. #5612 W03 adds
+    // lib/api/scriptProposals.ts (request-changes + promote), so the count is
+    // now 126.
+    expect(absoluteFiles.length).toBe(126);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
