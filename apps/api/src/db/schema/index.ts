@@ -95,6 +95,7 @@ export * from './c2c';
 export * from './delegant';
 export * from './google';
 export * from './m365';
+export * from './m365Sync';
 export * from './sla';
 export * from './drPlans';
 export * from './localVault';
