@@ -131,6 +131,11 @@ vi.mock('../services/aiAgentSdk', () => ({
   abortActivePlan: vi.fn(),
 }));
 
+vi.mock('../config/env', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config/env')>();
+  return { ...actual, aiScriptAuthoringEnabled: vi.fn(() => true) };
+});
+
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
@@ -150,6 +155,7 @@ vi.mock('../services/aiBudgetAlerts', async (importOriginal) => {
 
 import { aiRoutes } from './ai';
 import { db } from '../db';
+import { aiScriptAuthoringEnabled } from '../config/env';
 import {
   createSession,
   getSession,
@@ -657,6 +663,40 @@ describe('AI routes', () => {
         headers: { Authorization: 'Bearer test-token' },
       });
       expect(res.status).toBe(403);
+    });
+
+    it('404s with feature_disabled when the wave flag is off', async () => {
+      vi.mocked(aiScriptAuthoringEnabled).mockReturnValueOnce(false);
+      const res = await app.request(`/ai/admin/script-proposals-metrics?orgId=${ORG_ID}`, {
+        headers: { Authorization: 'Bearer test-token' },
+      });
+      expect(res.status).toBe(404);
+      expect((await res.json()).error).toBe('feature_disabled');
+      // No DB access at all — the gate is the first statement in the handler.
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('returns the full shape (including unattendedRuns/laneState) even with no orgId', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'admin-1', email: 'admin@example.com' },
+          scope: 'system', orgId: null, accessibleOrgIds: null, canAccessOrg: () => true,
+        });
+        return next();
+      });
+      const res = await app.request('/ai/admin/script-proposals-metrics', {
+        headers: { Authorization: 'Bearer test-token' },
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Same keys as the populated branch — ScriptProposalsPanel keys card
+      // visibility on `!== undefined`, so a partial shape here would silently
+      // drop the unattended-run/lane-state cards for a partner/system caller.
+      expect(body.scriptProposals).toEqual({
+        perDay: [], unattendedRuns: 0, laneState: null,
+        reviewerDisagreements: { humanRejectedAfterApprove: 0, humanApprovedAfterReject: 0 },
+      });
     });
 
     it('returns 400 for an invalid since date', async () => {

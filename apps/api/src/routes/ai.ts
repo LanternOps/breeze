@@ -10,6 +10,8 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { streamSSE } from 'hono/streaming';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { aiScriptAuthoringEnabled } from '../config/env';
+import { loadScriptProposalReviewerDisagreements } from '../services/scriptProposals/metrics';
 import {
   createSession,
   getSession,
@@ -1559,27 +1561,32 @@ aiRoutes.get(
   }
 );
 
-// Small local normaliser for a raw db.execute() result across driver
-// shapes — mirrors services/tenantCascade.ts's own rowsFromExecute helper
-// (not exported from there, so duplicated locally per CLAUDE.md's guidance
-// that small cross-file helpers may be duplicated rather than shared).
-function rowsFromExecute<T>(result: unknown): T[] {
-  if (Array.isArray(result)) return result as T[];
-  const rows = (result as { rows?: unknown } | null)?.rows;
-  return Array.isArray(rows) ? (rows as T[]) : [];
-}
-
 // GET /admin/script-proposals-metrics - AI Risk Dashboard script-proposal panel (W05, #5612)
 aiRoutes.get(
   '/admin/script-proposals-metrics',
   requireScope('organization', 'partner', 'system'),
   requireAiRead,
   async (c) => {
+    // Same dark-when-off gate as every other AI script authoring surface
+    // (routes/ai/scriptProposals.ts) — without it, a deployment with the
+    // feature off gets a permanently-empty "Script Proposals" tab instead of
+    // the tab simply not answering.
+    if (!aiScriptAuthoringEnabled()) return c.json({ error: 'feature_disabled' }, 404);
+
     const auth = c.get('auth');
     const orgId = c.req.query('orgId') || auth.orgId;
 
     if (!orgId) {
-      return c.json({ scriptProposals: { perDay: [], reviewerDisagreements: { humanRejectedAfterApprove: 0, humanApprovedAfterReject: 0 } } });
+      // Same shape as the populated branch below — ScriptProposalsPanel keys
+      // the unattended-run/lane-state cards on `!== undefined`, so a partial
+      // shape here would silently drop both cards for a partner/system-scope
+      // caller with no orgId instead of showing zero / not-configured.
+      return c.json({
+        scriptProposals: {
+          perDay: [], unattendedRuns: 0, laneState: null,
+          reviewerDisagreements: { humanRejectedAfterApprove: 0, humanApprovedAfterReject: 0 },
+        },
+      });
     }
     if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
       return c.json({ error: 'Access denied to this organization' }, 403);
@@ -1605,31 +1612,10 @@ aiRoutes.get(
     const perDay = perDayRows.map((row) => ({ date: row.date, count: Number(row.count) }));
 
     // 2. Reviewer disagreements — a human decision that goes against the
-    // latest completed model review. DISTINCT ON needs raw SQL: Drizzle's
-    // query builder has no portable equivalent used elsewhere in this repo
-    // (see tenantCascade.ts for the same db.execute + rowsFromExecute
-    // pattern). decided_by IS NOT NULL excludes the unattended lane's
-    // auto-approved proposals (decidedBy stays null there, per W04/#5612),
-    // which have no human decision to disagree with.
-    const disagreementResult = await db.execute(drizzleSql`
-      WITH latest_review AS (
-        SELECT DISTINCT ON (proposal_id) proposal_id, recommended_action
-        FROM script_proposal_reviews
-        WHERE org_id = ${orgId} AND reviewer_kind = 'model' AND status = 'completed'
-        ORDER BY proposal_id, created_at DESC
-      )
-      SELECT
-        COUNT(*) FILTER (WHERE lr.recommended_action = 'approve' AND sp.status = 'rejected') AS "humanRejectedAfterApprove",
-        COUNT(*) FILTER (WHERE lr.recommended_action = 'reject' AND sp.status IN ('approved', 'executed', 'verified', 'promoted')) AS "humanApprovedAfterReject"
-      FROM script_proposals sp
-      JOIN latest_review lr ON lr.proposal_id = sp.id
-      WHERE sp.org_id = ${orgId}
-        AND sp.decided_by IS NOT NULL
-        AND sp.created_at BETWEEN ${since.toISOString()} AND ${until.toISOString()}
-    `);
-    const [disagreementRow] = rowsFromExecute<{ humanRejectedAfterApprove: string | number; humanApprovedAfterReject: string | number }>(
-      disagreementResult,
-    );
+    // latest completed model review. Extracted to services/scriptProposals/
+    // metrics.ts (raw SQL, DISTINCT ON) so a live-Postgres test can exercise
+    // it directly.
+    const reviewerDisagreements = await loadScriptProposalReviewerDisagreements(orgId, since, until);
 
     // 3. Unattended runs in the window (W04, #5612)
     const [unattendedCountRow] = await db
@@ -1659,10 +1645,7 @@ aiRoutes.get(
         perDay,
         unattendedRuns,
         laneState,
-        reviewerDisagreements: {
-          humanRejectedAfterApprove: Number(disagreementRow?.humanRejectedAfterApprove ?? 0),
-          humanApprovedAfterReject: Number(disagreementRow?.humanApprovedAfterReject ?? 0),
-        },
+        reviewerDisagreements,
       },
     });
   }

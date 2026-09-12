@@ -29,8 +29,10 @@ describe('ScriptProposalDetail', () => {
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/ai/script-proposals/proposal-1');
   });
 
-  it('renders "evidence erased" when the proposal 404s (source org merged/erased)', async () => {
-    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ error: 'not found' }, 404));
+  it('renders "evidence erased" when the proposal 404s with error: not_found (source org merged/erased)', async () => {
+    // The real route (routes/ai/scriptProposals.ts) returns exactly this
+    // body for a genuinely gone row.
+    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ error: 'not_found' }, 404));
 
     render(<ScriptProposalDetail proposalId="proposal-2" />);
 
@@ -43,5 +45,16 @@ describe('ScriptProposalDetail', () => {
     render(<ScriptProposalDetail proposalId="proposal-3" />);
 
     await waitFor(() => expect(screen.getByText(/couldn't load/i)).toBeTruthy());
+  });
+
+  it('renders a load error, not "evidence erased", when the 404 is feature_disabled', async () => {
+    // The same route 404s the whole surface when the wave flag is off — that
+    // must never read as "this proposal's evidence was destroyed".
+    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ error: 'feature_disabled' }, 404));
+
+    render(<ScriptProposalDetail proposalId="proposal-4" />);
+
+    await waitFor(() => expect(screen.getByText(/couldn't load/i)).toBeTruthy());
+    expect(screen.queryByTestId('script-proposal-evidence-erased')).toBeNull();
   });
 });

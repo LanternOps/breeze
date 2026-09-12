@@ -39,14 +39,19 @@ export default function ScriptProposalDetail({ proposalId }: { proposalId: strin
     fetchWithAuth(`/ai/script-proposals/${proposalId}`)
       .then(async (res) => {
         if (cancelled) return;
-        // 404 covers both "never existed" and "evidence erased" (org merge /
-        // retention) — the API cannot distinguish them once the row is gone,
-        // and neither case should read as a broken link.
-        if (res.status === 404) {
-          setState('erased');
-          return;
-        }
         if (!res.ok) {
+          // Only a genuine "row is gone" 404 reads as "evidence erased" (org
+          // merge / retention) — a 404 the route returns because the whole
+          // feature is flag-off (`error: 'feature_disabled'`), or a 403 for
+          // a proposal the caller can't read, must not tell the operator
+          // audit evidence was destroyed when it wasn't.
+          if (res.status === 404) {
+            const body = await res.json().catch(() => null);
+            if ((body as { error?: string } | null)?.error === 'not_found') {
+              setState('erased');
+              return;
+            }
+          }
           setState('error');
           return;
         }
