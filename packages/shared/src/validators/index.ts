@@ -220,7 +220,12 @@ export const automationTriggerSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('event'),
     event: z.string(),
-    durationMinutes: z.number().optional()
+    durationMinutes: z.number().optional(),
+    // #5289: compiled monitor automations fire on `alert.triggered` but must
+    // only run for THEIR OWN alert rule, so the trigger carries the narrowing
+    // filter the runtime already reads (`normalizeAutomationTrigger` passes
+    // `filter` through). Free-form on purpose — the runtime matches by key.
+    filter: z.record(z.string(), z.unknown()).optional(),
   }),
   z.object({
     type: z.literal('webhook'),
@@ -632,7 +637,7 @@ export const deviceLifecycleInlineSettingsSchema = z
 export type DeviceLifecycleInlineSettings = z.infer<typeof deviceLifecycleInlineSettingsSchema>;
 
 export const addFeatureLinkSchema = z.object({
-  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper', 'vulnerability', 'device_lifecycle']),
+  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper', 'vulnerability', 'device_lifecycle', 'monitors']),
   featurePolicyId: z.string().guid().optional(),
   inlineSettings: configFeatureInlineSettingsSchema.optional(),
 }).refine(
@@ -1032,6 +1037,11 @@ export const alertRuleItemSchema = z.object({
   titleTemplate: z.string().max(500).optional(),
   messageTemplate: z.string().max(2000).optional(),
   sortOrder: z.number().int().min(0).optional(),
+  // #5289 delivery parity: a config-policy alert rule could never say WHERE it
+  // notifies or WHICH escalation policy it uses, so those alerts silently fell
+  // back to org defaults while the standalone alert-rule path honoured both.
+  escalationPolicyId: z.string().uuid().nullable().optional(),
+  notificationChannelIds: z.array(z.string().uuid()).max(20).optional(),
 });
 
 export const alertRuleInlineSettingsSchema = z.object({
@@ -1264,3 +1274,8 @@ export {
   type UpdateDocumentInput,
   type ListDocumentsQuery,
 } from './orgDocuments';
+
+// #5289 — monitor definitions. Kept LAST: monitors.ts imports automationActionSchema
+// from this module, so the re-export must run after that definition to avoid a
+// circular-initialisation hole.
+export * from './monitors';

@@ -51,6 +51,14 @@ export const automations = pgTable('automations', {
   managedByAgentId: uuid('managed_by_agent_id').references(() => aiAgents.id, {
     onDelete: 'restrict',
   }),
+  /**
+   * #5289: set only on the automation COMPILED from a monitor definition's
+   * responses. services/monitors/monitorCompiler.ts is the single writer; the
+   * routes and the manage_automations AI tool refuse edits, enable/disable and
+   * manual runs on a row carrying it. Declared without .references() to keep
+   * schema imports acyclic — the FK (ON DELETE CASCADE) lives in the migration.
+   */
+  managedByMonitorId: uuid('managed_by_monitor_id'),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
   enabled: boolean('enabled').notNull().default(true),
