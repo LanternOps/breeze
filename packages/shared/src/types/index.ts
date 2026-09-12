@@ -810,6 +810,7 @@ export * from './aiAgentRuns';
 export * from './aiAgentSchedules';
 export * from './aiOperator';
 export * from './orgNarrativeReport';
+export * from './fleetDesign';
 export * from './ticketTriage';
 export * from './aiAgentImpact';
 
