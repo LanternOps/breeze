@@ -18,7 +18,8 @@ import {
   deviceGroupMemberships,
   organizations,
   sites,
-  configPolicyAlertRules
+  configPolicyAlertRules,
+  monitorDefinitions
 } from '../db/schema';
 import { eq, and, inArray, isNull, isNotNull, or, sql, type SQL } from 'drizzle-orm';
 import { evaluateConditions, evaluateAutoResolveConditions, interpolateTemplate } from './alertConditions';
@@ -28,6 +29,8 @@ import { publishEvent } from './eventBus';
 import { resolveDeviceSiteId } from './deviceSiteResolver';
 import { enqueueAlertCorrelation } from '../jobs/alertCorrelation';
 import { captureException } from './sentry';
+import { resolveMonitorsForDevice } from './monitors/monitorResolver';
+import { applyOverrides, getMonitorKindSpec } from './monitors/kinds';
 
 // Types for alert creation
 export interface CreateAlertParams {
@@ -38,6 +41,12 @@ export interface CreateAlertParams {
   title: string;
   message: string;
   context?: Record<string, unknown>;
+  /**
+   * #5289 — set when the firing rule was COMPILED from a monitor definition,
+   * so the alert can link back to the monitor a technician actually authored
+   * (the compiled rule is an implementation detail they never see).
+   */
+  monitorId?: string | null;
 }
 
 // Rule with template info for evaluation
@@ -125,7 +134,7 @@ async function publishAlertTriggeredOrRollback(opts: {
  * @returns Created alert ID, or null if blocked by cooldown/dedupe
  */
 export async function createAlert(params: CreateAlertParams): Promise<string | null> {
-  const { ruleId, deviceId, orgId, severity, title, message, context } = params;
+  const { ruleId, deviceId, orgId, severity, title, message, context, monitorId } = params;
 
   // Get the rule to check cooldown settings
   const [rule] = await db
@@ -201,6 +210,7 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
       title,
       message,
       context: context ?? {},
+      monitorId: monitorId ?? null,
       status: 'active',
       triggeredAt: new Date()
     })
@@ -812,6 +822,18 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
     );
   }
 
+  // #5289 — the 'monitor' target type. A compiled monitor rule reaches a device
+  // only through configuration-policy attachment, never by org/site/group
+  // targeting, so the resolver is the authority on which ones apply. A monitor
+  // the resolution says is DISABLED for this device contributes no rule at all.
+  const effectiveMonitors = await resolveMonitorsForDevice(deviceId);
+  const enabledMonitorIds = effectiveMonitors.filter((m) => m.enabled).map((m) => m.monitorId);
+  if (enabledMonitorIds.length > 0) {
+    targetConditions.push(
+      and(eq(alertRules.targetType, 'monitor'), inArray(alertRules.targetId, enabledMonitorIds))
+    );
+  }
+
   // Get all active rules that apply to this device: the device org's own
   // rules plus its partner's partner-wide rules (#2128).
   const ownershipCondition = await alertRuleOwnershipConditionForOrg(device.orgId);
@@ -839,6 +861,19 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
 
   const templateMap = new Map(templates.map(t => [t.id, t]));
 
+  // Per-device monitor overrides (threshold tweaks, severity) come from the
+  // winning ATTACHMENT, so two devices can run the same monitor at different
+  // thresholds. One batched read for the managed rules in this call.
+  const managedMonitorIds = [...new Set(rules.map(r => r.managedByMonitorId).filter((id): id is string => !!id))];
+  const monitorDefinitionsById = new Map<string, typeof monitorDefinitions.$inferSelect>();
+  if (managedMonitorIds.length > 0) {
+    const defs = await db
+      .select()
+      .from(monitorDefinitions)
+      .where(inArray(monitorDefinitions.id, managedMonitorIds));
+    for (const def of defs) monitorDefinitionsById.set(def.id, def);
+  }
+
   // Build rule-with-template objects
   const result: RuleWithTemplate[] = [];
 
@@ -848,11 +883,37 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
 
     const overrides = rule.overrideSettings as Record<string, unknown> | null;
 
+    let effectiveConditions: unknown = (overrides?.conditions as unknown) ?? template.conditions;
+    let effectiveSeverity =
+      (overrides?.severity as 'critical' | 'high' | 'medium' | 'low' | 'info') ?? template.severity;
+
+    if (rule.managedByMonitorId) {
+      const effective = effectiveMonitors.find((m) => m.monitorId === rule.managedByMonitorId);
+      const def = monitorDefinitionsById.get(rule.managedByMonitorId);
+      if (effective?.overrides && def) {
+        try {
+          const spec = getMonitorKindSpec(def.kind);
+          const base = spec.conditionSchema.parse(def.condition);
+          effectiveConditions = spec.toAlertCondition(applyOverrides(spec, base, effective.overrides));
+          effectiveSeverity =
+            (effective.overrides.severity as typeof effectiveSeverity | undefined) ?? effectiveSeverity;
+        } catch (error) {
+          // A per-attachment override that no longer validates (the monitor's
+          // kind changed under it) must NOT silently disable the monitor —
+          // fall back to the compiled, un-overridden condition and say so.
+          console.error(
+            `[AlertService] Ignoring invalid monitor override for monitor=${rule.managedByMonitorId} device=${deviceId}:`,
+            error
+          );
+        }
+      }
+    }
+
     result.push({
       rule,
       template,
-      effectiveConditions: (overrides?.conditions as unknown) ?? template.conditions,
-      effectiveSeverity: (overrides?.severity as 'critical' | 'high' | 'medium' | 'low' | 'info') ?? template.severity,
+      effectiveConditions,
+      effectiveSeverity,
       effectiveCooldownMinutes: (overrides?.cooldownMinutes as number) ?? template.cooldownMinutes,
       notificationChannelIds: (overrides?.notificationChannelIds as string[]) ?? [],
       escalationPolicyId: overrides?.escalationPolicyId as string | undefined
@@ -918,6 +979,9 @@ export async function evaluateDeviceAlerts(deviceId: string): Promise<string[]> 
           severity: effectiveSeverity,
           title,
           message,
+          // #5289 — provenance, so the alert links to the authored monitor
+          // rather than to the compiled rule the technician never sees.
+          monitorId: rule.managedByMonitorId ?? null,
           context: {
             ...result.context,
             conditionsMet: result.conditionsMet,
