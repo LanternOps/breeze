@@ -259,6 +259,23 @@ export async function addEvidence(
   );
 }
 
+/**
+ * Upload a file as occurrence evidence (#5573 W03). The API files it in the
+ * org's document library with category `evidence` and the deliverable's portal
+ * flag, then links it. FormData must NOT carry a Content-Type — the browser
+ * supplies the multipart boundary.
+ */
+export async function uploadEvidence(
+  f: Fetcher,
+  orgId: string,
+  occurrenceId: string,
+  form: FormData,
+): Promise<Occurrence> {
+  return unwrapData<Occurrence>(
+    await f(`${occurrencePath(orgId, occurrenceId)}/evidence/upload`, { method: 'POST', body: form }),
+  );
+}
+
 export async function removeEvidence(
   f: Fetcher,
   orgId: string,

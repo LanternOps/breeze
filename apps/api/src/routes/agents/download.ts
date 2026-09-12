@@ -4,7 +4,7 @@ import { Readable } from 'node:stream';
 import { join, resolve } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
 import { isS3Configured, getPresignedUrl, isS3NotFound } from '../../services/s3Storage';
-import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl, HELPER_FILENAMES } from '../../services/binarySource';
+import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl, getGithubRecoveryIsoUrl, HELPER_FILENAMES } from '../../services/binarySource';
 import { getPromotedComponentVersion, getRegisteredComponentVersion, type PromotedComponent } from '../../services/promotedAgentVersion';
 import { fetchVerifiedMacosPkg } from '../../services/installerBuilder';
 
@@ -459,6 +459,25 @@ registerComponentDownloadRoute({
   component: 'backup',
   filenameFor: perArchFilename('backup'),
   githubUrlFor: getGithubBackupUrl,
+  binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
+});
+
+// breeze-recovery-linux-<arch>.iso (W04b): the bare-metal recovery media,
+// built and released alongside breeze-backup — see agent/recovery-media/.
+// Linux only for now (Windows media is W07); the route still takes an :os
+// segment (matching every other registerComponentDownloadRoute route) so it
+// shares this one handler, but filenameFor rejects anything but "linux".
+// GET /backup/bmr/boot-media (routes/backup/bmrRecoveries.ts) is what
+// actually advertises this URL to clients.
+registerComponentDownloadRoute({
+  path: '/download/recovery-iso/:os/:arch',
+  logTag: 'recovery-iso-download',
+  s3Prefix: 'recovery-iso',
+  entityLabel: 'Recovery media',
+  component: 'recovery-iso',
+  filenameFor: (os, arch) => (os === 'linux' ? `breeze-recovery-linux-${arch}.iso` : undefined),
+  invalidOsMessage: (os) => `Recovery media is only available for linux today. Got: ${os}`,
+  githubUrlFor: (_os, arch, version) => getGithubRecoveryIsoUrl(arch, version),
   binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
 });
 

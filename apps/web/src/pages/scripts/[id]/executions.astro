@@ -5,6 +5,6 @@ import ScriptExecutionsPage from '../../../components/scripts/ScriptExecutionsPa
 const { id } = Astro.params;
 ---
 
-<DashboardLayout title="Execution History">
+<DashboardLayout titleKey="titles.scriptsDetailExecutions">
   <ScriptExecutionsPage scriptId={id!} client:load />
 </DashboardLayout>

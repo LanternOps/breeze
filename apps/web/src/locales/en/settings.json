@@ -1149,6 +1149,14 @@
         "enableSupportUsage": {
           "label": "Support usage",
           "description": "Show month-to-date billable support-time totals."
+        },
+        "enableService": {
+          "label": "Service",
+          "description": "Show scheduled deliverables, what was delivered, and key dates."
+        },
+        "enableDocuments": {
+          "label": "Documents",
+          "description": "Let customers download the documents you have shared with them."
         }
       }
     },
@@ -2236,6 +2244,10 @@
           "label": "Scripts and commands",
           "description": "Run scripts, playbooks and system commands, and manage the processes, scheduled tasks and registry entries they touch."
         },
+        "author_scripts": {
+          "label": "Author scripts",
+          "description": "Write a new script as a proposal for independent review. Nothing an agent writes runs until it has been reviewed and approved."
+        },
         "tickets": {
           "label": "Helpdesk tickets",
           "description": "Review helpdesk tickets and propose replies or next steps."
@@ -2939,7 +2951,9 @@
     "loadingApproverDevices": "Loading approver devices…",
     "tryAgain": "Try again",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "No approver devices registered yet. Sign in to the Breeze mobile app on your phone and it appears here automatically, or register this browser below to approve with a biometric.",
-    "platformBound": "Platform-bound",
+    "hardwareAttested": "Hardware-attested",
+    "notAttested": "Not attested",
+    "notAttestedTooltip": "Critical approvals aren't available from this device until it's re-registered on an attested app build.",
     "registered": "Registered",
     "lastUsed": "Last used",
     "cancel": "Cancel",
@@ -5305,5 +5319,81 @@
       "update": "Could not save the contact.",
       "delete": "Could not delete the contact."
     }
+  },
+  "scriptAuthoringPage": {
+    "title": "Script authoring",
+    "subtitle": "Let the assistant and your agents write, review and — when you allow it — run scripts without a card.",
+    "partnerCard": {
+      "title": "Partner ceiling",
+      "description": "The widest setting any organization under this partner may use. Individual organizations can only narrow it.",
+      "readOnly": "Only a partner administrator with full organization access can change the ceiling.",
+      "missing": "Your partner has not granted a ceiling yet, so the unattended lane cannot be enabled here."
+    },
+    "orgCard": {
+      "title": "This organization",
+      "description": "An explicit grant. The unattended lane stays off until both the partner ceiling and this switch allow it.",
+      "noOrgSelected": "Select an organization to manage its script authoring settings."
+    },
+    "fields": {
+      "proposingEnabled": "Allow the AI to propose scripts",
+      "unattendedAllowed": "Allow organizations to use the unattended lane",
+      "unattendedEnabled": "Run approved low-risk scripts without an approval card",
+      "maxRiskTier": "Highest risk tier allowed unattended",
+      "allowedClasses": "What an unattended script may touch",
+      "perHour": "Maximum unattended runs per hour",
+      "reviewerModel": "Reviewer model",
+      "reviewerModelHint": "Leave empty to use the platform default.",
+      "protectedResources": "Never touch these",
+      "protectedServices": "Services",
+      "protectedPaths": "Paths",
+      "protectedRegistryKeys": "Registry keys",
+      "protectedDeviceTags": "Device tags"
+    },
+    "tier": {
+      "low": "Low",
+      "medium": "Medium"
+    },
+    "class": {
+      "registry": "Registry",
+      "services": "Services",
+      "processes": "Processes",
+      "files_system": "System files",
+      "files_user": "User files",
+      "temp_files": "Temporary files",
+      "network_egress": "Outbound network",
+      "firewall": "Firewall",
+      "credentials": "Credentials",
+      "users_groups": "Users and groups",
+      "packages": "Packages",
+      "scheduled_tasks": "Scheduled tasks",
+      "disk": "Disk",
+      "boot": "Boot configuration",
+      "security_tooling": "Security tooling",
+      "dns_cache": "DNS cache",
+      "printing": "Printing",
+      "browser": "Browsers",
+      "shell_eval": "Dynamic code"
+    },
+    "windowsOnly": "Windows only",
+    "hardDenied": "Never available unattended, whatever the ceiling says.",
+    "aboveCeiling": "Your partner does not allow this.",
+    "lane": {
+      "closedTitle": "Unattended lane is running normally",
+      "openTitle": "Unattended lane is paused",
+      "openBody": "{{reason}} Unattended runs are refused until an approver resets the lane. Approvals still work normally.",
+      "reset": "Reset the lane",
+      "resetSuccess": "The unattended lane is running again.",
+      "resetFailed": "The lane could not be reset."
+    },
+    "stepUp": {
+      "title": "Confirm it is you",
+      "body": "Enabling unattended runs needs a fresh security check."
+    },
+    "save": "Save",
+    "saving": "Saving…",
+    "saved": "Script authoring settings saved.",
+    "saveFailed": "Those settings could not be saved.",
+    "loading": "Loading…",
+    "loadFailed": "Script authoring settings could not be loaded."
   }
 }

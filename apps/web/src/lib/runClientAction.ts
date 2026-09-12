@@ -14,7 +14,7 @@ import { ActionError, runAction, type RunActionOptions } from './runAction';
  */
 export function runClientAction<T>(
   run: () => Promise<T>,
-  opts: Pick<RunActionOptions<T>, 'errorFallback' | 'successMessage' | 'onUnauthorized'>,
+  opts: Pick<RunActionOptions<T>, 'errorFallback' | 'successMessage' | 'onUnauthorized' | 'friendly'>,
 ): Promise<T> {
   return runAction<T>({
     ...opts,

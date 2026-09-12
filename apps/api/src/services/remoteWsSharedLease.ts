@@ -54,6 +54,15 @@ export interface RemoteWsRedisKeys {
 
 export interface DesktopFinalizationSharedState {
   ownerPresent: boolean;
+  /**
+   * Whether this session has EVER bound a desktop WebSocket owner lease.
+   * Derived from the `:generation` key, which `acquire` INCRs with no TTL and
+   * nothing ever deletes, so it outlives the owner key itself. A session that
+   * was never owned (the WebRTC peer-to-peer viewer transport never opens the
+   * desktop WebSocket) has no lease to lose and is therefore not a
+   * WebSocket-finalization orphan when `ownerPresent` is false.
+   */
+  everOwned: boolean;
   finalizationId: string | null;
   canonicalPayload: string | null;
   consistent: boolean;
@@ -140,11 +149,13 @@ export const REMOTE_WS_SHARED_LEASE_SCRIPTS = {
     local owner = redis.call('GET', KEYS[1])
     local fence = redis.call('GET', KEYS[2])
     local payload = redis.call('GET', KEYS[3])
+    local generation = redis.call('EXISTS', KEYS[4])
     return {
       owner and '1' or '0',
       fence or '',
       payload or '',
-      ((fence and payload) or (not fence and not payload)) and '1' or '0'
+      ((fence and payload) or (not fence and not payload)) and '1' or '0',
+      generation == 1 and '1' or '0'
     }
   `,
 } as const;
@@ -445,19 +456,21 @@ export function createRemoteWsSharedLeaseManager(input: {
       const requestStart = monotonicNow();
       const reply = await evalTimed(
         REMOTE_WS_SHARED_LEASE_SCRIPTS.observeDesktopFinalization,
-        [keys.owner, keys.finalizing!, keys.finalizationPayload!],
+        [keys.owner, keys.finalizing!, keys.finalizationPayload!, keys.generation],
         [],
         requestStart,
       );
       if (
-        reply.length !== 4
+        reply.length !== 5
         || (reply[0] !== '0' && reply[0] !== '1')
         || (reply[3] !== '0' && reply[3] !== '1')
+        || (reply[4] !== '0' && reply[4] !== '1')
       ) {
         throw new Error('remote websocket desktop intent reply was malformed');
       }
       return {
         ownerPresent: reply[0] === '1',
+        everOwned: reply[4] === '1',
         finalizationId: reply[1] === '' ? null : (reply[1] ?? null),
         canonicalPayload: reply[2] === '' ? null : (reply[2] ?? null),
         consistent: reply[3] === '1',

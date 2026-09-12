@@ -53,6 +53,16 @@ const STABLE_ERROR_CODES = [
 ] as const;
 type StableErrorCode = (typeof STABLE_ERROR_CODES)[number];
 
+const GRANT_HEALTH_STATES = [
+  "active",
+  "degraded",
+  "missing",
+  "unexpected",
+  "both",
+  "manifest-stale",
+] as const;
+type GrantHealthState = (typeof GRANT_HEALTH_STATES)[number];
+
 export const M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_RESULTS = [
   "active",
   "degraded",
@@ -78,7 +88,9 @@ type Connection = {
   clientId: string | null;
   displayName: string | null;
   status: ConnectionStatus;
+  grantHealth: GrantHealthState;
   manifestVersion: number;
+  currentManifestVersion: number;
   observedGrants: Grant[];
   missingGrants: Grant[];
   unexpectedGrants: Grant[];
@@ -91,7 +103,9 @@ type Envelope = {
   profile: {
     id: "customer-graph-actions";
     displayName: string;
-    manifestVersion: 1;
+    // Was the literal 1. The manifest is the source of truth; pinning a number
+    // here would have to be edited on every bump.
+    manifestVersion: number;
     requiredGrants: Grant[];
   };
   onboardingEnabled: boolean;
@@ -177,7 +191,8 @@ function parseTimestamp(value: unknown): string | null | undefined {
 function parseConnection(value: unknown): Connection | null | undefined {
   if (value === null) return null;
   const keys = [
-    "id", "tenantId", "clientId", "displayName", "status", "manifestVersion",
+    "id", "tenantId", "clientId", "displayName", "status", "grantHealth",
+    "manifestVersion", "currentManifestVersion",
     "observedGrants", "missingGrants", "unexpectedGrants", "grantsVerifiedAt",
     "lastVerifiedAt", "lastErrorCode",
   ];
@@ -194,6 +209,11 @@ function parseConnection(value: unknown): Connection | null | undefined {
     || (value.displayName !== null && typeof value.displayName !== "string")
     || typeof value.status !== "string" || !(STATUSES as readonly string[]).includes(value.status)
     || typeof value.manifestVersion !== "number" || !Number.isSafeInteger(value.manifestVersion) || value.manifestVersion < 1
+    || typeof value.grantHealth !== "string"
+      || !(GRANT_HEALTH_STATES as readonly string[]).includes(value.grantHealth)
+    || typeof value.currentManifestVersion !== "number"
+      || !Number.isSafeInteger(value.currentManifestVersion)
+      || value.currentManifestVersion < 1
     || observedGrants === null || missingGrants === null || unexpectedGrants === null
     || grantsVerifiedAt === undefined || lastVerifiedAt === undefined
     || (value.lastErrorCode !== null && typeof value.lastErrorCode !== "string")
@@ -204,7 +224,9 @@ function parseConnection(value: unknown): Connection | null | undefined {
     clientId: value.clientId as string | null,
     displayName: value.displayName as string | null,
     status: value.status as ConnectionStatus,
+    grantHealth: value.grantHealth as GrantHealthState,
     manifestVersion: value.manifestVersion,
+    currentManifestVersion: value.currentManifestVersion,
     observedGrants,
     missingGrants,
     unexpectedGrants,
@@ -231,7 +253,7 @@ function parseEnvelope(value: unknown): Envelope | null {
     profile: {
       id: "customer-graph-actions",
       displayName: value.profile.displayName,
-      manifestVersion: 1,
+      manifestVersion: TRUSTED_PROFILE.version,
       requiredGrants: grants,
     },
     onboardingEnabled: value.onboardingEnabled,

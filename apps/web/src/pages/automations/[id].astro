@@ -5,6 +5,6 @@ import AutomationEditPage from '../../components/automations/AutomationEditPage'
 const { id } = Astro.params;
 ---
 
-<DashboardLayout title="Edit Automation">
+<DashboardLayout titleKey="titles.automationsDetail">
   <AutomationEditPage automationId={id} client:load />
 </DashboardLayout>

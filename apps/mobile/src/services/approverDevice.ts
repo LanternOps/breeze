@@ -34,7 +34,7 @@ import {
   getAttestingSigner,
   type AttestingSigner,
 } from './attestingSigner';
-import { registrationTranscriptB64 } from './authenticatorTranscript';
+import { androidKeyGenChallengeB64, registrationTranscriptB64 } from './authenticatorTranscript';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const TOKEN_KEY = 'breeze_auth_token';
@@ -114,7 +114,17 @@ export type ApproverRegistrationOutcome =
        */
       reason?: 'attestation_rejected_by_server' | 'attestation_protocol_absent';
     }
-  | { status: 'already_registered' }
+  /**
+   * #5162 (#1374 W07): carries `attested` for the same reason the `registered`
+   * variant does. This is the outcome on EVERY launch after the first (the
+   * check above CRED_ID_KEY short-circuits before any network call), so
+   * without it a device stuck on a legacy/unattested key would show the
+   * 'unattested' banner only once, on its very first registration, and then
+   * silently lose it on every subsequent app open — even though the "standing
+   * condition" (ApprovalGate's own description of what these banners are for)
+   * hasn't changed at all.
+   */
+  | { status: 'already_registered'; attested: boolean }
   | { status: 'deferred'; reason: 'no_reauth_grant' }
   | { status: 'unsupported'; reason: 'no_hardware' }
   /**
@@ -143,6 +153,13 @@ let inFlight: Promise<ApproverRegistrationOutcome> | null = null;
 
 const DEVICE_LABEL = 'This device';
 const POP_PROMPT = 'Register this phone for approvals';
+
+/**
+ * The algorithm the attested keystore always mints (Secure Enclave and the
+ * Android P-256 KeyStore path both hold P-256 only). Named as a constant
+ * because Android's keygen challenge has to commit to it BEFORE the key exists.
+ */
+const ATTESTED_KEY_ALG = 'ES256' as const;
 
 /** Thrown inside the attested branch so it can never resolve as a legacy retry. */
 /**
@@ -289,11 +306,33 @@ async function registerAttested(
     // The challenge is passed at key-generation time for Android, where
     // `setAttestationChallenge` is a KeyGenParameterSpec property and cannot be
     // supplied later. iOS ignores it (App Attest binds the transcript at
-    // `attestKey` time). Note the ordering constraint this creates on Android:
-    // the transcript commits to the public key, so it cannot also be the
-    // key-generation challenge — Android binds the server challenge instead,
-    // and the API-side check for that binding is tracked separately.
-    key = await attesting.createAttestedKey({ attestationChallengeB64: challenge });
+    // `attestKey` time).
+    //
+    // It is NOT the transcript and NOT the raw server challenge. The transcript
+    // commits to the key's own SPKI, which does not exist yet; the raw challenge
+    // would leave the declared algorithm unbound. So it is a separately
+    // domain-tagged digest over (attemptId, challenge, alg) — the exact value
+    // `androidKeyGenChallenge` derives server-side and checks against the leaf
+    // certificate. Key identity is bound separately, by the server comparing the
+    // attested leaf key with the registered SPKI.
+    //
+    // The algorithm has to be named BEFORE the key exists, so it is asserted
+    // against the minted key below rather than assumed.
+    const keyGenChallengeB64 = await androidKeyGenChallengeB64({
+      attemptId,
+      challenge,
+      publicKeyAlg: ATTESTED_KEY_ALG,
+    });
+    key = await attesting.createAttestedKey({ attestationChallengeB64: keyGenChallengeB64 });
+    if (key.alg !== ATTESTED_KEY_ALG) {
+      // The keygen challenge already committed to ATTESTED_KEY_ALG, so a key of
+      // any other algorithm carries a challenge the server will not reproduce.
+      // Failing here is a legible client error; continuing would be an opaque
+      // attestation rejection at /verify.
+      throw new Error(
+        `attested key algorithm ${String(key.alg)} does not match the keygen challenge`,
+      );
+    }
     transcriptB64 = await registrationTranscriptB64({
       attemptId,
       challenge,
@@ -335,7 +374,7 @@ function runAttempt(
   inFlight = (async (): Promise<ApproverRegistrationOutcome> => {
     try {
       if (await SecureStore.getItemAsync(CRED_ID_KEY)) {
-        return { status: 'already_registered' };
+        return { status: 'already_registered', attested: (await SecureStore.getItemAsync(ATTESTED_KEY)) === '1' };
       }
       let canAttest: boolean;
       try {

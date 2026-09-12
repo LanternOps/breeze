@@ -201,6 +201,161 @@ func TestCreateSnapshot_EmptyFileSlice(t *testing.T) {
 	}
 }
 
+// growOnceProvider wraps mockProvider and, on the first N Upload calls for a
+// specific source path, appends extra bytes to that source file AFTER the
+// (successful) upload lands — simulating a file that keeps changing while it
+// is being backed up (a live log, the agent's own checkpoint journal, #5581).
+// Each grow also advances the file's mtime by a full second so the
+// post-upload os.Stat comparison in reconcileAfterUpload reliably observes a
+// change even on filesystems with 1-second mtime resolution.
+type growOnceProvider struct {
+	*mockProvider
+	growPath string
+	extra    []byte
+	grows    int // number of remaining times to grow growPath on Upload
+
+	mu              sync.Mutex
+	growPathUploads int
+}
+
+func (p *growOnceProvider) Upload(localPath, remotePath string) error {
+	if err := p.mockProvider.Upload(localPath, remotePath); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if localPath != p.growPath || p.grows <= 0 {
+		return nil
+	}
+	p.grows--
+	p.growPathUploads++
+	f, err := os.OpenFile(p.growPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil
+	}
+	_, _ = f.Write(p.extra)
+	_ = f.Close()
+	// Force the mtime forward so a coarse (1s) mtime clock can't make this
+	// growth look like a no-op to reconcileAfterUpload's comparison.
+	future := time.Now().Add(time.Duration(p.growPathUploads) * time.Second)
+	_ = os.Chtimes(p.growPath, future, future)
+	return nil
+}
+
+// TestCreateSnapshot_GrowingFile_ReconciledOnRetry proves #5581's core fix:
+// a file that grows between the pre-upload measurement and the upload
+// itself is re-measured and re-uploaded ONCE, and the manifest entry ends
+// up describing exactly the bytes that landed in that retry — not the
+// walk-time size, and not a checksum read at some other, unrelated instant.
+func TestCreateSnapshot_GrowingFile_ReconciledOnRetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	growPath := createTempFile(t, tmpDir, "growing.log", "start")
+
+	backing := newMockProvider()
+	provider := &growOnceProvider{mockProvider: backing, growPath: growPath, extra: []byte("-MORE"), grows: 1}
+
+	files := []backupFile{
+		{sourcePath: growPath, snapshotPath: "path_0/growing.log", size: 5, modTime: time.Now()},
+	}
+	snapshot, err := CreateSnapshot(provider, files)
+	if err != nil {
+		t.Fatalf("CreateSnapshot failed: %v", err)
+	}
+	if len(snapshot.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(snapshot.Files))
+	}
+	entry := snapshot.Files[0]
+	if entry.Volatile {
+		t.Errorf("a file that stabilizes after ONE retry must not be marked Volatile, got %+v", entry)
+	}
+
+	finalContent, err := os.ReadFile(growPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	wantSize := int64(len(finalContent))
+	wantChecksum, err := sha256File(growPath)
+	if err != nil {
+		t.Fatalf("sha256File: %v", err)
+	}
+	if entry.Size != wantSize {
+		t.Errorf("entry.Size = %d, want %d (the grown file's final size)", entry.Size, wantSize)
+	}
+	if entry.Checksum != wantChecksum {
+		t.Errorf("entry.Checksum = %q, want %q (the grown file's final checksum)", entry.Checksum, wantChecksum)
+	}
+
+	// The uploaded OBJECT must itself be wantSize bytes — not just the
+	// manifest's claim — proving Size/Checksum describe the bytes that were
+	// actually stored, the whole point of the fix.
+	uploadedBytes, ok := backing.files[entry.BackupPath]
+	if !ok {
+		t.Fatalf("no object stored at %s", entry.BackupPath)
+	}
+	if int64(len(uploadedBytes)) != wantSize {
+		t.Errorf("stored object is %d bytes, want %d", len(uploadedBytes), wantSize)
+	}
+}
+
+// TestCreateSnapshot_FileChangesTwice_RecordedVolatile proves the other half
+// of #5581's policy: a file that keeps changing even across the single
+// reconciliation retry is not chased forever — it is recorded Volatile with
+// the LAST pre-upload measurement (what the retry itself actually
+// uploaded), and the run carries a warning-worthy volatile count rather than
+// failing the file.
+func TestCreateSnapshot_FileChangesTwice_RecordedVolatile(t *testing.T) {
+	tmpDir := t.TempDir()
+	growPath := createTempFile(t, tmpDir, "growing.log", "start")
+
+	backing := newMockProvider()
+	provider := &growOnceProvider{mockProvider: backing, growPath: growPath, extra: []byte("-MORE"), grows: 2}
+
+	files := []backupFile{
+		{sourcePath: growPath, snapshotPath: "path_0/growing.log", size: 5, modTime: time.Now()},
+	}
+	snapshot, err := CreateSnapshot(provider, files)
+	if err != nil {
+		t.Fatalf("CreateSnapshot failed: %v", err)
+	}
+	if len(snapshot.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(snapshot.Files))
+	}
+	entry := snapshot.Files[0]
+	if !entry.Volatile {
+		t.Fatalf("a file that changes again across the retry must be recorded Volatile, got %+v", entry)
+	}
+	if snapshot.VolatileFiles != 1 {
+		t.Errorf("snapshot.VolatileFiles = %d, want 1", snapshot.VolatileFiles)
+	}
+
+	// The entry must describe what the RETRY actually uploaded (the second
+	// upload call for growPath), not the walk-time stat nor the very first
+	// upload's bytes.
+	uploadedBytes, ok := backing.files[entry.BackupPath]
+	if !ok {
+		t.Fatalf("no object stored at %s", entry.BackupPath)
+	}
+	if entry.Size != int64(len(uploadedBytes)) {
+		t.Errorf("entry.Size = %d, want %d (bytes actually stored at BackupPath)", entry.Size, len(uploadedBytes))
+	}
+	gotChecksum := sha256HashBytes(t, uploadedBytes)
+	if entry.Checksum != gotChecksum {
+		t.Errorf("entry.Checksum = %q, want %q (checksum of bytes actually stored)", entry.Checksum, gotChecksum)
+	}
+}
+
+// sha256HashBytes hashes b the same way sha256File hashes a file, for
+// comparing a manifest entry's checksum against in-memory upload bytes.
+func sha256HashBytes(t *testing.T, b []byte) string {
+	t.Helper()
+	tmp := createTempFile(t, t.TempDir(), "hashme", string(b))
+	sum, err := sha256File(tmp)
+	if err != nil {
+		t.Fatalf("sha256File: %v", err)
+	}
+	return sum
+}
+
 // cancelAfterFirstUploadProvider wraps mockProvider and cancels the given
 // CancelFunc right after the FIRST real Upload lands, so an aborted run has
 // something concrete under ITS OWN prefix for the abort cleanup to act on

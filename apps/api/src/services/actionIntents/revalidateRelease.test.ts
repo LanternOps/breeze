@@ -7,6 +7,9 @@ vi.mock('./agentReleaseAuthority', () => ({
   checkAgentReleaseAuthority: vi.fn(async () => ({ ok: true })),
 }));
 vi.mock('../tenantStatus', () => ({ getActiveOrgTenant: vi.fn(async () => ({ status: 'active' })) }));
+vi.mock('./scriptReviewerAutonomy', () => ({
+  revalidateScriptReviewerEvidence: vi.fn(async () => ({ ok: true })),
+}));
 vi.mock('./actorContext', () => ({
   buildAuthContextForIntent: vi.fn(async () => ({
     scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'],
@@ -33,6 +36,7 @@ import { checkToolPermission } from '../aiGuardrails';
 import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
 import { validateAuthorizationKeys } from './policyDecidable';
 import { policyDecideEnabled } from '../../config/env';
+import { revalidateScriptReviewerEvidence } from './scriptReviewerAutonomy';
 
 /** Minimal ActionIntent shape the function actually reads. */
 function intentFixture(overrides: Record<string, unknown> = {}) {
@@ -360,5 +364,88 @@ describe('revalidateApprovedIntentForRelease ticket-autonomy branch (P2-4 Task A
     );
     expect(result).toEqual({ ok: false, errorCode: 'digest_mismatch' });
     expect(checkAgentReleaseAuthority).not.toHaveBeenCalled();
+  });
+});
+
+describe('revalidateApprovedIntentForRelease script_reviewer branch (AI script authoring W04, #5612)', () => {
+  const args = { proposalId: 'prop-1', deviceIds: ['dev-1'] };
+  const digest = computeArgumentDigest(canonicalizeArguments(args));
+  const laneIntent = (overrides: Record<string, unknown> = {}) => intentFixture({
+    actionName: 'run_script',
+    arguments: args,
+    argumentDigest: digest,
+    decidedVia: 'script_reviewer',
+    scriptReviewerEvidence: { proposalId: 'prop-1', reviewId: 'rev-1' },
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    vi.mocked(revalidateScriptReviewerEvidence).mockResolvedValue({ ok: true });
+  });
+
+  it('a CHAT-origin lane intent releases with NO approval row, through user RBAC', async () => {
+    const result = await revalidateApprovedIntentForRelease(
+      laneIntent({ requestedByUserId: 'user-1', requestingAgentRunId: null }),
+      null,
+    );
+    expect(result).toMatchObject({ ok: true });
+    expect(revalidateScriptReviewerEvidence).toHaveBeenCalledTimes(1);
+    // Chat origin: the ordinary live RBAC re-check still runs.
+    expect(checkToolPermission).toHaveBeenCalledTimes(1);
+    expect(checkAgentReleaseAuthority).not.toHaveBeenCalled();
+  });
+
+  it('an AGENT-origin lane intent releases with NO approval row, through structural agent authority', async () => {
+    const result = await revalidateApprovedIntentForRelease(
+      laneIntent({
+        requestedByUserId: null,
+        requestingAgentRunId: 'run-1',
+        originPrincipalKind: 'ai_agent',
+        originPrincipalId: 'agent-1',
+        source: 'ai_agent',
+      }),
+      null,
+    );
+    expect(result).toMatchObject({ ok: true });
+    expect(revalidateScriptReviewerEvidence).toHaveBeenCalledTimes(1);
+    expect(checkAgentReleaseAuthority).toHaveBeenCalledTimes(1);
+    expect(checkToolPermission).not.toHaveBeenCalled();
+  });
+
+  it('a revoked lane fails with lane_revoked and the specific reason, before any other check', async () => {
+    vi.mocked(revalidateScriptReviewerEvidence).mockResolvedValue({ ok: false, reason: 'lane_open' });
+    const result = await revalidateApprovedIntentForRelease(
+      laneIntent({ requestedByUserId: 'user-1', requestingAgentRunId: null }),
+      null,
+    );
+    expect(result).toEqual({ ok: false, errorCode: 'lane_revoked', details: { reason: 'lane_open' } });
+    expect(checkToolPermission).not.toHaveBeenCalled();
+  });
+
+  it('a lane row WITH a winning approval row present takes the ordinary human path (never both)', async () => {
+    const result = await revalidateApprovedIntentForRelease(
+      laneIntent({ requestedByUserId: 'user-1', requestingAgentRunId: null }),
+      { boundArgumentDigest: digest },
+    );
+    expect(result).toMatchObject({ ok: true });
+    expect(revalidateScriptReviewerEvidence).not.toHaveBeenCalled();
+  });
+
+  it('REGRESSION: a ticket_autonomy intent with NO run id is still refused — the widening is lane-only', async () => {
+    const result = await revalidateApprovedIntentForRelease(
+      intentFixture({ decidedVia: 'ticket_autonomy', requestingAgentRunId: null, arguments: args, argumentDigest: digest }),
+      null,
+    );
+    expect(result).toEqual({ ok: false, errorCode: 'digest_mismatch' });
+    expect(revalidateScriptReviewerEvidence).not.toHaveBeenCalled();
+  });
+
+  it('REGRESSION: a policy intent with NO run id is still refused', async () => {
+    const result = await revalidateApprovedIntentForRelease(
+      intentFixture({ decidedVia: 'policy', policyDecisionState: 'authorized', requestingAgentRunId: null, arguments: args, argumentDigest: digest }),
+      null,
+    );
+    expect(result).toEqual({ ok: false, errorCode: 'digest_mismatch' });
+    expect(revalidateScriptReviewerEvidence).not.toHaveBeenCalled();
   });
 });

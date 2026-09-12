@@ -15,6 +15,8 @@ type PortalSettings = {
   enableBackups: boolean;
   enableReports: boolean;
   enableSupportUsage: boolean;
+  enableService: boolean;
+  enableDocuments: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
@@ -51,7 +53,9 @@ type VisibilityToggleKey =
   | 'enableSecurity'
   | 'enableBackups'
   | 'enableReports'
-  | 'enableSupportUsage';
+  | 'enableSupportUsage'
+  | 'enableService'
+  | 'enableDocuments';
 
 const VISIBILITY_TOGGLES: Array<{
   key: VisibilityToggleKey;
@@ -82,6 +86,16 @@ const VISIBILITY_TOGGLES: Array<{
     key: 'enableSupportUsage',
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableSupportUsage.label',
     descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableSupportUsage.description',
+  },
+  {
+    key: 'enableService',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableService.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableService.description',
+  },
+  {
+    key: 'enableDocuments',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableDocuments.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableDocuments.description',
   },
 ];
 
@@ -130,6 +144,8 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
     enableBackups: true,
     enableReports: true,
     enableSupportUsage: true,
+    enableService: true,
+    enableDocuments: true,
   });
 
   const save = useCallback(async () => {
@@ -149,6 +165,8 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enableBackups: draft.enableBackups,
             enableReports: draft.enableReports,
             enableSupportUsage: draft.enableSupportUsage,
+            enableService: draft.enableService,
+            enableDocuments: draft.enableDocuments,
             supportEmail: draft.supportEmail?.trim() || null,
             supportPhone: draft.supportPhone?.trim() || null,
             welcomeMessage: draft.welcomeMessage?.trim() || null,

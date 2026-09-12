@@ -103,6 +103,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_script_details', description: 'Script content, versions, and stats', category: 'Scripts & Automation' },
       { name: 'get_script_execution_history', description: 'Past execution results for a script', category: 'Scripts & Automation' },
       { name: 'get_script_execution', description: 'One script execution with its output', category: 'Scripts & Automation' },
+      // AI script authoring (behind BREEZE_AI_SCRIPT_AUTHORING_ENABLED). A
+      // proposal is inert: nothing runs until run_script consumes it (Tier 3).
+      { name: 'propose_script', description: 'Author a script as a proposal for independent review', category: 'Scripts & Automation' },
+      { name: 'get_script_proposal', description: 'Read a script proposal, its scan and its review', category: 'Scripts & Automation' },
       { name: 'list_playbooks', description: 'List self-healing playbooks', category: 'Scripts & Automation' },
       { name: 'get_playbook_history', description: 'Playbook execution history', category: 'Scripts & Automation' },
       // Configuration Policies
@@ -409,6 +413,8 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Scripts
   search_script_library: 'scripts.read',
   get_script_details: 'scripts.read',
+  propose_script: 'scripts.execute',
+  get_script_proposal: 'scripts.read',
   // Software & playbooks
   list_playbooks: 'devices.read',
   execute_playbook: 'devices.execute',

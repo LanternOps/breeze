@@ -8,6 +8,9 @@ const { dbMocks, contextMocks, sessionColumns } = vi.hoisted(() => ({
     conflictTargets: [] as unknown[],
     deleteResults: [] as unknown[][],
     deleteWhere: vi.fn(),
+    selectResults: [] as unknown[][],
+    selectWhere: [] as unknown[],
+    selectProjections: [] as unknown[],
   },
   contextMocks: {
     runOutside: vi.fn(<T>(fn: () => T) => fn()),
@@ -20,6 +23,7 @@ const { dbMocks, contextMocks, sessionColumns } = vi.hoisted(() => ({
     orgId: { name: 'org_id' },
     profile: { name: 'profile' },
     consentAttemptId: { name: 'consent_attempt_id' },
+    purpose: { name: 'purpose' },
     expiresAt: { name: 'expires_at' },
   },
 }));
@@ -65,6 +69,19 @@ vi.mock('../../db', () => ({
         returning: vi.fn(async () => dbMocks.deleteResults.shift() ?? []),
       })),
     })),
+    select: vi.fn((projection: unknown) => {
+      dbMocks.selectProjections.push(projection);
+      return {
+        from: vi.fn(() => ({
+          where: vi.fn((where: unknown) => {
+            dbMocks.selectWhere.push(where);
+            return {
+              limit: vi.fn(async () => dbMocks.selectResults.shift() ?? []),
+            };
+          }),
+        })),
+      };
+    }),
   },
   runOutsideDbContext: contextMocks.runOutside,
   withSystemDbAccessContext: contextMocks.withSystem,
@@ -81,6 +98,8 @@ import {
   prepareIdentityVerificationSession,
   deleteConsentSessionsForAttempt,
   deleteConsentSessionsForAttemptInTransaction,
+  deleteConsentSessionsForConnection,
+  readConsentSessionPurpose,
   hashTenantHint,
 } from './consentSessionService';
 
@@ -127,6 +146,96 @@ describe('M365 consent sessions', () => {
     dbMocks.insertedValues.length = 0;
     dbMocks.conflictTargets.length = 0;
     dbMocks.deleteResults.length = 0;
+    dbMocks.selectResults.length = 0;
+    dbMocks.selectWhere.length = 0;
+    dbMocks.selectProjections.length = 0;
+  });
+
+  describe('consent session purpose', () => {
+    it('defaults an admin consent session to the initial flow', async () => {
+      await createAdminConsentSession(owner);
+
+      expect(dbMocks.insertedValues[0]).toMatchObject({ purpose: 'initial' });
+    });
+
+    it('stamps an upgrade admin consent session as an upgrade', async () => {
+      await createAdminConsentSession({ ...owner, purpose: 'upgrade' });
+
+      expect(dbMocks.insertedValues[0]).toMatchObject({ purpose: 'upgrade' });
+    });
+
+    it('carries the purpose onto the identity-verification session', async () => {
+      await insertPreparedIdentityVerificationSessionInTransaction(
+        { ...owner, purpose: 'upgrade' },
+        prepareIdentityVerificationSession({ tenantHint: TENANT_ID }),
+      );
+
+      expect(dbMocks.insertedValues[0]).toMatchObject({
+        purpose: 'upgrade',
+        phase: 'identity_verification',
+      });
+    });
+
+    it('reads a purpose without deleting the session', async () => {
+      // The callback needs the purpose BEFORE it decides which connection
+      // statuses are legal; the authoritative consume happens later and
+      // re-checks every binding column. This lookup is a router, never an
+      // authorization — so it must not consume.
+      dbMocks.selectResults.push([{ purpose: 'upgrade' }]);
+
+      const purpose = await readConsentSessionPurpose({
+        rawState: 'raw-state',
+        phase: 'admin_consent',
+        connectionId: CONNECTION_ID,
+        consentAttemptId: ATTEMPT_ID,
+        profile: 'customer-graph-read',
+      });
+
+      expect(purpose).toBe('upgrade');
+      expect(dbMocks.deleteWhere).not.toHaveBeenCalled();
+      expect(dbMocks.selectWhere[0]).toMatchObject({
+        op: 'and',
+        conditions: expect.arrayContaining([
+          {
+            op: 'eq',
+            column: m365ConsentSessions.stateHash,
+            value: createHash('sha256').update('raw-state').digest('hex'),
+          },
+          { op: 'eq', column: m365ConsentSessions.consentAttemptId, value: ATTEMPT_ID },
+        ]),
+      });
+    });
+
+    it('returns null when no live session matches', async () => {
+      dbMocks.selectResults.push([]);
+
+      await expect(readConsentSessionPurpose({
+        rawState: 'raw-state',
+        phase: 'admin_consent',
+        connectionId: CONNECTION_ID,
+        consentAttemptId: ATTEMPT_ID,
+        profile: 'customer-graph-read',
+      })).resolves.toBeNull();
+    });
+
+    it('deletes every session of a connection regardless of attempt', async () => {
+      // Used before an attempt-id rotation, which has no ON UPDATE CASCADE: an
+      // upgrade session on an executable connection would otherwise raise 23503.
+      await deleteConsentSessionsForConnection({
+        connectionId: CONNECTION_ID,
+        orgId: ORG_ID,
+        profile: 'customer-graph-read',
+      });
+
+      expect(dbMocks.deleteWhere).toHaveBeenCalledWith({
+        op: 'and',
+        conditions: [
+          { op: 'eq', column: m365ConsentSessions.connectionId, value: CONNECTION_ID },
+          { op: 'eq', column: m365ConsentSessions.orgId, value: ORG_ID },
+          { op: 'eq', column: m365ConsentSessions.profile, value: 'customer-graph-read' },
+        ],
+      });
+    });
   });
 
   it('stores only the hash of a 32-byte random state with a ten-minute expiry', async () => {

@@ -9,15 +9,19 @@ const { queryMock, recordUsageMock, capturedQueryArgs, settleApprovalWaitsMock }
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
 
+// Approval mode now resolves through the EFFECTIVE budget (#5593): partner
+// JSONB override -> org ai_budgets row -> per_step. Return auto_approve so the
+// approval-mode prompt injection is observable.
+vi.mock('./effectiveSettings', () => ({
+  getEffectiveAiBudget: vi.fn(() => Promise.resolve({ approvalMode: 'auto_approve' })),
+}));
+
 vi.mock('../db', () => ({
   db: {
-    // Only DB read on this path: the aiBudgets approvalMode lookup
-    // (streamingSessionManager.getOrCreate). Return auto_approve so the
-    // approval-mode prompt injection is observable.
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
-          limit: vi.fn(() => Promise.resolve([{ approvalMode: 'auto_approve' }])),
+          limit: vi.fn(() => Promise.resolve([])),
         })),
       })),
     })),

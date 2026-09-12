@@ -212,6 +212,18 @@ vi.mock('../../db/schema/actionIntents', () => ({
   intentOutbox: schema.intentOutboxTbl,
 }));
 
+// W04 (#5612): the script lane's evaluator is a sibling decision path this
+// suite does not exercise; mocked wholesale so its transitive imports (agent
+// policy resolver, maintenance gate) never reach the partial schema mocks here.
+// W04 (#5612): the post-commit `ai.script.unattended_run` audit write. Mocked
+// so auditService's whole-schema import never reaches the partial schema
+// mocks in this file; the write itself is asserted in
+// intentService.scriptReviewer.test.ts.
+vi.mock('../auditService', () => ({ createAuditLogAsync: vi.fn(async () => {}) }));
+vi.mock('./scriptReviewerAutonomy', () => ({
+  evaluateScriptReviewerAutonomy: vi.fn(async () => ({ granted: false, reason: 'lane_disabled' })),
+  revalidateScriptReviewerEvidence: vi.fn(async () => ({ ok: false, reason: 'lane_disabled' })),
+}));
 vi.mock('../../db/schema/approvals', () => ({
   approvalRequests: schema.approvalRequestsTbl,
 }));
@@ -265,6 +277,7 @@ vi.mock('./metrics', () => ({
 
 vi.mock('./effectDigest', () => ({
   computeEffectDigestOutcome: effectDigestState.computeEffectDigestOutcome,
+  EffectDigestUnresolvableError: class EffectDigestUnresolvableError extends Error {},
 }));
 
 vi.mock('../../config/env', () => ({
@@ -565,6 +578,42 @@ beforeEach(() => {
 // Tier gating
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// W03 (#5612): four-eyes fan-out filtered to scripts:write for STRICT proposals
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — STRICT proposal fan-out filter (W03)', () => {
+  const proposalInput = (strictHits: string[]) => baseInput({
+    input: { proposalId: '44444444-4444-4444-8444-444444444444', deviceIds: ['device-1'] },
+    idempotencyKey: 'key-proposal',
+    guardrailContext: { proposal: { riskTier: 'high', strictHits } },
+  });
+
+  it('passes alsoRequire scripts:write when the proposal has strict hits', async () => {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push([makeIntentRow({ id: 'intent-sp', status: 'cancelled', errorCode: 'no_eligible_approvers' })]);
+    dbState.updateActionIntentsResults.push([makeIntentRow({ id: 'intent-sp', status: 'cancelled', errorCode: 'no_eligible_approvers' })]);
+
+    // The consume-proposal CAS inside the creation tx has no harness here;
+    // the fan-out resolution under test happens BEFORE the tx opens.
+    await createActionIntent(makeAuth(), proposalInput(['PowerShell HKLM write'])).catch(() => undefined);
+
+    expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(
+      ORG_ID, { alsoRequire: { resource: 'scripts', action: 'write' } },
+    );
+  });
+
+  it('passes no extra requirement for a proposal without strict hits', async () => {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push([makeIntentRow({ id: 'intent-sp2', status: 'cancelled', errorCode: 'no_eligible_approvers' })]);
+    dbState.updateActionIntentsResults.push([makeIntentRow({ id: 'intent-sp2', status: 'cancelled', errorCode: 'no_eligible_approvers' })]);
+
+    await createActionIntent(makeAuth(), proposalInput([])).catch(() => undefined);
+
+    expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(ORG_ID, { alsoRequire: undefined });
+  });
+});
+
 describe('createActionIntent — tier gating', () => {
   it('rejects a Tier <=2 tool as not-an-intent-path', async () => {
     guardrailMock.checkGuardrails.mockReturnValue({ tier: 2, allowed: true, requiresApproval: false });
@@ -707,6 +756,9 @@ describe('createActionIntent — ai_agent branch (wave 3b)', () => {
         deviceId: DEVICE_ID,
         deviceSiteId: SITE_ID,
       }),
+      // Proposal guardrail context — undefined for anything but a
+      // run_script { proposalId } call.
+      undefined,
     );
   });
 

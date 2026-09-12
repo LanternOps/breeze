@@ -49,6 +49,16 @@ const STABLE_ERROR_CODES = [
 ] as const;
 type StableErrorCode = (typeof STABLE_ERROR_CODES)[number];
 
+const GRANT_HEALTH_STATES = [
+  "active",
+  "degraded",
+  "missing",
+  "unexpected",
+  "both",
+  "manifest-stale",
+] as const;
+type GrantHealthState = (typeof GRANT_HEALTH_STATES)[number];
+
 export const M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS = [
   "active",
   "degraded",
@@ -74,7 +84,9 @@ type Connection = {
   clientId: string | null;
   displayName: string | null;
   status: ConnectionStatus;
+  grantHealth: GrantHealthState;
   manifestVersion: number;
+  currentManifestVersion: number;
   observedGrants: Grant[];
   missingGrants: Grant[];
   unexpectedGrants: Grant[];
@@ -87,7 +99,9 @@ type Envelope = {
   profile: {
     id: "customer-graph-read";
     displayName: string;
-    manifestVersion: 2;
+    // Was the literal 2. The manifest is the source of truth; pinning a number
+    // here would have to be edited on every bump.
+    manifestVersion: number;
     requiredGrants: Grant[];
   };
   onboardingEnabled: boolean;
@@ -95,7 +109,7 @@ type Envelope = {
 };
 
 type LoadState = "unavailable" | "loading" | "ready" | "error";
-type ActionName = "consent" | "retest" | "disconnect";
+type ActionName = "consent" | "upgrade" | "retest" | "disconnect";
 type OrgGeneration = {
   orgId: string | null;
   generation: number;
@@ -173,7 +187,8 @@ function parseTimestamp(value: unknown): string | null | undefined {
 function parseConnection(value: unknown): Connection | null | undefined {
   if (value === null) return null;
   const keys = [
-    "id", "tenantId", "clientId", "displayName", "status", "manifestVersion",
+    "id", "tenantId", "clientId", "displayName", "status", "grantHealth",
+    "manifestVersion", "currentManifestVersion",
     "observedGrants", "missingGrants", "unexpectedGrants", "grantsVerifiedAt",
     "lastVerifiedAt", "lastErrorCode",
   ];
@@ -190,6 +205,11 @@ function parseConnection(value: unknown): Connection | null | undefined {
     || (value.displayName !== null && typeof value.displayName !== "string")
     || typeof value.status !== "string" || !(STATUSES as readonly string[]).includes(value.status)
     || typeof value.manifestVersion !== "number" || !Number.isSafeInteger(value.manifestVersion) || value.manifestVersion < 1
+    || typeof value.grantHealth !== "string"
+      || !(GRANT_HEALTH_STATES as readonly string[]).includes(value.grantHealth)
+    || typeof value.currentManifestVersion !== "number"
+      || !Number.isSafeInteger(value.currentManifestVersion)
+      || value.currentManifestVersion < 1
     || observedGrants === null || missingGrants === null || unexpectedGrants === null
     || grantsVerifiedAt === undefined || lastVerifiedAt === undefined
     || (value.lastErrorCode !== null && typeof value.lastErrorCode !== "string")
@@ -200,7 +220,9 @@ function parseConnection(value: unknown): Connection | null | undefined {
     clientId: value.clientId as string | null,
     displayName: value.displayName as string | null,
     status: value.status as ConnectionStatus,
+    grantHealth: value.grantHealth as GrantHealthState,
     manifestVersion: value.manifestVersion,
+    currentManifestVersion: value.currentManifestVersion,
     observedGrants,
     missingGrants,
     unexpectedGrants,
@@ -227,7 +249,7 @@ function parseEnvelope(value: unknown): Envelope | null {
     profile: {
       id: "customer-graph-read",
       displayName: value.profile.displayName,
-      manifestVersion: 2,
+      manifestVersion: TRUSTED_PROFILE.version,
       requiredGrants: grants,
     },
     onboardingEnabled: value.onboardingEnabled,
@@ -425,6 +447,33 @@ export default function M365CustomerGraphReadCard({
     });
   }, [canWrite, data, isCurrent, orgId, perform, scope, scopedRequest, t]);
 
+  const startUpgradeConsent = useCallback(() => {
+    if (!orgId || !data?.connection || !canWrite) return;
+    const target = scope;
+    const connectionId = data.connection.id;
+    void perform(target, "upgrade", async () => {
+      try {
+        const url = await runAction<string>({
+          request: () => scopedRequest(
+            target,
+            () => fetchWithAuth(
+              `/m365/connections/${connectionId}/upgrade-consent?orgId=${target.orgId}`,
+              { method: "POST" },
+            ),
+            { adminConsentUrl: "https://login.microsoftonline.com/organizations/" },
+          ),
+          parseSuccess: parseConsentUrl,
+          errorFallback: t("m365CustomerGraphRead.actions.upgradeFailed"),
+        });
+        if (isCurrent(target)) navigateTo(url);
+      } catch (error) {
+        if (isCurrent(target)) {
+          handleActionError(error, t("m365CustomerGraphRead.actions.upgradeFailed"));
+        }
+      }
+    });
+  }, [canWrite, data, isCurrent, orgId, perform, scope, scopedRequest, t]);
+
   const retest = useCallback(() => {
     if (
       !orgId
@@ -502,6 +551,10 @@ export default function M365CustomerGraphReadCard({
   const StatusIcon = connection ? statusIcon(connection.status) : Unplug;
   const errorCopy = useMemo(() => {
     if (!connection?.lastErrorCode) return null;
+    // The banner below already says this, in words an administrator can act on.
+    if (connection.grantHealth === "manifest-stale" && connection.lastErrorCode === "manifest_stale") {
+      return null;
+    }
     return isStableErrorCode(connection.lastErrorCode)
       ? t(/* i18n-dynamic */ `m365CustomerGraphRead.errors.${connection.lastErrorCode}`)
       : t("m365CustomerGraphRead.errors.unknown");
@@ -572,6 +625,29 @@ export default function M365CustomerGraphReadCard({
           )}
           {errorCopy && (
             <p className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-foreground">{errorCopy}</p>
+          )}
+
+          {connection?.grantHealth === "manifest-stale" && (
+            <div
+              role="alert"
+              data-testid="m365-read-manifest-stale-banner"
+              className="rounded-md border border-warning/40 bg-warning/10 p-4 text-sm text-foreground"
+            >
+              <div className="flex items-start gap-2">
+                <AlertTriangle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+                <p>{t("m365CustomerGraphRead.upgrade.banner")}</p>
+              </div>
+              <button
+                type="button"
+                onClick={startUpgradeConsent}
+                disabled={!canWrite || action !== null}
+                data-testid="m365-read-approve-new-permissions"
+                className="mt-3 inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {action === "upgrade" && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}
+                {t("m365CustomerGraphRead.actions.approveNewPermissions")}
+              </button>
+            </div>
           )}
 
           {connection && (

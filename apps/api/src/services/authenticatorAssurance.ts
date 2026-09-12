@@ -139,6 +139,22 @@ export interface AssuranceDecisionShared {
   requiredLevel: AssuranceLevel;
   /** Phase 4: under-assured but allowed because enforcement is off / in grace. */
   graceDowngrade?: boolean;
+  /**
+   * #5601: this decision reused an `approval_decide` step-up grant instead of
+   * running its own ceremony. The level/factor/device fields are still honest
+   * — they describe a ceremony that really happened, minutes ago — but this
+   * decision did NOT make the user touch a sensor, and nothing downstream may
+   * imply that it did.
+   *
+   * Set ONLY on the redeem path (services/approvals/approvalDecideGrant.ts).
+   * Persisted to `approval_requests.decided_via_step_up_grant` inside the
+   * decision transaction, because the corresponding audit EVENT is emitted
+   * post-commit, only when the intent CAS is won, through a writer with a
+   * droppable in-memory retry queue — a committed reused-L3 row must not be
+   * able to end up indistinguishable from a fresh ceremony just because an
+   * event was lost.
+   */
+  stepUpGrantReuse?: boolean;
 }
 
 /**

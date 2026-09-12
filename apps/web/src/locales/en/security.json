@@ -4,6 +4,7 @@
     "analytics": "Analytics",
     "approvals": "Approvals",
     "denials": "Denials",
+    "proposals": "Script Proposals",
     "failedToLoadData": "Failed to load data",
     "failedToLoadToolExecutions": "Failed to load tool executions",
     "guardrails": "Guardrails",
@@ -16,6 +17,19 @@
     "value24h": "24h",
     "value30d": "30d",
     "value7d": "7d"
+  },
+  "aiRiskScriptProposalsPanel": {
+    "title": "Script Proposals",
+    "proposalsPerDay": "Proposals per day",
+    "reviewerDisagreements": "Reviewer disagreements",
+    "humanRejectedAfterApprove": "Human rejected after AI approved",
+    "humanApprovedAfterReject": "Human approved after AI rejected",
+    "unattendedRuns": "Unattended runs",
+    "laneState": "Unattended lane",
+    "laneOpen": "Open (paused after repeated failed verifications)",
+    "laneClosed": "Closed",
+    "laneNotConfigured": "Not configured for this organization",
+    "noData": "No script proposals in this time period"
   },
   "aiRiskApprovalHistoryFeed": {
     "all2": "All",

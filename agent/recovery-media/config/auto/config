@@ -1,0 +1,15 @@
+#!/bin/sh
+# Breeze recovery media live-build configuration (W04b). Invoked by
+# ../../build.sh via `lb config` from inside agent/recovery-media/config/.
+# Spec: docs/superpowers/specs/backup/2026-09-10-bare-metal-boot-media-recovery-design.md §7.1.
+set -e
+
+lb config noauto \
+  --mode debian --distribution bookworm --architectures "${BREEZE_ARCH:-amd64}" \
+  --archive-areas "main contrib non-free-firmware" \
+  --binary-images iso-hybrid --bootloaders "grub-efi" \
+  --debian-installer none --apt-recommends false --memtest none \
+  --linux-flavours "${BREEZE_ARCH:-amd64}" \
+  --bootappend-live "boot=live components quiet console=tty0 console=ttyS0,115200n8 breeze.media=1 ${BREEZE_EXTRA_CMDLINE:-}" \
+  --iso-application "Breeze Recovery" --iso-publisher "Breeze RMM" --iso-volume "BREEZE_RECOVERY" \
+  "${@}"

@@ -10,15 +10,17 @@ import AdminSessionManager from '../components/auth/AdminSessionManager';
 import AccountInactiveGuard from '../components/auth/AccountInactiveGuard';
 import AiChatSidebar from '../components/ai/AiChatSidebar';
 import HelpPanel from '../components/help/HelpPanel';
+import GlobalShortcuts from '../components/layout/GlobalShortcuts';
 import OnboardingTour from '../components/onboarding/OnboardingTour';
 import ToastContainer from '../components/shared/Toast';
 import WhatsNewSplash from '../components/whatsNew/WhatsNewSplash';
 
 interface Props {
-  title: string;
+  title?: string;
+  titleKey?: string;
 }
 
-const { title } = Astro.props;
+const { title, titleKey } = Astro.props;
 const currentPath = Astro.url.pathname;
 
 // Domain-specific accent color for wayfinding — thin 2px bar at top of content area
@@ -38,7 +40,7 @@ const getAccentClass = (path: string): string => {
 const accentClass = getAccentClass(currentPath);
 ---
 
-<Layout title={title}>
+<Layout title={title} titleKey={titleKey}>
   <AuthOverlay client:load transition:persist />
   <AccountInactiveGuard client:load transition:persist />
   <AdminSessionManager client:load transition:persist />
@@ -61,6 +63,9 @@ const accentClass = getAccentClass(currentPath);
   </div>
   <AiChatSidebar client:load transition:persist />
   <HelpPanel client:load transition:persist />
+  {/* Keyboard shortcuts (g-chords, /, ?, [), the recents recorder and the
+      shortcuts cheat sheet — see GlobalShortcuts.tsx. */}
+  <GlobalShortcuts client:load transition:persist />
   <ToastContainer client:load transition:persist />
   <WhatsNewSplash client:load transition:persist />
   <OnboardingTour client:idle />

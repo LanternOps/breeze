@@ -48,7 +48,12 @@ const { dbMocks, contextMocks, consentMocks, columns } = vi.hoisted(() => ({
     consumeAdmin: vi.fn(async (input: { rawState: string }) => {
       dbMocks.order.push('consume-admin-session');
       if (!consentMocks.validStates.delete(input.rawState)) return null;
-      return { userId: '66666666-6666-4666-8666-666666666666' };
+      // Mirrors the column default: every stored session carries a purpose.
+      return { userId: '66666666-6666-4666-8666-666666666666', purpose: 'initial' };
+    }),
+    deleteForConnection: vi.fn(async () => {
+      dbMocks.order.push('delete-session-by-connection');
+      consentMocks.validStates.clear();
     }),
     insertIdentity: vi.fn(async (_owner: unknown, prepared: Record<string, unknown>) => {
       dbMocks.order.push('insert-identity-session');
@@ -59,6 +64,8 @@ const { dbMocks, contextMocks, consentMocks, columns } = vi.hoisted(() => ({
     id: { name: 'id' }, orgId: { name: 'org_id' }, tenantId: { name: 'tenant_id' },
     clientId: { name: 'client_id' }, profile: { name: 'profile' },
     consentAttemptId: { name: 'consent_attempt_id' }, status: { name: 'status' },
+    consentGeneration: { name: 'consent_generation' },
+    permissionManifestVersion: { name: 'permission_manifest_version' },
   },
 }));
 
@@ -149,6 +156,7 @@ vi.mock('../../middleware/auth', () => ({
 
 vi.mock('./consentSessionService', () => ({
   deleteConsentSessionsForAttemptInTransaction: consentMocks.deleteAttempt,
+  deleteConsentSessionsForConnection: consentMocks.deleteForConnection,
   createAdminConsentSessionInTransaction: consentMocks.createAdmin,
   consumeConsentSessionInTransaction: consentMocks.consumeAdmin,
   insertPreparedIdentityVerificationSessionInTransaction: consentMocks.insertIdentity,
@@ -171,11 +179,14 @@ vi.mock('./runtimeConfig', () => ({
 import {
   ConnectionLifecycleError,
   applyIdentityVerificationResult,
+  applyUpgradeVerificationResult,
+  transitionUpgradeConsentToIdentity,
   applyRetestResult,
   createConnectionService,
   deriveGrantHealth,
   disconnectCustomerGraphReadConnection,
   initiateCustomerGraphReadConsent,
+  initiateCustomerGraphReadUpgradeConsent,
   loadRetestSnapshot,
   markAdminConsentReturned,
   transitionAdminConsentToIdentity,
@@ -206,7 +217,7 @@ function row(overrides: Record<string, unknown> = {}) {
     credentialDomain: 'customer-graph-read' as const,
     vaultRef: 'akv://vault/version',
     credentialVersion: 'version',
-    permissionManifestVersion: 2,
+    permissionManifestVersion: 3,
     observedGrants: [...REQUIRED],
     consentAttemptId: ATTEMPT_ID,
     grantsVerifiedAt: new Date('2026-07-14T16:00:00.000Z'),
@@ -228,7 +239,7 @@ function snapshot(overrides: Partial<CustomerGraphReadConnectionSnapshot> = {}):
   return {
     id: CONNECTION_ID, orgId: ORG_ID, profile: 'customer-graph-read',
     consentAttemptId: ATTEMPT_ID, tenantId: TENANT_ID, clientId: CLIENT_ID,
-    permissionManifestVersion: 2, observedGrants: [...REQUIRED],
+    permissionManifestVersion: 3, observedGrants: [...REQUIRED],
     grantsVerifiedAt: new Date('2026-07-14T16:00:00.000Z'), displayName: 'Contoso',
     status: 'active', lastVerifiedAt: new Date('2026-07-14T16:00:00.000Z'),
     lastErrorCode: null, ...overrides,
@@ -243,7 +254,7 @@ function completeResult(overrides: Partial<Extract<CompleteConsentResult, { succ
   return {
     success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
     administratorObjectId: '77777777-7777-4777-8777-777777777777',
-    organizationDisplayName: 'Contoso', manifestVersion: 2,
+    organizationDisplayName: 'Contoso', manifestVersion: 3,
     verifiedAt: '2026-07-14T16:00:00.000Z', grantReconciliation: 'complete',
     observedGrants: [...REQUIRED], missingGrants: [], unexpectedGrants: [],
     grantsVerifiedAt: '2026-07-14T16:00:00.000Z', ...overrides,
@@ -338,7 +349,7 @@ describe('customer Graph-read connection lifecycle', () => {
 
     await expect(initiateCustomerGraphReadConsent({ orgId: ORG_ID, actorId: ACTOR_ID }))
       .rejects.toThrow('insert failed');
-    expect(dbMocks.insertedValues[0]).toMatchObject({ permissionManifestVersion: 2 });
+    expect(dbMocks.insertedValues[0]).toMatchObject({ permissionManifestVersion: 3 });
     expect(consentMocks.createAdmin).not.toHaveBeenCalled();
   });
 
@@ -451,7 +462,7 @@ describe('customer Graph-read connection lifecycle', () => {
       profile: 'customer-graph-read',
       consentAttemptId: ATTEMPT_ID,
       tenantId: TENANT_ID,
-      permissionManifestVersion: 2,
+      permissionManifestVersion: 3,
       status: 'active',
       lastErrorCode: null,
     });
@@ -519,7 +530,7 @@ describe('customer Graph-read connection lifecycle', () => {
           tenantId: TENANT_ID,
           applicationId: CLIENT_ID,
           organizationDisplayName: 'Contoso',
-          manifestVersion: 2,
+          manifestVersion: 3,
           verifiedAt: '2026-07-14T16:00:00.000Z',
           grantReconciliation: 'complete',
           observedGrants: [...REQUIRED],
@@ -556,7 +567,7 @@ describe('customer Graph-read connection lifecycle', () => {
       tenantId: TENANT_ID,
       applicationId: CLIENT_ID,
       organizationDisplayName: displayName,
-      manifestVersion: 2,
+      manifestVersion: 3,
       verifiedAt,
       grantReconciliation: 'complete',
       observedGrants: [...REQUIRED],
@@ -635,7 +646,7 @@ describe('customer Graph-read connection lifecycle', () => {
     dbMocks.updateResults.push((set) => [row({ ...set })]);
     const retained = await applyRetestResult(retestSnapshot, {
       success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
-      organizationDisplayName: 'Contoso', manifestVersion: 2,
+      organizationDisplayName: 'Contoso', manifestVersion: 3,
       verifiedAt: '2026-07-14T17:00:00.000Z', grantReconciliation: 'unavailable',
       errorCode: 'grant_reconciliation_unavailable', observedGrants: null,
       missingGrants: null, unexpectedGrants: null, grantsVerifiedAt: null,
@@ -656,7 +667,7 @@ describe('customer Graph-read connection lifecycle', () => {
     expect(dbMocks.updateSets[0]).toMatchObject({
       tenantId: null, clientId: '', displayName: null, observedGrants: [],
       grantsVerifiedAt: null, lastVerifiedAt: null, status: 'revoked', lastErrorCode: null,
-      permissionManifestVersion: 2,
+      permissionManifestVersion: 3,
     });
     expect(disconnected.status).toBe('revoked');
     expect(disconnected.consentAttemptId).not.toBe(ATTEMPT_ID);
@@ -742,5 +753,402 @@ describe('createConnectionService factory (non-read profile)', () => {
     });
     expect(result.profile).toBe('customer-graph-actions');
     expect(result.status).toBe('active');
+  });
+});
+
+describe('initiateUpgradeConsent', () => {
+  const EXECUTABLE = {
+    id: CONNECTION_ID,
+    orgId: ORG_ID,
+    tenantId: TENANT_ID,
+    clientId: CLIENT_ID,
+    profile: 'customer-graph-read' as const,
+    permissionManifestVersion: 2,
+    observedGrants: [],
+    consentAttemptId: ATTEMPT_ID,
+    grantsVerifiedAt: new Date('2026-09-01T00:00:00.000Z'),
+    displayName: 'Contoso',
+    status: 'active' as const,
+    lastVerifiedAt: new Date('2026-09-01T00:00:00.000Z'),
+    lastErrorCode: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMocks.selectResults.length = 0;
+    dbMocks.updateResults.length = 0;
+    dbMocks.insertResults.length = 0;
+    dbMocks.updateSets.length = 0;
+    dbMocks.updateWheres.length = 0;
+    dbMocks.insertedValues.length = 0;
+    dbMocks.executed.length = 0;
+    dbMocks.order.length = 0;
+    consentMocks.validStates.clear();
+    consentMocks.stateCounter = 0;
+    contextMocks.callerDepth = 0;
+  });
+
+  it('binds the session to the EXISTING attempt and never writes status', async () => {
+    dbMocks.selectResults.push([EXECUTABLE], [EXECUTABLE]);
+
+    const initiated = await initiateCustomerGraphReadUpgradeConsent({
+      connectionId: EXECUTABLE.id,
+      orgId: EXECUTABLE.orgId,
+      auth: auth(),
+    });
+
+    expect(consentMocks.createAdmin).toHaveBeenCalledWith(expect.objectContaining({
+      connectionId: EXECUTABLE.id,
+      orgId: EXECUTABLE.orgId,
+      consentAttemptId: EXECUTABLE.consentAttemptId,
+      purpose: 'upgrade',
+    }));
+    // The whole point of the transition: no UPDATE on m365_connections at all,
+    // so an abandoned upgrade cannot strand a working connection in
+    // pending-consent (spec §2.2).
+    expect(dbMocks.updateSets).toHaveLength(0);
+    expect(initiated.connection.status).toBe('active');
+    expect(initiated.connection.consentAttemptId).toBe(EXECUTABLE.consentAttemptId);
+    expect(initiated.consentUrl).toContain('https://login.microsoftonline.com/common/adminconsent');
+    expect(initiated.consentUrl).toContain('state=');
+  });
+
+  it('supersedes an abandoned upgrade session before minting a new one', async () => {
+    dbMocks.selectResults.push([EXECUTABLE], [EXECUTABLE]);
+
+    await initiateCustomerGraphReadUpgradeConsent({
+      connectionId: EXECUTABLE.id,
+      orgId: EXECUTABLE.orgId,
+      auth: auth(),
+    });
+
+    expect(dbMocks.order.indexOf('delete-session'))
+      .toBeLessThan(dbMocks.order.indexOf('insert-session'));
+  });
+
+  it('serializes against re-consent on the same owner/profile advisory lock', async () => {
+    dbMocks.selectResults.push([EXECUTABLE], [EXECUTABLE]);
+
+    await initiateCustomerGraphReadUpgradeConsent({
+      connectionId: EXECUTABLE.id,
+      orgId: EXECUTABLE.orgId,
+      auth: auth(),
+    });
+
+    expect(dbMocks.order[0]).toBe('lock');
+  });
+
+  it('refuses a connection that is not executable', async () => {
+    dbMocks.selectResults.push([]);
+
+    await expect(initiateCustomerGraphReadUpgradeConsent({
+      connectionId: EXECUTABLE.id,
+      orgId: EXECUTABLE.orgId,
+      auth: auth(),
+    })).rejects.toMatchObject({ code: 'connection_not_found' });
+    expect(consentMocks.createAdmin).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the stored manifest is already current', async () => {
+    // Nothing to approve; minting a consent URL would send an administrator to
+    // Microsoft to re-approve what they already approved.
+    dbMocks.selectResults.push([{ ...EXECUTABLE, permissionManifestVersion: 3 }]);
+
+    await expect(initiateCustomerGraphReadUpgradeConsent({
+      connectionId: EXECUTABLE.id,
+      orgId: EXECUTABLE.orgId,
+      auth: auth(),
+    })).rejects.toMatchObject({ code: 'manifest_current' });
+    expect(consentMocks.createAdmin).not.toHaveBeenCalled();
+  });
+
+  it('refuses when a concurrent write rotated the attempt', async () => {
+    dbMocks.selectResults.push([EXECUTABLE], []);
+
+    await expect(initiateCustomerGraphReadUpgradeConsent({
+      connectionId: EXECUTABLE.id,
+      orgId: EXECUTABLE.orgId,
+      auth: auth(),
+    })).rejects.toMatchObject({ code: 'stale_attempt' });
+    expect(consentMocks.createAdmin).not.toHaveBeenCalled();
+  });
+});
+
+describe('upgrade consent verification', () => {
+  const MANIFEST = M365_PERMISSION_PROFILES['customer-graph-read'];
+  const REQUIRED_V3 = [...(MANIFEST.applicationPermissionAssignments ?? [])];
+  const ATTEMPT: ConsentAttemptSnapshot = {
+    id: CONNECTION_ID,
+    orgId: ORG_ID,
+    profile: 'customer-graph-read',
+    consentAttemptId: ATTEMPT_ID,
+    status: 'active',
+  };
+  const STORED = {
+    ...ATTEMPT,
+    tenantId: TENANT_ID,
+    clientId: CLIENT_ID,
+    permissionManifestVersion: 2,
+    observedGrants: [],
+    grantsVerifiedAt: new Date('2026-09-01T00:00:00.000Z'),
+    displayName: 'Contoso',
+    lastVerifiedAt: new Date('2026-09-01T00:00:00.000Z'),
+    lastErrorCode: null,
+  };
+  function successResult(observedGrants: unknown[]) {
+    return {
+      success: true as const,
+      tenantId: STORED.tenantId,
+      applicationId: CLIENT_ID,
+      organizationDisplayName: 'Contoso',
+      manifestVersion: MANIFEST.version,
+      verifiedAt: '2026-09-08T10:00:00.000Z',
+      grantReconciliation: 'complete' as const,
+      grantsVerifiedAt: '2026-09-08T10:00:01.000Z',
+      observedGrants,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMocks.selectResults.length = 0;
+    dbMocks.updateResults.length = 0;
+    dbMocks.updateSets.length = 0;
+    dbMocks.updateWheres.length = 0;
+    dbMocks.order.length = 0;
+    consentMocks.validStates.clear();
+    consentMocks.stateCounter = 0;
+  });
+
+  it('promotes the manifest version and bumps the consent generation on a full approval', async () => {
+    dbMocks.selectResults.push([STORED]);
+    dbMocks.updateResults.push((set) => [{ ...STORED, ...set }]);
+
+    const applied = await applyUpgradeVerificationResult(ATTEMPT, successResult(REQUIRED_V3) as never);
+
+    expect(applied.failureCode).toBeNull();
+    const set = dbMocks.updateSets[0]!;
+    expect(set.permissionManifestVersion).toBe(3);
+    expect(set.consentGeneration).toBeDefined();      // sql`consent_generation + 1`
+    expect(set.status).toBe('active');
+    expect(set.lastErrorCode).toBeNull();
+    expect(set.observedGrants).toEqual(REQUIRED_V3);
+  });
+
+  it('records the observation but does NOT promote when a v3 grant is missing', async () => {
+    const partial = REQUIRED_V3.slice(0, REQUIRED_V3.length - 1);
+    dbMocks.selectResults.push([STORED]);
+    dbMocks.updateResults.push((set) => [{ ...STORED, ...set }]);
+
+    const applied = await applyUpgradeVerificationResult(ATTEMPT, successResult(partial) as never);
+
+    expect(applied.failureCode).toBe('grant_missing');
+    const set = dbMocks.updateSets[0]!;
+    expect(set.permissionManifestVersion).toBeUndefined();
+    expect(set.consentGeneration).toBeUndefined();
+    expect(set.status).toBeUndefined();               // never made less executable
+    expect(set.lastErrorCode).toBe('grant_missing');
+    expect(set.observedGrants).toEqual(partial);
+  });
+
+  it('writes nothing at all when the administrator abandoned or the provider failed', async () => {
+    dbMocks.selectResults.push([STORED]);
+
+    const applied = await applyUpgradeVerificationResult(
+      ATTEMPT,
+      { success: false, errorCode: 'consent_cancelled' } as never,
+    );
+
+    expect(dbMocks.updateSets).toHaveLength(0);
+    expect(applied.connection.permissionManifestVersion).toBe(2);
+    expect(applied.connection.status).toBe('active');
+    // The row is untouched by design, so the reason has to travel in band or
+    // the callback cannot tell this apart from an abandoned flow.
+    expect(applied.failureCode).toBe('consent_cancelled');
+  });
+
+  it('refuses to rebind: a different verified tenant is a silent no-op', async () => {
+    // applyIdentityVerificationResult accepts a binding when tenant_id IS NULL
+    // OR equal. An upgrade always has a bound tenant, so anything but equality
+    // is an attempt to move a live connection to another tenant.
+    dbMocks.selectResults.push([STORED]);
+
+    const applied = await applyUpgradeVerificationResult(
+      ATTEMPT,
+      { ...successResult(REQUIRED_V3), tenantId: '99999999-9999-4999-8999-999999999999' } as never,
+    );
+
+    expect(dbMocks.updateSets).toHaveLength(0);
+    expect(applied.failureCode).toBe('tenant_mismatch');
+  });
+
+  it('writes nothing when the returned application is not the configured one', async () => {
+    dbMocks.selectResults.push([STORED]);
+
+    const applied = await applyUpgradeVerificationResult(
+      ATTEMPT,
+      { ...successResult(REQUIRED_V3), applicationId: '99999999-9999-4999-8999-999999999999' } as never,
+    );
+
+    expect(dbMocks.updateSets).toHaveLength(0);
+    expect(applied.failureCode).toBe('application_token_invalid');
+  });
+
+  it('writes nothing when grant reconciliation was unavailable', async () => {
+    dbMocks.selectResults.push([STORED]);
+
+    const applied = await applyUpgradeVerificationResult(
+      ATTEMPT,
+      { ...successResult(REQUIRED_V3), grantReconciliation: 'unavailable' } as never,
+    );
+
+    expect(dbMocks.updateSets).toHaveLength(0);
+    expect(applied.failureCode).toBe('grant_reconciliation_unavailable');
+  });
+
+  it('rejects an attempt whose connection is not executable', async () => {
+    await expect(applyUpgradeVerificationResult(
+      { ...ATTEMPT, status: 'pending-consent' },
+      successResult(REQUIRED_V3) as never,
+    )).rejects.toMatchObject({ code: 'stale_attempt' });
+  });
+});
+
+describe('transitionUpgradeConsentToIdentity', () => {
+  const ATTEMPT: ConsentAttemptSnapshot = {
+    id: CONNECTION_ID,
+    orgId: ORG_ID,
+    profile: 'customer-graph-read',
+    consentAttemptId: ATTEMPT_ID,
+    status: 'active',
+  };
+  const STORED = {
+    ...ATTEMPT,
+    tenantId: TENANT_ID,
+    clientId: CLIENT_ID,
+    permissionManifestVersion: 2,
+    observedGrants: [],
+    grantsVerifiedAt: null,
+    displayName: null,
+    lastVerifiedAt: null,
+    lastErrorCode: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMocks.selectResults.length = 0;
+    dbMocks.updateResults.length = 0;
+    dbMocks.updateSets.length = 0;
+    dbMocks.order.length = 0;
+  });
+
+  it('consumes the admin session and inserts an upgrade identity session without an UPDATE', async () => {
+    consentMocks.consumeAdmin.mockResolvedValueOnce({ userId: ACTOR_ID, purpose: 'upgrade' } as never);
+    dbMocks.selectResults.push([STORED]);
+
+    const prepared = {
+      rawState: 'identity-state', tenantHintHash: 'h', nonce: 'n',
+      codeVerifier: 'v', codeChallenge: 'c', expiresAt: new Date(),
+    };
+    const result = await transitionUpgradeConsentToIdentity({
+      attempt: ATTEMPT,
+      rawAdminState: 'admin-state',
+      prepared: prepared as never,
+    });
+
+    expect(result.actorId).toBe(ACTOR_ID);
+    expect(dbMocks.updateSets).toHaveLength(0);       // status untouched
+    expect(consentMocks.insertIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({ purpose: 'upgrade', consentAttemptId: ATTEMPT.consentAttemptId }),
+      expect.anything(),
+    );
+  });
+
+  it('refuses an upgrade session reaching the FIRST-TIME transition', async () => {
+    // Symmetric to the check below. Unreachable today only because the two
+    // flows gate on disjoint statuses; if that ever slipped, an upgrade would
+    // move a live connection to `verifying` and stop its reads.
+    consentMocks.consumeAdmin.mockResolvedValueOnce({ userId: ACTOR_ID, purpose: 'upgrade' } as never);
+
+    await expect(transitionAdminConsentToIdentity({
+      attempt: { ...ATTEMPT, status: 'pending-consent' },
+      rawAdminState: 'admin-state',
+      prepared: {} as never,
+    })).rejects.toMatchObject({ code: 'stale_attempt' });
+    expect(dbMocks.updateSets).toHaveLength(0);
+  });
+
+  it('refuses an admin session that is not an upgrade session', async () => {
+    // Defense in depth against a first-time session reaching the upgrade
+    // branch: the router read the purpose without consuming, so the consumed
+    // row is the authority.
+    consentMocks.consumeAdmin.mockResolvedValueOnce({ userId: ACTOR_ID, purpose: 'initial' } as never);
+
+    await expect(transitionUpgradeConsentToIdentity({
+      attempt: ATTEMPT,
+      rawAdminState: 'admin-state',
+      prepared: {} as never,
+    })).rejects.toMatchObject({ code: 'stale_attempt' });
+    expect(consentMocks.insertIdentity).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the connection is no longer executable', async () => {
+    await expect(transitionUpgradeConsentToIdentity({
+      attempt: { ...ATTEMPT, status: 'verifying' },
+      rawAdminState: 'admin-state',
+      prepared: {} as never,
+    })).rejects.toMatchObject({ code: 'stale_attempt' });
+    expect(consentMocks.consumeAdmin).not.toHaveBeenCalled();
+  });
+});
+
+describe('retest with an upgrade consent in flight', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMocks.selectResults.length = 0;
+    dbMocks.updateResults.length = 0;
+    dbMocks.updateSets.length = 0;
+    dbMocks.order.length = 0;
+    contextMocks.callerDepth = 0;
+  });
+
+  it("supersedes the connection's consent sessions before rotating the attempt id", async () => {
+    // The attempt-id rotation in loadRetestSnapshot has no ON UPDATE CASCADE
+    // on m365_consent_sessions_connection_identity_fkey, so a live upgrade
+    // session would make the rotation raise 23503.
+    const CURRENT = {
+      id: CONNECTION_ID,
+      orgId: ORG_ID,
+      tenantId: TENANT_ID,
+      clientId: CLIENT_ID,
+      profile: 'customer-graph-read' as const,
+      permissionManifestVersion: 3,
+      observedGrants: [],
+      consentAttemptId: ATTEMPT_ID,
+      grantsVerifiedAt: new Date('2026-09-01T00:00:00.000Z'),
+      displayName: 'Contoso',
+      status: 'active' as const,
+      lastVerifiedAt: new Date('2026-09-01T00:00:00.000Z'),
+      lastErrorCode: null,
+    };
+    dbMocks.selectResults.push([CURRENT]);
+    dbMocks.updateResults.push([CURRENT], [CURRENT]);
+
+    await retestCustomerGraphReadConnection({
+      id: CURRENT.id,
+      orgId: CURRENT.orgId,
+      auth: auth(),
+      executorClient: {
+        retestCustomerGraphRead: async () => ({ success: false, errorCode: 'credential_unavailable' }),
+      } as never,
+    });
+
+    expect(consentMocks.deleteForConnection).toHaveBeenCalledWith({
+      connectionId: CURRENT.id,
+      orgId: CURRENT.orgId,
+      profile: 'customer-graph-read',
+    });
+    expect(dbMocks.order.indexOf('delete-session-by-connection'))
+      .toBeLessThan(dbMocks.order.indexOf('update'));
   });
 });

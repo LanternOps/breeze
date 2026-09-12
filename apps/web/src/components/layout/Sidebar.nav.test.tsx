@@ -31,6 +31,7 @@ vi.mock('../../lib/authScope', () => ({ getJwtClaims: () => ({ scope: 'partner' 
 vi.mock('./BrandHeader', () => ({ default: () => null }));
 
 import Sidebar, { navSections, topLevelNav } from './Sidebar';
+import { GO_TO_SHORTCUTS } from '../../lib/keyboard/goToShortcuts';
 import { i18n, loadLocale } from '../../lib/i18n';
 import en from '../../locales/en/common.json';
 import ptBR from '../../locales/pt-BR/common.json';
@@ -110,7 +111,7 @@ describe('navSections structure (#1321, #1324)', () => {
 
   it('keeps every AI surface together and every platform-admin surface in Administration', () => {
     expect(hrefsOf('ai')).toEqual([
-      '/fleet', '/workspace', '/settings/ai-agents', '/ai-agents/runs', '/ai-agents/impact', '/settings/ai-usage', '/ai-for-office',
+      '/fleet', '/workspace', '/settings/ai-agents', '/ai-agents/runs', '/ai-agents/impact', '/settings/ai-usage', '/settings/ai-script-authoring', '/ai-for-office',
     ]);
     const admin = section('administration');
     expect(admin.items.length).toBeGreaterThan(0);
@@ -120,6 +121,17 @@ describe('navSections structure (#1321, #1324)', () => {
       for (const item of s.items) expect(item.platformAdminOnly, `${s.id} > ${item.href}`).toBeFalsy();
     }
     expect(topLevelNav.map((i) => i.href)).not.toContain('/onedrive');
+  });
+
+  it('adds a Script authoring entry to the AI section, after AI Usage & Budget (#5612 W05)', () => {
+    const item = section('ai').items.find((i) => i.href === '/settings/ai-script-authoring');
+    expect(item).toBeDefined();
+    expect(item?.labelKey).toBe('nav.scriptAuthoring');
+    expect(item?.requiredPermission).toEqual({ resource: 'ai_agents', action: 'read' });
+    const hrefs = hrefsOf('ai');
+    const usageIdx = hrefs.indexOf('/settings/ai-usage');
+    const scriptIdx = hrefs.indexOf('/settings/ai-script-authoring');
+    expect(scriptIdx).toBe(usageIdx + 1);
   });
 
   it('each moved href appears in exactly one section (no duplicate membership)', () => {
@@ -145,13 +157,29 @@ describe('navSections structure (#1321, #1324)', () => {
   });
 });
 
+describe('go-to keyboard chords (g then key)', () => {
+  it('every chord targets a top-level nav item and reuses its label key', () => {
+    for (const shortcut of GO_TO_SHORTCUTS) {
+      const item = topLevelNav.find((nav) => nav.href === shortcut.href);
+      expect(item, `no top-level nav item for g ${shortcut.key} → ${shortcut.href}`).toBeDefined();
+      expect(shortcut.labelKey).toBe(item!.labelKey);
+    }
+  });
+
+  it('uses each key at most once', () => {
+    const keys = GO_TO_SHORTCUTS.map((s) => s.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys.every((k) => /^[a-z]$/.test(k))).toBe(true);
+  });
+});
+
 describe('sidebar i18n seed', () => {
   it('renders pt-BR top-level labels when selected', async () => {
     await i18n.changeLanguage('pt-BR');
     render(<Sidebar currentPath="/" />);
 
     expect(await screen.findByText('Painel')).toBeInTheDocument();
-    expect(screen.getByText('Dispositivos')).toBeInTheDocument();
+    expect(screen.getByText('Dispositivos e ativos')).toBeInTheDocument();
     expect(screen.queryByText('Dashboard')).not.toBeInTheDocument();
   });
 

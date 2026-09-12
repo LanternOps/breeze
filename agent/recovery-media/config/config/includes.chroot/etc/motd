@@ -1,0 +1,4 @@
+Breeze bare-metal recovery media.
+
+The guided recovery console starts automatically on this console and on
+the serial port (ttyS0, 115200n8). No SSH server runs on this image.

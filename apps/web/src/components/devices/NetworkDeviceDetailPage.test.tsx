@@ -1394,7 +1394,7 @@ describe('NetworkDeviceDetailPage', () => {
         .mockResolvedValueOnce(devicesResponse([]));
       render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
       await screen.findByTestId('network-device-detail');
-      const back = screen.getByRole('link', { name: 'Devices' });
+      const back = screen.getByRole('link', { name: 'Devices & Assets' });
       expect(back.getAttribute('href')).toBe('/devices#deviceClass=network');
     });
 

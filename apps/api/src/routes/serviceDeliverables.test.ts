@@ -9,9 +9,21 @@ vi.mock('../middleware/auth', () => ({
     return next();
   },
   requireScope: () => async (_c: any, next: any) => next(),
-  requirePermission: () => async (c: any, next: any) =>
-    c.req.header('x-allow') === 'true' ? next() : c.json({ error: 'Forbidden' }, 403),
+  // x-allow: 'true' grants everything; otherwise a comma list of "resource:action".
+  requirePermission: (resource: string, action: string) => async (c: any, next: any) => {
+    const allow = c.req.header('x-allow') ?? '';
+    return allow === 'true' || allow.split(',').includes(`${resource}:${action}`) ? next() : c.json({ error: 'Forbidden' }, 403);
+  },
 }));
+
+vi.mock('../middleware/userRateLimit', () => ({
+  userRateLimit: () => async (_c: any, next: any) => next(),
+}));
+
+// deleteDocument is mocked (never wired to the route) so the uncompensated
+// link-failure test can assert the upload is NOT rolled back.
+const docMocks = vi.hoisted(() => ({ uploadDocument: vi.fn(), deleteDocument: vi.fn() }));
+vi.mock('../services/orgDocumentService', () => ({ ...docMocks, documentEtag: (s: string) => `"${s}"` }));
 
 const serviceMocks = vi.hoisted(() => ({
   listDeliverables: vi.fn(),
@@ -26,10 +38,19 @@ const serviceMocks = vi.hoisted(() => ({
   rescheduleOccurrence: vi.fn(),
   addEvidence: vi.fn(),
   removeEvidence: vi.fn(),
+  getOccurrenceOr404: vi.fn(),
 }));
 vi.mock('../services/serviceDeliverableService', () => ({
   ...serviceMocks,
   DeliverableServiceError: class DeliverableServiceError extends Error {
+    constructor(msg: string, public status = 400, public code = 'ERR', public details?: unknown) { super(msg); }
+  },
+}));
+
+const templateMocks = vi.hoisted(() => ({ applyTemplateSet: vi.fn() }));
+vi.mock('../services/deliverableTemplateService', () => ({
+  ...templateMocks,
+  TemplateServiceError: class TemplateServiceError extends Error {
     constructor(msg: string, public status = 400, public code = 'ERR', public details?: unknown) { super(msg); }
   },
 }));
@@ -154,12 +175,11 @@ describe('service deliverable routes (#5573 W01)', () => {
     expect(getDeliverable).not.toHaveBeenCalled();
   });
 
-  it('POST deliver → 400 for a document evidence kind (W03 widens the union)', async () => {
-    const res = await post(`/${ORG}/deliverables/occurrences/${OCC}/deliver`, {
-      evidence: [{ kind: 'document', documentId: RUN }],
-    });
-    expect(res.status).toBe(400);
-    expect(deliverOccurrence).not.toHaveBeenCalled();
+  it('POST deliver → 200 with a document evidence ref now that W03 widened the union', async () => {
+    const body = { evidence: [{ kind: 'document', documentId: RUN }] };
+    const res = await post(`/${ORG}/deliverables/occurrences/${OCC}/deliver`, body);
+    expect(res.status).toBe(200);
+    expect(deliverOccurrence).toHaveBeenCalledWith(ORG, OCC, body, ACTOR);
   });
 
   it('POST deliver → 409 on an invalid transition', async () => {
@@ -207,8 +227,125 @@ describe('service deliverable routes (#5573 W01)', () => {
     expect(await res.json()).toEqual({ error: 'x', code: 'BAD_CONTRACT', details: { contractId: DEL } });
   });
 
+  describe('POST occurrences/:oId/evidence/upload (W03)', () => {
+    const pdf = new Uint8Array(Buffer.concat([Buffer.from('%PDF-'), Buffer.alloc(16, 1)]));
+    const uploadForm = (fields: Record<string, string> = {}, withFile = true) => {
+      const f = new FormData();
+      if (withFile) f.append('file', new File([pdf], 'findings.pdf', { type: 'application/pdf' }));
+      for (const [k, v] of Object.entries(fields)) f.append(k, v);
+      return f;
+    };
+    const upload = (body: FormData, headers: Record<string, string> = AUTH) =>
+      app.request(`/${ORG}/deliverables/occurrences/${OCC}/evidence/upload`, { method: 'POST', headers, body });
+
+    beforeEach(() => {
+      serviceMocks.getOccurrenceOr404.mockResolvedValue({ id: OCC, deliverableId: DEL });
+      getDeliverable.mockResolvedValue({ id: DEL, portalVisible: true });
+      docMocks.uploadDocument.mockResolvedValue({ id: 'doc-1', portalVisible: true });
+      addEvidence.mockResolvedValue({ id: OCC, evidence: [{ id: 'e1', kind: 'document', documentId: 'doc-1' }] });
+    });
+
+    it('creates an evidence-category document that inherits the deliverable portal flag, then links it', async () => {
+      const res = await upload(uploadForm());
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ data: { id: OCC, evidence: [{ id: 'e1', kind: 'document', documentId: 'doc-1' }] } });
+      expect(serviceMocks.getOccurrenceOr404).toHaveBeenCalledWith(ORG, OCC, ACTOR);
+      expect(getDeliverable).toHaveBeenCalledWith(ORG, DEL, ACTOR);
+      const [orgId, input, actor] = docMocks.uploadDocument.mock.calls[0]!;
+      expect(orgId).toBe(ORG);
+      expect(actor).toEqual(ACTOR);
+      expect(input).toMatchObject({ category: 'evidence', portalVisible: true, title: 'findings.pdf' });
+      expect(addEvidence).toHaveBeenCalledWith(ORG, OCC, { kind: 'document', documentId: 'doc-1' }, ACTOR);
+    });
+
+    it('a private deliverable files a private document', async () => {
+      getDeliverable.mockResolvedValueOnce({ id: DEL, portalVisible: false });
+      await upload(uploadForm({ title: 'Q3 findings' }));
+      expect(docMocks.uploadDocument.mock.calls[0]![1]).toMatchObject({ portalVisible: false, title: 'Q3 findings' });
+    });
+
+    it('returns 415 from the document service without creating an evidence row', async () => {
+      docMocks.uploadDocument.mockRejectedValueOnce({ status: 415, code: 'UNSUPPORTED_DOCUMENT_TYPE', message: 'nope' });
+      const res = await upload(uploadForm());
+      expect(res.status).toBe(415);
+      expect(await res.json()).toMatchObject({ code: 'UNSUPPORTED_DOCUMENT_TYPE' });
+      expect(addEvidence).not.toHaveBeenCalled();
+    });
+
+    it('a failed LINK leaves the uploaded document in the library (deliberately uncompensated) and still reports the failure', async () => {
+      addEvidence.mockRejectedValueOnce({ status: 409, code: 'INVALID_OCCURRENCE_TRANSITION', message: 'nope' });
+      const res = await upload(uploadForm());
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'INVALID_OCCURRENCE_TRANSITION' });
+      // The document was created and is NOT deleted: a technician's uploaded
+      // artifact is customer data we would rather keep and re-link.
+      expect(docMocks.uploadDocument).toHaveBeenCalledTimes(1);
+      expect(docMocks.deleteDocument).not.toHaveBeenCalled();
+    });
+
+    it('404s (never 403) an occurrence of another org before any bytes are written', async () => {
+      serviceMocks.getOccurrenceOr404.mockRejectedValueOnce({ status: 404, code: 'NOT_FOUND', message: 'Not found' });
+      const res = await upload(uploadForm());
+      expect(res.status).toBe(404);
+      expect(docMocks.uploadDocument).not.toHaveBeenCalled();
+    });
+
+    it('400 INVALID_MULTIPART without a file part', async () => {
+      const res = await upload(uploadForm({}, false));
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'INVALID_MULTIPART' });
+      expect(docMocks.uploadDocument).not.toHaveBeenCalled();
+    });
+
+    it('requires documents:write as well as contracts:write — the route files an org document', async () => {
+      const contractsOnly = await upload(uploadForm(), { authorization: 'Bearer token', 'x-allow': 'contracts:write' });
+      expect(contractsOnly.status).toBe(403);
+      const both = await upload(uploadForm(), { authorization: 'Bearer token', 'x-allow': 'contracts:write,documents:write' });
+      expect(both.status).toBe(200);
+    });
+  });
+
   it('400 for a non-guid org or deliverable id', async () => {
     expect((await app.request(`/bad/deliverables`, { headers: AUTH })).status).toBe(400);
     expect((await app.request(`/${ORG}/deliverables/bad`, { headers: AUTH })).status).toBe(400);
+  });
+
+  // ── apply-template (W05) ────────────────────────────────────────────────
+  it('POST apply-template returns { data } with created and skipped', async () => {
+    templateMocks.applyTemplateSet.mockResolvedValueOnce({
+      setId: DEL, setName: 'Best plan', orgId: ORG, contractId: null, effectiveFrom: '2026-10-01',
+      created: [{ id: OCC, name: 'Sign-in log review', cadence: 'monthly', anchorDueDate: '2026-10-31' }],
+      skipped: ['Firewall rule review'],
+    });
+    const res = await post(`/${ORG}/deliverables/apply-template`, { setId: DEL, effectiveFrom: '2026-10-01' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ data: { skipped: ['Firewall rule review'] } });
+    expect(templateMocks.applyTemplateSet).toHaveBeenCalledWith(
+      ORG, DEL, { contractId: undefined, effectiveFrom: '2026-10-01', ownerUserId: undefined },
+      expect.objectContaining({ scope: 'partner', partnerId: 'p1' }),
+    );
+  });
+
+  it('POST apply-template surfaces 409 TEMPLATE_NAME_COLLISION with details.collisions', async () => {
+    templateMocks.applyTemplateSet.mockRejectedValueOnce({
+      status: 409, code: 'TEMPLATE_NAME_COLLISION', message: 'exists', details: { collisions: ['Sign-in log review'] },
+    });
+    const res = await post(`/${ORG}/deliverables/apply-template`, { setId: DEL });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'TEMPLATE_NAME_COLLISION', details: { collisions: ['Sign-in log review'] } });
+  });
+
+  it('POST apply-template 400s a non-ISO effectiveFrom before reaching the service', async () => {
+    templateMocks.applyTemplateSet.mockClear();
+    const res = await post(`/${ORG}/deliverables/apply-template`, { setId: DEL, effectiveFrom: '31/10/2026' });
+    expect(res.status).toBe(400);
+    expect(templateMocks.applyTemplateSet).not.toHaveBeenCalled();
+  });
+
+  it('apply-template is not swallowed by the /:id matcher', async () => {
+    templateMocks.applyTemplateSet.mockResolvedValueOnce({ created: [], skipped: [] });
+    const res = await post(`/${ORG}/deliverables/apply-template`, { setId: DEL });
+    expect(res.status).toBe(200);
+    expect(getDeliverable).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-// Portal visibility flags: the five feature-gate columns on portal_branding
+// Portal visibility flags: the feature-gate columns on portal_branding
 // (Task 3.1) that control which sections of the customer portal an org's
 // portal users can reach. This module is the single source of truth for the
 // flag key list/type, and hosts the W09 report-provisioning extension seam
@@ -13,7 +13,9 @@ export const PORTAL_VISIBILITY_FLAG_KEYS = [
   'enableSecurity',
   'enableBackups',
   'enableReports',
-  'enableSupportUsage'
+  'enableSupportUsage',
+  'enableService',
+  'enableDocuments'
 ] as const;
 
 export type PortalVisibilityFlag = typeof PORTAL_VISIBILITY_FLAG_KEYS[number];

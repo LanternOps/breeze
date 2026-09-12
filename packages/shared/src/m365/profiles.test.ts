@@ -20,6 +20,11 @@ const CUSTOMER_GRAPH_READ_ASSIGNMENTS = [
   },
   {
     resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+    appRoleId: '5e1e9171-754d-478c-812c-f1755a9a4c2d',
+    value: 'AuditLogsQuery.Read.All',
+  },
+  {
+    resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
     appRoleId: '7438b122-aefc-4978-80ed-43db9fcc7715',
     value: 'Device.Read.All',
   },
@@ -45,6 +50,21 @@ const CUSTOMER_GRAPH_READ_ASSIGNMENTS = [
   },
   {
     resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+    appRoleId: '246dd0d5-5bd0-4def-940b-0421030a5b68',
+    value: 'Policy.Read.All',
+  },
+  {
+    resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+    appRoleId: '483bed4a-2ad3-4361-a73b-c83ccdbdc53c',
+    value: 'RoleManagement.Read.Directory',
+  },
+  {
+    resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+    appRoleId: 'bf394140-e372-4bf9-a898-299cfc7564e5',
+    value: 'SecurityEvents.Read.All',
+  },
+  {
+    resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
     appRoleId: '332a536c-c7ef-4017-ab91-336970924f0d',
     value: 'Sites.Read.All',
   },
@@ -56,14 +76,55 @@ const CUSTOMER_GRAPH_READ_ASSIGNMENTS = [
 ] as const;
 
 describe('shared M365 permission profiles', () => {
-  it('defines the exact version 2 customer Graph read assignments', () => {
+  it('defines the exact version 3 customer Graph read assignments', () => {
     const profile = M365_PERMISSION_PROFILES['customer-graph-read'];
 
-    expect(profile.version).toBe(2);
+    expect(profile.version).toBe(3);
     expect(profile.applicationPermissionAssignments).toEqual(CUSTOMER_GRAPH_READ_ASSIGNMENTS);
     expect(profile.applicationPermissions).toEqual(
       CUSTOMER_GRAPH_READ_ASSIGNMENTS.map(({ value }) => value),
     );
+  });
+
+  it('adds exactly the four tenant-sync scopes on top of the v2 set', () => {
+    // Asserted as an exact delta rather than with toContain, so ADDING a fifth
+    // scope fails too: every application permission on this profile is granted
+    // tenant-wide by a customer's Global Administrator, and the whole point of
+    // one manifest bump is that the set is deliberate (spec §2.1).
+    const v2 = [
+      'Application.Read.All', 'AuditLog.Read.All', 'Device.Read.All',
+      'DeviceManagementConfiguration.Read.All', 'DeviceManagementManagedDevices.Read.All',
+      'Group.Read.All', 'Organization.Read.All', 'Sites.Read.All', 'User.Read.All',
+    ];
+    const profile = M365_PERMISSION_PROFILES['customer-graph-read'];
+    const added = profile.applicationPermissions.filter((value) => !v2.includes(value));
+    expect([...added].sort()).toEqual([
+      'AuditLogsQuery.Read.All',
+      'Policy.Read.All',
+      'RoleManagement.Read.Directory',
+      'SecurityEvents.Read.All',
+    ]);
+    expect(profile.applicationPermissions).toHaveLength(13);
+  });
+
+  it('flags every stored v2 row for consent reconciliation', () => {
+    expect(connectionNeedsConsentReconciliation('customer-graph-read', 2)).toBe(true);
+    expect(connectionNeedsConsentReconciliation('customer-graph-read', 3)).toBe(false);
+  });
+
+  it('gives every assignment a real GUID on the Microsoft Graph resource app', () => {
+    // A typo'd appRoleId produces a permanent grant_missing that no customer
+    // administrator can ever clear, because the role they approve is not the
+    // role Breeze reconciles against.
+    const guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    const profile = M365_PERMISSION_PROFILES['customer-graph-read'];
+    const ids = new Set<string>();
+    for (const grant of profile.applicationPermissionAssignments ?? []) {
+      expect(grant.resourceApplicationId).toBe('00000003-0000-0000-c000-000000000000');
+      expect(grant.appRoleId).toMatch(guid);
+      ids.add(grant.appRoleId);
+    }
+    expect(ids.size).toBe(13);
   });
 
   describe('communications-delegated is mail-only at version 2', () => {

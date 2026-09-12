@@ -40,15 +40,21 @@ Configure only these Microsoft Graph **application** permissions and grant custo
 |---|---|
 | `Application.Read.All` | `9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30` |
 | `AuditLog.Read.All` | `b0afded3-3588-46d8-8b3d-9842eff778da` |
+| `AuditLogsQuery.Read.All` | `5e1e9171-754d-478c-812c-f1755a9a4c2d` |
 | `Device.Read.All` | `7438b122-aefc-4978-80ed-43db9fcc7715` |
 | `DeviceManagementConfiguration.Read.All` | `dc377aa6-52d8-4e23-b271-2a7ae04cedf3` |
 | `DeviceManagementManagedDevices.Read.All` | `2f51be20-0bb4-4fed-bf7b-db946066c75e` |
 | `Group.Read.All` | `5b567255-7703-4780-807c-7be8301ae99b` |
 | `Organization.Read.All` | `498476ce-e0fe-48b0-b801-37ba7e2685c6` |
+| `Policy.Read.All` | `246dd0d5-5bd0-4def-940b-0421030a5b68` |
+| `RoleManagement.Read.Directory` | `483bed4a-2ad3-4361-a73b-c83ccdbdc53c` |
+| `SecurityEvents.Read.All` | `bf394140-e372-4bf9-a898-299cfc7564e5` |
 | `Sites.Read.All` | `332a536c-c7ef-4017-ab91-336970924f0d` |
 | `User.Read.All` | `df021288-bdef-4463-88db-98f22de89214` |
 
-All nine roles belong to the Microsoft Graph resource application `00000003-0000-0000-c000-000000000000`. The shared code manifest is authoritative. `Application.Read.All` is required for authoritative app-role-assignment reconciliation; it is not exposed as a general application-directory query tool.
+All thirteen roles belong to the Microsoft Graph resource application `00000003-0000-0000-c000-000000000000`. The shared code manifest is authoritative. `Application.Read.All` is required for authoritative app-role-assignment reconciliation; it is not exposed as a general application-directory query tool.
+
+The last four arrived with permission manifest **v3** (2026-09-08) for the tenant-sync foundation: `Policy.Read.All` for Conditional Access policies and named locations, `RoleManagement.Read.Directory` for admin role membership, `SecurityEvents.Read.All` for Secure Score, and `AuditLogsQuery.Read.All` for the unified audit log. They were added in one bump so customer administrators re-consent once. Until you add them to your application registration, your customers' administrators cannot approve them, connections stay at manifest v2, and Breeze keeps serving reads on the v2 grants — the upgrade banner in **Settings → Integrations** simply cannot be completed.
 
 ## Key Vault and certificate ownership
 

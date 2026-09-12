@@ -38,6 +38,12 @@ import {
   MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG,
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER
 } from './helpers';
+import {
+  assertDesktopStartIntentCurrent,
+  commitDesktopStartIntent,
+  formatDesktopGeneration,
+  startIntentDenialCode,
+} from '../../services/remoteDesktopStartIntent';
 import { revokeViewerSession } from '../../services/viewerTokenRevocation';
 import { captureException, captureMessage } from '../../services/sentry';
 import { ACTIVE_REMOTE_SESSION_STATUSES, teardownDisconnectedSessions } from '../../services/remoteSessionTeardown';
@@ -985,34 +991,44 @@ sessionRoutes.post(
     const promptMode = prompt?.mode === 'consent' || prompt?.mode === 'notify' ? prompt.mode : 'off';
     const startCommandId = createDesktopStartCommandId(sessionId);
 
-    // Publish the offer, prompt mode and one-off command identity together.
+    // Publish the offer, prompt mode and one-off command identity together,
+    // under a row lock that also bumps the start generation (SEC-038 W02).
     // A later re-offer replaces the identity, so an answer from the superseded
-    // agent command cannot win the result compare-and-set.
-    const [updated] = await db
-      .update(remoteSessions)
-      .set({
-        webrtcOffer: data.offer,
-        webrtcAnswer: null,
-        desktopStartCommandId: startCommandId,
-        desktopPromptMode: promptMode,
-        status: 'connecting',
-        ...(session.status === 'active' ? { endedAt: null } : {}),
-      })
-      .where(and(
-        eq(remoteSessions.id, sessionId),
-        inArray(remoteSessions.status, ['pending', 'connecting', 'active']),
-      ))
-      .returning();
+    // agent command cannot win the result compare-and-set; the generation is
+    // what orders this start against a terminal decision.
+    const startIntent = await commitDesktopStartIntent({
+      sessionId,
+      startCommandId,
+      promptMode,
+      offer: data.offer,
+    });
 
-    if (!updated) {
+    if (!startIntent.ok) {
+      if (startIntent.reason === 'not_found') {
+        return c.json({ error: 'Session not found' }, 404);
+      }
+      if (startIntent.reason === 'terminal') {
+        return c.json({
+          error: 'This session has already been ended',
+          code: 'SESSION_TERMINAL',
+        }, 409);
+      }
       return c.json({ error: 'Session state changed while submitting offer' }, 409);
     }
+
+    const startGeneration = startIntent.generation;
 
     await logSessionAudit(
       'session_offer_submitted',
       auth.user.id,
       device.orgId,
-      { sessionId, type: session.type, startCommandId, promptMode },
+      {
+        sessionId,
+        type: session.type,
+        startCommandId,
+        promptMode,
+        startGeneration: formatDesktopGeneration(startGeneration),
+      },
       getTrustedClientIpOrUndefined(c)
     );
 
@@ -1033,11 +1049,24 @@ sessionRoutes.post(
       }, 503);
     }
 
+    // Re-read generation + phase immediately before publication. An End that
+    // committed while the lease was being minted supersedes this start, and the
+    // command must not go out at all. This narrows the window to microseconds;
+    // the endpoint fence (W04/W05) is what closes it.
+    const stillCurrent = await assertDesktopStartIntentCurrent(sessionId, startGeneration);
+    if (!stillCurrent.ok) {
+      return c.json({
+        error: 'This session was ended while the stream was starting',
+        code: startIntentDenialCode(stillCurrent.reason),
+      }, 409);
+    }
+
     const agentReachable = sendCommandToAgent(device.agentId, {
       id: startCommandId,
       type: 'start_desktop',
       payload: {
         sessionId,
+        startGeneration: formatDesktopGeneration(startGeneration),
         offer: data.offer,
         iceServers: getIceServers({ sessionId, userId: session.userId, deviceId: session.deviceId }),
         clipboard: desktopPolicy.clipboard,
@@ -1059,9 +1088,9 @@ sessionRoutes.post(
     }
 
     return c.json({
-      id: updated.id,
-      status: updated.status,
-      webrtcOffer: updated.webrtcOffer,
+      id: sessionId,
+      status: 'connecting',
+      webrtcOffer: data.offer,
     });
   }
 );

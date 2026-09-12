@@ -7,7 +7,6 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const effects = vi.hoisted(() => ({
   mediaBuild: vi.fn(),
-  bootBuild: vi.fn(),
   queueCommand: vi.fn(),
   scheduledProviderConfig: vi.fn(),
 }));
@@ -15,11 +14,6 @@ const effects = vi.hoisted(() => ({
 vi.mock('../../services/recoveryMediaService', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/recoveryMediaService')>();
   return { ...actual, buildRecoveryMediaArtifact: effects.mediaBuild };
-});
-
-vi.mock('../../services/recoveryBootMediaService', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../services/recoveryBootMediaService')>();
-  return { ...actual, buildRecoveryBootMediaArtifact: effects.bootBuild };
 });
 
 vi.mock('../../services/commandQueue', async (importOriginal) => {
@@ -47,7 +41,6 @@ import {
   oauthClients,
   oauthGrants,
   organizationUsers,
-  recoveryBootMediaArtifacts,
   recoveryMediaArtifacts,
   recoveryTokens,
   servicePrincipals,
@@ -55,11 +48,9 @@ import {
 import type { AuthContext } from '../../middleware/auth';
 import { processC2cQueuedJob } from '../../jobs/c2cBackupWorker';
 import { processDrExecutionReconcileJob } from '../../jobs/drExecutionWorker';
-import { processRecoveryBootMediaBuildJob } from '../../jobs/recoveryBootMediaWorker';
 import { processRecoveryMediaBuildJob } from '../../jobs/recoveryMediaWorker';
 import type {
   DrExecutionQueueJobData,
-  RecoveryBootMediaQueueJobData,
   RecoveryMediaQueueJobData,
 } from '../../jobs/queueSchemas';
 import { runScheduledBackupVerification } from '../../routes/backup/verificationService';
@@ -107,7 +98,6 @@ type EffectCounts = {
   deviceCommands: number;
   backupVerifications: number;
   mediaArtifacts: number;
-  bootArtifacts: number;
   drExecutions: number;
   c2cJobs: number;
 };
@@ -337,28 +327,6 @@ async function insertMediaArtifact(
   return row.id;
 }
 
-async function insertBootArtifact(
-  world: World,
-  subject: CapturedRecoveryAuthorizationSubject,
-  existingBundleArtifactId?: string,
-): Promise<string> {
-  const bundleArtifactId = existingBundleArtifactId ?? await insertMediaArtifact(world);
-  const [row] = await getTestDb().insert(recoveryBootMediaArtifacts).values({
-    orgId: world.orgId,
-    tokenId: world.recoveryTokenId,
-    snapshotId: world.snapshotId,
-    bundleArtifactId,
-    platform: 'windows',
-    architecture: 'x86_64',
-    mediaType: 'iso',
-    status: 'pending',
-    createdBy: world.operator.id,
-    ...subject,
-  }).returning({ id: recoveryBootMediaArtifacts.id });
-  if (!row) throw new Error('boot artifact fixture failed');
-  return row.id;
-}
-
 async function insertDrExecution(
   world: World,
   subject: CapturedRecoveryAuthorizationSubject,
@@ -417,14 +385,6 @@ function mediaJob(artifactId: string): Job<RecoveryMediaQueueJobData> {
   } as Job<RecoveryMediaQueueJobData>;
 }
 
-function bootJob(artifactId: string): Job<RecoveryBootMediaQueueJobData> {
-  return {
-    id: `recovery-boot-media-${artifactId}`,
-    name: 'build-boot-media',
-    data: { type: 'build-boot-media', artifactId },
-  } as Job<RecoveryBootMediaQueueJobData>;
-}
-
 function drJob(executionId: string) {
   const moveToDelayed = vi.fn().mockResolvedValue(undefined);
   return {
@@ -446,7 +406,6 @@ async function readEffectCounts(): Promise<EffectCounts> {
       (select count(*)::int from device_commands) as device_commands,
       (select count(*)::int from backup_verifications) as backup_verifications,
       (select count(*)::int from recovery_media_artifacts) as media_artifacts,
-      (select count(*)::int from recovery_boot_media_artifacts) as boot_artifacts,
       (select count(*)::int from dr_executions) as dr_executions,
       (select count(*)::int from c2c_backup_jobs) as c2c_jobs
   `);
@@ -455,7 +414,6 @@ async function readEffectCounts(): Promise<EffectCounts> {
     deviceCommands: Number(row.device_commands),
     backupVerifications: Number(row.backup_verifications),
     mediaArtifacts: Number(row.media_artifacts),
-    bootArtifacts: Number(row.boot_artifacts),
     drExecutions: Number(row.dr_executions),
     c2cJobs: Number(row.c2c_jobs),
   };
@@ -463,7 +421,6 @@ async function readEffectCounts(): Promise<EffectCounts> {
 
 async function expectNoEffects(before: EffectCounts, moveToDelayed?: ReturnType<typeof vi.fn>) {
   expect(effects.mediaBuild).not.toHaveBeenCalled();
-  expect(effects.bootBuild).not.toHaveBeenCalled();
   expect(effects.queueCommand).not.toHaveBeenCalled();
   expect(effects.scheduledProviderConfig).not.toHaveBeenCalled();
   if (moveToDelayed) expect(moveToDelayed).not.toHaveBeenCalled();
@@ -473,12 +430,6 @@ async function expectNoEffects(before: EffectCounts, moveToDelayed?: ReturnType<
 async function readMedia(id: string) {
   const [row] = await getTestDb().select().from(recoveryMediaArtifacts)
     .where(eq(recoveryMediaArtifacts.id, id));
-  return row!;
-}
-
-async function readBoot(id: string) {
-  const [row] = await getTestDb().select().from(recoveryBootMediaArtifacts)
-    .where(eq(recoveryBootMediaArtifacts.id, id));
   return row!;
 }
 
@@ -496,7 +447,6 @@ beforeEach(() => {
   process.env.BREEZE_AI_AGENTS_ENABLED = 'true';
   vi.clearAllMocks();
   effects.mediaBuild.mockResolvedValue(undefined);
-  effects.bootBuild.mockResolvedValue(undefined);
   effects.queueCommand.mockImplementation(async () => ({
     command: { id: randomUUID(), status: 'pending' },
     error: null,
@@ -513,7 +463,7 @@ afterAll(() => {
 });
 
 describe('queued recovery authorization against real PostgreSQL', () => {
-  it('authorized controls reach all five worker-family boundaries', async () => {
+  it('authorized controls reach all four worker-family boundaries', async () => {
     const world = await seedWorld();
     const userAuth = authContext(world, { kind: 'user_session' });
 
@@ -521,21 +471,6 @@ describe('queued recovery authorization against real PostgreSQL', () => {
     await processRecoveryMediaBuildJob(mediaJob(mediaId));
     expect(effects.mediaBuild).toHaveBeenCalledTimes(1);
     expect(await readMedia(mediaId)).toMatchObject({
-      status: 'building',
-      authorizationState: 'authorized',
-      authorizationDenialCode: null,
-    });
-
-    vi.clearAllMocks();
-    effects.bootBuild.mockResolvedValue(undefined);
-    const bootId = await insertBootArtifact(
-      world,
-      await capture(world, userAuth, 'media'),
-      mediaId,
-    );
-    await processRecoveryBootMediaBuildJob(bootJob(bootId));
-    expect(effects.bootBuild).toHaveBeenCalledTimes(1);
-    expect(await readBoot(bootId)).toMatchObject({
       status: 'building',
       authorizationState: 'authorized',
       authorizationDenialCode: null,
@@ -625,7 +560,7 @@ describe('queued recovery authorization against real PostgreSQL', () => {
     await expectNoEffects(before);
   });
 
-  it('denies boot-media after a human API key is revoked', async () => {
+  it('denies media after a human API key is revoked', async () => {
     const world = await seedWorld();
     const [key] = await getTestDb().insert(apiKeys).values({
       orgId: world.orgId,
@@ -643,15 +578,15 @@ describe('queued recovery authorization against real PostgreSQL', () => {
       authContext(world, { kind: 'api_key', apiKeyId: key.id }),
       'media',
     );
-    const artifactId = await insertBootArtifact(world, subject);
+    const artifactId = await insertMediaArtifact(world, subject);
     await getTestDb().update(apiKeys).set({ status: 'revoked', updatedAt: new Date() })
       .where(eq(apiKeys.id, key.id));
     const before = await readEffectCounts();
 
-    await expect(processRecoveryBootMediaBuildJob(bootJob(artifactId)))
+    await expect(processRecoveryMediaBuildJob(mediaJob(artifactId)))
       .rejects.toBeInstanceOf(UnrecoverableError);
 
-    expect(await readBoot(artifactId)).toMatchObject({
+    expect(await readMedia(artifactId)).toMatchObject({
       status: 'pending',
       storageKey: null,
       completedAt: null,

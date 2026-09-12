@@ -126,6 +126,110 @@ describe('decideIntentApproval', () => {
   });
 });
 
+describe('decideIntentApproval — supervised scope skips the ceremony (#5600)', () => {
+  it('supervised approve: no WebAuthn ceremony, no proof in the body', async () => {
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    const outcome = await decideIntentApproval('ap-1', 'approve', undefined, 'supervised');
+    expect(outcome).toBe('decided');
+    expect(getApprovalAssertion).not.toHaveBeenCalled();
+
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchWithAuth.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/mobile/approvals/ap-1/approve');
+    expect(JSON.parse(init.body as string)).toEqual({});
+  });
+
+  it('four_eyes approve: still runs the ceremony and POSTs the proof', async () => {
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    await decideIntentApproval('ap-1', 'approve', undefined, 'four_eyes');
+    expect(getApprovalAssertion).toHaveBeenCalledWith('/mobile/approvals', 'ap-1');
+
+    await invokeCapturedRequest();
+    const [, init] = fetchWithAuth.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ proof: PROOF });
+  });
+
+  it('an unknown/absent scope keeps the always-ceremony behaviour', async () => {
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    await decideIntentApproval('ap-1', 'approve');
+    expect(getApprovalAssertion).toHaveBeenCalledTimes(1);
+  });
+
+  it('supervised + 403 step_up_required: retries EXACTLY once with the ceremony', async () => {
+    // An enforcing partner authenticator policy still demands the step-up.
+    // The proofless attempt is the optimistic path, not a decision to bypass.
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    fetchWithAuth
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'step_up_required', requiredLevel: 3 }), { status: 403 }),
+      )
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+
+    const outcome = await decideIntentApproval('ap-1', 'approve', undefined, 'supervised');
+    expect(outcome).toBe('decided');
+    expect(getApprovalAssertion).toHaveBeenCalledTimes(1);
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+    const [, retryInit] = fetchWithAuth.mock.calls[1] as [string, RequestInit];
+    expect(JSON.parse(retryInit.body as string)).toEqual({ proof: PROOF });
+    // The first, proofless attempt is an internal retry step — the user must
+    // not be told their approval failed when it is about to succeed.
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
+  it('supervised + 403 step_up_required + no approver device: needs_device, no second POST', async () => {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    const err = new Error('No registered approver device');
+    err.name = 'NoApproverDeviceError';
+    getApprovalAssertion.mockRejectedValue(err);
+    fetchWithAuth.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'step_up_required', requiredLevel: 3 }), { status: 403 }),
+    );
+
+    const outcome = await decideIntentApproval('ap-1', 'approve', undefined, 'supervised');
+    expect(outcome).toBe('needs_device');
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('supervised + a non-step-up rejection is surfaced, not retried', async () => {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    fetchWithAuth.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'not_sole_approver' }), { status: 403 }),
+    );
+
+    const outcome = await decideIntentApproval('ap-1', 'approve', undefined, 'supervised');
+    expect(outcome).toBe('not_sole_approver');
+    expect(getApprovalAssertion).not.toHaveBeenCalled();
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('supervised: a transport failure on the optimistic POST is toasted, not silent', async () => {
+    // The optimistic attempt runs outside runAction, which is what guarantees
+    // a toast on a thrown request everywhere else in this helper. Without its
+    // own catch the user would get inline card text only — and the POST must
+    // never be retried, since the server may well have received it.
+    fetchWithAuth.mockRejectedValue(new TypeError('Failed to fetch'));
+    const rejection = await decideIntentApproval('ap-1', 'approve', undefined, 'supervised').catch(
+      (e: unknown) => e,
+    );
+    expect(rejection).toBeInstanceOf(ActionError);
+    expect((rejection as ActionError).status).toBe(0);
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+    expect(runAction).not.toHaveBeenCalled();
+  });
+
+  it('supervised deny: unchanged — no ceremony, reason carried', async () => {
+    await decideIntentApproval('ap-1', 'deny', ' too risky ', 'supervised');
+    await invokeCapturedRequest();
+    const [url, init] = fetchWithAuth.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/mobile/approvals/ap-1/deny');
+    expect(JSON.parse(init.body as string)).toEqual({ reason: 'too risky' });
+    expect(getApprovalAssertion).not.toHaveBeenCalled();
+  });
+});
+
 describe('decideIntentApproval server rejections', () => {
   beforeEach(() => {
     runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));

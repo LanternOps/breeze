@@ -417,3 +417,26 @@ describe('ticket attachment upload carve-out (W08 #3902)', () => {
     ).toBe('default');
   });
 });
+
+describe('org document upload carve-out (service deliverables W03)', () => {
+  const ORG = '11111111-2222-4333-8444-555555555555';
+  const DOC = '22222222-2222-4333-8444-555555555555';
+  const expected = {
+    rule: 'org-document',
+    maxSize: 10 * 1024 * 1024 + 64 * 1024,
+    error: 'Document too large (max 10 MB)',
+  };
+
+  it('gives the three multipart upload routes 10 MiB + 64 KiB of headroom', () => {
+    expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/documents`)).toEqual(expected);
+    expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/documents/${DOC}/replace`)).toEqual(expected);
+    expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/deliverables/occurrences/${DOC}/evidence/upload`)).toEqual(expected);
+  });
+
+  it('does NOT widen the JSON siblings', () => {
+    expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/documents/${DOC}`).rule).toBe('default');
+    expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/documents/${DOC}/content`).rule).toBe('default');
+    expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/deliverables/occurrences/${DOC}/evidence`).rule).toBe('default');
+    expect(bodyLimitForPath(`/api/v1/orgs/${ORG}/deliverables/occurrences/${DOC}/deliver`).rule).toBe('default');
+  });
+});

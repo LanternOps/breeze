@@ -44,11 +44,21 @@ vi.mock('../db', () => ({
     select: vi.fn(),
     update: vi.fn(),
     insert: vi.fn()
-  }
+  },
+  // remoteDesktopStartIntent.ts (real impl, not mocked in this file) throws
+  // unless this reports an open db access context.
+  hasDbAccessContext: vi.fn(() => true)
 }));
 
 vi.mock('../db/schema', () => ({
-  remoteSessions: { id: 'remoteSessions.id', deviceId: 'remoteSessions.deviceId', status: 'remoteSessions.status' },
+  remoteSessions: {
+    id: 'remoteSessions.id',
+    deviceId: 'remoteSessions.deviceId',
+    status: 'remoteSessions.status',
+    desktopStartGeneration: 'remoteSessions.desktopStartGeneration',
+    terminalGeneration: 'remoteSessions.terminalGeneration',
+    terminationPhase: 'remoteSessions.terminationPhase',
+  },
   devices: { id: 'devices.id' },
   users: { id: 'users.id', status: 'users.status' },
   patchPolicies: {},
@@ -196,8 +206,23 @@ function mockUpdateNoReturn() {
   return {
     set: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([{ id: SESSION_ID }]),
+        returning: vi.fn().mockResolvedValue([{ id: SESSION_ID, generation: 1n }]),
       }),
+    })
+  } as any;
+}
+
+// select().from().where().limit().for('update') — the row-locked read
+// commitDesktopStreamStartIntent issues (SEC-038 W02, real impl in
+// remoteDesktopStartIntent.ts, not mocked in this file).
+function mockSelectLimitForChain(result: unknown) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockReturnValue({
+          for: vi.fn().mockResolvedValue(result)
+        })
+      })
     })
   } as any;
 }
@@ -236,8 +261,26 @@ function captureWsHandlers(
  * Set up database + auth mocks so that onOpen succeeds.
  * Uses a unique user ID each time to avoid the in-memory rate limiter.
  */
-function setupSuccessfulValidation() {
+function setupSuccessfulValidation(options: {
+  /** Phase the row-locked start-intent read reports (SEC-038 W02). */
+  lockedPhase?: 'none' | 'pending' | 'confirmed';
+  /** Phase the pre-publication re-read reports. */
+  recheckPhase?: 'none' | 'pending' | 'confirmed';
+  /** Generation the pre-publication re-read reports, to force a supersession. */
+  recheckGeneration?: bigint;
+} = {}) {
+  const {
+    lockedPhase = 'none',
+    recheckPhase = 'none',
+    recheckGeneration = 1n,
+  } = options;
   const userId = nextUserId();
+
+  // A test that exits the onOpen flow early (a refused start intent) leaves
+  // this file's FIFO `mockReturnValueOnce` queue partly unconsumed, which the
+  // NEXT test would then dequeue out of order. Start from empty.
+  vi.mocked(db.select).mockReset();
+  vi.mocked(db.update).mockReset();
 
   const ticketRecord = {
     ok: true as const,
@@ -276,7 +319,20 @@ function setupSuccessfulValidation() {
           })
         })
       })
-    } as any);
+    } as any)
+    // commitDesktopStreamStartIntent: row-locked read (SEC-038 W02)
+    .mockReturnValueOnce(mockSelectLimitForChain([{
+      status: session.status,
+      terminationPhase: lockedPhase,
+      // A terminal row carries the generation it was declared terminal at, so
+      // the fixture stays coherent with the DB CHECK constraint.
+      generation: lockedPhase === 'none' ? 0n : 7n
+    }]))
+    // assertDesktopStartIntentCurrent: pre-send re-read
+    .mockReturnValueOnce(mockSelectChain([{
+      terminationPhase: recheckPhase,
+      generation: recheckGeneration
+    }]));
 
   vi.mocked(isAgentConnected).mockReturnValue(true);
   vi.mocked(sendCommandToAgent).mockReturnValue(true);
@@ -596,6 +652,50 @@ describe('desktopWs', () => {
       expect(isDesktopSessionOwnedByAgent(SESSION_ID, AGENT_ID)).toBe(true);
       expect(isDesktopSessionOwnedByAgent(SESSION_ID, 'wrong-agent')).toBe(false);
       expect(getActiveDesktopSessionCount()).toBeGreaterThanOrEqual(1);
+    });
+
+    // SEC-038 W02. A start refused by the fence must TELL the viewer why: a
+    // socket that just drops is indistinguishable from a network blip, leaving
+    // the client with nothing to render and nothing to branch on.
+    it('tells the viewer the reason when the start intent is refused as terminal', async () => {
+      setupSuccessfulValidation({ lockedPhase: 'pending' });
+
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({}, ws);
+
+      const sent = ws.send.mock.calls.map((c: any[]) => c[0]);
+      expect(sent.some((s: any) => typeof s === 'string' && s.includes('"SESSION_TERMINAL"'))).toBe(true);
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Session not startable');
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('reports the pre-publication re-read denial with its own reason, not a blanket supersession', async () => {
+      setupSuccessfulValidation({ recheckPhase: 'pending' });
+
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({}, ws);
+
+      const sent = ws.send.mock.calls.map((c: any[]) => c[0]);
+      expect(sent.some((s: any) => typeof s === 'string' && s.includes('"SESSION_TERMINAL"'))).toBe(true);
+      expect(sent.some((s: any) => typeof s === 'string' && s.includes('"SESSION_SUPERSEDED"'))).toBe(false);
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('refuses to publish a start whose generation was superseded during setup', async () => {
+      setupSuccessfulValidation({ recheckGeneration: 9n });
+
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({}, ws);
+
+      const sent = ws.send.mock.calls.map((c: any[]) => c[0]);
+      expect(sent.some((s: any) => typeof s === 'string' && s.includes('"SESSION_SUPERSEDED"'))).toBe(true);
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
     });
 
     it('sends AGENT_SEND_FAILED when sendCommandToAgent fails', async () => {

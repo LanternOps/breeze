@@ -1154,15 +1154,16 @@ func applyDisplayOffset(handler InputHandler, displayIndex int, cursorOffX, curs
 		return
 	}
 	for _, m := range monitors {
-		slog.Debug("applyDisplayOffset: monitor",
+		slog.Info("applyDisplayOffset: monitor",
 			"index", m.Index, "name", m.Name,
 			"x", m.X, "y", m.Y, "w", m.Width, "h", m.Height,
 			"primary", m.IsPrimary)
 	}
 	for _, m := range monitors {
 		if m.Index == displayIndex {
-			slog.Debug("applyDisplayOffset: selected",
-				"display", displayIndex, "offsetX", m.X, "offsetY", m.Y)
+			slog.Info("applyDisplayOffset: selected",
+				"display", displayIndex, "offsetX", m.X, "offsetY", m.Y,
+				"dpiMode", processDPIMode)
 			handler.SetDisplayOffset(m.X, m.Y)
 			cursorOffX.Store(int32(m.X))
 			cursorOffY.Store(int32(m.Y))

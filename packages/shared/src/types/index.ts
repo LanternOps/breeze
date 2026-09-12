@@ -7,6 +7,7 @@ export * from './deviceOptions';
 export * from './agentHealth';
 export * from './scriptAdmission';
 export * from './softwareInventoryObservation';
+export * from './scriptProposals';
 
 // ============================================
 // Multi-Tenancy Types
@@ -843,6 +844,7 @@ export * from './executiveSummaryReport';
 // ============================================
 
 export * from './portalVisibility';
+export * from './portalService';
 
 // ============================================
 // Public login-context wire contract (#2183)
