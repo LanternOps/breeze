@@ -98,6 +98,15 @@ type desktopFenceEntry struct {
 // desktopFence is the per-session fence. Its zero value is ready to use, so a
 // Heartbeat built as a bare composite literal (as many tests do) is fenced
 // without any construction step.
+//
+// Entries are deliberately never pruned in W04. A tombstone that can be
+// forgotten is not a tombstone, and there is no safe local signal for "this
+// session will never be started again" — only the server has it
+// (termination_phase = 'confirmed'). Growth is bounded by legitimate connect
+// attempts between agent restarts (~100 bytes per session id), so the cost is
+// small and the failure mode of being wrong is a revived session. Eviction
+// belongs with W05, where the durable store lands and the confirmed-teardown
+// phase becomes visible to the agent.
 type desktopFence struct {
 	mu      sync.Mutex
 	entries map[string]desktopFenceEntry

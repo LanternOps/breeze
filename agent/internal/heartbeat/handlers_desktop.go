@@ -430,6 +430,15 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// unambiguous terminal decision, only its generation is unusable.
 	stopInput, genErr := parseDesktopTerminalGeneration(cmd.Payload)
 	if genErr != nil {
+		// Log-only, deliberately. The defect cannot be reported in the command
+		// result: desktopCommandResultSchema (apps/api/src/routes/agentWs.ts)
+		// is .strict(), so an extra key would make the API drop the whole stop
+		// confirmation as malformed — and W03's pending -> confirmed phase
+		// transition is driven by exactly that confirmation. Surfacing it needs
+		// an allowed field on the server side first; tracked with W03/W05.
+		// A malformed generation is in any case only reachable from a buggy or
+		// tampered server, and it never weakens the fence: the tombstone below
+		// is installed regardless.
 		log.Warn("stop_desktop carried a malformed terminal generation; tombstoning anyway",
 			"sessionId", sessionID, "commandId", cmd.ID, "error", genErr.Error())
 	}
