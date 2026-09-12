@@ -90,7 +90,7 @@ export default function ScriptProposalDetail({ proposalId }: { proposalId: strin
         {riskTier && isRiskTier(riskTier) && (
           <div>
             <dt className="text-muted-foreground">{t('scriptProposalDetail.riskTierLabel')}</dt>
-            <dd>{t(RISK_KEYS[riskTier])}</dd>
+            <dd>{t(/* i18n-dynamic */ RISK_KEYS[riskTier])}</dd>
           </div>
         )}
         {proposal.review?.summary && (
