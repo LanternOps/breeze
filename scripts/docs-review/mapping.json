@@ -3952,6 +3952,24 @@
         "deploy/production.mdx",
         "getting-started/quickstart.mdx"
       ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/ApproverDevicesSection.tsx",
+      "docs": [
+        "features/approval-security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/mobile/src/navigation/approverBannerCopy.ts",
+      "docs": [
+        "features/mobile.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/mobile/src/navigation/ApprovalGate.tsx",
+      "docs": [
+        "features/mobile.mdx"
+      ]
     }
   ]
 }
