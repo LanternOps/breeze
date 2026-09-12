@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, eq, inArray } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, withSystemDbAccessContext } from '../db';
 import { auditLogs, deviceCommands, remoteSessions } from '../db/schema';

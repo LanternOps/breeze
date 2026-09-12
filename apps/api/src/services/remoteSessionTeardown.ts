@@ -358,7 +358,7 @@ async function disconnectAndTeardown(
               inArray(remoteSessions.status, [...ACTIVE_REMOTE_SESSION_STATUSES])
             )
           )
-          .returning(terminalSessionReturning);
+          .returning(terminalSessionReturning());
         return rows.map(toTerminalSessionRow);
       })
     );

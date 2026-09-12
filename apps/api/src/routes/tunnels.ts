@@ -1642,7 +1642,7 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
             inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
           )
         )
-        .returning(terminalSessionReturning)).map(toTerminalSessionRow);
+        .returning(terminalSessionReturning())).map(toTerminalSessionRow);
       const created = await createRemoteSession('remote', {
         id: transitionSessionId,
         deviceId: bound.deviceId,

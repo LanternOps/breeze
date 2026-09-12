@@ -192,7 +192,7 @@ sessionRoutes.delete(
       .update(remoteSessions)
       .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date() }, 'pending'))
       .where(and(...conditions))
-      .returning(terminalSessionReturning)).map(toTerminalSessionRow);
+      .returning(terminalSessionReturning())).map(toTerminalSessionRow);
 
     // Revoke viewer tokens AND signal each agent to stop the peer-to-peer
     // WebRTC stream / terminal PTY. Marking the row + revoking the token alone
@@ -302,11 +302,11 @@ sessionRoutes.post(
             inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
           )
         ) as unknown as Promise<unknown> & {
-          returning?: (fields: typeof terminalSessionReturning) => Promise<Array<Parameters<typeof toTerminalSessionRow>[0]>>;
+          returning?: (fields: ReturnType<typeof terminalSessionReturning>) => Promise<Array<Parameters<typeof toTerminalSessionRow>[0]>>;
         };
 
       if (typeof staleUpdate.returning === 'function') {
-        const revoked = (await staleUpdate.returning(terminalSessionReturning)).map(toTerminalSessionRow);
+        const revoked = (await staleUpdate.returning(terminalSessionReturning())).map(toTerminalSessionRow);
         // Revoke viewer tokens AND push the agent stop so a stale row for a
         // still-live desktop/terminal doesn't leave the stream running.
         await teardownDisconnectedSessions(revoked);

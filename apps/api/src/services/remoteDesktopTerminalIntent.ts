@@ -119,18 +119,25 @@ export interface TerminalSessionRow {
   terminationPhase: 'pending' | 'confirmed';
 }
 
-/** The RETURNING projection bulk writers should use so their rows satisfy `TerminalSessionRow`. */
-export const terminalSessionReturning = {
-  id: remoteSessions.id,
-  type: remoteSessions.type,
-  deviceId: remoteSessions.deviceId,
-  orgId: remoteSessions.orgId,
-  userId: remoteSessions.userId,
-  status: remoteSessions.status,
-  promptMode: remoteSessions.desktopPromptMode,
-  terminalGeneration: remoteSessions.terminalGeneration,
-  terminationPhase: remoteSessions.terminationPhase,
-} as const;
+/**
+ * The RETURNING projection bulk writers should use so their rows satisfy
+ * `TerminalSessionRow`. A function, not a module-level constant: many mocked
+ * suites stub `../db/schema` without `remoteSessions`, and a load-time column
+ * access would break every file that transitively imports this module.
+ */
+export function terminalSessionReturning() {
+  return {
+    id: remoteSessions.id,
+    type: remoteSessions.type,
+    deviceId: remoteSessions.deviceId,
+    orgId: remoteSessions.orgId,
+    userId: remoteSessions.userId,
+    status: remoteSessions.status,
+    promptMode: remoteSessions.desktopPromptMode,
+    terminalGeneration: remoteSessions.terminalGeneration,
+    terminationPhase: remoteSessions.terminationPhase,
+  } as const;
+}
 
 /** Normalize a RETURNING row (driver may hand the bigint back as a string). */
 export function toTerminalSessionRow(row: {
@@ -193,7 +200,7 @@ export async function commitDesktopTerminalIntent(
       inArray(remoteSessions.status, [...LIVE_STATUSES]),
       ...(input.where ?? []),
     ))
-    .returning(terminalSessionReturning);
+    .returning(terminalSessionReturning());
 
   if (!updated) return { ok: false, reason: 'not_live' };
   const row = toTerminalSessionRow(updated);
