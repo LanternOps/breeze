@@ -380,6 +380,16 @@ describe('createActionIntent — script_reviewer autonomy (#5612 W04)', () => {
     expect(scriptLaneState.consumeProposalForIntent).toHaveBeenCalledWith(expect.anything(), 'prop-1', snap.id);
   });
 
+  it('ticket autonomy wins when it granted — the lane is never consulted and only one decided_via is stamped', async () => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    ticketAutonomyState.evaluateTicketAutonomy.mockResolvedValue({ granted: true });
+    await createActionIntent(makeUserAuth(), proposalRunInput({ autonomy: { kind: 'ticket_autonomy' } }));
+    expect(scriptLaneState.evaluateScriptReviewerAutonomy).not.toHaveBeenCalled();
+    const inserted = dbState.insertedActionIntentValues[0]!;
+    expect(inserted.decidedVia).toBe('ticket_autonomy');
+    expect(inserted.scriptReviewerEvidence).toBeUndefined();
+  });
+
   it('audits ai.script.unattended_run once the intent commits', async () => {
     dbState.insertActionIntentsResults.push(echoInsertedIntent());
     await createActionIntent(makeUserAuth(), proposalRunInput());

@@ -14,6 +14,7 @@ import {
   APPROVAL_WAIT_BUDGET_MS,
 } from './aiAgentSdk';
 import { db } from '../db';
+import { actionIntents } from '../db/schema/actionIntents';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
 import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
@@ -117,8 +118,13 @@ vi.mock('./actionIntents/durableRelease', () => ({
 // truth table: actionIntents/laneCheckpoint.test.ts). Mocked so its
 // transitive scriptDispatch/schema imports never reach the partial schema
 // mock above.
+const mockLaneCheckpoint = vi.fn(async () => ({ ok: true as boolean, checkpointRef: null as string | null, reason: undefined as string | undefined }));
 vi.mock('./actionIntents/laneCheckpoint', () => ({
-  ensureLaneCheckpointBeforeRelease: vi.fn(async () => ({ ok: true, checkpointRef: null })),
+  ensureLaneCheckpointBeforeRelease: (...a: unknown[]) => mockLaneCheckpoint(...(a as [])),
+}));
+const mockPublishTerminal = vi.fn(async () => {});
+vi.mock('./aiOperator/taskOutbox', () => ({
+  publishIntentTerminalOutbox: (...a: unknown[]) => mockPublishTerminal(...(a as [])),
 }));
 
 vi.mock('./actionIntents/revalidateRelease', () => ({
@@ -574,6 +580,45 @@ describe('approved-at-creation intent (unattended lane, #5612 W04)', () => {
     // The wait/CAS path is still taken for the approved intent.
     expect(mockWaitForIntentDecision).toHaveBeenCalledWith('intent-lane', expect.any(Number), expect.anything());
     expect(mockTransitionIntent).toHaveBeenCalledWith('intent-lane', 'approved', 'executing', expect.anything(), expect.anything());
+  });
+
+  it('a lane intent whose restore checkpoint cannot be taken is CASed to failed:checkpoint_unavailable and never executed', async () => {
+    tier3Guardrail('supervised');
+    mockInsertReturning({ id: 'exec-lane-cp' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-lane-cp', status: 'approved', approvalRequestIds: [], requesterApprovalRequestId: null }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    // approved -> executing CAS won; executing -> failed CAS won.
+    mockTransitionIntent.mockResolvedValue(true);
+    // The post-CAS read: the intent row (no pinned digest) and no approval row.
+    const laneRow = {
+      id: 'intent-lane-cp', orgId: 'org-1', actionName: 'run_script', arguments: { proposalId: 'prop-1', deviceIds: ['dev-1'] },
+      argumentDigest: 'd', decidedVia: 'script_reviewer', effectDigest: null,
+      scriptReviewerEvidence: { proposalId: 'prop-1', reviewId: 'rev-1', checkpointRequired: true },
+      requestingAgentRunId: null, requestedByUserId: 'user-1', riskTier: 3,
+    };
+    // Keyed on the table: the intent row for action_intents, nothing for
+    // approval_requests (a lane intent has no approval row).
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: (table: unknown) => ({
+        where: () => ({ limit: async () => (table === actionIntents ? [laneRow] : []) }),
+      }),
+    })) as never);
+    mockLaneCheckpoint.mockResolvedValueOnce({ ok: false, checkpointRef: null, reason: 'checkpoint_failed' });
+    const session = makeActiveSession();
+
+    const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    expect(mockLaneCheckpoint).toHaveBeenCalledWith(expect.objectContaining({ id: 'intent-lane-cp' }));
+    expect(mockTransitionIntent).toHaveBeenCalledWith(
+      'intent-lane-cp', 'executing', 'failed', expect.objectContaining({ errorCode: 'checkpoint_unavailable' }),
+    );
+    expect(mockPublishTerminal).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: 'intent-lane-cp' }), 'intent_failed');
+    // The tool never ran: the pre-tool hook denied.
+    expect(result).toMatchObject({ allowed: false });
+    expect(String((result as { error?: string }).error)).toContain('System Restore checkpoint');
   });
 
   it('still publishes approval_required for an ordinary pending intent', async () => {

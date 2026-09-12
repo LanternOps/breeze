@@ -52,8 +52,10 @@ vi.mock('../../db', () => ({
 }));
 
 const resolveEffectiveScriptPolicy = vi.fn();
+const resolvePartnerCeiling = vi.fn();
 vi.mock('../../services/scriptProposals/policy', () => ({
   resolveEffectiveScriptPolicy: (...a: unknown[]) => resolveEffectiveScriptPolicy(...a),
+  resolvePartnerCeiling: (...a: unknown[]) => resolvePartnerCeiling(...a),
 }));
 
 const getUserEpochs = vi.fn();
@@ -193,6 +195,7 @@ beforeEach(() => {
   currentAuth = orgAuth();
   currentPerms = makePerms(ALL_GRANTS);
   resolveEffectiveScriptPolicy.mockResolvedValue(DEFAULT_EFFECTIVE);
+  resolvePartnerCeiling.mockResolvedValue(DEFAULT_EFFECTIVE);
   getUserEpochs.mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
   consumeStepUpGrant.mockResolvedValue(true);
 });
@@ -295,25 +298,34 @@ describe('PUT /script-policy', () => {
     expect(res.status).toBe(400);
   });
 
-  it('422s above_partner_ceiling when a class exceeds the effective allowlist', async () => {
-    resolveEffectiveScriptPolicy.mockResolvedValue({ ...DEFAULT_EFFECTIVE, unattendedAllowedClasses: ['services'] });
+  it('422s above_partner_ceiling when a class exceeds the PARTNER allowlist', async () => {
+    resolvePartnerCeiling.mockResolvedValue({ ...DEFAULT_EFFECTIVE, unattendedAllowedClasses: ['services'] });
     const res = await putReq({ unattendedAllowedClasses: ['services', 'processes'] });
     expect(res.status).toBe(422);
     expect(await res.json()).toEqual({ error: 'above_partner_ceiling', field: 'unattendedAllowedClasses' });
   });
 
-  it('422s when maxUnattendedRiskTier exceeds the effective ceiling', async () => {
-    resolveEffectiveScriptPolicy.mockResolvedValue({ ...DEFAULT_EFFECTIVE, maxUnattendedRiskTier: 'low' });
+  it('422s when maxUnattendedRiskTier exceeds the PARTNER ceiling', async () => {
+    resolvePartnerCeiling.mockResolvedValue({ ...DEFAULT_EFFECTIVE, maxUnattendedRiskTier: 'low' });
     const res = await putReq({ maxUnattendedRiskTier: 'medium' });
     expect(res.status).toBe(422);
     expect(await res.json()).toEqual({ error: 'above_partner_ceiling', field: 'maxUnattendedRiskTier' });
   });
 
-  it('422s when maxUnattendedPerHour exceeds the effective ceiling', async () => {
-    resolveEffectiveScriptPolicy.mockResolvedValue({ ...DEFAULT_EFFECTIVE, maxUnattendedPerHour: 5 });
+  it('422s when maxUnattendedPerHour exceeds the PARTNER ceiling', async () => {
+    resolvePartnerCeiling.mockResolvedValue({ ...DEFAULT_EFFECTIVE, maxUnattendedPerHour: 5 });
     const res = await putReq({ maxUnattendedPerHour: 10 });
     expect(res.status).toBe(422);
     expect(await res.json()).toEqual({ error: 'above_partner_ceiling', field: 'maxUnattendedPerHour' });
+  });
+
+  it('REGRESSION: an org that lowered a value can raise it back inside the partner ceiling (no ratchet)', async () => {
+    // The org's own current row (per-hour 3) is folded into the EFFECTIVE
+    // merge; the write check must consult the PARTNER ceiling (10) instead.
+    resolveEffectiveScriptPolicy.mockResolvedValue({ ...DEFAULT_EFFECTIVE, maxUnattendedPerHour: 3, unattendedAllowedClasses: ['services'], maxUnattendedRiskTier: 'low' });
+    resolvePartnerCeiling.mockResolvedValue({ ...DEFAULT_EFFECTIVE, maxUnattendedPerHour: 10, unattendedAllowedClasses: ['services', 'processes'], maxUnattendedRiskTier: 'medium' });
+    const res = await putReq({ maxUnattendedPerHour: 7, unattendedAllowedClasses: ['services', 'processes'], maxUnattendedRiskTier: 'medium' });
+    expect(res.status).toBe(200);
   });
 
   it('403s APPROVALS_DECIDE_REQUIRED when enabling without approvals:decide, even with a grant', async () => {
@@ -357,11 +369,11 @@ describe('PUT /script-policy', () => {
     expect(binding.resourceDigest).toBe(scriptLanePolicyResourceDigest({ orgId: ORG_A, unattendedEnabled: true }));
 
     expect(writes).toHaveLength(1);
-    expect(writes[0].values).toMatchObject({ unattendedEnabled: true, unattendedEnabledBy: USER_ID });
-    expect(writes[0].values.unattendedEnabledAt).toBeInstanceOf(Date);
+    expect(writes[0]!.values).toMatchObject({ unattendedEnabled: true, unattendedEnabledBy: USER_ID });
+    expect(writes[0]!.values.unattendedEnabledAt).toBeInstanceOf(Date);
 
     expect(auditLog).toHaveLength(1);
-    expect(auditLog[0].action).toBe('ai.script_lane.enabled');
+    expect(auditLog[0]!.action).toBe('ai.script_lane.enabled');
   });
 
   it('200s disabling without approvals:decide or a step-up grant, and audits ai.script_policy.updated', async () => {
@@ -370,15 +382,15 @@ describe('PUT /script-policy', () => {
     expect(res.status).toBe(200);
     expect(consumeStepUpGrant).not.toHaveBeenCalled();
     expect(auditLog).toHaveLength(1);
-    expect(auditLog[0].action).toBe('ai.script_policy.updated');
+    expect(auditLog[0]!.action).toBe('ai.script_policy.updated');
   });
 
   it('strips stepUpGrant from the persisted columns', async () => {
     const res = await putReq({ proposingEnabled: true, stepUpGrant: 'unused-grant' });
     expect(res.status).toBe(200);
     expect(writes).toHaveLength(1);
-    expect(writes[0].values).not.toHaveProperty('stepUpGrant');
-    expect(writes[0].set).not.toHaveProperty('stepUpGrant');
+    expect(writes[0]!.values).not.toHaveProperty('stepUpGrant');
+    expect(writes[0]!.set).not.toHaveProperty('stepUpGrant');
   });
 });
 
@@ -409,7 +421,7 @@ describe('POST /script-lane/reset', () => {
     expect(binding.resourceDigest).toBe(scriptLanePolicyResourceDigest({ orgId: ORG_A, unattendedEnabled: true, reset: true }));
 
     expect(writes).toHaveLength(1);
-    expect(writes[0].set).toMatchObject({
+    expect(writes[0]!.set).toMatchObject({
       state: 'closed',
       consecutiveFailedVerifications: 0,
       openedAt: null,
@@ -417,6 +429,6 @@ describe('POST /script-lane/reset', () => {
     });
 
     expect(auditLog).toHaveLength(1);
-    expect(auditLog[0].action).toBe('ai.script_lane.reset');
+    expect(auditLog[0]!.action).toBe('ai.script_lane.reset');
   });
 });

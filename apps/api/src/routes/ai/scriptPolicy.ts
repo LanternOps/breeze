@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { TOUCH_CLASSES, riskTierRank, type EffectiveScriptPolicyDto, type ScriptLaneStateDto, type ScriptPolicyDto } from '@breeze/shared';
@@ -12,7 +12,7 @@ import { getUserEpochs } from '../../services/authEpochs';
 import { createAuditLogAsync } from '../../services/auditService';
 import { consumeStepUpGrant, scriptLanePolicyResourceDigest, type StepUpGrantBinding } from '../../services/mfaStepUpGrant';
 import { PERMISSIONS, userCanDecideApprovals } from '../../services/permissions';
-import { resolveEffectiveScriptPolicy, type EffectiveScriptPolicy } from '../../services/scriptProposals/policy';
+import { resolveEffectiveScriptPolicy, resolvePartnerCeiling, type EffectiveScriptPolicy } from '../../services/scriptProposals/policy';
 
 /**
  * AI script authoring W04 (#5612): the ORG GRANT half of the unattended lane
@@ -111,7 +111,7 @@ function toLaneStateDto(row: AiScriptLaneStateRow | undefined): ScriptLaneStateD
  * null when the caller may proceed.
  */
 async function requireLaneGrant(
-  c: Parameters<Parameters<typeof aiScriptPolicyRoutes.post>[1]>[0],
+  c: Context,
   auth: AuthContext,
   orgId: string,
   stepUpGrant: string | undefined,
@@ -178,14 +178,18 @@ aiScriptPolicyRoutes.put(
     if (!orgId) return c.json({ error: 'orgId is required' }, 400);
     const body = c.req.valid('json');
 
-    const effective = await resolveEffectiveScriptPolicy(orgId);
-    if (body.maxUnattendedRiskTier && riskTierRank(body.maxUnattendedRiskTier) > riskTierRank(effective.maxUnattendedRiskTier)) {
+    // Checked against the PARTNER CEILING, never the effective merge: the
+    // merge already folds this org's own current row in, so a value the org
+    // once lowered could never be raised back inside the partner's real
+    // ceiling.
+    const ceiling = await resolvePartnerCeiling(orgId);
+    if (body.maxUnattendedRiskTier && riskTierRank(body.maxUnattendedRiskTier) > riskTierRank(ceiling.maxUnattendedRiskTier)) {
       return c.json({ error: 'above_partner_ceiling', field: 'maxUnattendedRiskTier' }, 422);
     }
-    if (body.unattendedAllowedClasses?.some((cl) => !effective.unattendedAllowedClasses.includes(cl))) {
+    if (body.unattendedAllowedClasses?.some((cl) => !ceiling.unattendedAllowedClasses.includes(cl))) {
       return c.json({ error: 'above_partner_ceiling', field: 'unattendedAllowedClasses' }, 422);
     }
-    if (body.maxUnattendedPerHour !== undefined && body.maxUnattendedPerHour > effective.maxUnattendedPerHour) {
+    if (body.maxUnattendedPerHour !== undefined && body.maxUnattendedPerHour > ceiling.maxUnattendedPerHour) {
       return c.json({ error: 'above_partner_ceiling', field: 'maxUnattendedPerHour' }, 422);
     }
 

@@ -13,13 +13,14 @@ const mockRunCount = vi.fn();
 const mockScan = vi.fn();
 const runRows: unknown[] = [];
 
+const contextCalls = { system: 0 };
 vi.mock('../../db', () => ({
   db: {
     select: () => ({ from: () => ({ where: () => ({ limit: async () => runRows }) }) }),
     execute: vi.fn(),
   },
   runOutsideDbContext: async (fn: () => unknown) => fn(),
-  withSystemDbAccessContext: async (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: async (fn: () => unknown) => { contextCalls.system += 1; return fn(); },
   withDbAccessContext: async (_ctx: unknown, fn: () => unknown) => fn(),
   getCurrentDbAccessContext: () => undefined,
 }));
@@ -110,9 +111,14 @@ beforeEach(() => {
 });
 
 describe('revalidateScriptReviewerEvidence', () => {
-  it('POSITIVE CONTROL: unchanged state revalidates (chat origin)', async () => {
+  it('POSITIVE CONTROL: unchanged state revalidates (chat origin), inside its OWN system context', async () => {
+    contextCalls.system = 0;
     await expect(revalidateScriptReviewerEvidence(INTENT)).resolves.toEqual({ ok: true });
     expect(mockLoadProposal).toHaveBeenCalledWith(expect.anything(), 'prop-1', 'org-1');
+    // Both release callers reach this between DB contexts; without a scope
+    // of its own every read answers "not found" under RLS and every lane
+    // release would fail lane_disabled.
+    expect(contextCalls.system).toBeGreaterThanOrEqual(1);
   });
 
   it('POSITIVE CONTROL: unchanged state revalidates (agent origin)', async () => {
@@ -149,6 +155,11 @@ describe('revalidateScriptReviewerEvidence', () => {
   it('the kill switch was engaged', async () => {
     mockKillState.mockResolvedValue({ killed: true, epoch: 9 });
     await expect(revalidateScriptReviewerEvidence(AGENT_INTENT)).resolves.toEqual({ ok: false, reason: 'requester_unauthorized' });
+  });
+
+  it('a CHAT-origin row whose evidence carries an agent block is refused as forged (symmetric)', async () => {
+    await expect(revalidateScriptReviewerEvidence({ ...(INTENT as object), scriptReviewerEvidence: { ...EVIDENCE, agent: { agentId: 'agent-1', policyEpoch: 1, killEpoch: 0 } } } as never))
+      .resolves.toEqual({ ok: false, reason: 'requester_unauthorized' });
   });
 
   it('an agent-origin row whose evidence has no agent block is refused as forged', async () => {

@@ -8,6 +8,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * the CAS update flips state only when it is still 'closed'.
  */
 let row: Record<string, unknown> | null = null;
+let insertShouldFail = false;
+let failSafeOpens = 0;
 const audits: Array<Record<string, unknown>> = [];
 const notifications: Array<Record<string, unknown>> = [];
 const mockRecordRunTerminal = vi.fn();
@@ -18,8 +20,13 @@ vi.mock('../../db', () => ({
   db: {
     insert: () => ({
       values: (v: Record<string, unknown>) => ({
-        onConflictDoUpdate: ({ set }: { set: Record<string, unknown> }) => ({
+        onConflictDoUpdate: ({ set }: { set: Record<string, unknown> }) => {
+          const out = {
           returning: async () => {
+            if (insertShouldFail) {
+              insertShouldFail = false; // the fail-safe retry must succeed
+              throw new Error('pool exhausted');
+            }
             if (!row) row = { orgId: v.orgId, consecutiveFailedVerifications: v.consecutiveFailedVerifications, state: 'closed', openedAt: null, openedReason: null };
             else {
               const inc = typeof set.consecutiveFailedVerifications === 'object';
@@ -32,7 +39,14 @@ vi.mock('../../db', () => ({
             }
             return [row];
           },
-        }),
+          then: (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) => {
+            // The fail-safe open awaits the upsert WITHOUT .returning().
+            if (set.state === 'open') { failSafeOpens += 1; row = { ...(row ?? { orgId: v.orgId }), ...set }; return Promise.resolve(undefined).then(res, rej); }
+            return Promise.resolve(undefined).then(res, rej);
+          },
+          };
+          return out;
+        },
       }),
     }),
     update: () => ({
@@ -70,6 +84,8 @@ const base = { orgId: 'org-1', proposalId: 'prop-1', intentId: 'int-1', executio
 
 beforeEach(() => {
   row = null;
+  insertShouldFail = false;
+  failSafeOpens = 0;
   audits.length = 0;
   notifications.length = 0;
   selectRows.length = 0;
@@ -149,6 +165,18 @@ describe('onUnattendedVerificationOutcome', () => {
   it('a verified run notifies nobody — success is not an interruption', async () => {
     await onUnattendedVerificationOutcome({ ...base, outcome: 'verified', origin: CHAT });
     expect(notifications).toHaveLength(0);
+  });
+
+  it('FAIL SAFE: when the circuit bookkeeping itself fails after a failed outcome, the lane is opened outright', async () => {
+    insertShouldFail = true;
+    await expect(onUnattendedVerificationOutcome({ ...base, outcome: 'unknown', origin: CHAT })).resolves.toBeUndefined();
+    expect(failSafeOpens).toBe(1);
+  });
+
+  it('FAIL SAFE: a bookkeeping fault after a VERIFIED outcome does not open the lane', async () => {
+    insertShouldFail = true;
+    await onUnattendedVerificationOutcome({ ...base, outcome: 'verified', origin: CHAT });
+    expect(failSafeOpens).toBe(0);
   });
 
   it('never throws: a bookkeeping fault is reported, not propagated', async () => {

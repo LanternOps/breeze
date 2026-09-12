@@ -251,6 +251,12 @@ describe('evaluateScriptReviewerAutonomy — invariants 7-10', () => {
     }))).toEqual({ granted: false, reason: 'multi_device' });
   });
 
+  it('10 — two proposal targets with exactly ONE requested device still refuses (the target clause alone)', async () => {
+    expect(await evaluateScriptReviewerAutonomy(args({
+      proposal: { ...PROPOSAL, targetDeviceIds: ['dev-1', 'dev-2'] },
+    }))).toEqual({ granted: false, reason: 'multi_device' });
+  });
+
   it('10 — a requested device that is not the proposal target refuses', async () => {
     expect(await evaluateScriptReviewerAutonomy(args({
       intentDraft: draft({ arguments: { proposalId: 'prop-1', deviceIds: ['dev-9'] } }),
@@ -359,6 +365,19 @@ describe('evaluateScriptReviewerAutonomy — invariant 13 (requester authority)'
     expect(await evaluateScriptReviewerAutonomy(args({ intentDraft: agentDraft() })))
       .toEqual({ granted: false, reason: 'requester_unauthorized' });
     expect(mockRunCount).toHaveBeenCalledWith(expect.anything(), 'run-1');
+  });
+
+  it('agent — one below the per-run action cap still passes (>= boundary)', async () => {
+    mockRunCount.mockResolvedValue(2);
+    expect(await evaluateScriptReviewerAutonomy(args({ intentDraft: agentDraft() }))).toMatchObject({ granted: true });
+  });
+
+  it('agent — the structural guardrail sees the REAL review tier, strict hits and device site', async () => {
+    mockDevice.mockResolvedValue({ id: 'dev-1', status: 'online', osType: 'windows', siteId: 'site-9' });
+    await evaluateScriptReviewerAutonomy(args({ intentDraft: agentDraft() }));
+    const [, , policy, context] = mockAgentGuardrails.mock.calls[0]!;
+    expect(policy).toMatchObject({ deviceId: 'dev-1', deviceSiteId: 'site-9' });
+    expect(context).toEqual({ proposal: { riskTier: 'low', strictHits: [] } });
   });
 
   it('agent — a grant stamps the agent block into the evidence', async () => {

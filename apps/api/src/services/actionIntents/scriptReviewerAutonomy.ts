@@ -9,7 +9,7 @@ import {
   type TouchClass,
 } from '@breeze/shared';
 import { eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import type { ScriptProposalReviewRow, ScriptProposalRow } from '../../db/schema/scriptProposals';
@@ -204,7 +204,8 @@ async function checkAgentAuthority(
   orgId: string,
   run: ScriptReviewerAgentRun,
   toolArguments: Record<string, unknown>,
-  deviceId: string,
+  device: { id: string; siteId: string | null },
+  proposalContext: { riskTier: RiskTier; strictHits: string[] },
 ): Promise<{ ok: true; agent: NonNullable<ScriptReviewerEvidence['agent']> } | { ok: false }> {
   // The run's frozen snapshot must ALREADY have been act-mode. A shadow run
   // cannot acquire act authority by proposing a script.
@@ -228,15 +229,18 @@ async function checkAgentAuthority(
   if (killState.killed) return { ok: false };
 
   // Structural guardrails (site scope, device binding, protected inputs) on
-  // the LIVE policy. Synchronous and RBAC-free by design.
+  // the LIVE policy. Synchronous and RBAC-free by design. The REAL review
+  // tier, strict hits and device site are passed — never a fabricated
+  // "safe" context — so a future guardrail branch on any of them sees the
+  // truth (the tier ceiling itself is enforced by checkProposalInvariants).
   const structural = checkAgentGuardrails('run_script', toolArguments, {
     enabled: resolved.effective.enabled,
     mode: resolved.effective.mode,
     toolAllowlist: resolved.effective.toolAllowlist,
     protectedResources: resolved.effective.protectedResources,
-    deviceId,
-    deviceSiteId: null,
-  } as AgentGuardrailPolicy, { proposal: { riskTier: 'low', strictHits: [] } });
+    deviceId: device.id,
+    deviceSiteId: device.siteId,
+  } as AgentGuardrailPolicy, { proposal: proposalContext });
   if (!structural.allowed) return { ok: false };
 
   // Per-run action cap, the same limit act-mode execution reserves against
@@ -254,15 +258,6 @@ async function checkAgentAuthority(
       killEpoch: killState.epoch,
     },
   };
-}
-
-/** Invariant 14: online, in this org, not inside a maintenance window.
- *  Fail-closed on an unreadable window, exactly as `scriptDispatch` does. */
-async function checkDeviceAvailable(tx: LaneExecutor, deviceId: string, orgId: string): Promise<boolean> {
-  const device = await readLaneDevice(tx, deviceId, orgId);
-  if (!device || device.status !== 'online') return false;
-  const maintenance = await checkScriptMaintenanceSuppression(deviceId);
-  return !maintenance.suppressed;
 }
 
 export async function evaluateScriptReviewerAutonomy(
@@ -334,7 +329,14 @@ export async function evaluateScriptReviewerAutonomy(
     // has a policy. There is no shared path.
     let agentEvidence: ScriptReviewerEvidence['agent'];
     if (intentDraft.agentRun) {
-      const authority = await checkAgentAuthority(tx, intentDraft.orgId, intentDraft.agentRun, intentDraft.arguments, deviceId);
+      const authority = await checkAgentAuthority(
+        tx,
+        intentDraft.orgId,
+        intentDraft.agentRun,
+        intentDraft.arguments,
+        device,
+        { riskTier: review!.riskTier as RiskTier, strictHits: proposal.strictHits },
+      );
       if (!authority.ok) return deny('requester_unauthorized');
       agentEvidence = authority.agent;
     } else {
@@ -412,6 +414,27 @@ export async function revalidateScriptReviewerEvidence(
 ): Promise<{ ok: true } | { ok: false; reason: ScriptReviewerRefusal }> {
   const fail = (reason: ScriptReviewerRefusal) => ({ ok: false as const, reason });
   try {
+    // Both release callers (jobs/intentReleaseWorker.ts, the inline chat
+    // release in aiAgentSdk.ts) reach this BETWEEN DB contexts: `db` would
+    // fall back to the raw GUC-less pool, which RLS filters to zero rows
+    // rather than erroring — every read here would answer "not found" and
+    // every lane release would fail `lane_disabled`. Same discipline as
+    // checkAgentReleaseAuthority (agentReleaseAuthority.ts) and the effect-
+    // digest recompute: one short system-scoped context of our own.
+    return await runOutsideDbContext(() => withSystemDbAccessContext(() => revalidateInSystemContext(intent, database, fail)));
+  } catch (err) {
+    console.error('[scriptReviewerAutonomy] release revalidation threw — revoking (fail-closed):', err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return fail('lane_disabled');
+  }
+}
+
+async function revalidateInSystemContext(
+  intent: ActionIntent,
+  database: LaneExecutor,
+  fail: (reason: ScriptReviewerRefusal) => { ok: false; reason: ScriptReviewerRefusal },
+): Promise<{ ok: true } | { ok: false; reason: ScriptReviewerRefusal }> {
+  {
     const evidence = intent.scriptReviewerEvidence as ScriptReviewerEvidence | null;
     if (!evidence?.proposalId || !evidence.reviewId) return fail('lane_disabled');
 
@@ -442,6 +465,11 @@ export async function revalidateScriptReviewerEvidence(
     if (!deviceId) return fail('device_unavailable');
 
     // 13 — authority.
+    // 14 (device read shared with 13) — read once; the maintenance half runs
+    // after the authority check below.
+    const device = await readLaneDevice(database, deviceId, intent.orgId);
+    if (!device || device.status !== 'online') return fail('device_unavailable');
+
     if (intent.requestingAgentRunId && evidence.agent) {
       const authority = await checkAgentAuthority(
         database,
@@ -454,12 +482,13 @@ export async function revalidateScriptReviewerEvidence(
           policySnapshot: await readRunSnapshot(database, intent.requestingAgentRunId),
         },
         intent.arguments as Record<string, unknown>,
-        deviceId,
+        device,
+        { riskTier: review.riskTier as RiskTier, strictHits: proposal.strictHits },
       );
       if (!authority.ok) return fail('requester_unauthorized');
-    } else if (intent.requestingAgentRunId && !evidence.agent) {
-      // An agent-origin row whose evidence carries no agent block is not the
-      // shape the grant writes — treat as forged.
+    } else if (!!intent.requestingAgentRunId !== !!evidence.agent) {
+      // The grant writes an agent block iff the intent is agent-origin. Any
+      // other pairing is not a shape this code produces — treat as forged.
       return fail('requester_unauthorized');
     }
     // A CHAT-origin intent's user RBAC is re-checked by
@@ -467,13 +496,9 @@ export async function revalidateScriptReviewerEvidence(
     // which runs for every non-agent intent — duplicating it here would just
     // cost a second round trip.
 
-    if (!(await checkDeviceAvailable(database, deviceId, intent.orgId))) return fail('device_unavailable'); // 14
+    if ((await checkScriptMaintenanceSuppression(deviceId)).suppressed) return fail('device_unavailable'); // 14
 
     return { ok: true };
-  } catch (err) {
-    console.error('[scriptReviewerAutonomy] release revalidation threw — revoking (fail-closed):', err);
-    captureException(err instanceof Error ? err : new Error(String(err)));
-    return fail('lane_disabled');
   }
 }
 

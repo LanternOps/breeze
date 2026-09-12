@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockCheckpoint = vi.fn();
+const contextCalls = { system: 0 };
+vi.mock('../../db', () => ({
+  runOutsideDbContext: async (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: async (fn: () => unknown) => { contextCalls.system += 1; return fn(); },
+}));
 vi.mock('../deviceRecovery/restoreCheckpoint', () => ({
   ensureRestoreCheckpoint: (...a: unknown[]) => mockCheckpoint(...a),
 }));
@@ -31,9 +36,13 @@ describe('ensureLaneCheckpointBeforeRelease', () => {
     expect(mockCheckpoint).not.toHaveBeenCalled();
   });
 
-  it('takes one against the single target device when the evidence says it was required', async () => {
+  it('takes one against the single target device when the evidence says it was required, inside its OWN system context', async () => {
+    contextCalls.system = 0;
     await expect(ensureLaneCheckpointBeforeRelease(lane(true))).resolves.toEqual({ ok: true, checkpointRef: '42' });
     expect(mockCheckpoint).toHaveBeenCalledWith('dev-1');
+    // Both release callers reach this between DB contexts; without a scope
+    // of its own the device read would answer "not found" under RLS.
+    expect(contextCalls.system).toBe(1);
   });
 
   it('refuses when the checkpoint cannot be taken, carrying the specific reason', async () => {

@@ -76,21 +76,19 @@ export function mergeScriptPolicies(
   const unattendedEnabled = !!partner?.unattendedAllowed && !!org?.unattendedEnabled;
   const pr = partner?.protectedResources ?? EMPTY_PROTECTED_RESOURCES;
   const orr = org?.protectedResources ?? EMPTY_PROTECTED_RESOURCES;
+  // The CEILING: the partner row, or the spec §9 defaults when there is none.
+  const ceilingTier = partner?.maxUnattendedRiskTier ?? SCRIPT_POLICY_DEFAULTS.maxUnattendedRiskTier;
+  const ceilingClasses = partner?.unattendedAllowedClasses ?? SCRIPT_POLICY_DEFAULTS.unattendedAllowedClasses;
+  const ceilingPerHour = partner?.maxUnattendedPerHour ?? SCRIPT_POLICY_DEFAULTS.maxUnattendedPerHour;
+  // The org NARROWING: a missing org row narrows NOTHING (identity), it only
+  // withholds the grant — narrowing to the defaults would silently cut a
+  // partner that allowed more than the defaults.
   return {
     proposingEnabled: (partner?.proposingEnabled ?? true) && (org?.proposingEnabled ?? true),
     unattendedEnabled,
-    maxUnattendedRiskTier: minTier(
-      partner?.maxUnattendedRiskTier ?? SCRIPT_POLICY_DEFAULTS.maxUnattendedRiskTier,
-      org?.maxUnattendedRiskTier ?? SCRIPT_POLICY_DEFAULTS.maxUnattendedRiskTier,
-    ),
-    unattendedAllowedClasses: intersect(
-      partner?.unattendedAllowedClasses ?? SCRIPT_POLICY_DEFAULTS.unattendedAllowedClasses,
-      org?.unattendedAllowedClasses ?? SCRIPT_POLICY_DEFAULTS.unattendedAllowedClasses,
-    ) as TouchClass[],
-    maxUnattendedPerHour: Math.min(
-      partner?.maxUnattendedPerHour ?? SCRIPT_POLICY_DEFAULTS.maxUnattendedPerHour,
-      org?.maxUnattendedPerHour ?? SCRIPT_POLICY_DEFAULTS.maxUnattendedPerHour,
-    ),
+    maxUnattendedRiskTier: minTier(ceilingTier, org?.maxUnattendedRiskTier ?? ceilingTier),
+    unattendedAllowedClasses: intersect(ceilingClasses, org?.unattendedAllowedClasses ?? ceilingClasses) as TouchClass[],
+    maxUnattendedPerHour: Math.min(ceilingPerHour, org?.maxUnattendedPerHour ?? ceilingPerHour),
     // UNION, not intersection: more protected is tighter
     // (aiAgents/effectivePolicy.ts makes the same call for agents).
     protectedResources: {
@@ -149,4 +147,30 @@ export async function resolveEffectiveScriptPolicy(
   const partner = rows.find((r) => r.orgId === null) ?? null;
   const org = rows.find((r) => r.orgId !== null) ?? null;
   return mergeScriptPolicies(partner, org);
+}
+
+/**
+ * The partner CEILING alone (the org row ignored) — what an org write may be
+ * checked against. The effective merge folds the org's OWN current row in via
+ * min/∩, so checking a new org value against it would ratchet: once an org
+ * lowered a value it could never raise it back inside the partner's real
+ * ceiling. `unattendedEnabled` is always false here (no grant is consulted).
+ */
+export async function resolvePartnerCeiling(
+  orgId: string,
+  executor: PolicyExecutor = db,
+): Promise<EffectiveScriptPolicy> {
+  const [orgRow] = await executor
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  const partnerId: string | null = orgRow?.partnerId ?? null;
+  if (!partnerId) return mergeScriptPolicies(null, null);
+  const [partner] = await executor
+    .select()
+    .from(aiScriptPolicies)
+    .where(and(isNull(aiScriptPolicies.orgId), eq(aiScriptPolicies.partnerId, partnerId)))
+    .limit(1);
+  return mergeScriptPolicies(partner ?? null, null);
 }

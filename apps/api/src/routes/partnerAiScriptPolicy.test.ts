@@ -180,7 +180,7 @@ describe('PUT /', () => {
     expect(res.status).toBe(200);
 
     expect(writes).toHaveLength(1);
-    expect(writes[0].values).toMatchObject({
+    expect(writes[0]!.values).toMatchObject({
       partnerId: PARTNER,
       orgId: null,
       unattendedAllowed: true,
@@ -188,7 +188,7 @@ describe('PUT /', () => {
     });
 
     expect(auditLog).toHaveLength(1);
-    expect(auditLog[0].action).toBe('ai.script_policy.partner_updated');
+    expect(auditLog[0]!.action).toBe('ai.script_policy.partner_updated');
   });
 
   it('400s when the body carries unattendedEnabled (strict schema refuses the org grant on a partner row)', async () => {

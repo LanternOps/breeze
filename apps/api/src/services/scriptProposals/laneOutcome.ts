@@ -156,6 +156,30 @@ export async function onUnattendedVerificationOutcome(o: UnattendedVerificationO
   } catch (err) {
     console.error('[laneOutcome] failed to record an unattended verification outcome:', err);
     captureException(err instanceof Error ? err : new Error(String(err)));
+    // FAIL SAFE. The circuit only opens through the bookkeeping above; a
+    // fault there would otherwise leave the lane admitting runs as if every
+    // verification had succeeded. A failed/unknown outcome whose count could
+    // not be recorded therefore OPENS the lane outright (best effort — if
+    // even this write fails, the fault is already in Sentry). Reset is the
+    // usual human decision.
+    if (failed) {
+      try {
+        await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            db
+              .insert(aiScriptLaneState)
+              .values({ orgId: o.orgId, state: 'open', consecutiveFailedVerifications: 1, openedAt: new Date(), openedReason: 'circuit bookkeeping failed after a failed or unknown verification', updatedAt: new Date() })
+              .onConflictDoUpdate({
+                target: aiScriptLaneState.orgId,
+                set: { state: 'open', openedAt: new Date(), openedReason: 'circuit bookkeeping failed after a failed or unknown verification', updatedAt: new Date() },
+              }),
+          ),
+        );
+      } catch (openErr) {
+        console.error('[laneOutcome] fail-safe lane open also failed:', openErr);
+        captureException(openErr instanceof Error ? openErr : new Error(String(openErr)));
+      }
+    }
   }
 }
 

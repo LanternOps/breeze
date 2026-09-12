@@ -23,7 +23,7 @@ import '../../__tests__/integration/setup';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   actionIntents,
   aiScriptPolicies,
@@ -34,6 +34,7 @@ import {
 } from '../../db/schema';
 import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
 import { createActionIntent } from './intentService';
+import { revalidateApprovedIntentForRelease } from './revalidateRelease';
 import { PERMISSIONS } from '../permissions';
 import { getTestDb } from '../../__tests__/integration/setup';
 import {
@@ -272,6 +273,30 @@ describe('unattended lane hourly cap under concurrency (#5612 W04)', () => {
     }
     const [p] = await seedReviewedProposals(s, 1);
     expect((await runFor(s, p!)).status).toBe('approved');
+  });
+
+  runDb('RELEASE: a lane-approved intent revalidates OK with NO ambient DB context (the worker/inline release zone)', async () => {
+    // Both release callers reach revalidateApprovedIntentForRelease BETWEEN
+    // DB contexts. A revalidation that read through the raw GUC-less pool
+    // would see zero rows under RLS and revoke every lane release as
+    // lane_disabled — this is the regression the fix in
+    // revalidateScriptReviewerEvidence guards. `runOutsideDbContext` here
+    // strips whatever context the test harness holds.
+    const s = seeded!;
+    const [p] = await seedReviewedProposals(s, 1);
+    const snap = await runFor(s, p!);
+    expect(snap.status).toBe('approved');
+    const [row] = await withSystemDbAccessContext(() =>
+      db.select().from(actionIntents).where(eq(actionIntents.id, snap.id)).limit(1));
+    expect(row?.decidedVia).toBe('script_reviewer');
+
+    const result = await runOutsideDbContext(() => revalidateApprovedIntentForRelease(row!, null));
+    expect(result).toMatchObject({ ok: true });
+
+    // And a revocation is still seen from the same contextless zone.
+    await getTestDb().update(aiScriptPolicies).set({ unattendedEnabled: false }).where(eq(aiScriptPolicies.orgId, s.orgId));
+    const revoked = await runOutsideDbContext(() => revalidateApprovedIntentForRelease(row!, null));
+    expect(revoked).toEqual({ ok: false, errorCode: 'lane_revoked', details: { reason: 'lane_disabled' } });
   });
 
   runDb('a proposal consumed by one intent cannot be consumed by a second (one live run per proposal)', async () => {

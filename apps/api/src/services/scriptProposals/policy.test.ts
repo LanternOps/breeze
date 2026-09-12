@@ -20,7 +20,7 @@ vi.mock('../../db', () => ({
   },
 }));
 
-import { mergeScriptPolicies, resolveEffectiveScriptPolicy } from './policy';
+import { mergeScriptPolicies, resolveEffectiveScriptPolicy, resolvePartnerCeiling } from './policy';
 
 function partnerRow(over: Record<string, unknown> = {}) {
   return {
@@ -104,6 +104,23 @@ describe('resolveEffectiveScriptPolicy', () => {
     expect(eff.proposingEnabled).toBe(true);
     expect(eff.maxUnattendedRiskTier).toBe('low');
     expect(eff.maxUnattendedPerHour).toBe(10);
+  });
+
+  it('a missing org row narrows NOTHING: the partner ceiling passes through untouched (identity, not the defaults)', async () => {
+    rows.push(partnerRow({ maxUnattendedRiskTier: 'medium', unattendedAllowedClasses: ['services', 'packages', 'browser'], maxUnattendedPerHour: 40 }));
+    const eff = await resolveEffectiveScriptPolicy('org-1');
+    expect(eff.unattendedEnabled).toBe(false);
+    expect(eff.maxUnattendedRiskTier).toBe('medium');
+    expect(eff.unattendedAllowedClasses).toEqual(['browser', 'packages', 'services']);
+    expect(eff.maxUnattendedPerHour).toBe(40);
+  });
+
+  it('resolvePartnerCeiling ignores the org row entirely', async () => {
+    rows.push(partnerRow({ maxUnattendedPerHour: 10, unattendedAllowedClasses: ['services', 'processes'] }));
+    const ceiling = await resolvePartnerCeiling('org-1');
+    expect(ceiling.maxUnattendedPerHour).toBe(10);
+    expect(ceiling.unattendedAllowedClasses).toEqual(['processes', 'services']);
+    expect(ceiling.unattendedEnabled).toBe(false);
   });
 
   it('an org with no partner still resolves (org row only, lane off)', async () => {

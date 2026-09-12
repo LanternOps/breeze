@@ -78,9 +78,9 @@ export async function readLaneDevice(
   tx: LaneExecutor,
   deviceId: string,
   orgId: string,
-): Promise<{ id: string; status: string; osType: string } | null> {
+): Promise<{ id: string; status: string; osType: string; siteId: string | null } | null> {
   const [row] = await tx
-    .select({ id: devices.id, status: devices.status, osType: devices.osType })
+    .select({ id: devices.id, status: devices.status, osType: devices.osType, siteId: devices.siteId })
     .from(devices)
     .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
     .limit(1);

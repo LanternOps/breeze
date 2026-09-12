@@ -1,5 +1,6 @@
 import type { ScriptReviewerEvidence } from '@breeze/shared';
 import type { ActionIntent } from '../../db/schema/actionIntents';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { ensureRestoreCheckpoint, type RestoreCheckpointRefusal } from '../deviceRecovery/restoreCheckpoint';
 
 export type LaneCheckpointOutcome =
@@ -33,7 +34,11 @@ export async function ensureLaneCheckpointBeforeRelease(
   const deviceIds = (intent.arguments as { deviceIds?: unknown } | null)?.deviceIds;
   const deviceId = Array.isArray(deviceIds) && typeof deviceIds[0] === 'string' ? deviceIds[0] : null;
   if (!deviceId) return { ok: false, reason: 'device_unavailable' };
-  const checkpoint = await ensureRestoreCheckpoint(deviceId);
+  // Both release callers reach this between DB contexts (see
+  // revalidateScriptReviewerEvidence); the device read and the command poll
+  // inside ensureRestoreCheckpoint need a real scope or RLS answers "not
+  // found" and every checkpoint fails closed.
+  const checkpoint = await runOutsideDbContext(() => withSystemDbAccessContext(() => ensureRestoreCheckpoint(deviceId)));
   return checkpoint.ok
     ? { ok: true, checkpointRef: checkpoint.checkpointRef }
     : { ok: false, reason: checkpoint.reason };
