@@ -46,6 +46,9 @@ export const scriptProposals = pgTable('script_proposals', {
   basicHits: text('basic_hits').array().notNull().default(sql`'{}'::text[]`),
   strictHits: text('strict_hits').array().notNull().default(sql`'{}'::text[]`),
   touchClasses: text('touch_classes').array().notNull().default(sql`'{}'::text[]`),
+  /** W03: (submitted ∩ strict_hits) as resolved at decide time. Rides the
+   *  dispatch payload as acknowledgedSecurityPatterns. */
+  acknowledgedPatterns: text('acknowledged_patterns').array().notNull().default(sql`'{}'::text[]`),
   status: scriptProposalStatusEnum('status').notNull().default('proposed'),
   revision: integer('revision').notNull().default(1),
   supersedesId: uuid('supersedes_id'),
