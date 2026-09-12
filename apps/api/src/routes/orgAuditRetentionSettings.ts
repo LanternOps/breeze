@@ -17,7 +17,15 @@ import { getOrgAuditRetentionPolicy, upsertOrgAuditRetentionPolicy } from '../se
 async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> {
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
-  if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
+  // Org-scoped callers may only reach their OWN org (issue #5423): the
+  // token's bound orgId must match the path id, and the accessible-org
+  // allowlist must agree. Partner callers are bounded by the allowlist
+  // alone; system scope is unbounded. The identity check runs before the
+  // org lookup so a cross-tenant probe never touches the table.
+  if (auth.scope === 'organization' && auth.orgId !== id) {
+    return c.json({ error: 'Organization not found' }, 404);
+  }
+  if (auth.scope !== 'system' && !auth.canAccessOrg(id)) {
     return c.json({ error: 'Organization not found' }, 404);
   }
   const orgRows = await db
@@ -37,7 +45,7 @@ export function registerOrgAuditRetentionSettingsRoutes(orgRoutes: Hono) {
 
   orgRoutes.get(
     '/organizations/:id/audit-retention',
-    requireScope('partner', 'system'),
+    requireScope('organization', 'partner', 'system'),
     requireAuditRead,
     async (c) => {
       const org = await resolveAccessibleOrg(c);
@@ -50,7 +58,7 @@ export function registerOrgAuditRetentionSettingsRoutes(orgRoutes: Hono) {
 
   orgRoutes.put(
     '/organizations/:id/audit-retention',
-    requireScope('partner', 'system'),
+    requireScope('organization', 'partner', 'system'),
     requireAuditManage,
     requireMfa(),
     zValidator('json', auditRetentionPolicySchema),
