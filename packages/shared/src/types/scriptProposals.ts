@@ -92,3 +92,78 @@ export interface ScriptProposalReview {
   costCents: string | null;
   createdAt: string;
 }
+
+// ---------------------------------------------------------------------------
+// W03 (#5612): the detail DTO every approval surface renders.
+// ---------------------------------------------------------------------------
+
+export interface ScriptProposalExecutionDto {
+  id: string;
+  deviceId: string;
+  deviceHostname: string | null;
+  status: string;
+  exitCode: number | null;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface ScriptProposalVerificationDto {
+  outcome: 'pending' | 'verified' | 'verification_failed' | 'unknown';
+  verifiedAt: string | null;
+  attempts: number;
+  /** Human-readable, already-safe explanation; never raw device output. */
+  detail: string | null;
+}
+
+export interface ScriptProposalReviewFindingDto {
+  severity: 'info' | 'warning' | 'blocking';
+  text: string;
+  lineRef?: number;
+}
+
+/** The one shape every approval surface renders. Dates are ISO strings —
+ *  this crosses an HTTP boundary and is consumed by React Native too. */
+export interface ScriptProposalDetailDto {
+  proposal: {
+    id: string;
+    status: ScriptProposalStatus;
+    language: string;
+    content: string;
+    contentDigest: string;
+    goal: string;
+    expectedEffect: string;
+    rollbackNote: string | null;
+    verification: unknown;
+    runAs: string;
+    timeoutSeconds: number;
+    targetDeviceIds: string[];
+    basicHits: string[];
+    strictHits: string[];
+    touchClasses: string[];
+    riskTier: string | null;
+    revision: number;
+    acknowledgedPatterns: string[];
+    intentId: string | null;
+    createdAt: string;
+    expiresAt: string;
+    promotedScriptId: string | null;
+  };
+  review: {
+    id: string;
+    summary: string | null;
+    riskTier: string | null;
+    goalMatch: string | null;
+    reversible: boolean | null;
+    verificationAdequate: boolean | null;
+    recommendedAction: string | null;
+    findings: ScriptProposalReviewFindingDto[];
+    blastRadius: string[];
+    model: string | null;
+    createdAt: string;
+  } | null;
+  devices: Array<{ id: string; hostname: string; osType: string | null; status: string }>;
+  executions: ScriptProposalExecutionDto[];
+  verification: ScriptProposalVerificationDto;
+  /** Live-derived for THIS caller — never cached, never trusted from the client. */
+  viewer: { canDecide: boolean; canAcknowledge: boolean; canPromote: boolean };
+}

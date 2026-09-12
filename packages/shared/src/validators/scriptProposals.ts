@@ -79,3 +79,29 @@ export const scriptReviewVerdictSchema = z.object({
   recommendedAction: z.enum(['approve', 'changes', 'reject']),
 });
 export type ScriptReviewVerdict = z.infer<typeof scriptReviewVerdictSchema>;
+
+// ---------------------------------------------------------------------------
+// W03 (#5612): human-loop route schemas.
+// ---------------------------------------------------------------------------
+
+/** Well above the STRICT vocabulary size; mirrors MAX_ACKNOWLEDGED_SECURITY_PATTERNS
+ *  in apps/api/src/services/scriptSecurityAcknowledgement.ts. */
+export const MAX_ACKNOWLEDGED_PATTERNS = 64;
+
+export const acknowledgedPatternsSchema = z
+  .array(z.string().trim().min(1).max(200))
+  .max(MAX_ACKNOWLEDGED_PATTERNS)
+  .default([]);
+
+export const scriptProposalRequestChangesSchema = z.object({
+  note: z.string().trim().min(1).max(2000),
+});
+
+export const scriptProposalPromoteSchema = z.object({
+  name: z.string().trim().min(1).max(255),
+  description: z.string().trim().max(2000).optional(),
+  ownerScope: z.enum(['organization', 'partner']),
+});
+
+export type ScriptProposalRequestChangesInput = z.infer<typeof scriptProposalRequestChangesSchema>;
+export type ScriptProposalPromoteInput = z.infer<typeof scriptProposalPromoteSchema>;
