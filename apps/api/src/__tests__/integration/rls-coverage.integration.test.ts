@@ -726,6 +726,10 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // `scripts` could not satisfy the system-script INSERT under bound parameters.
   ['software_versions', ['software_catalog']],
   ['software_install_methods', ['software_catalog']],
+  // alert_correlations has TWO not-null FKs into `alerts` (parent_alert_id,
+  // child_alert_id). Because both parents are the SAME table, the all-of
+  // parent rule below cannot express "check both endpoints" — that half of the
+  // contract lives in PARENT_FK_REQUIRED_FK_COLUMNS instead (#5607).
   ['alert_correlations', ['alerts']],
   ['alert_notifications', ['alerts']],
   // 2026-06-13-b backstop: seven more child tables that shipped with NO rls and
@@ -956,6 +960,22 @@ const PARENT_FK_REQUIRED_PARENTS_PER_COMMAND: ReadonlyMap<string, PerCommandPare
       DELETE: { qual: { kind: 'any-of', parents: ['scripts'] } },
     },
   ],
+]);
+
+// Child tables that reach their tenant through MORE THAN ONE FK column into
+// the SAME parent table. PARENT_FK_REQUIRED_PARENTS_PER_COMMAND's 'all-of'
+// rule keys on parent TABLE names, so it is blind to this shape: listing
+// `['alerts', 'alerts']` proves nothing. This map pins the FK COLUMNS that
+// must appear in the slot Postgres evaluates, for every required command.
+//
+// alert_correlations (#5607): the 2026-05-30 parent-FK migration joined
+// `alerts` on parent_alert_id only, so an edge whose parent is org A's and
+// whose child is org B's was DB-visible (and insertable) under an org-A token.
+// 2026-10-16-170100-alert-correlations-child-org-rls.sql ANDs the same EXISTS
+// on child_alert_id. Both columns are NOT NULL, so the conjunction cannot go
+// three-valued. Behavioural proof: alertCorrelationsChildRls.integration.test.ts.
+const PARENT_FK_REQUIRED_FK_COLUMNS: ReadonlyMap<string, readonly string[]> = new Map<string, readonly string[]>([
+  ['alert_correlations', ['parent_alert_id', 'child_alert_id']],
 ]);
 
 async function loadPublicPolicies(): Promise<Map<string, PolicyRow[]>> {
@@ -1907,6 +1927,36 @@ describe('RLS coverage contract', () => {
         `Fix: SELECT/DELETE need the parent-alias helper in USING, INSERT in WITH CHECK, UPDATE in BOTH. ` +
         `Tables listed in PARENT_FK_REQUIRED_PARENTS_PER_COMMAND must satisfy every parent in their all-of rules. ` +
         `Shape reference: 2026-05-30-fk-child-tables-rls.sql; matcher: src/db/rlsPolicyShape.ts.`
+    ).toEqual([]);
+  });
+
+  // #5607: the two assertions above are blind to a child table with several FK
+  // columns into the SAME parent — they only ever prove the policy joins
+  // `alerts` once. Require every declared FK column to appear in the evaluated
+  // slot so a half predicate (parent checked, child not) cannot come back.
+  it('every multi-FK child table guards each declared FK column in the slot Postgres evaluates', async () => {
+    const policiesByTable = await loadPublicPolicies();
+    const offenders: Array<{ table: string; missing_cmds: string[] }> = [];
+
+    for (const [table, columns] of PARENT_FK_REQUIRED_FK_COLUMNS) {
+      const covered = coveredCommands(policiesByTable.get(table) ?? [], (pred) => {
+        if (!pred) return false;
+        const text = pred.toLowerCase();
+        return columns.every((col) => text.includes(col.toLowerCase()));
+      });
+      const missing = requiredCmdsFor(table).filter((cmd) => !covered.has(cmd));
+      if (missing.length > 0) offenders.push({ table, missing_cmds: missing });
+    }
+
+    expect(
+      offenders,
+      `Multi-FK child tables whose policies do not reference every tenant-bearing FK column:\n` +
+        `${JSON.stringify(offenders, null, 2)}\n\n` +
+        `Fix: AND one EXISTS-through-the-parent branch per FK column, in USING for SELECT/DELETE, ` +
+        `WITH CHECK for INSERT, and BOTH for UPDATE — e.g. ` +
+        `EXISTS (SELECT 1 FROM alerts p WHERE p.id = alert_correlations.parent_alert_id AND breeze_has_org_access(p.org_id)) ` +
+        `AND EXISTS (SELECT 1 FROM alerts c WHERE c.id = alert_correlations.child_alert_id AND breeze_has_org_access(c.org_id)). ` +
+        `Shape reference: 2026-10-16-170100-alert-correlations-child-org-rls.sql.`
     ).toEqual([]);
   });
 
