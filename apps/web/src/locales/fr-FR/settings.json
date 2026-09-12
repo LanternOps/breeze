@@ -2244,6 +2244,10 @@
           "label": "Scripts et commandes",
           "description": "Exécuter des scripts, des playbooks et des commandes système, et gérer les processus, tâches planifiées et entrées de registre concernés."
         },
+        "author_scripts": {
+          "label": "Rédiger des scripts",
+          "description": "Rédiger un nouveau script sous forme de proposition soumise à une relecture indépendante. Rien de ce qu'un agent rédige ne s'exécute avant d'avoir été relu et approuvé."
+        },
         "tickets": {
           "label": "Tickets d'assistance",
           "description": "Examiner les tickets du support et proposer des réponses ou les prochaines étapes."

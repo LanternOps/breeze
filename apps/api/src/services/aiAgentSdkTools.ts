@@ -33,6 +33,7 @@ import { CONTACT_ROLES } from './contacts/types';
 import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
+import { aiScriptAuthoringEnabled } from '../config/env';
 import { captureMessage } from './sentry';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
@@ -175,6 +176,9 @@ export const TOOL_TIERS = {
   sync_huntress_data: 2,
   execute_command: 3,
   run_script: 3,
+  // AI script authoring: a proposal is inert until run_script consumes it.
+  propose_script: 1,
+  get_script_proposal: 1,
   // #3525 — the de-escalation that undoes run_script; same tier, same gate.
   cancel_script_execution: 3,
   // Script library (read-only) — used by the script-builder assistant to
@@ -812,6 +816,49 @@ export const __test__ = { makeSessionAwareHandler, makeHandler };
  * Read from process.env at call time so it tracks runtime config (mirrors
  * googleToolDefinitions).
  */
+/**
+ * AI script authoring tools — EXPOSURE gate for BREEZE_AI_SCRIPT_AUTHORING_ENABLED.
+ * Registration in aiTools and TOOL_TIERS stays unconditional so the
+ * registry-parity contract holds statically; without a tool() entry the model
+ * simply cannot call these. Same shape as m365ToolDefinitions below.
+ */
+export function scriptProposalToolDefinitions(
+  getAuth: () => AuthContext,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  // Return type is inferred (like m365ToolDefinitions): the SDK's
+  // SdkMcpToolDefinition generic is invariant in its shape, so an explicit
+  // SdkTool[] annotation does not accept the concrete tool() results.
+  if (!aiScriptAuthoringEnabled()) return [];
+  const uuid = z.string().guid();
+  return [
+    tool(
+      'propose_script',
+      'Author a script as an immutable proposal for independent review. Nothing runs until it is reviewed and approved through run_script with the returned proposalId. Use this only when no library script fits.',
+      {
+        language: z.enum(['powershell', 'bash', 'python', 'cmd']),
+        content: z.string().min(1).max(65536),
+        goal: z.string().min(1).max(2000),
+        expectedEffect: z.string().min(1).max(2000),
+        verification: z.record(z.string(), z.unknown()),
+        rollbackNote: z.string().max(2000).optional(),
+        deviceIds: z.array(uuid).min(1).max(10),
+        runAs: z.enum(['system', 'user']).optional(),
+        timeoutSeconds: z.number().int().min(1).max(3600).optional(),
+        supersedesProposalId: uuid.optional(),
+      },
+      makeHandler('propose_script', getAuth, onPreToolUse, onPostToolUse),
+    ),
+    tool(
+      'get_script_proposal',
+      'Read a script proposal: status, static scan, review verdict, decision, executions and verification.',
+      { proposalId: uuid },
+      makeHandler('get_script_proposal', getAuth, onPreToolUse, onPostToolUse),
+    ),
+  ];
+}
+
 export function m365ToolDefinitions(
   getAuth: () => AuthContext,
   getActiveSession: (() => ActiveSession | undefined) | undefined,
@@ -1426,9 +1473,13 @@ export function createBreezeMcpServer(
 
     tool(
       'run_script',
-      'Execute a script on one or more devices.',
+      'Execute a script on one or more devices. Give EITHER scriptId (a saved library script) OR proposalId (a reviewed, AI-authored proposal from propose_script) — never both.',
       {
-        scriptId: uuid,
+        // The tool() form takes a raw zod SHAPE, not a schema, so the XOR
+        // refinement can only live in toolInputSchemas.run_script — which
+        // validateToolInput enforces at dispatch. Deliberate asymmetry.
+        scriptId: uuid.optional(),
+        proposalId: uuid.optional(),
         deviceIds: z.array(uuid).min(1).max(10),
         parameters: z.record(z.string(), z.unknown()).optional(),
         // #4888 — mirrors toolInputSchemas.run_script; see scriptRunRequest.ts
@@ -2897,6 +2948,9 @@ export function createBreezeMcpServer(
     // approval) and onPostToolUse (ai_tool_executions persistence +
     // delegant_tool_call_id correlation).
     ...m365ToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    // AI script authoring — behind BREEZE_AI_SCRIPT_AUTHORING_ENABLED (see the
+    // factory for why registration stays unconditional but exposure does not).
+    ...scriptProposalToolDefinitions(getAuth, onPreToolUse, onPostToolUse),
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a
     // per-org connection). Same enforcement path as every other tool.
     ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),

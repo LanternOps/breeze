@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import type { ScriptApprovalMethod, ScriptOrigin } from '@breeze/shared';
 import { db } from '../db';
-import { scripts, scriptVersions, type ScriptVersionRow } from '../db/schema';
+import { scripts, scriptVersions, type ScriptVersionRow } from '../db/schema/scripts';
 
 export type { ScriptVersionRow };
 

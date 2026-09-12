@@ -112,6 +112,16 @@ export function policyDecideEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
 }
 
+/**
+ * AI script authoring, review, and reviewer-gated execution (spec
+ * 2026-09-11-ai-script-authoring-and-review-design.md). Default OFF until W03.
+ * Call-time, not a module const: the flag is read per tool-registration and per
+ * run_script call, and tests flip it without vi.resetModules().
+ */
+export function aiScriptAuthoringEnabled(): boolean {
+  return envFlag('BREEZE_AI_SCRIPT_AUTHORING_ENABLED', false);
+}
+
 // AI Operator durable tasks (#5205 W06, spec §11.2 "Feature controls").
 //
 // Two INDEPENDENT flags, both default OFF, both read at CALL time so a test

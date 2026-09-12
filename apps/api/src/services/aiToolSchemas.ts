@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
 import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, currencyCodeSchema } from '@breeze/shared';
-import { backupProfileSelectionsSchema, ringAutoApproveSchema } from '@breeze/shared/validators';
+import { backupProfileSelectionsSchema, proposeScriptInputSchema, ringAutoApproveSchema } from '@breeze/shared/validators';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
@@ -776,8 +776,18 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     payload: z.record(z.string(), z.unknown()).optional(),
   }),
 
+  // AI script authoring (spec §4.2). The full propose_script input contract
+  // lives in @breeze/shared so the tool handler, a future HTTP route and the
+  // web form cannot disagree about it.
+  propose_script: proposeScriptInputSchema,
+  get_script_proposal: z.object({ proposalId: uuid }),
+
   run_script: z.object({
-    scriptId: uuid,
+    // EXACTLY ONE of these (AI script authoring, spec §4.2). Both optional at
+    // the field level so the refinement below owns the message; the JSON
+    // schema's `required: ['deviceIds']` says the same thing to the model.
+    scriptId: uuid.optional(),
+    proposalId: uuid.optional(),
     deviceIds: z.array(uuid).min(1).max(10),
     parameters: z.record(z.string(), z.unknown()).optional(),
     // #4888 — an assistant may choose the run context, under exactly the
@@ -788,6 +798,25 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     // "…and exactly one device") live there, not here, so the two callers
     // cannot disagree about them.
     ...aiRunContextInputShape,
+  }).superRefine((data, ctx) => {
+    const named = [data.scriptId, data.proposalId].filter((v) => typeof v === 'string').length;
+    if (named !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['scriptId'],
+        message: 'run_script takes exactly one of scriptId or proposalId',
+      });
+    }
+    // A proposal's content is literal and its digest pins that literal content;
+    // there are no parameter definitions to bind, so accepting parameters would
+    // mean running something the reviewer never saw.
+    if (data.proposalId && data.parameters && Object.keys(data.parameters).length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['parameters'],
+        message: 'a proposal-backed run does not take parameters',
+      });
+    }
   }),
 
   // #3525: the bound mirrors MAX_GRACE_SECONDS in services/scriptCancellation —

@@ -77,6 +77,7 @@ import {
   TOOL_ACTION_INPUT_KEYS,
   type AgentGuardrailPolicy,
 } from '../aiGuardrails';
+import { loadProposalGuardrailContext } from '../scriptProposals';
 import { publishEvent } from '../eventBus';
 import { resolveLlmConfigForOrg } from '../llm/llmConfigResolver';
 import type { UsableLlmConfig } from '../llm/llmConfigResolver';
@@ -764,7 +765,8 @@ export function createAgentRunPreToolUse(args: {
       return { allowed: true };
     }
 
-    const check = checkAgentGuardrails(toolName, input, guardrailPolicy);
+    const guardrailContext = await loadProposalGuardrailContext(input, run.orgId);
+    const check = checkAgentGuardrails(toolName, input, guardrailPolicy, guardrailContext);
 
     if (check.disposition === 'deny') {
       const reason = check.reason ?? 'Denied by agent guardrails';

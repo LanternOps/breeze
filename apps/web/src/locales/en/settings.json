@@ -2244,6 +2244,10 @@
           "label": "Scripts and commands",
           "description": "Run scripts, playbooks and system commands, and manage the processes, scheduled tasks and registry entries they touch."
         },
+        "author_scripts": {
+          "label": "Author scripts",
+          "description": "Write a new script as a proposal for independent review. Nothing an agent writes runs until it has been reviewed and approved."
+        },
         "tickets": {
           "label": "Helpdesk tickets",
           "description": "Review helpdesk tickets and propose replies or next steps."

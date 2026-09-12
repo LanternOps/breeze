@@ -2244,6 +2244,10 @@
           "label": "Scripts e comandos",
           "description": "Executar scripts, playbooks e comandos do sistema, e gerenciar os processos, tarefas agendadas e entradas de registro envolvidos."
         },
+        "author_scripts": {
+          "label": "Criar scripts",
+          "description": "Escrever um novo script como proposta para revisão independente. Nada que um agente escreve é executado até ter sido revisado e aprovado."
+        },
         "tickets": {
           "label": "Tickets de suporte",
           "description": "Revisar tickets do helpdesk e propor respostas ou próximos passos."

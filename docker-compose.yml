@@ -279,6 +279,8 @@ x-api-env: &api-env
   AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED: ${AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED:-false}
   # Wave 5 Part B (#3827) sub-flag — see .env.example for what it gates.
   BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: ${BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED:-false}
+  # AI script authoring (#5612) — off by default.
+  BREEZE_AI_SCRIPT_AUTHORING_ENABLED: ${BREEZE_AI_SCRIPT_AUTHORING_ENABLED:-false}
   # BYO-LLM partner provider catalog (#3922 W01–W04) — off by default.
   LLM_PROVIDER_CATALOG_ENABLED: ${LLM_PROVIDER_CATALOG_ENABLED:-false}
   # MCP OAuth (off by default, opt-in via env)

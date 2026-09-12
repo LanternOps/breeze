@@ -28,13 +28,17 @@ import { ACT_MANIFEST, SCRIPT_GATED_ACT_TOOLS } from './actManifest';
 export type AgentCapabilityId =
   | 'alerts_monitoring' | 'services_startup' | 'files_disk' | 'scripts_commands' | 'tickets'
   | 'patching_software' | 'security_response' | 'backup_recovery' | 'config_policies' | 'network'
-  | 'remote_access' | 'endpoint_agent' | 'automations_reports' | 'business' | 'tenancy';
+  | 'remote_access' | 'endpoint_agent' | 'automations_reports' | 'business' | 'tenancy'
+  | 'author_scripts';
 
 export const AGENT_CAPABILITIES: readonly { id: AgentCapabilityId; tone: 'standard' | 'high' }[] = [
   { id: 'alerts_monitoring', tone: 'standard' },
   { id: 'services_startup', tone: 'standard' },
   { id: 'files_disk', tone: 'standard' },
   { id: 'scripts_commands', tone: 'standard' },
+  // 'high' tone: authoring novel code is a qualitatively different grant from
+  // running a reviewed library script, and the picker must say so.
+  { id: 'author_scripts', tone: 'high' },
   { id: 'tickets', tone: 'standard' },
   { id: 'patching_software', tone: 'standard' },
   { id: 'security_response', tone: 'high' },
@@ -83,6 +87,9 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   disk_cleanup: 'files_disk',
   analyze_disk_usage: 'files_disk',
 
+  // ---- author_scripts ----
+  propose_script: 'author_scripts',
+  get_script_proposal: 'author_scripts',
   // ---- scripts_commands ----
   run_script: 'scripts_commands',
   execute_command: 'scripts_commands',

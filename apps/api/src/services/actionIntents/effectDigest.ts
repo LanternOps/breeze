@@ -6,6 +6,7 @@ import {
   quotes, quoteLines, invoices, invoicePayments, contracts, organizations,
   tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks,
 } from '../../db/schema';
+import { scriptProposals, type ScriptProposalRow } from '../../db/schema/scriptProposals';
 import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnapshot';
 import type { ToolExecutionContext, VerifiedRunScript } from '../toolExecutionContext';
 
@@ -98,6 +99,44 @@ type ResolverResult =
   | { kind: 'missing_arg' }
   | { kind: 'target_absent' };
 
+/**
+ * Thrown ONLY by the proposal branch of the run_script resolver.
+ *
+ * The rest of this module is total by construction — every unresolvable case
+ * returns a sentinel, and intentService stores a NULL digest that both release
+ * paths treat as "nothing to check". For an AI-authored script that fail-open
+ * is unacceptable (spec §4.5), so this is the one case that aborts intent
+ * creation instead.
+ */
+export class EffectDigestUnresolvableError extends Error {
+  constructor(public readonly resolver: string, public readonly detail: string) {
+    super(`effect digest for ${resolver} could not be resolved: ${detail}`);
+    this.name = 'EffectDigestUnresolvableError';
+  }
+}
+
+/**
+ * Pinned material for a proposal-backed run. Lifecycle state is deliberately
+ * absent: release checks status/expiry/supersession/intent_id separately and
+ * fails with `proposal_not_runnable`, so an ordinary state change must not
+ * masquerade as `content_changed`.
+ */
+function runScriptProposalDigestMaterial(
+  proposal: ScriptProposalRow,
+  args: Record<string, unknown>,
+): string {
+  const deviceIds = Array.isArray(args.deviceIds) ? [...(args.deviceIds as string[])].sort() : [];
+  return JSON.stringify({
+    proposalId: proposal.id,
+    contentDigest: proposal.contentDigest,
+    language: proposal.language,
+    runAs: proposal.runAs,
+    timeoutSeconds: proposal.timeoutSeconds,
+    deviceIds,
+    scannerVersion: proposal.scannerVersion,
+  });
+}
+
 const MISSING_ARG: ResolverResult = { kind: 'missing_arg' };
 const TARGET_ABSENT: ResolverResult = { kind: 'target_absent' };
 const material = (value: string | Buffer): ResolverResult => ({ kind: 'material', material: value });
@@ -162,6 +201,21 @@ const EFFECT_DIGEST_RESOLVERS: Record<
   // correctly mismatches against the digest pinned at creation (the release
   // fails closed instead of trying to run a deleted script).
   run_script: async (args, database) => {
+    // AI script authoring (spec §4.5): a proposal-backed run pins the
+    // proposal's immutable material, and an unresolvable proposal ABORTS
+    // creation rather than storing a fail-open NULL digest.
+    if (typeof args.proposalId === 'string' && args.proposalId.length > 0) {
+      const [proposal] = await database
+        .select().from(scriptProposals).where(eq(scriptProposals.id, args.proposalId)).limit(1);
+      if (!proposal) {
+        throw new EffectDigestUnresolvableError('run_script.proposal', `proposal ${args.proposalId} not found`);
+      }
+      const deviceIds = Array.isArray(args.deviceIds) ? (args.deviceIds as string[]) : [];
+      if (deviceIds.length === 0) {
+        throw new EffectDigestUnresolvableError('run_script.proposal', 'deviceIds is required');
+      }
+      return { kind: 'material', material: runScriptProposalDigestMaterial(proposal, args) };
+    }
     const built = await buildRunScriptSnapshot(args, database);
     if (built.kind === 'missing_arg') return MISSING_ARG;
     if (built.kind === 'target_absent') return TARGET_ABSENT;

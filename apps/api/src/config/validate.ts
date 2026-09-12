@@ -625,6 +625,10 @@ const envObjectSchema = z
     // AGENT_AUTO_PROMOTE above.
     BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: z.string().optional(),
 
+    // AI script authoring (W01b). Read at runtime by aiScriptAuthoringEnabled()
+    // in env.ts. Validated here for boolean format only.
+    BREEZE_AI_SCRIPT_AUTHORING_ENABLED: z.string().optional(),
+
     // #1374 — L4 (critical-tier) platform-attestation gate. Defaults TRUE; read
     // at runtime by authenticatorAttestationEnforced() in env.ts. Validated here
     // for boolean format only, same class as AGENT_AUTO_PROMOTE above — and for
@@ -1818,6 +1822,19 @@ const envSchema = envObjectSchema
         path: ['BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED'],
         message:
           'BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (unattended policy-decided authorization is dark).',
+      });
+    }
+
+    // BREEZE_AI_SCRIPT_AUTHORING_ENABLED (AI script authoring W01b). Same
+    // treatment: a typo must be caught at boot rather than silently reading as
+    // off. Mirrors aiScriptAuthoringEnabled() in env.ts.
+    const scriptAuthoringRaw = (data.BREEZE_AI_SCRIPT_AUTHORING_ENABLED ?? '').trim().toLowerCase();
+    if (scriptAuthoringRaw && !boolValues.has(scriptAuthoringRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_AI_SCRIPT_AUTHORING_ENABLED'],
+        message:
+          'BREEZE_AI_SCRIPT_AUTHORING_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (AI script authoring is dark).',
       });
     }
 
