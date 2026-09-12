@@ -722,6 +722,10 @@ const REPOINT_TABLES: readonly string[] = [
   "metric_anomaly_incidents",
   "metric_rollups",
   "metric_rollups_default",
+  // #5289 — an org-owned monitor definition repoints with the org like any
+  // other config row; its compiled alert_rules/alert_templates/automations rows
+  // are already in this list and repoint alongside it.
+  "monitor_definitions",
   "network_baselines",
   "network_change_events",
   "network_monitors",

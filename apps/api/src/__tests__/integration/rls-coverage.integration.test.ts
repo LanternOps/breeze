@@ -314,6 +314,14 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
 // is the canonical case: a user row is visible if the caller has access
 // to the user's partner OR the user's org OR is the user themselves.
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
+  // monitor_definitions (#5287 W02): a monitor is org-scoped (org_id set) or
+  // partner-wide (partner_id set, org_id NULL — one MSP-authored monitor
+  // deployed across every customer). Created dual-axis from day one in
+  // 2026-10-16-140300-monitor-definitions, with the partner-wide SELECT branch
+  // in the same migration. CHECK monitor_definitions_one_owner_chk enforces
+  // exactly one axis. Functional cross-partner forge proof:
+  // monitorDefinitionsPartnerRls.integration.test.ts.
+  'monitor_definitions',
   // ai_script_policies (AI script authoring W04, #5612): a policy row is
   // org-scoped (org_id set — the GRANT) or partner-wide (partner_id set,
   // org_id NULL — the CEILING). Created dual-axis from day one in
@@ -607,6 +615,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // changes. If access_reviews ever gains a CHECK, this note has no examples
 // left and should be deleted rather than patched.
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
+  // monitor_definitions_one_owner_chk ((org_id IS NULL) <> (partner_id IS
+  // NULL)), 2026-10-16-140300 (#5287 W02). Its partner-wide SELECT branch
+  // (monitor_definitions_partner_wide_select) ships in the same migration, so
+  // it needs no PARTNER_WIDE_SELECT_BRANCH_EXEMPT entry.
+  'monitor_definitions',
   // ai_script_policies_one_owner_chk, 2026-10-16-120200 (#5612 W04).
   'ai_script_policies',
   // deliverable_template_sets_one_owner_chk / deliverable_template_items_one_owner_chk
@@ -710,6 +723,10 @@ const DEVICE_ID_JOIN_POLICY_TABLES: ReadonlySet<string> = new Set<string>([
 // leave automation_id NULL and reach their org via config_policy_id instead.
 const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new Map<string, readonly string[]>([
   ['automation_runs', ['automations', 'configuration_policies']],
+  // #5289: a monitor ATTACHMENT has no org_id — it reaches its tenant through
+  // config_policy_feature_links -> configuration_policies, the same join the
+  // other config_policy_* child tables use.
+  ['config_policy_monitors', ['configuration_policies']],
   ['ai_messages', ['ai_sessions']],
   ['ai_tool_executions', ['ai_sessions']],
   // NOTE: script_execution_batches is NOT here — it carries a denormalized

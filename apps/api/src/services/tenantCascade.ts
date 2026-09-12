@@ -514,6 +514,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'metric_rollups',
   'metric_rollups_default',
   'ml_feedback_events',
+  // #5289. Deleting a definition cascades to its compiled alert template /
+  // rule / automation rows and to every config_policy_monitors attachment, all
+  // of which are listed earlier or reached by FK, so alphabetical order is also
+  // a safe delete order here (asserted by tenantCascade.integration.test.ts).
+  'monitor_definitions',
   'network_baselines',
   'network_change_events',
   'network_monitors',
