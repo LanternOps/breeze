@@ -2444,5 +2444,10 @@
     "approximateUnavailableStale": "≈ total indisponível — a taxa de câmbio para {{target}} em {{codes}} está desatualizada",
     "approximateUnavailableMixed": "≈ total indisponível — não foi possível converter {{codes}} em {{target}}",
     "approximateUnavailableCodesOverflow": "{{codes}} e mais {{more}}"
+  },
+  "mfaEnrollmentGraceBanner": {
+    "message": "Sua função vai exigir autenticação de dois fatores. Configure-a até {{date}}.",
+    "cta": "Configurar 2FA",
+    "dismiss": "Dispensar lembrete de autenticação de dois fatores"
   }
 }

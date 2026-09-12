@@ -72,7 +72,8 @@ const {
   getEffectiveMfaPolicyMock: vi.fn().mockResolvedValue({
     required: false,
     allowedMethods: { totp: true, sms: true, passkey: true },
-    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true }
+    pendingEnrollment: null,
+    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const }
   }),
   // SR2-17: default the pending-email service succeeds and returns a raw token.
   requestPendingEmailChangeMock: vi.fn().mockResolvedValue({ rawToken: 'raw-token-mock', emailEpoch: 5 }),
@@ -363,7 +364,8 @@ describe('user routes', () => {
     getEffectiveMfaPolicyMock.mockResolvedValue({
       required: false,
       allowedMethods: { totp: true, sms: true, passkey: true },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true }
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const }
     });
     requestPendingEmailChangeMock.mockResolvedValue({ rawToken: 'raw-token-mock', emailEpoch: 5 });
     isPasswordAuthDisabledBySsoMock.mockResolvedValue(false);
@@ -1648,7 +1650,8 @@ describe('user routes', () => {
       getEffectiveMfaPolicyMock.mockResolvedValue({
         required: true,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: true }
+        pendingEnrollment: null,
+        source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const }
       });
       userIsMfaProtectedMock.mockResolvedValue(false);
 
@@ -1668,7 +1671,8 @@ describe('user routes', () => {
       getEffectiveMfaPolicyMock.mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true }
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const }
       });
 
       const res = await patchMe({ email: 'new@example.com' });

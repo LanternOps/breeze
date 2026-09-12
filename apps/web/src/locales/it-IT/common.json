@@ -2444,5 +2444,10 @@
     "approximateUnavailableStale": "≈ totale non disponibile — il tasso di cambio verso {{target}} per {{codes}} è troppo vecchio",
     "approximateUnavailableMixed": "≈ totale non disponibile — impossibile convertire {{codes}} in {{target}}",
     "approximateUnavailableCodesOverflow": "{{codes}} e altri {{more}}"
+  },
+  "mfaEnrollmentGraceBanner": {
+    "message": "Il tuo ruolo richiederà l'autenticazione a due fattori. Configurala entro il {{date}}.",
+    "cta": "Configura 2FA",
+    "dismiss": "Ignora il promemoria per l'autenticazione a due fattori"
   }
 }

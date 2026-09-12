@@ -24,6 +24,7 @@ import {
 } from '../../services/pendingRegistration';
 import { createPartner } from '../../services/partnerCreate';
 import { combineMfaPolicyFacts, type MfaSecuritySettings } from '../../services/mfaPolicy';
+import { evaluateMfaEnrollmentGrace, resolveMfaGraceDays } from '../../services/mfaEnrollmentGrace';
 import { dispatchHook } from '../../services/partnerHooks';
 import { ANONYMOUS_ACTOR_ID, writeAuditEvent } from '../../services/auditEvents';
 import { createAuditLog } from '../../services/auditService';
@@ -401,6 +402,8 @@ interface RegistrationFacts {
   mfaEpoch: number;
   mfaEnrollmentRequired: boolean;
   mfaSatisfied: boolean;
+  /** #5306 — ISO deadline while the owner's enrolment grace window is open. */
+  mfaGraceEndsAt: string | null;
 }
 
 type RegistrationCommit =
@@ -469,10 +472,23 @@ async function createRegistrationAccount(
   const epochs = await advanceUserEpochs(tx, created.adminUserId, { auth: true });
 
   const partnerSettings = (partnerRow.settings ?? {}) as Record<string, unknown>;
+  const security = partnerSettings.security as MfaSecuritySettings | undefined;
+  // #5306 — grant the brand-new owner the same enrolment window every other
+  // role-forced user gets, instead of bouncing them into /auth/mfa/setup before
+  // they have seen the product. Evaluated INSIDE this transaction for the same
+  // reason the facts above are: the user, role and membership rows are not
+  // committed yet, so a second pooled connection would read none of them.
+  // Only consulted when the role force is what would require MFA (a partner
+  // that already sets security.requireMfa keeps immediate enforcement).
+  const grace =
+    roleRow.forceMfa === true && security?.requireMfa !== true
+      ? await evaluateMfaEnrollmentGrace(created.adminUserId, resolveMfaGraceDays(security), tx)
+      : null;
   const policy = combineMfaPolicyFacts({
     roleForceMfa: roleRow.forceMfa === true,
-    security: partnerSettings.security as MfaSecuritySettings | undefined,
+    security,
     failClosed: true,
+    grace,
   });
   const mfaEnrollmentRequired = ENABLE_2FA && !userRow.mfaEnabled && policy.required;
   const mfaSatisfied = !ENABLE_2FA || (!userRow.mfaEnabled && !policy.required);
@@ -486,6 +502,7 @@ async function createRegistrationAccount(
     mfaEpoch: epochs.mfaEpoch,
     mfaEnrollmentRequired,
     mfaSatisfied,
+    mfaGraceEndsAt: policy.pendingEnrollment?.deadline ?? null,
   };
 }
 
@@ -779,6 +796,7 @@ async function finalizePendingRegistration(
       partner: { id: facts.created.partnerId, name: facts.partnerRow.name, slug: facts.partnerRow.slug, status: effectiveStatus },
       mfaRequired: false,
       mfaEnrollmentRequired: facts.mfaEnrollmentRequired,
+      mfaGraceEndsAt: facts.mfaGraceEndsAt,
       enrollUrl: facts.mfaEnrollmentRequired ? '/auth/mfa/setup' : undefined,
       ...(redirectUrl ? { redirectUrl } : {}),
     };

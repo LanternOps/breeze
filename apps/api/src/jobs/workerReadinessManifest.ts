@@ -50,6 +50,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('mlOutputRetention'),
   consumers('offlineDetector'),
   consumers('notificationDispatcher'),
+  // #5306 — daily MFA enrolment grace notices. Plain Redis-required consumer:
+  // it constructs and attaches unconditionally wherever it is placed.
+  consumers('mfaEnrollmentNoticeWorker'),
   consumers('webhookDelivery', ['webhookDeliveryWorker']),
   consumers('policyEvaluationWorker'),
   consumers('softwareComplianceWorker'),

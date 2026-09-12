@@ -38,7 +38,8 @@ vi.mock('../services/mfaPolicy', () => ({
   getEffectiveMfaPolicy: vi.fn(async () => ({
     required: false,
     allowedMethods: { totp: true, sms: true, passkey: true },
-    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false }
+    pendingEnrollment: null,
+    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const }
   }))
 }));
 
@@ -507,12 +508,14 @@ describe('authMiddleware', () => {
   const requirePolicy = {
     required: true,
     allowedMethods: { totp: true, sms: true, passkey: true },
-    source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: false }
+    pendingEnrollment: null,
+    source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const }
   };
   const noRequirePolicy = {
     required: false,
     allowedMethods: { totp: true, sms: true, passkey: true },
-    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false }
+    pendingEnrollment: null,
+    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const }
   };
 
   it('returns 428 mfa_enrollment_required when the effective policy requires MFA and the user has none enabled', async () => {
