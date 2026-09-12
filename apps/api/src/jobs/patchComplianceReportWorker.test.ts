@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
   updateSets: [] as Array<Record<string, unknown>>,
   redisAvailable: false,
   queueAdds: [] as Array<{ name: string; data: unknown }>,
+  queueAddError: null as Error | null,
   updateScopes: [] as Array<string | undefined>,
 }));
 
@@ -43,6 +44,7 @@ vi.mock('bullmq', () => ({
   Job: class {},
   Queue: class {
     async add(name: string, data: unknown) {
+      if (state.queueAddError) throw state.queueAddError;
       state.queueAdds.push({ name, data });
       return { id: 'synthetic-job-id' };
     }
@@ -212,6 +214,7 @@ describe('patch compliance report worker authority', () => {
     state.updateSets = [];
     state.redisAvailable = false;
     state.queueAdds = [];
+    state.queueAddError = null;
     state.updateScopes = [];
     dbCtx.calls.length = 0;
     vi.mocked(db.update).mockImplementation(() => ({
@@ -325,6 +328,48 @@ describe('patch compliance report worker authority', () => {
     expect(state.updateScopes.length).toBeGreaterThan(0);
     expect(state.updateScopes).not.toContain('request-org-scoped');
     expect([...new Set(state.updateScopes)]).toEqual(['system']);
+  });
+
+  it('surfaces an inline fallback failure to the caller log instead of swallowing it', async () => {
+    state.redisAvailable = false;
+    state.report = report({ executionScopeFingerprint: 'malformed' });
+    installSelects();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await expect(enqueuePatchComplianceReport(REPORT_ID)).resolves.toEqual({ enqueued: false });
+      await flushUntil(() => consoleError.mock.calls.length > 0);
+
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining(`Inline report processing failed for ${REPORT_ID}`),
+        expect.any(Error),
+      );
+      expect(state.updateSets.at(-1)).toEqual(expect.objectContaining({ status: 'failed' }));
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('falls back inline in a fresh system context when the enqueue itself throws', async () => {
+    state.redisAvailable = true;
+    state.queueAddError = new Error('queue.add exploded');
+    installSelects();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await expect(
+        dbCtx.storage.run('request-org-scoped', () => enqueuePatchComplianceReport(REPORT_ID)),
+      ).resolves.toEqual({ enqueued: false });
+
+      await flushUntil(() => state.updateSets.some((v) => v.status === 'completed'));
+
+      expect(state.queueAdds).toEqual([]);
+      expect(dbCtx.calls).toEqual(['runOutsideDbContext', 'withSystemDbAccessContext']);
+      expect(state.updateScopes.length).toBeGreaterThan(0);
+      expect([...new Set(state.updateScopes)]).toEqual(['system']);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it('places only the report locator on Redis rather than serialized authority', async () => {
