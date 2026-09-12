@@ -29,4 +29,21 @@ describe('ScriptProposalsPanel', () => {
     render(<ScriptProposalsPanel data={null} loading={false} />);
     expect(screen.getByText(/no script proposals/i)).toBeTruthy();
   });
+
+  it('renders the unattended-runs and lane-state cards once the fields are present', () => {
+    render(
+      <ScriptProposalsPanel
+        data={metrics({ unattendedRuns: 7, laneState: 'closed' })}
+        loading={false}
+      />,
+    );
+    expect(screen.getByTestId('script-proposals-unattended-card')).toBeTruthy();
+    expect(screen.getByText('7')).toBeTruthy();
+    expect(screen.getByTestId('script-proposals-lane-card')).toBeTruthy();
+  });
+
+  it('shows the "open" copy when the lane has paused itself', () => {
+    render(<ScriptProposalsPanel data={metrics({ unattendedRuns: 0, laneState: 'open' })} loading={false} />);
+    expect(screen.getByText(/paused after repeated failed verifications/i)).toBeTruthy();
+  });
 });
