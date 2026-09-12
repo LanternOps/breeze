@@ -18,6 +18,7 @@ import {
 } from '../services/softwarePolicyService';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
+import { assertMayArmInstall } from '../services/softwarePolicyAuthorization';
 import { captureException } from '../services/sentry';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { requestPamCleanup } from '../services/pamActuationLifecycle';
@@ -305,6 +306,18 @@ softwarePoliciesRoutes.post(
     }
     const payload = c.req.valid('json');
 
+    // #5505 D3: arming remediationOptions.autoInstall installs software on
+    // managed devices, so it needs deployment-grade authorization
+    // (devices.execute + MFA) on top of the devices:write + requireMfa() this
+    // route already carries. `stored` is null — nothing exists yet — so the
+    // merged state is the body alone.
+    const armDenied = await assertMayArmInstall(c, null, {
+      mode: payload.mode,
+      enforceMode: payload.enforceMode,
+      remediationOptions: payload.remediationOptions,
+    });
+    if (armDenied) return armDenied;
+
     // Ownership axis (#2126). Partner-wide templates push rules to devices in
     // ALL orgs under the partner (including orgs created later), so creation is
     // gated on the partner-wide capability — same gate as configuration
@@ -544,6 +557,17 @@ softwarePoliciesRoutes.patch(
     if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
+
+    // #5505 D3: evaluated over the POST-WRITE merged state — the stored row
+    // overlaid with this body — so editing an ALREADY-armed policy is gated
+    // too. Adding a catalogId to an armed policy installs new software, and
+    // that must not be reachable with a weaker credential than arming was.
+    const armDenied = await assertMayArmInstall(c, policy, {
+      mode: payload.mode,
+      enforceMode: payload.enforceMode,
+      remediationOptions: payload.remediationOptions,
+    });
+    if (armDenied) return armDenied;
 
     const updates: Omit<Partial<typeof softwarePolicies.$inferInsert>, 'approvalGeneration'> & { approvalGeneration?: SQL } = {
       updatedAt: new Date(),
