@@ -1091,13 +1091,16 @@ const mergeOrganizationUsers: CustomMergeExecutor = async (loser, survivor) => {
 };
 
 // ---------------------------------------------------------------------------
-// reports — two partial unique indexes can collide during an org merge:
+// reports — three partial unique indexes can collide during an org merge:
 // `reports_source_ai_agent_schedule_uniq (org_id,
-// source_ai_agent_schedule_id) WHERE source_ai_agent_schedule_id IS NOT NULL`
-// and `reports_portal_self_service_org_type_uniq (org_id, type) WHERE
-// portal_self_service = true`. The first is a partner-wide narrative definition;
-// the second is the canonical customer-portal definition for each report type.
-// A plain repoint collides on 23505 and aborts the merge.
+// source_ai_agent_schedule_id) WHERE source_ai_agent_schedule_id IS NOT NULL`,
+// `reports_portal_self_service_org_type_uniq (org_id, type) WHERE
+// portal_self_service = true`, and `reports_ai_fleet_design_org_uniq (org_id)
+// WHERE type = 'ai_fleet_design'` (Fleet Designer W01, #5651). The first is a
+// partner-wide narrative definition; the second is the canonical
+// customer-portal definition for each report type; the third is the one
+// Fleet Design definition per org. A plain repoint collides on 23505 and
+// aborts the merge.
 //
 // `report_runs.report_id` is NOT NULL with a NO ACTION FK (verified against
 // pg_constraint), so a dedupe DELETE would raise 23503 instead — and even if it
@@ -1110,14 +1113,19 @@ const mergeOrganizationUsers: CustomMergeExecutor = async (loser, survivor) => {
 // The narrative key deliberately carries no keyWhere: `keyMatch` compares with a plain
 // `=`, which is NULL-blind, so ordinary reports (NULL
 // source_ai_agent_schedule_id) never match each other — exactly the semantics
-// of the partial index it mirrors. The portal pass needs an explicit predicate
-// on both aliases because its key (`type`) is always non-NULL.
+// of the partial index it mirrors. The portal and fleet-design passes need an
+// explicit predicate on both aliases because their keys (`type`) are always
+// non-NULL.
 // ---------------------------------------------------------------------------
 const REPORTS_KEY = ['source_ai_agent_schedule_id'] as const;
 // Mirrors reports_portal_self_service_org_type_uniq (org_id, type)
 // WHERE portal_self_service = true.
 const PORTAL_REPORT_KEY = ['type'] as const;
 const PORTAL_REPORT_WHERE_BOTH = sql`s.portal_self_service = true AND t.portal_self_service = true`;
+// Mirrors reports_ai_fleet_design_org_uniq (org_id) WHERE type = 'ai_fleet_design'
+// (Fleet Designer W01): one design definition per org, keyed on the type.
+const FLEET_DESIGN_REPORT_KEY = ['type'] as const;
+const FLEET_DESIGN_REPORT_WHERE_BOTH = sql`s.type = 'ai_fleet_design' AND t.type = 'ai_fleet_design'`;
 
 async function rehomeReportChildrenThenDelete(
   loser: string,
@@ -1195,6 +1203,12 @@ const mergeReports: CustomMergeExecutor = async (loser, survivor) => {
     PORTAL_REPORT_KEY,
     PORTAL_REPORT_WHERE_BOTH,
   );
+  const fleetDesign = await rehomeReportChildrenThenDelete(
+    loser,
+    survivor,
+    FLEET_DESIGN_REPORT_KEY,
+    FLEET_DESIGN_REPORT_WHERE_BOTH,
+  );
   const moved = await run(buildRepoint('reports', loser, survivor));
   const notes: string[] = [];
   if (narrative.dropped > 0) {
@@ -1208,9 +1222,14 @@ const mergeReports: CustomMergeExecutor = async (loser, survivor) => {
       `reports: dropped ${portal.dropped} duplicate portal self-service report definition from the merged-away org and re-homed its children onto the survivor's canonical definition (report_runs: ${portal.reportRunsRehomed}; report_schedule_recipients: ${portal.recipientsDeduplicated} deduplicated, ${portal.recipientsRehomed} re-homed)`,
     );
   }
+  if (fleetDesign.dropped > 0) {
+    notes.push(
+      `reports: dropped ${fleetDesign.dropped} duplicate Fleet Design report definition from the merged-away org and re-homed its children onto the survivor's definition (report_runs: ${fleetDesign.reportRunsRehomed}; report_schedule_recipients: ${fleetDesign.recipientsDeduplicated} deduplicated, ${fleetDesign.recipientsRehomed} re-homed)`,
+    );
+  }
   return {
     moved,
-    dropped: narrative.dropped + portal.dropped,
+    dropped: narrative.dropped + portal.dropped + fleetDesign.dropped,
     notes,
   };
 };

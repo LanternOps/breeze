@@ -29,7 +29,11 @@ export const reportTypeEnum = pgEnum('report_type', [
   'security_compliance_posture',
   // Phase 2 wave P2-3 (#4187 / #4190): the weekly AI org narrative. Its
   // definition row is system-managed — see reports.sourceAiAgentScheduleId.
-  'ai_org_narrative'
+  'ai_org_narrative',
+  // Fleet Designer W01 (#5651): one system-managed definition per org, keyed
+  // by type (see reportsAiFleetDesignOrgUniq below) rather than by schedule —
+  // manual design runs have no schedule to key on.
+  'ai_fleet_design'
 ]);
 
 export const reportScheduleEnum = pgEnum('report_schedule', [
@@ -91,6 +95,11 @@ export const reports = pgTable('reports', {
     'reports_portal_self_service_org_type_uniq',
   ).on(table.orgId, table.type)
     .where(sql`${table.portalSelfService} = true`),
+  // Fleet Designer W01 (#5651): one Fleet Design definition per org. See
+  // migrations/2026-10-16-160600-ai-agents-fleet-designer.sql.
+  aiFleetDesignOrgUniq: uniqueIndex('reports_ai_fleet_design_org_uniq')
+    .on(table.orgId)
+    .where(sql`${table.type} = 'ai_fleet_design'`),
 }));
 
 export const reportRuns = pgTable('report_runs', {
