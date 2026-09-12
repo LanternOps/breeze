@@ -351,6 +351,14 @@
       "title": "Eliminar automatización",
       "confirmPrefix": "¿Está seguro de que desea eliminar?",
       "confirmSuffix": "Esta acción no se puede deshacer."
+    },
+    "tabs": {
+      "ariaLabel": "Tipos de trabajo",
+      "all": "Todos",
+      "scheduled": "Programados",
+      "on-demand": "Bajo demanda",
+      "webhooks": "Webhooks",
+      "event-rules": "Reglas de eventos"
     }
   },
   "complianceDashboard": {

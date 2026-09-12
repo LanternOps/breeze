@@ -351,6 +351,14 @@
       "title": "Delete Automation",
       "confirmPrefix": "Are you sure you want to delete",
       "confirmSuffix": "This action cannot be undone."
+    },
+    "tabs": {
+      "ariaLabel": "Job types",
+      "all": "All",
+      "scheduled": "Scheduled",
+      "on-demand": "On demand",
+      "webhooks": "Webhooks",
+      "event-rules": "Event rules"
     }
   },
   "complianceDashboard": {

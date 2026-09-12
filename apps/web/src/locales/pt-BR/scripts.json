@@ -351,6 +351,14 @@
       "title": "Excluir automação",
       "confirmPrefix": "Tem certeza de que deseja excluir",
       "confirmSuffix": "Esta ação não pode ser desfeita."
+    },
+    "tabs": {
+      "ariaLabel": "Tipos de job",
+      "all": "Todos",
+      "scheduled": "Agendados",
+      "on-demand": "Sob demanda",
+      "webhooks": "Webhooks",
+      "event-rules": "Regras de evento"
     }
   },
   "complianceDashboard": {

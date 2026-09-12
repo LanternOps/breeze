@@ -351,6 +351,14 @@
       "title": "Automatisierung löschen",
       "confirmPrefix": "Sind Sie sicher, dass Sie löschen möchten?",
       "confirmSuffix": "Diese Aktion kann nicht rückgängig gemacht werden."
+    },
+    "tabs": {
+      "ariaLabel": "Auftragstypen",
+      "all": "Alle",
+      "scheduled": "Geplant",
+      "on-demand": "Manuell",
+      "webhooks": "Webhooks",
+      "event-rules": "Ereignisregeln"
     }
   },
   "complianceDashboard": {

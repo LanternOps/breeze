@@ -59,6 +59,8 @@ export type Automation = {
   managedByAgentId?: string | null;
 };
 
+export type TriggerFilter = 'all' | 'schedule' | 'event' | 'webhook' | 'manual';
+
 type AutomationListProps = {
   automations: Automation[];
   onEdit?: (automation: Automation) => void;
@@ -68,6 +70,9 @@ type AutomationListProps = {
   onViewHistory?: (automation: Automation) => void;
   pageSize?: number;
   timezone?: string;
+  /** #5288: when provided, the trigger filter is controlled by the parent (Jobs tabs). */
+  triggerFilter?: TriggerFilter;
+  onTriggerFilterChange?: (value: TriggerFilter) => void;
 };
 
 const triggerConfig: Record<TriggerType, { label: string; icon: typeof Clock; color: string }> = {
@@ -129,11 +134,18 @@ export default function AutomationList({
   onToggle,
   onViewHistory,
   pageSize = 10,
-  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  timezone = Intl.DateTimeFormat().resolvedOptions().timeZone,
+  triggerFilter: controlledTriggerFilter,
+  onTriggerFilterChange
 }: AutomationListProps) {
   const { t } = useTranslation('scripts');
   const [query, setQuery] = useState('');
-  const [triggerFilter, setTriggerFilter] = useState<string>('all');
+  const [internalTriggerFilter, setInternalTriggerFilter] = useState<TriggerFilter>('all');
+  const triggerFilter = controlledTriggerFilter ?? internalTriggerFilter;
+  const setTriggerFilter = (value: TriggerFilter) => {
+    if (onTriggerFilterChange) onTriggerFilterChange(value);
+    if (controlledTriggerFilter === undefined) setInternalTriggerFilter(value);
+  };
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
@@ -189,7 +201,7 @@ export default function AutomationList({
           <select
             value={triggerFilter}
             onChange={event => {
-              setTriggerFilter(event.target.value);
+              setTriggerFilter(event.target.value as TriggerFilter);
               setCurrentPage(1);
             }}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-36"

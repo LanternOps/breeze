@@ -351,6 +351,14 @@
       "title": "Supprimer l’automatisation",
       "confirmPrefix": "Voulez-vous vraiment supprimer",
       "confirmSuffix": "Cette action est irréversible."
+    },
+    "tabs": {
+      "ariaLabel": "Types de tâches",
+      "all": "Toutes",
+      "scheduled": "Planifiées",
+      "on-demand": "À la demande",
+      "webhooks": "Webhooks",
+      "event-rules": "Règles d'événement"
     }
   },
   "complianceDashboard": {

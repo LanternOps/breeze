@@ -351,6 +351,14 @@
       "title": "Elimina automazione",
       "confirmPrefix": "Vuoi davvero eliminare",
       "confirmSuffix": "Questa azione non può essere annullata."
+    },
+    "tabs": {
+      "ariaLabel": "Tipi di attività",
+      "all": "Tutte",
+      "scheduled": "Pianificate",
+      "on-demand": "Su richiesta",
+      "webhooks": "Webhook",
+      "event-rules": "Regole evento"
     }
   },
   "complianceDashboard": {
