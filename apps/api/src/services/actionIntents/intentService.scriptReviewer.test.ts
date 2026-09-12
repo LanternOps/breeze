@@ -1,6 +1,16 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 /**
+ * AI script authoring W04 (#5612) — `createActionIntent`'s creation-transaction
+ * SCRIPT-LANE WIRING: given a decision from `evaluateScriptReviewerAutonomy`
+ * (mocked wholesale here — its fourteen-invariant truth table is unit-tested
+ * in scriptReviewerAutonomy.test.ts), does creation correctly stamp
+ * `status: 'approved'` / `decidedVia: 'script_reviewer'` / evidence, skip the
+ * human fan-out, publish `intent_approved`, and abort on a lost proposal CAS.
+ *
+ * Harness copied from intentService.ticketAutonomy.test.ts, which documents
+ * the mock scaffolding:
+ *
  * P2-4 Task A3 (#4191) — `createActionIntent`'s creation-transaction
  * ticket-autonomy WIRING: given a decision from `evaluateTicketAutonomy`
  * (mocked wholesale here — its own five-gate truth table is unit-tested in
@@ -17,7 +27,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
  * existence check and a wholesale `./ticketAutonomy` mock.
  */
 
-const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushState, notifyState, metricsMock, intentApproversState, effectDigestState, envMock, policyDecideMock, ticketAutonomyState } = vi.hoisted(() => {
+const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushState, notifyState, metricsMock, intentApproversState, effectDigestState, envMock, policyDecideMock, ticketAutonomyState, scriptLaneState } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = {
     id: col('id'),
@@ -91,6 +101,14 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
       evaluateTicketAutonomy: vi.fn(async () => ({ granted: false, reason: 'not_requested' }) as
         { granted: true } | { granted: false; reason: string }),
     },
+    scriptLaneState: {
+      evaluateScriptReviewerAutonomy: vi.fn(async () => ({ granted: false, reason: 'lane_disabled' }) as
+        { granted: true; evidence: Record<string, unknown> } | { granted: false; reason: string }),
+      consumeProposalForIntent: vi.fn(async () => true),
+      loadProposalForRelease: vi.fn(async () => ({ id: 'prop-1', orgId: '11111111-1111-4111-8111-111111111111' })),
+      latestCompletedReview: vi.fn(async () => ({ id: 'rev-1' })),
+      loadProposalGuardrailContext: vi.fn(async () => ({ proposal: { riskTier: 'low', strictHits: [] } })),
+    },
   };
 });
 
@@ -156,13 +174,6 @@ vi.mock('../../db/schema/actionIntents', () => ({
   actionIntents: schema.actionIntentsTbl,
   intentOutbox: schema.intentOutboxTbl,
 }));
-// W04 (#5612): the script lane's evaluator is a sibling decision path this
-// suite does not exercise; mocked wholesale so its transitive imports (agent
-// policy resolver, maintenance gate) never reach the partial schema mocks here.
-vi.mock('./scriptReviewerAutonomy', () => ({
-  evaluateScriptReviewerAutonomy: vi.fn(async () => ({ granted: false, reason: 'lane_disabled' })),
-  revalidateScriptReviewerEvidence: vi.fn(async () => ({ ok: false, reason: 'lane_disabled' })),
-}));
 vi.mock('../../db/schema/approvals', () => ({ approvalRequests: schema.approvalRequestsTbl }));
 vi.mock('./intentApprovers', () => ({
   resolveIntentApprovers: intentApproversState.resolveIntentApprovers,
@@ -198,6 +209,15 @@ vi.mock('./effectDigest', () => ({ computeEffectDigestOutcome: effectDigestState
 vi.mock('../../config/env', () => ({ policyDecideEnabled: envMock.policyDecideEnabled }));
 vi.mock('./policyDecide', () => ({ attemptPolicyDecision: policyDecideMock.attemptPolicyDecision }));
 vi.mock('./ticketAutonomy', () => ({ evaluateTicketAutonomy: ticketAutonomyState.evaluateTicketAutonomy }));
+vi.mock('./scriptReviewerAutonomy', () => ({
+  evaluateScriptReviewerAutonomy: scriptLaneState.evaluateScriptReviewerAutonomy,
+}));
+vi.mock('../scriptProposals', () => ({
+  consumeProposalForIntent: scriptLaneState.consumeProposalForIntent,
+  loadProposalForRelease: scriptLaneState.loadProposalForRelease,
+  latestCompletedReview: scriptLaneState.latestCompletedReview,
+  loadProposalGuardrailContext: scriptLaneState.loadProposalGuardrailContext,
+}));
 
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((...args: unknown[]) => ({ op: 'eq', args })),
@@ -215,14 +235,13 @@ import { createActionIntent, type CreateActionIntentInput } from './intentServic
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const REQUESTER_ID = '22222222-2222-4222-8222-222222222222';
 const PARTNER_ID = '55555555-5555-4555-8555-555555555555';
-const AGENT_ID = '66666666-6666-4666-8666-666666666666';
-const RUN_ID = '77777777-7777-4777-8777-777777777777';
-const TICKET_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const DEVICE_ID = '33333333-3333-4333-8333-333333333333';
+const EVIDENCE = { proposalId: 'prop-1', reviewId: 'rev-1', checkpointRequired: false };
 
-function makeAgentAuth() {
+function makeUserAuth() {
   return {
-    principal: { kind: 'ai_agent', agentId: AGENT_ID, runId: RUN_ID },
-    user: { id: AGENT_ID, email: `agent+${AGENT_ID}@breeze.internal`, name: 'Triage agent' },
+    principal: { kind: 'user' },
+    user: { id: REQUESTER_ID, email: 'tech@example.com', name: 'Tech' },
     orgId: ORG_ID,
     partnerId: PARTNER_ID,
     scope: 'organization' as const,
@@ -230,45 +249,12 @@ function makeAgentAuth() {
   } as unknown as Parameters<typeof createActionIntent>[0];
 }
 
-function makeTicketTriageRunRow(overrides?: Record<string, unknown>) {
-  return {
-    id: RUN_ID,
-    agentId: AGENT_ID,
-    orgId: ORG_ID,
-    deviceId: null,
-    policySnapshot: {
-      schemaVersion: 8,
-      agentId: AGENT_ID,
-      kind: 'helpdesk',
-      effective: {
-        enabled: true,
-        mode: 'act',
-        toolAllowlist: ['manage_tickets'],
-        protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
-        triggers: { alertSeverities: [], respectMaintenanceWindows: true, ticketAutonomousWrites: true },
-      },
-      provenance: {},
-      resolvedAt: new Date().toISOString(),
-    },
-    ...overrides,
-  };
-}
-
-function queueTicketTriageContext(opts?: { run?: Record<string, unknown>; ticket?: unknown[] }) {
-  const run = makeTicketTriageRunRow(opts?.run);
-  dbState.selectAgentRunsResults.push([run]);
-  dbState.selectAgentsResults.push([{ id: AGENT_ID, name: 'Triage agent' }]);
-  dbState.selectTicketsResults.push(opts?.ticket ?? [{ id: TICKET_ID, orgId: ORG_ID }]);
-  // One fanned-out approval row per intent, for the human_required paths.
-  dbState.insertApprovalRequestsResults.push([{ id: 'approval-1' }]);
-}
-
 function echoInsertedIntent(overrides?: Record<string, unknown>) {
   return (values: Record<string, unknown>) => [
     {
       id: 'intent-echo',
       partnerId: PARTNER_ID,
-      requestedByUserId: null,
+      requestedByUserId: REQUESTER_ID,
       status: 'pending_approval',
       createdAt: new Date(),
       result: null,
@@ -279,14 +265,13 @@ function echoInsertedIntent(overrides?: Record<string, unknown>) {
   ];
 }
 
-function triageInput(overrides?: Partial<CreateActionIntentInput>): CreateActionIntentInput {
+function proposalRunInput(overrides?: Partial<CreateActionIntentInput>): CreateActionIntentInput {
   return {
-    toolName: 'manage_tickets',
-    input: { action: 'draft', ticketId: TICKET_ID, kind: 'draftReply', body: 'Have you tried rebooting?' },
-    source: 'ai_agent',
+    toolName: 'run_script',
+    input: { proposalId: 'prop-1', deviceIds: [DEVICE_ID] },
+    source: 'chat',
     orgId: ORG_ID,
-    scope: { ticketId: TICKET_ID },
-    autonomy: { kind: 'ticket_autonomy' },
+    guardrailContext: { proposal: { riskTier: 'low', strictHits: [] } },
     ...overrides,
   };
 }
@@ -303,145 +288,99 @@ beforeEach(() => {
   aiToolsState.tools.clear();
   aiToolsState.resolveWritableToolOrgId.mockReturnValue({ orgId: ORG_ID });
   guardrailMock.checkGuardrails.mockReturnValue({
-    tier: 3,
-    allowed: true,
-    requiresApproval: true,
-    approvalScope: 'supervised',
-    description: 'Draft an AI reply',
+    tier: 3, allowed: true, requiresApproval: true, approvalScope: 'supervised', description: 'Run a script',
   });
-  guardrailMock.checkAgentGuardrails.mockReturnValue({
-    tier: 3,
-    allowed: true,
-    requiresApproval: true,
-    disposition: 'propose',
-    description: 'Draft an AI reply',
-  });
-  intentApproversState.resolveIntentApprovers.mockResolvedValue([]);
-  intentApproversState.resolveAgentIntentApprovers.mockResolvedValue([REQUESTER_ID]);
+  intentApproversState.resolveIntentApprovers.mockResolvedValue([REQUESTER_ID]);
   intentApproversState.resolveIntentTargetScope.mockResolvedValue({ kind: 'indirect' });
-  permState.getUserPermissions.mockResolvedValue(null);
-  pushState.getUserPushTokens.mockResolvedValue([]);
-  pushState.dispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
-  notifyState.createNotification.mockResolvedValue('notif-1');
+  permState.getUserPermissions.mockResolvedValue({ canDecide: true });
   effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'not_applicable' });
   envMock.policyDecideEnabled.mockReturnValue(false);
-  policyDecideMock.attemptPolicyDecision.mockResolvedValue(undefined);
   ticketAutonomyState.evaluateTicketAutonomy.mockResolvedValue({ granted: false, reason: 'not_requested' });
+  scriptLaneState.evaluateScriptReviewerAutonomy.mockResolvedValue({ granted: true, evidence: EVIDENCE });
+  scriptLaneState.consumeProposalForIntent.mockResolvedValue(true);
+  scriptLaneState.loadProposalForRelease.mockResolvedValue({ id: 'prop-1', orgId: ORG_ID });
+  scriptLaneState.latestCompletedReview.mockResolvedValue({ id: 'rev-1' });
+  dbState.insertApprovalRequestsResults.push([{ id: 'approval-1' }]);
 });
 
-describe('createActionIntent — creation-transaction ticket autonomy (P2-4 Task A3, #4191)', () => {
-  it('granted: inserts approved/ticket_autonomy, skips fan-out, writes BOTH outbox events', async () => {
-    queueTicketTriageContext();
+describe('createActionIntent — script_reviewer autonomy (#5612 W04)', () => {
+  it('is not consulted for run_script WITHOUT a proposalId', async () => {
     dbState.insertActionIntentsResults.push(echoInsertedIntent());
-    ticketAutonomyState.evaluateTicketAutonomy.mockResolvedValue({ granted: true });
+    await createActionIntent(makeUserAuth(), proposalRunInput({ input: { scriptId: 's-1', deviceIds: [DEVICE_ID] }, guardrailContext: undefined }));
+    expect(scriptLaneState.evaluateScriptReviewerAutonomy).not.toHaveBeenCalled();
+    expect(scriptLaneState.loadProposalForRelease).not.toHaveBeenCalled();
+  });
 
-    const snapshot = await createActionIntent(makeAgentAuth(), triageInput());
+  it('is not consulted for another tool that happens to carry a proposalId', async () => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    await createActionIntent(makeUserAuth(), proposalRunInput({ toolName: 'restart_service', input: { proposalId: 'prop-1', deviceId: DEVICE_ID }, guardrailContext: undefined }));
+    expect(scriptLaneState.evaluateScriptReviewerAutonomy).not.toHaveBeenCalled();
+  });
 
-    const inserted = dbState.insertedActionIntentValues[0];
-    expect(inserted?.status).toBe('approved');
-    expect(inserted?.decidedVia).toBe('ticket_autonomy');
-    expect(inserted?.decidedAt).toBeInstanceOf(Date);
-    expect(inserted?.decidedByUserId).toBeNull();
-    expect(inserted?.releaseBy).toBeInstanceOf(Date);
-    expect(inserted?.scopeKind).toBe('ticket');
-    expect(inserted?.scopeTicketId).toBe(TICKET_ID);
-    // No breadcrumb on a GRANT — result stays null.
-    expect(inserted?.result).toBeNull();
+  it('a grant inserts an APPROVED intent with the lane decision stamped, and hands the evaluator the proposal + latest review', async () => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    await createActionIntent(makeUserAuth(), proposalRunInput());
+    const inserted = dbState.insertedActionIntentValues[0]!;
+    expect(inserted).toMatchObject({
+      status: 'approved',
+      decidedVia: 'script_reviewer',
+      decidedByUserId: null,
+      scriptReviewerEvidence: EVIDENCE,
+      result: null,
+    });
+    expect(inserted.releaseBy).toBeInstanceOf(Date);
+    expect(inserted.decidedAt).toBeInstanceOf(Date);
+    expect(scriptLaneState.loadProposalForRelease).toHaveBeenCalledWith(expect.anything(), 'prop-1', ORG_ID);
+    expect(scriptLaneState.evaluateScriptReviewerAutonomy).toHaveBeenCalledWith(expect.objectContaining({
+      intentDraft: expect.objectContaining({ orgId: ORG_ID, approvalScope: 'supervised', agentRun: null }),
+      proposal: { id: 'prop-1', orgId: ORG_ID },
+      review: { id: 'rev-1' },
+    }));
+  });
 
-    // No human ever reviewed this: zero approval_requests rows.
+  it('a grant writes NO approval_requests rows and an intent_approved outbox row', async () => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    const snap = await createActionIntent(makeUserAuth(), proposalRunInput());
     expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
-    expect(snapshot.approvalRequestIds).toEqual([]);
-
-    // BOTH outbox events: the unconditional intent_created, AND the
-    // approve-path intent_approved that actually triggers release.
-    const eventTypes = dbState.insertedOutboxValues.map((v) => v.eventType);
-    expect(eventTypes).toEqual(['intent_created', 'intent_approved']);
+    expect(snap.approvalRequestIds).toEqual([]);
+    expect(dbState.insertedOutboxValues.map((o) => o.eventType)).toEqual(['intent_created', 'intent_approved']);
   });
 
-  it('toggle false (run snapshot denies): pending_approval, human fan-out runs, autonomyDenied breadcrumb stamped', async () => {
-    queueTicketTriageContext();
+  it('a grant CONSUMES the proposal for exactly this intent', async () => {
     dbState.insertActionIntentsResults.push(echoInsertedIntent());
-    ticketAutonomyState.evaluateTicketAutonomy.mockResolvedValue({
-      granted: false,
-      reason: 'run_snapshot_not_authorized',
-    });
+    const snap = await createActionIntent(makeUserAuth(), proposalRunInput());
+    expect(scriptLaneState.consumeProposalForIntent).toHaveBeenCalledWith(expect.anything(), 'prop-1', snap.id);
+  });
 
-    const snapshot = await createActionIntent(makeAgentAuth(), triageInput());
+  it('a LOST consumption race ABORTS the whole transaction — no half-consumed approved intent', async () => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    scriptLaneState.consumeProposalForIntent.mockResolvedValue(false);
+    await expect(createActionIntent(makeUserAuth(), proposalRunInput())).rejects.toMatchObject({ code: 'proposal_not_runnable' });
+    expect(dbState.insertedOutboxValues).toHaveLength(0);
+  });
 
-    const inserted = dbState.insertedActionIntentValues[0];
-    // status/decidedVia/releaseBy are NOT set on the insert — left at their
-    // column defaults (status defaults to 'pending_approval' in the DB;
-    // this mock doesn't apply defaults, so the key is simply absent).
-    expect(inserted?.status).toBeUndefined();
-    expect(inserted?.decidedVia).toBeUndefined();
-    expect(inserted?.result).toEqual({ autonomyDenied: 'run_snapshot_not_authorized' });
-
-    // The ordinary human fan-out ran.
+  it('a refusal falls through to the human path unchanged, with the reason as a breadcrumb', async () => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    scriptLaneState.evaluateScriptReviewerAutonomy.mockResolvedValue({ granted: false, reason: 'hourly_cap' });
+    const snap = await createActionIntent(makeUserAuth(), proposalRunInput());
+    const inserted = dbState.insertedActionIntentValues[0]!;
+    expect(inserted.status).toBeUndefined();
+    expect(inserted.decidedVia).toBeUndefined();
+    expect(inserted.scriptReviewerEvidence).toBeUndefined();
+    expect(inserted.result).toEqual({ scriptLaneRefusal: 'hourly_cap' });
     expect(dbState.insertedApprovalRequestsValues.length).toBeGreaterThan(0);
-    expect(snapshot.approvalRequestIds.length).toBeGreaterThan(0);
-
-    // Only the ordinary intent_created outbox row — no intent_approved.
-    const eventTypes = dbState.insertedOutboxValues.map((v) => v.eventType);
-    expect(eventTypes).toEqual(['intent_created']);
+    expect(snap.approvalRequestIds.length).toBeGreaterThan(0);
+    expect(dbState.insertedOutboxValues.map((o) => o.eventType)).toEqual(['intent_created']);
+    // The proposal is still claimed by the (pending) intent — W01b's CAS.
+    expect(scriptLaneState.consumeProposalForIntent).toHaveBeenCalledWith(expect.anything(), 'prop-1', snap.id);
   });
 
-  // Review fix (#4191): a gate-evaluation exception (e.g.
-  // resolveEffectiveAgentSystem throwing) must degrade to the SAME
-  // human_required path as an ordinary denial, never abort intent creation
-  // entirely — evaluateTicketAutonomy itself now catches this (its own
-  // ticketAutonomy.test.ts proves the catch); this proves the wiring here
-  // treats 'gate_evaluation_failed' exactly like any other denial reason.
-  it('gate-evaluation exception denial: intent still created pending_approval, breadcrumb carries gate_evaluation_failed', async () => {
-    queueTicketTriageContext();
+  it('a missing proposal is a proposal_not_runnable breadcrumb and the evaluator is never called', async () => {
     dbState.insertActionIntentsResults.push(echoInsertedIntent());
-    ticketAutonomyState.evaluateTicketAutonomy.mockResolvedValue({
-      granted: false,
-      reason: 'gate_evaluation_failed',
-    });
-
-    const snapshot = await createActionIntent(makeAgentAuth(), triageInput());
-
-    expect(snapshot.status).toBe('pending_approval');
-    const inserted = dbState.insertedActionIntentValues[0];
-    expect(inserted?.status).toBeUndefined();
-    expect(inserted?.decidedVia).toBeUndefined();
-    expect(inserted?.result).toEqual({ autonomyDenied: 'gate_evaluation_failed' });
-    expect(dbState.insertedApprovalRequestsValues.length).toBeGreaterThan(0);
-  });
-
-  it('live-policy-flipped-off race (snapshot true, live false): pending_approval, breadcrumb reflects the live-policy reason', async () => {
-    queueTicketTriageContext();
-    dbState.insertActionIntentsResults.push(echoInsertedIntent());
-    ticketAutonomyState.evaluateTicketAutonomy.mockResolvedValue({
-      granted: false,
-      reason: 'live_policy_not_authorized',
-    });
-
-    const snapshot = await createActionIntent(makeAgentAuth(), triageInput());
-
-    expect(snapshot.status).toBe('pending_approval');
-    const inserted = dbState.insertedActionIntentValues[0];
-    expect(inserted?.result).toEqual({ autonomyDenied: 'live_policy_not_authorized' });
-    expect(dbState.insertedApprovalRequestsValues.length).toBeGreaterThan(0);
-  });
-
-  it('autonomy not requested at all: no breadcrumb, ordinary human_required path, unaffected by evaluateTicketAutonomy', async () => {
-    queueTicketTriageContext();
-    dbState.insertActionIntentsResults.push(echoInsertedIntent());
-    // Defensive: even if the collaborator were somehow called and returned a
-    // denial reason, no breadcrumb should be stamped when autonomy was never
-    // requested — createActionIntent's own gate on `input.autonomy?.kind`
-    // must be what decides this, not merely relaying evaluateTicketAutonomy's
-    // reason through unconditionally.
-    ticketAutonomyState.evaluateTicketAutonomy.mockResolvedValue({ granted: false, reason: 'not_requested' });
-
-    const snapshot = await createActionIntent(
-      makeAgentAuth(),
-      triageInput({ autonomy: undefined }),
-    );
-
-    expect(snapshot.status).toBe('pending_approval');
-    const inserted = dbState.insertedActionIntentValues[0];
-    expect(inserted?.result).toBeNull();
+    scriptLaneState.loadProposalForRelease.mockResolvedValue(null);
+    // W01b's CAS then refuses the claim — the intent never commits.
+    scriptLaneState.consumeProposalForIntent.mockResolvedValue(false);
+    await expect(createActionIntent(makeUserAuth(), proposalRunInput())).rejects.toMatchObject({ code: 'proposal_not_runnable' });
+    expect(scriptLaneState.evaluateScriptReviewerAutonomy).not.toHaveBeenCalled();
   });
 });

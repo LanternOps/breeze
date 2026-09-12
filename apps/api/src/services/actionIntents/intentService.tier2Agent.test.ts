@@ -188,6 +188,13 @@ vi.mock('../../db/schema/actionIntents', () => ({
   intentOutbox: schema.intentOutboxTbl,
 }));
 
+// W04 (#5612): the script lane's evaluator is a sibling decision path this
+// suite does not exercise; mocked wholesale so its transitive imports (agent
+// policy resolver, maintenance gate) never reach the partial schema mocks here.
+vi.mock('./scriptReviewerAutonomy', () => ({
+  evaluateScriptReviewerAutonomy: vi.fn(async () => ({ granted: false, reason: 'lane_disabled' })),
+  revalidateScriptReviewerEvidence: vi.fn(async () => ({ ok: false, reason: 'lane_disabled' })),
+}));
 vi.mock('../../db/schema/approvals', () => ({
   approvalRequests: schema.approvalRequestsTbl,
 }));
