@@ -24,9 +24,6 @@ const { accountsRetrieveMock, eventsListMock, sessionsExpireMock } = vi.hoisted(
   sessionsExpireMock: vi.fn().mockRejectedValue(
     Object.assign(new Error('No such checkout session'), { type: 'StripeInvalidRequestError', code: 'resource_missing' }),
   ),
-const { accountsRetrieveMock, eventsListMock } = vi.hoisted(() => ({
-  accountsRetrieveMock: vi.fn(),
-  eventsListMock: vi.fn().mockResolvedValue({ data: [], has_more: false }),
 }));
 vi.mock('stripe', () => ({
   default: class MockStripe {
