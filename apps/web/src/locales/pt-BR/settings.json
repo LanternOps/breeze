@@ -5317,5 +5317,81 @@
       "conflict": "Conflito",
       "orgNotFound": "Organização não encontrada"
     }
+  },
+  "scriptAuthoringPage": {
+    "title": "Criação de scripts",
+    "subtitle": "Permita que o assistente e seus agentes escrevam, revisem e — quando você permitir — executem scripts sem um cartão de aprovação.",
+    "partnerCard": {
+      "title": "Limite do parceiro",
+      "description": "A configuração mais ampla que qualquer organização deste parceiro pode usar. Organizações individuais só podem restringi-la.",
+      "readOnly": "Somente um administrador do parceiro com acesso total às organizações pode alterar o limite.",
+      "missing": "Seu parceiro ainda não concedeu um limite, portanto o modo sem supervisão não pode ser habilitado aqui."
+    },
+    "orgCard": {
+      "title": "Esta organização",
+      "description": "Uma concessão explícita. O modo sem supervisão permanece desativado até que tanto o limite do parceiro quanto esta opção permitam.",
+      "noOrgSelected": "Selecione uma organização para gerenciar suas configurações de criação de scripts."
+    },
+    "fields": {
+      "proposingEnabled": "Permitir que a IA proponha scripts",
+      "unattendedAllowed": "Permitir que as organizações usem o modo sem supervisão",
+      "unattendedEnabled": "Executar scripts aprovados de baixo risco sem um cartão de aprovação",
+      "maxRiskTier": "Nível de risco mais alto permitido sem supervisão",
+      "allowedClasses": "O que um script sem supervisão pode tocar",
+      "perHour": "Máximo de execuções sem supervisão por hora",
+      "reviewerModel": "Modelo revisor",
+      "reviewerModelHint": "Deixe em branco para usar o padrão da plataforma.",
+      "protectedResources": "Nunca tocar nestes",
+      "protectedServices": "Serviços",
+      "protectedPaths": "Caminhos",
+      "protectedRegistryKeys": "Chaves de registro",
+      "protectedDeviceTags": "Tags de dispositivo"
+    },
+    "tier": {
+      "low": "Baixo",
+      "medium": "Médio"
+    },
+    "class": {
+      "registry": "Registro",
+      "services": "Serviços",
+      "processes": "Processos",
+      "files_system": "Arquivos do sistema",
+      "files_user": "Arquivos do usuário",
+      "temp_files": "Arquivos temporários",
+      "network_egress": "Tráfego de rede de saída",
+      "firewall": "Firewall",
+      "credentials": "Credenciais",
+      "users_groups": "Usuários e grupos",
+      "packages": "Pacotes",
+      "scheduled_tasks": "Tarefas agendadas",
+      "disk": "Disco",
+      "boot": "Configuração de inicialização",
+      "security_tooling": "Ferramentas de segurança",
+      "dns_cache": "Cache de DNS",
+      "printing": "Impressão",
+      "browser": "Navegadores",
+      "shell_eval": "Código dinâmico"
+    },
+    "windowsOnly": "Somente Windows",
+    "hardDenied": "Nunca disponível sem supervisão, seja qual for o limite.",
+    "aboveCeiling": "Seu parceiro não permite isso.",
+    "lane": {
+      "closedTitle": "O modo sem supervisão está funcionando normalmente",
+      "openTitle": "O modo sem supervisão está pausado",
+      "openBody": "{{reason}} As execuções sem supervisão são recusadas até que um aprovador redefina o modo. As aprovações continuam funcionando normalmente.",
+      "reset": "Redefinir o modo",
+      "resetSuccess": "O modo sem supervisão está funcionando novamente.",
+      "resetFailed": "Não foi possível redefinir o modo."
+    },
+    "stepUp": {
+      "title": "Confirme que é você",
+      "body": "Habilitar execuções sem supervisão exige uma nova verificação de segurança."
+    },
+    "save": "Salvar",
+    "saving": "Salvando…",
+    "saved": "Configurações de criação de scripts salvas.",
+    "saveFailed": "Não foi possível salvar essas configurações.",
+    "loading": "Carregando…",
+    "loadFailed": "Não foi possível carregar as configurações de criação de scripts."
   }
 }

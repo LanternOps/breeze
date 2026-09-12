@@ -43,6 +43,11 @@ export type StepUpOperation =
   // technician was shown, so a grant can never be replayed against a
   // different device set or a longer window.
   | 'device_maintenance'
+  // AI script authoring W04 (#5612): enabling the unattended lane on an org
+  // is the same class of action as enabling agent act mode — a fresh MFA
+  // proof, bound to the org AND to the value being set, so a grant minted to
+  // turn the lane ON cannot be replayed to widen something else.
+  | 'ai_script_lane_grant'
   // #5601: a "recent ceremony" credential for consecutive approval decides.
   // THE ONLY MULTI-USE OPERATION IN THIS MODULE — redeemed with the
   // non-consuming `readStepUpGrant`/`validateStepUpGrant` (GET), never
@@ -169,6 +174,24 @@ export function maintenanceResourceDigest(input: {
 }
 
 /** Bind a factor-removal grant to one exact server-side passkey row. */
+/**
+ * W04 (#5612): binds an `ai_script_lane_grant` to the org and the requested
+ * value (`unattendedEnabled`), and to the lane-reset action when `reset` is
+ * set. Same one-org-one-value shape as the maintenance digest.
+ */
+export function scriptLanePolicyResourceDigest(input: {
+  orgId: string;
+  unattendedEnabled: boolean;
+  reset?: boolean;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    orgId: input.orgId,
+    unattendedEnabled: input.unattendedEnabled,
+    reset: input.reset === true,
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
 export function passkeyRemovalResourceDigest(passkeyId: string): `sha256:${string}` {
   const canonical = JSON.stringify({ passkeyId });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;

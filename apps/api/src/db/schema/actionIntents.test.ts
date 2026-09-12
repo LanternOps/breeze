@@ -307,6 +307,8 @@ describe('action_intents schema', () => {
         'decidedByUserId',
         'decidedAssuranceLevel',
         'decidedVia',
+        // AI script authoring W04 (#5612)
+        'scriptReviewerEvidence',
         'executionStartedAt',
         'executedAt',
         'result',

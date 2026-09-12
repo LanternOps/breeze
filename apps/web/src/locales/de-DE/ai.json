@@ -82,7 +82,8 @@
         "label": "Letzte Aktivitäten",
         "prompt": "Zeige die neuesten Einträge im Audit-Protokoll an – welche Aktionen wurden in den letzten Stunden ausgeführt?"
       }
-    }
+    },
+    "unattendedRelease": "Vom KI-Skriptprüfer geprüft und ohne Genehmigungskarte freigegeben."
   },
   "aiChatSidebar": {
     "history": "Verlauf",

@@ -111,7 +111,9 @@ const namespaceDuplicateBaselines = {
     // locale-invariant (the acronym is never translated).
     // +1: aiAgentsPage.errors.scriptRejected (#5065) — "Script {{id}}: {{reason}}"
     // spells identically to English here ("script" is the loanword).
-    'settings.json': 123,
+    // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
+    // standard loanword in pt-BR.
+    'settings.json': 124,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -212,7 +214,9 @@ const namespaceDuplicateBaselines = {
     // locale-invariant (the acronym is never translated).
     // +1: aiAgentsPage.errors.scriptRejected (#5065) — "Script {{id}}: {{reason}}"
     // spells identically to English here ("script" is the loanword).
-    'settings.json': 126,
+    // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
+    // standard loanword in es-419.
+    'settings.json': 127,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -337,7 +341,10 @@ const namespaceDuplicateBaselines = {
     // "{{count}} minutes" spell identically in French.
     // +2: orgPortalSettingsEditor.visibility.toggles.enableService/enableDocuments
     // (W04 #5573) — "Service" and "Documents" spell identically in French.
-    'settings.json': 171,
+    // +2 W05 (#5612): scriptAuthoringPage.fields.protectedServices and
+    // scriptAuthoringPage.class.services — "Services" spells identically in
+    // French.
+    'settings.json': 173,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -458,7 +465,10 @@ const namespaceDuplicateBaselines = {
     // spells identically to English here ("script" is the loanword).
     // +2: orgPortalSettingsEditor.visibility.toggles.enableService/enableDocuments
     // (W04 #5573) — "Service" and "Documents" spell identically in Canadian French.
-    'settings.json': 177,
+    // +2 W05 (#5612): scriptAuthoringPage.fields.protectedServices and
+    // scriptAuthoringPage.class.services — "Services" spells identically in
+    // Canadian French.
+    'settings.json': 179,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -572,7 +582,9 @@ const namespaceDuplicateBaselines = {
     // locale-invariant (the acronym is never translated).
     // +1: orgPortalSettingsEditor.visibility.toggles.enableService.label (W04 #5573)
     // — "Service" is the same word in German.
-    'settings.json': 186,
+    // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
+    // standard loanword in de-DE.
+    'settings.json': 187,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -650,7 +662,9 @@ const namespaceDuplicateBaselines = {
     // locale-invariant (the acronym is never translated).
     // +1: aiAgentsPage.errors.scriptRejected (#5065) — "Script {{id}}: {{reason}}"
     // spells identically to English here ("script" is the loanword).
-    'settings.json': 164,
+    // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
+    // standard loanword in it-IT.
+    'settings.json': 165,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -722,7 +736,9 @@ const namespaceDuplicateBaselines = {
     // uses it), so the three site labels stay identical.
     // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
     // locale-invariant (the acronym is never translated).
-    'settings.json': 69,
+    // +1 W05 (#5612): scriptAuthoringPage.class.disk — "Disk" is spelled
+    // identically in tr-TR.
+    'settings.json': 70,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     'tickets.json': 12,

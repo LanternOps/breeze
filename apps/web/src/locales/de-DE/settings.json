@@ -5317,5 +5317,81 @@
       "conflict": "Konflikt",
       "orgNotFound": "Organisation nicht gefunden"
     }
+  },
+  "scriptAuthoringPage": {
+    "title": "Skripterstellung",
+    "subtitle": "Lassen Sie den Assistenten und Ihre Agenten Skripte schreiben, prüfen und – wenn Sie es zulassen – ohne Karte ausführen.",
+    "partnerCard": {
+      "title": "Partner-Obergrenze",
+      "description": "Die weiteste Einstellung, die eine Organisation dieses Partners verwenden darf. Einzelne Organisationen können sie nur einschränken.",
+      "readOnly": "Nur ein Partneradministrator mit vollem Organisationszugriff kann die Obergrenze ändern.",
+      "missing": "Ihr Partner hat noch keine Obergrenze festgelegt, daher kann die unbeaufsichtigte Ausführung hier nicht aktiviert werden."
+    },
+    "orgCard": {
+      "title": "Diese Organisation",
+      "description": "Eine ausdrückliche Freigabe. Die unbeaufsichtigte Ausführung bleibt deaktiviert, bis sowohl die Partner-Obergrenze als auch dieser Schalter es erlauben.",
+      "noOrgSelected": "Wählen Sie eine Organisation aus, um deren Einstellungen für die Skripterstellung zu verwalten."
+    },
+    "fields": {
+      "proposingEnabled": "Der KI erlauben, Skripte vorzuschlagen",
+      "unattendedAllowed": "Organisationen die unbeaufsichtigte Ausführung erlauben",
+      "unattendedEnabled": "Genehmigte risikoarme Skripte ohne Genehmigungskarte ausführen",
+      "maxRiskTier": "Höchste unbeaufsichtigt erlaubte Risikostufe",
+      "allowedClasses": "Worauf ein unbeaufsichtigtes Skript zugreifen darf",
+      "perHour": "Maximale unbeaufsichtigte Ausführungen pro Stunde",
+      "reviewerModel": "Prüfmodell",
+      "reviewerModelHint": "Leer lassen, um die Plattformvorgabe zu verwenden.",
+      "protectedResources": "Diese niemals anfassen",
+      "protectedServices": "Dienste",
+      "protectedPaths": "Pfade",
+      "protectedRegistryKeys": "Registrierungsschlüssel",
+      "protectedDeviceTags": "Geräte-Tags"
+    },
+    "tier": {
+      "low": "Niedrig",
+      "medium": "Mittel"
+    },
+    "class": {
+      "registry": "Registrierung",
+      "services": "Dienste",
+      "processes": "Prozesse",
+      "files_system": "Systemdateien",
+      "files_user": "Benutzerdateien",
+      "temp_files": "Temporäre Dateien",
+      "network_egress": "Ausgehender Netzwerkverkehr",
+      "firewall": "Firewall",
+      "credentials": "Anmeldedaten",
+      "users_groups": "Benutzer und Gruppen",
+      "packages": "Pakete",
+      "scheduled_tasks": "Geplante Aufgaben",
+      "disk": "Datenträger",
+      "boot": "Startkonfiguration",
+      "security_tooling": "Sicherheitstools",
+      "dns_cache": "DNS-Cache",
+      "printing": "Drucken",
+      "browser": "Browser",
+      "shell_eval": "Dynamischer Code"
+    },
+    "windowsOnly": "Nur Windows",
+    "hardDenied": "Unbeaufsichtigt nie verfügbar, unabhängig von der Obergrenze.",
+    "aboveCeiling": "Ihr Partner erlaubt dies nicht.",
+    "lane": {
+      "closedTitle": "Die unbeaufsichtigte Ausführung läuft normal",
+      "openTitle": "Die unbeaufsichtigte Ausführung ist pausiert",
+      "openBody": "{{reason}} Unbeaufsichtigte Ausführungen werden verweigert, bis ein Genehmiger die Ausführung zurücksetzt. Genehmigungen funktionieren weiterhin normal.",
+      "reset": "Ausführung zurücksetzen",
+      "resetSuccess": "Die unbeaufsichtigte Ausführung läuft wieder.",
+      "resetFailed": "Die Ausführung konnte nicht zurückgesetzt werden."
+    },
+    "stepUp": {
+      "title": "Bestätigen Sie, dass Sie es sind",
+      "body": "Das Aktivieren unbeaufsichtigter Ausführungen erfordert eine erneute Sicherheitsprüfung."
+    },
+    "save": "Speichern",
+    "saving": "Wird gespeichert…",
+    "saved": "Einstellungen zur Skripterstellung gespeichert.",
+    "saveFailed": "Diese Einstellungen konnten nicht gespeichert werden.",
+    "loading": "Wird geladen…",
+    "loadFailed": "Die Einstellungen zur Skripterstellung konnten nicht geladen werden."
   }
 }

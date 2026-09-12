@@ -2,7 +2,13 @@ import { buildActionLabel, hasDeviceIdStub } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { actionIntentTaskContextSchema, type ActionIntentTaskContext, type AssuranceLevel } from '@breeze/shared';
+import {
+  actionIntentTaskContextSchema,
+  type ActionIntentTaskContext,
+  type AiAgentPolicySnapshot,
+  type AssuranceLevel,
+  type ScriptReviewerEvidence,
+} from '@breeze/shared';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type Database, type DbAccessContext } from '../../db';
 import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
@@ -30,7 +36,12 @@ import {
   type GuardrailCheck,
   type GuardrailContext,
 } from '../aiGuardrails';
-import { consumeProposalForIntent, loadProposalGuardrailContext } from '../scriptProposals';
+import {
+  consumeProposalForIntent,
+  latestCompletedReview,
+  loadProposalForRelease,
+  loadProposalGuardrailContext,
+} from '../scriptProposals';
 import { getUserPermissions, userCanDecideApprovals } from '../permissions';
 import { PERMISSION_GRANTS } from '@breeze/shared';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from '../expoPush';
@@ -51,6 +62,8 @@ import {
   IntentScopeArgumentMismatchError,
 } from './intentTargetScope';
 import { evaluateTicketAutonomy } from './ticketAutonomy';
+import { createAuditLogAsync } from '../auditService';
+import { evaluateScriptReviewerAutonomy, type ScriptReviewerDecision } from './scriptReviewerAutonomy';
 import { aiOperatorOperations, aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
 import {
   isTaskLinkedIntent,
@@ -1162,6 +1175,9 @@ export async function createActionIntent(
   // human-originated intent (agentRun stays null, which already forces
   // human_required on its own).
   let agentRunMode: string | undefined;
+  // W04 (#5612): the run's immutable start-of-run policy snapshot, handed to
+  // the script lane's agent-authority gate (invariant 13).
+  let agentRunPolicySnapshot: AiAgentPolicySnapshot | null = null;
   // #5106: the scoped device's human-readable name, threaded through to
   // buildActionLabel below so the approval headline reads "on <hostname>"
   // instead of the raw "on device <id>..." stub. Stays null for every
@@ -1259,6 +1275,7 @@ export async function createActionIntent(
     }
     agentRun = loaded.run;
     agentRow = loaded.agent;
+    agentRunPolicySnapshot = loaded.run.policySnapshot ?? null;
 
     // #5205 W04 (#5209), Codex quorum D1b (adopted): the caller ASSERTING a
     // task id proves nothing. `ai_agent_runs.task_id` / `task_step_key` are
@@ -1640,6 +1657,52 @@ export async function createActionIntent(
           ? { autonomyDenied: autonomyDecision.reason }
           : null;
 
+      // AI script authoring W04 (#5612), spec §4.6 — the THIRD autonomy type
+      // at this seam, evaluated in the SAME transaction on the SAME ambient
+      // `db` as the ticket one above and the insert below, for the same
+      // reason: a concurrent policy flip must not land between "decide" and
+      // "insert", and the hourly reservation must be held under the advisory
+      // lock across both (the lock is taken inside the evaluator and lives
+      // until this transaction ends).
+      //
+      // Short-circuited to nothing for every intent that is not `run_script`
+      // with a `proposalId` — the overwhelming majority — so this module
+      // costs nothing on the ordinary path.
+      //
+      // Ticket autonomy wins when it granted: an intent carries exactly one
+      // `decided_via`, and re-deciding an already-decided row would make the
+      // evidence describe a decision that did not release it.
+      const proposalIdArg = input.toolName === 'run_script'
+        ? (input.input as { proposalId?: unknown }).proposalId
+        : undefined;
+      let scriptLaneDecision: ScriptReviewerDecision | null = null;
+      if (!autonomyGranted && typeof proposalIdArg === 'string') {
+        const proposal = await loadProposalForRelease(db, proposalIdArg, orgId);
+        const review = proposal ? await latestCompletedReview(db, proposal.id) : null;
+        scriptLaneDecision = proposal
+          ? await evaluateScriptReviewerAutonomy({
+            auth,
+            intentDraft: {
+              orgId,
+              approvalScope,
+              agentRun: agentRun
+                ? { id: agentRun.id, agentId: agentRun.agentId, policySnapshot: agentRunPolicySnapshot }
+                : null,
+              arguments: input.input,
+            },
+            proposal,
+            review,
+          })
+          : { granted: false, reason: 'proposal_not_runnable' };
+      }
+      const scriptLaneGranted = scriptLaneDecision?.granted === true;
+      // A refusal is a breadcrumb on a row that still proceeds down the
+      // ordinary human path — never an error, exactly like `autonomyDenied`.
+      const scriptLaneRefusalResult: Record<string, unknown> | null =
+        scriptLaneDecision && !scriptLaneDecision.granted
+          ? { scriptLaneRefusal: scriptLaneDecision.reason }
+          : null;
+
       const [inserted] = await db
         .insert(actionIntents)
         .values({
@@ -1716,7 +1779,22 @@ export async function createActionIntent(
               releaseBy: new Date(Date.now() + RELEASE_LEASE_MS),
             }
             : {}),
-          result: autonomyResult,
+          // W04 (#5612): the SAME approved-at-creation shape, with the lane's
+          // typed evidence. `decidedByUserId: null` because no human decided
+          // this; `releaseBy` the same fixed lease every approved intent gets.
+          // `script_proposals.decided_by` stays NULL too (the proposal CAS
+          // below only claims `intent_id`).
+          ...(scriptLaneDecision?.granted
+            ? {
+              status: 'approved' as const,
+              decidedVia: 'script_reviewer',
+              decidedAt: new Date(),
+              decidedByUserId: null,
+              releaseBy: new Date(Date.now() + RELEASE_LEASE_MS),
+              scriptReviewerEvidence: scriptLaneDecision.evidence,
+            }
+            : {}),
+          result: autonomyResult ?? scriptLaneRefusalResult,
         })
         // IMPORTANT-4: action_intents_org_idem_uniq is now a PARTIAL unique
         // index (migration 2026-07-18-action-intents.sql) covering only LIVE
@@ -1892,7 +1970,7 @@ export async function createActionIntent(
       // human fan-out entirely, same as the (not-yet-reachable-here)
       // policy-authorized case would — no approval_requests rows, no
       // approver notification.
-      if (!autonomyGranted && decisionState === 'human_required') {
+      if (!autonomyGranted && !scriptLaneGranted && decisionState === 'human_required') {
         ({ approvalRequestIds, requesterApprovalRequestId, fanOutUserIds, finalIntent } =
           await runHumanFanout({
             db,
@@ -1939,7 +2017,12 @@ export async function createActionIntent(
       // to release directly for a `decidedVia: 'ticket_autonomy'` row
       // instead of calling `attemptPolicyDecision`) — a backstop in case
       // this row's own publish is ever the one that gets stuck.
-      if (autonomyGranted) {
+      // W04 (#5612): a script-lane grant publishes the same durable release
+      // job. The proposal was already claimed for this intent by the CAS
+      // above (`consumeProposalForIntent`), which throws — rolling this whole
+      // transaction back — on a lost race, so an approved lane intent can
+      // never commit without owning its proposal.
+      if (autonomyGranted || scriptLaneGranted) {
         await db.insert(intentOutbox).values({
           intentId: inserted.id,
           eventType: 'intent_approved',
@@ -2096,6 +2179,33 @@ export async function createActionIntent(
             creation.fanOutUserIds[0] === requesterId,
           ...agentAuditDetails,
         },
+    });
+  }
+
+  // AI script authoring W04 (#5612), spec §4.6: `ai.script.unattended_run`
+  // at approval. After the creation transaction committed (audit writes run
+  // outside the caller's transaction, auditService.ts) — fire-and-forget with
+  // createAuditLogAsync's in-process retry queue: the intent already
+  // committed, and a transient audit fault must not undo an approved run.
+  if (creation.isNew && creation.intent.decidedVia === 'script_reviewer') {
+    const evidence = creation.intent.scriptReviewerEvidence as ScriptReviewerEvidence | null;
+    void createAuditLogAsync({
+      orgId,
+      actorType: agentRun ? 'ai_agent' : 'system',
+      actorId: agentRun?.agentId ?? requesterId ?? 'ai-script-lane',
+      action: 'ai.script.unattended_run',
+      resourceType: 'action_intent',
+      resourceId: creation.intent.id,
+      details: {
+        proposalId: evidence?.proposalId ?? null,
+        reviewId: evidence?.reviewId ?? null,
+        touchClasses: evidence?.touchClasses ?? null,
+        policySnapshot: evidence?.policySnapshot ?? null,
+        checkpointRequired: evidence?.checkpointRequired ?? null,
+        origin: agentRun ? 'agent' : 'chat',
+      },
+      result: 'success',
+      initiatedBy: 'ai',
     });
   }
 

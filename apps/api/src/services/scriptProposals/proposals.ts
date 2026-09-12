@@ -1,9 +1,14 @@
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
   type ProposeScriptInput, type ScriptProposalStatus, type ScriptScanResult, scanScriptContent,
 } from '@breeze/shared';
 import { db } from '../../db';
-import { scriptProposals, type ScriptProposalRow } from '../../db/schema/scriptProposals';
+import {
+  scriptProposalReviews,
+  scriptProposals,
+  type ScriptProposalReviewRow,
+  type ScriptProposalRow,
+} from '../../db/schema/scriptProposals';
 import { sha256Content } from '../scriptVersions';
 import type { AuthContext } from '../../middleware/auth';
 
@@ -171,4 +176,48 @@ export async function consumeProposalForIntent(
     ))
     .returning({ id: scriptProposals.id });
   return rows.length === 1;
+}
+
+// ---------------------------------------------------------------------------
+// Unattended lane readers (W04, #5612). Plain in-context reads — they run on
+// whatever connection the caller holds (the intent-creation transaction, the
+// release worker's system context) and never escalate.
+// ---------------------------------------------------------------------------
+
+/** The proposal row, org-pinned. `null` when absent or in another org. */
+type ReadExecutor = Pick<typeof db, 'select'>;
+
+export async function loadProposalForRelease(
+  tx: ReadExecutor,
+  proposalId: string,
+  orgId: string,
+): Promise<ScriptProposalRow | null> {
+  const [row] = await tx
+    .select()
+    .from(scriptProposals)
+    .where(and(eq(scriptProposals.id, proposalId), eq(scriptProposals.orgId, orgId)))
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * The proposal's LATEST completed MODEL review — the row the lane pins by id
+ * in its evidence and re-checks at release ("still the operative review").
+ * Static-scan rows are not reviews in this sense.
+ */
+export async function latestCompletedReview(
+  tx: ReadExecutor,
+  proposalId: string,
+): Promise<ScriptProposalReviewRow | null> {
+  const [row] = await tx
+    .select()
+    .from(scriptProposalReviews)
+    .where(and(
+      eq(scriptProposalReviews.proposalId, proposalId),
+      eq(scriptProposalReviews.reviewerKind, 'model'),
+      eq(scriptProposalReviews.status, 'completed'),
+    ))
+    .orderBy(desc(scriptProposalReviews.createdAt))
+    .limit(1);
+  return row ?? null;
 }

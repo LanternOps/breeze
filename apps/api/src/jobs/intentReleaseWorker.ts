@@ -35,6 +35,7 @@ import {
 import { enqueueFixWatchPhase1 } from './fixWatchWorker';
 import { attemptPolicyDecision, PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
+import { ensureLaneCheckpointBeforeRelease } from '../services/actionIntents/laneCheckpoint';
 import { readAiKillState } from '../services/aiKillState';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
@@ -1029,6 +1030,19 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     // Only a MATCHING digest licenses reuse: the material is what the approver
     // approved. On a mismatch we returned above and nothing is carried.
     verifiedContext = recomputed.context;
+  }
+
+  // AI script authoring W04 (#5612), spec §4.6 invariant 11: the recovery
+  // prerequisite is a RELEASE precondition, read back immediately before the
+  // effect. After the digest recompute (a drifted proposal never costs a
+  // checkpoint), before the session gate and the dispatch (nothing mutates
+  // the device without a rollback point). No-op for every non-lane intent.
+  const laneCheckpoint = await ensureLaneCheckpointBeforeRelease(intent);
+  if (!laneCheckpoint.ok) {
+    await failIntent(intent, 'checkpoint_unavailable', {
+      details: { actionName: intent.actionName, reason: laneCheckpoint.reason },
+    });
+    return;
   }
 
   // Phase-1 deferral: the headless worker still cannot run session-aware M365

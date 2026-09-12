@@ -282,6 +282,11 @@ const TARGET_GLOBS = [
   // runAction-wrapped in this module so no caller — the approval card, the
   // inbox, or a future surface — can invoke them unwrapped.
   'src/lib/api/scriptProposals.ts',
+  // Script authoring settings (#5612 W05 Tasks 23-24): both the org and
+  // partner ceiling PUTs, and the lane reset POST, decide whether scripts run
+  // against customer machines unattended — a silent failure here would leave
+  // an operator believing the lane is off (or on) when it is not.
+  'src/components/settings/ScriptAuthoringPage.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -604,8 +609,9 @@ describe('no silent mutations in targeted set', () => {
     // #4622 W04 adds ManualAssetModal.tsx and #5213 W02 adds
     // AddNetworkAssetModal.tsx, so the count is now 125. #5612 W03 adds
     // lib/api/scriptProposals.ts (request-changes + promote), so the count is
-    // now 126.
-    expect(absoluteFiles.length).toBe(126);
+    // now 126. #5612 W05 Tasks 23-24 add ScriptAuthoringPage.tsx, so the
+    // count is now 127.
+    expect(absoluteFiles.length).toBe(127);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

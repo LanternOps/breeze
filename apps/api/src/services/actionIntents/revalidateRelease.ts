@@ -9,6 +9,7 @@ import { buildAuthContextForIntent } from './actorContext';
 import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
 import { IntentScopeLostError } from './intentTargetScope';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
+import { revalidateScriptReviewerEvidence } from './scriptReviewerAutonomy';
 
 /**
  * Shared release-time revalidation for an approved action intent (spec
@@ -128,7 +129,12 @@ function checkPolicyDecisionEvidence(
  * every human-approved agent intent.
  */
 function isSystemDecided(intent: ActionIntent): boolean {
-  return intent.decidedVia === 'policy' || intent.decidedVia === 'ticket_autonomy';
+  return intent.decidedVia === 'policy'
+    || intent.decidedVia === 'ticket_autonomy'
+    // W04 (#5612): the unattended script lane. Same defining shape — no
+    // approval_requests row by construction, no human ever reviewed it —
+    // decided at creation like ticket_autonomy, not by a post-commit attempt.
+    || intent.decidedVia === 'script_reviewer';
 }
 
 export async function revalidateApprovedIntentForRelease(
@@ -174,10 +180,36 @@ export async function revalidateApprovedIntentForRelease(
   // `policyDecisionState` check at all (see the comment above) — the extra
   // `intent.decidedVia !== 'policy'` clause keeps this OR from re-admitting
   // an `authorized: false` policy row through the back door.
+  //
+  // W04 (#5612): `requestingAgentRunId` is required for the POLICY and
+  // TICKET branches (policy-decide only ever authorizes agent proposals, and
+  // a row carrying those columns without a run is the tamper shape the
+  // clause exists to catch). The SCRIPT LANE covers chat sessions too
+  // (spec D1/§4.6 "Release"), so a chat-origin lane intent has no run id by
+  // design — and would fail `digest_mismatch` here against an approval row
+  // that never existed.
+  //
+  // The run-id clause is therefore scoped to the two branches that need it,
+  // and the lane substitutes a STRONGER proof: a typed evidence blob that
+  // revalidates against current policy, proposal, review, circuit, authority
+  // and device state (`revalidateScriptReviewerEvidence`). A forged row with
+  // `decided_via = 'script_reviewer'` and no valid evidence fails there and
+  // never reaches the exception. Only consulted when no approval row exists:
+  // a lane row that somehow has one takes the ordinary human path
+  // (defense-in-depth: never both).
+  const laneEvidence = !winningApproval && intent.decidedVia === 'script_reviewer'
+    ? await revalidateScriptReviewerEvidence(intent)
+    : null;
+  if (laneEvidence && !laneEvidence.ok) {
+    return { ok: false, errorCode: 'lane_revoked', details: { reason: laneEvidence.reason } };
+  }
+
   const noApprovalRowRequired = !winningApproval
-    && !!intent.requestingAgentRunId
     && isSystemDecided(intent)
-    && (intent.decidedVia !== 'policy' || intent.policyDecisionState === 'authorized');
+    && (intent.decidedVia === 'script_reviewer'
+      ? laneEvidence?.ok === true
+      : !!intent.requestingAgentRunId
+        && (intent.decidedVia !== 'policy' || intent.policyDecisionState === 'authorized'));
 
   if (!noApprovalRowRequired) {
     // (a) UNCHANGED — the human-approval-row path, byte-identical to every

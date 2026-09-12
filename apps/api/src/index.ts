@@ -141,6 +141,8 @@ import { agentVersionRoutes } from './routes/agentVersions';
 import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
 import { aiScriptProposalRoutes } from './routes/ai/scriptProposals';
+import { aiScriptPolicyRoutes } from './routes/ai/scriptPolicy';
+import { partnerAiScriptPolicyRoutes } from './routes/partnerAiScriptPolicy';
 import { aiProviderRoutes } from './routes/aiProvider';
 import { aiAgentsRoutes } from './routes/aiAgents';
 import { aiAgentSchedulesRoutes } from './routes/aiAgentSchedules';
@@ -967,6 +969,8 @@ api.route('/groups', groupRoutes);
 api.route('/device-groups', groupRoutes);
 api.route('/integrations', integrationRoutes);
 api.route('/partner/trust', partnerTrustRoutes);
+// W04 (#5612): the partner CEILING for the unattended script lane.
+api.route('/partner/ai/script-policy', partnerAiScriptPolicyRoutes);
 api.route('/partner', partnerRoutes);
 api.route('/internal/synthetic', internalSyntheticRoutes);
 api.route('/partner/known-guests', networkKnownGuestsRoutes);
@@ -996,6 +1000,10 @@ api.route('/ai/operator', aiOperatorTasksRoutes);
 // reason '/ai/agents/schedules' sits above '/ai/agents'. Hono matches in
 // registration order.
 api.route('/ai/script-proposals', aiScriptProposalRoutes);
+// W04 (#5612): GET/PUT /ai/script-policy + POST /ai/script-lane/reset —
+// registered ahead of '/ai' so the literal paths never fall into a sibling
+// param route.
+api.route('/ai', aiScriptPolicyRoutes);
 api.route('/ai', aiRoutes);
 api.route('/ai/script-builder', scriptAiRoutes);
 api.route('/mcp', mcpServerRoutes);
