@@ -97,6 +97,32 @@ func TestHandleStartDesktopRefusesSupersededGeneration(t *testing.T) {
 	}
 }
 
+// #3107: one start_desktop delivered over BOTH the agent WebSocket and the
+// heartbeat response arrives twice, concurrently, with the same command id and
+// the same generation. The fence must not turn the second delivery into a
+// refusal — it has to reach joinOrRunDesktopStart, which collapses the pair.
+func TestHandleStartDesktopDualDeliveryOfOneCommandIsNotRefused(t *testing.T) {
+	h := newFenceHeartbeat()
+	cmd := fenceStartCommand("start-dup", map[string]any{"startGeneration": "3"})
+
+	results := make(chan string, 2)
+	for i := 0; i < 2; i++ {
+		go func() { results <- handleStartDesktop(h, cmd).Error }()
+	}
+	for i := 0; i < 2; i++ {
+		got := <-results
+		if !strings.Contains(got, fencePassedMarker) {
+			t.Fatalf("delivery %d was refused by the fence: %q", i, got)
+		}
+	}
+
+	// A DIFFERENT command reusing that generation is still a replay.
+	replay := handleStartDesktop(h, fenceStartCommand("start-other", map[string]any{"startGeneration": "3"}))
+	if replay.Status != "failed" || strings.Contains(replay.Error, fencePassedMarker) {
+		t.Fatalf("a different command at the same generation must be refused, got status=%q error=%q", replay.Status, replay.Error)
+	}
+}
+
 // Old server, mixed fleet: a start with no generation field is admitted, so an
 // agent can roll ahead of the API.
 func TestHandleStartDesktopAdmitsStartWithoutGeneration(t *testing.T) {
