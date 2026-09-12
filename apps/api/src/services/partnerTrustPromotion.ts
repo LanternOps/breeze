@@ -6,6 +6,7 @@ import type { IpClass, PartnerTrustState } from '../db/schema/orgs';
 import { getBreezeBillingClient } from './breezeBillingClient';
 import { readTrust } from './partnerTrust.repo';
 import { setTrustState } from './partnerTrust';
+import { sendEvidenceCard } from './partnerTrustEvidenceCard';
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
@@ -357,9 +358,11 @@ export async function gatherPromotionFacts(partnerId: string): Promise<Promotion
   // status as a hold so an outage in breeze-billing can never silently
   // unblock an auto-promotion.
   const billingHoldUnknown = hold === null;
+  // 'none' (no records / nothing open) and 'pass' (an unreleased row that
+  // explicitly cleared the partner) are the only statuses that are not a hold.
   const billingHold = billingHoldUnknown
     ? true
-    : hold.status === 'hold' || hold.status === 'review_pending';
+    : hold.status !== 'none' && hold.status !== 'pass';
   return {
     ...localFacts,
     settledCard: settledCard && !settledCard.disputed && !settledCard.refunded
@@ -372,9 +375,49 @@ export async function gatherPromotionFacts(partnerId: string): Promise<Promotion
   };
 }
 
+/**
+ * Evaluates hard-deny signals and, when one matches, moves the partner to
+ * `restricted` (CAS from `probation`) and best-effort sends the evidence card.
+ * Returns whether the restriction actually landed.
+ *
+ * Lives here rather than in the job so that EVERY promotion path goes through
+ * it — `tryAutoPromote` calls it first, so no caller can promote a partner
+ * that should have been restricted. The ip-classify job still calls it
+ * directly, since that path restricts without attempting a promotion.
+ */
+export async function restrictOnHardDeny(partnerId: string): Promise<boolean> {
+  const decision = await evaluateHardDenies(partnerId);
+  if (!decision.restrict) return false;
+  const restricted = await setTrustState(
+    partnerId,
+    'restricted',
+    decision.reason,
+    null,
+    decision.evidence,
+    { expectedFrom: 'probation' },
+  );
+  if (restricted) {
+    try {
+      await sendEvidenceCard(partnerId, 'restricted');
+    } catch (error) {
+      // Best-effort: the restriction itself already landed — a notification
+      // failure must never surface as a job failure.
+      console.warn(
+        `[partnerTrustPromotion] Failed to send evidence card for restricted partner ${partnerId}`,
+        error,
+      );
+    }
+  }
+  return restricted;
+}
+
 export async function tryAutoPromote(partnerId: string): Promise<boolean> {
   const current = await readTrust(partnerId);
   if (current?.trustState !== 'probation') return false;
+  // Hard denies are evaluated here, not at the call site, so a direct caller
+  // can never promote past a signal that should restrict. A failure to
+  // evaluate them propagates rather than falling through to promotion.
+  if (await restrictOnHardDeny(partnerId)) return false;
   const facts = await gatherPromotionFacts(partnerId);
   const decision = promotionDecision(facts, new Date());
   if (!decision.promote) return false;
