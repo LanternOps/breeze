@@ -9,6 +9,12 @@ import {
   NARRATIVE_SECTION_TITLES,
   type OrgNarrativeReportSummary,
 } from '../types/orgNarrativeReport';
+import {
+  FLEET_DESIGN_SECTION_KEYS,
+  FLEET_DESIGN_SECTION_TITLES,
+  FLEET_DESIGN_TEXT_MAX_CHARS,
+  type FleetDesignReportSummary,
+} from '../types/fleetDesign';
 
 /**
  * Branded PDF design system for Breeze reports.
@@ -59,7 +65,7 @@ export type BuildOpts = {
   generatedAt: string;
   /** IANA timezone for formatting ISO date cells in generic tables. */
   timezone: string;
-  summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary;
+  summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary;
   /** Slim baseline from the previous completed run, when the caller supplied
    * one (report_runs.result.previous) — drives the scorecard trend chip and
    * its "since <date>" label. */
@@ -85,6 +91,7 @@ const REPORT_TYPE_LABELS: Record<string, string> = {
   security_compliance_posture: 'Security & Compliance Posture',
   ai_org_narrative: 'Weekly AI Operations Narrative',
   ai_agent_impact: 'AI Agent Impact',
+  ai_fleet_design: 'Fleet Design',
 };
 
 const reportTypeLabel = (t: string): string => REPORT_TYPE_LABELS[t] ?? titleCase(t);
@@ -1067,6 +1074,348 @@ function renderNarrativeReport(doc: jsPDF, narrative: NarrativeSnapshot, opts: B
 }
 
 // ----------------------------------------------------------------------------
+// Fleet Design: title block + one heading per section (server-fixed
+// FLEET_DESIGN_SECTION_KEYS order, FLEET_DESIGN_SECTION_TITLES — never a
+// stored title, never an unknown key), bullets for prose-shaped sections and
+// autoTable grids for tabular ones. Every field of
+// `FleetDesignReportSummary['fleetDesign']` (and everything nested under its
+// optional `outcome`) is optional/defensively read: a legacy or partial
+// snapshot must render without throwing, drawing only what it has.
+//
+// Like `renderNarrativeReport`, this arm draws its OWN chrome per page as it
+// paginates (model/table volume is unbounded up to the schema caps) —
+// `buildReportPdf` does not draw header/footer again after calling it.
+// ----------------------------------------------------------------------------
+
+/** Everything under `FleetDesignReportSummary.fleetDesign`, non-optional. */
+type FleetDesignSnapshot = NonNullable<FleetDesignReportSummary['fleetDesign']>;
+
+function drawFleetDesignFootnote(doc: jsPDF): void {
+  set.text(doc, C.faint);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.text('Proposals only — nothing here is live until a technician applies it.', PAGE.mx, PAGE.footY - 2);
+}
+
+/** Finish the outgoing page's chrome, start a fresh one, and return its content-start y. */
+function fleetDesignPageBreak(doc: jsPDF, opts: BuildOpts): number {
+  drawHeaderBand(doc, opts);
+  drawFooter(doc, opts);
+  drawFleetDesignFootnote(doc);
+  doc.addPage();
+  return PAGE.bandH + 10;
+}
+
+/** Page-break-aware vertical budget check, mirroring `ensureNarrativeRoom` but
+ * with the Fleet Design footnote drawn on the outgoing page. */
+function ensureFleetDesignRoom(doc: jsPDF, opts: BuildOpts, y: number, neededH: number): number {
+  return y + neededH > NARRATIVE_CONTENT_BOTTOM ? fleetDesignPageBreak(doc, opts) : y;
+}
+
+/** `jspdf-autotable` stamps `doc.lastAutoTable.finalY` at runtime but does not
+ * declare it in its shipped types (dist/index.d.ts has no such export). */
+function fleetDesignAutoTableFinalY(doc: jsPDF, fallback: number): number {
+  const t = (doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable;
+  return typeof t?.finalY === 'number' ? t.finalY : fallback;
+}
+
+/** Sanitize a possibly-non-string, possibly-absent field the same way a
+ * narrative bullet is sanitized before it can reach jsPDF. */
+function fdText(value: unknown, max = NARRATIVE_BULLET_MAX_CHARS): string {
+  return sanitizeNarrativeText(value, max);
+}
+
+/** Map+sanitize+drop-empty over a value that should be an array but — coming
+ * from an unvalidated jsonb blob (legacy/hand-built snapshots included) —
+ * might not be. */
+function fdList(arr: unknown, mapper: (item: unknown) => string): string[] {
+  if (!Array.isArray(arr)) return [];
+  return arr.map(mapper).filter((s) => s.length > 0);
+}
+
+function fmtPct(n: unknown): string {
+  return typeof n === 'number' && Number.isFinite(n) ? `${Math.round(n * 100)}%` : '—';
+}
+
+/** Shared bullet-list renderer for the Fleet Design report's prose sections
+ * (found/baseline/unsure/automation) — same shape as the narrative bullet
+ * loop: sanitize, wrap, page-break-aware, teal marker dot. */
+function drawFleetDesignBullets(doc: jsPDF, opts: BuildOpts, lines: string[], y: number): number {
+  for (const raw of lines) {
+    const text = fdText(raw);
+    if (!text) continue;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    const wrapped = doc.splitTextToSize(text, PAGE.w - PAGE.mx * 2 - NARRATIVE_BULLET_INDENT) as string[];
+    const blockH = wrapped.length * NARRATIVE_LINE_H;
+    y = ensureFleetDesignRoom(doc, opts, y, blockH);
+    set.fill(doc, C.teal);
+    doc.circle(PAGE.mx + 1.2, y - 1.4, 0.9, 'F');
+    set.text(doc, C.ink);
+    doc.text(wrapped, PAGE.mx + NARRATIVE_BULLET_INDENT, y);
+    y += blockH + NARRATIVE_BULLET_GAP;
+  }
+  return y;
+}
+
+/** Shared autoTable option block for the Fleet Design report's grids — the
+ * posture table's style block (:1319-1340 pre-edit) minus `didParseCell`
+ * (posture-specific cell colouring; nothing here needs it). */
+function drawFleetDesignTable(doc: jsPDF, opts: BuildOpts, head: string[][], body: string[][], y: number): number {
+  autoTable(doc, {
+    startY: y,
+    margin: { top: PAGE.bandH + 6, left: PAGE.mx, right: PAGE.mx, bottom: 16 },
+    head,
+    body,
+    theme: 'grid',
+    rowPageBreak: 'avoid',
+    styles: { fontSize: 7.5, cellPadding: 1.8, lineColor: C.rule, lineWidth: 0.1, textColor: C.ink, valign: 'middle' },
+    headStyles: { fillColor: C.primary, textColor: C.white, fontStyle: 'bold', fontSize: 7.5, lineColor: C.white, lineWidth: 0.15 },
+    alternateRowStyles: { fillColor: C.zebra },
+    didDrawPage: () => {
+      drawHeaderBand(doc, opts);
+      drawFooter(doc, opts);
+      drawFleetDesignFootnote(doc);
+    },
+  });
+  return fleetDesignAutoTableFinalY(doc, y) + 6;
+}
+
+function drawFleetDesignSubheading(doc: jsPDF, text: string, y: number): number {
+  set.text(doc, C.primary);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9.5);
+  doc.text(text, PAGE.mx, y);
+  return y + 4.5;
+}
+
+function fleetDesignFoundBullets(found: unknown): string[] {
+  const f = (found ?? {}) as { summary?: unknown; findings?: unknown };
+  return [
+    ...fdList(f.summary, (s) => fdText(s)),
+    ...fdList(f.findings, (item) => {
+      const finding = item as { title?: unknown; deviceCount?: unknown; evidence?: unknown };
+      const title = fdText(finding.title);
+      if (!title) return '';
+      const count = typeof finding.deviceCount === 'number' ? finding.deviceCount : null;
+      const countPart = count == null ? '' : ` (${count} device${count === 1 ? '' : 's'})`;
+      const evidence = fdList(finding.evidence, (e) => fdText(e)).join('; ');
+      return evidence ? `${title}${countPart} — ${evidence}` : `${title}${countPart}`;
+    }),
+  ];
+}
+
+function drawFleetDesignFunctionsTable(doc: jsPDF, opts: BuildOpts, functions: unknown, y: number): number {
+  if (!Array.isArray(functions) || functions.length === 0) return y;
+  const body = functions.map((item) => {
+    const f = item as { functionKey?: unknown; label?: unknown; deviceIds?: unknown; confidence?: unknown; evidence?: unknown };
+    const label = fdText(f.label) || fdText(f.functionKey) || '—';
+    const deviceCount = Array.isArray(f.deviceIds) ? f.deviceIds.length : 0;
+    const evidence = fdList(f.evidence, (e) => fdText(e)).join('; ') || '—';
+    return [label, String(deviceCount), fmtPct(f.confidence), evidence];
+  });
+  return drawFleetDesignTable(doc, opts, [['Function', 'Devices', 'Confidence', 'Evidence']], body, y);
+}
+
+function drawFleetDesignMonitoringSection(doc: jsPDF, opts: BuildOpts, monitoring: unknown, y: number): number {
+  if (!Array.isArray(monitoring) || monitoring.length === 0) return y;
+  for (const item of monitoring) {
+    const m = item as { functionKey?: unknown; watches?: unknown; alertRules?: unknown };
+    const label = fdText(m.functionKey) || '—';
+    y = ensureFleetDesignRoom(doc, opts, y, 6);
+    y = drawFleetDesignSubheading(doc, label, y);
+
+    const watches = Array.isArray(m.watches) ? m.watches : [];
+    if (watches.length > 0) {
+      const body = watches.map((w) => {
+        const watch = w as { watchType?: unknown; name?: unknown; alertOnStop?: unknown; autoRestart?: unknown; rationale?: unknown };
+        return [
+          fdText(watch.watchType) || '—',
+          fdText(watch.name) || '—',
+          watch.alertOnStop ? 'Yes' : 'No',
+          watch.autoRestart ? 'Yes' : 'No',
+          fdText(watch.rationale, FLEET_DESIGN_TEXT_MAX_CHARS) || '—',
+        ];
+      });
+      y = drawFleetDesignTable(doc, opts, [['Type', 'Name', 'Alert on stop', 'Auto-restart', 'Rationale']], body, y);
+    }
+
+    const rules = Array.isArray(m.alertRules) ? m.alertRules : [];
+    if (rules.length > 0) {
+      const body = rules.map((r) => {
+        const rule = r as { name?: unknown; severity?: unknown; cooldownMinutes?: unknown; paging?: unknown; rationale?: unknown };
+        return [
+          fdText(rule.name) || '—',
+          fdText(rule.severity) || '—',
+          typeof rule.cooldownMinutes === 'number' ? `${rule.cooldownMinutes}m` : '—',
+          fdText(rule.paging) || '—',
+          fdText(rule.rationale, FLEET_DESIGN_TEXT_MAX_CHARS) || '—',
+        ];
+      });
+      y = drawFleetDesignTable(doc, opts, [['Name', 'Severity', 'Cooldown', 'Paging', 'Rationale']], body, y);
+    }
+  }
+  return y;
+}
+
+function drawFleetDesignRetiredTable(doc: jsPDF, opts: BuildOpts, retired: unknown, y: number): number {
+  if (!Array.isArray(retired) || retired.length === 0) return y;
+  const body = retired.map((item) => {
+    const r = item as { kind?: unknown; itemName?: unknown; policyName?: unknown; reason?: unknown };
+    return [fdText(r.kind) || '—', fdText(r.itemName) || '—', fdText(r.policyName) || '—', fdText(r.reason, FLEET_DESIGN_TEXT_MAX_CHARS) || '—'];
+  });
+  return drawFleetDesignTable(doc, opts, [['Kind', 'Item', 'Policy', 'Reason']], body, y);
+}
+
+function drawFleetDesignAutomationBullets(automation: unknown): string[] {
+  if (!Array.isArray(automation)) return [];
+  const bullets: string[] = [];
+  for (const item of automation) {
+    const a = item as { functionKey?: unknown; playbooks?: unknown; scripts?: unknown };
+    const fk = fdText(a.functionKey) || '—';
+    for (const pb of Array.isArray(a.playbooks) ? a.playbooks : []) {
+      const p = (pb ?? {}) as { builtInName?: unknown; custom?: unknown };
+      if (typeof p.builtInName === 'string') {
+        const name = fdText(p.builtInName);
+        if (name) bullets.push(`${fk}: playbook "${name}"`);
+      } else if (p.custom && typeof p.custom === 'object') {
+        const c = p.custom as { name?: unknown; description?: unknown };
+        const name = fdText(c.name);
+        const desc = fdText(c.description, FLEET_DESIGN_TEXT_MAX_CHARS);
+        if (name) bullets.push(desc ? `${fk}: custom playbook "${name}" — ${desc}` : `${fk}: custom playbook "${name}"`);
+      }
+    }
+    for (const sc of Array.isArray(a.scripts) ? a.scripts : []) {
+      const s = (sc ?? {}) as { name?: unknown; purpose?: unknown };
+      const name = fdText(s.name);
+      const purpose = fdText(s.purpose, FLEET_DESIGN_TEXT_MAX_CHARS);
+      if (name) bullets.push(purpose ? `${fk}: script "${name}" — ${purpose}` : `${fk}: script "${name}"`);
+    }
+  }
+  return bullets;
+}
+
+function drawFleetDesignLegacyTable(doc: jsPDF, opts: BuildOpts, legacy: unknown, y: number): number {
+  if (!Array.isArray(legacy) || legacy.length === 0) return y;
+  const body = legacy.map((item) => {
+    const l = item as { scriptName?: unknown; bucket?: unknown; coveredBy?: unknown; intent?: unknown };
+    return [fdText(l.scriptName) || '—', fdText(l.bucket) || '—', fdText(l.coveredBy) || '—', fdText(l.intent, FLEET_DESIGN_TEXT_MAX_CHARS) || '—'];
+  });
+  return drawFleetDesignTable(doc, opts, [['Script', 'Bucket', 'Covered by', 'Intent']], body, y);
+}
+
+function fleetDesignBaselineBullets(baseline: unknown): string[] {
+  const b = (baseline ?? {}) as { notes?: unknown; numbers?: unknown };
+  const numbers = (b.numbers ?? {}) as { alertsPer100EndpointsPerMonth?: unknown; ticketsPerMonth?: unknown; precursors?: unknown };
+  const bullets: string[] = [];
+  if (typeof numbers.alertsPer100EndpointsPerMonth === 'number') {
+    bullets.push(`Alerts per 100 endpoints per month: ${numbers.alertsPer100EndpointsPerMonth}`);
+  }
+  if (typeof numbers.ticketsPerMonth === 'number') {
+    bullets.push(`Tickets per month: ${numbers.ticketsPerMonth}`);
+  }
+  bullets.push(...fdList(numbers.precursors, (p) => {
+    const precursor = (p ?? {}) as { condition?: unknown; deviceCount?: unknown };
+    const condition = fdText(precursor.condition);
+    if (!condition) return '';
+    const label = titleCase(condition);
+    const count = typeof precursor.deviceCount === 'number' ? precursor.deviceCount : null;
+    return count == null ? label : `${label}: ${count} device${count === 1 ? '' : 's'}`;
+  }));
+  bullets.push(...fdList(b.notes, (n) => fdText(n)));
+  return bullets;
+}
+
+function fleetDesignUnsureBullets(unsure: unknown): string[] {
+  const u = (unsure ?? {}) as {
+    lowConfidenceFunctions?: unknown; unreachableDevices?: unknown; needsHuman?: unknown; roleCorrections?: unknown;
+  };
+  const bullets: string[] = [];
+  bullets.push(...fdList(u.lowConfidenceFunctions, (item) => {
+    const f = (item ?? {}) as { functionKey?: unknown; label?: unknown; deviceIds?: unknown; confidence?: unknown; evidence?: unknown };
+    const label = fdText(f.label) || fdText(f.functionKey);
+    if (!label) return '';
+    const count = Array.isArray(f.deviceIds) ? f.deviceIds.length : 0;
+    const evidence = fdList(f.evidence, (e) => fdText(e)).join('; ');
+    return `Low-confidence function: ${label} — ${count} device${count === 1 ? '' : 's'}, confidence ${fmtPct(f.confidence)}${evidence ? ` — ${evidence}` : ''}`;
+  }));
+  bullets.push(...fdList(u.unreachableDevices, (id) => {
+    const t = fdText(id);
+    return t ? `Unreachable device: ${t}` : '';
+  }));
+  bullets.push(...fdList(u.needsHuman, (n) => fdText(n)));
+  bullets.push(...fdList(u.roleCorrections, (item) => {
+    const r = (item ?? {}) as { deviceId?: unknown; currentRole?: unknown; proposedRole?: unknown; evidence?: unknown };
+    const deviceId = fdText(r.deviceId);
+    if (!deviceId) return '';
+    const current = fdText(r.currentRole) || '—';
+    const proposed = fdText(r.proposedRole) || '—';
+    const evidence = fdList(r.evidence, (e) => fdText(e)).join('; ');
+    return `Role correction: device ${deviceId} ${current} -> ${proposed}${evidence ? ` — ${evidence}` : ''}`;
+  }));
+  return bullets;
+}
+
+function renderFleetDesignReport(doc: jsPDF, fd: FleetDesignSnapshot, opts: BuildOpts): void {
+  const orgName = fdText(fd.orgName, NARRATIVE_NAME_MAX_CHARS);
+  const agentName = fdText(fd.agentName, NARRATIVE_NAME_MAX_CHARS);
+  const siteName = fdText(fd.siteName, NARRATIVE_NAME_MAX_CHARS);
+
+  const metaParts = [`Generated ${opts.generatedAt}`];
+  if (agentName) metaParts.push(`Agent: ${agentName}`);
+  if (siteName) metaParts.push(`Site: ${siteName}`);
+
+  let y = drawTitleBlock(doc, 'Fleet Design', orgName, metaParts.join('   ·   '), PAGE.bandH + 8);
+
+  // Closed, exhaustive iteration over FLEET_DESIGN_SECTION_KEYS (never a
+  // stored key order) is what makes an unknown/renamed key structurally
+  // unrenderable. `sections` itself is only present when `outcome` is —
+  // an outcome-less snapshot (old/partial persisted summary) renders just
+  // the title block above, which is the intended degraded-but-safe result.
+  const sections = fd.outcome?.sections;
+  if (sections) {
+    for (const key of FLEET_DESIGN_SECTION_KEYS) {
+      y = ensureFleetDesignRoom(doc, opts, y, 5 + NARRATIVE_LINE_H);
+      y = drawSectionHeading(doc, FLEET_DESIGN_SECTION_TITLES[key], y);
+      switch (key) {
+        case 'found':
+          y = drawFleetDesignBullets(doc, opts, fleetDesignFoundBullets(sections.found), y);
+          break;
+        case 'functions':
+          y = drawFleetDesignFunctionsTable(doc, opts, sections.functions, y);
+          break;
+        case 'monitoring':
+          y = drawFleetDesignMonitoringSection(doc, opts, sections.monitoring, y);
+          break;
+        case 'retired':
+          y = drawFleetDesignRetiredTable(doc, opts, sections.retired, y);
+          break;
+        case 'automation':
+          y = drawFleetDesignBullets(doc, opts, drawFleetDesignAutomationBullets(sections.automation), y);
+          break;
+        case 'legacy':
+          y = drawFleetDesignLegacyTable(doc, opts, sections.legacy, y);
+          break;
+        case 'baseline':
+          y = drawFleetDesignBullets(doc, opts, fleetDesignBaselineBullets(sections.baseline), y);
+          break;
+        case 'unsure':
+          y = drawFleetDesignBullets(doc, opts, fleetDesignUnsureBullets(sections.unsure), y);
+          break;
+      }
+      y += NARRATIVE_SECTION_GAP;
+    }
+  }
+
+  // Chrome for the final page — every earlier page got its chrome from
+  // fleetDesignPageBreak()/drawFleetDesignTable()'s didDrawPage when we
+  // rolled off of it.
+  drawHeaderBand(doc, opts);
+  drawFooter(doc, opts);
+  drawFleetDesignFootnote(doc);
+}
+
+// ----------------------------------------------------------------------------
 // Per-device detail table (curated columns + per-cell colour for posture).
 // ----------------------------------------------------------------------------
 
@@ -1479,6 +1828,15 @@ export function buildReportPdf(rows: unknown[], opts: BuildOpts): jsPDF {
     // schema caps and may paginate; buildReportPdf must not draw a second,
     // conflicting header/footer over whatever page rendering left current.
     renderNarrativeReport(doc, (opts.summary as OrgNarrativeReportSummary).narrative!, opts);
+  } else if (
+    opts.reportType === 'ai_fleet_design'
+    && opts.summary
+    && (opts.summary as FleetDesignReportSummary).fleetDesign
+  ) {
+    // Same self-contained-chrome rationale as the narrative arm above:
+    // section/table volume is unbounded up to the schema caps and may
+    // paginate on its own.
+    renderFleetDesignReport(doc, (opts.summary as FleetDesignReportSummary).fleetDesign!, opts);
   } else {
     renderGenericReport(doc, records, opts);
   }
