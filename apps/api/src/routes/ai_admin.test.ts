@@ -68,6 +68,16 @@ vi.mock('../db/schema', () => ({
     orgId: 'scriptProposals.orgId',
     createdAt: 'scriptProposals.createdAt',
   },
+  scriptExecutions: {
+    id: 'scriptExecutions.id',
+    orgId: 'scriptExecutions.orgId',
+    approvalMethod: 'scriptExecutions.approvalMethod',
+    createdAt: 'scriptExecutions.createdAt',
+  },
+  aiScriptLaneState: {
+    orgId: 'aiScriptLaneState.orgId',
+    state: 'aiScriptLaneState.state',
+  },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -637,6 +647,7 @@ describe('AI routes', () => {
       chain.where = vi.fn(() => chain);
       chain.groupBy = vi.fn(() => chain);
       chain.orderBy = vi.fn(() => chain);
+      chain.limit = vi.fn(() => chain);
       chain.then = (resolve: any, reject: any) => Promise.resolve(result).then(resolve, reject);
       return chain;
     };
@@ -656,12 +667,17 @@ describe('AI routes', () => {
     });
 
     it('returns per-day proposal counts and reviewer-disagreement counts for the org', async () => {
-      vi.mocked(db.select).mockReturnValueOnce(
-        makeChainMock([
-          { date: '2026-09-10', count: 3 },
-          { date: '2026-09-11', count: 1 },
-        ]) as never,
-      );
+      vi.mocked(db.select)
+        .mockReturnValueOnce(
+          makeChainMock([
+            { date: '2026-09-10', count: 3 },
+            { date: '2026-09-11', count: 1 },
+          ]) as never,
+        )
+        // unattendedRuns count
+        .mockReturnValueOnce(makeChainMock([{ count: 0 }]) as never)
+        // laneState row
+        .mockReturnValueOnce(makeChainMock([]) as never);
       vi.mocked(db.execute).mockResolvedValueOnce({
         rows: [{ humanRejectedAfterApprove: '2', humanApprovedAfterReject: '1' }],
       } as never);
@@ -682,7 +698,10 @@ describe('AI routes', () => {
     });
 
     it('defaults reviewer disagreements to 0 when db.execute returns no row', async () => {
-      vi.mocked(db.select).mockReturnValueOnce(makeChainMock([]) as never);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(makeChainMock([]) as never)
+        .mockReturnValueOnce(makeChainMock([{ count: 0 }]) as never)
+        .mockReturnValueOnce(makeChainMock([]) as never);
       vi.mocked(db.execute).mockResolvedValueOnce({ rows: [] } as never);
 
       const res = await app.request(`/ai/admin/script-proposals-metrics?orgId=${ORG_ID}`, {
@@ -693,6 +712,41 @@ describe('AI routes', () => {
         humanRejectedAfterApprove: 0,
         humanApprovedAfterReject: 0,
       });
+    });
+
+    it('includes unattendedRuns and laneState once the W04 lane tables exist', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(makeChainMock([]) as never)
+        // unattendedRuns count
+        .mockReturnValueOnce(makeChainMock([{ count: 4 }]) as never)
+        // laneState row
+        .mockReturnValueOnce(makeChainMock([{ state: 'open' }]) as never);
+      vi.mocked(db.execute).mockResolvedValueOnce({
+        rows: [{ humanRejectedAfterApprove: '0', humanApprovedAfterReject: '0' }],
+      } as never);
+
+      const res = await app.request(`/ai/admin/script-proposals-metrics?orgId=${ORG_ID}`, {
+        headers: { Authorization: 'Bearer test-token' },
+      });
+      const body = await res.json();
+      expect(body.scriptProposals.unattendedRuns).toBe(4);
+      expect(body.scriptProposals.laneState).toBe('open');
+    });
+
+    it('reports laneState null when the org has no lane-state row', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(makeChainMock([]) as never)
+        .mockReturnValueOnce(makeChainMock([{ count: 0 }]) as never)
+        .mockReturnValueOnce(makeChainMock([]) as never);
+      vi.mocked(db.execute).mockResolvedValueOnce({
+        rows: [{ humanRejectedAfterApprove: '0', humanApprovedAfterReject: '0' }],
+      } as never);
+
+      const res = await app.request(`/ai/admin/script-proposals-metrics?orgId=${ORG_ID}`, {
+        headers: { Authorization: 'Bearer test-token' },
+      });
+      const body = await res.json();
+      expect(body.scriptProposals.laneState).toBeNull();
     });
   });
 

@@ -41,7 +41,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { assertNotLocked } from '../services/effectiveSettings';
 import { normalizeAlertThresholds, evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
 import { db } from '../db';
-import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents, scriptProposals } from '../db/schema';
+import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents, scriptProposals, scriptExecutions, aiScriptLaneState } from '../db/schema';
 import { eq, and, desc, gte, lte, count, avg, sql as drizzleSql } from 'drizzle-orm';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 import { PERMISSIONS } from '../services/permissions';
@@ -1631,9 +1631,34 @@ aiRoutes.get(
       disagreementResult,
     );
 
+    // 3. Unattended runs in the window (W04, #5612)
+    const [unattendedCountRow] = await db
+      .select({ count: drizzleSql<number>`COUNT(*)::int` })
+      .from(scriptExecutions)
+      .where(
+        and(
+          eq(scriptExecutions.orgId, orgId),
+          eq(scriptExecutions.approvalMethod, 'unattended_reviewer_gated'),
+          gte(scriptExecutions.createdAt, since),
+          lte(scriptExecutions.createdAt, until),
+        ),
+      );
+    const unattendedRuns = Number(unattendedCountRow?.count ?? 0);
+
+    // 4. Lane state (W04) — one row per org, PK org_id; no row means the
+    // lane has never been evaluated for this org.
+    const [laneRow] = await db
+      .select({ state: aiScriptLaneState.state })
+      .from(aiScriptLaneState)
+      .where(eq(aiScriptLaneState.orgId, orgId))
+      .limit(1);
+    const laneState = laneRow?.state ?? null;
+
     return c.json({
       scriptProposals: {
         perDay,
+        unattendedRuns,
+        laneState,
         reviewerDisagreements: {
           humanRejectedAfterApprove: Number(disagreementRow?.humanRejectedAfterApprove ?? 0),
           humanApprovedAfterReject: Number(disagreementRow?.humanApprovedAfterReject ?? 0),
