@@ -121,12 +121,18 @@ interface RegistrationFacts {
 interface RoleFacts {
   state: M365SyncSourceState;
   /**
-   * `known` is false only when the role-assignment enumeration itself failed
-   * or was truncated — direct assignments are then entirely unknown, so
-   * adminRoles must be null (unknown), not []. `known` stays true when the
-   * enumeration succeeded even though some GROUP expansions were capped: the
-   * direct assignments are still known-good, so [] correctly claims "no
-   * known assignment" and `state` alone reports the incomplete expansion.
+   * `known` is false when the role-assignment enumeration itself failed or
+   * was truncated, OR when any individual group's own member-page fetch
+   * failed or was truncated — in every one of those cases we cannot tell
+   * WHICH users are affected without the missing data, so adminRoles must be
+   * null (unknown) for everyone rather than [] (definitely no assignment)
+   * for whichever users happened to be enumerated so far.
+   *
+   * `known` stays true only when the top-level enumeration AND every group
+   * we actually expanded were each read completely — the coarser "expansion
+   * CAPPED at 50 distinct groups" case still leaves `known: true`, because
+   * every group we did expand was read in full; `state` alone reports that
+   * some groups beyond the cap were never looked at.
    */
   known: boolean;
   byUserId: Map<string, { roleTemplateId: string; displayName: string; viaGroupId?: string }[]>;
@@ -197,6 +203,13 @@ async function fetchRoleFacts(
   const uniquePrincipals = [...new Set(groupAssignments.map((entry) => entry.principalId))].sort();
   const expandable = uniquePrincipals.slice(0, ROLE_GROUP_EXPANSION_CAP);
   let state: M365SyncSourceState = uniquePrincipals.length > expandable.length ? 'error' : 'ok';
+  // A truncated or failed group membership page means we cannot tell which
+  // users it would have named — merging what we DID get would silently turn
+  // "unknown" into "definitely not an admin" for those users. Once ANY
+  // expanded group is incomplete, adminRoles becomes unknown for everyone
+  // (see the RoleFacts.known doc comment): there is no way to narrow the
+  // blast radius to only the affected users without the missing data.
+  let groupMembershipIncomplete = false;
   const membersByGroup = new Map<string, string[]>();
   for (const groupId of expandable) {
     try {
@@ -206,17 +219,24 @@ async function fetchRoleFacts(
         query: { '$select': 'id', '$top': '999' },
         limits: limitsFor(context, context.limits.maxItemsUsers, { maxPages: 5 }),
       });
-      if (members.stopReason !== 'complete') state = 'error';
+      if (members.stopReason !== 'complete') {
+        state = 'error';
+        groupMembershipIncomplete = true;
+      }
       membersByGroup.set(
         groupId,
         members.items.map((member) => member.id).filter((id): id is string => typeof id === 'string'),
       );
     } catch (error) {
       // A non-group principal (service principal, deleted object) 404s. That is
-      // information, not a failure.
-      if (!(error instanceof GraphClientError && error.code === 'graph_not_found')) state = 'error';
+      // information, not a failure — the group simply has no members to merge.
+      if (!(error instanceof GraphClientError && error.code === 'graph_not_found')) {
+        state = 'error';
+        groupMembershipIncomplete = true;
+      }
     }
   }
+  if (groupMembershipIncomplete) return { state, known: false, byUserId };
   for (const { principalId, role } of groupAssignments) {
     for (const memberId of membersByGroup.get(principalId) ?? []) {
       if (userIds.has(memberId)) add(memberId, { ...role, viaGroupId: principalId });

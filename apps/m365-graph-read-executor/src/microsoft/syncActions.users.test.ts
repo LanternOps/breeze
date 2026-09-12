@@ -163,6 +163,36 @@ describe('executeGraphSyncAction — m365.sync.users', () => {
     expect(result.items[1]!.adminRoles).toEqual([]);       // Grace gains nothing
   });
 
+  it('degrades ALL adminRoles to null when a group\'s own member page truncates — never a partial []', async () => {
+    const { client } = stubClient({
+      ...HAPPY,
+      // The group has more members than fit in the fetch's page cap: we get
+      // SOME members back, but cannot tell whether Grace (or anyone else) is
+      // among the ones we did not see.
+      [`/groups/${ADMINS_GROUP}/members`]: { items: GROUP_MEMBERS_PAGE, stopReason: 'max_items', pages: 1 },
+    });
+    const result = await executeGraphSyncAction({ type: 'm365.sync.users' }, context(client));
+    if (!('items' in result)) throw new Error('expected success');
+    expect(result.sources).toMatchObject({ roleAssignments: 'error' });
+    // Ada's DIRECT assignment is unaffected by an unrelated group's truncation.
+    expect(result.items[0]!.adminRoles).toBeNull();
+    // Grace would previously read [] here — a false "definitely not an admin"
+    // — because the partial member page happened not to include her ID.
+    expect(result.items[1]!.adminRoles).toBeNull();
+  });
+
+  it('degrades ALL adminRoles to null when a group\'s own member fetch errors (not 404)', async () => {
+    const { client } = stubClient({
+      ...HAPPY,
+      [`/groups/${ADMINS_GROUP}/members`]: new GraphClientError('graph_throttled', 30),
+    });
+    const result = await executeGraphSyncAction({ type: 'm365.sync.users' }, context(client));
+    if (!('items' in result)) throw new Error('expected success');
+    expect(result.sources).toMatchObject({ roleAssignments: 'error' });
+    expect(result.items[0]!.adminRoles).toBeNull();
+    expect(result.items[1]!.adminRoles).toBeNull();
+  });
+
   it('caps group expansion at 50 lookups and says so through the source state', async () => {
     const groups = Array.from({ length: 60 }, (_unused, index) => `aaaaaaaa-0000-4000-8000-${String(index).padStart(12, '0')}`);
     const responses: Record<string, GraphSyncPageSet | GraphClientError> = {
