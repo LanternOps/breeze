@@ -14,6 +14,7 @@ import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { executeTool, aiTools } from './aiTools';
+import { LIST_DELIVERABLE_TEMPLATES_TOOL, LIST_DELIVERABLES_TOOL, MANAGE_DELIVERABLES_TOOL, MANAGE_KEY_DATES_TOOL } from './aiToolsDeliverables';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
@@ -32,6 +33,7 @@ import { CONTACT_ROLES } from './contacts/types';
 import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
+import { aiScriptAuthoringEnabled } from '../config/env';
 import { captureMessage } from './sentry';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
@@ -174,6 +176,9 @@ export const TOOL_TIERS = {
   sync_huntress_data: 2,
   execute_command: 3,
   run_script: 3,
+  // AI script authoring: a proposal is inert until run_script consumes it.
+  propose_script: 1,
+  get_script_proposal: 1,
   // #3525 — the de-escalation that undoes run_script; same tier, same gate.
   cancel_script_execution: 3,
   // Script library (read-only) — used by the script-builder assistant to
@@ -285,6 +290,12 @@ export const TOOL_TIERS = {
   list_contracts: 2,
   get_contract: 2,
   manage_contracts: 2,          // activate/pause/resume/cancel escalate to 3 in guardrails
+  list_deliverable_templates: 2,
+  list_deliverables: 2,
+  manage_deliverables: 2,       // apply_template escalates to 3 in guardrails (W05)
+  manage_key_dates: 2,
+  list_org_documents: 2,
+  manage_org_documents: 2,
   search_catalog: 2,
   get_catalog_item: 2,
   lookup_distributor_product: 2,
@@ -806,6 +817,49 @@ export const __test__ = { makeSessionAwareHandler, makeHandler };
  * Read from process.env at call time so it tracks runtime config (mirrors
  * googleToolDefinitions).
  */
+/**
+ * AI script authoring tools — EXPOSURE gate for BREEZE_AI_SCRIPT_AUTHORING_ENABLED.
+ * Registration in aiTools and TOOL_TIERS stays unconditional so the
+ * registry-parity contract holds statically; without a tool() entry the model
+ * simply cannot call these. Same shape as m365ToolDefinitions below.
+ */
+export function scriptProposalToolDefinitions(
+  getAuth: () => AuthContext,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  // Return type is inferred (like m365ToolDefinitions): the SDK's
+  // SdkMcpToolDefinition generic is invariant in its shape, so an explicit
+  // SdkTool[] annotation does not accept the concrete tool() results.
+  if (!aiScriptAuthoringEnabled()) return [];
+  const uuid = z.string().guid();
+  return [
+    tool(
+      'propose_script',
+      'Author a script as an immutable proposal for independent review. Nothing runs until it is reviewed and approved through run_script with the returned proposalId. Use this only when no library script fits.',
+      {
+        language: z.enum(['powershell', 'bash', 'python', 'cmd']),
+        content: z.string().min(1).max(65536),
+        goal: z.string().min(1).max(2000),
+        expectedEffect: z.string().min(1).max(2000),
+        verification: z.record(z.string(), z.unknown()),
+        rollbackNote: z.string().max(2000).optional(),
+        deviceIds: z.array(uuid).min(1).max(10),
+        runAs: z.enum(['system', 'user']).optional(),
+        timeoutSeconds: z.number().int().min(1).max(3600).optional(),
+        supersedesProposalId: uuid.optional(),
+      },
+      makeHandler('propose_script', getAuth, onPreToolUse, onPostToolUse),
+    ),
+    tool(
+      'get_script_proposal',
+      'Read a script proposal: status, static scan, review verdict, decision, executions and verification.',
+      { proposalId: uuid },
+      makeHandler('get_script_proposal', getAuth, onPreToolUse, onPostToolUse),
+    ),
+  ];
+}
+
 export function m365ToolDefinitions(
   getAuth: () => AuthContext,
   getActiveSession: (() => ActiveSession | undefined) | undefined,
@@ -1420,9 +1474,13 @@ export function createBreezeMcpServer(
 
     tool(
       'run_script',
-      'Execute a script on one or more devices.',
+      'Execute a script on one or more devices. Give EITHER scriptId (a saved library script) OR proposalId (a reviewed, AI-authored proposal from propose_script) — never both.',
       {
-        scriptId: uuid,
+        // The tool() form takes a raw zod SHAPE, not a schema, so the XOR
+        // refinement can only live in toolInputSchemas.run_script — which
+        // validateToolInput enforces at dispatch. Deliberate asymmetry.
+        scriptId: uuid.optional(),
+        proposalId: uuid.optional(),
         deviceIds: z.array(uuid).min(1).max(10),
         parameters: z.record(z.string(), z.unknown()).optional(),
         // #4888 — mirrors toolInputSchemas.run_script; see scriptRunRequest.ts
@@ -2553,6 +2611,31 @@ export function createBreezeMcpServer(
     ),
 
     tool(
+      'list_org_documents',
+      'List the current version of every document in an organization\'s library (runbooks, baselines, policies, exports, delivery evidence). Metadata only — never the file bytes. Read-only.',
+      {
+        orgId: uuid,
+        category: z.enum(['baseline', 'runbook', 'policy', 'evidence', 'report', 'export', 'other']).optional(),
+        includeSuperseded: z.boolean().optional(),
+      },
+      makeHandler('list_org_documents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_org_documents',
+      'Manage documents already in an organization\'s library: edit metadata, show or hide a document on the customer portal, or mark one document as the newer version of another. File content cannot be added here.',
+      {
+        action: z.enum(['update_metadata', 'set_portal_visibility', 'supersede']),
+        orgId: uuid,
+        documentId: uuid.optional(),
+        supersedesDocumentId: uuid.optional(),
+        portalVisible: z.boolean().optional(),
+        patch: z.record(z.string(), z.unknown()).optional(),
+      },
+      makeHandler('manage_org_documents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
       'manage_contracts',
       'Create and manage recurring contracts for orgs the caller can access: draft edits, lines, and lifecycle actions. Activate, pause, resume, and cancel actions change contract lifecycle state and require approval.',
       {
@@ -2575,6 +2658,60 @@ export function createBreezeMcpServer(
         patch: z.record(z.string(), z.unknown()).optional(),
       },
       makeHandler('manage_contracts', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_deliverables',
+      LIST_DELIVERABLES_TOOL.definition.description ?? 'List service deliverables for one organization. Read-only.',
+      {
+        orgId: uuid,
+        contractId: uuid.optional(),
+        includeInactive: z.boolean().optional(),
+        occurrencesFor: uuid.optional(),
+      },
+      makeHandler('list_deliverables', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_deliverable_templates',
+      LIST_DELIVERABLE_TEMPLATES_TOOL.definition.description ?? 'List deliverable template sets. Read-only.',
+      { orgId: uuid.optional() },
+      makeHandler('list_deliverable_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_deliverables',
+      MANAGE_DELIVERABLES_TOOL.definition.description ?? 'Create and manage service deliverables and their occurrences.',
+      {
+        action: z.enum(['create', 'update', 'deactivate', 'deliver', 'waive', 'reopen', 'reschedule', 'link_evidence', 'apply_template']),
+        orgId: uuid.optional(),
+        deliverableId: uuid.optional(),
+        occurrenceId: uuid.optional(),
+        setId: uuid.optional(),
+        contractId: uuid.optional(),
+        effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        ownerUserId: uuid.optional(),
+        input: z.record(z.string(), z.unknown()).optional(),
+        patch: z.record(z.string(), z.unknown()).optional(),
+        note: z.string().max(4000).optional(),
+        reason: z.string().max(2000).optional(),
+        dueAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        reportRunId: uuid.optional(),
+      },
+      makeHandler('manage_deliverables', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_key_dates',
+      MANAGE_KEY_DATES_TOOL.definition.description ?? 'List, create, update or delete organization key dates.',
+      {
+        action: z.enum(['list', 'create', 'update', 'delete']),
+        orgId: uuid,
+        keyDateId: uuid.optional(),
+        input: z.record(z.string(), z.unknown()).optional(),
+        patch: z.record(z.string(), z.unknown()).optional(),
+      },
+      makeHandler('manage_key_dates', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -2823,6 +2960,9 @@ export function createBreezeMcpServer(
     // approval) and onPostToolUse (ai_tool_executions persistence +
     // delegant_tool_call_id correlation).
     ...m365ToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    // AI script authoring — behind BREEZE_AI_SCRIPT_AUTHORING_ENABLED (see the
+    // factory for why registration stays unconditional but exposure does not).
+    ...scriptProposalToolDefinitions(getAuth, onPreToolUse, onPostToolUse),
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a
     // per-org connection). Same enforcement path as every other tool.
     ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),

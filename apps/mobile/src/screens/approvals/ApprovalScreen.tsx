@@ -28,10 +28,11 @@ import { RequesterRow } from './components/RequesterRow';
 import { ActionHeadline } from './components/ActionHeadline';
 import { DetailsCollapse } from './components/DetailsCollapse';
 import { UacInterceptDetails } from './components/UacInterceptDetails';
+import { ScriptProposalDetails } from './components/ScriptProposalDetails';
 import { RiskBand } from './components/RiskBand';
 import { CustomerTenantBadge } from './components/CustomerTenantBadge';
 import { ApprovalButtons } from './components/ApprovalButtons';
-import { resolveApprovalFlowType } from './approvalFlow';
+import { resolveApprovalFlowType, extractProposalId } from './approvalFlow';
 import { getApprovalCopy } from './approvalCopy';
 import { decisionTarget, type CapturedRequestId } from './decisionTarget';
 import { SuspiciousReportSheet } from './components/SuspiciousReportSheet';
@@ -74,6 +75,12 @@ export function ApprovalScreen() {
   const [reportSheetOpen, setReportSheetOpen] = useState(false);
   const [reportBusy, setReportBusy] = useState(false);
   const expiredHandledRef = useRef<string | null>(null);
+  // W03 (#5612): STRICT patterns the approver has ticked on a script_proposal's
+  // checklist, threaded into the approve POST body. ScriptProposalDetails
+  // reports its own reset (to []) whenever the focused proposal changes, so
+  // this doesn't need its own focus-tracking effect.
+  const [acknowledgedPatterns, setAcknowledgedPatterns] = useState<string[]>([]);
+  const [proposalApproveBlocked, setProposalApproveBlocked] = useState<'acknowledge' | 'permission' | null>(null);
 
   // When does the user "see" the approval? When ApprovalScreen mounts onto a
   // focused approval — that's the takeover moment. We stamp it per approval
@@ -153,7 +160,16 @@ export function ApprovalScreen() {
     haptic.approve();
     const approvalSnap = target;
     const decideSeconds = secondsToDecide(approvalSnap.id);
-    dispatch(approve(approvalSnap.id))
+    // Recomputed from the captured snapshot (not the outer `flowType`) so the
+    // decision matches exactly what the user consented to at press time.
+    const isScriptProposal = resolveApprovalFlowType(approvalSnap) === 'script_proposal';
+    dispatch(
+      approve(
+        isScriptProposal && acknowledgedPatterns.length > 0
+          ? { id: approvalSnap.id, acknowledgedPatterns }
+          : approvalSnap.id
+      )
+    )
       .unwrap()
       .then(() => {
         track('approval_decided', {
@@ -332,6 +348,12 @@ export function ApprovalScreen() {
           <RiskBand tier={focused.riskTier} summary={focused.riskSummary} />
           {flowType === 'uac_intercept' ? (
             <UacInterceptDetails args={focused.actionArguments} />
+          ) : flowType === 'script_proposal' ? (
+            <ScriptProposalDetails
+              proposalId={extractProposalId(focused.actionArguments)!}
+              onAcknowledgementsChange={setAcknowledgedPatterns}
+              onApproveBlockedChange={setProposalApproveBlocked}
+            />
           ) : (
             <DetailsCollapse toolName={focused.actionToolName} args={focused.actionArguments} />
           )}
@@ -346,6 +368,7 @@ export function ApprovalScreen() {
             holdLabel={copy.holdLabel}
             onApprove={handleApprove}
             onDeny={handleDeny}
+            approveDisabled={flowType === 'script_proposal' && proposalApproveBlocked !== null}
           />
         </View>
       </Animated.View>

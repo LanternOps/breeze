@@ -6,6 +6,6 @@ const { id } = Astro.params;
 if (!id) return Astro.redirect('/settings/sites');
 ---
 
-<DashboardLayout title="Site Settings">
+<DashboardLayout titleKey="titles.settingsSitesDetail">
   <SiteDetailPage siteId={id} client:load />
 </DashboardLayout>

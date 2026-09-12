@@ -95,6 +95,9 @@ export const JOB_SCHEDULES = {
   'pax8-sync': '28 4 * * *',
   'audit-chain-anchor': '48 4 * * *',
   'contract-billing-sweep': '8 5 * * *',
+  // Service deliverables W02 (#5573 spec §5.1). Daily tier, minute ≡ 3 (mod 5).
+  // Ten minutes after the billing sweep so the two never hold the pool together.
+  'deliverable-sweep': '18 5 * * *',
   'tdsynnex-sftp-sync': '38 5 * * *',
   'auth-browser-transition-cleanup': '58 5 * * *',
   'invoice-overdue-sweep': '8 6 * * *',

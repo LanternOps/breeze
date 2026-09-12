@@ -26,6 +26,7 @@ import {
   linkTags,
   type BundleAuth,
 } from './scriptBundle';
+import { cutScriptVersion } from './scriptVersions';
 
 export type ScriptCloneInput = { name?: string; orgId?: string };
 export type ScriptCloneError = ScriptScopeError | { error: string; status: 400 | 403 | 404 };
@@ -129,7 +130,9 @@ export async function cloneScript(
         timeoutSeconds: source.timeoutSeconds,
         runAs: source.runAs,
         isSystem: false,
-        version: 1,
+        // cutScriptVersion moves it to 1 below; 0 never escapes this
+        // transaction.
+        version: 0,
         exitCodeSeverityMapping: source.exitCodeSeverityMapping ?? null,
         // #5129 — `acknowledgedSecurityPatterns` is DELIBERATELY not copied, so
         // the clone starts with nothing acknowledged (the column defaults to
@@ -143,11 +146,25 @@ export async function cloneScript(
       .returning();
     if (!row) return undefined;
 
+    // Same transaction as the tag copy, so "failed" keeps meaning "nothing was
+    // created" — including no half-cut version.
+    //
+    // origin 'human', not 'imported': duplicating a script in the UI is a
+    // person acting. 'imported' is reserved for services/scriptBundle.
+    const cut = await cutScriptVersion(tx, {
+      scriptId: row.id,
+      provenance: {
+        origin: 'human',
+        changelog: 'Duplicated from another script',
+        createdBy: auth.user.id,
+      },
+    });
+
     if (tagRows.length > 0) {
       const tagIds = await ensureTagIds(scope, tagRows.map((t) => t.name), tx);
       await linkTags(row.id, tagIds, false, tx);
     }
-    return row;
+    return { ...row, version: cut.version };
   });
   if (!created) {
     return { error: 'Clone failed', status: 400 };

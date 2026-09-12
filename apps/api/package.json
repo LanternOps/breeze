@@ -19,6 +19,7 @@
     "metric-anomalies:backfill": "tsx scripts/metric-anomaly-backfill.ts",
     "metric-rollups:backfill": "tsx scripts/metric-rollup-backfill.ts",
     "partner-trust:backfill-cards": "tsx scripts/partner-trust-backfill-cards.ts",
+    "deliverables:backfill-first-customer": "tsx scripts/backfill-first-customer-deliverables.ts",
     "recover:stuck-agents": "tsx scripts/recover-stuck-agents.ts",
     "recover:stuck-agents:prod": "node dist/scripts/recover-stuck-agents.cjs",
     "secrets:reencrypt": "tsx ../../scripts/re-encrypt-secrets.ts",

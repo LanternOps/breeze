@@ -1,5 +1,5 @@
-import { and, asc, count, desc, eq, getTableColumns, inArray, isNull, ne, sql } from 'drizzle-orm';
-import { db } from '../db';
+import { and, asc, count, desc, eq, getTableColumns, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   serviceDeliverables, serviceDeliverableOccurrences, serviceDeliverableEvidence,
   type ServiceDeliverableRow, type ServiceDeliverableOccurrenceRow,
@@ -8,13 +8,17 @@ import { contracts } from '../db/schema/contracts';
 import { organizations } from '../db/schema/orgs';
 import { users } from '../db/schema/users';
 import { reports, reportRuns } from '../db/schema/reports';
+import { orgDocuments } from '../db/schema/orgDocuments';
 import { ticketCategories } from '../db/schema/tickets';
 import type {
   CreateDeliverableInput, UpdateDeliverableInput, DeliverOccurrenceInput, WaiveOccurrenceInput,
   RescheduleOccurrenceInput, EvidenceRef,
 } from '@breeze/shared';
 import { transition, InvalidTransitionError, type OccurrenceStatus } from './serviceDeliverableState';
-import { isInLeadWindow, isPastGrace } from './recurrence';
+import { isInLeadWindow, isPastGrace, planOccurrences, type Cadence } from './recurrence';
+import { addDaysISO } from './contractMath';
+import { createPlannedWorkTicket } from './plannedWorkTicket';
+import { captureException } from './sentry';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 
 /**
@@ -45,7 +49,23 @@ export interface OccurrenceView extends ServiceDeliverableOccurrenceRow {
   evidence: Array<{ id: string; kind: 'document' | 'report_run'; documentId: string | null; reportId: string | null; reportRunId: string | null; createdAt: string }>;
 }
 
-type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+/**
+ * A live db handle or an open transaction handle. `applyTemplateSet` (W05)
+ * needs every createDeliverable in ONE transaction: reaching for the
+ * module-level `db` proxy from inside `db.transaction()` resolves to the
+ * AMBIENT request transaction, not the nested one, so the writes would not be
+ * covered by the all-or-nothing rollback.
+ */
+export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Nested `transaction()` on an open handle is a SAVEPOINT (see
+ * assertNameAvailable) — the cast is only needed because the union's two arms
+ * type their callback handle differently; both accept the same call.
+ */
+function withSavepoint<T>(executor: DbExecutor, fn: (tx: DbExecutor) => Promise<T>): Promise<T> {
+  return (executor as typeof db).transaction(async (savepoint) => fn(savepoint));
+}
 
 const NON_TERMINAL: readonly OccurrenceStatus[] = ['scheduled', 'open', 'awaiting_evidence', 'missed'];
 const ACTIONABLE: readonly OccurrenceStatus[] = ['open', 'awaiting_evidence', 'missed'];
@@ -95,12 +115,12 @@ function buildSummary(row: ServiceDeliverableRow, contractName: string | null, o
   };
 }
 
-async function loadSummaries(orgId: string, filters: { id?: string; contractId?: string; includeInactive?: boolean }): Promise<DeliverableSummary[]> {
+async function loadSummaries(orgId: string, filters: { id?: string; contractId?: string; includeInactive?: boolean }, executor: DbExecutor = db): Promise<DeliverableSummary[]> {
   const conditions = [eq(serviceDeliverables.orgId, orgId)];
   if (filters.id !== undefined) conditions.push(eq(serviceDeliverables.id, filters.id));
   if (filters.contractId !== undefined) conditions.push(eq(serviceDeliverables.contractId, filters.contractId));
   if (!filters.includeInactive) conditions.push(eq(serviceDeliverables.active, true));
-  const rows = await db
+  const rows = await executor
     .select({ deliverable: serviceDeliverables, contractName: contracts.name })
     .from(serviceDeliverables)
     .leftJoin(contracts, and(eq(contracts.id, serviceDeliverables.contractId), eq(contracts.orgId, serviceDeliverables.orgId)))
@@ -108,7 +128,7 @@ async function loadSummaries(orgId: string, filters: { id?: string; contractId?:
     .orderBy(asc(serviceDeliverables.sortOrder), asc(serviceDeliverables.name));
   if (rows.length === 0) return [];
   const ids = rows.map((r) => r.deliverable.id);
-  const occ = await db
+  const occ = await executor
     .select({
       id: serviceDeliverableOccurrences.id, deliverableId: serviceDeliverableOccurrences.deliverableId,
       status: serviceDeliverableOccurrences.status, dueAt: serviceDeliverableOccurrences.dueAt,
@@ -138,29 +158,29 @@ type RefInput = Pick<UpdateDeliverableInput, 'contractId' | 'ownerUserId' | 'tic
 
 /** Only keys PRESENT on the input are validated, so a PATCH that omits a
  *  reference never re-validates it (and a null clears it without a lookup). */
-async function validateReferences(orgId: string, input: RefInput): Promise<void> {
+async function validateReferences(orgId: string, input: RefInput, executor: DbExecutor = db): Promise<void> {
   if (input.contractId != null) {
-    const [c] = await db.select({ id: contracts.id }).from(contracts)
+    const [c] = await executor.select({ id: contracts.id }).from(contracts)
       .where(and(eq(contracts.id, input.contractId), eq(contracts.orgId, orgId))).limit(1);
     if (!c) throw new DeliverableServiceError('Contract does not belong to this organization', 400, 'CONTRACT_NOT_IN_ORG');
   }
   if (input.ownerUserId != null || input.ticketCategoryId != null) {
-    const [org] = await db.select({ partnerId: organizations.partnerId }).from(organizations)
+    const [org] = await executor.select({ partnerId: organizations.partnerId }).from(organizations)
       .where(eq(organizations.id, orgId)).limit(1);
     if (!org) throw notFound();
     if (input.ownerUserId != null) {
-      const [u] = await db.select({ id: users.id }).from(users)
+      const [u] = await executor.select({ id: users.id }).from(users)
         .where(and(eq(users.id, input.ownerUserId), eq(users.partnerId, org.partnerId))).limit(1);
       if (!u) throw new DeliverableServiceError('Owner must be a user of the organization\'s partner', 400, 'OWNER_NOT_ALLOWED');
     }
     if (input.ticketCategoryId != null) {
-      const [cat] = await db.select({ id: ticketCategories.id }).from(ticketCategories)
+      const [cat] = await executor.select({ id: ticketCategories.id }).from(ticketCategories)
         .where(and(eq(ticketCategories.id, input.ticketCategoryId), eq(ticketCategories.partnerId, org.partnerId))).limit(1);
       if (!cat) throw new DeliverableServiceError('Ticket category must belong to the organization\'s partner', 400, 'CATEGORY_NOT_ALLOWED');
     }
   }
   if (input.autoEvidenceReportId != null) {
-    const [r] = await db.select({ id: reports.id }).from(reports)
+    const [r] = await executor.select({ id: reports.id }).from(reports)
       .where(and(eq(reports.id, input.autoEvidenceReportId), eq(reports.orgId, orgId))).limit(1);
     if (!r) throw notFound();
   }
@@ -181,14 +201,14 @@ const duplicateName = () =>
  * error rolls back the savepoint alone and the outer transaction stays usable
  * for the 409 response.
  */
-async function assertNameAvailable(orgId: string, contractId: string | null, name: string, excludeId?: string): Promise<void> {
+async function assertNameAvailable(orgId: string, contractId: string | null, name: string, excludeId?: string, executor: DbExecutor = db): Promise<void> {
   const conditions = [
     eq(serviceDeliverables.orgId, orgId),
     eq(serviceDeliverables.name, name),
     contractId === null ? isNull(serviceDeliverables.contractId) : eq(serviceDeliverables.contractId, contractId),
   ];
   if (excludeId) conditions.push(ne(serviceDeliverables.id, excludeId));
-  const [dup] = await db.select({ one: sql<number>`1` }).from(serviceDeliverables).where(and(...conditions)).limit(1);
+  const [dup] = await executor.select({ one: sql<number>`1` }).from(serviceDeliverables).where(and(...conditions)).limit(1);
   if (dup) throw duplicateName();
 }
 
@@ -219,20 +239,25 @@ export async function getDeliverable(orgId: string, id: string, actor: Deliverab
  *  get endpoints return, so the web table can splice a create/PATCH response
  *  straight in without losing status / nextDue / contractName. includeInactive
  *  so a PATCH that just deactivated the row still resolves. */
-async function loadWrittenSummary(orgId: string, id: string): Promise<DeliverableSummary> {
-  const [summary] = await loadSummaries(orgId, { id, includeInactive: true });
+async function loadWrittenSummary(orgId: string, id: string, executor: DbExecutor = db): Promise<DeliverableSummary> {
+  const [summary] = await loadSummaries(orgId, { id, includeInactive: true }, executor);
   if (!summary) throw new DeliverableServiceError('Deliverable vanished after write', 500, 'RELOAD_FAILED');
   return summary;
 }
 
-export async function createDeliverable(orgId: string, input: CreateDeliverableInput, actor: DeliverableActor): Promise<DeliverableSummary> {
+/**
+ * `executor` defaults to the ambient `db` proxy. `applyTemplateSet` (W05) passes
+ * the open transaction handle so every deliverable of one template apply lands
+ * in the same all-or-nothing transaction, reads included.
+ */
+export async function createDeliverable(orgId: string, input: CreateDeliverableInput, actor: DeliverableActor, executor: DbExecutor = db): Promise<DeliverableSummary> {
   requireOrgAccess(actor, orgId);
-  await validateReferences(orgId, input);
-  await assertNameAvailable(orgId, input.contractId ?? null, input.name);
+  await validateReferences(orgId, input, executor);
+  await assertNameAvailable(orgId, input.contractId ?? null, input.name, undefined, executor);
   let row: ServiceDeliverableRow | undefined;
   try {
     // Savepoint: see assertNameAvailable — keeps a 23505 from poisoning the request transaction.
-    [row] = await db.transaction(async (tx) => tx.insert(serviceDeliverables).values({
+    [row] = await withSavepoint(executor, async (tx) => tx.insert(serviceDeliverables).values({
       orgId,
       contractId: input.contractId ?? null,
       name: input.name,
@@ -256,7 +281,7 @@ export async function createDeliverable(orgId: string, input: CreateDeliverableI
     mapUniqueViolation(err);
   }
   if (!row) throw new DeliverableServiceError('Insert returned no row', 500, 'INSERT_FAILED');
-  return loadWrittenSummary(orgId, row.id);
+  return loadWrittenSummary(orgId, row.id, executor);
 }
 
 export async function updateDeliverable(orgId: string, id: string, patch: UpdateDeliverableInput, actor: DeliverableActor): Promise<DeliverableSummary> {
@@ -383,12 +408,26 @@ async function insertEvidenceRef(orgId: string, occurrenceId: string, ref: Evide
       });
       return;
     }
+    case 'document': {
+      // 404 not 403 (spec §12): a document of another org — or a soft-deleted
+      // one — must be indistinguishable from one that does not exist. The
+      // composite FK (document_id, org_id) is the DB backstop; checking here
+      // gives the caller a clean 404 instead of a 23503. Evidence pins this
+      // exact version: a later replace creates a new id and never moves it.
+      const [doc] = await executor.select({ id: orgDocuments.id })
+        .from(orgDocuments)
+        .where(and(eq(orgDocuments.id, ref.documentId), eq(orgDocuments.orgId, orgId), isNull(orgDocuments.deletedAt)))
+        .limit(1);
+      if (!doc) throw notFound();
+      await executor.insert(serviceDeliverableEvidence).values({
+        orgId, occurrenceId, kind: 'document', documentId: doc.id, reportId: null, reportRunId: null, createdByUserId: actor.userId,
+      });
+      return;
+    }
     default: {
-      // W03 widens EvidenceRef with { kind: 'document' }; this guard turns a
-      // forgotten branch into a compile error and a loud 500, never a silent
-      // no-op. Narrow on the discriminant (not `ref`): the union is currently
-      // a single member, and a lone object type never narrows to `never`.
-      const _exhaustive: never = ref.kind;
+      // Turns a forgotten branch into a compile error and a loud 500, never a
+      // silent no-op.
+      const _exhaustive: never = ref;
       throw new DeliverableServiceError('Unsupported evidence kind', 500, 'UNSUPPORTED_EVIDENCE_KIND');
     }
   }
@@ -540,6 +579,13 @@ export async function rescheduleOccurrence(
   });
 }
 
+/** Load one occurrence by id, 404 NOT_FOUND on a foreign org or a missing row
+ *  (W03: the evidence-upload route needs it before it writes a document). */
+export async function getOccurrenceOr404(orgId: string, occurrenceId: string, actor: DeliverableActor): Promise<OccurrenceView> {
+  requireOrgAccess(actor, orgId);
+  return loadView(orgId, occurrenceId, db);
+}
+
 export async function addEvidence(orgId: string, occurrenceId: string, ref: EvidenceRef, actor: DeliverableActor): Promise<OccurrenceView> {
   requireOrgAccess(actor, orgId);
   return db.transaction(async (tx) => {
@@ -582,17 +628,287 @@ export async function removeEvidence(orgId: string, occurrenceId: string, eviden
 // Exported as stubs so W02 replaces bodies, not names.
 // ---------------------------------------------------------------------------
 
-export async function materializeOccurrences(_deliverableId: string, _today: string): Promise<ServiceDeliverableOccurrenceRow[]> {
-  throw new Error('not implemented (W02)');
+/** Spec §5.3 step 1. System caller — run inside withSystemDbAccessContext. */
+export async function materializeOccurrences(deliverableId: string, today: string): Promise<ServiceDeliverableOccurrenceRow[]> {
+  const [d] = await db
+    .select({
+      id: serviceDeliverables.id, orgId: serviceDeliverables.orgId, name: serviceDeliverables.name,
+      cadence: serviceDeliverables.cadence, anchorDueDate: serviceDeliverables.anchorDueDate,
+      effectiveFrom: serviceDeliverables.effectiveFrom, effectiveUntil: serviceDeliverables.effectiveUntil,
+      leadDays: serviceDeliverables.leadDays, graceDays: serviceDeliverables.graceDays,
+    })
+    .from(serviceDeliverables).where(eq(serviceDeliverables.id, deliverableId)).limit(1);
+  if (!d) throw notFound();
+
+  // Keyed on original_due_at: a rescheduled occurrence moved its due_at, but its
+  // nominal slot is still taken and must not be planned again.
+  const existing = await db
+    .select({ originalDueAt: serviceDeliverableOccurrences.originalDueAt })
+    .from(serviceDeliverableOccurrences)
+    .where(eq(serviceDeliverableOccurrences.deliverableId, deliverableId));
+
+  const plan = planOccurrences({
+    anchorDueDate: d.anchorDueDate, cadence: d.cadence as Cadence,
+    effectiveFrom: d.effectiveFrom, effectiveUntil: d.effectiveUntil,
+    leadDays: d.leadDays, graceDays: d.graceDays, today,
+    existingDueDates: existing.map((e) => e.originalDueAt),
+  });
+  if (plan.length === 0) return [];
+
+  return db.insert(serviceDeliverableOccurrences)
+    .values(plan.map((p) => ({
+      orgId: d.orgId, deliverableId: d.id,
+      // Spec §4.2: the name at materialization. A later rename never rewrites history.
+      nameSnapshot: d.name,
+      periodStart: p.periodStart, periodEnd: p.periodEnd,
+      dueAt: p.dueAt, originalDueAt: p.dueAt, status: p.initialStatus,
+    })))
+    // UNIQUE (deliverable_id, period_start) is the claim; a concurrent sweep
+    // loses silently rather than raising 23505 and failing the deliverable.
+    .onConflictDoNothing({ target: [serviceDeliverableOccurrences.deliverableId, serviceDeliverableOccurrences.periodStart] })
+    .returning();
 }
-export async function openOccurrence(_occurrenceId: string, _ticketId: string | null): Promise<void> {
-  throw new Error('not implemented (W02)');
+/** Spec §5.3 step 2, single-row form. System caller. */
+export async function openOccurrence(occurrenceId: string, ticketId: string | null): Promise<void> {
+  await db.update(serviceDeliverableOccurrences)
+    .set({ status: 'open', ...(ticketId ? { ticketId } : {}), updatedAt: new Date() })
+    .where(and(eq(serviceDeliverableOccurrences.id, occurrenceId), eq(serviceDeliverableOccurrences.status, 'scheduled')));
 }
-export async function markOccurrenceMissed(_occurrenceId: string): Promise<void> {
-  throw new Error('not implemented (W02)');
+const MISSABLE: readonly OccurrenceStatus[] = ['open', 'awaiting_evidence'];
+
+/** Spec §5.3 step 4, single-row form. System caller. */
+export async function markOccurrenceMissed(occurrenceId: string): Promise<void> {
+  await db.update(serviceDeliverableOccurrences)
+    .set({ status: 'missed', updatedAt: new Date() })
+    .where(and(eq(serviceDeliverableOccurrences.id, occurrenceId), inArray(serviceDeliverableOccurrences.status, MISSABLE)));
 }
-export async function applyTicketStatusChange(_args: {
+const RESOLVED_LIKE: ReadonlySet<string> = new Set(['resolved', 'closed']);
+const REOPENED_LIKE: ReadonlySet<string> = new Set(['new', 'open', 'pending', 'on_hold']);
+
+/**
+ * Spec §6. System caller (the `deliverable-status` subscriber). Advisory, not
+ * the record of delivery (D4) — the deliverable's completion policy decides,
+ * via the pure state machine. Idempotent by construction: the write is CAS'd
+ * on the status this function read, so a duplicate or racing event updates 0
+ * rows.
+ */
+export async function applyTicketStatusChange(args: {
   ticketId: string; orgId: string; to: string; actorUserId: string | null; resolutionNote: string | null;
 }): Promise<void> {
-  throw new Error('not implemented (W02)');
+  const [occ] = await db.select({
+      id: serviceDeliverableOccurrences.id, status: serviceDeliverableOccurrences.status,
+      deliveredVia: serviceDeliverableOccurrences.deliveredVia,
+      artifactRequired: serviceDeliverables.artifactRequired,
+      completionMode: serviceDeliverables.completionMode,
+    })
+    .from(serviceDeliverableOccurrences)
+    .innerJoin(serviceDeliverables, and(
+      eq(serviceDeliverables.id, serviceDeliverableOccurrences.deliverableId),
+      eq(serviceDeliverables.orgId, serviceDeliverableOccurrences.orgId),
+    ))
+    .where(and(eq(serviceDeliverableOccurrences.ticketId, args.ticketId), eq(serviceDeliverableOccurrences.orgId, args.orgId)))
+    .limit(1);
+  if (!occ) return;
+
+  const current = occ.status;
+  let outcome: ReturnType<typeof transition>;
+  if (RESOLVED_LIKE.has(args.to)) {
+    const evidence = await db.select({ id: serviceDeliverableEvidence.id })
+      .from(serviceDeliverableEvidence)
+      .where(and(eq(serviceDeliverableEvidence.occurrenceId, occ.id), eq(serviceDeliverableEvidence.orgId, args.orgId)))
+      .limit(1);
+    outcome = transition(current, {
+      type: 'ticket_resolved', hasEvidence: evidence.length > 0,
+      artifactRequired: occ.artifactRequired, completionMode: occ.completionMode,
+    });
+  } else if (REOPENED_LIKE.has(args.to)) {
+    outcome = transition(current, { type: 'ticket_reopened', deliveredVia: occ.deliveredVia });
+  } else {
+    return;
+  }
+  if (outcome.next === null) return;
+
+  const now = new Date();
+  const patch: Partial<typeof serviceDeliverableOccurrences.$inferInsert> = { status: outcome.next, updatedAt: now };
+  if (outcome.next === 'delivered') {
+    patch.deliveredAt = now;
+    patch.deliveredByUserId = args.actorUserId;
+    patch.deliveredVia = 'ticket';
+    patch.deliveryNote = args.resolutionNote;
+  } else if (outcome.next === 'awaiting_evidence') {
+    // The delivery is not recorded until evidence arrives (addEvidence stamps
+    // it), but the technician's resolution note is the delivery narrative —
+    // keep it so the eventual delivery carries it.
+    patch.deliveryNote = args.resolutionNote;
+  } else if (outcome.next === 'open') {
+    patch.deliveredAt = null; patch.deliveredByUserId = null;
+    patch.deliveredVia = null; patch.deliveryNote = null;
+  }
+
+  await db.update(serviceDeliverableOccurrences).set(patch)
+    // CAS on the status we decided from: a concurrent write loses silently.
+    .where(and(occurrenceKey(args.orgId, occ.id), eq(serviceDeliverableOccurrences.status, current)));
+}
+
+// ---------------------------------------------------------------------------
+// W02 sweep-shaped siblings (system callers, no actor).
+// ---------------------------------------------------------------------------
+
+export interface SweepDeliverable {
+  id: string; orgId: string; name: string;
+  cadence: 'monthly' | 'quarterly' | 'semiannual' | 'annual' | 'one_time';
+  anchorDueDate: string; effectiveFrom: string; effectiveUntil: string | null;
+  leadDays: number; graceDays: number; autoEvidenceReportId: string | null;
+}
+
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
+
+/** "Oct 2026" | "Q4 2026" | "H2 2026" | "2026" — the period label in the ticket subject. */
+export function periodLabel(cadence: Cadence, periodEnd: string): string {
+  const y = Number(periodEnd.slice(0, 4));
+  const m = Number(periodEnd.slice(5, 7));
+  if (cadence === 'annual') return String(y);
+  if (cadence === 'semiannual') return `H${m <= 6 ? 1 : 2} ${y}`;
+  if (cadence === 'quarterly') return `Q${Math.ceil(m / 3)} ${y}`;
+  return `${MONTH_ABBR[m - 1]} ${y}`;                        // monthly and one_time
+}
+
+/**
+ * Synthetic actor for sweep-created tickets: only ever written to
+ * audit_logs.actor_id, which is NOT NULL with no FK to users (precedent:
+ * inboundEmailService.ts). createTicket writes no `tickets` column from it.
+ */
+const DELIVERABLE_SWEEP_ACTOR = { userId: '00000000-0000-0000-0000-000000000000', name: 'Service deliverables' } as const;
+
+type SweepOccurrence = { id: string; nameSnapshot: string; periodStart: string; periodEnd: string; dueAt: string };
+
+/**
+ * Spec §5.3 step 2. Self-wrapping: one system transaction per occurrence, so
+ * the claim UPDATE and the ticket creation commit or roll back together — a
+ * crash between them cannot strand an `open` occurrence with no ticket and no
+ * retry.
+ */
+export async function openDueOccurrencesForDeliverable(
+  d: SweepDeliverable, today: string, serviceOffWarned: Set<string>,
+): Promise<number> {
+  const candidates: SweepOccurrence[] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    db.select({
+        id: serviceDeliverableOccurrences.id, nameSnapshot: serviceDeliverableOccurrences.nameSnapshot,
+        periodStart: serviceDeliverableOccurrences.periodStart, periodEnd: serviceDeliverableOccurrences.periodEnd,
+        dueAt: serviceDeliverableOccurrences.dueAt,
+      })
+      .from(serviceDeliverableOccurrences)
+      .where(and(eq(serviceDeliverableOccurrences.deliverableId, d.id), eq(serviceDeliverableOccurrences.status, 'scheduled'))),
+    'deliverableSweep.selectScheduled'));
+
+  let opened = 0;
+  for (const occ of candidates) {
+    if (!isInLeadWindow(occ.dueAt, d.leadDays, today)) continue;
+    // Per occurrence: its transaction rolls back (releasing the claim for
+    // tomorrow), and the deliverable's REMAINING occurrences — and the miss
+    // and auto-evidence steps that follow in the sweep — still run today.
+    try {
+      opened += await runOutsideDbContext(() => withSystemDbAccessContext(
+        () => openOneOccurrence(d, occ, serviceOffWarned), 'deliverableSweep.openOccurrence'));
+    } catch (err) {
+      console.error('[deliverables] opening an occurrence failed', `orgId=${d.orgId}`, `deliverableId=${d.id}`,
+        `occurrenceId=${occ.id}`, err instanceof Error ? err.message : String(err));
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+  return opened;
+}
+
+async function openOneOccurrence(d: SweepDeliverable, occ: SweepOccurrence, serviceOffWarned: Set<string>): Promise<number> {
+  // Claim first: 0 rows means a concurrent sweep won and already has the ticket.
+  const claimed = await db.update(serviceDeliverableOccurrences)
+    .set({ status: 'open', updatedAt: new Date() })
+    .where(and(eq(serviceDeliverableOccurrences.id, occ.id), eq(serviceDeliverableOccurrences.status, 'scheduled')))
+    .returning({ id: serviceDeliverableOccurrences.id });
+  if (claimed.length === 0) return 0;
+
+  const [cfg] = await db.select({
+      ownerUserId: serviceDeliverables.ownerUserId,
+      ticketCategoryId: serviceDeliverables.ticketCategoryId,
+      description: serviceDeliverables.description,
+    }).from(serviceDeliverables).where(eq(serviceDeliverables.id, d.id)).limit(1);
+
+  // Any failure other than Service Management `off` (and a stale owner or
+  // category, which the helper drops) is rethrown: this transaction rolls
+  // back, the claim is released, and the occurrence retries on the next run
+  // rather than being stranded `open` with no ticket.
+  const created = await createPlannedWorkTicket({
+    orgId: d.orgId, workKind: 'deliverable',
+    subject: `${occ.nameSnapshot} — ${periodLabel(d.cadence, occ.periodEnd)}`,
+    description: cfg?.description ?? undefined,
+    dueDate: new Date(`${occ.dueAt}T00:00:00.000Z`),
+    assigneeId: cfg?.ownerUserId ?? null,
+    categoryId: cfg?.ticketCategoryId ?? null,
+  }, DELIVERABLE_SWEEP_ACTOR, { orgId: d.orgId, deliverableId: d.id });
+
+  if (created.kind === 'service_management_off') {
+    // Spec §5.3 step 2: an `off` partner still gets the occurrence, fulfilled by hand.
+    if (!serviceOffWarned.has(d.orgId)) {
+      serviceOffWarned.add(d.orgId);
+      console.warn('[deliverables] Service Management is off for this partner — occurrences opened without tickets',
+        `orgId=${d.orgId}`, `deliverableId=${d.id}`);
+    }
+    return 1;
+  }
+
+  await db.update(serviceDeliverableOccurrences)
+    .set({ ticketId: created.ticketId, updatedAt: new Date() })
+    .where(eq(serviceDeliverableOccurrences.id, occ.id));
+  return 1;
+}
+/**
+ * Spec §5.3 step 4, sweep form. System caller. The ticket is deliberately
+ * untouched: a missed deliverable's work may still be in flight, and closing
+ * its ticket would destroy that signal.
+ */
+export async function markDueOccurrencesMissedForDeliverable(d: SweepDeliverable, today: string): Promise<number> {
+  const cutoff = addDaysISO(today, -d.graceDays);   // due_at < cutoff ⇔ due_at + grace < today (isPastGrace)
+  const rows = await db.update(serviceDeliverableOccurrences)
+    .set({ status: 'missed', updatedAt: new Date() })
+    .where(and(
+      eq(serviceDeliverableOccurrences.deliverableId, d.id),
+      inArray(serviceDeliverableOccurrences.status, MISSABLE),
+      lt(serviceDeliverableOccurrences.dueAt, cutoff),
+    ))
+    .returning({ id: serviceDeliverableOccurrences.id });
+  return rows.length;
+}
+/**
+ * Spec §5.4. A cancelled contract ends the service it paid for, so every
+ * deliverable still open-ended on it stops today. `paused` deliberately does
+ * nothing (a billing pause is not a service pause) and `expired` is ignored
+ * entirely (D1 — generateDueInvoice expires an annual-advance contract the day
+ * after its single invoice while service runs on).
+ *
+ * The contract's CURRENT status is re-read rather than trusted from the event:
+ * `contract-events` gained its first consumer in this wave, so the first
+ * deploy drains a historical backlog, and a cancel later reversed must not
+ * close a live deliverable. cancelContract stores no cancellation timestamp,
+ * so `today` is the processing date, not a back-date. Self-wrapping.
+ */
+export async function applyContractCancelledToDeliverables(contractId: string, today: string): Promise<number> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const [contract] = await db.select({ id: contracts.id, orgId: contracts.orgId, status: contracts.status })
+      .from(contracts).where(eq(contracts.id, contractId)).limit(1);
+    if (!contract || contract.status !== 'cancelled') return 0;
+
+    const updated = await db.update(serviceDeliverables)
+      .set({ effectiveUntil: today, updatedAt: new Date() })
+      .where(and(
+        eq(serviceDeliverables.contractId, contractId),
+        eq(serviceDeliverables.orgId, contract.orgId),
+        isNull(serviceDeliverables.effectiveUntil),
+      ))
+      .returning({ id: serviceDeliverables.id });
+    if (updated.length > 0) {
+      console.log('[deliverables] contract cancelled — closed effective window',
+        `contractId=${contractId}`, `deliverables=${updated.length}`, `effectiveUntil=${today}`);
+    }
+    return updated.length;
+  }, 'deliverables.contractCancelled'));
 }

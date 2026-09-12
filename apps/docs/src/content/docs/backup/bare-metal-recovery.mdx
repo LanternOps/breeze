@@ -1,6 +1,6 @@
 ---
 title: Bare Metal Recovery
-description: Reinstall a base OS or boot an operator-built Linux ISO, then use a one-time recovery token to restore files from a file snapshot or apply the OS state captured in a system_image snapshot — and, on Linux, rebuild a disk from scratch with breeze-backup rebuild.
+description: Boot the Breeze recovery media, enter a one-time code, and rebuild a Linux machine from a whole-machine snapshot onto a blank disk — or, as the fallback, reinstall an OS yourself and recover files or OS state into it with a recovery token.
 sidebar:
   order: 12
   label: "Bare Metal Recovery"
@@ -8,25 +8,76 @@ sidebar:
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-Bare Metal Recovery (BMR) is a **reinstall-then-recover** flow, not disk imaging. You put a working OS on the target machine yourself — by installing one normally or, on Linux/amd64 hardware, by booting an ISO Breeze builds from your own boot-template directory — then run the `breeze-backup` recovery binary with a one-time token. It downloads the snapshot: a `file` snapshot restores its files onto whatever is already booted; a `system_image` snapshot downloads the OS-state artifacts collected at backup time, verifies each one, and **applies them to the booted OS** (registry hives, `/etc`, packages, services, firewall rules, scheduled tasks — see [What gets applied](#what-a-system_image-recovery-applies)). Breeze does not ship boot media, and there is no WinPE/WinRE environment: on Windows and macOS you provide the booted OS yourself before recovery starts.
+Bare Metal Recovery (BMR) has two modes.
 
-Since v0.112.0 there is also a second, Linux-only path — [`breeze-backup rebuild`](#rebuilding-a-linux-disk-from-scratch-breeze-backup-rebuild) — which partitions a blank disk from the layout recorded with the snapshot, restores a whole-machine snapshot into it, applies the system state offline and installs the bootloader. It is a command-line tool for recovery media, not a button in the console.
+- **Recover from Breeze recovery media** (Linux). Download the release-built Linux ISO, boot the target machine from it, and enter a one-time nine-character code from the console. The media partitions the blank disk from the layout recorded with the snapshot, restores a whole-machine snapshot into it, applies the OS state offline, installs the bootloader and reboots into the rebuilt system. Progress is reported live on the recovery's timeline in Breeze. This is the path for a dead disk or replacement hardware; see [Recover from Breeze recovery media](#recover-from-breeze-recovery-media).
+- **Reinstall-then-recover** (all platforms). You put a working OS on the target machine yourself, then run the `breeze-backup` recovery binary with a one-time token. A `file` snapshot restores its files onto whatever is booted; a `system_image` snapshot downloads the OS-state artifacts collected at backup time, verifies each one, and **applies them to the booted OS** (registry hives, `/etc`, packages, services, firewall rules, scheduled tasks — see [What gets applied](#what-a-system_image-recovery-applies)). There is no WinPE/WinRE environment yet: on Windows and macOS this is the only mode, and you provide the booted OS before recovery starts. See [Alternative: recover into a freshly installed OS](#alternative-recover-into-a-freshly-installed-os).
+
+Both modes share the same rebuild engine, [`breeze-backup rebuild`](#rebuilding-a-linux-disk-from-scratch-breeze-backup-rebuild), which is also available as a command-line tool for scripted or unusual recoveries.
 
 A recovery token is scoped to **one snapshot**. A `file`-mode snapshot recovers data; a `system_image`-mode snapshot applies OS state. To recover both for one machine, generate two tokens (one per snapshot) and run `bmr-recover` twice, or back the machine up with a [Whole machine profile](/backup/profiles/#whole-machine-templates) so one snapshot carries both — a whole-machine profile is a single `system_image` selection that also walks the OS root, so it produces exactly one snapshot with files, layout, and system state together, not a separate file snapshot plus a files-less `system_image` snapshot.
 
 ---
 
-## How It Works
+## Recover from Breeze recovery media
 
-1. Get a working OS onto the target machine — install one normally, or boot the Linux/amd64 recovery ISO if you built one from your boot template.
+This is the fully guided path. It needs a whole-machine snapshot that Breeze marked **Bare-metal restorable** (see [Is the snapshot bare-metal restorable?](#is-the-snapshot-bare-metal-restorable)) and a target machine that boots UEFI with one blank disk at least as large as the source disk.
+
+### 1. Get the media
+
+<Steps>
+1. Open **Backup → Recovery Bootstrap**. The **Boot media** list shows the current release's `breeze-recovery-linux-amd64.iso` and `breeze-recovery-linux-arm64.iso` with their SHA-256 checksums. The same files are attached to each [GitHub release](https://github.com/LanternOps/breeze/releases) and served by your Breeze server at `/download/recovery-iso/linux/<arch>`.
+2. Write the ISO to a USB stick (`dd if=breeze-recovery-linux-amd64.iso of=/dev/sdX bs=4M status=progress`, Rufus in DD mode, or balenaEtcher), or attach it as a virtual DVD to a VM.
+3. Keep the media current. The server enforces a minimum media version at code exchange, so an ISO from an older release is refused with `This recovery media (vX) is older than the server requires (vY); download the current ISO.`
+</Steps>
+
+The media is a Debian live system with the `breeze-backup` binary and nothing else of yours on it: no server address, no credentials, no snapshot data. Everything is fetched at recovery time with the code.
+
+### 2. Create a recovery code
+
+<Steps>
+1. Still on **Recovery Bootstrap**, in the **Bare-metal recovery** panel, pick the snapshot to rebuild from. Only snapshots marked **Bare-metal restorable** are listed.
+2. Choose the **Device identity**:
+   - **Original device** — the rebuilt machine keeps its machine ID, hostname and agent enrollment, and the recovery completes when it checks in for the first time. Use this to bring the same device back on repaired or identical hardware.
+   - **New device** — the machine ID is regenerated, the hostname gets a `-restored` suffix and the agent identity is stripped, so it enrolls as a brand-new device if you install an agent. Use this for rehearsals, VMs, or when the original is still in service.
+3. Click **Create recovery code**. The code (`XXX-XXX-XXX`) is shown once, expires after **15 minutes**, and can be used **once**. Create it right before you boot the media.
+</Steps>
+
+<Aside type="note">
+  One recovery at a time per device. While a recovery is anywhere between `created` and `rebooted`, creating another for the same device is refused with `recovery_in_progress`; it clears once the recovery reaches a terminal state (`checked_in`, `completed`, `failed` or `refused`).
+</Aside>
+
+### 3. Boot and follow the console
+
+<Steps>
+1. Boot the target machine from the media. GRUB starts the live system automatically after 5 seconds; the console also mirrors to the first serial port (`ttyS0`, 115200 8N1) for headless servers reached over IPMI or SOL.
+2. **Breeze server URL** — enter your server's `https://` address. Plain `http://` is refused unless the media was booted with `breeze.insecure=1` on the kernel command line (development only).
+3. **Recovery code** — enter the code. You get three attempts. On success the console downloads the plan: the device, snapshot time, source disk layout, the detected target disk with model, size and serial, and the identity mode.
+4. If more than one candidate disk is found, choose one by number. Disks that are mounted or hold the live system are never offered.
+5. **Confirm** by typing the target disk's serial number exactly as shown, or `ERASE` when the disk reports no serial (common for virtual disks). Anything else cancels without touching the disk.
+6. The seven rebuild phases run with progress on screen: preflight, provision, restore, boot, identity, encryption, validate. Each phase is also posted to Breeze, so the recovery's timeline on the **Recovery Bootstrap** panel moves through `Media booted → Planned → Restoring → Validated → Rebooted`.
+7. `Restored. Rebooting in 10 s (press any key to stay).` Remove the media. With **Original device** the recovery becomes `Checked in` on the restored agent's first heartbeat; with **New device** it is `Completed` as soon as validation passes.
+</Steps>
+
+If a phase fails or the snapshot is refused, the reason stays on screen with a `[r]etry  [s]hell  [p]oweroff` prompt, and the same reason is recorded on the recovery in Breeze. `[s]hell` drops to a root shell on the live system for inspection. Re-running the same recovery resumes: phases already completed are skipped and restore progress is kept.
+
+<Aside type="caution" title="Unattended boot options">
+  The kernel command line accepts `breeze.server=`, `breeze.code=`, `breeze.target=`, `breeze.confirm=` and `breeze.after=poweroff` to pre-answer the prompts. These exist for Breeze's own CI and for lab automation; a code on a command line is a code in a boot log, so do not use them for production recoveries.
+</Aside>
+
+---
+
+## Alternative: recover into a freshly installed OS
+
+Use this mode on Windows and macOS, on Linux machines whose layout is not bare-metal restorable, or when you only need data or configuration back on a machine that already boots.
+
+1. Get a working OS onto the target machine by installing one normally.
 2. Generate a **recovery token** from a backup snapshot and download the recovery bundle (the `breeze-backup` binary, a launch script, and `bootstrap.json`).
 3. On the target machine, run the recovery binary with the token — no Breeze enrollment needed.
 4. It downloads the snapshot: for a `file` snapshot, files are restored to their original paths; for a `system_image` snapshot, every OS-state artifact is downloaded, its size and SHA-256 checksum are verified against the snapshot's manifest, and the platform restorer applies it.
 5. A post-restore validation probe runs and reports pass/fail; nothing reboots the machine for you.
 
----
-
-## Generating a Recovery Token
+### Generating a Recovery Token
 
 <Steps>
 1. Find the snapshot you want to recover from (via the Backup dashboard or device backup tab).
@@ -40,7 +91,7 @@ A recovery token is scoped to **one snapshot**. A `file`-mode snapshot recovers 
 5. The token is displayed **once**. Copy it immediately — it's stored as a SHA-256 hash and cannot be retrieved later.
 </Steps>
 
-Once a token exists, build downloadable recovery media for it from the **Recovery Bootstrap** tab on the device's Backup view — either a bootable ISO or a recovery bundle (the helper binary and a launch script) for machines that already have an OS installed.
+Once a token exists, download the recovery bundle (the helper binary and a launch script) for the target platform from the **Recovery Bootstrap** tab. Bootable media is no longer built per token; use the release ISO described above.
 
 <Aside type="danger">
   Recovery tokens are shown only once at creation time. Store the token securely and use it promptly. If lost, generate a new one.
@@ -52,10 +103,10 @@ Once a token exists, build downloadable recovery media for it from the **Recover
 
 ---
 
-## Running the Recovery
+### Running the Recovery
 
 <Steps>
-1. Get the target machine to a booted OS: install one normally, or boot it from the Linux/amd64 recovery ISO if you built one.
+1. Get the target machine to a booted OS by installing one normally.
 2. Download and extract the recovery bundle for the target platform/architecture, then run the launch script (`run-recovery.sh` / `run-recovery.ps1`) or the binary directly:
    ```
    breeze-backup bmr-recover --token <recovery-token> --server <breeze-server-url>
@@ -67,7 +118,7 @@ Once a token exists, build downloadable recovery media for it from the **Recover
 6. A post-restore validation probe checks network reachability, presence of critical files, and service status, and reports the result — it does not repair or retry anything it finds wrong.
 </Steps>
 
-### Reading the result
+#### Reading the result
 
 The run ends with a status and a short result summary (`filesRestored`, `failedFiles`, `bytesRestored`, `stateApplied`, `validated`, `warnings`). The same fields are recorded against the recovery in Breeze.
 
@@ -135,8 +186,8 @@ The badge governs only the `rebuild` path below. A snapshot marked *not* restora
 
 `breeze-backup rebuild` is the from-scratch counterpart to `bmr-recover`: instead of restoring onto an OS you installed, it takes a **blank disk (or a raw image file)**, provisions the partitions recorded in the snapshot's layout manifest, restores a whole-machine snapshot into them, applies the system state offline, installs GRUB and validates the result. It ships in the same `breeze-backup` binary as the recovery bundle.
 
-<Aside type="note" title="Scope in v0.112.0">
-  Linux hosts and Linux snapshots only, run from a booted Linux environment (for example the recovery ISO); the snapshot must be marked **Bare-metal restorable** and the target must be UEFI/GPT. It is a command-line tool — nothing in the web console dispatches it, and it does not appear in the device's command history. Boot media that runs it automatically and restore-as-VM are later work built on this engine.
+<Aside type="note" title="Scope">
+  Linux hosts and Linux snapshots only, run from a booted Linux environment; the snapshot must be marked **Bare-metal restorable** and the target must be UEFI/GPT. The [recovery media](#recover-from-breeze-recovery-media) runs it for you; the command below is for scripted or unusual recoveries and does not appear in the device's command history. Restore-as-VM is later work built on this engine.
 </Aside>
 
 ```
@@ -176,7 +227,7 @@ Progress is checkpointed to `<state-dir>/rebuild-<snapshot>-<target>.json` after
 
 | Scenario | Approach |
 |----------|----------|
-| **Hard drive failure (Linux, UEFI/GPT)** | Boot the recovery ISO and run `breeze-backup rebuild` against the new disk from a **Bare-metal restorable** whole-machine snapshot. |
+| **Hard drive failure (Linux, UEFI/GPT)** | [Boot the Breeze recovery media](#recover-from-breeze-recovery-media) and enter a recovery code for a **Bare-metal restorable** whole-machine snapshot. |
 | **Hard drive failure (other)** | Install/boot an OS on the new disk, recover data with a `file` snapshot, then apply configuration with a `system_image` snapshot. |
 | **Machine replacement** | Install a base OS on the replacement hardware, then recover data and system state with BMR. Drivers and hardware-specific configuration come from the OS you installed; `rebuild` targets identical or compatible hardware. |
 | **Disaster recovery** | BMR as part of a [DR plan](/backup/disaster-recovery/). |

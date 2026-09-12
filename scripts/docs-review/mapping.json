@@ -236,7 +236,35 @@
     {
       "pattern": "apps/api/src/routes/ai.ts",
       "docs": [
+        "features/ai.mdx",
+        "features/ai-script-authoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/scriptProposals/**",
+      "docs": [
+        "features/ai-script-authoring.mdx",
+        "features/scripts.mdx",
         "features/ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/ai/scriptProposals.ts",
+      "docs": [
+        "features/ai-script-authoring.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/scriptDispatch.ts",
+      "docs": [
+        "features/ai-script-authoring.mdx",
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/actionIntents/scriptReviewerAutonomy.ts",
+      "docs": [
+        "features/ai-script-authoring.mdx"
       ]
     },
     {

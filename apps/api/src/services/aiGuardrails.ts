@@ -11,7 +11,7 @@
  */
 
 import type { AiApprovalScope } from '@breeze/shared/types/ai';
-import type { AiAgentMode, AiAgentProtectedResources } from '@breeze/shared';
+import type { AiAgentMode, AiAgentProtectedResources, RiskTier } from '@breeze/shared';
 import { getToolTier } from './aiTools';
 import { getUserPermissions, hasPermission } from './permissions';
 import { rateLimiter } from './rate-limit';
@@ -167,7 +167,10 @@ export const TIER2_READONLY_TOOLS = new Set<string>([
   'get_invoice',
   'get_quote',
   'list_contracts',
+  // Deliverable template sets W05 (#5573): a pure read, like list_contracts.
+  'list_deliverable_templates',
   'list_invoices',
+  'list_org_documents',
   'list_quotes',
   'lookup_distributor_product',
   'search_catalog',
@@ -190,6 +193,10 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // `list` was deliberately downgraded to Tier 2 (2026-07-20) — recon-only.
   file_operations: ['read', 'write', 'delete', 'mkdir', 'rename'],
   manage_services: ['start', 'stop', 'restart'],
+  // Applying a deliverable template set arms unattended ticket creation for
+  // every future period of every applied item — same class as
+  // manage_software_policies create/update (#3552). W05 (#5573).
+  manage_deliverables: ['apply_template'],
   security_scan: ['quarantine', 'remove', 'restore'],
   disk_cleanup: ['execute'],
   manage_startup_items: ['disable', 'enable'],
@@ -434,6 +441,11 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_startup_items: ['disable', 'enable'],
   manage_scheduled_tasks: ['run', 'disable', 'enable'],
   manage_configuration_policy: ['create', 'update', 'delete'],
+  // W05 (#5573). `supervised`, not four_eyes: applying a template set creates
+  // ordinary org config (a recurring obligation schedule) that a tech can
+  // deactivate afterwards. Nothing here is externally binding, financial, or
+  // state-destroying — the four_eyes classes above.
+  manage_deliverables: ['apply_template'],
   manage_deployments: ['create', 'start', 'cancel'],
   manage_patches: ['install', 'setup_auto_approval'],
   manage_groups: ['create', 'update', 'delete'],
@@ -550,13 +562,44 @@ export function isInputAwareTier3(
  */
 export const TIER3_INPUT_AWARE_TOOLS: ReadonlySet<string> = new Set<string>([
   's1_isolate_device',
+  // run_script { proposalId }: scope comes from the proposal's REVIEWED risk
+  // tier, handed in through GuardrailContext (AI script authoring, spec §4.5).
+  'run_script',
 ]);
+
+/**
+ * Optional, DB-FREE context a caller may hand to the guardrail so an
+ * input-aware decision can read persisted state without this module importing
+ * the schema (aiGuardrails.imports.contract.test.ts).
+ *
+ * Loaded by `loadProposalGuardrailContext`
+ * (services/scriptProposals/guardrailContext.ts) — which is the only producer,
+ * so the risk tier here is always the tier a completed review actually wrote.
+ */
+export interface GuardrailContext {
+  proposal?: { riskTier: RiskTier; strictHits: string[] };
+}
+
+/** A `run_script` call that names a proposal instead of a library script. */
+function isProposalRunScript(toolName: string, input: Record<string, unknown>): boolean {
+  return toolName === 'run_script' && typeof input.proposalId === 'string' && input.proposalId.length > 0;
+}
 
 export function resolveApprovalScope(
   toolName: string,
   action: string | undefined,
   input: Record<string, unknown>,
+  context?: GuardrailContext,
 ): AiApprovalScope {
+  if (isProposalRunScript(toolName, input)) {
+    // Spec §4.5. No context ⇒ four_eyes, the module's own fail-safe default —
+    // checkGuardrails refuses the call outright a moment later, so this value
+    // is only ever read by a caller that skipped the tier check. Placed BEFORE
+    // the generic TIER3_SUPERVISED_TOOLS hit, which would otherwise resolve
+    // `supervised` for every tier.
+    const tier = context?.proposal?.riskTier;
+    return tier === 'low' || tier === 'medium' ? 'supervised' : 'four_eyes';
+  }
   // Input-aware overrides (spec §3.1) — scope depends on argument CONTENT,
   // not just the tool/action name, so these cannot live in the static
   // TIER3_*_ACTIONS / TIER3_*_TOOLS tables above. Checked first since neither
@@ -612,6 +655,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   s1_threat_action: { resource: 'devices', action: 'execute' },
   execute_command: { resource: 'devices', action: 'execute' },
   run_script: { resource: 'scripts', action: 'execute' },
+  // Authoring is inert, but it is still script work: whoever may read the
+  // library may read a proposal, and whoever may run a script may write one.
+  propose_script: { resource: 'scripts', action: 'execute' },
+  get_script_proposal: { resource: 'scripts', action: 'read' },
   // Same permission the HTTP cancel route requires (PERMISSIONS.SCRIPTS_EXECUTE):
   // whoever may start a script may stop it, and nobody else.
   cancel_script_execution: { resource: 'scripts', action: 'execute' },
@@ -700,6 +747,38 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     pause: { resource: 'contracts', action: 'manage' },
     resume: { resource: 'contracts', action: 'manage' },
     cancel: { resource: 'contracts', action: 'manage' },
+  },
+  // Service deliverables W02 (#5573 spec §10). `contracts`, not a new resource:
+  // the REST routes for deliverables AND key dates gate on contracts:read /
+  // contracts:write, and the AI door must not disagree with the HTTP door.
+  list_deliverables: { resource: 'contracts', action: 'read' },
+  list_deliverable_templates: { resource: 'contracts', action: 'read' },
+  manage_deliverables: {
+    create: { resource: 'contracts', action: 'write' },
+    update: { resource: 'contracts', action: 'write' },
+    deactivate: { resource: 'contracts', action: 'write' },
+    deliver: { resource: 'contracts', action: 'write' },
+    waive: { resource: 'contracts', action: 'write' },
+    reopen: { resource: 'contracts', action: 'write' },
+    reschedule: { resource: 'contracts', action: 'write' },
+    link_evidence: { resource: 'contracts', action: 'write' },
+    // `manage`, not `write`: applying a template stands up a whole schedule at
+    // once, matching the contracts lifecycle actions above.
+    apply_template: { resource: 'contracts', action: 'manage' },
+  },
+  manage_key_dates: {
+    list: { resource: 'contracts', action: 'read' },
+    create: { resource: 'contracts', action: 'write' },
+    update: { resource: 'contracts', action: 'write' },
+    delete: { resource: 'contracts', action: 'write' },
+  },
+  // Org document library (service deliverables W03): its own resource, not
+  // `contracts` — a technician may file documents without billing authority.
+  list_org_documents: { resource: 'documents', action: 'read' },
+  manage_org_documents: {
+    update_metadata: { resource: 'documents', action: 'write' },
+    set_portal_visibility: { resource: 'documents', action: 'write' },
+    supersede: { resource: 'documents', action: 'write' },
   },
   list_quotes: { resource: 'quotes', action: 'read' },
   get_quote: { resource: 'quotes', action: 'read' },
@@ -1383,7 +1462,8 @@ export function resolveActionForTool(toolName: string, input: Record<string, unk
  */
 export function checkGuardrails(
   toolName: string,
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  context?: GuardrailContext,
 ): GuardrailCheck {
   // Tier 4: Blocked
   if (BLOCKED_TOOLS.has(toolName)) {
@@ -1402,6 +1482,19 @@ export function checkGuardrails(
       allowed: false,
       requiresApproval: false,
       reason: `Unknown tool: ${toolName}`
+    };
+  }
+
+  // Fail CLOSED on a proposal-backed run with no loaded context. The scope this
+  // call needs is derived from a persisted review, and a missing context means
+  // the proposal is absent, cross-org, or unreviewed — none of which may run.
+  // Placed after the blocked/unknown denies so those keep their own reasons.
+  if (isProposalRunScript(toolName, input) && !context?.proposal) {
+    return {
+      tier: 4,
+      allowed: false,
+      requiresApproval: false,
+      reason: 'proposal_context_missing: run_script with a proposalId requires a reviewed proposal in the caller\'s organization',
     };
   }
 
@@ -1428,7 +1521,7 @@ export function checkGuardrails(
       tier: 3,
       allowed: true,
       requiresApproval: true,
-      approvalScope: resolveApprovalScope(toolName, action, input),
+      approvalScope: resolveApprovalScope(toolName, action, input, context),
       description: buildApprovalDescription(toolName, action, input)
     };
   }
@@ -1438,7 +1531,7 @@ export function checkGuardrails(
       tier: 3,
       allowed: true,
       requiresApproval: true,
-      approvalScope: resolveApprovalScope(toolName, action, input),
+      approvalScope: resolveApprovalScope(toolName, action, input, context),
       description: buildApprovalDescription(toolName, action, input)
     };
   }
@@ -1461,7 +1554,7 @@ export function checkGuardrails(
       tier: 3,
       allowed: true,
       requiresApproval: true,
-      approvalScope: resolveApprovalScope(toolName, action, input),
+      approvalScope: resolveApprovalScope(toolName, action, input, context),
       description: buildApprovalDescription(toolName, action, input)
     };
   }
@@ -1646,11 +1739,29 @@ function registryKeyIsProtected(candidate: string, protectedKey: string): boolea
   );
 }
 
-function touchesProtected(
-  input: Record<string, unknown>,
+/**
+ * Protected-resource matcher over EXPLICIT name lists.
+ *
+ * Split out of `touchesProtected` for the AI script lane (#5612 W04): the
+ * agent path derives names from NAMED INPUT FIELDS (`serviceName`, path keys,
+ * registry keys — this module has never inspected script content), while the
+ * lane derives them from the shared scanner's `ScriptScanResult.touchedNames`.
+ * Same comparison semantics, one implementation — the path/registry
+ * hierarchy normalisation is exactly the part that must not be duplicated.
+ *
+ * Stays a pure function with no DB or registry import
+ * (`aiGuardrails.imports.contract.test.ts`).
+ */
+export function touchesProtectedNames(
+  names: {
+    services?: readonly string[];
+    paths?: readonly string[];
+    registryKeys?: readonly string[];
+    deviceTags?: readonly string[];
+  },
   protectedResources: AiAgentProtectedResources,
 ): string | null {
-  for (const serviceName of leafValuesFor(input, SERVICE_INPUT_KEYS)) {
+  for (const serviceName of names.services ?? []) {
     if (protectedResources.services.some(
       (protectedService) => protectedService.toLowerCase() === serviceName.toLowerCase(),
     )) {
@@ -1658,13 +1769,13 @@ function touchesProtected(
     }
   }
 
-  for (const path of leafValuesFor(input, PATH_INPUT_KEYS)) {
+  for (const path of names.paths ?? []) {
     if (protectedResources.paths.some((protectedPath) => pathIsProtected(path, protectedPath))) {
       return `path "${path}" is protected`;
     }
   }
 
-  for (const registryKey of leafValuesFor(input, REGISTRY_INPUT_KEYS)) {
+  for (const registryKey of names.registryKeys ?? []) {
     if (protectedResources.registryKeys.some(
       (protectedKey) => registryKeyIsProtected(registryKey, protectedKey),
     )) {
@@ -1672,11 +1783,7 @@ function touchesProtected(
     }
   }
 
-  const deviceTags = [
-    ...leafValuesFor(input, DEVICE_TAG_INPUT_KEYS),
-    ...leafValuesFor(input, DEVICE_TAG_ARRAY_INPUT_KEYS),
-  ];
-  for (const deviceTag of deviceTags) {
+  for (const deviceTag of names.deviceTags ?? []) {
     // Case-insensitive, matching services/paths/registry. 'Production' vs
     // 'production' passed before.
     if (protectedResources.deviceTags.some(
@@ -1687,6 +1794,24 @@ function touchesProtected(
   }
 
   return null;
+}
+
+function touchesProtected(
+  input: Record<string, unknown>,
+  protectedResources: AiAgentProtectedResources,
+): string | null {
+  return touchesProtectedNames(
+    {
+      services: leafValuesFor(input, SERVICE_INPUT_KEYS),
+      paths: leafValuesFor(input, PATH_INPUT_KEYS),
+      registryKeys: leafValuesFor(input, REGISTRY_INPUT_KEYS),
+      deviceTags: [
+        ...leafValuesFor(input, DEVICE_TAG_INPUT_KEYS),
+        ...leafValuesFor(input, DEVICE_TAG_ARRAY_INPUT_KEYS),
+      ],
+    },
+    protectedResources,
+  );
 }
 
 function isAgentGuardrailPolicy(
@@ -1740,8 +1865,9 @@ export function checkAgentGuardrails(
   toolName: string,
   input: Record<string, unknown>,
   policy: AgentGuardrailPolicy | null | undefined,
+  context?: GuardrailContext,
 ): AgentGuardrailCheck {
-  const base = checkGuardrails(toolName, input);
+  const base = checkGuardrails(toolName, input, context);
   const deny = (reason: string): AgentGuardrailCheck =>
     ({ ...base, allowed: false, requiresApproval: false, disposition: 'deny', reason });
 

@@ -20,6 +20,7 @@ import { zValidator } from '../lib/validation';
 import { authMiddleware, requireScope, requirePermission, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import {
+  applyTemplateSetSchema,
   createDeliverableSchema, updateDeliverableSchema, listDeliverablesQuerySchema,
   deliverOccurrenceSchema, waiveOccurrenceSchema, rescheduleOccurrenceSchema,
   addEvidenceSchema, listOccurrencesQuerySchema,
@@ -27,9 +28,14 @@ import {
 import {
   listDeliverables, getDeliverable, createDeliverable, updateDeliverable, deactivateDeliverable,
   listOccurrences, deliverOccurrence, waiveOccurrence, reopenOccurrence, rescheduleOccurrence,
-  addEvidence, removeEvidence,
+  addEvidence, removeEvidence, getOccurrenceOr404,
   type DeliverableActor,
 } from '../services/serviceDeliverableService';
+import { applyTemplateSet } from '../services/deliverableTemplateService';
+import { templateActorFrom, handleTemplateError } from './deliverableTemplates';
+import { uploadDocument } from '../services/orgDocumentService';
+import { userRateLimit } from '../middleware/userRateLimit';
+import { parseUpload } from './orgDocuments';
 
 export const serviceDeliverableRoutes = new Hono();
 serviceDeliverableRoutes.use('*', authMiddleware);
@@ -160,6 +166,44 @@ serviceDeliverableRoutes.post(
   },
 );
 
+// Spec §7 upload-on-deliver (W03). Two writes, ordered: the document must
+// exist before it can be evidence. If the link fails the document survives as
+// an ordinary library row rather than a dangling upload — deliberately NOT
+// compensated, because a technician's uploaded artifact is customer data we
+// would rather keep and re-link than silently discard.
+//
+// Gated on documents:write AS WELL AS contracts:write: the route files an org
+// document, and a contracts-only role (Partner Billing) must not gain a side
+// door into the document library through it.
+serviceDeliverableRoutes.post(
+  '/:orgId/deliverables/occurrences/:oId/evidence/upload',
+  scopes, writePerm,
+  requirePermission(PERMISSIONS.DOCUMENTS_WRITE.resource, PERMISSIONS.DOCUMENTS_WRITE.action),
+  zValidator('param', occurrenceParam),
+  userRateLimit('deliverable-evidence-upload', 30, 60),
+  async (c) => {
+    const { orgId, oId } = c.req.valid('param');
+    const actor = deliverableActorFrom(c);
+    const parsed = await parseUpload(c);
+    if ('error' in parsed) {
+      return c.json({ error: 'Expected a multipart body with exactly one file part named "file"', code: 'INVALID_MULTIPART' }, 400);
+    }
+    const title = (parsed.fields.title ?? '').trim() || parsed.file.filename.trim() || 'Evidence';
+    try {
+      const occ = await getOccurrenceOr404(orgId, oId, actor);
+      const deliverable = await getDeliverable(orgId, occ.deliverableId, actor);
+      const doc = await uploadDocument(orgId, {
+        title: title.slice(0, 200),
+        description: parsed.fields.description?.trim() ? parsed.fields.description.slice(0, 4000) : null,
+        category: 'evidence',
+        portalVisible: deliverable.portalVisible,
+        file: parsed.file,
+      }, actor);
+      return c.json({ data: await addEvidence(orgId, oId, { kind: 'document', documentId: doc.id }, actor) });
+    } catch (err) { return handleDeliverableError(c, err); }
+  },
+);
+
 serviceDeliverableRoutes.delete(
   '/:orgId/deliverables/occurrences/:oId/evidence/:eId',
   scopes, writePerm,
@@ -169,6 +213,26 @@ serviceDeliverableRoutes.delete(
     try {
       return c.json({ data: await removeEvidence(orgId, oId, eId, deliverableActorFrom(c)) });
     } catch (err) { return handleDeliverableError(c, err); }
+  },
+);
+
+// ── Apply a template set (literal segment — MUST precede `/:id`) ───────────
+
+serviceDeliverableRoutes.post(
+  '/:orgId/deliverables/apply-template',
+  scopes, writePerm,
+  zValidator('param', orgParam), zValidator('json', applyTemplateSetSchema),
+  async (c) => {
+    const { setId, contractId, effectiveFrom, ownerUserId } = c.req.valid('json');
+    try {
+      return c.json({
+        data: await applyTemplateSet(
+          c.req.valid('param').orgId, setId,
+          { contractId, effectiveFrom, ownerUserId },
+          templateActorFrom(c),
+        ),
+      });
+    } catch (err) { return handleTemplateError(c, err); }
   },
 );
 

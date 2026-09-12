@@ -162,6 +162,7 @@ describe('BreezeOidcAdapter', () => {
 
   it('upserts AuthorizationCode rows using tenant ids from payload.extra', async () => {
     const chain = mockInsertChain();
+    mockUpdateChain();
     const payload = {
       accountId: '00000000-0000-4000-8000-000000000001',
       clientId: 'client_abc',
@@ -187,6 +188,45 @@ describe('BreezeOidcAdapter', () => {
       target: oauthAuthorizationCodes.id,
       set: expect.objectContaining({ payload, expiresAt: expect.any(Date) }),
     }));
+  });
+
+  // DCR GC (provider.cleanupStaleOauthClients) deletes clients whose
+  // `last_used_at` is NULL once they age past 7 days with no live grant.
+  // Before this stamp existed, `last_used_at` was only written on
+  // re-registration, so every actively used Claude / Claude Code client was
+  // GC'd the moment its refresh token lapsed and the client kept replaying a
+  // dead client_id (`invalid_client`, 2026-09-10).
+  it('stamps oauth_clients.last_used_at when an AuthorizationCode is issued for the client', async () => {
+    mockInsertChain();
+    const update = mockUpdateChain();
+    const payload = {
+      accountId: '00000000-0000-4000-8000-000000000001',
+      clientId: 'client_abc',
+      extra: { partner_id: '00000000-0000-4000-8000-000000000002' },
+    };
+
+    await new BreezeOidcAdapter('AuthorizationCode').upsert('code_abc', payload, 60);
+
+    expect(updateMock).toHaveBeenCalledWith(oauthClients);
+    expect(update.set).toHaveBeenCalledWith({ lastUsedAt: expect.any(Date) });
+    const whereArg = (update.where.mock.calls[0] as unknown[])[0];
+    expect(collectAllStrings(whereArg)).toContain('client_abc');
+  });
+
+  it('stamps oauth_clients.last_used_at when a RefreshToken is issued for the client', async () => {
+    mockInsertChain();
+    const update = mockUpdateChain();
+    const payload = {
+      accountId: '00000000-0000-4000-8000-000000000001',
+      clientId: 'client_abc',
+      extra: { partner_id: '00000000-0000-4000-8000-000000000002' },
+    };
+
+    await new BreezeOidcAdapter('RefreshToken').upsert('raw_rt', payload, 3600);
+
+    expect(updateMock).toHaveBeenCalledWith(oauthClients);
+    expect(update.set).toHaveBeenCalledWith({ lastUsedAt: expect.any(Date) });
+    expect(collectAllStrings((update.where.mock.calls[0] as unknown[])[0])).toContain('client_abc');
   });
 
   it('marks AuthorizationCode rows consumed and stamps payload.consumed for the library', async () => {

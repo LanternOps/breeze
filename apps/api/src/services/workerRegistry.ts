@@ -874,14 +874,6 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    name: 'recoveryBootMediaWorker',
-    placement: 'global',
-    load: async () => {
-      const m = await import('../jobs/recoveryBootMediaWorker');
-      return { init: m.initializeRecoveryBootMediaWorker, shutdown: m.shutdownRecoveryBootMediaWorker };
-    },
-  },
-  {
     name: 'warrantyWorker',
     placement: 'global',
     load: async () => {
@@ -1145,6 +1137,19 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Service deliverables W02 (#5573 spec §5.1). Two Workers, one initializer:
+    // the daily `deliverable-jobs` sweep and the first `contract-events`
+    // consumer. 'global' because workerEntrypointClosure.contract.test.ts says
+    // so — if it reports the closure reaching routes/agentWs.ts, flip to
+    // 'socket-owner', never loosen the test.
+    name: 'deliverableWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/deliverableWorker');
+      return { init: m.initializeDeliverableWorkers, shutdown: m.shutdownDeliverableWorkers };
+    },
+  },
+  {
     // Wave 5B (#3827 Task 4): 48h sweep of `ai_unattended_exposure`, the
     // org-wide blast-cap ledger the act + policy-decide lanes share. No
     // route graph / socket import anywhere in its closure — `global`, same
@@ -1253,6 +1258,38 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/aiAgentGraduationWorker');
       return { init: m.initializeAiAgentGraduationWorker, shutdown: m.shutdownAiAgentGraduationWorker };
+    },
+  },
+  {
+    // W02 (#5612): the script-review worker turns a `proposed` script
+    // proposal into `reviewed`/`review_failed` via an independent model
+    // review. `global` — its closure is db/schema, Redis, the Anthropic SDK
+    // (via llmConfigResolver), and the AI budget/cost services; it never
+    // touches `routes/agentWs.ts` or `services/agentCommandAwait.ts`.
+    // Verified by workerEntrypointClosure.contract.test.ts like every other
+    // entry. Attached unconditionally (`requiredWhen: 'redis'` in the
+    // readiness manifest): BREEZE_AI_SCRIPT_AUTHORING_ENABLED gates the
+    // PRODUCER (propose_script), so with the flag off the queue is simply
+    // empty — same precedent as aiAgentGraduation.
+    name: 'scriptReviewWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/scriptReviewWorker');
+      return { init: m.initializeScriptReviewWorker, shutdown: m.shutdownScriptReviewWorker };
+    },
+  },
+  {
+    // W03 (#5612): evaluates a proposal's verification claim after its
+    // execution lands. `socket-owner`, NOT `global`: the closure reaches
+    // evaluateVerificationClaim -> executeCommandWithSystemPrecheck ->
+    // agentCommandAwait / agentWs, the same dependency that puts
+    // alertVerdictScheduler on this placement.
+    // workerEntrypointClosure.contract.test.ts is the mechanical authority.
+    name: 'scriptVerifyWorker',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/scriptVerifyWorker');
+      return { init: m.initializeScriptVerifyWorker, shutdown: m.shutdownScriptVerifyWorker };
     },
   },
   {

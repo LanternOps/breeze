@@ -2,18 +2,44 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { db } from '../../db';
 import { alerts, alertCorrelations } from '../../db/schema';
-import { eq, and, or, gte, desc, sql, inArray } from 'drizzle-orm';
-import { requireScope } from '../../middleware/auth';
+import { eq, and, or, desc, inArray } from 'drizzle-orm';
+import { requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { PERMISSIONS } from '../../services/permissions';
 import { listCorrelationsSchema, analyzeCorrelationsSchema } from './schemas';
 import { resolveScopedOrgId } from './helpers';
 import { getPagination } from '../../utils/pagination';
+import { deviceInSiteScope, filterAlertsBySiteScope } from '../tickets/siteScope';
 
 export const correlationRoutes = new Hono();
+
+const requireAlertRead = requirePermission(
+  PERMISSIONS.ALERTS_READ.resource,
+  PERMISSIONS.ALERTS_READ.action,
+);
+
+async function visibleOrgAlertIds(auth: AuthContext, orgId: string): Promise<string[]> {
+  const orgAlerts = await db
+    .select({ id: alerts.id, deviceId: alerts.deviceId })
+    .from(alerts)
+    .where(eq(alerts.orgId, orgId));
+  const visibleAlerts = await filterAlertsBySiteScope({ ...auth, orgId }, orgAlerts);
+  return visibleAlerts.map((alert) => alert.id);
+}
+
+export function filterCorrelationsToVisibleAlerts<
+  T extends { parentAlertId: string; childAlertId: string },
+>(correlations: T[], visibleAlertIds: readonly string[]): T[] {
+  const visible = new Set(visibleAlertIds);
+  return correlations.filter(
+    (correlation) => visible.has(correlation.parentAlertId) && visible.has(correlation.childAlertId),
+  );
+}
 
 correlationRoutes.get(
   '/correlations',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   zValidator('query', listCorrelationsSchema),
   async (c) => {
     try {
@@ -26,12 +52,7 @@ correlationRoutes.get(
       const query = c.req.valid('query');
 
       // Get all alert IDs for this org to scope correlations
-      const orgAlerts = await db
-        .select({ id: alerts.id })
-        .from(alerts)
-        .where(eq(alerts.orgId, orgId));
-
-      const orgAlertIds = orgAlerts.map(a => a.id);
+      const orgAlertIds = await visibleOrgAlertIds(auth, orgId);
 
       if (orgAlertIds.length === 0) {
         return c.json({ data: [], page: 1, limit: 20, total: 0 });
@@ -56,6 +77,7 @@ correlationRoutes.get(
         .from(alertCorrelations)
         .where(and(...filterConditions))
         .orderBy(desc(alertCorrelations.createdAt));
+      allCorrelations = filterCorrelationsToVisibleAlerts(allCorrelations, orgAlertIds);
 
       if (query.minConfidence) {
         const minConfidence = Number.parseFloat(query.minConfidence);
@@ -83,6 +105,7 @@ correlationRoutes.get(
 correlationRoutes.get(
   '/correlations/groups',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   async (c) => {
     try {
       const auth = c.get('auth');
@@ -93,10 +116,11 @@ correlationRoutes.get(
 
       // Build correlation groups from real data:
       // Group alerts that share correlation links into clusters
-      const orgAlerts = await db
+      const allOrgAlerts = await db
         .select()
         .from(alerts)
         .where(eq(alerts.orgId, orgId));
+      const orgAlerts = await filterAlertsBySiteScope({ ...auth, orgId }, allOrgAlerts);
 
       const orgAlertIds = orgAlerts.map(a => a.id);
       const alertMap = new Map(orgAlerts.map(a => [a.id, a]));
@@ -105,7 +129,7 @@ correlationRoutes.get(
         return c.json({ data: [] });
       }
 
-      const scopedCorrelations = await db
+      const correlationRows = await db
         .select()
         .from(alertCorrelations)
         .where(and(
@@ -113,6 +137,7 @@ correlationRoutes.get(
           inArray(alertCorrelations.childAlertId, orgAlertIds)
         ))
         .orderBy(desc(alertCorrelations.createdAt));
+      const scopedCorrelations = filterCorrelationsToVisibleAlerts(correlationRows, orgAlertIds);
 
       // Union-find to group correlated alerts
       const parent = new Map<string, string>();
@@ -169,6 +194,7 @@ correlationRoutes.get(
 correlationRoutes.post(
   '/correlations/analyze',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   zValidator('json', analyzeCorrelationsSchema),
   async (c) => {
     try {
@@ -181,14 +207,10 @@ correlationRoutes.post(
       const data = c.req.valid('json');
       const windowMinutes = data.windowMinutes ?? 60;
 
-      const orgAlerts = await db
-        .select({ id: alerts.id })
-        .from(alerts)
-        .where(eq(alerts.orgId, orgId));
-
-      const orgAlertIdList = orgAlerts.map(a => a.id);
+      const orgAlertIdList = await visibleOrgAlertIds(auth, orgId);
       const orgAlertIdSet = new Set(orgAlertIdList);
-      const alertIds = (data.alertIds ?? []).filter(id => orgAlertIdSet.has(id));
+      const requestedAlertIds = data.alertIds ?? [];
+      const alertIds = requestedAlertIds.filter(id => orgAlertIdSet.has(id));
 
       if (orgAlertIdList.length === 0) {
         return c.json({
@@ -206,7 +228,7 @@ correlationRoutes.post(
         inArray(alertCorrelations.childAlertId, orgAlertIdList),
       ];
 
-      if (alertIds.length) {
+      if (requestedAlertIds.length && alertIds.length > 0) {
         scopeConditions.push(
           or(
             inArray(alertCorrelations.parentAlertId, alertIds),
@@ -215,11 +237,17 @@ correlationRoutes.post(
         );
       }
 
-      const links = await db
-        .select()
-        .from(alertCorrelations)
-        .where(and(...scopeConditions))
-        .orderBy(desc(alertCorrelations.createdAt));
+      // A non-empty request that resolves entirely outside the caller's site
+      // ceiling is an empty selection, not an implicit request for every
+      // visible correlation in the organization.
+      const linkRows = requestedAlertIds.length > 0 && alertIds.length === 0
+        ? []
+        : await db
+          .select()
+          .from(alertCorrelations)
+          .where(and(...scopeConditions))
+          .orderBy(desc(alertCorrelations.createdAt));
+      const links = filterCorrelationsToVisibleAlerts(linkRows, orgAlertIdList);
 
       writeRouteAudit(c, {
         orgId,
@@ -237,8 +265,10 @@ correlationRoutes.post(
           requestedAlertIds: alertIds,
           windowMinutes,
           links,
-          summary: alertIds.length
-            ? 'Correlation analysis complete for requested alerts.'
+          summary: requestedAlertIds.length
+            ? alertIds.length
+              ? 'Correlation analysis complete for requested alerts.'
+              : 'No visible requested alerts found.'
             : 'Returning all correlation data.'
         }
       });
@@ -252,6 +282,7 @@ correlationRoutes.post(
 correlationRoutes.get(
   '/correlations/:alertId',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   async (c) => {
     try {
       const auth = c.get('auth');
@@ -268,7 +299,7 @@ correlationRoutes.get(
         .where(and(eq(alerts.id, alertId), eq(alerts.orgId, orgId)))
         .limit(1);
 
-      if (!alert) {
+      if (!alert || !(await deviceInSiteScope(auth, alert.deviceId))) {
         return c.json({ error: 'Alert not found' }, 404);
       }
 
@@ -300,12 +331,21 @@ correlationRoutes.get(
               inArray(alerts.id, ids)
             )
           );
+        relatedAlerts = await filterAlertsBySiteScope({ ...auth, orgId }, relatedAlerts);
       }
+
+      const visibleRelatedIds = new Set(relatedAlerts.map((related) => related.id));
+      const visibleCorrelations = correlations.filter((correlation) => {
+        const relatedId = correlation.parentAlertId === alertId
+          ? correlation.childAlertId
+          : correlation.parentAlertId;
+        return visibleRelatedIds.has(relatedId);
+      });
 
       return c.json({
         data: {
           alert,
-          correlations,
+          correlations: visibleCorrelations,
           relatedAlerts,
         }
       });

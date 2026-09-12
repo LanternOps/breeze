@@ -28,6 +28,7 @@ export * from './contracts';
 export * from './mlFeedback';
 export * from './quotes';
 export * from './contractTemplates';
+export * from './scriptProposals';
 export * from './maintenanceWindow';
 export * from './agentVersionPins';
 export * from './enrollmentDefaults';
@@ -1214,6 +1215,7 @@ export {
   updateDeliverableSchema,
   listDeliverablesQuerySchema,
   reportRunEvidenceRefSchema,
+  documentEvidenceRefSchema,
   evidenceRefSchema,
   addEvidenceSchema,
   deliverOccurrenceSchema,
@@ -1229,9 +1231,36 @@ export {
   type EvidenceRef,
 } from './serviceDeliverables';
 export {
+  templateOwnerScopeSchema,
+  createTemplateItemSchema,
+  updateTemplateItemSchema,
+  createTemplateSetSchema,
+  updateTemplateSetSchema,
+  listTemplateSetsQuerySchema,
+  applyTemplateSetSchema,
+  type CreateTemplateItemInput,
+  type UpdateTemplateItemInput,
+  type CreateTemplateSetInput,
+  type UpdateTemplateSetInput,
+  type ApplyTemplateSetInput,
+  type TemplateOwnerScope,
+} from './deliverableTemplates';
+export {
   keyDateKindSchema,
   createKeyDateSchema,
   updateKeyDateSchema,
   type CreateKeyDateInput,
   type UpdateKeyDateInput,
 } from './orgKeyDates';
+export {
+  orgDocumentCategorySchema,
+  uploadDocumentMetaSchema,
+  replaceDocumentMetaSchema,
+  updateDocumentSchema,
+  listDocumentsQuerySchema,
+  type OrgDocumentCategory,
+  type UploadDocumentMeta,
+  type ReplaceDocumentMeta,
+  type UpdateDocumentInput,
+  type ListDocumentsQuery,
+} from './orgDocuments';

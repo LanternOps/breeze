@@ -27,7 +27,7 @@ vi.mock('../../db', () => {
   return { db: chain };
 });
 
-import { createPortalFeatureGateStrict } from './featureFlags';
+import { createPortalFeatureGateAny, createPortalFeatureGateStrict } from './featureFlags';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 
@@ -62,6 +62,8 @@ describe('createPortalFeatureGateStrict', () => {
     ['enableBackups', 'PORTAL_BACKUPS_DISABLED'],
     ['enableReports', 'PORTAL_REPORTS_DISABLED'],
     ['enableSupportUsage', 'PORTAL_SUPPORT_USAGE_DISABLED'],
+    ['enableService', 'PORTAL_SERVICE_DISABLED'],
+    ['enableDocuments', 'PORTAL_DOCUMENTS_DISABLED'],
   ] as const)(
     'fails closed for %s',
     async (flag, code) => {
@@ -102,4 +104,66 @@ describe('createPortalFeatureGateStrict', () => {
       expect(dbState.where).toBeUndefined();
     },
   );
+});
+
+describe('createPortalFeatureGateAny', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.rows = [];
+    dbState.where = undefined;
+  });
+
+  function anyApp(withAuth = true) {
+    const a = new Hono();
+    if (withAuth) {
+      a.use('*', async (c, next) => {
+        c.set('portalAuth', {
+          user: { id: 'pu1', orgId: ORG_ID, email: 'c@example.test', name: 'Cust', contactId: null, receiveNotifications: true, status: 'active' },
+          token: 't',
+          authMethod: 'bearer',
+          timezone: 'UTC',
+        });
+        await next();
+      });
+    }
+    a.use('/protected', createPortalFeatureGateAny('enableDocuments', 'enableService'));
+    a.get('/protected', (c) => c.json({ ok: true }));
+    return a;
+  }
+
+  it('passes when any listed flag is true', async () => {
+    dbState.rows = [{ enableDocuments: false, enableService: true }];
+    const response = await anyApp().request('/protected');
+    expect(response.status).toBe(200);
+    const query = new PgDialect().sqlToQuery(dbState.where as SQL);
+    expect(query.sql).toContain('"portal_branding"."org_id" = $1');
+    expect(query.params).toEqual([ORG_ID]);
+  });
+
+  it('refuses with the FIRST flag code when every flag is false', async () => {
+    dbState.rows = [{ enableDocuments: false, enableService: false }];
+    const response = await anyApp().request('/protected');
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: 'PORTAL_DOCUMENTS_DISABLED' });
+  });
+
+  it('fails closed when the org has no portal_branding row', async () => {
+    dbState.rows = [];
+    const response = await anyApp().request('/protected');
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: 'PORTAL_DOCUMENTS_DISABLED' });
+  });
+
+  it('does not treat a truthy non-boolean as enabled', async () => {
+    dbState.rows = [{ enableDocuments: 'true', enableService: 1 }];
+    const response = await anyApp().request('/protected');
+    expect(response.status).toBe(403);
+  });
+
+  it('rejects an unauthenticated request before reading the row', async () => {
+    dbState.rows = [{ enableDocuments: true }];
+    const response = await anyApp(false).request('/protected');
+    expect(response.status).toBe(401);
+    expect(dbState.where).toBeUndefined();
+  });
 });

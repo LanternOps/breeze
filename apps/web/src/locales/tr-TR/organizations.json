@@ -32,6 +32,7 @@
       "tickets": "Biletler",
       "billing": "Sözleşmeler ve Faturalandırma",
       "service": "Hizmet",
+      "documents": "Belgeler",
       "activity": "Etkinlik"
     },
     "comingSoon": {
@@ -127,6 +128,74 @@
         "contracts": "Sözleşmeler",
         "invoices": "Faturalar",
         "quotes": "Alıntılar"
+      }
+    },
+    "documents": {
+      "title": "Belgeler",
+      "subtitle": "Bu kuruluşa ait runbook'lar, taban çizgileri, politikalar ve teslimat kanıtları.",
+      "empty": "Henüz belge yok. Kitaplığı başlatmak için bir runbook, taban çizgisi veya imzalı bir politika yükleyin.",
+      "emptyFiltered": "Bu kategoride belge yok.",
+      "loadFailed": "Belgeler yüklenemedi.",
+      "upload": "Belge yükle",
+      "uploading": "Yükleniyor…",
+      "replace": "Değiştir",
+      "download": "İndir",
+      "delete": "Sil",
+      "deleteConfirm": "\"{{title}}\" silinsin mi? Bu işlem dosyayı ve tüm önceki sürümlerini kaldırır. Bu işlem geri alınamaz.",
+      "edit": "Düzenle",
+      "save": "Kaydet",
+      "cancel": "İptal",
+      "versions": "Sürüm geçmişi",
+      "showSuperseded": "Önceki sürümleri göster",
+      "form": {
+        "title": "Başlık",
+        "description": "Açıklama",
+        "category": "Kategori",
+        "portalVisible": "Müşteri portalında görünür",
+        "file": "Dosya",
+        "fileHint": "PDF, JPEG, PNG veya WebP, 10 MB'a kadar.",
+        "replaceHint": "Mevcut sürüm geçmiş olarak saklanır ve yeni dosya güncel sürüm olur."
+      },
+      "filter": {
+        "all": "Tüm kategoriler"
+      },
+      "category": {
+        "baseline": "Taban çizgisi",
+        "runbook": "İşletim kılavuzu",
+        "policy": "Politika",
+        "evidence": "Kanıt",
+        "report": "Rapor",
+        "export": "Dışa aktarma",
+        "other": "Diğer"
+      },
+      "column": {
+        "title": "Başlık",
+        "category": "Kategori",
+        "size": "Boyut",
+        "uploaded": "Yükleme tarihi",
+        "portal": "Müşteri portalı",
+        "actions": "İşlemler"
+      },
+      "badge": {
+        "superseded": "Önceki sürüm",
+        "portal": "Portalda"
+      },
+      "errors": {
+        "tooLarge": "Bu dosya 10 MB'tan büyük.",
+        "unsupportedType": "Yalnızca PDF, JPEG, PNG ve WebP dosyaları depolanabilir.",
+        "storageUnavailable": "Belge depolama şu anda kullanılamıyor. Kısa süre sonra tekrar deneyin.",
+        "notHead": "Bu belge zaten değiştirildi. Sayfayı yeniden yükleyip güncel sürüm üzerinden devam edin.",
+        "emptyFile": "Bu dosya boş.",
+        "uploadFailed": "Belge yüklenemedi.",
+        "updateFailed": "Belge kaydedilemedi.",
+        "deleteFailed": "Belge silinemedi.",
+        "downloadFailed": "Belge indirilemedi."
+      },
+      "toast": {
+        "uploaded": "Belge yüklendi",
+        "replaced": "Yeni sürüm yüklendi",
+        "updated": "Belge güncellendi",
+        "deleted": "Belge silindi"
       }
     }
   }

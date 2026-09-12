@@ -18,10 +18,9 @@ var (
 	// user32 is already declared in input_windows.go (same package)
 	gdi32 = syscall.NewLazyDLL("gdi32.dll")
 
-	procGetDC              = user32.NewProc("GetDC")
-	procReleaseDC          = user32.NewProc("ReleaseDC")
-	procGetSystemMetrics   = user32.NewProc("GetSystemMetrics")
-	procSetProcessDPIAware = user32.NewProc("SetProcessDPIAware")
+	procGetDC            = user32.NewProc("GetDC")
+	procReleaseDC        = user32.NewProc("ReleaseDC")
+	procGetSystemMetrics = user32.NewProc("GetSystemMetrics")
 
 	procCreateDCW              = gdi32.NewProc("CreateDCW")
 	procCreateCompatibleDC     = gdi32.NewProc("CreateCompatibleDC")
@@ -122,20 +121,6 @@ type gdiCapturer struct {
 	// here is what lets StartSession tell the technician WHY the startup probe
 	// found no frame (see describeCaptureFailure).
 	lastCaptureErr error
-}
-
-func init() {
-	if procSetProcessDPIAware.Find() != nil {
-		return
-	}
-	// Not fatal, but not nothing either: without DPI awareness GetSystemMetrics
-	// reports scaled dimensions, which is the same class of capture/encoder size
-	// mismatch AlignEven exists to prevent (see ensureHandles). Worth a line in
-	// the helper log rather than nothing at all.
-	if ret, _, errno := procSetProcessDPIAware.Call(); ret == 0 {
-		slog.Debug("SetProcessDPIAware failed; capture dimensions may be DPI-scaled",
-			"error", gdiCallError("SetProcessDPIAware", errno).Error())
-	}
 }
 
 // ensureHandles creates or recreates GDI handles if needed.

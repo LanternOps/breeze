@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { matchContactByEmail } from './contacts/crud';
 import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, contacts, ticketStatusEnum, ticketSourceEnum, ticketOutbox, ticketDrafts, actionIntents, aiAgentRuns, deviceVulnerabilities, type TicketOutboxEvent } from '../db/schema';
+import { serviceDeliverableOccurrences } from '../db/schema/serviceDeliverables';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
@@ -61,7 +62,10 @@ export type TicketServiceErrorCode =
   // tickets. Lowercase to match the wire code the web/AI surfaces branch on
   // (`ServiceManagementOffError.code`), unlike the UPPER_SNAKE codes above,
   // which are internal to the ticket service.
-  | 'service_management_off';
+  | 'service_management_off'
+  // #5573 W02 — the ticket is a service deliverable's work item; it cannot
+  // leave the deliverable's org.
+  | 'DELIVERABLE_TICKET_PINNED';
 
 export class TicketServiceError extends Error {
   constructor(
@@ -500,6 +504,29 @@ interface BaseCreateTicketInput {
   assigneeId?: string;
   formId?: string;
   formResponses?: Record<string, unknown>;
+  /**
+   * #5573 spec §4.8 (D3/D14). Planned work is typed, not tagged. Defaults to
+   * 'support'; only the deliverable sweep and the key-date reminder set
+   * anything else today. Non-'support' gets NO SLA — see
+   * resolveSlaTargetsForWorkKind.
+   */
+  workKind?: TicketWorkKind;
+}
+
+export type TicketWorkKind = 'support' | 'deliverable' | 'project_task';
+
+/**
+ * #5573 W02. Planned work carries no SLA. The SLA worker clocks from
+ * `created_at` (jobs/ticketSlaWorker.ts), so a deliverable ticket opened
+ * `lead_days` before its due date would breach before the work was due. This
+ * is the SINGLE place category/org/partner defaults are dropped; the worker's
+ * own `work_kind = 'support'` predicate is defence in depth.
+ */
+export function resolveSlaTargetsForWorkKind(
+  workKind: TicketWorkKind,
+  targets: { responseMinutes: number | null; resolutionMinutes: number | null }
+): { responseMinutes: number | null; resolutionMinutes: number | null } {
+  return workKind === 'support' ? targets : { responseMinutes: null, resolutionMinutes: null };
 }
 
 // portal source carries the requester; the worker emails submitterEmail on public replies/resolution.
@@ -695,6 +722,8 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     partnerResolutionMinutes: partnerSla.resolutionMinutes,
     priority
   });
+  const workKind: TicketWorkKind = input.workKind ?? 'support';
+  const effectiveSla = resolveSlaTargetsForWorkKind(workKind, slaTargets);
 
   const internalNumber = await allocateInternalTicketNumber(org.partnerId);
 
@@ -718,8 +747,9 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     submitterEmail: resolvedSubmitterEmail,
     submitterName: resolvedSubmitterName,
     category: null,
-    responseSlaMinutes: slaTargets.responseMinutes,
-    resolutionSlaMinutes: slaTargets.resolutionMinutes,
+    responseSlaMinutes: effectiveSla.responseMinutes,
+    resolutionSlaMinutes: effectiveSla.resolutionMinutes,
+    workKind,
     tags: intake?.defaultTags.length ? intake.defaultTags : undefined,
     customFields: intake ? intake.intakeSnapshot : undefined
   } satisfies typeof tickets.$inferInsert;
@@ -2279,6 +2309,58 @@ export interface MoveTicketOrgOptions {
   acceptCurrencyMismatch?: boolean;
 }
 
+export const DELIVERABLE_TICKET_PINNED_MESSAGE =
+  'This ticket is the work item for a service deliverable and cannot be moved to another organization. Unlink or reschedule the deliverable occurrence first.';
+
+/**
+ * #5573 spec §6. A deliverable occurrence pins its ticket to the
+ * deliverable's org. Lives here, not in the route, because moveTicketOrg has
+ * two doors (routes/tickets/moveOrg.ts and the manage_tickets AI tool).
+ * Defence in depth only: sd_occ_ticket_org_fk (ticket_id, org_id) ->
+ * tickets(id, org_id) has no ON UPDATE clause, so the move would raise 23503
+ * anyway — this turns an opaque FK violation into an explainable 409. That is
+ * also why service_deliverable_occurrences is deliberately NOT in
+ * TICKET_ORG_DENORMALIZED_TABLES: a pinned ticket never moves, so there is
+ * nothing to re-stamp.
+ */
+export async function assertTicketNotPinnedToDeliverable(
+  tx: Pick<typeof db, 'select'>,
+  ticketId: string
+): Promise<void> {
+  const linked = await tx
+    .select({ id: serviceDeliverableOccurrences.id })
+    .from(serviceDeliverableOccurrences)
+    .where(eq(serviceDeliverableOccurrences.ticketId, ticketId))
+    .limit(1);
+  if (linked.length > 0) {
+    throw new TicketServiceError(DELIVERABLE_TICKET_PINNED_MESSAGE, 409, 'DELIVERABLE_TICKET_PINNED');
+  }
+}
+
+/**
+ * The DEVICE-move door onto the same invariant. `routes/devices/moveOrg.ts`
+ * re-stamps `tickets.org_id` for every ticket bound to the moved device
+ * (`tickets` is in getDeviceOrgDenormalizedTables()), which trips
+ * sd_occ_ticket_org_fk exactly as a ticket-level move would — and that FK is
+ * deliberately NOT in that route's `SET CONSTRAINTS ... DEFERRED` list, so it
+ * fires the instant the UPDATE completes and surfaces as an opaque 500.
+ * Checked before the rewrite so the operator gets the same explainable 409.
+ */
+export async function assertDeviceTicketsNotPinnedToDeliverable(
+  tx: Pick<typeof db, 'select'>,
+  deviceId: string
+): Promise<void> {
+  const linked = await tx
+    .select({ id: serviceDeliverableOccurrences.id })
+    .from(serviceDeliverableOccurrences)
+    .innerJoin(tickets, eq(tickets.id, serviceDeliverableOccurrences.ticketId))
+    .where(eq(tickets.deviceId, deviceId))
+    .limit(1);
+  if (linked.length > 0) {
+    throw new TicketServiceError(DELIVERABLE_TICKET_PINNED_MESSAGE, 409, 'DELIVERABLE_TICKET_PINNED');
+  }
+}
+
 export async function moveTicketOrg(
   ticketId: string,
   targetOrgId: string,
@@ -2372,6 +2454,8 @@ export async function moveTicketOrg(
     if (!sourceMeta || sourceMeta.partnerId !== targetMeta.partnerId) {
       throw new TicketServiceError('Tickets can only be moved between organizations of the same partner', 400);
     }
+    // #5573 W02: cheap precondition, before the ticket UPDATE burns anything.
+    await assertTicketNotPinnedToDeliverable(tx, ticketId);
     // Present by construction: the metadata rows above resolved, so the locks did too.
     const sourceOrg = { ...sourceMeta, currencyCode: lockedOrgs.get(ticket.orgId)!.currencyCode };
     const targetOrg = { ...targetMeta, currencyCode: lockedOrgs.get(targetOrgId)!.currencyCode };

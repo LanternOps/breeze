@@ -14,6 +14,7 @@ import {
   recordUsage,
   recordUsageFromSdkResult,
   sumInputTokens,
+  updateBudget,
 } from './aiCostTracker';
 import { db, withSystemDbAccessContext } from '../db';
 import { getEffectiveAiBudget } from './effectiveSettings';
@@ -493,7 +494,7 @@ describe('recordUsageFromSdkResult', () => {
     expect(captured.aggregateValues.every((values) => values.billingSource === 'platform')).toBe(true);
     expect(captured.aggregateConflictSets.every((set) => set.billingSource === 'platform')).toBe(true);
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://billing.internal/api/internal/partners/partner-1/ai-credits/deduct',
+      'https://billing.internal/billing/api/internal/partners/partner-1/ai-credits/deduct',
       expect.objectContaining({ method: 'POST' }),
     );
   });
@@ -1006,7 +1007,7 @@ describe('recordSessionlessSdkUsage', () => {
     await recordSessionlessSdkUsage('org-1', agentRunUsage, 'platform');
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://billing.internal/api/internal/partners/partner-1/ai-credits/deduct',
+      'https://billing.internal/billing/api/internal/partners/partner-1/ai-credits/deduct',
       expect.objectContaining({ method: 'POST' }),
     );
     const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
@@ -1691,7 +1692,7 @@ describe('getUsageSummary: credit cache read-through (#4388 W04)', () => {
     expect(summary.credits).toMatchObject({ remaining: 777, includedBalance: 200, purchasedBalance: 577 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://billing.internal/api/internal/partners/partner-1/ai-credits',
+      'https://billing.internal/billing/api/internal/partners/partner-1/ai-credits',
       expect.objectContaining({ headers: { Authorization: 'Bearer billing-key' } }),
     );
     expect(redisSet).toHaveBeenCalledWith(
@@ -1718,6 +1719,46 @@ describe('getUsageSummary: credit cache read-through (#4388 W04)', () => {
     redisGet.mockResolvedValueOnce(null);
 
     await expect(getUsageSummary('org1', { includeCredits: true })).resolves.toMatchObject({ credits: null });
+  });
+});
+
+// breeze-billing mounts its internal router at `/billing/api/internal`
+// (`app.route('/billing/api/internal', internalRoutes)`), and
+// `breezeBillingClient.cancelSubscription` already uses that prefix. These two
+// call sites were built against a bare `/api/internal`, so every credit check
+// and every deduction 404'd in production: the gate failed open and platform AI
+// spend was never deducted. Pin the full path so a prefix drift is a red test.
+describe('billing internal route prefix (#5591)', () => {
+  it('the credit check fetches /billing/api/internal/partners/:id/ai-credits', async () => {
+    setupDbMocks(null);
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: true, remainingCredits: 500, plan: 'pro',
+    }));
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValue(null);
+
+    await getUsageSummary('org1', { includeCredits: true });
+
+    expect(new URL(fetchMock.mock.calls[0]![0] as string).pathname).toBe(
+      '/billing/api/internal/partners/partner-1/ai-credits',
+    );
+  });
+
+  it('the deduction posts to /billing/api/internal/partners/:id/ai-credits/deduct', async () => {
+    setupDbMocks(null);
+    const fetchMock = enableBillingService();
+
+    await recordSessionlessSdkUsage('org-1', {
+      costCents: 40,
+      usage: { input_tokens: 10, output_tokens: 20 },
+      numTurns: 1,
+      model: 'claude-sonnet-4-6',
+    }, 'platform');
+
+    expect(new URL(fetchMock.mock.calls[0]![0] as string).pathname).toBe(
+      '/billing/api/internal/partners/partner-1/ai-credits/deduct',
+    );
   });
 });
 
@@ -1906,5 +1947,103 @@ describe('billing telemetry', () => {
     // A deployment mode, not a failure — reporting it would be pure noise.
     expect(vi.mocked(captureMessage)).not.toHaveBeenCalled();
     expect(vi.mocked(captureException)).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================
+// updateBudget — #5592
+// ============================================
+
+/**
+ * Wire `db` for updateBudget: `existingRow` drives the `ai_budgets` lookup
+ * (`undefined` = no row yet, so the insert branch runs). Returns the values
+ * handed to `db.insert(aiBudgets).values(...)` / `db.update(...).set(...)`.
+ */
+function setupBudgetDbMocks(existingRow?: Record<string, unknown>) {
+  const capture: {
+    insertValues?: Record<string, unknown>;
+    updateSet?: Record<string, unknown>;
+  } = {};
+
+  mockDb.select.mockImplementation(() => ({
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({
+        limit: vi.fn().mockResolvedValue(existingRow ? [existingRow] : []),
+      })),
+    })),
+  }));
+
+  mockDb.insert.mockReturnValue({
+    values: vi.fn(async (values: Record<string, unknown>) => {
+      capture.insertValues = values;
+    }),
+  });
+
+  mockDb.update.mockReturnValue({
+    set: vi.fn((values: Record<string, unknown>) => {
+      capture.updateSet = values;
+      return { where: vi.fn().mockResolvedValue(undefined) };
+    }),
+  });
+
+  return capture;
+}
+
+describe('updateBudget', () => {
+  it('persists approvalMode on the FIRST save for an org with no ai_budgets row', async () => {
+    const capture = setupBudgetDbMocks();
+
+    await updateBudget('org-budget-1', { approvalMode: 'auto_approve' });
+
+    expect(mockDb.insert).toHaveBeenCalledTimes(1);
+    expect(mockDb.update).not.toHaveBeenCalled();
+    // The bug (#5592): the insert branch enumerated columns and omitted
+    // approvalMode, so the row fell back to the `per_step` column default and
+    // the user's choice was silently discarded until a second save.
+    expect(capture.insertValues?.approvalMode).toBe('auto_approve');
+  });
+
+  it('defaults approvalMode to per_step when the first save does not set it', async () => {
+    const capture = setupBudgetDbMocks();
+
+    await updateBudget('org-budget-2', { enabled: false });
+
+    expect(capture.insertValues?.approvalMode).toBe('per_step');
+  });
+
+  it('carries every settings field through the insert branch', async () => {
+    const capture = setupBudgetDbMocks();
+
+    await updateBudget('org-budget-3', {
+      enabled: false,
+      monthlyBudgetCents: 5000,
+      dailyBudgetCents: 250,
+      maxTurnsPerSession: 10,
+      messagesPerMinutePerUser: 5,
+      messagesPerHourPerOrg: 60,
+      approvalMode: 'hybrid_plan',
+      alertThresholdPercents: [50, 90],
+    });
+
+    expect(capture.insertValues).toMatchObject({
+      orgId: 'org-budget-3',
+      enabled: false,
+      monthlyBudgetCents: 5000,
+      dailyBudgetCents: 250,
+      maxTurnsPerSession: 10,
+      messagesPerMinutePerUser: 5,
+      messagesPerHourPerOrg: 60,
+      approvalMode: 'hybrid_plan',
+      alertThresholdPercents: [50, 90],
+    });
+  });
+
+  it('updates in place (no insert) when a row already exists', async () => {
+    const capture = setupBudgetDbMocks({ orgId: 'org-budget-4' });
+
+    await updateBudget('org-budget-4', { approvalMode: 'action_plan' });
+
+    expect(mockDb.insert).not.toHaveBeenCalled();
+    expect(capture.updateSet?.approvalMode).toBe('action_plan');
   });
 });

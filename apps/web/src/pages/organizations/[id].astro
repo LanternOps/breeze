@@ -6,6 +6,6 @@ const { id } = Astro.params;
 if (!id) return Astro.redirect('/settings/organizations');
 ---
 
-<DashboardLayout title="Organization">
+<DashboardLayout titleKey="titles.organizationsDetail">
   <OrganizationRecordPage orgId={id} client:load />
 </DashboardLayout>

@@ -80,7 +80,11 @@
     "rescheduledFrom": "Verschoben von {{date}}",
     "deliveryNote": "Lieferhinweis",
     "waivedReason": "Grund für den Erlass",
-    "newDueDate": "Neue Fälligkeit"
+    "newDueDate": "Neue Fälligkeit",
+    "uploadEvidence": "Datei als Nachweis hochladen",
+    "uploadEvidenceHint": "PDF, JPEG, PNG oder WebP, bis zu 10 MB. Die Datei wird in der Dokumentenbibliothek dieser Organisation abgelegt.",
+    "evidenceDocument": "Dokument",
+    "upload": "Hochladen"
   },
   "evidence": {
     "reportRun": "Berichtslauf",
@@ -99,7 +103,11 @@
     "duplicateName": "Für diese Organisation existiert bereits eine Leistung mit diesem Namen.",
     "loadFailed": "Leistungen konnten nicht geladen werden.",
     "saveFailed": "Leistung konnte nicht gespeichert werden.",
-    "actionFailed": "Vorkommen konnte nicht aktualisiert werden."
+    "actionFailed": "Vorkommen konnte nicht aktualisiert werden.",
+    "uploadFailed": "Die Nachweisdatei konnte nicht hochgeladen werden.",
+    "tooLarge": "Diese Datei ist größer als 10 MB.",
+    "unsupportedType": "Es können nur PDF-, JPEG-, PNG- und WebP-Dateien angehängt werden.",
+    "storageUnavailable": "Die Dokumentenspeicherung ist derzeit nicht verfügbar. Versuchen Sie es in Kürze erneut."
   },
   "confirm": {
     "deactivate": "{{name}} deaktivieren? Offene Vorkommen werden geschlossen und keine neuen mehr geplant.",
@@ -144,6 +152,68 @@
     "rescheduled": "Vorkommen neu terminiert",
     "evidenceAdded": "Nachweis hinzugefügt",
     "evidenceRemoved": "Nachweis entfernt",
-    "deactivated": "Leistung deaktiviert"
+    "deactivated": "Leistung deaktiviert",
+    "evidenceUploaded": "Nachweis hochgeladen"
+  },
+  "templates": {
+    "pageTitle": "Leistungsvorlagen",
+    "pageDescription": "Definieren Sie eine Servicestufe einmal und wenden Sie sie auf jeden Kunden an. Partnerweite Sets stehen jeder von Ihnen verwalteten Organisation zur Verfügung.",
+    "empty": "Noch keine Vorlagensets.",
+    "allOrganizations": "Alle Orgs",
+    "actions": {
+      "newSet": "Neues Vorlagenset",
+      "addItem": "Leistung hinzufügen",
+      "apply": "Vorlagenset anwenden",
+      "edit": "Bearbeiten",
+      "delete": "Löschen",
+      "save": "Speichern",
+      "cancel": "Abbrechen"
+    },
+    "form": {
+      "name": "Setname",
+      "description": "Beschreibung",
+      "itemName": "Name der Leistung",
+      "cadence": "Turnus",
+      "leadDays": "So viele Tage vor Fälligkeit öffnen",
+      "graceDays": "So viele Tage nach Fälligkeit als versäumt markieren",
+      "artifactRequired": "Nachweis erforderlich",
+      "completionMode": "Abschluss"
+    },
+    "ownerScope": {
+      "legend": "Für wen ist dieses Set?",
+      "allOrganizations": "Alle Organisationen (partnerweit)",
+      "thisOrganizationOnly": "Nur diese Organisation"
+    },
+    "apply": {
+      "title": "Vorlagenset anwenden",
+      "set": "Vorlagenset",
+      "contract": "Vertrag (optional)",
+      "noContract": "Kein Vertrag",
+      "effectiveFrom": "Gültig ab",
+      "owner": "Verantwortlich (optional)",
+      "submit": "Anwenden",
+      "created_one": "{{count}} Leistung erstellt",
+      "created_other": "{{count}} Leistungen erstellt",
+      "skipped": "Übersprungen (bereits vorhanden): {{names}}"
+    },
+    "errors": {
+      "collision": "Diese Leistungen existieren bereits im Ziel: {{names}}",
+      "duplicateSetName": "Ein Vorlagenset mit diesem Namen existiert bereits.",
+      "duplicateItemName": "Ein Eintrag mit diesem Namen existiert bereits in diesem Set.",
+      "partnerWideDenied": "Zum Verwalten partnerweiter Vorlagen ist vollständiger Zugriff auf die Partnerorganisation erforderlich.",
+      "loadFailed": "Vorlagensets konnten nicht geladen werden.",
+      "saveFailed": "Vorlagenset konnte nicht gespeichert werden.",
+      "deleteFailed": "Vorlagenset konnte nicht gelöscht werden.",
+      "itemSaveFailed": "Leistung konnte nicht gespeichert werden.",
+      "itemDeleteFailed": "Leistung konnte nicht entfernt werden.",
+      "applyFailed": "Vorlagenset konnte nicht angewendet werden."
+    },
+    "toast": {
+      "setSaved": "Vorlagenset gespeichert",
+      "setDeleted": "Vorlagenset gelöscht",
+      "itemSaved": "Leistung gespeichert",
+      "itemDeleted": "Leistung entfernt",
+      "applied": "Vorlagenset angewendet"
+    }
   }
 }

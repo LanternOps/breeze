@@ -433,7 +433,9 @@ const RUN_SCRIPT_STDERR_PREVIEW_CHARS = 8_192;
 
 type RunScriptResult = {
   executionId: string;
-  scriptId: string;
+  // Nullable since 2026-10-16-100200: a proposal-backed execution has no
+  // library script.
+  scriptId: string | null;
   scriptName?: string;
   status: string;
   exitCode?: number;

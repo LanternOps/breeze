@@ -115,3 +115,24 @@ describe('Service tab (#5573 W01)', () => {
     expect(tabFromHash('#service')).toBe('service');
   });
 });
+
+describe('Documents tab (#5573 W03)', () => {
+  it('declares Documents after Service and before Activity', () => {
+    expect([...ORG_RECORD_TABS]).toEqual([
+      'overview', 'contacts', 'sites', 'devices', 'tickets', 'billing', 'service', 'documents', 'activity',
+    ]);
+  });
+
+  it('gates Documents on documents:read', () => {
+    expect(TAB_PERMISSION.documents).toEqual([{ resource: 'documents', action: 'read' }]);
+    expect(visibleTabs(grants(['documents', 'read']), 'native')).toContain('documents');
+    expect(visibleTabs(grants(['organizations', 'read']), 'native')).not.toContain('documents');
+    expect(tabFromHash('#documents')).toBe('documents');
+  });
+
+  it('stays visible in every service-management mode — a runbook outlives the PSA choice', () => {
+    for (const mode of ['native', 'off', 'external'] as const) {
+      expect(visibleTabs(grants(['documents', 'read']), mode)).toContain('documents');
+    }
+  });
+});

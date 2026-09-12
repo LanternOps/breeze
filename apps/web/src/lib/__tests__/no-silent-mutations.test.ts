@@ -278,6 +278,15 @@ const TARGET_GLOBS = [
   // is a brand-new mutation surface; a bare fetchWithAuth here would silently
   // no-op the operator's "Add network asset" submit.
   'src/components/devices/AddNetworkAssetModal.tsx',
+  // Script proposal request-changes/promote (#5612 W03): both mutations are
+  // runAction-wrapped in this module so no caller — the approval card, the
+  // inbox, or a future surface — can invoke them unwrapped.
+  'src/lib/api/scriptProposals.ts',
+  // Script authoring settings (#5612 W05 Tasks 23-24): both the org and
+  // partner ceiling PUTs, and the lane reset POST, decide whether scripts run
+  // against customer machines unattended — a silent failure here would leave
+  // an operator believing the lane is off (or on) when it is not.
+  'src/components/settings/ScriptAuthoringPage.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -598,8 +607,11 @@ describe('no silent mutations in targeted set', () => {
     // 1 more (AgentCreateFlow.tsx), so the count is now 120 — bump it
     // deliberately on every merge, never by resolving the hunk.
     // #4622 W04 adds ManualAssetModal.tsx and #5213 W02 adds
-    // AddNetworkAssetModal.tsx, so the count is now 125.
-    expect(absoluteFiles.length).toBe(125);
+    // AddNetworkAssetModal.tsx, so the count is now 125. #5612 W03 adds
+    // lib/api/scriptProposals.ts (request-changes + promote), so the count is
+    // now 126. #5612 W05 Tasks 23-24 add ScriptAuthoringPage.tsx, so the
+    // count is now 127.
+    expect(absoluteFiles.length).toBe(127);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

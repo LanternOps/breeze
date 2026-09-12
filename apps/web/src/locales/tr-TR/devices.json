@@ -278,7 +278,8 @@
     "loadMore": "Daha fazlasını yükle",
     "couldnTLoadMore": "Daha fazlası yüklenemedi.",
     "viewAllActivity2": "Tüm etkinlikleri görüntüle",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "Öneriyi görüntüle"
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Uyarı geçmişi getirilemedi",

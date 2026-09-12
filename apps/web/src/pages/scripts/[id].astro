@@ -6,6 +6,6 @@ const { id } = Astro.params;
 if (!id) return Astro.redirect('/scripts');
 ---
 
-<DashboardLayout title="Edit Script">
+<DashboardLayout titleKey="titles.scriptsDetail">
   <ScriptEditPage scriptId={id} client:load />
 </DashboardLayout>

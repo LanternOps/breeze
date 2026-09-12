@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cadenceMonths, coveredPeriod, nthDueDate, planOccurrences, isInLeadWindow, isPastGrace } from './recurrence';
+import { cadenceMonths, coveredPeriod, firstAnchorAfter, nthDueDate, planOccurrences, isInLeadWindow, isPastGrace } from './recurrence';
 
 describe('recurrence', () => {
   it('maps cadence to months', () => {
@@ -74,5 +74,35 @@ describe('recurrence', () => {
     expect(isInLeadWindow('2026-10-31', 7, '2026-10-23')).toBe(false);
     expect(isPastGrace('2026-10-31', 14, '2026-11-14')).toBe(false);
     expect(isPastGrace('2026-10-31', 14, '2026-11-15')).toBe(true);
+  });
+});
+
+describe('firstAnchorAfter (template apply, spec §4.6)', () => {
+  const cases: Array<[string, Parameters<typeof firstAnchorAfter>[1], string]> = [
+    ['2026-10-01', 'monthly', '2026-10-31'],
+    ['2026-10-01', 'quarterly', '2026-12-31'],
+    ['2026-10-01', 'semiannual', '2027-03-31'],
+    ['2026-10-01', 'annual', '2027-09-30'],
+    ['2026-10-01', 'one_time', '2026-10-01'],
+    ['2026-10-15', 'monthly', '2026-11-14'],
+    ['2026-01-31', 'monthly', '2026-02-27'],
+    ['2026-02-01', 'monthly', '2026-02-28'],
+  ];
+  it.each(cases)('%s / %s -> %s', (from, cadence, expected) => {
+    expect(firstAnchorAfter(from, cadence)).toBe(expected);
+  });
+
+  it('the anchor covers a period that ends on the anchor itself', () => {
+    const anchor = firstAnchorAfter('2026-10-01', 'quarterly');
+    expect(coveredPeriod(anchor, 'quarterly')).toEqual({ periodStart: '2026-10-01', periodEnd: '2026-12-31' });
+  });
+
+  it('the first planned occurrence is the anchor, not a date before effective_from', () => {
+    const anchor = firstAnchorAfter('2026-10-01', 'monthly');
+    const plan = planOccurrences({
+      anchorDueDate: anchor, cadence: 'monthly', effectiveFrom: '2026-10-01', effectiveUntil: null,
+      leadDays: 7, graceDays: 14, today: '2026-10-25', existingDueDates: [],
+    });
+    expect(plan.map((p) => p.dueAt)).toEqual(['2026-10-31']);
   });
 });

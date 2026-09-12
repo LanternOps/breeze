@@ -300,6 +300,13 @@ export async function ensureAppRole(): Promise<boolean> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='pam_actuation_results') THEN
           REVOKE UPDATE, DELETE, TRUNCATE ON TABLE pam_actuation_results FROM breeze_app;
         END IF;
+        -- script_proposal_reviews (AI script authoring, 2026-10-16-100100):
+        -- append-only review evidence. Org erasure deletes it as
+        -- breeze_audit_admin with breeze.allow_audit_retention='1'
+        -- (AUDIT_ADMIN_REQUIRED_TABLES); org merge leaves it in place.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='script_proposal_reviews') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE script_proposal_reviews FROM breeze_app;
+        END IF;
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='automation_action_results') THEN
           REVOKE TRUNCATE ON TABLE automation_action_results FROM breeze_app;
           REVOKE TRUNCATE ON TABLE automation_action_results FROM PUBLIC;

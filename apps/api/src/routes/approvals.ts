@@ -47,6 +47,7 @@ import {
   loadHomogeneousBatch,
 } from '../services/approvals/batchDecide';
 import {
+  acknowledgedPatternsSchema,
   assertionProofSchema,
   mobileHwKeyProofSchema,
   type ApprovalProof,
@@ -723,6 +724,18 @@ approvalRoutes.post('/:id/approve', async (c) => {
     proof = parsed.data;
   }
 
+  // #5601: an `approval_decide` grant from an earlier approve in this window,
+  // presented instead of a fresh ceremony. Validated as a uuid here so a
+  // malformed value is a 400 rather than reaching Redis as a key fragment;
+  // everything that matters (binding, digest, age, device liveness) is decided
+  // server-side in decideApprovalRequest, which fails closed to 403.
+  let stepUpGrantId: string | undefined;
+  if (raw && raw.stepUpGrantId !== undefined) {
+    const parsed = z.string().uuid().safeParse(raw.stepUpGrantId);
+    if (!parsed.success) return c.json({ error: 'Invalid step-up grant' }, 400);
+    stepUpGrantId = parsed.data;
+  }
+
   // L4 (critical) re-auth: the client may include a fresh `reauthPassword` to
   // satisfy the critical-tier re-authentication factor (spec §5). Verified
   // server-side here — a bad/rate-limited password short-circuits with the
@@ -752,6 +765,19 @@ approvalRoutes.post('/:id/approve', async (c) => {
     reauthVerified = true;
   }
 
+  // W03 (#5612): the script-proposal card submits the STRICT patterns the
+  // approver ticked. Shape-checked here so a malformed array is a 400 rather
+  // than a silently-dropped acknowledgement the approver believes they granted
+  // (same reasoning as unknownSecurityPatternDescriptions in
+  // scriptSecurityAcknowledgement.ts). Resolution against strict_hits, the
+  // scripts:write + MFA bar and the 422s live in the decide core.
+  let acknowledgedPatterns: string[] | undefined;
+  if (raw && raw.acknowledgedPatterns !== undefined) {
+    const parsed = acknowledgedPatternsSchema.safeParse(raw.acknowledgedPatterns);
+    if (!parsed.success) return c.json({ error: 'Invalid acknowledgedPatterns' }, 400);
+    acknowledgedPatterns = parsed.data;
+  }
+
   return respond(
     c,
     await decideApprovalRequest({
@@ -760,6 +786,8 @@ approvalRoutes.post('/:id/approve', async (c) => {
       status: 'approved',
       proof,
       reauthVerified,
+      stepUpGrantId,
+      acknowledgedPatterns,
     }),
   );
 });

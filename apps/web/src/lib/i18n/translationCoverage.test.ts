@@ -78,6 +78,7 @@ const namespaceDuplicateBaselines = {
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // pt-BR.
     'organizations.json': 6, // W01 #5075: cognates — "Sites", "{{count}} site(s)"; +2 W02: device status "Online"/"Offline" are identical cognates in pt-BR
+    'pages.json': 10, // Cognates: Backup, Webhooks (x2), OneDrive, Scripts, Logs, EDR, Software (x2), and one settings-card title (Sites).
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 357,
@@ -89,7 +90,9 @@ const namespaceDuplicateBaselines = {
     'reports.json': 39,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
-    'scripts.json': 57,
+    // +1: scriptProposalDetail.statusLabel — "Status" is the same cognate in
+    // pt-BR already accepted above for bulkOrgImport.preview.status.
+    'scripts.json': 58,
     'security.json': 140,
     // +1: the it-IT locale's self-name is intentionally identical in every catalog.
     // +1: bulkOrgImport.preview.status — "Status" is the same cognate in pt-BR
@@ -110,7 +113,9 @@ const namespaceDuplicateBaselines = {
     // locale-invariant (the acronym is never translated).
     // +1: aiAgentsPage.errors.scriptRejected (#5065) — "Script {{id}}: {{reason}}"
     // spells identically to English here ("script" is the loanword).
-    'settings.json': 123,
+    // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
+    // standard loanword in pt-BR.
+    'settings.json': 124,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -180,6 +185,7 @@ const namespaceDuplicateBaselines = {
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // es-419.
     'organizations.json': 1, // W01 #5075: cognate — "Tickets"
+    'pages.json': 12, // Cognates: CIS Benchmarks, Webhooks (x2), OneDrive, Scripts, EDR, Roles, Variables, Software (x2), Tickets, and Ticket (singular).
     'patches.json': 16,
     'peripherals.json': 4,
     'policies.json': 241,
@@ -210,7 +216,9 @@ const namespaceDuplicateBaselines = {
     // locale-invariant (the acronym is never translated).
     // +1: aiAgentsPage.errors.scriptRejected (#5065) — "Script {{id}}: {{reason}}"
     // spells identically to English here ("script" is the loanword).
-    'settings.json': 126,
+    // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
+    // standard loanword in es-419.
+    'settings.json': 127,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -286,6 +294,10 @@ const namespaceDuplicateBaselines = {
     'discovery.json': 15,
     'integrations.json': 38,
     'organizations.json': 8, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR
+    // +1: PR review fix aligning fr-FR terminology with devices.json/settings.json/
+    // scripts.json made titles.scripts an intentional cognate ("Script" is the
+    // standard fr-FR loanword) on top of the pre-existing ones.
+    'pages.json': 12, // Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
     'patches.json': 20,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -329,7 +341,12 @@ const namespaceDuplicateBaselines = {
     // locale-invariant (the acronym is never translated).
     // +2: aiAgentsPage.summary.minuteCount_one/_other (#5048 QA) — "{{count}} minute" /
     // "{{count}} minutes" spell identically in French.
-    'settings.json': 169,
+    // +2: orgPortalSettingsEditor.visibility.toggles.enableService/enableDocuments
+    // (W04 #5573) — "Service" and "Documents" spell identically in French.
+    // +2 W05 (#5612): scriptAuthoringPage.fields.protectedServices and
+    // scriptAuthoringPage.class.services — "Services" spells identically in
+    // French.
+    'settings.json': 173,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -399,6 +416,10 @@ const namespaceDuplicateBaselines = {
     'discovery.json': 15,
     'integrations.json': 40,
     'organizations.json': 7, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA
+    // +1: PR review fix aligning fr-CA terminology with fr-FR (fr-CA mirrors it
+    // here) made titles.scripts an intentional cognate ("Script" is the
+    // standard loanword) on top of the pre-existing ones.
+    'pages.json': 12, // Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
     'patches.json': 20,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -444,7 +465,12 @@ const namespaceDuplicateBaselines = {
     // "{{count}} minutes" spell identically in French.
     // +1: aiAgentsPage.errors.scriptRejected (#5065) — "Script {{id}}: {{reason}}"
     // spells identically to English here ("script" is the loanword).
-    'settings.json': 175,
+    // +2: orgPortalSettingsEditor.visibility.toggles.enableService/enableDocuments
+    // (W04 #5573) — "Service" and "Documents" spell identically in Canadian French.
+    // +2 W05 (#5612): scriptAuthoringPage.fields.protectedServices and
+    // scriptAuthoringPage.class.services — "Services" spells identically in
+    // Canadian French.
+    'settings.json': 179,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -527,6 +553,7 @@ const namespaceDuplicateBaselines = {
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
     // interpolation; German uses the same "OS" acronym.
     'organizations.json': 3, // W01 #5075: cognate — "Tickets"; +2 W02: device status "Online"/"Offline" are identical cognates in de-DE
+    'pages.json': 14, // Cognates: Backup, CIS Benchmarks, Dashboard, Webhooks (x2), OneDrive, Patches, EDR, Software (x2), Tickets, Ticket (singular), and two settings-card titles (Ticketing, Single Sign-On).
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 205,
@@ -538,7 +565,9 @@ const namespaceDuplicateBaselines = {
     'reports.json': 53,
     // +1: automationRunHistory.scriptOutput.stderr — a stream name, not
     // wording; intentionally identical in every catalog (#3162).
-    'scripts.json': 54,
+    // +1: scriptProposalDetail.statusLabel — "Status" is the standard
+    // loanword in this locale, same as the German "Status" used elsewhere.
+    'scripts.json': 55,
     'security.json': 166,
     // +1: bulkOrgImport.preview.status — "Status" is the German word too.
     // +1: aiAgentsPage.fields.name — "Name" is the German word too.
@@ -555,7 +584,11 @@ const namespaceDuplicateBaselines = {
     // the same word in German (already accepted above in this namespace).
     // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
     // locale-invariant (the acronym is never translated).
-    'settings.json': 185,
+    // +1: orgPortalSettingsEditor.visibility.toggles.enableService.label (W04 #5573)
+    // — "Service" is the same word in German.
+    // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
+    // standard loanword in de-DE.
+    'settings.json': 187,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -608,6 +641,7 @@ const namespaceDuplicateBaselines = {
     'discovery.json': 22,
     'integrations.json': 81,
     'organizations.json': 3, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term; +2 W02: device status "Online"/"Offline" are identical cognates in it-IT
+    'pages.json': 10, // Cognates: Backup, CIS Benchmarks, Dashboard, OneDrive, EDR, Software (x2), Ticket, and two settings-card titles (Ticketing, SSO) — proper nouns/acronyms/loanwords.
     'patches.json': 18,
     'peripherals.json': 4,
     'policies.json': 363,
@@ -632,7 +666,9 @@ const namespaceDuplicateBaselines = {
     // locale-invariant (the acronym is never translated).
     // +1: aiAgentsPage.errors.scriptRejected (#5065) — "Script {{id}}: {{reason}}"
     // spells identically to English here ("script" is the loanword).
-    'settings.json': 164,
+    // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
+    // standard loanword in it-IT.
+    'settings.json': 165,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -680,6 +716,7 @@ const namespaceDuplicateBaselines = {
     'discovery.json': 9,
     'integrations.json': 22,
     'organizations.json': 1, // W01 #5075: cognate — "{{count}} site"
+    'pages.json': 3, // Cognates: CIS Benchmarks, OneDrive, EDR — proper nouns/acronyms.
     'patches.json': 11,
     'peripherals.json': 4,
     // +8: package-manager software library — OS names ("Windows", "macOS",
@@ -703,7 +740,9 @@ const namespaceDuplicateBaselines = {
     // uses it), so the three site labels stay identical.
     // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
     // locale-invariant (the acronym is never translated).
-    'settings.json': 69,
+    // +1 W05 (#5612): scriptAuthoringPage.class.disk — "Disk" is spelled
+    // identically in tr-TR.
+    'settings.json': 70,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     'tickets.json': 12,

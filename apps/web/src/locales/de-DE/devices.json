@@ -278,7 +278,8 @@
     "loadMore": "Mehr laden",
     "couldnTLoadMore": "Konnte nicht mehr laden.",
     "viewAllActivity2": "Alle Aktivitäten anzeigen",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "Vorschlag ansehen"
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Der Alarmverlauf konnte nicht abgerufen werden",

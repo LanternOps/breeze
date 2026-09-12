@@ -27,6 +27,14 @@ export type ResilienceResourceRef = {
     | 'snapshot'
     | 'recovery_token'
     | 'media_artifact'
+    // boot_media_artifact (per-token ISO builder, retired W04b): the CREATE
+    // route is gone, but recovery_boot_media_artifacts rows created before
+    // this migration still exist (table intentionally kept one more release
+    // — see plan docs/superpowers/plans/backup/
+    // 2026-09-10-bare-metal-w04b-linux-live-media-console-qemu.md Task 3),
+    // and drExecutionService.ts's EXPLICIT_SOURCE_FIELDS still resolves a DR
+    // plan restore config's legacy `bootMediaArtifactId` through this kind.
+    // Drop it only alongside the table itself (W08).
     | 'boot_media_artifact'
     | 'restore_job';
   id: string;

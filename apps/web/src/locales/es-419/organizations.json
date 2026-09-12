@@ -32,6 +32,7 @@
       "tickets": "Tickets",
       "billing": "Contratos y facturación",
       "service": "Servicio",
+      "documents": "Documentos",
       "activity": "Actividad"
     },
     "comingSoon": {
@@ -127,6 +128,74 @@
         "contracts": "Contratos",
         "invoices": "Facturas",
         "quotes": "Cotizaciones"
+      }
+    },
+    "documents": {
+      "title": "Documentos",
+      "subtitle": "Runbooks, líneas base, políticas y evidencia de entrega para esta organización.",
+      "empty": "Aún no hay documentos. Suba un runbook, una línea base o una política firmada para iniciar la biblioteca.",
+      "emptyFiltered": "No hay documentos en esta categoría.",
+      "loadFailed": "No se pudieron cargar los documentos.",
+      "upload": "Subir documento",
+      "uploading": "Subiendo…",
+      "replace": "Reemplazar",
+      "download": "Descargar",
+      "delete": "Eliminar",
+      "deleteConfirm": "¿Eliminar \"{{title}}\"? Esto quita el archivo y todas sus versiones anteriores. Esta acción no se puede deshacer.",
+      "edit": "Editar",
+      "save": "Guardar",
+      "cancel": "Cancelar",
+      "versions": "Historial de versiones",
+      "showSuperseded": "Mostrar versiones anteriores",
+      "form": {
+        "title": "Título",
+        "description": "Descripción",
+        "category": "Categoría",
+        "portalVisible": "Visible en el portal del cliente",
+        "file": "Archivo",
+        "fileHint": "PDF, JPEG, PNG o WebP, hasta 10 MB.",
+        "replaceHint": "La versión actual se conserva como historial y el archivo nuevo pasa a ser la versión vigente."
+      },
+      "filter": {
+        "all": "Todas las categorías"
+      },
+      "category": {
+        "baseline": "Línea base",
+        "runbook": "Guía operativa",
+        "policy": "Política",
+        "evidence": "Evidencia",
+        "report": "Informe",
+        "export": "Exportación",
+        "other": "Otro"
+      },
+      "column": {
+        "title": "Título",
+        "category": "Categoría",
+        "size": "Tamaño",
+        "uploaded": "Subido",
+        "portal": "Portal del cliente",
+        "actions": "Acciones"
+      },
+      "badge": {
+        "superseded": "Versión anterior",
+        "portal": "En el portal"
+      },
+      "errors": {
+        "tooLarge": "Ese archivo pesa más de 10 MB.",
+        "unsupportedType": "Solo se pueden almacenar archivos PDF, JPEG, PNG y WebP.",
+        "storageUnavailable": "El almacenamiento de documentos no está disponible en este momento. Vuelva a intentarlo en unos minutos.",
+        "notHead": "Este documento ya fue reemplazado. Vuelva a cargar la página y trabaje con la versión actual.",
+        "emptyFile": "Ese archivo está vacío.",
+        "uploadFailed": "No se pudo subir el documento.",
+        "updateFailed": "No se pudo guardar el documento.",
+        "deleteFailed": "No se pudo eliminar el documento.",
+        "downloadFailed": "No se pudo descargar el documento."
+      },
+      "toast": {
+        "uploaded": "Documento subido",
+        "replaced": "Nueva versión subida",
+        "updated": "Documento actualizado",
+        "deleted": "Documento eliminado"
       }
     }
   }

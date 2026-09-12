@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared';
+import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint, optionalQueryBoolean } from '@breeze/shared';
 import {
   backupRetentionSchema as sharedBackupRetentionSchema,
   backupRetentionUpdateSchema as sharedBackupRetentionUpdateSchema,
@@ -152,7 +152,7 @@ export const snapshotListSchema = z.object({
   // Bare-metal recovery W04a: the recovery-creation panel needs "which
   // snapshots CAN start a bare-metal recovery" without pulling every
   // snapshot and filtering client-side.
-  bareMetalRestorable: z.coerce.boolean().optional(),
+  bareMetalRestorable: optionalQueryBoolean,
 });
 
 export const snapshotProtectionReasonSchema = z.object({
@@ -369,22 +369,6 @@ export const bmrMediaListSchema = z.object({
   tokenId: z.string().guid().optional(),
   snapshotId: z.string().guid().optional(),
   status: z.enum(['pending', 'building', 'ready', 'ready_signed', 'legacy_unsigned', 'failed', 'expired']).optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  offset: z.coerce.number().int().min(0).default(0),
-});
-
-export const bmrBootMediaCreateSchema = z.object({
-  tokenId: z.string().guid(),
-  bundleArtifactId: z.string().guid().optional(),
-  platform: z.literal('linux').default('linux'),
-  architecture: z.literal('amd64').default('amd64'),
-  mediaType: z.literal('iso').default('iso'),
-});
-
-export const bmrBootMediaListSchema = z.object({
-  tokenId: z.string().guid().optional(),
-  snapshotId: z.string().guid().optional(),
-  status: z.enum(['pending', 'building', 'ready_signed', 'failed', 'expired']).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });

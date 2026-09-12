@@ -66,6 +66,8 @@ Act mode is bounded by more than the operation list:
 - **An organization-wide exposure ledger.** Every unattended action Act mode takes is recorded against the organization it ran in, alongside the equivalent record for the separate, not-yet-generally-available policy-decide capability. This ledger is the foundation for a shared, org-wide cap on unattended activity across all of an organization's agents.
 - **Verification, not certainty.** Act mode checks the result of what it did (a service is running again, disk usage improved) and reports if that check fails — but it does not roll anything back. If verification fails, a person resolves it, the same as they would resolve any other failed run.
 
+An agent in Act mode can also author a new script when nothing in your library fits, following the same independent review and approval flow as the chat assistant — or, if your partner and organization have both opted in, the [unattended lane](/features/ai-script-authoring/#the-unattended-lane) for narrow, low-risk cases. An agent never edits or approves its own proposal.
+
 ### Turning Act mode on
 
 In **Settings → AI Agents**, set the agent's mode to **Act**. The API refuses the change unless the agent already has both a recipient that resolves to a real person (Act mode still needs someone to notify) and at least one act-eligible operation in its **Tool allowlist** (for scripts, at least one authorized script). The form shows an explicit warning — unattended execution, no rollback, single-device scope, the action cap — and, the first time you switch an agent into Act mode, requires you to check an acknowledgement before it lets you save.
