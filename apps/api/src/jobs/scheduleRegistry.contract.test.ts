@@ -756,4 +756,11 @@ describe('BullMQ repeatable schedule registry', { timeout: 60_000 }, () => {
       warnSpy.mockRestore();
     }
   });
+
+  it('allocates the m365 sync retention slot in the daily lane', () => {
+    const pattern = jobSchedule('m365-sync-retention');
+    expect(pattern).toBe('3 19 * * *');
+    const [minute] = pattern.split(' ');
+    expect(Number(minute) % 5, 'daily tier is minutes = 3 (mod 5)').toBe(3);
+  });
 });

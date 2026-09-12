@@ -17,6 +17,7 @@ import {
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 import { executeOrgMerge } from '../../services/orgMerge';
+import { pruneM365SyncRetention } from '../../jobs/m365SyncRetentionWorker';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const credentialVersion = '0123456789abcdef0123456789abcdef';
@@ -295,6 +296,57 @@ describe('m365 tenant sync — cross-tenant isolation as breeze_app', () => {
       db.select({ id: m365SyncState.id }).from(m365SyncState)
         .where(sql`${m365SyncState.connectionId} = ${fx.a.connection.id}::uuid`));
     expect(remaining).toEqual([]);
+  });
+});
+
+describe('m365 tenant sync — retention sweep against real Postgres', () => {
+  runDb('deletes only entities stale for 30+ days and nulls only score detail older than 90 days', async () => {
+    const fx = await withSystemDbAccessContext(() => seedOrg('retention'));
+    const org = fx.org.id;
+    const day = 24 * 3600 * 1000;
+    const ago = (days: number) => new Date(Date.now() - days * day);
+    const isoDate = (days: number) => ago(days).toISOString().slice(0, 10);
+    const expired = randomUUID();
+    const recentlyStale = randomUUID();
+    const live = randomUUID();
+    await withSystemDbAccessContext(async () => {
+      await db.insert(m365Users).values([
+        { orgId: org, graphId: expired, coreHash: hash, isStale: true, staleSince: ago(31) },
+        { orgId: org, graphId: recentlyStale, coreHash: hash, isStale: true, staleSince: ago(5) },
+        { orgId: org, graphId: live, coreHash: hash, isStale: false },
+      ]);
+      await db.insert(m365LicenseSkus).values({
+        orgId: org, graphId: expired, coreHash: hash, isStale: true, staleSince: ago(45),
+      });
+      await db.insert(m365SecureScoreSnapshots).values([
+        { orgId: org, tenantId: fx.tenantId, scoreDate: isoDate(100), currentScore: '1.00', controlScores: [] },
+        { orgId: org, tenantId: fx.tenantId, scoreDate: isoDate(10), currentScore: '2.00', controlScores: [] },
+      ]);
+    });
+
+    const result = await pruneM365SyncRetention();
+    expect(result.deletedEntities).toBeGreaterThanOrEqual(2);
+    expect(result.prunedScoreControls).toBeGreaterThanOrEqual(1);
+
+    const admin = getTestDb() as typeof db;
+    const users = (await admin.execute(sql`
+      SELECT graph_id FROM m365_users WHERE org_id = ${org}::uuid ORDER BY graph_id
+    `)) as unknown as Array<{ graph_id: string }>;
+    expect(users.map((u) => u.graph_id).sort()).toEqual([live, recentlyStale].sort());
+    const skus = (await admin.execute(sql`
+      SELECT count(*)::int AS n FROM m365_license_skus WHERE org_id = ${org}::uuid
+    `)) as unknown as Array<{ n: number }>;
+    expect(skus[0]!.n).toBe(0);
+    const scores = (await admin.execute(sql`
+      SELECT score_date::text AS score_date, current_score::text AS current_score,
+             control_scores IS NULL AS pruned
+      FROM m365_secure_score_snapshots WHERE org_id = ${org}::uuid ORDER BY score_date
+    `)) as unknown as Array<{ score_date: string; current_score: string; pruned: boolean }>;
+    // The ROW (the trend line) is kept; only the 90+-day-old detail is nulled.
+    expect(scores).toEqual([
+      { score_date: isoDate(100), current_score: '1.00', pruned: true },
+      { score_date: isoDate(10), current_score: '2.00', pruned: false },
+    ]);
   });
 });
 

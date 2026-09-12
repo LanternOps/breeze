@@ -219,4 +219,8 @@ describe('retention/rollup job metrics', () => {
     expect(new Set(RETENTION_JOB_NAMES).size).toBe(RETENTION_JOB_NAMES.length);
     expect([...RETENTION_JOB_NAMES]).toEqual([...RETENTION_JOB_NAMES].sort());
   });
+
+  it('instruments the m365 sync retention sweep', () => {
+    expect(RETENTION_JOB_NAMES).toContain('m365_sync_retention');
+  });
 });

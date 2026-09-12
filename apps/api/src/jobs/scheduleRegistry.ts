@@ -139,6 +139,12 @@ export const JOB_SCHEDULES = {
   // held 3/23/43; :13 was free. NOT minute 17: that lane is ≡2 (mod 5) and
   // `audit-drift-evaluator` already fires hourly at :17.
   'removed-device-purge': '13 8 * * *',
+  // #5329 (M365 tenant sync, spec §3.7) — daily prune of stale M365 snapshot
+  // rows (30 days past stale_since) and of Secure Score control_scores past
+  // 90 days, both via partial indexes so the sweep never rescans pruned
+  // history. Hour 19 was free in the daily tier; :03 keeps it in the
+  // daily = 3 (mod 5) lane.
+  'm365-sync-retention': '3 19 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0
