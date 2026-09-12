@@ -512,6 +512,7 @@ describe('customer Graph-read connection lifecycle', () => {
     const executorClient = {
       completeIdentityVerification: vi.fn(),
       executeReadAction: vi.fn(),
+      syncAction: vi.fn(),
       retestCustomerGraphRead: vi.fn(async () => {
         expect(contextMocks.callerDepth).toBe(0);
         return {
@@ -573,6 +574,7 @@ describe('customer Graph-read connection lifecycle', () => {
     const slowExecutor = {
       completeIdentityVerification: vi.fn(),
       executeReadAction: vi.fn(),
+      syncAction: vi.fn(),
       retestCustomerGraphRead: vi.fn(() => {
         markFirstStarted();
         return firstResult;
@@ -603,6 +605,7 @@ describe('customer Graph-read connection lifecycle', () => {
       executorClient: {
         completeIdentityVerification: vi.fn(),
         executeReadAction: vi.fn(),
+        syncAction: vi.fn(),
         retestCustomerGraphRead: vi.fn(async () => result('Newer Result', '2026-07-14T18:00:00.000Z')),
       },
     });
