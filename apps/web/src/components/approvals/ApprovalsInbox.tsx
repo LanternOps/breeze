@@ -21,6 +21,7 @@ import {
 } from '@/lib/intentApprovals';
 import { loginPathWithNext } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
+import { useHashState } from '@/lib/useHashState';
 import { ActionError, runAction } from '@/lib/runAction';
 import { formatRelativeTime } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -224,20 +225,15 @@ function rowErrorKind(result: BatchRowResult): DecisionErrorKind {
  * proposal notifications. Hash, not a query param (CLAUDE.md URL-state rule).
  * Returns null for any other hash.
  */
-function proposalIdFromHash(hash: string): string | null {
-  const m = /^#proposal-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(hash);
-  return m ? m[1]! : null;
+function proposalIdFromHash(hash: string): string | undefined {
+  const m = /^#?proposal-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(hash);
+  return m ? m[1]! : undefined;
 }
 
 export default function ApprovalsInbox() {
-  const [hashProposalId, setHashProposalId] = useState<string | null>(() =>
-    typeof window === 'undefined' ? null : proposalIdFromHash(window.location.hash),
-  );
-  useEffect(() => {
-    const onHash = () => setHashProposalId(proposalIdFromHash(window.location.hash));
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
-  }, []);
+  // SSR-safe (#2421): starts null, adopts the hash post-mount, follows
+  // hashchange — never read in a useState initializer.
+  const [hashProposalId] = useHashState<string | null>(null, proposalIdFromHash);
   const { t } = useTranslation('approvals');
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [loading, setLoading] = useState(true);
@@ -665,7 +661,13 @@ export default function ApprovalsInbox() {
       const outcome =
         decision === 'approve'
           ? opts
-            ? await decideIntentApproval(approval.id, 'approve', undefined, approval.approvalScope, opts)
+            ? await decideIntentApproval(
+                approval.id, 'approve', undefined,
+                approval.approvalScope === 'supervised' || approval.approvalScope === 'four_eyes'
+                  ? approval.approvalScope
+                  : null,
+                opts,
+              )
             : await decideIntentApproval(approval.id, 'approve')
           : await decideIntentApproval(approval.id, 'deny', reason?.trim() || undefined);
       if (outcome === 'needs_device') {
