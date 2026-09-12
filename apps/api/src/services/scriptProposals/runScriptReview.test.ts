@@ -109,7 +109,7 @@ vi.mock('../auditService', () => ({ createAuditLogAsync: shared.createAuditLogAs
 vi.mock('./proposals', () => ({ transitionProposal: shared.transitionProposalMock }));
 vi.mock('../../config/env', () => ({ AI_SCRIPT_REVIEWER_MODEL: 'claude-sonnet-4-6' }));
 
-import { runScriptReview, REVIEWER_PROMPT_VERSION } from './reviewer';
+import { ProposalNotReviewableError, runScriptReview, REVIEWER_PROMPT_VERSION } from './reviewer';
 
 const PROPOSAL_ROW = {
   id: PROPOSAL_ID,
@@ -312,5 +312,189 @@ describe('runScriptReview — happy path', () => {
 
     expect(shared.insertValues).toHaveLength(1);
     expect(shared.insertValues[0]).toMatchObject({ reviewerKind: 'model' });
+  });
+});
+
+describe('runScriptReview — failure paths (D7: fail closed)', () => {
+  beforeEach(() => {
+    resetDbState();
+    vi.clearAllMocks();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    shared.transitionProposalMock.mockResolvedValue(true);
+    shared.getAnthropicClientForPartnerMock.mockImplementation(async () => ({
+      client: { messages: { create: shared.messagesCreateMock } },
+      resolved: { source: 'platform' },
+    }));
+  });
+
+  function expectFailedClosed(status: 'failed' | 'timeout') {
+    // Failure row is a `model` row so the chain reads static_scan → model(failed).
+    expect(shared.insertValues.at(-1)).toMatchObject({ reviewerKind: 'model', status });
+    expect(shared.transitionProposalMock).toHaveBeenCalledWith(
+      expect.anything(), PROPOSAL_ID, ['proposed'], 'review_failed', expect.objectContaining({ decisionNote: expect.any(String) }),
+    );
+    expect(shared.transitionProposalMock).not.toHaveBeenCalledWith(
+      expect.anything(), PROPOSAL_ID, expect.anything(), 'reviewed', expect.anything(),
+    );
+    expect(shared.createAuditLogAsyncMock).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'script.proposal.review_failed', result: 'failure' }),
+    );
+  }
+
+  it('budget denied ⇒ review_failed, no model call, nothing to settle (nothing was reserved)', async () => {
+    shared.selectQueue.push([PROPOSAL_ROW]);
+    shared.selectQueue.push([]); // no static_scan row yet
+    shared.reserveAiBudgetMock.mockResolvedValueOnce({ kind: 'denied', reason: 'daily_budget', message: 'Daily AI budget exhausted ($5.00)' });
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row-1', reviewerKind: 'model', status: 'failed' }]);
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(shared.getAnthropicClientForPartnerMock).not.toHaveBeenCalled();
+    expect(shared.messagesCreateMock).not.toHaveBeenCalled();
+    expect(shared.recordUsageMock).not.toHaveBeenCalled();
+    expect(shared.insertValues.at(-1)).toMatchObject({ budgetReservationId: null, model: null, summary: expect.stringContaining('daily_budget') });
+    expectFailedClosed('failed');
+  });
+
+  it('provider client unavailable ⇒ review_failed, reservation settled at zero', async () => {
+    queueReadsThroughModelCall();
+    shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
+    shared.getAnthropicClientForPartnerMock.mockRejectedValueOnce(new Error('egress blocked'));
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row-2', reviewerKind: 'model', status: 'failed' }]);
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(shared.messagesCreateMock).not.toHaveBeenCalled();
+    expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
+    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID);
+    expectFailedClosed('failed');
+  });
+
+  it('provider error before any response ⇒ review_failed, reservation settled at zero', async () => {
+    queueReadsThroughModelCall();
+    shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row-3', reviewerKind: 'model', status: 'failed' }]);
+    shared.messagesCreateMock.mockRejectedValueOnce(new Error('connection reset'));
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
+    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID);
+    expect(shared.insertValues.at(-1)).toMatchObject({ budgetReservationId: RESERVATION_ID, model: 'claude-sonnet-4-6' });
+    expectFailedClosed('failed');
+  });
+
+  it('timeout ⇒ review_failed with a timeout-classified review row, reservation settled at zero', async () => {
+    queueReadsThroughModelCall();
+    shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row-4', reviewerKind: 'model', status: 'timeout' }]);
+    const abortError = new Error('The operation was aborted due to timeout');
+    abortError.name = 'TimeoutError';
+    shared.messagesCreateMock.mockRejectedValueOnce(abortError);
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ status: 'timeout' });
+    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID);
+    expectFailedClosed('timeout');
+  });
+
+  it('malformed JSON ⇒ review_failed, reservation settled at the REAL (nonzero) token counts already spent', async () => {
+    queueReadsThroughModelCall();
+    shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row-5', reviewerKind: 'model', status: 'failed' }]);
+    shared.messagesCreateMock.mockResolvedValueOnce({ usage: { input_tokens: 300, output_tokens: 40 }, content: [{ type: 'text', text: 'not json at all' }] });
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
+    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 300, 40, false, 'platform', undefined, RESERVATION_ID);
+    expect(shared.insertValues.at(-1)).toMatchObject({ inputTokens: 300, outputTokens: 40 });
+    expectFailedClosed('failed');
+  });
+
+  it('schema-invalid JSON (missing required field) ⇒ review_failed', async () => {
+    queueReadsThroughModelCall();
+    shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row-6', reviewerKind: 'model', status: 'failed' }]);
+    const { findings: _findings, ...withoutFindings } = VALID_VERDICT as Record<string, unknown>;
+    shared.messagesCreateMock.mockResolvedValueOnce({ usage: { input_tokens: 300, output_tokens: 40 }, content: [{ type: 'text', text: JSON.stringify(withoutFindings) }] });
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(shared.insertValues.at(-1)).toMatchObject({ summary: expect.stringContaining('findings') });
+    expectFailedClosed('failed');
+  });
+
+  it('no text block at all (e.g. max_tokens hit mid-thought) ⇒ review_failed', async () => {
+    queueReadsThroughModelCall();
+    shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row-7', reviewerKind: 'model', status: 'failed' }]);
+    shared.messagesCreateMock.mockResolvedValueOnce({ usage: { input_tokens: 300, output_tokens: 2000 }, content: [] });
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 300, 2000, false, 'platform', undefined, RESERVATION_ID);
+    expectFailedClosed('failed');
+  });
+
+  it('idempotent under retry: a proposal already past "proposed" short-circuits with no second model call or reservation', async () => {
+    shared.selectQueue.push([{ ...PROPOSAL_ROW, status: 'reviewed' }]);
+    shared.selectQueue.push([{ id: REVIEW_ROW_ID, reviewerKind: 'model', status: 'completed', riskTier: 'low' }]);
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ id: REVIEW_ROW_ID });
+    expect(shared.reserveAiBudgetMock).not.toHaveBeenCalled();
+    expect(shared.messagesCreateMock).not.toHaveBeenCalled();
+    expect(shared.recordUsageMock).not.toHaveBeenCalled();
+    expect(shared.insertValues).toHaveLength(0);
+  });
+
+  it('a proposal that left "proposed" with no model review (superseded/expired) is not reviewable — no retry, no spend', async () => {
+    shared.selectQueue.push([{ ...PROPOSAL_ROW, status: 'superseded' }]);
+    shared.selectQueue.push([]);
+
+    await expect(runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 })).rejects.toBeInstanceOf(ProposalNotReviewableError);
+    expect(shared.reserveAiBudgetMock).not.toHaveBeenCalled();
+    expect(shared.insertValues).toHaveLength(0);
+  });
+
+  it('a proposal missing from the org (cross-org id) is not reviewable', async () => {
+    shared.selectQueue.push([]);
+
+    await expect(runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 })).rejects.toBeInstanceOf(ProposalNotReviewableError);
+  });
+
+  it('lost CAS race: a concurrent attempt already transitioned the proposal ⇒ settles its own spend once and returns the winner', async () => {
+    queueReadsThroughModelCall();
+    shared.reserveAiBudgetMock.mockResolvedValueOnce(RESERVED);
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'loser-row', reviewerKind: 'model', status: 'completed' }]);
+    shared.messagesCreateMock.mockResolvedValueOnce({ usage: { input_tokens: 500, output_tokens: 80 }, content: [{ type: 'text', text: JSON.stringify(VALID_VERDICT) }] });
+    shared.transitionProposalMock.mockResolvedValueOnce(false);
+    shared.selectQueue.push([{ id: 'winner-row', reviewerKind: 'model', status: 'completed' }]);
+
+    const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
+
+    expect(result).toMatchObject({ id: 'winner-row' });
+    expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
+    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 500, 80, false, 'platform', undefined, RESERVATION_ID);
+    // Not fail-closed: the winner's completed review stands.
+    expect(shared.transitionProposalMock).not.toHaveBeenCalledWith(expect.anything(), PROPOSAL_ID, expect.anything(), 'review_failed', expect.anything());
   });
 });
