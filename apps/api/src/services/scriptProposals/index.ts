@@ -8,3 +8,4 @@ export * from './guardrailContext';
 export * from './dispatchSnapshot';
 export * from './reviewQueue';
 export * from './intentLink';
+export { resolveEffectiveScriptPolicy, mergeScriptPolicies, SCRIPT_POLICY_DEFAULTS, type EffectiveScriptPolicy } from './policy';

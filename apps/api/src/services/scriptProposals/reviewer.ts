@@ -22,6 +22,7 @@ import {
   getAnthropicClientForPartner, getLlmBillingSourceForOrg, resolveWireModel,
 } from '../llm/llmConfigResolver';
 import { transitionProposal } from './proposals';
+import { resolveEffectiveScriptPolicy, type EffectiveScriptPolicy } from './policy';
 import type { ScriptReviewJobData } from './reviewQueue';
 
 export const SCRIPT_REVIEW_TIMEOUT_MS = 60_000;
@@ -134,13 +135,22 @@ export function buildReviewerPrompt(args: {
 }
 
 /**
- * The reviewer's model for `orgId`. Today this is a flat platform constant —
- * `ai_script_policies.reviewer_model` (W04) does not exist yet. `orgId` is
- * accepted now (not added later) so this seam's call sites never need to
- * change shape when W04 lands; only this function's body does.
+ * The reviewer's model for `orgId`: the effective script policy's
+ * `reviewer_model` (org override, else partner, W04 #5612) or the platform
+ * default. The org may only choose a model the partner's BYOK provider
+ * already serves — that constraint is enforced by the PUT route's validation
+ * (routes/ai/scriptPolicy.ts), not here, so this stays a plain read. Runs in
+ * the worker (no request context), hence the system context.
  */
-export function resolveReviewerModel(_orgId: string): string {
-  return AI_SCRIPT_REVIEWER_MODEL;
+export async function resolveReviewerModel(orgId: string): Promise<string> {
+  const effective = await resolveReviewerPolicy(orgId);
+  return effective.reviewerModel ?? AI_SCRIPT_REVIEWER_MODEL;
+}
+
+/** The effective lane policy as the worker sees it (system context — there
+ *  is no request here). */
+export async function resolveReviewerPolicy(orgId: string): Promise<EffectiveScriptPolicy> {
+  return withSystemDbAccessContext(() => resolveEffectiveScriptPolicy(orgId));
 }
 
 /** The org's partner id. `organizations.partner_id` is NOT NULL, so this
@@ -332,6 +342,10 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   await ensureStaticScanRow(job, scan);
 
   const billingSource: BillingSource = await getLlmBillingSourceForOrg(job.orgId);
+  // Resolved BEFORE the reservation so a policy-read failure cannot strand
+  // an open reservation. The ceiling is advisory context for the prompt
+  // (spec §9); the lane's own evaluator re-reads the policy at decision time.
+  const effectivePolicy = await resolveReviewerPolicy(job.orgId);
   const reservation = await reserveAiBudget({
     orgId: job.orgId,
     idempotencyKey: `script-review:${job.proposalId}:${job.attempt}`,
@@ -344,7 +358,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   }
   const reservationId = reservation.reservationId;
 
-  const model = resolveReviewerModel(job.orgId);
+  const model = effectivePolicy.reviewerModel ?? AI_SCRIPT_REVIEWER_MODEL;
 
   // Settle-at-zero helper for the branches where no tokens were ever spent.
   const settleAtZero = (catalogPricing?: CatalogPricing) =>
@@ -359,10 +373,9 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   try {
     partnerId = await readOrgPartnerId(job.orgId);
     const targetDevices = await loadDeviceFacts(job.orgId, proposal.targetDeviceIds);
-    // Advisory context only (spec §9's documented default) — see
-    // buildReviewerPrompt's comment. W04 replaces this with
-    // resolveEffectiveScriptPolicy(orgId).maxUnattendedRiskTier.
-    const ceiling: RiskTier = 'low';
+    // Advisory context only — see buildReviewerPrompt's comment. This is
+    // the effective (partner ∧ org) ceiling, never the org row alone.
+    const ceiling: RiskTier = effectivePolicy.maxUnattendedRiskTier;
     ({ system, user } = buildReviewerPrompt({ proposal, scan, devices: targetDevices, ceiling }));
   } catch (error) {
     await settleAtZero();

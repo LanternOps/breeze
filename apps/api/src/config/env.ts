@@ -128,13 +128,12 @@ export function aiScriptAuthoringEnabled(): boolean {
   return envFlag('BREEZE_AI_SCRIPT_AUTHORING_ENABLED', true);
 }
 
-// W02 (#5612): the script-proposal reviewer's model. A flat env-driven
-// constant, not a DB-backed policy row — `ai_script_policies.reviewer_model`
-// (W04) does not exist yet. `resolveReviewerModel(orgId)` in
-// services/scriptProposals/reviewer.ts is the seam W04 extends: it ignores
-// `orgId` today and will read the org/partner override first once that table
-// lands, falling back to this constant. Unset ⇒ the platform default model
-// (which itself honours ANTHROPIC_MODEL for self-hosted gateways, #1412).
+// W02 (#5612): the script-proposal reviewer's PLATFORM DEFAULT model.
+// `resolveReviewerModel(orgId)` in services/scriptProposals/reviewer.ts
+// reads the effective `ai_script_policies.reviewer_model` (org override, else
+// partner — W04) first and falls back to this constant. Unset ⇒ the platform
+// default model (which itself honours ANTHROPIC_MODEL for self-hosted
+// gateways, #1412).
 export const AI_SCRIPT_REVIEWER_MODEL =
   process.env.BREEZE_AI_SCRIPT_REVIEWER_MODEL?.trim() || resolveDefaultModel();
 
