@@ -257,6 +257,19 @@ export interface ConnectionService<P extends M365ConsentSessionProfile, Client> 
     input: M365ConsentAttemptSnapshot<P>,
     result: CompleteConsentResult,
   ): Promise<M365ConnectionSnapshot<P>>;
+  transitionUpgradeConsentToIdentity(input: {
+    attempt: M365ConsentAttemptSnapshot<P>;
+    rawAdminState: string;
+    prepared: PreparedIdentityVerificationSession;
+  }): Promise<{
+    connection: M365ConnectionSnapshot<P>;
+    identity: Awaited<ReturnType<typeof insertPreparedIdentityVerificationSessionInTransaction>>;
+    actorId: string;
+  }>;
+  applyUpgradeVerificationResult(
+    input: M365ConsentAttemptSnapshot<P>,
+    result: CompleteConsentResult,
+  ): Promise<M365ConnectionSnapshot<P>>;
   loadRetestSnapshot(input: {
     id: string;
     orgId: string;
@@ -688,6 +701,125 @@ export function createConnectionService<
     }));
   }
 
+  function isExecutable(status: M365ConnectionStatus): boolean {
+    return EXECUTABLE_STATUSES.includes(status as typeof EXECUTABLE_STATUSES[number]);
+  }
+
+  /**
+   * Upgrade counterpart of transitionAdminConsentToIdentity. Same consume +
+   * insert, minus the status write: the connection is `active`/`degraded`
+   * throughout an upgrade and moving it to `verifying` would stop reads for the
+   * duration of a Microsoft round trip.
+   */
+  async function transitionUpgradeConsentToIdentity(input: {
+    attempt: M365ConsentAttemptSnapshot<P>;
+    rawAdminState: string;
+    prepared: PreparedIdentityVerificationSession;
+  }): Promise<{
+    connection: M365ConnectionSnapshot<P>;
+    identity: Awaited<ReturnType<typeof insertPreparedIdentityVerificationSessionInTransaction>>;
+    actorId: string;
+  }> {
+    if (!isExecutable(input.attempt.status)) throw lifecycleError('stale_attempt');
+    return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      const adminSession = await consumeConsentSessionInTransaction({
+        rawState: input.rawAdminState,
+        phase: 'admin_consent',
+        connectionId: input.attempt.id,
+        orgId: input.attempt.orgId,
+        consentAttemptId: input.attempt.consentAttemptId,
+        profile,
+      });
+      if (!adminSession) throw lifecycleError('stale_attempt');
+      // The consumed row is the authority on which flow this is; the callback's
+      // non-consuming lookup only routed us here.
+      if (adminSession.purpose !== 'upgrade') throw lifecycleError('stale_attempt');
+
+      const rows = await db.select().from(m365Connections)
+        .where(attemptPredicate(input.attempt)).limit(1).for('update');
+      const connection = rows[0] ? snapshot(rows[0]) : null;
+      if (!connection) throw lifecycleError('stale_attempt');
+
+      const identity = await insertPreparedIdentityVerificationSessionInTransaction({
+        connectionId: input.attempt.id,
+        orgId: input.attempt.orgId,
+        consentAttemptId: input.attempt.consentAttemptId,
+        userId: adminSession.userId,
+        profile,
+        purpose: 'upgrade',
+      }, input.prepared);
+      return { connection, identity, actorId: adminSession.userId };
+    }));
+  }
+
+  /**
+   * Applies an upgrade callback result in place (spec §2.2).
+   *
+   * Every early return is a deliberate no-op: an abandoned, cancelled, or
+   * failed upgrade must leave the connection exactly as it was, still
+   * executing on the grants it already holds. The one write path never lowers
+   * executability — a partial approval records what was observed and leaves
+   * the stored manifest version, so deriveGrantHealth keeps reporting
+   * manifest-stale and the card keeps offering the banner.
+   */
+  async function applyUpgradeVerificationResult(
+    input: M365ConsentAttemptSnapshot<P>,
+    result: CompleteConsentResult,
+  ): Promise<M365ConnectionSnapshot<P>> {
+    if (!isExecutable(input.status)) throw lifecycleError('stale_attempt');
+    return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      const rows = await db.select().from(m365Connections)
+        .where(attemptPredicate(input)).limit(1).for('update');
+      const current = rows[0] ? snapshot(rows[0]) : null;
+      if (!current) throw lifecycleError('stale_attempt');
+
+      if (!result.success) return current;
+      // The executor is fixed-profile, but the control plane checks the proof
+      // against its own code/config-owned application, exactly as the
+      // first-time path does.
+      if (result.applicationId !== deps.loadRuntimeConfig().clientId) return current;
+      // Strict equality, not "NULL or equal": an upgrade always has a bound
+      // tenant, so a different tenant is a rebind attempt, never a binding.
+      if (result.tenantId !== current.tenantId) return current;
+      if (result.grantReconciliation !== 'complete') return current;
+
+      const verifiedAt = new Date(result.verifiedAt);
+      const grantsVerifiedAt = new Date(result.grantsVerifiedAt);
+      const health = deriveGrantHealth({
+        status: current.status,
+        permissionManifestVersion: deps.manifest.version,
+        observedGrants: result.observedGrants,
+        grantsVerifiedAt,
+        lastErrorCode: null,
+      }, deps.manifest);
+      const promote = health.missingGrants.length === 0
+        && result.manifestVersion === deps.manifest.version;
+
+      const set = promote
+        ? {
+            displayName: result.organizationDisplayName,
+            observedGrants: result.observedGrants,
+            grantsVerifiedAt,
+            lastVerifiedAt: verifiedAt,
+            permissionManifestVersion: deps.manifest.version,
+            consentGeneration: sql`${m365Connections.consentGeneration} + 1`,
+            status: health.state === 'active' ? 'active' as const : 'degraded' as const,
+            lastErrorCode: lifecycleErrorForHealth(health),
+            updatedAt: new Date(),
+          }
+        : {
+            displayName: result.organizationDisplayName,
+            observedGrants: result.observedGrants,
+            grantsVerifiedAt,
+            lastVerifiedAt: verifiedAt,
+            lastErrorCode: 'grant_missing',
+            updatedAt: new Date(),
+          };
+      return requireCasRow(await db.update(m365Connections).set(set)
+        .where(attemptPredicate(input)).returning());
+    }));
+  }
+
   async function loadRetestSnapshot(input: {
     id: string;
     orgId: string;
@@ -855,6 +987,8 @@ export function createConnectionService<
     transitionAdminConsentToIdentity,
     markConsentAttemptFailed,
     applyIdentityVerificationResult,
+    transitionUpgradeConsentToIdentity,
+    applyUpgradeVerificationResult,
     loadRetestSnapshot,
     applyRetestResult,
     retestConnection,
@@ -892,6 +1026,8 @@ export const markAdminConsentReturned = readConnectionService.markAdminConsentRe
 export const transitionAdminConsentToIdentity = readConnectionService.transitionAdminConsentToIdentity;
 export const markConsentAttemptFailed = readConnectionService.markConsentAttemptFailed;
 export const applyIdentityVerificationResult = readConnectionService.applyIdentityVerificationResult;
+export const transitionUpgradeConsentToIdentity = readConnectionService.transitionUpgradeConsentToIdentity;
+export const applyUpgradeVerificationResult = readConnectionService.applyUpgradeVerificationResult;
 export const loadRetestSnapshot = readConnectionService.loadRetestSnapshot;
 export const applyRetestResult = readConnectionService.applyRetestResult;
 export const retestCustomerGraphReadConnection = readConnectionService.retestConnection;

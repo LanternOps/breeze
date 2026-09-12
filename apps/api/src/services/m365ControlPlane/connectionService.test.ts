@@ -178,6 +178,8 @@ vi.mock('./runtimeConfig', () => ({
 import {
   ConnectionLifecycleError,
   applyIdentityVerificationResult,
+  applyUpgradeVerificationResult,
+  transitionUpgradeConsentToIdentity,
   applyRetestResult,
   createConnectionService,
   deriveGrantHealth,
@@ -868,5 +870,211 @@ describe('initiateUpgradeConsent', () => {
       auth: auth(),
     })).rejects.toMatchObject({ code: 'stale_attempt' });
     expect(consentMocks.createAdmin).not.toHaveBeenCalled();
+  });
+});
+
+describe('upgrade consent verification', () => {
+  const MANIFEST = M365_PERMISSION_PROFILES['customer-graph-read'];
+  const REQUIRED_V3 = [...(MANIFEST.applicationPermissionAssignments ?? [])];
+  const ATTEMPT: ConsentAttemptSnapshot = {
+    id: CONNECTION_ID,
+    orgId: ORG_ID,
+    profile: 'customer-graph-read',
+    consentAttemptId: ATTEMPT_ID,
+    status: 'active',
+  };
+  const STORED = {
+    ...ATTEMPT,
+    tenantId: TENANT_ID,
+    clientId: CLIENT_ID,
+    permissionManifestVersion: 2,
+    observedGrants: [],
+    grantsVerifiedAt: new Date('2026-09-01T00:00:00.000Z'),
+    displayName: 'Contoso',
+    lastVerifiedAt: new Date('2026-09-01T00:00:00.000Z'),
+    lastErrorCode: null,
+  };
+  function successResult(observedGrants: unknown[]) {
+    return {
+      success: true as const,
+      tenantId: STORED.tenantId,
+      applicationId: CLIENT_ID,
+      organizationDisplayName: 'Contoso',
+      manifestVersion: MANIFEST.version,
+      verifiedAt: '2026-09-08T10:00:00.000Z',
+      grantReconciliation: 'complete' as const,
+      grantsVerifiedAt: '2026-09-08T10:00:01.000Z',
+      observedGrants,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMocks.selectResults.length = 0;
+    dbMocks.updateResults.length = 0;
+    dbMocks.updateSets.length = 0;
+    dbMocks.updateWheres.length = 0;
+    dbMocks.order.length = 0;
+    consentMocks.validStates.clear();
+    consentMocks.stateCounter = 0;
+  });
+
+  it('promotes the manifest version and bumps the consent generation on a full approval', async () => {
+    dbMocks.selectResults.push([STORED]);
+    dbMocks.updateResults.push((set) => [{ ...STORED, ...set }]);
+
+    await applyUpgradeVerificationResult(ATTEMPT, successResult(REQUIRED_V3) as never);
+
+    const set = dbMocks.updateSets[0]!;
+    expect(set.permissionManifestVersion).toBe(3);
+    expect(set.consentGeneration).toBeDefined();      // sql`consent_generation + 1`
+    expect(set.status).toBe('active');
+    expect(set.lastErrorCode).toBeNull();
+    expect(set.observedGrants).toEqual(REQUIRED_V3);
+  });
+
+  it('records the observation but does NOT promote when a v3 grant is missing', async () => {
+    const partial = REQUIRED_V3.slice(0, REQUIRED_V3.length - 1);
+    dbMocks.selectResults.push([STORED]);
+    dbMocks.updateResults.push((set) => [{ ...STORED, ...set }]);
+
+    await applyUpgradeVerificationResult(ATTEMPT, successResult(partial) as never);
+
+    const set = dbMocks.updateSets[0]!;
+    expect(set.permissionManifestVersion).toBeUndefined();
+    expect(set.consentGeneration).toBeUndefined();
+    expect(set.status).toBeUndefined();               // never made less executable
+    expect(set.lastErrorCode).toBe('grant_missing');
+    expect(set.observedGrants).toEqual(partial);
+  });
+
+  it('writes nothing at all when the administrator abandoned or the provider failed', async () => {
+    dbMocks.selectResults.push([STORED]);
+
+    const applied = await applyUpgradeVerificationResult(
+      ATTEMPT,
+      { success: false, errorCode: 'consent_cancelled' } as never,
+    );
+
+    expect(dbMocks.updateSets).toHaveLength(0);
+    expect(applied.permissionManifestVersion).toBe(2);
+    expect(applied.status).toBe('active');
+  });
+
+  it('refuses to rebind: a different verified tenant is a silent no-op', async () => {
+    // applyIdentityVerificationResult accepts a binding when tenant_id IS NULL
+    // OR equal. An upgrade always has a bound tenant, so anything but equality
+    // is an attempt to move a live connection to another tenant.
+    dbMocks.selectResults.push([STORED]);
+
+    await applyUpgradeVerificationResult(
+      ATTEMPT,
+      { ...successResult(REQUIRED_V3), tenantId: '99999999-9999-4999-8999-999999999999' } as never,
+    );
+
+    expect(dbMocks.updateSets).toHaveLength(0);
+  });
+
+  it('writes nothing when the returned application is not the configured one', async () => {
+    dbMocks.selectResults.push([STORED]);
+
+    await applyUpgradeVerificationResult(
+      ATTEMPT,
+      { ...successResult(REQUIRED_V3), applicationId: '99999999-9999-4999-8999-999999999999' } as never,
+    );
+
+    expect(dbMocks.updateSets).toHaveLength(0);
+  });
+
+  it('writes nothing when grant reconciliation was unavailable', async () => {
+    dbMocks.selectResults.push([STORED]);
+
+    await applyUpgradeVerificationResult(
+      ATTEMPT,
+      { ...successResult(REQUIRED_V3), grantReconciliation: 'unavailable' } as never,
+    );
+
+    expect(dbMocks.updateSets).toHaveLength(0);
+  });
+
+  it('rejects an attempt whose connection is not executable', async () => {
+    await expect(applyUpgradeVerificationResult(
+      { ...ATTEMPT, status: 'pending-consent' },
+      successResult(REQUIRED_V3) as never,
+    )).rejects.toMatchObject({ code: 'stale_attempt' });
+  });
+});
+
+describe('transitionUpgradeConsentToIdentity', () => {
+  const ATTEMPT: ConsentAttemptSnapshot = {
+    id: CONNECTION_ID,
+    orgId: ORG_ID,
+    profile: 'customer-graph-read',
+    consentAttemptId: ATTEMPT_ID,
+    status: 'active',
+  };
+  const STORED = {
+    ...ATTEMPT,
+    tenantId: TENANT_ID,
+    clientId: CLIENT_ID,
+    permissionManifestVersion: 2,
+    observedGrants: [],
+    grantsVerifiedAt: null,
+    displayName: null,
+    lastVerifiedAt: null,
+    lastErrorCode: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMocks.selectResults.length = 0;
+    dbMocks.updateResults.length = 0;
+    dbMocks.updateSets.length = 0;
+    dbMocks.order.length = 0;
+  });
+
+  it('consumes the admin session and inserts an upgrade identity session without an UPDATE', async () => {
+    consentMocks.consumeAdmin.mockResolvedValueOnce({ userId: ACTOR_ID, purpose: 'upgrade' } as never);
+    dbMocks.selectResults.push([STORED]);
+
+    const prepared = {
+      rawState: 'identity-state', tenantHintHash: 'h', nonce: 'n',
+      codeVerifier: 'v', codeChallenge: 'c', expiresAt: new Date(),
+    };
+    const result = await transitionUpgradeConsentToIdentity({
+      attempt: ATTEMPT,
+      rawAdminState: 'admin-state',
+      prepared: prepared as never,
+    });
+
+    expect(result.actorId).toBe(ACTOR_ID);
+    expect(dbMocks.updateSets).toHaveLength(0);       // status untouched
+    expect(consentMocks.insertIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({ purpose: 'upgrade', consentAttemptId: ATTEMPT.consentAttemptId }),
+      expect.anything(),
+    );
+  });
+
+  it('refuses an admin session that is not an upgrade session', async () => {
+    // Defense in depth against a first-time session reaching the upgrade
+    // branch: the router read the purpose without consuming, so the consumed
+    // row is the authority.
+    consentMocks.consumeAdmin.mockResolvedValueOnce({ userId: ACTOR_ID, purpose: 'initial' } as never);
+
+    await expect(transitionUpgradeConsentToIdentity({
+      attempt: ATTEMPT,
+      rawAdminState: 'admin-state',
+      prepared: {} as never,
+    })).rejects.toMatchObject({ code: 'stale_attempt' });
+    expect(consentMocks.insertIdentity).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the connection is no longer executable', async () => {
+    await expect(transitionUpgradeConsentToIdentity({
+      attempt: { ...ATTEMPT, status: 'verifying' },
+      rawAdminState: 'admin-state',
+      prepared: {} as never,
+    })).rejects.toMatchObject({ code: 'stale_attempt' });
+    expect(consentMocks.consumeAdmin).not.toHaveBeenCalled();
   });
 });
