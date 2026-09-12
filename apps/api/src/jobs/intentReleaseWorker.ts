@@ -1143,9 +1143,20 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
           // receive the execution context"). The no-verified-material case in
           // this file's suite asserts the bag's EXACT shape, so a future field
           // cannot ride along unnoticed.
+          //
+          // `releaseDecision` (#5645) rides with it on the same terms: it is
+          // the intent's own decision record (approval scope + decided_via),
+          // which `run_script`'s proposal branch turns into the execution
+          // row's spec §4.1 `approval_method` — so a reviewer-decided lane
+          // run reads as `unattended_reviewer_gated` instead of the
+          // constant it used to be stamped with.
           () =>
             executeTool(intent.actionName, intent.arguments, auth, {
-              context: { ...verifiedContext, actionIntentId: intent.id },
+              context: {
+                ...verifiedContext,
+                actionIntentId: intent.id,
+                releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia ?? null },
+              },
             });
       rawResult = await withToolTimeout(
         withAuthDbAccessContext(auth, invoke),

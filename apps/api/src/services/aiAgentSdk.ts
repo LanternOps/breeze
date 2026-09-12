@@ -1609,6 +1609,17 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             });
           }
 
+          // #5645 — the handler gets the released intent's decision record
+          // alongside the verified material, exactly as the durable worker
+          // passes it (jobs/intentReleaseWorker.ts): `run_script`'s proposal
+          // branch derives the execution row's spec §4.1 `approval_method`
+          // from it. Unconditional for the same reason `actionIntentId` is
+          // (see toolExecutionContext.ts).
+          verifiedToolContext = {
+            ...verifiedToolContext,
+            releaseDecision: { approvalScope: intentRow.approvalScope, decidedVia: intentRow.decidedVia ?? null },
+          };
+
           // Won the release: track the intent id so createSessionPostToolUse can
           // CAS it executing -> completed|failed once the inline tool call
           // actually finishes (see pendingIntentBySession above).

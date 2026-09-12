@@ -527,6 +527,7 @@ function baseIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
     decidedByUserId: 'approver-1',
     decidedAssuranceLevel: 1,
     decidedVia: 'session_tap',
+    approvalScope: 'four_eyes',
     executedAt: null,
     result: null,
     errorCode: null,
@@ -734,7 +735,7 @@ describe('releaseApprovedIntent', () => {
         // P2-5 (#4192): the durable worker ALWAYS names the intent it is
         // releasing. A handler that may only run as an approved release
         // (manage_ai_agents:authorize_supervised_key) reads it from here.
-        { context: { actionIntentId: intent.id } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
@@ -818,7 +819,7 @@ describe('releaseApprovedIntent', () => {
         // P2-5 (#4192): the durable worker ALWAYS names the intent it is
         // releasing. A handler that may only run as an approved release
         // (manage_ai_agents:authorize_supervised_key) reads it from here.
-        { context: { actionIntentId: intent.id } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
       );
     expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
       intent.id,
@@ -1251,7 +1252,7 @@ describe('releaseApprovedIntent', () => {
         // P2-5 (#4192): the durable worker ALWAYS names the intent it is
         // releasing. A handler that may only run as an approved release
         // (manage_ai_agents:authorize_supervised_key) reads it from here.
-        { context: { actionIntentId: intent.id } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
@@ -1284,7 +1285,7 @@ describe('releaseApprovedIntent', () => {
         // P2-5 (#4192): the durable worker ALWAYS names the intent it is
         // releasing. A handler that may only run as an approved release
         // (manage_ai_agents:authorize_supervised_key) reads it from here.
-        { context: { actionIntentId: intent.id } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
@@ -1354,7 +1355,7 @@ describe('releaseApprovedIntent', () => {
         // P2-5 (#4192): the durable worker ALWAYS names the intent it is
         // releasing. A handler that may only run as an approved release
         // (manage_ai_agents:authorize_supervised_key) reads it from here.
-        { context: { actionIntentId: intent.id } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id,
@@ -1802,7 +1803,7 @@ describe('releaseApprovedIntent', () => {
         'manage_alerts',
         expect.objectContaining({ action: 'suppress', alertId: 'alert-1' }),
         agentAuth,
-        { context: { actionIntentId: intent.id } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
@@ -4067,6 +4068,12 @@ describe('script lane checkpoint precondition (#5612 W04)', () => {
 
     expect(laneCheckpointMock.ensureLaneCheckpointBeforeRelease).toHaveBeenCalledWith(intent);
     expect(aiToolsMock.executeTool).toHaveBeenCalledTimes(1);
+    // #5645: the release hands the handler the intent's DECISION RECORD so the
+    // execution row's approval_method can be derived from it (§4.1 / §4.6) —
+    // a reviewer-decided lane intent must read as unattended_reviewer_gated.
+    const laneCall = aiToolsMock.executeTool.mock.calls[0]! as unknown as unknown[];
+    expect((laneCall[3] as { context: ToolExecutionContext }).context.releaseDecision)
+      .toEqual({ approvalScope: intent.approvalScope, decidedVia: 'script_reviewer' });
     const checkpointOrder = laneCheckpointMock.ensureLaneCheckpointBeforeRelease.mock.invocationCallOrder[0]!;
     const executeOrder = aiToolsMock.executeTool.mock.invocationCallOrder[0]!;
     expect(checkpointOrder).toBeLessThan(executeOrder);

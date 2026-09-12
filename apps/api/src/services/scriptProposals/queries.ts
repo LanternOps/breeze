@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray } from 'drizzle-orm';
+import type { ScriptApprovalMethod } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { scriptProposals, scriptProposalReviews, type ScriptProposalRow } from '../../db/schema/scriptProposals';
 import { scriptExecutions } from '../../db/schema/scripts';
@@ -56,6 +57,31 @@ export async function loadProposalExecutions(proposalId: string) {
         .where(eq(scriptExecutions.proposalId, proposalId))
         .orderBy(desc(scriptExecutions.startedAt)),
     ),
+  );
+}
+
+/**
+ * #5645 — the `approval_method` the release stamped on this proposal's run
+ * (spec §4.1), for `promoteProposalToLibrary` to carry onto the promoted
+ * version. Every execution of one proposal comes from the same release (the
+ * proposal is single-consumption), so the newest row is representative.
+ * `null` when no execution carries one — the caller stores that as-is rather
+ * than inventing a method.
+ */
+export async function loadProposalRunApprovalMethod(
+  proposalId: string,
+  orgId: string,
+): Promise<ScriptApprovalMethod | null> {
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const [row] = await db
+        .select({ approvalMethod: scriptExecutions.approvalMethod })
+        .from(scriptExecutions)
+        .where(and(eq(scriptExecutions.proposalId, proposalId), eq(scriptExecutions.orgId, orgId)))
+        .orderBy(desc(scriptExecutions.createdAt))
+        .limit(1);
+      return row?.approvalMethod ?? null;
+    }),
   );
 }
 
