@@ -182,6 +182,18 @@ describe('monitor_definitions RLS — dual-axis (#5289)', () => {
       );
     });
 
+    it('org A can insert its OWN org-owned definition (positive control for the forge below)', async () => {
+      // Without this, a policy change that denied EVERY org-scoped insert would
+      // still leave the cross-org forge passing — for the wrong reason.
+      const rows = await withDbAccessContext(orgContext(f.orgA, f.partnerA), () =>
+        db
+          .insert(monitorDefinitions)
+          .values(monitorValues({ orgId: f.orgA, partnerId: null }))
+          .returning({ id: monitorDefinitions.id }),
+      );
+      expect(rows).toHaveLength(1);
+    });
+
     it('FORGE: org B cannot insert an org-owned definition for org A (42501)', async () => {
       await expectSqlState(
         () =>

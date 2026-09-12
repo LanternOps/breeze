@@ -23,6 +23,7 @@ const {
   deleteMonitorDefinitionMock,
   writeRouteAuditMock,
   selectMock,
+  isMonitorAttachableToPolicyMock,
 } = vi.hoisted(() => ({
   hasPermMock: vi.fn<(resource: string, action: string) => boolean>(() => true),
   mfaOkMock: vi.fn(() => true),
@@ -33,6 +34,11 @@ const {
   deleteMonitorDefinitionMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
   selectMock: vi.fn(),
+  // Defaults to attachable — tests that need the pre-check to refuse override
+  // it with mockResolvedValueOnce(false). Its own ownership-axis correctness
+  // is covered by monitorAttachability.test.ts; these route tests only check
+  // that the route respects the pre-check's answer.
+  isMonitorAttachableToPolicyMock: vi.fn(async () => true),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -103,6 +109,15 @@ vi.mock('../services/configurationPolicy', () => ({
   getConfigPolicy: vi.fn(),
   removeFeatureLink: vi.fn(),
   updateFeatureLink: vi.fn(),
+  validateAssignmentTarget: vi.fn(async () => ({ valid: true })),
+  authorizeAssignmentTarget: vi.fn(async () => ({ valid: true })),
+}));
+
+// Real pre-check function replaced with a controllable mock — see
+// isMonitorAttachableToPolicyMock above. Its own ownership-axis logic is unit
+// tested directly in monitorAttachability.test.ts.
+vi.mock('../services/monitors/monitorAttachability', () => ({
+  isMonitorAttachableToPolicy: isMonitorAttachableToPolicyMock,
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -136,11 +151,22 @@ vi.mock('../db', () => ({
 }));
 
 import { monitorDefinitionRoutes } from './monitorDefinitions';
+import {
+  addFeatureLink as addFeatureLinkMock,
+  assignPolicy as assignPolicyMock,
+  createConfigPolicy as createConfigPolicyMock,
+  getConfigPolicy as getConfigPolicyMock,
+  removeFeatureLink as removeFeatureLinkMock,
+  updateFeatureLink as updateFeatureLinkMock,
+} from '../services/configurationPolicy';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 
 const ORG_ID = '33333333-3333-4333-8333-333333333333';
 const USER_ID = '77777777-7777-4777-8777-777777777777';
 const MONITOR_ID = '11111111-1111-4111-8111-111111111111';
 const POLICY_ID = '22222222-2222-4222-8222-222222222222';
+const PARTNER_ID = '44444444-4444-4444-8444-444444444444';
+const OTHER_ORG_ID = '55555555-5555-4555-8555-555555555555';
 
 function monitorRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -351,5 +377,109 @@ describe('POST /monitor-definitions/:id/attachments', () => {
 
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Monitor not found' });
+  });
+
+  it('refuses to attach to a PARTNER-WIDE policy when the caller cannot manage partner-wide policies (#5289 review fix)', async () => {
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+    vi.mocked(getConfigPolicyMock).mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID } as never);
+
+    const res = await jsonRequest(
+      buildApp({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'none' }),
+      'POST',
+      `/${MONITOR_ID}/attachments`,
+      { configPolicyId: POLICY_ID },
+    );
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('allows attaching to a PARTNER-WIDE policy when the caller CAN manage partner-wide policies (#5289 review fix)', async () => {
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+    vi.mocked(getConfigPolicyMock).mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID } as never);
+
+    const res = await jsonRequest(
+      buildApp({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'all' }),
+      'POST',
+      `/${MONITOR_ID}/attachments`,
+      { configPolicyId: POLICY_ID },
+    );
+
+    expect(res.status).toBe(201);
+    expect(addFeatureLinkMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses createPolicyFor with a partner-owned monitor when the caller cannot manage partner-wide policies (#5289 review fix)', async () => {
+    // Partner-owned monitor: orgId null, partnerId set. Default buildApp auth
+    // is org-scoped, which can never manage partner-wide policies.
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow({ orgId: null, partnerId: PARTNER_ID }));
+
+    const res = await jsonRequest(buildApp(), 'POST', `/${MONITOR_ID}/attachments`, {
+      createPolicyFor: { level: 'organization', targetId: OTHER_ORG_ID },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+    expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    expect(assignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 MONITOR_NOT_ATTACHABLE when the pre-check refuses, and never writes the feature link (#5289 review fix)', async () => {
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+    vi.mocked(getConfigPolicyMock).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null } as never);
+    isMonitorAttachableToPolicyMock.mockResolvedValueOnce(false);
+
+    const res = await jsonRequest(buildApp(), 'POST', `/${MONITOR_ID}/attachments`, {
+      configPolicyId: POLICY_ID,
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'MONITOR_NOT_ATTACHABLE' });
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('DELETE /monitor-definitions/:id/attachments/:attachmentId', () => {
+  const ATTACHMENT_ID = '66666666-6666-4666-8666-666666666666';
+
+  function mockAttachmentRow(overrides: Record<string, unknown> = {}) {
+    selectMock.mockReturnValueOnce(
+      selectChain([{ id: ATTACHMENT_ID, featureLinkId: 'fl-1', configPolicyId: POLICY_ID, ...overrides }]),
+    );
+  }
+
+  it('refuses to detach from a PARTNER-WIDE policy when the caller cannot manage partner-wide policies (#5289 review fix)', async () => {
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+    mockAttachmentRow();
+    vi.mocked(getConfigPolicyMock).mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID } as never);
+
+    const res = await jsonRequest(
+      buildApp({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'none' }),
+      'DELETE',
+      `/${MONITOR_ID}/attachments/${ATTACHMENT_ID}`,
+    );
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+    expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('allows detaching from a PARTNER-WIDE policy when the caller CAN manage partner-wide policies (#5289 review fix)', async () => {
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+    mockAttachmentRow();
+    vi.mocked(getConfigPolicyMock).mockResolvedValue({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID } as never);
+
+    const res = await jsonRequest(
+      buildApp({ scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'all' }),
+      'DELETE',
+      `/${MONITOR_ID}/attachments/${ATTACHMENT_ID}`,
+    );
+
+    expect(res.status).toBe(204);
+    expect(removeFeatureLinkMock).toHaveBeenCalledTimes(1);
   });
 });

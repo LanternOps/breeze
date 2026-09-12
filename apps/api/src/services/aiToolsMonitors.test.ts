@@ -18,6 +18,34 @@ vi.mock('../db', async (importOriginal) => ({
   },
 }));
 
+// getConfigPolicy/addFeatureLink/updateFeatureLink/removeFeatureLink are
+// mocked directly rather than driven through the real configurationPolicy
+// service (which issues several more db.select calls per policy fetch) —
+// these attach/detach tests only care about the ownership gate in
+// aiToolsMonitors.ts itself, not configurationPolicy's own read logic.
+const { getConfigPolicyMock, addFeatureLinkMock, updateFeatureLinkMock, removeFeatureLinkMock } = vi.hoisted(() => ({
+  getConfigPolicyMock: vi.fn(),
+  addFeatureLinkMock: vi.fn(),
+  updateFeatureLinkMock: vi.fn(),
+  removeFeatureLinkMock: vi.fn(),
+}));
+vi.mock('./configurationPolicy', () => ({
+  getConfigPolicy: getConfigPolicyMock,
+  addFeatureLink: addFeatureLinkMock,
+  updateFeatureLink: updateFeatureLinkMock,
+  removeFeatureLink: removeFeatureLinkMock,
+}));
+
+// Real pre-check replaced with a controllable mock — its own ownership-axis
+// logic is unit tested in monitors/monitorAttachability.test.ts. Defaults to
+// attachable; tests that need a refusal override with mockResolvedValueOnce(false).
+const { isMonitorAttachableToPolicyMock } = vi.hoisted(() => ({
+  isMonitorAttachableToPolicyMock: vi.fn(async () => true),
+}));
+vi.mock('./monitors/monitorAttachability', () => ({
+  isMonitorAttachableToPolicy: isMonitorAttachableToPolicyMock,
+}));
+
 import { db } from '../db';
 import { registerMonitorTools } from './aiToolsMonitors';
 import type { AuthContext } from '../middleware/auth';
@@ -59,6 +87,21 @@ function auth(overrides: Partial<AuthContext> = {}): AuthContext {
 
 async function call(name: string, input: Record<string, unknown>, as: AuthContext = auth()) {
   return JSON.parse(await handlerFor(name)(input, as));
+}
+
+/** Chainable `db.select(...)` stand-in resolving to `rows` regardless of which chain methods are called. */
+function chain<T>(rows: T[]) {
+  const c: Record<string, unknown> = {
+    then: (resolve: (v: T[]) => unknown, reject?: (e: unknown) => unknown) => Promise.resolve(rows).then(resolve, reject),
+  };
+  for (const method of ['from', 'innerJoin', 'leftJoin', 'where', 'orderBy', 'groupBy', 'limit', 'offset']) {
+    c[method] = () => c;
+  }
+  return c;
+}
+
+function monitorRow(overrides: Record<string, unknown> = {}) {
+  return { id: 'm1', orgId: ORG, partnerId: null, name: 'CPU high', ...overrides };
 }
 
 function validDefinition(overrides: Record<string, unknown> = {}) {
@@ -228,5 +271,101 @@ describe('manage_monitor_definitions — other actions', () => {
   it('rejects an unknown action', async () => {
     const result = await call('manage_monitor_definitions', { action: 'teleport' });
     expect(result.error).toMatch(/Unknown action/);
+  });
+});
+
+/**
+ * Queue up the sequence of `db.select` calls a test drives through
+ * (getMonitorDefinition, then the attachment/link lookups), regardless of
+ * which chain methods each call happens to invoke — `chain()` accepts any.
+ */
+function queueSelects(...results: Array<Array<Record<string, unknown>>>) {
+  let call = 0;
+  mockDb.select.mockImplementation(() => chain(results[call++] ?? []));
+}
+
+describe('manage_monitor_definitions attach — partner-wide gate & attachability (#5289 review fix)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isMonitorAttachableToPolicyMock.mockImplementation(async () => true);
+  });
+
+  it('refuses to attach to a PARTNER-WIDE policy when the caller cannot manage partner-wide policies', async () => {
+    queueSelects([monitorRow()]);
+    getConfigPolicyMock.mockResolvedValue({ id: 'p1', orgId: null, partnerId: PARTNER });
+
+    const result = await call(
+      'manage_monitor_definitions',
+      { action: 'attach', monitorId: 'm1', configPolicyId: 'p1' },
+      auth({ scope: 'organization', partnerId: PARTNER, partnerOrgAccess: null }),
+    );
+
+    expect(result.error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('allows attaching to a PARTNER-WIDE policy when the caller CAN manage partner-wide policies', async () => {
+    queueSelects([monitorRow()], []);
+    getConfigPolicyMock.mockResolvedValue({ id: 'p1', orgId: null, partnerId: PARTNER });
+
+    const result = await call(
+      'manage_monitor_definitions',
+      { action: 'attach', monitorId: 'm1', configPolicyId: 'p1' },
+      auth({ scope: 'partner', partnerId: PARTNER, orgId: null, partnerOrgAccess: 'all' }),
+    );
+
+    expect(result.success).toBe(true);
+    expect(addFeatureLinkMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses the attach when the ownership pre-check refuses, and never writes the feature link', async () => {
+    queueSelects([monitorRow()]);
+    getConfigPolicyMock.mockResolvedValue({ id: 'p1', orgId: ORG, partnerId: null });
+    isMonitorAttachableToPolicyMock.mockResolvedValueOnce(false);
+
+    const result = await call('manage_monitor_definitions', { action: 'attach', monitorId: 'm1', configPolicyId: 'p1' });
+
+    expect(result.error).toMatch(/ownership axis mismatch/);
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('manage_monitor_definitions detach — partner-wide gate (#5289 review fix)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isMonitorAttachableToPolicyMock.mockImplementation(async () => true);
+  });
+
+  const attachmentRow = { id: 'att1', featureLinkId: 'fl1', configPolicyId: 'p1' };
+
+  it('refuses to detach from a PARTNER-WIDE policy when the caller cannot manage partner-wide policies', async () => {
+    queueSelects([monitorRow()], [attachmentRow]);
+    getConfigPolicyMock.mockResolvedValue({ id: 'p1', orgId: null, partnerId: PARTNER });
+
+    const result = await call(
+      'manage_monitor_definitions',
+      { action: 'detach', monitorId: 'm1', attachmentId: 'att1' },
+      auth({ scope: 'organization', partnerId: PARTNER, partnerOrgAccess: null }),
+    );
+
+    expect(result.error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+    expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('allows detaching from a PARTNER-WIDE policy when the caller CAN manage partner-wide policies', async () => {
+    queueSelects([monitorRow()], [attachmentRow], []);
+    getConfigPolicyMock.mockResolvedValue({ id: 'p1', orgId: null, partnerId: PARTNER });
+
+    const result = await call(
+      'manage_monitor_definitions',
+      { action: 'detach', monitorId: 'm1', attachmentId: 'att1' },
+      auth({ scope: 'partner', partnerId: PARTNER, orgId: null, partnerOrgAccess: 'all' }),
+    );
+
+    expect(result.success).toBe(true);
+    expect(removeFeatureLinkMock).toHaveBeenCalledTimes(1);
   });
 });
