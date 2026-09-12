@@ -1149,6 +1149,14 @@
         "enableSupportUsage": {
           "label": "Utilizzo assistenza",
           "description": "Mostra il totale del tempo di assistenza fatturabile del mese in corso."
+        },
+        "enableService": {
+          "label": "Servizio",
+          "description": "Mostra i deliverable pianificati, quanto consegnato e le date chiave."
+        },
+        "enableDocuments": {
+          "label": "Documenti",
+          "description": "Consente ai clienti di scaricare i documenti condivisi."
         }
       }
     },
@@ -2235,6 +2243,10 @@
         "scripts_commands": {
           "label": "Script e comandi",
           "description": "Eseguire script, playbook e comandi di sistema, e gestire i processi, le attività pianificate e le voci di registro coinvolte."
+        },
+        "author_scripts": {
+          "label": "Creare script",
+          "description": "Scrivere un nuovo script come proposta per una revisione indipendente. Nulla di ciò che un agente scrive viene eseguito finché non è stato revisionato e approvato."
         },
         "tickets": {
           "label": "Ticket di assistenza",

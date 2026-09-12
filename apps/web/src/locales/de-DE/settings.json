@@ -1149,6 +1149,14 @@
         "enableSupportUsage": {
           "label": "Support-Nutzung",
           "description": "Zeigt die abrechenbare Supportzeit des Monats bis heute an."
+        },
+        "enableService": {
+          "label": "Service",
+          "description": "Zeigt geplante Leistungen, Erbrachtes und wichtige Termine."
+        },
+        "enableDocuments": {
+          "label": "Dokumente",
+          "description": "Ermöglicht Kunden den Download freigegebener Dokumente."
         }
       }
     },
@@ -2235,6 +2243,10 @@
         "scripts_commands": {
           "label": "Skripte und Befehle",
           "description": "Skripte, Playbooks und Systembefehle ausführen und die dabei betroffenen Prozesse, geplanten Aufgaben und Registrierungseinträge verwalten."
+        },
+        "author_scripts": {
+          "label": "Skripte verfassen",
+          "description": "Ein neues Skript als Vorschlag für eine unabhängige Prüfung schreiben. Nichts, was ein Agent verfasst, wird ausgeführt, bevor es geprüft und freigegeben wurde."
         },
         "tickets": {
           "label": "Helpdesk-Tickets",

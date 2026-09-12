@@ -38,7 +38,7 @@ func mountTree(ctx context.Context, r *run) error {
 		if fstype == "fat32" {
 			fstype = "vfat"
 		}
-		if err := r.sys.Mount(ctx, r.sys.PartitionDevice(r.disk, p.Number), dir, fstype); err != nil {
+		if err := mountWithBusyRetry(ctx, r.sys, r.sys.PartitionDevice(r.disk, p.Number), dir, fstype); err != nil {
 			return err
 		}
 		if p.MountPoint == "/" {

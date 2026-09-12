@@ -100,6 +100,8 @@ export interface DesktopOrphanRecoveryDependencies {
   loadSession(sessionId: string): Promise<DesktopOrphanSession | null>;
   observeSharedState(sessionId: string): Promise<{
     ownerPresent: boolean;
+    /** See DesktopFinalizationSharedState.everOwned. */
+    everOwned: boolean;
     finalizationId: string | null;
     canonicalPayload: string | null;
     consistent: boolean;
@@ -294,6 +296,25 @@ export function createDesktopSessionOrphanRecoveryService(
         }
       }
 
+      // No owner and no persisted intent. Before treating the absent owner as
+      // a LOST lease, check that the session ever held one. The only code
+      // that acquires the desktop owner lease is the desktop WebSocket
+      // upgrade (routes/desktopWs.ts), and the viewer's default WebRTC
+      // peer-to-peer transport never opens that WebSocket -- it only polls
+      // GET /desktop-ws/:id/viewer/session -- so a healthy P2P session looks
+      // permanently "absent" here and, unguarded, was finalized with
+      // error_message='orphan_recovery' one lease TTL after the agent's
+      // WebRTC answer flipped the row to `active`. Same bug class as the
+      // terminal-session reaping in #2871. P2P sessions are not governed by
+      // this sweeper at all: they end via the agent's peer-disconnect notice,
+      // the revocation lease (#5481), and the 12h session cap. Sessions that
+      // DID carry a persisted finalization intent are handled above and keep
+      // driving that intent regardless of ownership history.
+      if (!observed.everOwned) {
+        firstAbsentObservation.delete(sessionId);
+        return 'not_orphaned';
+      }
+
       const first = firstAbsentObservation.get(sessionId);
       if (first === undefined) {
         firstAbsentObservation.set(sessionId, deps.now());
@@ -383,6 +404,7 @@ function getProductionService() {
       const observed = await manager.observeDesktopFinalization(sessionId);
       return {
         ownerPresent: observed.ownerPresent,
+        everOwned: observed.everOwned,
         finalizationId: observed.finalizationId,
         canonicalPayload: observed.canonicalPayload,
         consistent: observed.consistent,

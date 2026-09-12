@@ -113,7 +113,7 @@ class FakeRedis {
     }
 
     if (script === REMOTE_WS_SHARED_LEASE_SCRIPTS.observeDesktopFinalization) {
-      const [ownerKey, fenceKey, payloadKey] = keys;
+      const [ownerKey, fenceKey, payloadKey, generationKey] = keys;
       const owner = this.current(ownerKey!);
       const fence = this.current(fenceKey!);
       const payload = this.current(payloadKey!);
@@ -122,6 +122,7 @@ class FakeRedis {
         fence ?? '',
         payload ?? '',
         (fence === null) === (payload === null) ? '1' : '0',
+        this.current(generationKey!) === null ? '0' : '1',
       ];
     }
 
@@ -322,6 +323,7 @@ describe('remote websocket shared lease', () => {
     if (!acquired.ok) return;
     expect(await leases.observeDesktopFinalization('observed')).toEqual({
       ownerPresent: true,
+      everOwned: true,
       finalizationId: null,
       canonicalPayload: null,
       consistent: true,
@@ -334,6 +336,7 @@ describe('remote websocket shared lease', () => {
     );
     expect(await leases.observeDesktopFinalization('observed')).toEqual({
       ownerPresent: true,
+      everOwned: true,
       finalizationId: 'finalization-observed',
       canonicalPayload: payload,
       consistent: true,
@@ -343,7 +346,46 @@ describe('remote websocket shared lease', () => {
     redis.values.set(keys.finalizing!, { value: 'only-fence', expiresAt: null });
     expect(await leases.observeDesktopFinalization('incomplete')).toMatchObject({
       ownerPresent: false,
+      everOwned: false,
       consistent: false,
+    });
+  });
+
+  it('reports everOwned from the durable generation key, not the expiring owner key', async () => {
+    const redis = new FakeRedis();
+    const leases = manager(redis, '11111111-1111-4111-8111-111111111111');
+
+    // A session that never acquired the desktop lease (WebRTC P2P viewer
+    // transport) has neither key: not owned now, never owned.
+    expect(await leases.observeDesktopFinalization('never-owned')).toEqual({
+      ownerPresent: false,
+      everOwned: false,
+      finalizationId: null,
+      canonicalPayload: null,
+      consistent: true,
+    });
+
+    // Once acquired, the generation key persists with no TTL: after the owner
+    // lease expires the session reads as "not owned now, but was owned".
+    const acquired = await leases.acquire('desktop', 'lost-owner');
+    expect(acquired.ok).toBe(true);
+    redis.now += REMOTE_WS_SHARED_LEASE_TTL_MS + 1;
+    expect(await leases.observeDesktopFinalization('lost-owner')).toEqual({
+      ownerPresent: false,
+      everOwned: true,
+      finalizationId: null,
+      canonicalPayload: null,
+      consistent: true,
+    });
+
+    // An explicit release also leaves the generation key behind.
+    const released = await leases.acquire('desktop', 'released-owner');
+    expect(released.ok).toBe(true);
+    if (!released.ok) return;
+    expect(await leases.release(released.claim)).toBe(true);
+    expect(await leases.observeDesktopFinalization('released-owner')).toMatchObject({
+      ownerPresent: false,
+      everOwned: true,
     });
   });
 

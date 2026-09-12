@@ -1149,6 +1149,14 @@
         "enableSupportUsage": {
           "label": "Support usage",
           "description": "Show month-to-date billable support-time totals."
+        },
+        "enableService": {
+          "label": "Service",
+          "description": "Show scheduled deliverables, what was delivered, and key dates."
+        },
+        "enableDocuments": {
+          "label": "Documents",
+          "description": "Let customers download the documents you have shared with them."
         }
       }
     },
@@ -2235,6 +2243,10 @@
         "scripts_commands": {
           "label": "Scripts and commands",
           "description": "Run scripts, playbooks and system commands, and manage the processes, scheduled tasks and registry entries they touch."
+        },
+        "author_scripts": {
+          "label": "Author scripts",
+          "description": "Write a new script as a proposal for independent review. Nothing an agent writes runs until it has been reviewed and approved."
         },
         "tickets": {
           "label": "Helpdesk tickets",

@@ -30,7 +30,7 @@ W03 and W05 run in parallel with W02. W04 starts once both W02 and W03 have merg
 | `2026-10-15-170300-org-documents.sql` | W03 |
 | `2026-10-15-170400-documents-permissions.sql` (DML: seeds `documents:*` permission rows; elects `breeze.scope=system` first) | W03 |
 | `2026-10-16-100500-deliverable-templates.sql` | W05 |
-| `2026-10-15-170600-portal-branding-service-documents-flags.sql` | W04 |
+| `2026-10-16-110000-portal-branding-service-documents-flags.sql` | W04 |
 
 Every executor re-checks `ls apps/api/migrations | sort | tail -1` before committing
 and renames upward if main has moved past these names. Slots are independent

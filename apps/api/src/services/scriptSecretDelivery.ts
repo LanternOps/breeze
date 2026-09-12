@@ -253,7 +253,8 @@ async function failLinkedScriptExecution(cmd: ClaimedCommand, completedAt: Date)
     .returning({ id: scriptExecutions.id, scriptId: scriptExecutions.scriptId });
 
   const batchId = payload.batchId;
-  if (typeof batchId !== 'string' || !updated[0]) return;
+  // A proposal-backed execution carries no script_id and is never batched.
+  if (typeof batchId !== 'string' || !updated[0] || !updated[0].scriptId) return;
   await db
     .update(scriptExecutionBatches)
     .set({ devicesFailed: sql`${scriptExecutionBatches.devicesFailed} + 1` })

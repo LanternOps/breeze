@@ -1149,6 +1149,14 @@
         "enableSupportUsage": {
           "label": "Uso de suporte",
           "description": "Mostra o total de tempo de suporte faturável do mês até a data."
+        },
+        "enableService": {
+          "label": "Serviço",
+          "description": "Mostra as entregas programadas, o que foi entregue e as datas importantes."
+        },
+        "enableDocuments": {
+          "label": "Documentos",
+          "description": "Permite que os clientes baixem os documentos compartilhados."
         }
       }
     },
@@ -2235,6 +2243,10 @@
         "scripts_commands": {
           "label": "Scripts e comandos",
           "description": "Executar scripts, playbooks e comandos do sistema, e gerenciar os processos, tarefas agendadas e entradas de registro envolvidos."
+        },
+        "author_scripts": {
+          "label": "Criar scripts",
+          "description": "Escrever um novo script como proposta para revisão independente. Nada que um agente escreve é executado até ter sido revisado e aprovado."
         },
         "tickets": {
           "label": "Tickets de suporte",

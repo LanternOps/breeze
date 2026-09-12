@@ -204,6 +204,10 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_script_details',
   'get_script_execution',
   'get_script_execution_history',
+  // AI script authoring: tier 1 by design — a proposal is inert until a
+  // Tier-3 run_script consumes it, and the handler itself returns
+  // feature_disabled while BREEZE_AI_SCRIPT_AUTHORING_ENABLED is off.
+  'get_script_proposal',
   'get_security_posture',
   'get_service_monitoring_status',
   'get_user_experience_metrics',
@@ -239,6 +243,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'manage_maintenance_windows',
   'manage_service_monitors',
   'preview_configuration_change',
+  'propose_script',
   'query_audit_log',
   'query_change_log',
   'query_devices',

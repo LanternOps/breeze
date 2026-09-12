@@ -11,7 +11,7 @@
  */
 
 import type { AiApprovalScope } from '@breeze/shared/types/ai';
-import type { AiAgentMode, AiAgentProtectedResources } from '@breeze/shared';
+import type { AiAgentMode, AiAgentProtectedResources, RiskTier } from '@breeze/shared';
 import { getToolTier } from './aiTools';
 import { getUserPermissions, hasPermission } from './permissions';
 import { rateLimiter } from './rate-limit';
@@ -562,13 +562,44 @@ export function isInputAwareTier3(
  */
 export const TIER3_INPUT_AWARE_TOOLS: ReadonlySet<string> = new Set<string>([
   's1_isolate_device',
+  // run_script { proposalId }: scope comes from the proposal's REVIEWED risk
+  // tier, handed in through GuardrailContext (AI script authoring, spec §4.5).
+  'run_script',
 ]);
+
+/**
+ * Optional, DB-FREE context a caller may hand to the guardrail so an
+ * input-aware decision can read persisted state without this module importing
+ * the schema (aiGuardrails.imports.contract.test.ts).
+ *
+ * Loaded by `loadProposalGuardrailContext`
+ * (services/scriptProposals/guardrailContext.ts) — which is the only producer,
+ * so the risk tier here is always the tier a completed review actually wrote.
+ */
+export interface GuardrailContext {
+  proposal?: { riskTier: RiskTier; strictHits: string[] };
+}
+
+/** A `run_script` call that names a proposal instead of a library script. */
+function isProposalRunScript(toolName: string, input: Record<string, unknown>): boolean {
+  return toolName === 'run_script' && typeof input.proposalId === 'string' && input.proposalId.length > 0;
+}
 
 export function resolveApprovalScope(
   toolName: string,
   action: string | undefined,
   input: Record<string, unknown>,
+  context?: GuardrailContext,
 ): AiApprovalScope {
+  if (isProposalRunScript(toolName, input)) {
+    // Spec §4.5. No context ⇒ four_eyes, the module's own fail-safe default —
+    // checkGuardrails refuses the call outright a moment later, so this value
+    // is only ever read by a caller that skipped the tier check. Placed BEFORE
+    // the generic TIER3_SUPERVISED_TOOLS hit, which would otherwise resolve
+    // `supervised` for every tier.
+    const tier = context?.proposal?.riskTier;
+    return tier === 'low' || tier === 'medium' ? 'supervised' : 'four_eyes';
+  }
   // Input-aware overrides (spec §3.1) — scope depends on argument CONTENT,
   // not just the tool/action name, so these cannot live in the static
   // TIER3_*_ACTIONS / TIER3_*_TOOLS tables above. Checked first since neither
@@ -624,6 +655,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   s1_threat_action: { resource: 'devices', action: 'execute' },
   execute_command: { resource: 'devices', action: 'execute' },
   run_script: { resource: 'scripts', action: 'execute' },
+  // Authoring is inert, but it is still script work: whoever may read the
+  // library may read a proposal, and whoever may run a script may write one.
+  propose_script: { resource: 'scripts', action: 'execute' },
+  get_script_proposal: { resource: 'scripts', action: 'read' },
   // Same permission the HTTP cancel route requires (PERMISSIONS.SCRIPTS_EXECUTE):
   // whoever may start a script may stop it, and nobody else.
   cancel_script_execution: { resource: 'scripts', action: 'execute' },
@@ -1427,7 +1462,8 @@ export function resolveActionForTool(toolName: string, input: Record<string, unk
  */
 export function checkGuardrails(
   toolName: string,
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  context?: GuardrailContext,
 ): GuardrailCheck {
   // Tier 4: Blocked
   if (BLOCKED_TOOLS.has(toolName)) {
@@ -1446,6 +1482,19 @@ export function checkGuardrails(
       allowed: false,
       requiresApproval: false,
       reason: `Unknown tool: ${toolName}`
+    };
+  }
+
+  // Fail CLOSED on a proposal-backed run with no loaded context. The scope this
+  // call needs is derived from a persisted review, and a missing context means
+  // the proposal is absent, cross-org, or unreviewed — none of which may run.
+  // Placed after the blocked/unknown denies so those keep their own reasons.
+  if (isProposalRunScript(toolName, input) && !context?.proposal) {
+    return {
+      tier: 4,
+      allowed: false,
+      requiresApproval: false,
+      reason: 'proposal_context_missing: run_script with a proposalId requires a reviewed proposal in the caller\'s organization',
     };
   }
 
@@ -1472,7 +1521,7 @@ export function checkGuardrails(
       tier: 3,
       allowed: true,
       requiresApproval: true,
-      approvalScope: resolveApprovalScope(toolName, action, input),
+      approvalScope: resolveApprovalScope(toolName, action, input, context),
       description: buildApprovalDescription(toolName, action, input)
     };
   }
@@ -1482,7 +1531,7 @@ export function checkGuardrails(
       tier: 3,
       allowed: true,
       requiresApproval: true,
-      approvalScope: resolveApprovalScope(toolName, action, input),
+      approvalScope: resolveApprovalScope(toolName, action, input, context),
       description: buildApprovalDescription(toolName, action, input)
     };
   }
@@ -1505,7 +1554,7 @@ export function checkGuardrails(
       tier: 3,
       allowed: true,
       requiresApproval: true,
-      approvalScope: resolveApprovalScope(toolName, action, input),
+      approvalScope: resolveApprovalScope(toolName, action, input, context),
       description: buildApprovalDescription(toolName, action, input)
     };
   }
@@ -1784,8 +1833,9 @@ export function checkAgentGuardrails(
   toolName: string,
   input: Record<string, unknown>,
   policy: AgentGuardrailPolicy | null | undefined,
+  context?: GuardrailContext,
 ): AgentGuardrailCheck {
-  const base = checkGuardrails(toolName, input);
+  const base = checkGuardrails(toolName, input, context);
   const deny = (reason: string): AgentGuardrailCheck =>
     ({ ...base, allowed: false, requiresApproval: false, disposition: 'deny', reason });
 

@@ -604,6 +604,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'script_categories',
   'script_execution_batches',
   'script_executions',
+  'script_proposal_reviews',
+  'script_proposals',
   'script_tags',
   'scripts',
   'security_policies',
@@ -996,6 +998,10 @@ const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>([
   'peripheral_policy_delivery_events',
   'agent_rollback_events',
   'pam_actuation_results',
+  // Append-only review evidence: REVOKE UPDATE/DELETE from breeze_app plus an
+  // immutability trigger (2026-10-16-100100), so erasure has to run as
+  // breeze_audit_admin with breeze.allow_audit_retention=1.
+  'script_proposal_reviews',
 ]);
 
 interface FkEdge {

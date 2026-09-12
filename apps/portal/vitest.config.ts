@@ -19,6 +19,10 @@ export default defineConfig({
     // Node by default (most portal suites are pure lib logic). Component test files
     // opt into jsdom per-file via a `// @vitest-environment jsdom` header comment.
     environment: 'node',
+    // jest-dom matchers (toHaveTextContent, toBeInTheDocument, ...) for the
+    // handful of component tests that render with @testing-library/react.
+    // Mirrors apps/web/vitest.config.ts.
+    setupFiles: ['src/__tests__/setup.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
     passWithNoTests: true
   }

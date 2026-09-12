@@ -42,7 +42,27 @@ export type StepUpOperation =
   // resourceDigest to the exact { deviceIds, reason, durationHours } the
   // technician was shown, so a grant can never be replayed against a
   // different device set or a longer window.
-  | 'device_maintenance';
+  | 'device_maintenance'
+  // #5601: a "recent ceremony" credential for consecutive approval decides.
+  // THE ONLY MULTI-USE OPERATION IN THIS MODULE — redeemed with the
+  // non-consuming `readStepUpGrant`/`validateStepUpGrant` (GET), never
+  // `consumeStepUpGrant` (GETDEL), so one passkey ceremony can cover the
+  // several Tier-3 rows one AI conversation raises inside the TTL.
+  //
+  // That deviation is safe only because the other bounds are tighter than any
+  // other operation's: it is minted and redeemed for SUPERVISED rows only
+  // (four_eyes keeps its per-approval passkey, Todd's call 2026-09-11), the
+  // digest pins one conversation + one org + one risk tier
+  // (services/approvals/approvalDecideGrant.ts), critical/L4 is excluded
+  // outright, the minting approver device must still be live at redeem,
+  // redeeming mints nothing so the window cannot ratchet forward, and the
+  // TTL is 120 s (OPERATION_TTL_SECONDS below), not the 300 s default.
+  //
+  // MUST NOT be client-requestable: it is deliberately excluded from
+  // STEP_UP_OPERATIONS in routes/auth/schemas.ts, by the compiler. Letting a
+  // client mint one would turn an ordinary TOTP step-up into a bypass of the
+  // enforcing-partner L3 passkey floor on supervised rows.
+  | 'approval_decide';
 
 export interface StepUpGrant {
   id: string;
@@ -57,7 +77,43 @@ export interface StepUpGrant {
 export type StepUpGrantBinding = Omit<StepUpGrant, 'id'>;
 type GrantBind = Omit<StepUpGrantBinding, 'resourceDigest'> & { resourceDigest?: string };
 
+/**
+ * Server-written payload stored ALONGSIDE a grant's binding (#5601).
+ *
+ * Deliberately NOT part of `bindsMatch`: `bindsMatch` is a statement about
+ * facts the CALLER must present correctly, and this is data the server wrote
+ * to itself. Including it would make the binding depend on values no caller
+ * ever supplies, turning a legitimate redeem into a confusing mismatch.
+ *
+ * Only `approval_decide` uses it today, to carry the achieved assurance level,
+ * the factor, the device that signed, and the moment the ceremony actually
+ * happened across the reuse window. Typed as `unknown` here on purpose — this
+ * module must not learn the approvals domain's shapes; the redeeming service
+ * validates it (services/approvals/approvalDecideGrant.ts).
+ */
+type StoredGrant = StepUpGrantBinding & { context?: unknown };
+
 const TTL_SECONDS = 300;
+
+/**
+ * Per-operation TTL overrides. Every single-use operation keeps the 300 s
+ * default above; `approval_decide` (#5601) is the one MULTI-USE grant in the
+ * codebase, so its window is deliberately shorter — 120 s, Todd's call on
+ * 2026-09-11 — because inside it a live stolen access token plus a leaked
+ * grant id can repeat a decide the session is already authorised to make.
+ * Kept here, next to the default, so a reader comparing the two numbers sees
+ * both in one place; the approvals module derives its own age bound from
+ * `stepUpGrantTtlSeconds` rather than re-declaring the number.
+ */
+const OPERATION_TTL_SECONDS: Partial<Record<StepUpOperation, number>> = {
+  approval_decide: 120,
+};
+
+/** Redis TTL a grant of this operation is written with. */
+export function stepUpGrantTtlSeconds(operation: StepUpOperation): number {
+  return OPERATION_TTL_SECONDS[operation] ?? TTL_SECONDS;
+}
+
 const key = (id: string) => `mfa:stepup:${id}`;
 
 function bindsMatch(record: GrantBind, bind: GrantBind): boolean {
@@ -125,7 +181,7 @@ export function passkeyRemovalResourceDigest(passkeyId: string): `sha256:${strin
  * never propagate as an uncaught rejection into a caller like
  * `mintLoginRegisterGrant` that must never throw.
  */
-export async function mintStepUpGrant(bind: GrantBind): Promise<string | null> {
+export async function mintStepUpGrant(bind: GrantBind, context?: unknown): Promise<string | null> {
   const redis = getRedis();
   if (!redis) {
     console.error(`[mfaStepUpGrant] mint declined for user ${bind.userId} (${bind.operation}): Redis unavailable`);
@@ -133,8 +189,11 @@ export async function mintStepUpGrant(bind: GrantBind): Promise<string | null> {
   }
   try {
     const id = randomUUID();
-    const normalized: StepUpGrantBinding = { ...bind, resourceDigest: bind.resourceDigest ?? '' };
-    await redis.setex(key(id), TTL_SECONDS, JSON.stringify(normalized));
+    const normalized: StoredGrant = { ...bind, resourceDigest: bind.resourceDigest ?? '' };
+    // Omitted entirely when absent so every existing operation's stored bytes
+    // are unchanged — a grant minted by an older API instance stays readable.
+    if (context !== undefined) normalized.context = context;
+    await redis.setex(key(id), stepUpGrantTtlSeconds(bind.operation), JSON.stringify(normalized));
     return id;
   } catch (err) {
     // Still fails closed (null), but no longer silently: a bare `catch {}` here
@@ -156,6 +215,38 @@ export async function validateStepUpGrant(id: string, bind: GrantBind): Promise<
     return bindsMatch(JSON.parse(raw) as GrantBind, bind);
   } catch {
     return false;
+  }
+}
+
+/**
+ * Non-consuming read that returns the grant's server-written `context` when —
+ * and only when — the binding matches (#5601).
+ *
+ * `validateStepUpGrant` answers a boolean, which is all a single-use factor
+ * write needs. A multi-use `approval_decide` grant must additionally recover
+ * WHAT the original ceremony achieved (level, factor, device, when), and that
+ * payload must come from the SAME record whose binding was just checked —
+ * reading it separately would open a window where the two disagree.
+ *
+ * Returns `{ context }` on a match (context `undefined` when none was stored)
+ * and `null` on every failure: Redis down, miss, malformed JSON, or a binding
+ * mismatch. Callers cannot distinguish those, by design — all of them mean
+ * "no usable grant", and fail closed identically.
+ */
+export async function readStepUpGrant(
+  id: string,
+  bind: GrantBind,
+): Promise<{ context: unknown } | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(key(id));
+    if (!raw) return null;
+    const record = JSON.parse(raw) as StoredGrant;
+    if (!bindsMatch(record, bind)) return null;
+    return { context: record.context };
+  } catch {
+    return null;
   }
 }
 

@@ -16,6 +16,7 @@ import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
+import { attachProposalToSession, loadProposalGuardrailContext } from './scriptProposals';
 import { checkBudget, checkAiRateLimit } from './aiCostTracker';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
@@ -716,8 +717,11 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       };
     }
 
-    // Guardrails (tier check + action-based escalation)
-    const guardrailCheck = checkGuardrails(toolName, input);
+    // Guardrails (tier check + action-based escalation). A proposal-backed
+    // run_script needs the proposal's reviewed risk tier to pick supervised vs
+    // four_eyes; every other tool call passes `undefined` and is unchanged.
+    const guardrailContext = await loadProposalGuardrailContext(input, session.orgId);
+    const guardrailCheck = checkGuardrails(toolName, input, guardrailContext);
 
     if (!guardrailCheck.allowed) {
       return { allowed: false, error: guardrailCheck.reason ?? 'Blocked by guardrails' };
@@ -1918,6 +1922,36 @@ function isScriptApplyTool(toolName: string): boolean {
  * Creates a postToolUse callback that reads auth/auditSnapshot from the active
  * session and publishes tool_result events to the session's event bus.
  */
+/**
+ * Back-fill `script_proposals.session_id` for a chat-authored proposal. The
+ * UPDATE is org-scoped and `session_id IS NULL`-guarded inside
+ * attachProposalToSession, so a foreign-org id in the output cannot be claimed.
+ * Best-effort: a failure here must not break the tool_result the UI already
+ * received. Exported for its unit test.
+ */
+export async function attachChatProposalToSession(
+  session: Pick<ActiveSession, 'orgId' | 'breezeSessionId'>,
+  parsedOutput: Record<string, unknown>,
+): Promise<void> {
+  const proposalId = parsedOutput.proposalId;
+  if (typeof proposalId !== 'string' || proposalId.length === 0) return;
+  try {
+    const attached = await withDbAccessContext(
+      { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+      () => attachProposalToSession(proposalId, session.orgId, session.breezeSessionId),
+    );
+    if (!attached) {
+      // Not an error (an idempotent retry lands here too), but a proposal the
+      // handler just created that is NOT attributable is worth a trace: it
+      // means the id in the output and the session's org disagree.
+      console.warn(`[AI-SDK] script proposal ${proposalId} not attributed to session ${session.breezeSessionId} (foreign org or already attributed)`);
+    }
+  } catch (err) {
+    console.error('[AI-SDK] Failed to attach script proposal to session:', err instanceof Error ? err.message : err);
+    captureException(err, undefined, { service: 'aiAgentSdk', orgId: session.orgId });
+  }
+}
+
 export function createSessionPostToolUse(session: ActiveSession): PostToolUseCallback {
   return async (toolName, input, output, isError, durationMs, sealed, handoff) => {
     // Count this tool call toward the turn's tool_execution_count rollup
@@ -1940,7 +1974,8 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // Canonical session org (always set) — `auth.orgId` is null for partner-
     // scope logins, which left tool audit rows without an org attribution.
     const orgId = session.orgId;
-    const guardrailCheck = checkGuardrails(toolName, input);
+    const guardrailContext = await loadProposalGuardrailContext(input, session.orgId);
+    const guardrailCheck = checkGuardrails(toolName, input, guardrailContext);
 
     // Script-builder "apply" tools deliver their payload (code / metadata) to
     // the editor via this SSE tool_result event, NOT the chat transcript.
@@ -1998,6 +2033,14 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // 2. Persist to DB — best-effort with individual error handling.
     //    If any write fails, we warn but don't block the conversation.
     let persistenceError = false;
+
+    // 2-pre. Chat attribution for an AI script proposal. The propose_script
+    // handler receives `(input, auth)` and never the Breeze session id, so the
+    // row is inserted with session_id NULL and back-filled here, org-scoped,
+    // once the output carries the proposal id (roadmap reconciliation).
+    if (toolName === 'propose_script' && !isError) {
+      await attachChatProposalToSession(session, parsedOutput);
+    }
 
     // 2a. Save tool_result to aiMessages
     try {

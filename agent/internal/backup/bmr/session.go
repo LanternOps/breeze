@@ -112,6 +112,75 @@ func hasSystemStateManifest(raw json.RawMessage) bool {
 	return !bytes.Equal(trimmed, []byte("null"))
 }
 
+// ErrCodeInvalid is returned by ExchangeRecoveryCode when the server
+// rejects a recovery code (unknown, already used, expired, or wrong
+// status) — always a 404 from POST /bmr/recover/exchange, which never
+// distinguishes those reasons to an unauthenticated caller (spec §8.1).
+var ErrCodeInvalid = fmt.Errorf("bmr: recovery code invalid or already used")
+
+// ExchangeRecoveryCode exchanges a one-time recovery code (typed by the
+// operator into the recovery console) for a recovery token and its
+// bootstrap, via POST /api/v1/backup/bmr/recover/exchange. This is the
+// console's Deps.Exchange seam (agent/internal/recoveryconsole).
+func ExchangeRecoveryCode(ctx context.Context, serverURL, code string) (string, *BootstrapResponse, error) {
+	payload, err := json.Marshal(map[string]string{"code": code})
+	if err != nil {
+		return "", nil, fmt.Errorf("bmr: marshal exchange request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildBMRURL(serverURL, "/api/v1/backup/bmr/recover/exchange"), bytes.NewReader(payload))
+	if err != nil {
+		return "", nil, fmt.Errorf("bmr: create exchange request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := newHTTPClient().Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("bmr: exchange request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", nil, fmt.Errorf("bmr: read exchange response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", nil, ErrCodeInvalid
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var errorBody map[string]any
+		if err := json.Unmarshal(data, &errorBody); err == nil {
+			if message, ok := errorBody["error"].(string); ok && message != "" {
+				return "", nil, fmt.Errorf("bmr: exchange failed: %s", message)
+			}
+		}
+		return "", nil, fmt.Errorf("bmr: exchange failed with status %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Token     string          `json:"token"`
+		Bootstrap json.RawMessage `json:"bootstrap"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		return "", nil, fmt.Errorf("bmr: decode exchange response: %w", err)
+	}
+	if body.Token == "" || len(body.Bootstrap) == 0 {
+		return "", nil, fmt.Errorf("bmr: exchange response missing token or bootstrap")
+	}
+	// The server returns the same authenticate ENVELOPE here as
+	// /bmr/recover/authenticate does (flat legacy fields + a nested versioned
+	// `bootstrap` carrying download/recovery). Decode it through the shared
+	// envelope-aware decoder; a bare Unmarshal into BootstrapResponse read
+	// only the flat outer fields, left Download/Recovery nil, and the console
+	// failed AFTER the one-time code had been consumed (KIT proof, #5493).
+	bootstrap, err := decodeBootstrapResponse(body.Bootstrap)
+	if err != nil {
+		return "", nil, fmt.Errorf("bmr: decode exchange bootstrap: %w", err)
+	}
+	return body.Token, bootstrap, nil
+}
+
 func authenticateRecoverySession(serverURL, token string) (*BootstrapResponse, error) {
 	return authenticateRecoverySessionContext(context.Background(), serverURL, token)
 }

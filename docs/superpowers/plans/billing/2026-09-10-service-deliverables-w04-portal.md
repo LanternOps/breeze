@@ -43,7 +43,7 @@ tracking_issue: LanternOps/breeze#5573
 
 | Path | Responsibility |
 |---|---|
-| `apps/api/migrations/2026-10-15-170600-portal-branding-service-documents-flags.sql` | `enable_service`, `enable_documents` columns |
+| `apps/api/migrations/2026-10-16-110000-portal-branding-service-documents-flags.sql` | `enable_service`, `enable_documents` columns |
 | `apps/api/src/db/schema/portal.ts:36-40` area | the two Drizzle columns beside the five Wave-1 flags |
 | `apps/api/src/services/portal/portalFlags.ts:11-17` | both keys in `PORTAL_VISIBILITY_FLAG_KEYS` |
 | `apps/api/src/routes/portal/featureFlags.ts` | two `STRICT_PORTAL_FEATURES` entries + `createPortalFeatureGateAny` |
@@ -74,7 +74,7 @@ tracking_issue: LanternOps/breeze#5573
 ### Task 1: Flags — migration, Drizzle, flag registry, export policy
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-15-170600-portal-branding-service-documents-flags.sql`
+- Create: `apps/api/migrations/2026-10-16-110000-portal-branding-service-documents-flags.sql`
 - Modify: `apps/api/src/db/schema/portal.ts:34-40` (the five Wave-1 flags block)
 - Modify: `apps/api/src/services/portal/portalFlags.ts:11-17`
 - Modify: `apps/api/src/services/portal/portalFlags.test.ts:20-30`
@@ -216,7 +216,7 @@ Expected: PASS. A failure naming `enable_service` means Step 8 was skipped.
 - [ ] **Step 10: Commit**
 
 ```bash
-git add apps/api/migrations/2026-10-15-170600-portal-branding-service-documents-flags.sql \
+git add apps/api/migrations/2026-10-16-110000-portal-branding-service-documents-flags.sql \
   apps/api/src/db/schema/portal.ts apps/api/src/services/portal/portalFlags.ts \
   apps/api/src/services/portal/portalFlags.test.ts apps/api/src/routes/portal/featureFlags.ts \
   apps/api/src/routes/portal/featureFlags.test.ts apps/api/src/services/tenantExportPolicyRegistry.ts

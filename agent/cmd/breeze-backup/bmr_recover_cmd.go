@@ -33,6 +33,7 @@ func defaultRecoveryContext() (context.Context, context.CancelFunc) {
 
 func init() {
 	rootCmd.AddCommand(newBMRRecoverCommand())
+	rootCmd.AddCommand(newRecoveryConsoleCommand())
 }
 
 func newBMRRecoverCommand() *cobra.Command {

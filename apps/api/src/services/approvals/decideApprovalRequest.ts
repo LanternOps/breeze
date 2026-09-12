@@ -14,11 +14,19 @@ import {
 } from '../../db/schema/actionIntents';
 import {
   assertApprovalAssurance,
+  assertDecisionConsistent,
   resolveApprovalAssurance,
   StepUpRequiredError,
   ReauthRequiredError,
   type AssuranceDecision,
 } from '../authenticatorAssurance';
+import {
+  isApprovalDecideGrantEligible,
+  mintApprovalDecideGrant,
+  redeemApprovalDecideGrant,
+  type ApprovalDecideScope,
+} from './approvalDecideGrant';
+import { getUserEpochs } from '../authEpochs';
 import { recordActionIntentEvent } from '../actionIntents/metrics';
 import { RELEASE_LEASE_MS } from '../actionIntents/intentService';
 import {
@@ -37,7 +45,7 @@ import { loadPartnerPolicy, isEnforcing } from '../authenticatorPolicy';
 import { getUserPermissions, hasPermission, userCanDecideApprovals, canAccessOrg } from '../permissions';
 import { createPamDecisionIntent } from '../pamActuationLifecycle';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
-import type { RiskTier, ApprovalProof } from '@breeze/shared';
+import { requiredAssurance, type RiskTier, type ApprovalProof } from '@breeze/shared';
 
 /**
  * The approvals DECIDE core (P2-2 #4189), lifted verbatim out of
@@ -283,6 +291,136 @@ function stampReleaseLease(intentTargetStatus: ActionIntentStatus): { releaseBy?
   return { releaseBy: new Date(Date.now() + RELEASE_LEASE_MS) };
 }
 
+/** The loaded intent a decide is acting on, or null for an unlinked row
+ *  (PAM / dev seed). Named so the #5601 grant helpers below read clearly. */
+type LinkedIntent = ActionIntent | null;
+
+/**
+ * #5601: resolve the conversation/tenancy/severity scope a decide's
+ * `approval_decide` grant is pinned to.
+ *
+ * `aiSessionId` needs a lookup because there is no column for it on the
+ * intent: web AI chat stamps `ai_tool_executions.intent_id` onto the execution
+ * it created (aiAgentSdk.ts), and that execution carries the conversation's
+ * `session_id`. That lookup is what makes the conversation binding real for
+ * chat — `requesting_agent_run_id` is populated ONLY for an `ai_agent`
+ * principal, and chat creates its intents with the human's auth, so scoping on
+ * the run id alone would have bounded nothing for the motivating flow.
+ *
+ * System-scoped for the same reason the decide write is: `ai_tool_executions`
+ * is org-scoped and the caller's ambient context does not guarantee visibility
+ * of the org this intent belongs to. Read-only, and a failure degrades to
+ * `null` (no grant) rather than failing the decide.
+ */
+async function resolveGrantScope(
+  intent: LinkedIntent,
+  riskTier: RiskTier,
+): Promise<ApprovalDecideScope | null> {
+  if (!intent) return null;
+  // SUPERVISED ONLY (Todd, 2026-09-11): four_eyes is the high-trust path and
+  // keeps its per-approval passkey, so a four_eyes row neither mints nor
+  // redeems. Refused HERE, in the core, before any lookup and independently
+  // of `isApprovalDecideGrantEligible` (which refuses it again from the
+  // scope's `approvalScope`) — two gates, so a loosening of either alone
+  // cannot let a grant reach a four_eyes decide. A presented grant on such a
+  // row therefore lands in the redeem branch's fail-closed 403 and the client
+  // runs a real ceremony.
+  if (intent.approvalScope !== 'supervised') return null;
+  let aiSessionId: string | null = null;
+  try {
+    const [exec] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db
+          .select({ sessionId: aiToolExecutions.sessionId })
+          .from(aiToolExecutions)
+          .where(eq(aiToolExecutions.intentId, intent.id))
+          .limit(1),
+      ),
+    );
+    aiSessionId = exec?.sessionId ?? null;
+  } catch (err) {
+    // Never fatal: no session id simply means a narrower (or ineligible)
+    // scope, which costs the operator a ceremony. Logged rather than swallowed
+    // so a persistent fault is visible instead of silently disabling reuse.
+    console.error('[approvals] grant scope: ai session lookup failed:', err);
+  }
+  const scope: ApprovalDecideScope = {
+    approvalScope: intent.approvalScope,
+    agentRunId: intent.requestingAgentRunId ?? null,
+    aiSessionId,
+    orgId: intent.orgId,
+    riskTier,
+  };
+  return isApprovalDecideGrantEligible(scope) ? scope : null;
+}
+
+/** The `{authEpoch, mfaEpoch, sid}` half of a grant binding, or null when the
+ *  caller's session cannot supply it (no sid on a non-interactive token, or an
+ *  epoch read failure). Null means "no grant", which is always safe. */
+async function resolveGrantSession(
+  auth: AuthContext,
+): Promise<{ authEpoch: number; mfaEpoch: number; sid: string } | null> {
+  const sid = auth.token?.sid;
+  if (!sid) return null;
+  try {
+    const epochs = await getUserEpochs(auth.user.id);
+    if (!epochs) return null;
+    return { authEpoch: epochs.authEpoch, mfaEpoch: epochs.mfaEpoch, sid };
+  } catch (err) {
+    console.error('[approvals] grant session: epoch read failed:', err);
+    return null;
+  }
+}
+
+/**
+ * #5601: redeem a presented grant into the assurance its original ceremony
+ * achieved, or `null` (→ the caller's 403) on any failure.
+ *
+ * The partner floor is RE-EVALUATED here against the CURRENT policy rather
+ * than inherited from the minting decide, so a partner who raises their floor
+ * mid-window invalidates outstanding grants in effect without anyone touching
+ * Redis. Under a non-enforcing policy an under-assured redeem sets
+ * `graceDowngrade`, exactly as the ladder would.
+ */
+async function redeemGrantForDecide(input: {
+  grantId: string;
+  auth: AuthContext;
+  userId: string;
+  riskTier: RiskTier;
+  intent: LinkedIntent;
+  decision: 'approved' | 'denied';
+}): Promise<AssuranceDecision | null> {
+  const scope = await resolveGrantScope(input.intent, input.riskTier);
+  if (!scope) return null;
+  const session = await resolveGrantSession(input.auth);
+  if (!session) return null;
+
+  const redeemed = await redeemApprovalDecideGrant({
+    grantId: input.grantId,
+    userId: input.userId,
+    ...session,
+    scope,
+  });
+  if (!redeemed) return null;
+
+  const isApprove = input.decision === 'approved';
+  const policy = isApprove ? await loadPartnerPolicy(input.auth.partnerId ?? null) : null;
+  const decision: AssuranceDecision = {
+    requiredLevel: requiredAssurance(input.riskTier, policy?.floorOverrides ?? null),
+    decidedAssuranceLevel: redeemed.context.decidedAssuranceLevel,
+    decidedVia: redeemed.context.decidedVia,
+    authenticatorDeviceId: redeemed.context.authenticatorDeviceId,
+    stepUpGrantReuse: true,
+  };
+  if (isApprove && decision.decidedAssuranceLevel < decision.requiredLevel) {
+    // An ENFORCING partner whose floor now outranks what the grant proves:
+    // refuse, so the operator runs a ceremony that can actually clear it.
+    if (isEnforcing(policy, new Date())) return null;
+    decision.graceDowngrade = true;
+  }
+  return decision;
+}
+
 /** Everything the decide core needs from the request. `auth` replaces the
  *  route's `c.get('auth')`; `id` replaces `c.req.param('id')`. */
 export interface DecideApprovalInput {
@@ -309,6 +447,22 @@ export interface DecideApprovalInput {
    * authorization.
    */
   preverifiedAssurance?: AssuranceDecision;
+  /**
+   * #5601: an `approval_decide` step-up grant minted by an EARLIER decide in
+   * this same window, presented in place of running another ceremony. See
+   * services/approvals/approvalDecideGrant.ts. Honoured for SUPERVISED rows
+   * only (an enforcing partner's step-up floor); a four_eyes row refuses it
+   * with 403 step_up_required and always takes a fresh proof.
+   *
+   * Presenting one disables `skipAssuranceLadder` exactly as presenting a
+   * `proof` does — otherwise a supervised row under a non-enforcing partner
+   * could present a BAD grant, take the shortcut, and succeed at L1, silently
+   * ignoring the very credential the redeem path promises to reject.
+   *
+   * A request carrying BOTH a proof and a grant runs the real ladder and
+   * ignores the grant: a presented proof is always verified.
+   */
+  stepUpGrantId?: string;
 }
 
 /** The route adapter re-emits this as `c.json(body, httpStatus)`; the batch
@@ -736,14 +890,68 @@ export async function decideApprovalRequest(
     !input.preverifiedAssurance && isSupervisedSelfDecide && status === 'approved'
       ? isEnforcing(await loadPartnerPolicy(input.auth.partnerId ?? null), new Date())
       : false;
+  // #5601: a presented grant suppresses the shortcut for the same reason a
+  // presented proof does — a credential the caller offered must be ADJUDICATED
+  // (accepted, or refused with 403), never silently dropped on the floor while
+  // the decide succeeds at L1.
+  const presentedGrantId = input.preverifiedAssurance ? undefined : input.stepUpGrantId;
   const skipAssuranceLadder =
-    isSupervisedSelfDecide && !isPartnerEnforcingForSupervised && proof === undefined;
+    isSupervisedSelfDecide
+    && !isPartnerEnforcingForSupervised
+    && proof === undefined
+    && presentedGrantId === undefined;
 
   let assurance: AssuranceDecision;
   if (input.preverifiedAssurance) {
     assurance = input.preverifiedAssurance;
   } else if (skipAssuranceLadder) {
     assurance = resolveApprovalAssurance(existing.riskTier as RiskTier);
+  } else if (presentedGrantId !== undefined && proof === undefined && status === 'approved') {
+    // #5601 REDEEM PATH. Replaces the ceremony, never the authorization: every
+    // other gate in this handler (human principal, row pending/expiry, live
+    // authorization, digest binding, isAgentIntentDecideAuthorized,
+    // sole-operator re-derivation below, CAS) still runs per row, unchanged.
+    //
+    // Supervised rows only: `resolveGrantScope` (inside redeemGrantForDecide)
+    // returns null for any other approval scope, so a four_eyes decide that
+    // presents a grant is refused below with 403 and must bring a fresh
+    // proof — the four_eyes sole-operator >= L3 gate is untouched.
+    //
+    // `status === 'approved'` is a FAIL-SAFE, not a redundancy. Neither /deny
+    // nor the batch populates `stepUpGrantId` today, so a deny cannot reach
+    // here — but this branch's whole contract is "refuse with 403 when the
+    // credential is no good", and spec §12 says a technician must NEVER be
+    // unable to REFUSE. Without this guard, the day someone plumbs the field
+    // through the deny route, a stale grant would start blocking denials. A
+    // deny instead falls through to the ladder with no proof, i.e. today's L1
+    // session tap, which is exactly right.
+    const redeemed = await redeemGrantForDecide({
+      grantId: presentedGrantId,
+      auth: input.auth,
+      userId,
+      riskTier: existing.riskTier as RiskTier,
+      intent: linkedIntent,
+      decision: status,
+    });
+    if (!redeemed) {
+      // FAIL CLOSED. Expired / wrong binding / wrong scope / revoked approver
+      // device / Redis down all land here, and none of them may fall through
+      // to an L1 session tap — letting an expired credential become a session
+      // tap is the exact silent downgrade this design exists to prevent. The
+      // client re-runs a fresh ceremony on this token.
+      return {
+        httpStatus: 403,
+        body: { error: 'step_up_required', requiredLevel: requiredAssurance(existing.riskTier as RiskTier) },
+      };
+    }
+    // Same invariant backstop the fresh-ladder path gets inside
+    // `assertApprovalAssurance`. `parseGrantContext` already enforces the same
+    // factor/level/device-id invariants independently, so this cannot fire
+    // today — but a reconstructed decision is written verbatim to the audit
+    // columns, and the two paths that build one should be guarded alike rather
+    // than relying on a reader to notice only one of them is.
+    assertDecisionConsistent(redeemed);
+    assurance = redeemed;
   } else {
     try {
       assurance = await assertApprovalAssurance({
@@ -767,7 +975,20 @@ export async function decideApprovalRequest(
       console.error('[approvals] assertion verification failed:', err);
       return { httpStatus: 401, body: { error: 'assertion_failed' } };
     }
+  }
 
+  // #5601: the sole-operator gate is SHARED by the fresh-proof path and the
+  // grant-redeem path, which is why it sits here rather than inside the ladder
+  // branch where it used to live. A redeem branch that sat beside the ladder
+  // and skipped this gate would route an enforcing-partner supervised
+  // self-decide around its own >= L3 requirement — the exact regression this
+  // placement prevents. (four_eyes never reaches the redeem branch at all.)
+  //
+  // Still skipped for the two branches that were never gated: the batch's
+  // `preverifiedAssurance` (the gate already ran once at batch level against
+  // batchAssertionKey) and `skipAssuranceLadder` (a plain supervised click
+  // under a non-enforcing partner, which must keep passing).
+  if (!input.preverifiedAssurance && !skipAssuranceLadder) {
     // Sole-operator step-up (spec §1 / §4): a requester approving their OWN
     // intent (the four_eyes sole-operator single-row fan-out case, OR a
     // supervised row under an enforcing partner policy) must present >= L3
@@ -860,6 +1081,11 @@ export async function decideApprovalRequest(
               decidedAssuranceLevel: assurance.decidedAssuranceLevel,
               decidedVia: assurance.decidedVia,
               authenticatorDeviceId: assurance.authenticatorDeviceId,
+              // #5601: in the SAME transaction as the assurance columns above,
+              // so a reused-grant decision can never commit looking like a
+              // fresh ceremony (the equivalent audit event is post-commit and
+              // droppable).
+              decidedViaStepUpGrant: assurance.stepUpGrantReuse === true,
             })
             .where(
               and(
@@ -1151,8 +1377,55 @@ export async function decideApprovalRequest(
         decidedAssuranceLevel: assurance.decidedAssuranceLevel,
         decidedVia: assurance.decidedVia,
         ...(supervisedSelfApproval ? { approvalMethod: 'supervised_self' as const } : {}),
+        // #5601: a redeemed row keeps the honest level/factor above (they
+        // describe a real ceremony), so THIS is the only thing that says a
+        // second ceremony did not happen. Emitted only on reuse, so a fresh
+        // ceremony's rows and any dashboard built on them are unchanged and
+        // "reused" is never the default reading of a missing field. The
+        // durable statement is approval_requests.decided_via_step_up_grant —
+        // this event is post-commit and droppable.
+        ...(assurance.stepUpGrantReuse ? { assuranceSource: 'step_up_grant' as const } : {}),
       },
     });
+  }
+
+  // #5601: mint the reusable "recent ceremony" credential — HERE, after the
+  // whole decide transaction resolved and after the `lostRace` return above,
+  // never at the CAS itself (which is still inside the surrounding
+  // system-context transaction and can roll back). A decide that lost a race,
+  // 403'd, or rolled back must never leave a reusable credential behind.
+  //
+  // `wonIntent` is required as well as a committed row: the approval row can
+  // commit while the linked-intent CAS loses to another approver, and this
+  // core deliberately returns success in that case. Without it, "a decide that
+  // lost a race never mints" would not actually be true. The cost of the
+  // stricter rule is one extra ceremony in a rare race.
+  //
+  // Best effort throughout: a mint failure (Redis down, ineligible scope,
+  // no sid) only costs the operator another ceremony and must NEVER fail an
+  // approval that has already committed.
+  let mintedGrantId: string | null = null;
+  if (
+    status === 'approved'
+    && wonIntent
+    && linkedIntent
+    && !input.preverifiedAssurance
+    && !assurance.stepUpGrantReuse
+  ) {
+    try {
+      const scope = await resolveGrantScope(linkedIntent, existing.riskTier as RiskTier);
+      const session = scope ? await resolveGrantSession(input.auth) : null;
+      if (scope && session) {
+        mintedGrantId = await mintApprovalDecideGrant({
+          userId,
+          ...session,
+          scope,
+          assurance,
+        });
+      }
+    } catch (err) {
+      console.error('[approvals] step-up grant mint failed (decision already committed):', err);
+    }
   }
 
   // P2-2: the decide response carries the SAME target projection the inbox
@@ -1174,6 +1447,10 @@ export async function decideApprovalRequest(
         decidedTargetRef?.orgId ?? null,
       ),
       ...(enforcementStatus ? { enforcementStatus } : {}),
+      // #5601: present only when a genuine ceremony just minted one. The
+      // client caches it and presents it on the next approve in this window
+      // instead of prompting for another passkey scan.
+      ...(mintedGrantId ? { stepUpGrantId: mintedGrantId } : {}),
     },
   };
 }

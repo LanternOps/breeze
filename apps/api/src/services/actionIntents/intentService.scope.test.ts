@@ -356,6 +356,7 @@ describe('createActionIntent — explicit device scope (P2-2)', () => {
       'manage_services',
       expect.anything(),
       expect.objectContaining({ deviceId: SCOPE_DEVICE_ID, deviceSiteId: SITE_ID }),
+      undefined,
     );
     // Approver targeting resolves against the scope device too — the humans
     // who can reach IT, not whatever the (device-less) run could reach.
@@ -391,6 +392,7 @@ describe('createActionIntent — explicit device scope (P2-2)', () => {
       'manage_services',
       expect.anything(),
       expect.objectContaining({ deviceId: SCOPE_DEVICE_ID, deviceSiteId: null }),
+      undefined,
     );
   });
 

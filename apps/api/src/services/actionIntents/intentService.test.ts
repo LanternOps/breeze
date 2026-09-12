@@ -707,6 +707,9 @@ describe('createActionIntent — ai_agent branch (wave 3b)', () => {
         deviceId: DEVICE_ID,
         deviceSiteId: SITE_ID,
       }),
+      // Proposal guardrail context — undefined for anything but a
+      // run_script { proposalId } call.
+      undefined,
     );
   });
 
