@@ -1656,13 +1656,24 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
   // well still exist and we simply could not look — the alias cannot be
   // ruled out against ANY current local identity, so every local identity
   // is deferred for this run and the failure is escalated.
+  //
+  // The same reasoning applies to a CURRENT local root that fails with a
+  // non-ENOENT errno (review round 2 code-reviewer finding): its coarse
+  // signature degrades to the lexical path while a symlink-aliased sibling
+  // config's resolves to the real directory, so the two no longer collide
+  // in detectSuspiciousStorageIdentityCollisions and the HEALTHY sibling
+  // would run the full algorithm over the shared physical directory.
+  // Deferring only the failing identity is therefore not enough — every
+  // local identity is deferred for the run. ENOENT on a current root is
+  // exempt from the broadcast: a path that resolves to no inode cannot be
+  // the same inode as any sibling's, so only that identity is deferred.
   const unreachableCoarseSignatures = new Set<string>();
-  const unresolvedStaleLocalKeys: string[] = [];
+  const unresolvedLocalKeys: string[] = []; // non-ENOENT failures, stale AND current
   for (const staleKey of unreachableIdentityKeys) {
     const coarse = await coarseStorageSignatureFromKey(staleKey);
     unreachableCoarseSignatures.add(coarse.signature);
     if (coarse.unresolved && coarse.unresolved.code !== 'ENOENT') {
-      unresolvedStaleLocalKeys.push(staleKey);
+      unresolvedLocalKeys.push(staleKey);
       const message =
         `[BackupGC] stale/unreachable identity ${staleKey}: fs.realpath failed with ${coarse.unresolved.code} ` +
         `(${coarse.unresolved.message}) — cannot rule out that a current local identity aliases this directory; ` +
@@ -1670,6 +1681,9 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
       console.error(message);
       captureException(new Error(message));
     }
+  }
+  for (const [key, coarse] of coarseByKey) {
+    if (coarse.unresolved && coarse.unresolved.code !== 'ENOENT') unresolvedLocalKeys.push(key);
   }
 
   let deleted = 0;
@@ -1718,7 +1732,7 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
     // a listing of the mount point would be empty and must not be trusted).
     // Either way there is no legitimate reclamation to lose by deferring.
     const realpathDeferred = identityCoarse.unresolved !== null
-      || (identity.provider === 'local' && unresolvedStaleLocalKeys.length > 0);
+      || (identity.provider === 'local' && unresolvedLocalKeys.length > 0);
 
     try {
       const state = await loadIdentityGcState(identity, nowMs);
@@ -1748,14 +1762,16 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
         } else {
           const message =
             `[BackupGC] identity ${identity.key}: reclamation deferred — fs.realpath failed with ${code} (${cause}); ` +
-            `cannot verify this local root is not a symlink/bind-mount alias of another identity (fail-closed).`;
+            `cannot verify this local root is not a symlink/bind-mount alias of another identity, so every local ` +
+            `identity is deferred this run (fail-closed).`;
           console.error(message);
           captureException(new Error(message));
         }
       } else if (realpathDeferred) {
         console.warn(
-          `[BackupGC] identity ${identity.key}: reclamation deferred — a stale local identity's root could not be ` +
-          `resolved this run (${unresolvedStaleLocalKeys.join(', ')}); see the error logged above.`,
+          `[BackupGC] identity ${identity.key}: reclamation deferred — another local identity's root could not be ` +
+          `resolved this run (${unresolvedLocalKeys.join(', ')}), so a symlink/bind-mount alias with this one ` +
+          `cannot be ruled out; see the error logged for that identity.`,
         );
       }
 

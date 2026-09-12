@@ -1930,6 +1930,103 @@ describe('sweepUnreferencedBackupObjects', () => {
       expect(captureExceptionMock.mock.calls.some(([err]) => String((err as Error).message).includes(staleKey) && String((err as Error).message).includes('EACCES'))).toBe(true);
     });
 
+    // Review round 2 code-reviewer finding: two CURRENT local configs that
+    // alias via a symlink, where realpath fails on only ONE of them. The
+    // failing one falls back to its lexical path, the healthy one resolves
+    // to the real directory, the signatures no longer match, and the
+    // current-vs-current collision check sees nothing — so the healthy one
+    // would run the full non-deferred algorithm over the SAME physical
+    // directory. A non-ENOENT realpath failure on any current local root
+    // therefore defers EVERY local identity this run, not just its own.
+    it('a non-ENOENT realpath failure on ONE of two symlink-aliased CURRENT local roots defers BOTH (the healthy one must not reclaim over the shared directory)', async () => {
+      const realDir = await mkdtemp(join(tmpdir(), 'breeze-gc-real3-'));
+      const linkPath = join(tmpdir(), `breeze-gc-link3-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+      await symlink(realDir, linkPath, 'dir');
+      const configReal = { id: 'cfg-real', provider: 'local', providerConfig: { path: realDir } };
+      const configLink = { id: 'cfg-link', provider: 'local', providerConfig: { path: linkPath } };
+      const keyLink = normalizeStorageIdentity('local', configLink.providerConfig);
+
+      pushRunLevel([configReal, configLink]);
+      pushIdentity(); // cfg-real
+      pushIdentity(); // cfg-link
+      // Both identities list the same physical contents: one reclaimable orphan.
+      const old = new Date(Date.now() - 30 * DAY_MS);
+      fetchBackupObjectTextMock.mockResolvedValue(manifestJson([]));
+      listBackupObjectsUnderPrefixMock.mockResolvedValue([{ key: 'snapshots/OLDORPHAN/manifest.json', lastModified: old }]);
+      realpathFailWith = { code: 'EACCES', onlyPath: linkPath }; // realDir resolves fine
+
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let result;
+      let errorMessages: string[];
+      try {
+        result = await sweepUnreferencedBackupObjects();
+        errorMessages = error.mock.calls.map(([msg]) => String(msg));
+      } finally {
+        error.mockRestore();
+        warn.mockRestore();
+      }
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deferredIdentities).toBe(2);
+      expect(result.skippedIdentities).toBe(0);
+      expect(errorMessages.some((msg) => msg.includes(keyLink) && msg.includes('EACCES'))).toBe(true);
+      expect(captureExceptionMock).toHaveBeenCalled();
+    });
+
+    it('a stale non-ENOENT realpath failure defers local identities only — a sibling s3 identity in the same run still reclaims normally', async () => {
+      const { key } = await arrangeLocalIdentityWithReclaimableOrphan();
+      const s3Destination = { id: 'cfg-s3', provider: 's3', providerConfig: { bucket: 'backups', region: 'us-east-1' } };
+      const s3Key = normalizeStorageIdentity('s3', s3Destination.providerConfig);
+      const staleDir = await mkdtemp(join(tmpdir(), 'breeze-gc-stale2-'));
+      const staleKey = `local::${staleDir}`;
+      // Rewrite run-level reads: two destinations, usage rows for both + the stale key.
+      selectQueue[1] = [...(selectQueue[1] as unknown[]), s3Destination];
+      selectQueue[2] = [{ storageIdentity: key, count: 1 }, { storageIdentity: s3Key, count: 1 }, { storageIdentity: staleKey, count: 4 }];
+      pushIdentity(); // s3 identity's per-identity reads
+      fetchBackupObjectTextMock.mockResolvedValue(manifestJson([]));
+      listBackupObjectsUnderPrefixMock.mockResolvedValue([
+        { key: 'snapshots/OLDORPHAN/manifest.json', lastModified: new Date(Date.now() - 30 * DAY_MS) },
+      ]);
+      deleteBackupObjectKeysMock.mockResolvedValue({ deletedKeys: ['snapshots/OLDORPHAN/manifest.json'], failedKeys: [] });
+      realpathFailWith = { code: 'EACCES', onlyPath: staleDir };
+
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let result;
+      try {
+        result = await sweepUnreferencedBackupObjects();
+      } finally {
+        error.mockRestore();
+        warn.mockRestore();
+      }
+
+      expect(result.deferredIdentities).toBe(1); // the local one only
+      expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1); // the s3 identity's orphan
+      expect((deleteBackupObjectKeysMock.mock.calls[0]![0] as { provider: string }).provider).toBe('s3');
+    });
+
+    it('an identity deferred for BOTH a legacy helper and an unresolvable root is counted once', async () => {
+      const { key } = await arrangeLocalIdentityWithReclaimableOrphan();
+      void key;
+      // Replace the capability read (4th per-identity read) with a legacy helper.
+      selectQueue[selectQueue.length - 1] = [{ deviceId: 'dev-legacy', backupVersion: '0.100.0' }];
+      realpathFailWith = { code: 'ELOOP' };
+
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let result;
+      try {
+        result = await sweepUnreferencedBackupObjects();
+      } finally {
+        error.mockRestore();
+        warn.mockRestore();
+      }
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deferredIdentities).toBe(1);
+    });
+
     it('ENOENT on a STALE local key is the expected "old directory is gone" case: lexical fallback, no deferral', async () => {
       const { key } = await arrangeLocalIdentityWithReclaimableOrphan();
       const goneStaleKey = `local::${join(tmpdir(), `breeze-gc-gone-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)}`;
