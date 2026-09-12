@@ -50,6 +50,10 @@ const { dbMocks, contextMocks, consentMocks, columns } = vi.hoisted(() => ({
       if (!consentMocks.validStates.delete(input.rawState)) return null;
       return { userId: '66666666-6666-4666-8666-666666666666' };
     }),
+    deleteForConnection: vi.fn(async () => {
+      dbMocks.order.push('delete-session-by-connection');
+      consentMocks.validStates.clear();
+    }),
     insertIdentity: vi.fn(async (_owner: unknown, prepared: Record<string, unknown>) => {
       dbMocks.order.push('insert-identity-session');
       return { rawState: prepared.rawState, codeChallenge: prepared.codeChallenge, session: {} };
@@ -59,6 +63,8 @@ const { dbMocks, contextMocks, consentMocks, columns } = vi.hoisted(() => ({
     id: { name: 'id' }, orgId: { name: 'org_id' }, tenantId: { name: 'tenant_id' },
     clientId: { name: 'client_id' }, profile: { name: 'profile' },
     consentAttemptId: { name: 'consent_attempt_id' }, status: { name: 'status' },
+    consentGeneration: { name: 'consent_generation' },
+    permissionManifestVersion: { name: 'permission_manifest_version' },
   },
 }));
 
@@ -149,6 +155,7 @@ vi.mock('../../middleware/auth', () => ({
 
 vi.mock('./consentSessionService', () => ({
   deleteConsentSessionsForAttemptInTransaction: consentMocks.deleteAttempt,
+  deleteConsentSessionsForConnection: consentMocks.deleteForConnection,
   createAdminConsentSessionInTransaction: consentMocks.createAdmin,
   consumeConsentSessionInTransaction: consentMocks.consumeAdmin,
   insertPreparedIdentityVerificationSessionInTransaction: consentMocks.insertIdentity,
@@ -176,6 +183,7 @@ import {
   deriveGrantHealth,
   disconnectCustomerGraphReadConnection,
   initiateCustomerGraphReadConsent,
+  initiateCustomerGraphReadUpgradeConsent,
   loadRetestSnapshot,
   markAdminConsentReturned,
   transitionAdminConsentToIdentity,
@@ -742,5 +750,123 @@ describe('createConnectionService factory (non-read profile)', () => {
     });
     expect(result.profile).toBe('customer-graph-actions');
     expect(result.status).toBe('active');
+  });
+});
+
+describe('initiateUpgradeConsent', () => {
+  const EXECUTABLE = {
+    id: CONNECTION_ID,
+    orgId: ORG_ID,
+    tenantId: TENANT_ID,
+    clientId: CLIENT_ID,
+    profile: 'customer-graph-read' as const,
+    permissionManifestVersion: 2,
+    observedGrants: [],
+    consentAttemptId: ATTEMPT_ID,
+    grantsVerifiedAt: new Date('2026-09-01T00:00:00.000Z'),
+    displayName: 'Contoso',
+    status: 'active' as const,
+    lastVerifiedAt: new Date('2026-09-01T00:00:00.000Z'),
+    lastErrorCode: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMocks.selectResults.length = 0;
+    dbMocks.updateResults.length = 0;
+    dbMocks.insertResults.length = 0;
+    dbMocks.updateSets.length = 0;
+    dbMocks.updateWheres.length = 0;
+    dbMocks.insertedValues.length = 0;
+    dbMocks.executed.length = 0;
+    dbMocks.order.length = 0;
+    consentMocks.validStates.clear();
+    consentMocks.stateCounter = 0;
+    contextMocks.callerDepth = 0;
+  });
+
+  it('binds the session to the EXISTING attempt and never writes status', async () => {
+    dbMocks.selectResults.push([EXECUTABLE], [EXECUTABLE]);
+
+    const initiated = await initiateCustomerGraphReadUpgradeConsent({
+      connectionId: EXECUTABLE.id,
+      orgId: EXECUTABLE.orgId,
+      auth: auth(),
+    });
+
+    expect(consentMocks.createAdmin).toHaveBeenCalledWith(expect.objectContaining({
+      connectionId: EXECUTABLE.id,
+      orgId: EXECUTABLE.orgId,
+      consentAttemptId: EXECUTABLE.consentAttemptId,
+      purpose: 'upgrade',
+    }));
+    // The whole point of the transition: no UPDATE on m365_connections at all,
+    // so an abandoned upgrade cannot strand a working connection in
+    // pending-consent (spec §2.2).
+    expect(dbMocks.updateSets).toHaveLength(0);
+    expect(initiated.connection.status).toBe('active');
+    expect(initiated.connection.consentAttemptId).toBe(EXECUTABLE.consentAttemptId);
+    expect(initiated.consentUrl).toContain('https://login.microsoftonline.com/common/adminconsent');
+    expect(initiated.consentUrl).toContain('state=');
+  });
+
+  it('supersedes an abandoned upgrade session before minting a new one', async () => {
+    dbMocks.selectResults.push([EXECUTABLE], [EXECUTABLE]);
+
+    await initiateCustomerGraphReadUpgradeConsent({
+      connectionId: EXECUTABLE.id,
+      orgId: EXECUTABLE.orgId,
+      auth: auth(),
+    });
+
+    expect(dbMocks.order.indexOf('delete-session'))
+      .toBeLessThan(dbMocks.order.indexOf('insert-session'));
+  });
+
+  it('serializes against re-consent on the same owner/profile advisory lock', async () => {
+    dbMocks.selectResults.push([EXECUTABLE], [EXECUTABLE]);
+
+    await initiateCustomerGraphReadUpgradeConsent({
+      connectionId: EXECUTABLE.id,
+      orgId: EXECUTABLE.orgId,
+      auth: auth(),
+    });
+
+    expect(dbMocks.order[0]).toBe('lock');
+  });
+
+  it('refuses a connection that is not executable', async () => {
+    dbMocks.selectResults.push([]);
+
+    await expect(initiateCustomerGraphReadUpgradeConsent({
+      connectionId: EXECUTABLE.id,
+      orgId: EXECUTABLE.orgId,
+      auth: auth(),
+    })).rejects.toMatchObject({ code: 'connection_not_found' });
+    expect(consentMocks.createAdmin).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the stored manifest is already current', async () => {
+    // Nothing to approve; minting a consent URL would send an administrator to
+    // Microsoft to re-approve what they already approved.
+    dbMocks.selectResults.push([{ ...EXECUTABLE, permissionManifestVersion: 3 }]);
+
+    await expect(initiateCustomerGraphReadUpgradeConsent({
+      connectionId: EXECUTABLE.id,
+      orgId: EXECUTABLE.orgId,
+      auth: auth(),
+    })).rejects.toMatchObject({ code: 'manifest_current' });
+    expect(consentMocks.createAdmin).not.toHaveBeenCalled();
+  });
+
+  it('refuses when a concurrent write rotated the attempt', async () => {
+    dbMocks.selectResults.push([EXECUTABLE], []);
+
+    await expect(initiateCustomerGraphReadUpgradeConsent({
+      connectionId: EXECUTABLE.id,
+      orgId: EXECUTABLE.orgId,
+      auth: auth(),
+    })).rejects.toMatchObject({ code: 'stale_attempt' });
+    expect(consentMocks.createAdmin).not.toHaveBeenCalled();
   });
 });

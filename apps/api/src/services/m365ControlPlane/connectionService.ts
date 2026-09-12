@@ -97,7 +97,8 @@ export type ConnectionLifecycleErrorCode =
   | 'connection_not_found'
   | 'connection_not_executable'
   | 'stale_attempt'
-  | 'tenant_already_bound';
+  | 'tenant_already_bound'
+  | 'manifest_current';
 
 export class ConnectionLifecycleError extends Error {
   constructor(readonly code: ConnectionLifecycleErrorCode) {
@@ -217,6 +218,17 @@ export interface InitiateConsentInput {
   actorId: string;
 }
 
+export interface InitiateUpgradeConsentInput {
+  connectionId: string;
+  orgId: string;
+  /**
+   * The caller's exact scope. The connection is loaded under it so RLS — not
+   * an app-layer org comparison — is what proves the caller may touch this
+   * row, mirroring loadRetestSnapshot.
+   */
+  auth: AuthContext;
+}
+
 export interface InitiatedConsent<P extends M365ConnectionProfile = M365ConnectionProfile> {
   connection: M365ConnectionSnapshot<P>;
   rawState: string;
@@ -225,6 +237,7 @@ export interface InitiatedConsent<P extends M365ConnectionProfile = M365Connecti
 
 export interface ConnectionService<P extends M365ConsentSessionProfile, Client> {
   initiateConsent(input: InitiateConsentInput): Promise<InitiatedConsent<P>>;
+  initiateUpgradeConsent(input: InitiateUpgradeConsentInput): Promise<InitiatedConsent<P>>;
   listConnections(orgId: string): Promise<Array<M365ConnectionSnapshot<P> & { grantHealth: GrantHealth }>>;
   markAdminConsentReturned(input: M365ConsentAttemptSnapshot<P>): Promise<M365ConnectionSnapshot<P>>;
   transitionAdminConsentToIdentity(input: {
@@ -457,6 +470,81 @@ export function createConnectionService<
       consentUrl.searchParams.set('redirect_uri', config.callbackUrl);
       consentUrl.searchParams.set('state', created.rawState);
       return { connection, rawState: created.rawState, consentUrl: consentUrl.toString() };
+    }));
+  }
+
+  /**
+   * Starts a manifest UPGRADE consent on an already-executable connection.
+   *
+   * Differs from initiateConsent in the two ways that matter (spec §2.2):
+   *   - it does not rotate `consent_attempt_id`, so the session binds to the
+   *     EXISTING attempt through the composite FK; and
+   *   - it writes nothing to m365_connections at all, so an administrator who
+   *     abandons the Microsoft flow leaves a fully working connection behind.
+   *     initiateConsent moves the row to `pending-consent`, which stops reads.
+   */
+  async function initiateUpgradeConsent(
+    input: InitiateUpgradeConsentInput,
+  ): Promise<InitiatedConsent<P>> {
+    const config = deps.loadRuntimeConfig();
+
+    // Phase 1 — authorize under the caller's own scope. RLS is the authority
+    // for "may this caller see this connection"; the org id in the predicate
+    // is a narrowing, not the check.
+    const current = await withDbAccessContext(dbAccessContextFromAuth(input.auth), async () => {
+      const rows = await db.select().from(m365Connections).where(and(
+        eq(m365Connections.id, input.connectionId),
+        eq(m365Connections.orgId, input.orgId),
+        eq(m365Connections.profile, profile),
+        inArray(m365Connections.status, [...EXECUTABLE_STATUSES]),
+      )).limit(1);
+      const value = rows[0] ? snapshot(rows[0]) : null;
+      if (!value) throw lifecycleError('connection_not_found');
+      if (!value.tenantId) throw lifecycleError('connection_not_executable');
+      return value;
+    });
+    if (current.permissionManifestVersion === deps.manifest.version) {
+      throw lifecycleError('manifest_current');
+    }
+
+    // Phase 2 — mint the session in a system transaction. m365_consent_sessions
+    // is system-scope-only RLS, so this cannot run under the caller's context.
+    return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      // Same key initiateConsent takes, so an upgrade and a full re-consent on
+      // the same owner/profile can never interleave.
+      await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${input.orgId}/${profile}`}, 0))`);
+      const rows = await db.select().from(m365Connections).where(and(
+        eq(m365Connections.id, current.id),
+        eq(m365Connections.orgId, input.orgId),
+        eq(m365Connections.profile, profile),
+        eq(m365Connections.consentAttemptId, current.consentAttemptId),
+        inArray(m365Connections.status, [...EXECUTABLE_STATUSES]),
+      )).limit(1).for('update');
+      const locked = rows[0] ? snapshot(rows[0]) : null;
+      if (!locked) throw lifecycleError('stale_attempt');
+
+      // An abandoned earlier upgrade left a live session on this same attempt.
+      // Superseding it keeps at most one outstanding upgrade per connection.
+      await deleteConsentSessionsForAttemptInTransaction({
+        connectionId: locked.id,
+        orgId: locked.orgId,
+        consentAttemptId: locked.consentAttemptId,
+        profile,
+      });
+
+      const created = await createAdminConsentSessionInTransaction({
+        connectionId: locked.id,
+        orgId: locked.orgId,
+        consentAttemptId: locked.consentAttemptId,
+        userId: input.auth.user.id,
+        profile,
+        purpose: 'upgrade',
+      });
+      const consentUrl = new URL('https://login.microsoftonline.com/common/adminconsent');
+      consentUrl.searchParams.set('client_id', config.clientId);
+      consentUrl.searchParams.set('redirect_uri', config.callbackUrl);
+      consentUrl.searchParams.set('state', created.rawState);
+      return { connection: locked, rawState: created.rawState, consentUrl: consentUrl.toString() };
     }));
   }
 
@@ -761,6 +849,7 @@ export function createConnectionService<
 
   return {
     initiateConsent,
+    initiateUpgradeConsent,
     listConnections,
     markAdminConsentReturned,
     transitionAdminConsentToIdentity,
@@ -797,6 +886,7 @@ export type InitiateCustomerGraphReadConsentInput = InitiateConsentInput;
 export type InitiatedCustomerGraphReadConsent = InitiatedConsent<'customer-graph-read'>;
 
 export const initiateCustomerGraphReadConsent = readConnectionService.initiateConsent;
+export const initiateCustomerGraphReadUpgradeConsent = readConnectionService.initiateUpgradeConsent;
 export const listCustomerGraphReadConnections = readConnectionService.listConnections;
 export const markAdminConsentReturned = readConnectionService.markAdminConsentReturned;
 export const transitionAdminConsentToIdentity = readConnectionService.transitionAdminConsentToIdentity;
