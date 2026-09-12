@@ -41,7 +41,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { assertNotLocked } from '../services/effectiveSettings';
 import { normalizeAlertThresholds, evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
 import { db } from '../db';
-import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents } from '../db/schema';
+import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents, scriptProposals } from '../db/schema';
 import { eq, and, desc, gte, lte, count, avg, sql as drizzleSql } from 'drizzle-orm';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 import { PERMISSIONS } from '../services/permissions';
@@ -1555,6 +1555,90 @@ aiRoutes.get(
         rejected: Number(row.rejected),
       })),
       executions,
+    });
+  }
+);
+
+// Small local normaliser for a raw db.execute() result across driver
+// shapes — mirrors services/tenantCascade.ts's own rowsFromExecute helper
+// (not exported from there, so duplicated locally per CLAUDE.md's guidance
+// that small cross-file helpers may be duplicated rather than shared).
+function rowsFromExecute<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  const rows = (result as { rows?: unknown } | null)?.rows;
+  return Array.isArray(rows) ? (rows as T[]) : [];
+}
+
+// GET /admin/script-proposals-metrics - AI Risk Dashboard script-proposal panel (W05, #5612)
+aiRoutes.get(
+  '/admin/script-proposals-metrics',
+  requireScope('organization', 'partner', 'system'),
+  requireAiRead,
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = c.req.query('orgId') || auth.orgId;
+
+    if (!orgId) {
+      return c.json({ scriptProposals: { perDay: [], reviewerDisagreements: { humanRejectedAfterApprove: 0, humanApprovedAfterReject: 0 } } });
+    }
+    if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
+    }
+
+    const sinceParam = c.req.query('since');
+    const untilParam = c.req.query('until');
+    const since = sinceParam ? new Date(sinceParam) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const until = untilParam ? new Date(untilParam) : new Date();
+    if (isNaN(since.getTime())) return c.json({ error: `Invalid 'since' date: ${sinceParam}` }, 400);
+    if (isNaN(until.getTime())) return c.json({ error: `Invalid 'until' date: ${untilParam}` }, 400);
+
+    // 1. Proposals per day
+    const perDayRows = await db
+      .select({
+        date: drizzleSql<string>`DATE(${scriptProposals.createdAt})::text`,
+        count: drizzleSql<number>`COUNT(*)::int`,
+      })
+      .from(scriptProposals)
+      .where(and(eq(scriptProposals.orgId, orgId), gte(scriptProposals.createdAt, since), lte(scriptProposals.createdAt, until)))
+      .groupBy(drizzleSql`DATE(${scriptProposals.createdAt})`)
+      .orderBy(drizzleSql`DATE(${scriptProposals.createdAt}) ASC`);
+    const perDay = perDayRows.map((row) => ({ date: row.date, count: Number(row.count) }));
+
+    // 2. Reviewer disagreements — a human decision that goes against the
+    // latest completed model review. DISTINCT ON needs raw SQL: Drizzle's
+    // query builder has no portable equivalent used elsewhere in this repo
+    // (see tenantCascade.ts for the same db.execute + rowsFromExecute
+    // pattern). decided_by IS NOT NULL excludes the unattended lane's
+    // auto-approved proposals (decidedBy stays null there, per W04/#5612),
+    // which have no human decision to disagree with.
+    const disagreementResult = await db.execute(drizzleSql`
+      WITH latest_review AS (
+        SELECT DISTINCT ON (proposal_id) proposal_id, recommended_action
+        FROM script_proposal_reviews
+        WHERE org_id = ${orgId} AND reviewer_kind = 'model' AND status = 'completed'
+        ORDER BY proposal_id, created_at DESC
+      )
+      SELECT
+        COUNT(*) FILTER (WHERE lr.recommended_action = 'approve' AND sp.status = 'rejected') AS "humanRejectedAfterApprove",
+        COUNT(*) FILTER (WHERE lr.recommended_action = 'reject' AND sp.status IN ('approved', 'executed', 'verified', 'promoted')) AS "humanApprovedAfterReject"
+      FROM script_proposals sp
+      JOIN latest_review lr ON lr.proposal_id = sp.id
+      WHERE sp.org_id = ${orgId}
+        AND sp.decided_by IS NOT NULL
+        AND sp.created_at BETWEEN ${since.toISOString()} AND ${until.toISOString()}
+    `);
+    const [disagreementRow] = rowsFromExecute<{ humanRejectedAfterApprove: string | number; humanApprovedAfterReject: string | number }>(
+      disagreementResult,
+    );
+
+    return c.json({
+      scriptProposals: {
+        perDay,
+        reviewerDisagreements: {
+          humanRejectedAfterApprove: Number(disagreementRow?.humanRejectedAfterApprove ?? 0),
+          humanApprovedAfterReject: Number(disagreementRow?.humanApprovedAfterReject ?? 0),
+        },
+      },
     });
   }
 );

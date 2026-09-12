@@ -9,6 +9,7 @@ vi.mock('../db', () => ({
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
+    execute: vi.fn(),
   },
 }));
 
@@ -61,6 +62,11 @@ vi.mock('../db/schema', () => ({
     status: 'aiActionPlans.status',
     approvedBy: 'aiActionPlans.approvedBy',
     approvedAt: 'aiActionPlans.approvedAt',
+  },
+  scriptProposals: {
+    id: 'scriptProposals.id',
+    orgId: 'scriptProposals.orgId',
+    createdAt: 'scriptProposals.createdAt',
   },
 }));
 
@@ -621,6 +627,72 @@ describe('AI routes', () => {
       const execFields = selectCalls[selectCalls.length - 1]![0] as Record<string, unknown>;
       expect(execFields).toHaveProperty('intentId');
       expect(execFields).toHaveProperty('tempPasswordState');
+    });
+  });
+
+  describe('GET /ai/admin/script-proposals-metrics', () => {
+    const makeChainMock = (result: unknown[]) => {
+      const chain: any = {};
+      chain.from = vi.fn(() => chain);
+      chain.where = vi.fn(() => chain);
+      chain.groupBy = vi.fn(() => chain);
+      chain.orderBy = vi.fn(() => chain);
+      chain.then = (resolve: any, reject: any) => Promise.resolve(result).then(resolve, reject);
+      return chain;
+    };
+
+    it('requires access to the requested org', async () => {
+      const res = await app.request('/ai/admin/script-proposals-metrics?orgId=other-org-id', {
+        headers: { Authorization: 'Bearer test-token' },
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it('returns 400 for an invalid since date', async () => {
+      const res = await app.request(`/ai/admin/script-proposals-metrics?orgId=${ORG_ID}&since=not-a-date`, {
+        headers: { Authorization: 'Bearer test-token' },
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('returns per-day proposal counts and reviewer-disagreement counts for the org', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(
+        makeChainMock([
+          { date: '2026-09-10', count: 3 },
+          { date: '2026-09-11', count: 1 },
+        ]) as never,
+      );
+      vi.mocked(db.execute).mockResolvedValueOnce({
+        rows: [{ humanRejectedAfterApprove: '2', humanApprovedAfterReject: '1' }],
+      } as never);
+
+      const res = await app.request(`/ai/admin/script-proposals-metrics?orgId=${ORG_ID}`, {
+        headers: { Authorization: 'Bearer test-token' },
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.scriptProposals.perDay).toEqual([
+        { date: '2026-09-10', count: 3 },
+        { date: '2026-09-11', count: 1 },
+      ]);
+      expect(body.scriptProposals.reviewerDisagreements).toEqual({
+        humanRejectedAfterApprove: 2,
+        humanApprovedAfterReject: 1,
+      });
+    });
+
+    it('defaults reviewer disagreements to 0 when db.execute returns no row', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(makeChainMock([]) as never);
+      vi.mocked(db.execute).mockResolvedValueOnce({ rows: [] } as never);
+
+      const res = await app.request(`/ai/admin/script-proposals-metrics?orgId=${ORG_ID}`, {
+        headers: { Authorization: 'Bearer test-token' },
+      });
+      const body = await res.json();
+      expect(body.scriptProposals.reviewerDisagreements).toEqual({
+        humanRejectedAfterApprove: 0,
+        humanApprovedAfterReject: 0,
+      });
     });
   });
 
