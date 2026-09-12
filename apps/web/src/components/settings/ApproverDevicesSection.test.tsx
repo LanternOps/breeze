@@ -96,6 +96,34 @@ describe('ApproverDevicesSection', () => {
     expect(badge.textContent).toBe('Not attested');
   });
 
+  // ios_keychain_rsa_app_attest textually resembles the trusted
+  // ios_se_p256_app_attest and is EXPLICITLY excluded from the L4-trusted set
+  // server-side (authenticatorAssurance.ts) because App Attest there vouches
+  // for the app instance, not that the RSA key itself lives in hardware. It's
+  // exactly the value most likely to be miscopied into the mirrored web set by
+  // a future edit, so pin it here.
+  it('shows "Not attested" for ios_keychain_rsa_app_attest, not the similarly-named trusted basis (#5162)', async () => {
+    listApproverDevicesMock.mockResolvedValueOnce([
+      deviceFixture({ isPlatformBound: true, platformBoundBasis: 'ios_keychain_rsa_app_attest' }),
+    ]);
+    render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
+
+    const badge = await screen.findByTestId('approver-device-platform-badge-dev-1');
+    expect(badge.textContent).toBe('Not attested');
+  });
+
+  // A device from an API predating #1374 W02 sends no `platformBoundBasis` at
+  // all. Fail toward the honest badge, never the reverse.
+  it('shows "Not attested" when platformBoundBasis is missing entirely (#5162)', async () => {
+    listApproverDevicesMock.mockResolvedValueOnce([
+      deviceFixture({ isPlatformBound: true, platformBoundBasis: undefined }),
+    ]);
+    render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
+
+    const badge = await screen.findByTestId('approver-device-platform-badge-dev-1');
+    expect(badge.textContent).toBe('Not attested');
+  });
+
   it('shows an empty state when no devices are registered', async () => {
     listApproverDevicesMock.mockResolvedValueOnce([]);
     render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
