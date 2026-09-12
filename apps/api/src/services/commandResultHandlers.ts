@@ -337,12 +337,17 @@ async function handleSnmpPollResult({ agentId, command, result, commandId }: Par
 }
 
 /** W03 (#5612): `proposalId` rides every CAS rung's RETURNING so the terminal
- *  convergence point below can enqueue verification without a second read. */
-const TERMINAL_EXECUTION_PROJECTION = {
-  id: scriptExecutions.id,
-  scriptId: scriptExecutions.scriptId,
-  proposalId: scriptExecutions.proposalId,
-} as const;
+ *  convergence point below can enqueue verification without a second read.
+ *  A function, not a module-level const: many route suites mock `../db/schema`
+ *  with a narrow table set, and a const would dereference `scriptExecutions`
+ *  at import time and fail every one of them. */
+function terminalExecutionProjection() {
+  return {
+    id: scriptExecutions.id,
+    scriptId: scriptExecutions.scriptId,
+    proposalId: scriptExecutions.proposalId,
+  } as const;
+}
 
 async function handleScriptResult({ agentId, command, result, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
   // Which write we are on, for the shared catch below. This function now runs a
@@ -473,7 +478,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             eq(scriptExecutions.status, 'cancelling'),
             eq(scriptExecutions.cancelCommandId, markerCommandId),
           ))
-          .returning(TERMINAL_EXECUTION_PROJECTION);
+          .returning(terminalExecutionProjection());
         cancelConfirmed = cancelClosed.length > 0;
       }
       if (cancelClosed.length === 0) {
@@ -486,7 +491,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             eq(scriptExecutions.deviceId, resolvedDeviceId),
             eq(scriptExecutions.status, 'cancelling'),
           ))
-          .returning(TERMINAL_EXECUTION_PROJECTION);
+          .returning(terminalExecutionProjection());
       }
 
       let updatedExecutions: Array<{ id: string; scriptId: string | null; proposalId: string | null }> = [];
@@ -502,7 +507,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             eq(scriptExecutions.deviceId, resolvedDeviceId),
             inArray(scriptExecutions.status, ['pending', 'queued', 'running'])
           ))
-          .returning(TERMINAL_EXECUTION_PROJECTION);
+          .returning(terminalExecutionProjection());
         effectiveExecution = updatedExecutions[0] ?? null;
 
         // #3607 — second chance for an execution a server-side sweep already
@@ -548,7 +553,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
               isNull(scriptExecutions.exitCode),
               isNull(scriptExecutions.stdout)
             ))
-            .returning(TERMINAL_EXECUTION_PROJECTION);
+            .returning(terminalExecutionProjection());
 
           if (recovered.length > 0) {
             effectiveExecution = recovered[0] ?? null;
@@ -680,11 +685,12 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
           // proposal simply stays `executed` and the card shows "verification
           // pending" rather than losing the output.
           try {
-            await enqueueScriptVerify({
-              proposalId: effectiveExecution.proposalId,
+            // #1105: never hold the ambient DB context across a Redis round-trip.
+            await runOutsideDbContext(() => enqueueScriptVerify({
+              proposalId: effectiveExecution.proposalId as string,
               executionId: effectiveExecution.id,
               attempt: 1,
-            });
+            }));
           } catch (err) {
             console.error(`[AgentWs] script-verify enqueue failed for execution ${effectiveExecution.id}:`, err);
             captureException(err, undefined, { area: 'script_verify_enqueue', executionId: effectiveExecution.id });
