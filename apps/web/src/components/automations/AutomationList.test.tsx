@@ -106,4 +106,27 @@ describe('AutomationList controlled trigger filter (#5288)', () => {
     fireEvent.change(screen.getByDisplayValue(/event/i), { target: { value: 'schedule' } });
     expect(onChange).toHaveBeenCalledWith('schedule');
   });
+
+  it('resets to page 1 when a parent-driven triggerFilter prop change narrows the list (PR #5648 review)', () => {
+    const automations = [
+      makeAutomation({ id: 'e1', name: 'Event One', triggerType: 'event' }),
+      makeAutomation({ id: 'e2', name: 'Event Two', triggerType: 'event' }),
+      makeAutomation({ id: 's1', name: 'Scheduled One', triggerType: 'schedule' }),
+    ];
+
+    const { rerender } = render(
+      <AutomationList automations={automations} pageSize={1} triggerFilter="event" />
+    );
+
+    // Page 1 of the "event" filter (2 pages: e1, e2). Advance to page 2.
+    fireEvent.click(screen.getByLabelText('Next page'));
+    expect(screen.getByText('Event Two')).toBeInTheDocument();
+
+    // Parent (Jobs tab strip) switches the controlled filter to "schedule",
+    // whose single match (s1) only has one page — currentPage must not stay
+    // stranded on the old page 2.
+    rerender(<AutomationList automations={automations} pageSize={1} triggerFilter="schedule" />);
+
+    expect(screen.getByText('Scheduled One')).toBeInTheDocument();
+  });
 });

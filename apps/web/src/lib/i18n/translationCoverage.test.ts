@@ -79,7 +79,8 @@ const namespaceDuplicateBaselines = {
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // pt-BR.
     'organizations.json': 6, // W01 #5075: cognates — "Sites", "{{count}} site(s)"; +2 W02: device status "Online"/"Offline" are identical cognates in pt-BR
-    'pages.json': 10, // Cognates: Backup, Webhooks (x2), OneDrive, Scripts, Logs, EDR, Software (x2), and one settings-card title (Sites).
+    // +1 #5288: titles.jobs — "Jobs" is the same loanword in pt-BR.
+    'pages.json': 11, // Cognates: Backup, Webhooks (x2), OneDrive, Scripts, Logs, EDR, Software (x2), and one settings-card title (Sites).
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 357,

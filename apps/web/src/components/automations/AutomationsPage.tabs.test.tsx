@@ -1,5 +1,5 @@
 import '@/lib/i18n';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../../stores/auth', async (importOriginal) => {
@@ -35,6 +35,35 @@ describe('Jobs tabs (#5288)', () => {
     await waitFor(() => expect(screen.getByText('Inbound webhook')).toBeInTheDocument());
     expect(screen.queryByText('Nightly cleanup')).toBeNull();
     expect(screen.queryByText('On disk alert')).toBeNull();
+    window.location.hash = '';
+  });
+
+  it('clicking the "Event rules" tab filters the list and writes the hash (PR #5648 review)', async () => {
+    render(<AutomationsPage />);
+    await waitFor(() => expect(screen.getByText('Nightly cleanup')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Event rules' }));
+
+    await waitFor(() => expect(screen.getByText('On disk alert')).toBeInTheDocument());
+    expect(screen.queryByText('Nightly cleanup')).toBeNull();
+    expect(screen.queryByText('Inbound webhook')).toBeNull();
+    expect(window.location.hash).toBe('#event-rules');
+    expect(screen.getByRole('button', { name: 'Event rules' })).toHaveAttribute('aria-current', 'page');
+
+    window.location.hash = '';
+  });
+
+  it("changing AutomationList's own trigger select switches tabs (reverse mapping, PR #5648 review)", async () => {
+    render(<AutomationsPage />);
+    await waitFor(() => expect(screen.getByText('Nightly cleanup')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByDisplayValue('All Triggers'), { target: { value: 'webhook' } });
+
+    await waitFor(() => expect(screen.getByText('Inbound webhook')).toBeInTheDocument());
+    expect(screen.queryByText('Nightly cleanup')).toBeNull();
+    expect(window.location.hash).toBe('#webhooks');
+    expect(screen.getByRole('button', { name: 'Webhooks' })).toHaveAttribute('aria-current', 'page');
+
     window.location.hash = '';
   });
 });
