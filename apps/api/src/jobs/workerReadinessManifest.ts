@@ -187,6 +187,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // proposal is ever enqueued) and attaches it under its own registry-key
   // name.
   consumers('scriptReviewWorker'),
+  // W03 (#5612): same shape as scriptReviewWorker — one Worker, no flag gate
+  // of its own (the producer is gated), attached under its registry-key name.
+  consumers('scriptVerifyWorker'),
   // SEC-142/143 (review B3). Plain-required (`redis`): read, not inferred —
   // aiBudgetReservationSweep reads no feature flag anywhere in the module and
   // constructs exactly one Worker unconditionally, attaching it under its own

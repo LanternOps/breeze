@@ -304,6 +304,7 @@ const EXPECTED_NAMES = [
   'aiAgentImpactRollup',
   'aiAgentGraduation',
   'scriptReviewWorker',
+  'scriptVerifyWorker',
   'aiBudgetReservationSweep',
 ];
 
@@ -456,7 +457,7 @@ describe('workerEntrypointClosure contract (#4086 Task 5)', () => {
 
   describe('global-placement entries never reach socket-local dispatch', () => {
     const entries = parseRegistrySource();
-    expect(entries.length).toBe(130); // sanity: the source-parsing regex itself must find all 130
+    expect(entries.length).toBe(131); // sanity: the source-parsing regex itself must find all 131
 
     const globalEntries = entries.filter((e) => e.placement === 'global');
     expect(globalEntries.length).toBeGreaterThan(0);

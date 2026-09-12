@@ -1279,6 +1279,20 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // W03 (#5612): evaluates a proposal's verification claim after its
+    // execution lands. `socket-owner`, NOT `global`: the closure reaches
+    // evaluateVerificationClaim -> executeCommandWithSystemPrecheck ->
+    // agentCommandAwait / agentWs, the same dependency that puts
+    // alertVerdictScheduler on this placement.
+    // workerEntrypointClosure.contract.test.ts is the mechanical authority.
+    name: 'scriptVerifyWorker',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/scriptVerifyWorker');
+      return { init: m.initializeScriptVerifyWorker, shutdown: m.shutdownScriptVerifyWorker };
+    },
+  },
+  {
     // SEC-142/143 (review B3): reclaims durable AI budget reservations whose
     // TTL passed without settling. `global` — the sweep is one UPDATE with no
     // socket-local state, and leaving it to the socket owner would mean a
