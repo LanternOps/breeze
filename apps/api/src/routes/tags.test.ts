@@ -28,6 +28,16 @@ vi.mock('../db/schema', () => ({
     status: 'status',
     osType: 'osType',
     tags: 'tags'
+  },
+  manualAssets: {
+    id: 'ma_id',
+    orgId: 'ma_orgId',
+    siteId: 'ma_siteId',
+    name: 'ma_name',
+    tags: 'ma_tags',
+    retiredAt: 'ma_retiredAt',
+    linkedDeviceId: 'ma_linkedDeviceId',
+    linkedDiscoveredAssetId: 'ma_linkedDiscoveredAssetId'
   }
 }));
 
@@ -65,6 +75,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db } from '../db';
+import { manualAssets } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
 
 describe('tag routes', () => {
@@ -83,6 +94,14 @@ describe('tag routes', () => {
       });
       return next();
     });
+    // Both endpoints issue two queries (devices, then manual assets). Tests that
+    // only care about the device arm queue a single `mockReturnValueOnce`; this
+    // default answers the manual-asset query with no rows.
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([])
+      })
+    } as any);
     app = new Hono();
     app.route('/tags', tagRoutes);
   });
@@ -212,6 +231,44 @@ describe('tag routes', () => {
       expect(body.data[0].deviceCount).toBe(3);
     });
 
+    it('unions manual-asset tags into the tag counts', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ tags: ['prod', 'web'] }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ tags: ['prod', 'printer'] }, { tags: ['printer'] }])
+          })
+        } as any);
+
+      const res = await app.request('/tags', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const byTag = Object.fromEntries(body.data.map((t: any) => [t.tag, t.deviceCount]));
+      expect(byTag).toEqual({ prod: 2, printer: 2, web: 1 });
+      expect(body.total).toBe(3);
+    });
+
+    it('queries manual assets from the manual_assets table', async () => {
+      const manualFrom = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
+        } as any)
+        .mockReturnValueOnce({ from: manualFrom } as any);
+
+      await app.request('/tags', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(manualFrom).toHaveBeenCalledWith(manualAssets);
+    });
+
     it('should ignore empty string tags', async () => {
       const deviceRows = [
         { tags: ['', '  ', 'valid'] }
@@ -259,6 +316,43 @@ describe('tag routes', () => {
       expect(body.data).toHaveLength(2);
       expect(body.total).toBe(2);
       expect(body.data[0].id).toBe('dev-1');
+    });
+
+    it('includes manual assets carrying the tag, shaped as deviceClass=manual', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: 'dev-1', hostname: 'host-1', displayName: 'Host 1', status: 'online', osType: 'linux', tags: ['prod'] }
+            ])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: 'ma-1', name: 'Lobby Printer', tags: ['prod', 'printer'] }
+            ])
+          })
+        } as any);
+
+      const res = await app.request('/tags/devices?tag=prod', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.total).toBe(2);
+      expect(body.data[0]).toMatchObject({ id: 'dev-1', deviceClass: 'agent' });
+      expect(body.data[1]).toEqual({
+        id: 'ma-1',
+        deviceClass: 'manual',
+        hostname: 'Lobby Printer',
+        displayName: 'Lobby Printer',
+        status: 'unknown',
+        osType: null,
+        tags: ['prod', 'printer']
+      });
     });
 
     it('should validate that tag query parameter is required', async () => {
@@ -515,7 +609,59 @@ describe('tag routes', () => {
       // The serialized SQL must contain the literal `false` short-circuit.
       expect(where).toHaveBeenCalledTimes(1);
       const whereArg = where.mock.calls[0]?.[0];
-      expect(JSON.stringify(whereArg)).toContain('false');
+      // The sql`false` chunk specifically: a bare 'false' substring also matches
+      // drizzle's `"shouldInlineParams":false` and would pass without it.
+      expect(JSON.stringify(whereArg)).toContain('"value":["false"]');
+    });
+
+    // The manual-asset arm (#5425) is narrowed on the same app-layer site axis.
+    // RLS covers the org axis only, so a missing site filter here would leak the
+    // tags of out-of-site manual assets into a site-restricted user's taxonomy.
+    function captureManualWhere(rows: unknown[]) {
+      const where = vi.fn().mockResolvedValue(rows);
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
+        } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where }) } as any);
+      return where;
+    }
+
+    it('GET /tags narrows the manual-asset arm to the site allowlist', async () => {
+      const where = captureManualWhere([{ tags: ['finance'] }]);
+
+      const res = await app.request('/tags', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token', 'x-restrict-site': ALLOWED_SITE_ID }
+      });
+
+      expect(res.status).toBe(200);
+      expect(where).toHaveBeenCalledTimes(1);
+      const whereText = conditionText(where.mock.calls[0]?.[0]);
+      expect(whereText).toContain('ma_siteId');
+      expect(whereText).toContain(ALLOWED_SITE_ID);
+      // Retired and already-linked assets never reach the taxonomy.
+      expect(whereText).toContain('ma_retiredAt');
+      expect(whereText).toContain('ma_linkedDeviceId');
+      expect(whereText).toContain('ma_linkedDiscoveredAssetId');
+    });
+
+    it('GET /tags/devices emits a never-true manual-asset condition when the allowlist is empty', async () => {
+      const where = captureManualWhere([]);
+
+      const res = await app.request('/tags/devices?tag=finance', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token', 'x-restrict-site-empty': '1' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+      expect(where).toHaveBeenCalledTimes(1);
+      // Match the sql`false` chunk itself — a bare `.toContain('false')` also
+      // matches drizzle's own `"shouldInlineParams":false` and would pass with
+      // the short-circuit removed.
+      expect(JSON.stringify(where.mock.calls[0]?.[0])).toContain('"value":["false"]');
     });
 
     it('GET /tags applies no site filter when allowlist is unset (full org access)', async () => {
