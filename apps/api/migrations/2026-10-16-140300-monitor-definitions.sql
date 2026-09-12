@@ -169,30 +169,41 @@ CREATE INDEX IF NOT EXISTS config_policy_monitors_monitor_id_idx ON config_polic
 ALTER TABLE config_policy_monitors ENABLE ROW LEVEL SECURITY;
 ALTER TABLE config_policy_monitors FORCE ROW LEVEL SECURITY;
 
+-- The EXISTS reads FROM configuration_policies (the declared parent) with the
+-- feature link as a scalar subquery, rather than joining the two. That shape is
+-- load-bearing for the parent-FK contract test in
+-- rls-coverage.integration.test.ts: it matches on the literal `FROM
+-- configuration_policies` and on the helper being applied to the PARENT's
+-- alias, and Postgres renders a two-table join as `FROM (configuration_policies
+-- cp JOIN ...)` — with a parenthesis that defeats the match.
 DROP POLICY IF EXISTS config_policy_monitors_isolation ON config_policy_monitors;
 CREATE POLICY config_policy_monitors_isolation
   ON config_policy_monitors
   USING (
     public.breeze_current_scope() = 'system'
     OR EXISTS (
-      SELECT 1 FROM config_policy_feature_links fl
-      JOIN configuration_policies cp ON cp.id = fl.config_policy_id
-      WHERE fl.id = config_policy_monitors.feature_link_id
+      SELECT 1 FROM configuration_policies cp
+      WHERE cp.id = (
+          SELECT fl.config_policy_id FROM config_policy_feature_links fl
+          WHERE fl.id = config_policy_monitors.feature_link_id
+        )
         AND (
-          (cp.org_id IS NOT NULL AND public.breeze_has_org_access(cp.org_id))
-          OR (cp.partner_id IS NOT NULL AND public.breeze_has_partner_access(cp.partner_id))
+          public.breeze_has_org_access(cp.org_id)
+          OR public.breeze_has_partner_access(cp.partner_id)
         )
     )
   )
   WITH CHECK (
     public.breeze_current_scope() = 'system'
     OR EXISTS (
-      SELECT 1 FROM config_policy_feature_links fl
-      JOIN configuration_policies cp ON cp.id = fl.config_policy_id
-      WHERE fl.id = config_policy_monitors.feature_link_id
+      SELECT 1 FROM configuration_policies cp
+      WHERE cp.id = (
+          SELECT fl.config_policy_id FROM config_policy_feature_links fl
+          WHERE fl.id = config_policy_monitors.feature_link_id
+        )
         AND (
-          (cp.org_id IS NOT NULL AND public.breeze_has_org_access(cp.org_id))
-          OR (cp.partner_id IS NOT NULL AND public.breeze_has_partner_access(cp.partner_id))
+          public.breeze_has_org_access(cp.org_id)
+          OR public.breeze_has_partner_access(cp.partner_id)
         )
     )
   );
@@ -203,9 +214,11 @@ CREATE POLICY config_policy_monitors_partner_wide_select
   FOR SELECT
   USING (
     EXISTS (
-      SELECT 1 FROM config_policy_feature_links fl
-      JOIN configuration_policies cp ON cp.id = fl.config_policy_id
-      WHERE fl.id = config_policy_monitors.feature_link_id
+      SELECT 1 FROM configuration_policies cp
+      WHERE cp.id = (
+          SELECT fl.config_policy_id FROM config_policy_feature_links fl
+          WHERE fl.id = config_policy_monitors.feature_link_id
+        )
         AND cp.org_id IS NULL
         AND cp.partner_id = public.breeze_current_partner_id()
     )

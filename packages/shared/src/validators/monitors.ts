@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { automationActionSchema } from './index';
+import { automationActionSchema } from './automationActions';
 
 /**
  * Monitor definitions (#5287 W02).
