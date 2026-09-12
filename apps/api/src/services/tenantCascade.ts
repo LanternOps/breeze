@@ -306,6 +306,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_operator_task_outbox',
   'ai_operator_tasks',
   'ai_screenshots',
+  // AI script authoring W04 (#5612). ai_script_lane_state is per-org circuit
+  // state (PK org_id); ai_script_policies is dual-owner config whose PARTNER
+  // rows have org_id NULL and are therefore never cascade participants —
+  // only the org GRANT row is deleted here.
+  'ai_script_lane_state',
+  'ai_script_policies',
   'ai_sessions',
   // ai_unattended_exposure (Wave 5 Part A, #3827): blast-cap ledger. Sorts
   // here alphabetically (after ai_sessions, before alert_correlation_groups)

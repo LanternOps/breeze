@@ -308,6 +308,15 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // available anyway — the row would need to be reinserted under the new
   // key, i.e. a fresh circuit, which is exactly what closed+erased achieves.
   ai_agent_circuit_state: { kind: 'leave-for-erasure', note: 'per-org failure-streak state, not carried config; composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
+  // AI script authoring W04 (#5612): per-org lane circuit, not carried config
+  // — a survivor org must not inherit a loser's failure streak (or its open
+  // circuit). Rows die with the loser shell.
+  ai_script_lane_state: { kind: 'leave-for-erasure', note: 'per-org unattended-lane failure streak and circuit state, not carried config; the survivor keeps its own lane state' },
+  // AI script authoring W04 (#5612): the ORG GRANT row is singleton org config
+  // (ai_script_policies_org_uq, partial on org_id IS NOT NULL) — the survivor's
+  // own grant wins and the loser's is dropped, exactly like ai_budgets. Partner
+  // CEILING rows have org_id NULL and are not merge participants at all.
+  ai_script_policies: { kind: 'keep-survivor' }, // verified: ai_script_policies_org_uq (org_id) WHERE org_id IS NOT NULL
   // llm_egress_events (#3922 phase 2, landed on main 2026-08-27): per-request
   // egress telemetry — which org attempted which outbound LLM dial, allowed or
   // blocked. Repointing would attribute the loser org's egress history to the

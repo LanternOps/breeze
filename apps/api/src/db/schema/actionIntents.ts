@@ -15,7 +15,12 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
-import { AI_APPROVAL_SCOPES, type AiApprovalScope, type AssuranceLevel } from '@breeze/shared';
+import {
+  AI_APPROVAL_SCOPES,
+  type AiApprovalScope,
+  type AssuranceLevel,
+  type ScriptReviewerEvidence,
+} from '@breeze/shared';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { apiKeys } from './apiKeys';
@@ -357,6 +362,14 @@ export const actionIntents = pgTable(
     // CHECK here; `.$type` keeps the inferred read type aligned.
     decidedAssuranceLevel: smallint('decided_assurance_level').$type<AssuranceLevel>(),
     decidedVia: text('decided_via'),
+    /**
+     * AI script authoring W04 (#5612): typed evidence for a
+     * decided_via = 'script_reviewer' intent (ScriptReviewerEvidence). Written
+     * once at INSERT and IMMUTABLE thereafter — named in
+     * action_intents_block_content_update()'s deny-list by
+     * migrations/2026-10-16-120300-action-intents-script-reviewer.sql.
+     */
+    scriptReviewerEvidence: jsonb('script_reviewer_evidence').$type<ScriptReviewerEvidence>(),
     // Stamped by the release worker when it CASes the intent
     // approved -> executing (Task 5). Stale-execution detection keys off
     // this (COALESCE'd to decidedAt for rows that predate the column or

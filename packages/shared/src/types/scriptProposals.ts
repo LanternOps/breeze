@@ -7,6 +7,9 @@
  * `ScriptProposalStatus`) — do not move these two out when that lands.
  */
 
+import type { RiskTier } from '../utils/assuranceLevel';
+import type { TouchClass } from '../utils/scriptSecurityPatterns';
+
 /** Birth record of a script version row. Mirrors the `script_origin` pg enum. */
 export const SCRIPT_ORIGINS = ['human', 'ai_proposal', 'imported', 'system'] as const;
 export type ScriptOrigin = (typeof SCRIPT_ORIGINS)[number];
@@ -193,4 +196,58 @@ export interface ScriptVersionDto {
   reviewModel: string | null;
   /** True when the review row this version cites is gone (source org erased). */
   reviewEvidenceErased: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Unattended lane (W04, spec §4.1 / §4.6). Policy + lane-state DTOs the
+// settings UI reads, and the typed decision evidence an approved-at-creation
+// intent carries in action_intents.script_reviewer_evidence.
+// ---------------------------------------------------------------------------
+
+export interface ScriptPolicyDto {
+  ownerScope: 'organization' | 'partner';
+  proposingEnabled: boolean;
+  /** Partner rows only. */
+  unattendedAllowed?: boolean;
+  /** Org rows only. */
+  unattendedEnabled?: boolean;
+  maxUnattendedRiskTier: RiskTier;
+  unattendedAllowedClasses: TouchClass[];
+  maxUnattendedPerHour: number;
+  protectedResources: { services: string[]; paths: string[]; registryKeys: string[]; deviceTags: string[] };
+  reviewerModel: string | null;
+  unattendedEnabledAt: string | null;
+}
+
+export interface ScriptLaneStateDto {
+  state: 'closed' | 'open';
+  consecutiveFailedVerifications: number;
+  openedAt: string | null;
+  openedReason: string | null;
+  resetAt: string | null;
+}
+
+/** What GET /ai/script-policy returns alongside the org row, so the UI can
+ *  grey out anything the partner ceiling already forbids. */
+export interface EffectiveScriptPolicyDto {
+  proposingEnabled: boolean;
+  unattendedEnabled: boolean;
+  maxUnattendedRiskTier: RiskTier;
+  unattendedAllowedClasses: TouchClass[];
+  maxUnattendedPerHour: number;
+}
+
+/** Immutable decision record for a decided_via = 'script_reviewer' intent. */
+export interface ScriptReviewerEvidence {
+  proposalId: string;
+  reviewId: string;
+  contentDigest: string;
+  scannerVersion: string;
+  reviewerModel: string;
+  reviewerPromptVersion: string;
+  touchClasses: TouchClass[];
+  policySnapshot: { ceiling: RiskTier; allowedClasses: TouchClass[]; perHour: number };
+  laneReservationAt: string;
+  checkpointRequired: boolean;
+  agent?: { agentId: string; policyEpoch: number; killEpoch: number };
 }
