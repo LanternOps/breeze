@@ -652,3 +652,31 @@ describe('accounting_entity_mappings payment arm (QuickBooks Phase D2 outbox)', 
     expect(arm).toContain("breeze_entity_type = 'payment'");
   });
 });
+
+describe('m365 tenant sync cascade registration', () => {
+  const M365_SYNC_TABLES = [
+    'm365_ca_policies',
+    'm365_intune_devices',
+    'm365_license_skus',
+    'm365_posture_rollups',
+    'm365_secure_score_snapshots',
+    'm365_sync_state',
+    'm365_users',
+  ] as const;
+
+  it('registers every m365 tenant-sync table for org erasure', () => {
+    const order = getOrgCascadeDeleteOrder();
+    for (const table of M365_SYNC_TABLES) {
+      expect(order, `${table} missing from CORE_ORG_CASCADE_DELETE_ORDER`).toContain(table);
+    }
+  });
+
+  it('keeps the org-scoped prefix alphabetised by localeCompare', () => {
+    // Mirrors tenantCascade.integration.test.ts:45-53, which needs a live DB.
+    // Duplicated here so a misplaced insert fails in the Test API job too.
+    const order = [...getOrgCascadeDeleteOrder()];
+    expect(order.at(-1)).toBe('organizations');
+    const prefix = order.slice(0, -1);
+    expect(prefix).toEqual([...prefix].sort((a, b) => a.localeCompare(b)));
+  });
+});

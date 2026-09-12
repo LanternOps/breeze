@@ -502,8 +502,22 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'log_correlation_rules',
   'log_correlations',
   'log_search_queries',
+  // M365 tenant sync snapshots (spec §3). Alphabetical placement is the whole
+  // contract for this array: tenantCascade.integration.test.ts asserts
+  // localeCompare order, while FK-children-before-parents is asserted against
+  // topologicalCascadeOrder()'s RUNTIME pg_constraint read — so
+  // m365_sync_state sorting after m365_connections here is harmless even
+  // though it FK-references it. None of these is append-only and none carries
+  // an immutability trigger, so no AUDIT_ADMIN_REQUIRED_TABLES entry.
+  'm365_ca_policies',
   'm365_connections',
   'm365_consent_sessions',
+  'm365_intune_devices',
+  'm365_license_skus',
+  'm365_posture_rollups',
+  'm365_secure_score_snapshots',
+  'm365_sync_state',
+  'm365_users',
   'maintenance_windows',
   // #4622 — org-scoped hand-entered inventory. Not append-only and carrying no
   // immutability trigger, so no AUDIT_ADMIN_REQUIRED_TABLES entry.
