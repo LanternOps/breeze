@@ -261,8 +261,26 @@ function captureWsHandlers(
  * Set up database + auth mocks so that onOpen succeeds.
  * Uses a unique user ID each time to avoid the in-memory rate limiter.
  */
-function setupSuccessfulValidation() {
+function setupSuccessfulValidation(options: {
+  /** Phase the row-locked start-intent read reports (SEC-038 W02). */
+  lockedPhase?: 'none' | 'pending' | 'confirmed';
+  /** Phase the pre-publication re-read reports. */
+  recheckPhase?: 'none' | 'pending' | 'confirmed';
+  /** Generation the pre-publication re-read reports, to force a supersession. */
+  recheckGeneration?: bigint;
+} = {}) {
+  const {
+    lockedPhase = 'none',
+    recheckPhase = 'none',
+    recheckGeneration = 1n,
+  } = options;
   const userId = nextUserId();
+
+  // A test that exits the onOpen flow early (a refused start intent) leaves
+  // this file's FIFO `mockReturnValueOnce` queue partly unconsumed, which the
+  // NEXT test would then dequeue out of order. Start from empty.
+  vi.mocked(db.select).mockReset();
+  vi.mocked(db.update).mockReset();
 
   const ticketRecord = {
     ok: true as const,
@@ -305,11 +323,16 @@ function setupSuccessfulValidation() {
     // commitDesktopStreamStartIntent: row-locked read (SEC-038 W02)
     .mockReturnValueOnce(mockSelectLimitForChain([{
       status: session.status,
-      terminationPhase: 'none',
-      generation: 0n
+      terminationPhase: lockedPhase,
+      // A terminal row carries the generation it was declared terminal at, so
+      // the fixture stays coherent with the DB CHECK constraint.
+      generation: lockedPhase === 'none' ? 0n : 7n
     }]))
     // assertDesktopStartIntentCurrent: pre-send re-read
-    .mockReturnValueOnce(mockSelectChain([{ terminationPhase: 'none', generation: 1n }]));
+    .mockReturnValueOnce(mockSelectChain([{
+      terminationPhase: recheckPhase,
+      generation: recheckGeneration
+    }]));
 
   vi.mocked(isAgentConnected).mockReturnValue(true);
   vi.mocked(sendCommandToAgent).mockReturnValue(true);
@@ -629,6 +652,50 @@ describe('desktopWs', () => {
       expect(isDesktopSessionOwnedByAgent(SESSION_ID, AGENT_ID)).toBe(true);
       expect(isDesktopSessionOwnedByAgent(SESSION_ID, 'wrong-agent')).toBe(false);
       expect(getActiveDesktopSessionCount()).toBeGreaterThanOrEqual(1);
+    });
+
+    // SEC-038 W02. A start refused by the fence must TELL the viewer why: a
+    // socket that just drops is indistinguishable from a network blip, leaving
+    // the client with nothing to render and nothing to branch on.
+    it('tells the viewer the reason when the start intent is refused as terminal', async () => {
+      setupSuccessfulValidation({ lockedPhase: 'pending' });
+
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({}, ws);
+
+      const sent = ws.send.mock.calls.map((c: any[]) => c[0]);
+      expect(sent.some((s: any) => typeof s === 'string' && s.includes('"SESSION_TERMINAL"'))).toBe(true);
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Session not startable');
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('reports the pre-publication re-read denial with its own reason, not a blanket supersession', async () => {
+      setupSuccessfulValidation({ recheckPhase: 'pending' });
+
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({}, ws);
+
+      const sent = ws.send.mock.calls.map((c: any[]) => c[0]);
+      expect(sent.some((s: any) => typeof s === 'string' && s.includes('"SESSION_TERMINAL"'))).toBe(true);
+      expect(sent.some((s: any) => typeof s === 'string' && s.includes('"SESSION_SUPERSEDED"'))).toBe(false);
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('refuses to publish a start whose generation was superseded during setup', async () => {
+      setupSuccessfulValidation({ recheckGeneration: 9n });
+
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({}, ws);
+
+      const sent = ws.send.mock.calls.map((c: any[]) => c[0]);
+      expect(sent.some((s: any) => typeof s === 'string' && s.includes('"SESSION_SUPERSEDED"'))).toBe(true);
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
     });
 
     it('sends AGENT_SEND_FAILED when sendCommandToAgent fails', async () => {

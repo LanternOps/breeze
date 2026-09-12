@@ -42,6 +42,7 @@ import {
   assertDesktopStartIntentCurrent,
   commitDesktopStartIntent,
   formatDesktopGeneration,
+  startIntentDenialCode,
 } from '../../services/remoteDesktopStartIntent';
 import { revokeViewerSession } from '../../services/viewerTokenRevocation';
 import { captureException, captureMessage } from '../../services/sentry';
@@ -1056,7 +1057,7 @@ sessionRoutes.post(
     if (!stillCurrent.ok) {
       return c.json({
         error: 'This session was ended while the stream was starting',
-        code: stillCurrent.reason === 'terminal' ? 'SESSION_TERMINAL' : 'SESSION_SUPERSEDED',
+        code: startIntentDenialCode(stillCurrent.reason),
       }, 409);
     }
 

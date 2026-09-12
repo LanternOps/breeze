@@ -29,6 +29,8 @@ import {
   commitDesktopStartIntent,
   commitDesktopStreamStartIntent,
   formatDesktopGeneration,
+  startIntentDenialCode,
+  startIntentDenialMessage,
 } from '../services/remoteDesktopStartIntent';
 import { webrtcOfferSchema } from './remote/schemas';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
@@ -930,15 +932,33 @@ function createDesktopWsHandlers(
         const streamIntent = await withSystemDbAccessContext(() =>
           commitDesktopStreamStartIntent(sessionId)
         );
-        if (
-          !streamIntent.ok
-          || !ownsSafeRemoteConnection(
-            activeDesktopSessions,
-            sessionId,
-            boundIdentity,
-            ws,
-          )
-        ) {
+        // A denial is told to the viewer, with the reason, exactly as the lease
+        // and re-read failures below are. Dropping the socket without a frame
+        // is indistinguishable from a network blip, and the viewer then has
+        // nothing to render and nothing to branch on.
+        if (!streamIntent.ok) {
+          ws.send(JSON.stringify({
+            type: 'error',
+            code: startIntentDenialCode(streamIntent.reason),
+            message: startIntentDenialMessage(streamIntent.reason),
+          }));
+          await closeDesktopSessionLifecycle(sessionId, {
+            expectedWs: ws,
+            connection: boundIdentity,
+            reason: 'setup_failed',
+            terminalStatus: 'failed',
+            notifyAgent: true,
+          });
+          ws.close(4003, 'Session not startable');
+          return;
+        }
+
+        if (!ownsSafeRemoteConnection(
+          activeDesktopSessions,
+          sessionId,
+          boundIdentity,
+          ws,
+        )) {
           await closeDesktopSessionLifecycle(sessionId, {
             expectedWs: ws,
             connection: boundIdentity,
@@ -997,8 +1017,8 @@ function createDesktopWsHandlers(
         if (!streamStillCurrent.ok) {
           ws.send(JSON.stringify({
             type: 'error',
-            code: 'SESSION_SUPERSEDED',
-            message: 'This session was ended while the stream was starting',
+            code: startIntentDenialCode(streamStillCurrent.reason),
+            message: startIntentDenialMessage(streamStillCurrent.reason),
           }));
           await closeDesktopSessionLifecycle(sessionId, {
             expectedWs: ws,
@@ -1685,7 +1705,7 @@ export function createDesktopWsRoutes(
       if (!stillCurrent.ok) {
         return c.json({
           error: 'This session was ended while the stream was starting',
-          code: stillCurrent.reason === 'terminal' ? 'SESSION_TERMINAL' : 'SESSION_SUPERSEDED',
+          code: startIntentDenialCode(stillCurrent.reason),
         }, 409);
       }
 

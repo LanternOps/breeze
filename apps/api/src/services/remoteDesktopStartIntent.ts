@@ -25,6 +25,19 @@
  * microseconds; it does NOT close it, and it is not meant to — closing it is
  * the endpoint's job in W04/W05.
  *
+ * **How much the re-read can actually see depends on the caller's transaction
+ * boundary, and the three start sites differ.** `authMiddleware` wraps a JWT
+ * route handler in ONE `withDbAccessContext` transaction, so on
+ * `POST /remote/sessions/:id/offer` the row lock is held until the response is
+ * produced: a concurrent End blocks instead of interleaving, and the re-read
+ * there is a belt-and-braces check against a same-transaction change rather
+ * than a genuine race detector. The two `desktopWs` sites run outside that
+ * middleware and open their own `withSystemDbAccessContext` per operation, so
+ * the lock is released at the commit and the re-read there does catch a real
+ * cross-connection terminal. Both shapes are exercised in
+ * `src/__tests__/integration/remoteDesktopStartFence.integration.test.ts`,
+ * whose header documents the distinction in full.
+ *
  * **Generations never pass through a JavaScript `Number`.** They are `bigint`
  * in storage and in this module, and `formatDesktopGeneration` renders the
  * canonical decimal string that travels on the wire.
@@ -72,6 +85,32 @@ export type DesktopStartIntentResult = DesktopStartIntent | { ok: false; reason:
  */
 export function formatDesktopGeneration(generation: bigint): string {
   return generation.toString(10);
+}
+
+/**
+ * The client-visible code for a denial, so every start site names the same
+ * refusal the same way — HTTP body `code`, WS `{type:'error', code}`, both.
+ * Kept here rather than at the call sites because three sites drifting apart is
+ * exactly how a client ends up unable to distinguish "already ended" from
+ * "superseded" on one transport only.
+ */
+export function startIntentDenialCode(reason: StartIntentDenial): string {
+  switch (reason) {
+    case 'not_found': return 'SESSION_NOT_FOUND';
+    case 'terminal': return 'SESSION_TERMINAL';
+    case 'superseded': return 'SESSION_SUPERSEDED';
+    case 'state_changed': return 'SESSION_STATE_CHANGED';
+  }
+}
+
+/** The matching human-readable message for a denial. */
+export function startIntentDenialMessage(reason: StartIntentDenial): string {
+  switch (reason) {
+    case 'not_found': return 'Session not found';
+    case 'terminal': return 'This session has already been ended';
+    case 'superseded': return 'This session was superseded by a newer start';
+    case 'state_changed': return 'Session state changed while starting the stream';
+  }
 }
 
 function requireDbAccessContext(operation: string): void {
@@ -219,6 +258,12 @@ export async function commitDesktopStreamStartIntent(
  * Deliberately NOT a locking read. It narrows the window between the commit and
  * the send; it does not close it, because the authoritative refusal for a stale
  * start belongs at the endpoint (W04/W05).
+ *
+ * Unlike the two commit functions this does NOT require an open db access
+ * context: it is a plain SELECT with no lock to lose, so it is correct (just
+ * weaker) on a contextless connection. `?? 0` on the generation is defensive
+ * only — the column is NOT NULL DEFAULT 0 — and it fails CLOSED if it ever
+ * fired, since every committed generation is >= 1 and would read as superseded.
  */
 export async function assertDesktopStartIntentCurrent(
   sessionId: string,
