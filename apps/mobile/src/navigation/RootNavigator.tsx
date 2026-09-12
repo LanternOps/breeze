@@ -110,6 +110,14 @@ export function RootNavigator() {
     if (registerGrant) dispatch(clearAuthenticatorRegisterGrant());
     void ensureApproverDevice(undefined, registerGrant ?? undefined).then((outcome) => {
       if (!active) return;
+      // #5162: computed ONCE and reused for both telemetry and the dispatched
+      // state below. A prior version of the 'registered-but-unattested' branch
+      // computed a locally-scoped `reason` (with the iOS-legacy-path fallback)
+      // that fed ONLY Sentry.captureMessage, while the dispatch below read
+      // `outcome.reason` directly — so `legacy_path_on_ios` (the one case
+      // approverBannerCopy.ts has copy for) never reached the banner. Do not
+      // reintroduce that split.
+      let dispatchedReason: string | null = 'reason' in outcome ? (outcome.reason ?? null) : null;
       if (outcome.status === 'failed') {
         // Telemetry only, so a silent registration failure is at least visible
         // in Sentry — this is otherwise invisible until the user reports it.
@@ -135,11 +143,24 @@ export function RootNavigator() {
             tags: { area: 'approver-device-registration', reason },
           });
         }
+        dispatchedReason = reason;
       }
       dispatch(
         setApproverRegistration({
           status: outcome.status === 'already_registered' ? 'registered' : outcome.status,
-          reason: 'reason' in outcome ? outcome.reason : null,
+          reason: dispatchedReason,
+          // #5162 (#1374 W07): carry `attested` through so ApprovalGate can
+          // show the 'unattested' banner instead of reading this as a fully
+          // L4-capable device. MUST include `already_registered`, not just
+          // `registered` — `already_registered` is the outcome on every launch
+          // after the first (CRED_ID_KEY short-circuits before any network
+          // call), so omitting it here would make the banner disappear the
+          // moment the user closes and reopens the app, even though nothing
+          // about the device's attestation changed.
+          attested:
+            outcome.status === 'registered' || outcome.status === 'already_registered'
+              ? outcome.attested
+              : null,
         })
       );
     });

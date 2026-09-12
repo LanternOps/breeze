@@ -308,7 +308,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // its content is a list of granted capabilities, which is exactly what the open-container
   // exclusion exists for.
   "m365_connections": tablePolicy("org_id", {"included":["id","org_id","user_id","tenant_id","client_id","profile","auth_mode","permission_manifest_version","consent_attempt_id","delegated_user_object_id","consent_generation","grants_verified_at","display_name","status","consented_at","last_verified_at","expires_at","revoked_at","last_error_code","created_by","created_at","updated_at"],"reviewedIncluded":["credential_domain","credential_version"],"excludedSensitive":["client_secret","vault_ref"],"excludedOpen":["observed_grants","observed_delegated_scopes"]}),
-  "m365_consent_sessions": tablePolicy("org_id", {"included":["id","phase","connection_id","org_id","profile","consent_attempt_id","user_id","expires_at","created_at"],"reviewedIncluded":[],"excludedSensitive":["state_hash","tenant_hint_hash","nonce","code_verifier"],"excludedOpen":[]}),
+  "m365_consent_sessions": tablePolicy("org_id", {"included":["id","phase","purpose","connection_id","org_id","profile","consent_attempt_id","user_id","expires_at","created_at"],"reviewedIncluded":[],"excludedSensitive":["state_hash","tenant_hint_hash","nonce","code_verifier"],"excludedOpen":[]}),
   // M365 tenant sync (spec §3, §8). Every jsonb column is excludedOpen: a CA
   // policy's conditions/grant/session blocks name users, groups and apps by id
   // and are a capability list, and assigned_sku_ids / admin_roles / sources /

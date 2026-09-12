@@ -22,6 +22,7 @@ const { authRef, mocks } = vi.hoisted(() => ({
   mocks: {
     list: vi.fn(),
     initiate: vi.fn(),
+    upgrade: vi.fn(),
     retest: vi.fn(),
     disconnect: vi.fn(),
     onboardingEnabled: vi.fn(() => true),
@@ -68,6 +69,7 @@ vi.mock('../services/m365ControlPlane/connectionService', async (importActual) =
   ...await importActual<typeof import('../services/m365ControlPlane/connectionService')>(),
   listCustomerGraphReadConnections: mocks.list,
   initiateCustomerGraphReadConsent: mocks.initiate,
+  initiateCustomerGraphReadUpgradeConsent: mocks.upgrade,
   retestCustomerGraphReadConnection: mocks.retest,
   disconnectCustomerGraphReadConnection: mocks.disconnect,
 }));
@@ -103,7 +105,7 @@ function connection(overrides: Record<string, unknown> = {}) {
     tenantId: TENANT_ID,
     clientId: '88888888-8888-4888-8888-888888888888',
     profile: 'customer-graph-read',
-    permissionManifestVersion: 2,
+    permissionManifestVersion: 3,
     observedGrants: [requiredGrant],
     consentAttemptId: ATTEMPT_ID,
     grantsVerifiedAt: new Date('2026-07-14T10:00:00.000Z'),
@@ -159,7 +161,7 @@ beforeEach(() => {
   mocks.retest.mockResolvedValue(connection());
   mocks.disconnect.mockResolvedValue(connection({
     tenantId: null, clientId: '', displayName: null, status: 'revoked',
-    permissionManifestVersion: 2, observedGrants: [], grantsVerifiedAt: null,
+    permissionManifestVersion: 3, observedGrants: [], grantsVerifiedAt: null,
     lastVerifiedAt: null, grantHealth: undefined,
   }));
   mocks.buildBindingCookie.mockReturnValue('binding-cookie=opaque; HttpOnly; SameSite=Lax');
@@ -184,7 +186,7 @@ describe('GET /m365/connections', () => {
     expect(response.status).toBe(200);
     expect(mocks.list).toHaveBeenCalledWith(ORG_ID);
     await expect(response.json()).resolves.toMatchObject({
-      profile: { id: 'customer-graph-read', displayName: 'Customer Graph Read', manifestVersion: 2 },
+      profile: { id: 'customer-graph-read', displayName: 'Customer Graph Read', manifestVersion: 3 },
       onboardingEnabled: true,
       connection: null,
     });
@@ -201,7 +203,9 @@ describe('GET /m365/connections', () => {
       clientId: '88888888-8888-4888-8888-888888888888',
       displayName: 'Contoso',
       status: 'active',
-      manifestVersion: 2,
+      grantHealth: 'active',
+      manifestVersion: 3,
+      currentManifestVersion: 3,
       observedGrants: [requiredGrant],
       missingGrants: [],
       unexpectedGrants: [],
@@ -301,7 +305,7 @@ describe('POST /m365/connections/customer-graph-read/consent', () => {
       connectionId: CONNECTION_ID,
       profile: 'customer-graph-read',
       consentAttemptId: ATTEMPT_ID,
-      manifestVersion: 2,
+      manifestVersion: 3,
       outcome: 'initiated',
       actorId: USER_ID,
     }));
@@ -328,7 +332,7 @@ describe('scoped connection mutations', () => {
     expect(mocks.audit).toHaveBeenCalledTimes(1);
     expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       event: 'm365.customer_graph_read.retested', connectionId: CONNECTION_ID,
-      outcome: 'active', consentAttemptId: ATTEMPT_ID, manifestVersion: 2,
+      outcome: 'active', consentAttemptId: ATTEMPT_ID, manifestVersion: 3,
     }));
   });
 
@@ -366,7 +370,7 @@ describe('scoped connection mutations', () => {
         clientId: null,
         displayName: null,
         status: 'revoked',
-        manifestVersion: 2,
+        manifestVersion: 3,
         observedGrants: [],
         missingGrants: [],
         unexpectedGrants: [],
@@ -433,5 +437,114 @@ describe.each(strictOrgQueryRoutes)('%s strict orgId query contract', (_name, me
     expect(mocks.retest).not.toHaveBeenCalled();
     expect(mocks.disconnect).not.toHaveBeenCalled();
     expect(mocks.audit).not.toHaveBeenCalled();
+  });
+});
+
+describe('connection DTO grant health', () => {
+  it('exposes the derived health, the stored version, and the current version', async () => {
+    // deriveGrantHealth already returns manifest-stale for a lagging row;
+    // before this change the DTO forwarded stored status only, so the web card
+    // could not tell a stale manifest from a healthy one (spec §2.2).
+    mocks.list.mockResolvedValue([connection({
+      permissionManifestVersion: 2,
+      grantHealth: undefined,
+    })]);
+
+    const response = await app().request(`/m365/connections?orgId=${ORG_ID}`);
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.connection.grantHealth).toBe('manifest-stale');
+    expect(body.connection.manifestVersion).toBe(2);
+    expect(body.connection.currentManifestVersion).toBe(3);
+  });
+
+  it('reports active health for a current, fully granted connection', async () => {
+    mocks.list.mockResolvedValue([connection()]);
+
+    const body = await (await app().request(`/m365/connections?orgId=${ORG_ID}`)).json();
+
+    expect(body.connection.grantHealth).toBe('active');
+    expect(body.connection.manifestVersion).toBe(3);
+    expect(body.connection.currentManifestVersion).toBe(3);
+  });
+});
+
+describe('POST /m365/connections/:id/upgrade-consent', () => {
+  beforeEach(() => {
+    mocks.upgrade.mockResolvedValue({
+      connection: connection(),
+      rawState: 'raw-state',
+      consentUrl: 'https://login.microsoftonline.com/common/adminconsent?state=raw-state',
+    });
+  });
+
+  it('requires MFA exactly like retest', async () => {
+    authRef.current = auth({ mfa: false });
+
+    const response = await app().request(
+      `/m365/connections/${CONNECTION_ID}/upgrade-consent?orgId=${ORG_ID}`,
+      { method: 'POST' },
+    );
+
+    expect(response.status).toBe(403);
+    expect(mocks.upgrade).not.toHaveBeenCalled();
+  });
+
+  it('requires organizations:write', async () => {
+    authRef.current = auth({ permissions: new Set(['organizations:read']) });
+
+    const response = await app().request(
+      `/m365/connections/${CONNECTION_ID}/upgrade-consent?orgId=${ORG_ID}`,
+      { method: 'POST' },
+    );
+
+    expect(response.status).toBe(403);
+    expect(mocks.upgrade).not.toHaveBeenCalled();
+  });
+
+  it('returns the Microsoft admin-consent URL and sets the browser binding', async () => {
+    const response = await app().request(
+      `/m365/connections/${CONNECTION_ID}/upgrade-consent?orgId=${ORG_ID}`,
+      { method: 'POST' },
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      adminConsentUrl: 'https://login.microsoftonline.com/common/adminconsent?state=raw-state',
+    });
+    expect(response.headers.get('set-cookie')).toContain('binding-cookie=');
+    expect(mocks.upgrade).toHaveBeenCalledWith(expect.objectContaining({
+      connectionId: CONNECTION_ID,
+      orgId: ORG_ID,
+    }));
+    expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: 'm365.customer_graph_read.upgrade_consent_initiated',
+      outcome: 'initiated',
+    }));
+  });
+
+  it('404s a connection in another organization', async () => {
+    const response = await app().request(
+      `/m365/connections/${CONNECTION_ID}/upgrade-consent?orgId=${OTHER_ORG_ID}`,
+      { method: 'POST' },
+    );
+
+    expect(response.status).toBe(404);
+    expect(mocks.upgrade).not.toHaveBeenCalled();
+  });
+
+  it('409s when the stored manifest is already current', async () => {
+    mocks.upgrade.mockRejectedValue(
+      Object.assign(new Error('manifest_current'), { code: 'manifest_current' }),
+    );
+
+    const response = await app().request(
+      `/m365/connections/${CONNECTION_ID}/upgrade-consent?orgId=${ORG_ID}`,
+      { method: 'POST' },
+    );
+
+    expect(response.status).toBe(409);
   });
 });

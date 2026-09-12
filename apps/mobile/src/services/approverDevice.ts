@@ -114,7 +114,17 @@ export type ApproverRegistrationOutcome =
        */
       reason?: 'attestation_rejected_by_server' | 'attestation_protocol_absent';
     }
-  | { status: 'already_registered' }
+  /**
+   * #5162 (#1374 W07): carries `attested` for the same reason the `registered`
+   * variant does. This is the outcome on EVERY launch after the first (the
+   * check above CRED_ID_KEY short-circuits before any network call), so
+   * without it a device stuck on a legacy/unattested key would show the
+   * 'unattested' banner only once, on its very first registration, and then
+   * silently lose it on every subsequent app open — even though the "standing
+   * condition" (ApprovalGate's own description of what these banners are for)
+   * hasn't changed at all.
+   */
+  | { status: 'already_registered'; attested: boolean }
   | { status: 'deferred'; reason: 'no_reauth_grant' }
   | { status: 'unsupported'; reason: 'no_hardware' }
   /**
@@ -364,7 +374,7 @@ function runAttempt(
   inFlight = (async (): Promise<ApproverRegistrationOutcome> => {
     try {
       if (await SecureStore.getItemAsync(CRED_ID_KEY)) {
-        return { status: 'already_registered' };
+        return { status: 'already_registered', attested: (await SecureStore.getItemAsync(ATTESTED_KEY)) === '1' };
       }
       let canAttest: boolean;
       try {

@@ -6,6 +6,9 @@ import { Counter, type Registry } from 'prom-client';
 
 export const M365_CUSTOMER_GRAPH_READ_EVENTS = [
   'm365.customer_graph_read.consent_initiated',
+  // Position is load-bearing: metrics.test.ts pins the whole ordered array and
+  // later waves append at the END, so an out-of-order insert reddens both.
+  'm365.customer_graph_read.upgrade_consent_initiated',
   'm365.customer_graph_read.admin_consent_returned',
   'm365.customer_graph_read.tenant_binding_verified',
   'm365.customer_graph_read.verification_failed',

@@ -100,6 +100,16 @@ export type NewM365ConnectionRow = typeof m365Connections.$inferInsert;
 
 export type M365ConsentPhase = 'admin_consent' | 'identity_verification';
 
+/**
+ * Which flow a consent session belongs to. `initial` is a first-time (or
+ * full re-)consent that moves the connection through pending-consent →
+ * verifying. `upgrade` is a manifest bump on a connection that stays
+ * executable for the whole flow (spec §2.2) — the callback must never call
+ * markConsentAttemptFailed on one, because that sets status = 'pending-consent'
+ * and would take a live connection out of service on a cancelled consent.
+ */
+export type M365ConsentPurpose = 'initial' | 'upgrade';
+
 export const m365ConsentSessions = pgTable(
   'm365_consent_sessions',
   {
@@ -116,6 +126,10 @@ export const m365ConsentSessions = pgTable(
     tenantHintHash: char('tenant_hint_hash', { length: 64 }),
     nonce: text('nonce'),
     codeVerifier: text('code_verifier'),
+    purpose: varchar('purpose', { length: 16 })
+      .$type<M365ConsentPurpose>()
+      .notNull()
+      .default('initial'),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -165,6 +179,10 @@ export const m365ConsentSessions = pgTable(
         AND ${t.nonce} IS NOT NULL
         AND ${t.codeVerifier} IS NOT NULL
       )`,
+    ),
+    purposeCheck: check(
+      'm365_consent_sessions_purpose_check',
+      sql`${t.purpose} IN ('initial', 'upgrade')`,
     ),
   }),
 );

@@ -180,14 +180,40 @@ describe('ensureApproverDevice', () => {
     expect(signer.createKeys).toHaveBeenCalledTimes(1);
   });
 
-  it('is a no-op when a credential id already exists', async () => {
+  // #5162 (#1374 W07): `already_registered` is the outcome on EVERY app launch
+  // after the first (see the single-flight guard), not just the first. If it
+  // doesn't carry `attested`, RootNavigator has no way to keep showing the
+  // 'unattested' banner after the user closes and reopens the app — a
+  // "standing condition" banner (ApprovalGate's own description) that
+  // vanishes on relaunch is a real regression, not a display nuance.
+  it('reports attested=true when already registered on an attested key', async () => {
     const signer = fakeSigner();
-    secureStore.getItemAsync.mockImplementation(async (k: string) =>
-      k === 'breeze_approver_credential_id' ? 'dev-1' : 'test-token',
-    );
+    secureStore.getItemAsync.mockImplementation(async (k: string) => {
+      if (k === 'breeze_approver_credential_id') return 'dev-1';
+      if (k === 'breeze_approver_attested') return '1';
+      return 'test-token';
+    });
 
     await expect(ensureApproverDevice(signer)).resolves.toEqual({
       status: 'already_registered',
+      attested: true,
+    });
+
+    expect(signer.createKeys).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reports attested=false when already registered on a legacy/unattested key', async () => {
+    const signer = fakeSigner();
+    secureStore.getItemAsync.mockImplementation(async (k: string) => {
+      if (k === 'breeze_approver_credential_id') return 'dev-1';
+      if (k === 'breeze_approver_attested') return null;
+      return 'test-token';
+    });
+
+    await expect(ensureApproverDevice(signer)).resolves.toEqual({
+      status: 'already_registered',
+      attested: false,
     });
 
     expect(signer.createKeys).not.toHaveBeenCalled();

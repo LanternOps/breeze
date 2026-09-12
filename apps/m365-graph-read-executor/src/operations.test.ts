@@ -47,7 +47,7 @@ describe('executor operations', () => {
       tenantId: TENANT_ID,
       applicationId: CLIENT_ID,
       organizationDisplayName: 'Example',
-      manifestVersion: 2,
+      manifestVersion: 3,
       grantReconciliation: 'unavailable',
       errorCode: 'grant_reconciliation_unavailable',
       observedGrants: null,

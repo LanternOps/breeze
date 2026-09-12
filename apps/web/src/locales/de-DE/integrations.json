@@ -42,6 +42,9 @@
       "unknownPermission": "Unbekannte Berechtigung (Rolle {{appRoleId}})",
       "grantsVerifiedAt": "Berechtigungen geprüft"
     },
+    "upgrade": {
+      "banner": "Neue Microsoft 365-Berechtigungen sind für bedingten Zugriff, die Sicherheitsbewertung und die Sichtbarkeit von Administratorrollen erforderlich. Ein globaler Administrator muss sie genehmigen."
+    },
     "actions": {
       "connect": "Verbinden",
       "reconsent": "Erneut zustimmen",
@@ -53,7 +56,9 @@
       "retestSucceeded": "Die erneute Verbindungsprüfung ist abgeschlossen.",
       "disconnectWarning": "Durch das Trennen kann Breeze diese Verbindung nicht mehr verwenden. Die mandantenweite Microsoft-Zustimmung bleibt bestehen, bis ein Kundenadministrator sie in Microsoft Entra entfernt.",
       "disconnectFailed": "Die Verbindung konnte nicht getrennt werden.",
-      "disconnectSucceeded": "Die Breeze-Verbindung wurde getrennt."
+      "disconnectSucceeded": "Die Breeze-Verbindung wurde getrennt.",
+      "approveNewPermissions": "Neue Berechtigungen genehmigen",
+      "upgradeFailed": "Die Genehmigung der neuen Berechtigungen konnte nicht gestartet werden."
     },
     "errors": {
       "consent_expired": "Die Zustimmungssitzung ist abgelaufen. Starten Sie die Zustimmung erneut.",

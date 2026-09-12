@@ -99,11 +99,15 @@ const GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000";
 const REQUIRED_GRANTS = [
   ["9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30", "Application.Read.All"],
   ["b0afded3-3588-46d8-8b3d-9842eff778da", "AuditLog.Read.All"],
+  ["5e1e9171-754d-478c-812c-f1755a9a4c2d", "AuditLogsQuery.Read.All"],
   ["7438b122-aefc-4978-80ed-43db9fcc7715", "Device.Read.All"],
   ["dc377aa6-52d8-4e23-b271-2a7ae04cedf3", "DeviceManagementConfiguration.Read.All"],
   ["2f51be20-0bb4-4fed-bf7b-db946066c75e", "DeviceManagementManagedDevices.Read.All"],
   ["5b567255-7703-4780-807c-7be8301ae99b", "Group.Read.All"],
   ["498476ce-e0fe-48b0-b801-37ba7e2685c6", "Organization.Read.All"],
+  ["246dd0d5-5bd0-4def-940b-0421030a5b68", "Policy.Read.All"],
+  ["483bed4a-2ad3-4361-a73b-c83ccdbdc53c", "RoleManagement.Read.Directory"],
+  ["bf394140-e372-4bf9-a898-299cfc7564e5", "SecurityEvents.Read.All"],
   ["332a536c-c7ef-4017-ab91-336970924f0d", "Sites.Read.All"],
   ["df021288-bdef-4463-88db-98f22de89214", "User.Read.All"],
 ].map(([appRoleId, value]) => ({
@@ -117,7 +121,7 @@ function envelope(overrides: Record<string, unknown> = {}) {
     profile: {
       id: "customer-graph-read",
       displayName: "Customer Graph Read",
-      manifestVersion: 2,
+      manifestVersion: 3,
       requiredGrants: REQUIRED_GRANTS,
     },
     onboardingEnabled: true,
@@ -133,7 +137,9 @@ function connection(overrides: Record<string, unknown> = {}) {
     clientId: "55555555-5555-4555-8555-555555555555",
     displayName: "Northwind Tenant",
     status: "active",
-    manifestVersion: 2,
+    grantHealth: "active",
+    manifestVersion: 3,
+    currentManifestVersion: 3,
     observedGrants: REQUIRED_GRANTS,
     missingGrants: [],
     unexpectedGrants: [],
@@ -177,7 +183,7 @@ describe("M365CustomerGraphReadCard", () => {
     state.errorMessages = [];
   });
 
-  it("renders the exact nine fixed permissions and no credential inputs for an empty envelope", async () => {
+  it("renders the exact thirteen fixed permissions and no credential inputs for an empty envelope", async () => {
     fetchWithAuthMock.mockResolvedValue(makeResponse(envelope()));
 
     render(<M365CustomerGraphReadCard />);
@@ -188,7 +194,7 @@ describe("M365CustomerGraphReadCard", () => {
     for (const grant of REQUIRED_GRANTS) {
       expect(screen.getByText(grant.value)).toBeInTheDocument();
     }
-    expect(screen.getAllByTestId("required-grant")).toHaveLength(9);
+    expect(screen.getAllByTestId("required-grant")).toHaveLength(13);
     expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
     expect(screen.queryAllByRole("textbox")).toHaveLength(0);
     expect(screen.queryByLabelText(/client secret|certificate|vault/i)).not.toBeInTheDocument();
@@ -398,7 +404,7 @@ describe("M365CustomerGraphReadCard", () => {
 
     expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
     expect(screen.getByText("44444444-4444-4444-8444-444444444444")).toBeInTheDocument();
-    expect(screen.getByText("Manifest version 2")).toBeInTheDocument();
+    expect(screen.getByText("Manifest version 3")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Required permissions" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Observed permissions" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Missing permissions" })).toBeInTheDocument();
@@ -872,5 +878,110 @@ describe("M365CustomerGraphReadCard", () => {
     render(<M365CustomerGraphReadCard />);
     expect(await screen.findByText("Select an organization to manage Customer Graph Read.")).toBeInTheDocument();
     expect(fetchWithAuthMock).not.toHaveBeenCalled();
+  });
+  describe("manifest upgrade banner", () => {
+    it("shows the amber banner and the approve button for a manifest-stale connection", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection({ manifestVersion: 2, grantHealth: "manifest-stale" }),
+      })));
+
+      render(<M365CustomerGraphReadCard />);
+
+      const banner = await screen.findByTestId("m365-read-manifest-stale-banner");
+      expect(banner).toHaveTextContent(
+        "New Microsoft 365 permissions are required for Conditional Access, Secure Score, and admin role visibility. A Global Administrator must approve them.",
+      );
+      expect(screen.getByTestId("m365-read-approve-new-permissions")).toBeEnabled();
+    });
+
+    it("hides the banner for a current connection", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection(),
+      })));
+
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByRole("heading", { name: "Customer Graph Read" })).toBeInTheDocument();
+      expect(screen.queryByTestId("m365-read-manifest-stale-banner")).not.toBeInTheDocument();
+    });
+
+    it("starts the upgrade through runAction and navigates to the validated Microsoft URL", async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeResponse(envelope({
+          connection: connection({ manifestVersion: 2, grantHealth: "manifest-stale" }),
+        })))
+        .mockResolvedValueOnce(makeResponse({
+          adminConsentUrl: "https://login.microsoftonline.com/common/adminconsent?state=raw",
+        }));
+
+      render(<M365CustomerGraphReadCard />);
+      fireEvent.click(await screen.findByTestId("m365-read-approve-new-permissions"));
+
+      await waitFor(() => expect(runActionMock).toHaveBeenCalledTimes(1));
+      expect(fetchWithAuthMock).toHaveBeenLastCalledWith(
+        `/m365/connections/${CONNECTION_ID}/upgrade-consent?orgId=${ORG_A}`,
+        { method: "POST" },
+      );
+      await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith(
+        "https://login.microsoftonline.com/common/adminconsent?state=raw",
+      ));
+    });
+
+    it("refuses to navigate to a non-Microsoft consent URL", async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeResponse(envelope({
+          connection: connection({ manifestVersion: 2, grantHealth: "manifest-stale" }),
+        })))
+        .mockResolvedValueOnce(makeResponse({ adminConsentUrl: "https://evil.example/adminconsent" }));
+
+      render(<M365CustomerGraphReadCard />);
+      fireEvent.click(await screen.findByTestId("m365-read-approve-new-permissions"));
+
+      await waitFor(() => expect(runActionMock).toHaveBeenCalledTimes(1));
+      expect(navigateToMock).not.toHaveBeenCalled();
+    });
+
+    it("disables the approve button without organizations:write", async () => {
+      state.canWrite = false;
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection({ manifestVersion: 2, grantHealth: "manifest-stale" }),
+      })));
+
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByTestId("m365-read-approve-new-permissions")).toBeDisabled();
+    });
+
+    it("still renders missing grants degraded rather than the banner once the manifest is current", async () => {
+      // Spec §2.2: missing grants after a retest keep the EXISTING degraded
+      // rendering; the banner is only for a stale manifest.
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection({
+          grantHealth: "missing",
+          status: "degraded",
+          observedGrants: REQUIRED_GRANTS.slice(0, 12),
+          missingGrants: REQUIRED_GRANTS.slice(12),
+        }),
+      })));
+
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByRole("heading", { name: "Customer Graph Read" })).toBeInTheDocument();
+      expect(screen.queryByTestId("m365-read-manifest-stale-banner")).not.toBeInTheDocument();
+      expect(screen.getAllByText(REQUIRED_GRANTS[12]!.value).length).toBeGreaterThan(0);
+    });
+
+    it("rejects an envelope whose connection is missing the new fields", async () => {
+      // hasExactKeys is exact in both directions: a server that has not shipped
+      // the DTO change yet must fail closed, not render a half-parsed card.
+      const stale = connection();
+      delete (stale as Record<string, unknown>).grantHealth;
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: stale })));
+
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByText("Connection details are unavailable."))
+        .toBeInTheDocument();
+    });
   });
 });

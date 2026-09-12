@@ -35,7 +35,7 @@ The four **assurance levels** describe increasingly strong proof, performed on t
 | **L1 -- session tap** | A simple tap to confirm within an authenticated session. |
 | **L2 -- biometric** | A biometric check (Face / fingerprint). |
 | **L3 -- biometric + PIN** | Biometric plus a PIN. |
-| **L4 -- hardware key + re-auth** | A platform-bound hardware security key plus fresh re-authentication (password or login MFA). |
+| **L4 -- hardware key + re-auth** | A hardware-attested, platform-bound security key -- Breeze verifies the attestation server-side, not just a claim from the device -- plus fresh re-authentication (password or login MFA). |
 
 <Aside type="tip">
   The policy is **raise-only**. For any tier you can require a *higher* assurance level than the Breeze default, but you can never drop below it -- the dropdown simply doesn't offer the weaker options, and the server re-validates the same rule. An override that would weaken the floor is ignored (fail-closed).
@@ -66,8 +66,10 @@ Registering a Breeze Authenticator (approver) device always requires a **fresh i
 - **From the web dashboard**, registering a device prompts for a step-up in order of strength: a **passkey** tap if you have one enrolled, otherwise your **TOTP code**, otherwise your **password**. If your account has a passkey or TOTP factor, the password fallback is refused -- the server insists on the strongest factor you own (except on deployments with MFA disabled platform-wide, where the password path remains available). A newly registered device shows a **"pending — activates on first approval"** badge until it decides its first request.
 - **From the mobile app**, no separate ceremony is needed: signing in (including completing your MFA challenge) authorises the app to register itself as your approver device on that login. If registration couldn't happen at sign-in, the app shows a banner and completes it on your **next login**.
 
+Each device in the list carries a badge -- **Hardware-attested** or **Not attested** -- showing whether Breeze has server-verified proof that its signing key lives in hardware. Only a hardware-attested device can satisfy the **L4** assurance floor for critical-risk approvals; a device marked **Not attested** still works for lower tiers, but critical-tier approvals from it are refused, even if it was already enrolled. On mobile this usually means the app needs an update -- see [Approver Device Registration and Assurance](/features/mobile/#approver-device-registration-and-assurance) for what determines the badge and how the app's own banner explains it. A **passkey / platform authenticator** registered from a browser is treated as hardware-attested for this purpose, as long as it is a single-device, non-backed-up credential.
+
 <Aside type="note">
-  Mobile app builds older than v0.99.0 used a flow the server no longer accepts, so registration from an outdated app fails until the app is updated. If a technician's phone stops registering as an approver device after a server upgrade, update the Breeze mobile app.
+  Mobile app builds older than v0.99.0 used a flow the server no longer accepts, so registration from an outdated app fails until the app is updated. If a technician's phone stops registering as an approver device after a server upgrade, update the Breeze mobile app. A device that *does* register on an older build still shows **Not attested** and stays capped below L4 until it is updated.
 </Aside>
 
 ## How it interacts with PAM and Breeze Authenticator
