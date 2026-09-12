@@ -21,6 +21,7 @@ import {
 } from './sensitiveCommandPayload';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
+import { createAuditLogAsync } from './auditService';
 import { checkScriptMaintenanceSuppression } from './scriptMaintenanceGate';
 import {
   describeVariableFailure,
@@ -64,6 +65,12 @@ import {
  * Inserts run in the caller's ambient DB context — request paths stay under
  * RLS; system-context callers must validate ownership before calling.
  */
+// Matches the fallback actor id commandQueue.ts uses for a non-user dispatch
+// (commandQueue.ts's own system-actor literal) — kept as a local literal
+// rather than importing that module's internal, since this file already
+// avoids depending on commandQueue for anything but queueCommand/CommandTypes.
+const SYSTEM_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
+
 export type ScriptDispatchSource =
   | { kind: 'saved'; script: typeof scripts.$inferSelect; automationRunId?: string | null }
   | { kind: 'raw'; content: string; language: string; provenance: string }
@@ -759,6 +766,41 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     } else {
       deliveryOutcome = 'claim_lost';
     }
+  }
+
+  // #5022 / W05: an AI-authored (proposal-backed) run writes its own audit
+  // row here, sourced ONLY from the same `provenance` snapshot that
+  // `buildExecutionValues` just wrote onto this execution's
+  // approval_method/review_risk_tier/review_summary columns above (line
+  // ~855) — never a live join to script_proposals, and deliberately not a
+  // re-read of script_executions either (that would just re-fetch the same
+  // values this function already holds, and would collide with every
+  // existing proposal-dispatch test's own `db.select` mock). This is why the
+  // device activity feed that reads this row back (W05 Task 3) survives
+  // erasure of the source proposal. Fire-and-forget like every other
+  // createAuditLogAsync caller: a lost audit row must never fail the dispatch
+  // that already succeeded.
+  if (source.kind === 'proposal' && executionId) {
+    void createAuditLogAsync({
+      orgId: device.orgId,
+      actorType: source.proposal.authorKind === 'agent_run' ? 'ai_agent' : 'user',
+      actorId: safeCreatedBy ?? safeTriggeredBy ?? SYSTEM_ACTOR_ID,
+      action: 'ai.script.executed',
+      resourceType: 'device',
+      resourceId: device.id,
+      resourceName: device.hostname,
+      initiatedBy: 'ai',
+      result: 'dispatched',
+      details: {
+        executionId,
+        commandId: command.id,
+        proposalId: source.proposal.id,
+        sourceKind: 'proposal',
+        approvalMethod: input.provenance?.approvalMethod ?? null,
+        reviewRiskTier: input.provenance?.reviewRiskTier ?? null,
+        reviewSummary: input.provenance?.reviewSummary ?? null,
+      },
+    });
   }
 
   return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, deliverBy, ignoredParameters, runAs, targetSessionId: input.targetSessionId ?? null };

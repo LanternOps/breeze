@@ -478,6 +478,10 @@ const actionLabels: Record<string, string> = {
   'agent.recovery_keys.submit': 'Recovery keys escrowed',
   'script.execute': 'Script executed',
   'script.execution.cancel': 'Script execution cancelled',
+  // #5022 / W05: written by scriptDispatch.ts at DISPATCH time (result:
+  // 'dispatched'), same tense discipline as the agent.command.* rows below —
+  // the row can't know the run's outcome yet, so the copy doesn't claim one.
+  'ai.script.executed': 'AI script run sent',
   // #3525: NOT YET EMITTED by anything — registered ahead of the cancellation
   // closers (W03), which are what will write it when a cancel resolves without
   // the device proving the stop. Grep will find no call site until then. The
