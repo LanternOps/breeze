@@ -206,7 +206,7 @@ function row(overrides: Record<string, unknown> = {}) {
     credentialDomain: 'customer-graph-read' as const,
     vaultRef: 'akv://vault/version',
     credentialVersion: 'version',
-    permissionManifestVersion: 2,
+    permissionManifestVersion: 3,
     observedGrants: [...REQUIRED],
     consentAttemptId: ATTEMPT_ID,
     grantsVerifiedAt: new Date('2026-07-14T16:00:00.000Z'),
@@ -228,7 +228,7 @@ function snapshot(overrides: Partial<CustomerGraphReadConnectionSnapshot> = {}):
   return {
     id: CONNECTION_ID, orgId: ORG_ID, profile: 'customer-graph-read',
     consentAttemptId: ATTEMPT_ID, tenantId: TENANT_ID, clientId: CLIENT_ID,
-    permissionManifestVersion: 2, observedGrants: [...REQUIRED],
+    permissionManifestVersion: 3, observedGrants: [...REQUIRED],
     grantsVerifiedAt: new Date('2026-07-14T16:00:00.000Z'), displayName: 'Contoso',
     status: 'active', lastVerifiedAt: new Date('2026-07-14T16:00:00.000Z'),
     lastErrorCode: null, ...overrides,
@@ -243,7 +243,7 @@ function completeResult(overrides: Partial<Extract<CompleteConsentResult, { succ
   return {
     success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
     administratorObjectId: '77777777-7777-4777-8777-777777777777',
-    organizationDisplayName: 'Contoso', manifestVersion: 2,
+    organizationDisplayName: 'Contoso', manifestVersion: 3,
     verifiedAt: '2026-07-14T16:00:00.000Z', grantReconciliation: 'complete',
     observedGrants: [...REQUIRED], missingGrants: [], unexpectedGrants: [],
     grantsVerifiedAt: '2026-07-14T16:00:00.000Z', ...overrides,
@@ -338,7 +338,7 @@ describe('customer Graph-read connection lifecycle', () => {
 
     await expect(initiateCustomerGraphReadConsent({ orgId: ORG_ID, actorId: ACTOR_ID }))
       .rejects.toThrow('insert failed');
-    expect(dbMocks.insertedValues[0]).toMatchObject({ permissionManifestVersion: 2 });
+    expect(dbMocks.insertedValues[0]).toMatchObject({ permissionManifestVersion: 3 });
     expect(consentMocks.createAdmin).not.toHaveBeenCalled();
   });
 
@@ -451,7 +451,7 @@ describe('customer Graph-read connection lifecycle', () => {
       profile: 'customer-graph-read',
       consentAttemptId: ATTEMPT_ID,
       tenantId: TENANT_ID,
-      permissionManifestVersion: 2,
+      permissionManifestVersion: 3,
       status: 'active',
       lastErrorCode: null,
     });
@@ -519,7 +519,7 @@ describe('customer Graph-read connection lifecycle', () => {
           tenantId: TENANT_ID,
           applicationId: CLIENT_ID,
           organizationDisplayName: 'Contoso',
-          manifestVersion: 2,
+          manifestVersion: 3,
           verifiedAt: '2026-07-14T16:00:00.000Z',
           grantReconciliation: 'complete',
           observedGrants: [...REQUIRED],
@@ -556,7 +556,7 @@ describe('customer Graph-read connection lifecycle', () => {
       tenantId: TENANT_ID,
       applicationId: CLIENT_ID,
       organizationDisplayName: displayName,
-      manifestVersion: 2,
+      manifestVersion: 3,
       verifiedAt,
       grantReconciliation: 'complete',
       observedGrants: [...REQUIRED],
@@ -635,7 +635,7 @@ describe('customer Graph-read connection lifecycle', () => {
     dbMocks.updateResults.push((set) => [row({ ...set })]);
     const retained = await applyRetestResult(retestSnapshot, {
       success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
-      organizationDisplayName: 'Contoso', manifestVersion: 2,
+      organizationDisplayName: 'Contoso', manifestVersion: 3,
       verifiedAt: '2026-07-14T17:00:00.000Z', grantReconciliation: 'unavailable',
       errorCode: 'grant_reconciliation_unavailable', observedGrants: null,
       missingGrants: null, unexpectedGrants: null, grantsVerifiedAt: null,
@@ -656,7 +656,7 @@ describe('customer Graph-read connection lifecycle', () => {
     expect(dbMocks.updateSets[0]).toMatchObject({
       tenantId: null, clientId: '', displayName: null, observedGrants: [],
       grantsVerifiedAt: null, lastVerifiedAt: null, status: 'revoked', lastErrorCode: null,
-      permissionManifestVersion: 2,
+      permissionManifestVersion: 3,
     });
     expect(disconnected.status).toBe('revoked');
     expect(disconnected.consentAttemptId).not.toBe(ATTEMPT_ID);

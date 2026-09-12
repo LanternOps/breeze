@@ -103,7 +103,7 @@ function connection(overrides: Record<string, unknown> = {}) {
     tenantId: TENANT_ID,
     clientId: '88888888-8888-4888-8888-888888888888',
     profile: 'customer-graph-read',
-    permissionManifestVersion: 2,
+    permissionManifestVersion: 3,
     observedGrants: [requiredGrant],
     consentAttemptId: ATTEMPT_ID,
     grantsVerifiedAt: new Date('2026-07-14T10:00:00.000Z'),
@@ -159,7 +159,7 @@ beforeEach(() => {
   mocks.retest.mockResolvedValue(connection());
   mocks.disconnect.mockResolvedValue(connection({
     tenantId: null, clientId: '', displayName: null, status: 'revoked',
-    permissionManifestVersion: 2, observedGrants: [], grantsVerifiedAt: null,
+    permissionManifestVersion: 3, observedGrants: [], grantsVerifiedAt: null,
     lastVerifiedAt: null, grantHealth: undefined,
   }));
   mocks.buildBindingCookie.mockReturnValue('binding-cookie=opaque; HttpOnly; SameSite=Lax');
@@ -184,7 +184,7 @@ describe('GET /m365/connections', () => {
     expect(response.status).toBe(200);
     expect(mocks.list).toHaveBeenCalledWith(ORG_ID);
     await expect(response.json()).resolves.toMatchObject({
-      profile: { id: 'customer-graph-read', displayName: 'Customer Graph Read', manifestVersion: 2 },
+      profile: { id: 'customer-graph-read', displayName: 'Customer Graph Read', manifestVersion: 3 },
       onboardingEnabled: true,
       connection: null,
     });
@@ -201,7 +201,7 @@ describe('GET /m365/connections', () => {
       clientId: '88888888-8888-4888-8888-888888888888',
       displayName: 'Contoso',
       status: 'active',
-      manifestVersion: 2,
+      manifestVersion: 3,
       observedGrants: [requiredGrant],
       missingGrants: [],
       unexpectedGrants: [],
@@ -301,7 +301,7 @@ describe('POST /m365/connections/customer-graph-read/consent', () => {
       connectionId: CONNECTION_ID,
       profile: 'customer-graph-read',
       consentAttemptId: ATTEMPT_ID,
-      manifestVersion: 2,
+      manifestVersion: 3,
       outcome: 'initiated',
       actorId: USER_ID,
     }));
@@ -328,7 +328,7 @@ describe('scoped connection mutations', () => {
     expect(mocks.audit).toHaveBeenCalledTimes(1);
     expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       event: 'm365.customer_graph_read.retested', connectionId: CONNECTION_ID,
-      outcome: 'active', consentAttemptId: ATTEMPT_ID, manifestVersion: 2,
+      outcome: 'active', consentAttemptId: ATTEMPT_ID, manifestVersion: 3,
     }));
   });
 
@@ -366,7 +366,7 @@ describe('scoped connection mutations', () => {
         clientId: null,
         displayName: null,
         status: 'revoked',
-        manifestVersion: 2,
+        manifestVersion: 3,
         observedGrants: [],
         missingGrants: [],
         unexpectedGrants: [],
