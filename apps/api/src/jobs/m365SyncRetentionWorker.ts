@@ -102,6 +102,11 @@ export async function pruneM365SyncRetention(): Promise<M365SyncRetentionResult>
       `[M365SyncRetention] Deleted ${deletedEntities} stale entity row(s) and pruned `
       + `${prunedScoreControls} score control_scores blob(s) in ${durationMs}ms`,
     );
+    // rowsDeleted is the counter's contract (breeze_retention_rows_deleted_total):
+    // only the entity DELETEs count. The score-detail prune is an UPDATE that
+    // keeps every row, so it is not folded in — it surfaces in the log line
+    // above and in the returned job result (prunedScoreControls), and the
+    // run itself still stamps the job's last-run gauge.
     recordRetentionRun('m365_sync_retention', { rowsDeleted: deletedEntities });
     return { deletedEntities, prunedScoreControls, durationMs };
   });

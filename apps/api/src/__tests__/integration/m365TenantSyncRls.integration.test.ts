@@ -244,6 +244,40 @@ describe('m365 tenant sync — cross-tenant isolation as breeze_app', () => {
     expect(visible).toEqual([]);
   });
 
+  runDb('cannot UPDATE, DELETE, or re-tenant another org row, nor move its own row out', async () => {
+    const fx = await seedFixture();
+    const foreign = randomUUID();
+    const own = randomUUID();
+    await withSystemDbAccessContext(() => db.insert(m365Users).values([
+      { orgId: fx.b.org.id, graphId: foreign, coreHash: hash, displayName: 'b-original' },
+      { orgId: fx.a.org.id, graphId: own, coreHash: hash, displayName: 'a-original' },
+    ]));
+
+    await withDbAccessContext(fx.a.context, async () => {
+      // USING hides org B's row from UPDATE/DELETE targeting: zero rows matched.
+      const updated = await db.update(m365Users).set({ displayName: 'hijacked' })
+        .where(sql`${m365Users.graphId} = ${foreign}`).returning({ id: m365Users.id });
+      expect(updated).toEqual([]);
+      const deleted = await db.delete(m365Users)
+        .where(sql`${m365Users.graphId} = ${foreign}`).returning({ id: m365Users.id });
+      expect(deleted).toEqual([]);
+      // Positive control: the same UPDATE shape does reach org A's own row.
+      const ownUpdated = await db.update(m365Users).set({ displayName: 'a-edited' })
+        .where(sql`${m365Users.graphId} = ${own}`).returning({ id: m365Users.id });
+      expect(ownUpdated).toHaveLength(1);
+    });
+
+    // WITH CHECK refuses moving org A's own row into org B.
+    await expect(withDbAccessContext(fx.a.context, () =>
+      db.update(m365Users).set({ orgId: fx.b.org.id }).where(sql`${m365Users.graphId} = ${own}`)))
+      .rejects.toMatchObject({ cause: { code: '42501' } });
+
+    const [row] = (await getTestDb().execute(sql`
+      SELECT display_name FROM m365_users WHERE graph_id = ${foreign}
+    `)) as unknown as Array<{ display_name: string }>;
+    expect(row!.display_name).toBe('b-original');
+  });
+
   runDb('refuses a (breeze_device_id, org_id) pair that crosses orgs with 23503', async () => {
     const fx = await seedFixture();
     await expect(withSystemDbAccessContext(() => db.insert(m365IntuneDevices).values({
