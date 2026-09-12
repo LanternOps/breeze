@@ -144,6 +144,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('intentExpiryReaper'),
   consumers('intentReleaseWorker'),
   consumers('stripeReconcileSweep'),
+  consumers('stripeSessionRevocationSweep'),
   consumers('quoteExpiryReaper'),
   consumers('suppressionExpiryReaper'),
   consumers('ticketNotifyWorker'),

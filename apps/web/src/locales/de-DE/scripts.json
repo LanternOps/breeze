@@ -7,7 +7,7 @@
     },
     "loading": "Automatisierung wird geladen...",
     "breadcrumb": {
-      "automations": "Automatisierungen",
+      "automations": "Aufträge",
       "new": "Neue Automatisierung",
       "edit": "Automatisierung bearbeiten"
     },
@@ -341,8 +341,8 @@
       "delete": "Die Automatisierung konnte nicht gelöscht werden"
     },
     "loading": "Automatisierungen werden geladen...",
-    "title": "Automatisierungen",
-    "description": "Erstellen und verwalten Sie automatisierte Workflows.",
+    "title": "Aufträge",
+    "description": "Geplante, manuelle, Webhook- und ereignisgesteuerte Automatisierungen.",
     "actions": {
       "new": "Neue Automatisierung",
       "deleting": "Löschen..."
@@ -351,6 +351,14 @@
       "title": "Automatisierung löschen",
       "confirmPrefix": "Sind Sie sicher, dass Sie löschen möchten?",
       "confirmSuffix": "Diese Aktion kann nicht rückgängig gemacht werden."
+    },
+    "tabs": {
+      "ariaLabel": "Auftragstypen",
+      "all": "Alle",
+      "scheduled": "Geplant",
+      "on-demand": "Manuell",
+      "webhooks": "Webhooks",
+      "event-rules": "Ereignisregeln"
     }
   },
   "complianceDashboard": {

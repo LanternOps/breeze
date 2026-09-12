@@ -33,7 +33,7 @@ vi.mock('../../services/partnerStripe', () => ({
 }));
 
 import * as svc from '../../services/invoiceService';
-import { createInvoicePayLink } from '../../services/invoiceCheckout';
+import { createInvoicePayLink, checkoutSessionExpiry } from '../../services/invoiceCheckout';
 import type { InvoiceActor } from '../../services/invoiceTypes';
 
 interface Fixture { partnerId: string; orgId: string; userId: string }
@@ -100,7 +100,12 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     expect(call[0].line_items[0].price_data.unit_amount).toBe(10000);
     // #2245 deposit invoicing: the idempotency key now carries a _dep/_bal
     // suffix. A plain payable (non-deposit) invoice charges the balance → `_bal`.
-    expect(call[1].idempotencyKey).toBe(`inv_${inv.id}_10000_bal`);
+    // SEC-150 appends the hour quantum of the requested `expires_at`, because
+    // Stripe refuses an idempotent replay whose parameters moved — asserted
+    // through checkoutSessionExpiry() so a drift between the two would fail here
+    // rather than as an idempotency_key_in_use in production.
+    expect(call[1].idempotencyKey).toBe(`inv_${inv.id}_10000_bal_e${checkoutSessionExpiry().quantum}`);
+    expect(call[0].expires_at).toBe(checkoutSessionExpiry().expiresAt);
 
     const mappings = await withSystemDbAccessContext(() =>
       db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.invoiceId, inv.id)));

@@ -456,6 +456,12 @@ type Heartbeat struct {
 	// Defaults to requestRevocationLeaseRenew; nil is a no-op.
 	leaseRenewRequester func(sessionID string)
 
+	// desktopStartFence linearizes desktop start decisions against terminal
+	// decisions (SEC-038): a per-session high-water generation plus an
+	// absolute terminal tombstone. See desktop_fence.go. Carries its own lock
+	// and its zero value is ready to use, so it is never nil.
+	desktopStartFence desktopFence
+
 	// desktopTargets maps remote desktop session id -> explicitly targeted
 	// Windows session ("" for untargeted/legacy connects) so the stop path can
 	// route the banner-hide and end-of-session notify to the same user who saw
