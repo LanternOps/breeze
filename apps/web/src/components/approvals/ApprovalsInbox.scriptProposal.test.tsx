@@ -122,4 +122,35 @@ describe('ApprovalsInbox + script proposals', () => {
       ),
     );
   });
+
+  it('renders a read-only card for a #proposal-<id> deep link, without a pending row', async () => {
+    const id = '44444444-4444-4444-8444-444444444444';
+    window.location.hash = `#proposal-${id}`;
+    try {
+      useScriptProposal.mockReturnValue({
+        data: { ...proposalDto, proposal: { ...proposalDto.proposal, id, status: 'verified' }, viewer: { canDecide: true, canAcknowledge: true, canPromote: true } },
+        loading: false, error: null, reload: vi.fn(),
+      });
+      renderInbox([]);
+      expect(await screen.findByTestId('approval-proposal-detail')).toBeInTheDocument();
+      expect(useScriptProposal).toHaveBeenCalledWith(id);
+      expect(screen.getByTestId('script-proposal-card')).toBeInTheDocument();
+      // Read-only: no decision footer, but Save to library is offered on a verified proposal.
+      expect(screen.queryByTestId('script-proposal-approve-button')).not.toBeInTheDocument();
+      expect(screen.getByTestId('script-proposal-save-to-library')).toBeEnabled();
+    } finally {
+      window.location.hash = '';
+    }
+  });
+
+  it('ignores a hash that is not a proposal deep link', async () => {
+    window.location.hash = '#something-else';
+    try {
+      renderInbox([]);
+      await screen.findByTestId('approvals-inbox');
+      expect(screen.queryByTestId('approval-proposal-detail')).not.toBeInTheDocument();
+    } finally {
+      window.location.hash = '';
+    }
+  });
 });

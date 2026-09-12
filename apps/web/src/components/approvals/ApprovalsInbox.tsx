@@ -218,7 +218,26 @@ function rowErrorKind(result: BatchRowResult): DecisionErrorKind {
   return 'decisionFailed';
 }
 
+/**
+ * W03 (#5612): `/approvals#proposal-<uuid>` deep-links to one AI script
+ * proposal — the target of the script provenance panel's link and of
+ * proposal notifications. Hash, not a query param (CLAUDE.md URL-state rule).
+ * Returns null for any other hash.
+ */
+function proposalIdFromHash(hash: string): string | null {
+  const m = /^#proposal-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(hash);
+  return m ? m[1]! : null;
+}
+
 export default function ApprovalsInbox() {
+  const [hashProposalId, setHashProposalId] = useState<string | null>(() =>
+    typeof window === 'undefined' ? null : proposalIdFromHash(window.location.hash),
+  );
+  useEffect(() => {
+    const onHash = () => setHashProposalId(proposalIdFromHash(window.location.hash));
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
   const { t } = useTranslation('approvals');
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1167,6 +1186,15 @@ export default function ApprovalsInbox() {
         title={t('title')}
         description={t('description')}
       />
+
+      {hashProposalId && (
+        // The deep-linked proposal, read-only: decisions still happen on the
+        // pending row below (or in chat); this surface exists for the
+        // post-decision states — verification progress and Save to library.
+        <section className="rounded-xl border bg-card p-4" data-testid="approval-proposal-detail">
+          <ScriptProposalApprovalCard proposalId={hashProposalId} readOnly />
+        </section>
+      )}
 
       {!loading && !loadError && approvals.length > 0 && (
         <div
