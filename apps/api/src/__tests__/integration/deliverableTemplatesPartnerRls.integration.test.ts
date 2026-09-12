@@ -3,7 +3,7 @@
  * (org XOR partner) enforcement, branch-FK owner integrity, and the apply
  * fan-out (#5573 W05, CLAUDE.md "Partner-Wide First" step 6).
  *
- * The shipped policies (2026-10-16-100500-deliverable-templates.sql) are:
+ * The shipped policies (2026-10-16-110100-deliverable-templates.sql) are:
  *   <table>_isolation            FOR ALL  system OR breeze_has_org_access(org_id)
  *                                        OR breeze_has_partner_access(partner_id)
  *   <table>_partner_wide_select  FOR SELECT  org_id IS NULL

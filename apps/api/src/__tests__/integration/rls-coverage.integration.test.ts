@@ -318,7 +318,7 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // D9): a template set is org-scoped (org_id set) OR partner-wide (partner_id
   // set, org_id NULL — one service tier applied across every org the MSP
   // manages). Created dual-axis from day one in
-  // 2026-10-16-100500-deliverable-templates. The org_id column means org-tenant
+  // 2026-10-16-110100-deliverable-templates. The org_id column means org-tenant
   // auto-discovery already asserts the breeze_has_org_access branch, so these
   // entries are what assert the breeze_has_partner_access (partner-wide)
   // branch. CHECKs <table>_one_owner_chk enforce exactly one axis. Functional
