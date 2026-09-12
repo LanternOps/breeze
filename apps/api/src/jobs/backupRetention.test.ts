@@ -124,6 +124,30 @@ vi.mock('../services/backupSnapshotStorage', async (importOriginal) => {
 const captureExceptionMock = vi.fn();
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
 
+// `fs.realpath` fault injection for coarseStorageSignatureFromKey (review
+// round 2 HOLD item): when `realpathFailWith` is set, the module under test's
+// realpath rejects with that errno for EVERY path; otherwise the real
+// implementation runs (the symlink-alias tests below rely on the real one).
+// Everything else on node:fs/promises passes straight through.
+let realpathFailWith: { code: string; onlyPath?: string } | null = null;
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    realpath: async (p: string) => {
+      if (realpathFailWith && (!realpathFailWith.onlyPath || realpathFailWith.onlyPath === p)) {
+        throw Object.assign(new Error(`${realpathFailWith.code}: injected realpath failure, realpath '${p}'`), {
+          code: realpathFailWith.code,
+          errno: -1,
+          syscall: 'realpath',
+          path: p,
+        });
+      }
+      return actual.realpath(p);
+    },
+  };
+});
+
 
 const {
   computeExpiresAt,
@@ -465,6 +489,7 @@ describe('sweepUnreferencedBackupObjects', () => {
     vi.clearAllMocks();
     selectQueue.length = 0;
     updateCalls.length = 0;
+    realpathFailWith = null;
     redisAvailableForTest = true;
     redisSmembersMock.mockResolvedValue([]);
     delete process.env.BACKUP_GC_MAX_DELETES_PER_RUN;
@@ -1753,6 +1778,176 @@ describe('sweepUnreferencedBackupObjects', () => {
       const result = await sweepUnreferencedBackupObjects();
       expect(result.deferredIdentities).toBe(0);
       expect(result.unreachableIdentities).toBe(1);
+    });
+
+    it('escalates an alias deferral via captureException, not only console.warn (review round 2 follow-up 4)', async () => {
+      const aliasedDestination = {
+        id: 'cfg-alias',
+        provider: 's3',
+        providerConfig: { bucket: 'MyBucket', endpoint: 'nyc3.digitaloceanspaces.com' },
+      };
+      const newKey = normalizeStorageIdentity(aliasedDestination.provider, aliasedDestination.providerConfig);
+      const staleKey = 's3::nyc3.digitaloceanspaces.com:9000::MyBucket';
+      selectQueue.push([]);
+      selectQueue.push([aliasedDestination]);
+      selectQueue.push([{ storageIdentity: staleKey, count: 3 }, { storageIdentity: newKey, count: 1 }]);
+      pushIdentity();
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([]);
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await sweepUnreferencedBackupObjects();
+      } finally {
+        warn.mockRestore();
+      }
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+      const [err] = captureExceptionMock.mock.calls[0]!;
+      expect(err).toBeInstanceOf(Error);
+      expect(String((err as Error).message)).toContain(newKey);
+      expect(String((err as Error).message)).toContain('aliases a stale/unreachable identity');
+    });
+  });
+
+  // Review round 2 (HOLD): coarseStorageSignatureFromKey used to swallow EVERY
+  // fs.realpath error and silently fall back to the lexical key — which is the
+  // same non-symlink-following comparison normalizeStorageIdentity already
+  // does, i.e. the local alias guard added in round 1 silently contributed
+  // nothing in exactly the failure mode it exists for (EACCES / ELOOP / EMFILE
+  // / an NFS hiccup on that run). It now fails closed: an unresolvable local
+  // root defers the identity for the run, logs key + errno, and escalates.
+  describe('review round 2: fs.realpath failure on a local root fails closed (defers, logs, escalates)', () => {
+    // Arrange a local identity with a 30-day-old, row-less, manifest-only
+    // prefix — under the NON-deferred algorithm this is abandoned orphan
+    // garbage and gets reclaimed; under the deferred algorithm every listed
+    // manifest is a root and nothing is deleted. So "was anything deleted?"
+    // is the discriminating observable.
+    async function arrangeLocalIdentityWithReclaimableOrphan() {
+      const realDir = await mkdtemp(join(tmpdir(), 'breeze-gc-realpath-'));
+      const localDestination = { id: 'cfg-local', provider: 'local', providerConfig: { path: realDir } };
+      const key = normalizeStorageIdentity('local', localDestination.providerConfig);
+      pushRunLevel([localDestination]);
+      pushIdentity();
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/OLDORPHAN/manifest.json', lastModified: new Date(Date.now() - 30 * DAY_MS) },
+      ]);
+      return { key, realDir };
+    }
+
+    it.each(['EACCES', 'ELOOP', 'EMFILE'])('%s from realpath on a CURRENT local root defers the identity, deletes nothing, logs key+code, and escalates', async (code) => {
+      const { key } = await arrangeLocalIdentityWithReclaimableOrphan();
+      realpathFailWith = { code };
+
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let result;
+      let errorMessages: string[];
+      try {
+        result = await sweepUnreferencedBackupObjects();
+        errorMessages = error.mock.calls.map(([msg]) => String(msg));
+      } finally {
+        error.mockRestore();
+        warn.mockRestore();
+      }
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deferredIdentities).toBe(1);
+      expect(result.skippedIdentities).toBe(0);
+      expect(result.blockedIdentities).toBe(0);
+      expect(errorMessages.some((msg) => msg.includes(key) && msg.includes(code))).toBe(true);
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+      const [err] = captureExceptionMock.mock.calls[0]!;
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toContain(key);
+      expect((err as Error).message).toContain(code);
+    });
+
+    it('control: with realpath healthy the same arrangement reclaims the orphan (proves the deferral above is the realpath guard, not the fixture)', async () => {
+      await arrangeLocalIdentityWithReclaimableOrphan();
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/OLDORPHAN/manifest.json'], failedKeys: [] });
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).toHaveBeenCalled();
+      expect(result.deferredIdentities).toBe(0);
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+    });
+
+    it('ENOENT on a CURRENT local root also defers (nothing to reclaim if fresh; exactly right if the mount is missing) but does NOT page Sentry', async () => {
+      const missingDir = join(tmpdir(), `breeze-gc-missing-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+      const localDestination = { id: 'cfg-local', provider: 'local', providerConfig: { path: missingDir } };
+      pushRunLevel([localDestination]);
+      pushIdentity();
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/OLDORPHAN/manifest.json', lastModified: new Date(Date.now() - 30 * DAY_MS) },
+      ]);
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let result;
+      let warnMessages: string[];
+      try {
+        result = await sweepUnreferencedBackupObjects(); // real realpath -> real ENOENT
+        warnMessages = warn.mock.calls.map(([msg]) => String(msg));
+      } finally {
+        warn.mockRestore();
+      }
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deferredIdentities).toBe(1);
+      expect(warnMessages.some((msg) => msg.includes(missingDir) && msg.includes('ENOENT'))).toBe(true);
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+    });
+
+    it('a non-ENOENT realpath failure on a STALE local key defers every local identity this run (the alias cannot be ruled out) and escalates', async () => {
+      const { key, realDir } = await arrangeLocalIdentityWithReclaimableOrphan();
+      // Re-push the identityUsage read with an extra stale local key whose
+      // realpath will fail — pushRunLevel queued a usage row for the current
+      // config only, so replace that third queued read.
+      const staleDir = await mkdtemp(join(tmpdir(), 'breeze-gc-stale-'));
+      const staleKey = `local::${staleDir}`;
+      selectQueue[2] = [{ storageIdentity: key, count: 1 }, { storageIdentity: staleKey, count: 4 }];
+      realpathFailWith = { code: 'EACCES', onlyPath: staleDir }; // the CURRENT root resolves fine
+      void realDir;
+
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let result;
+      let errorMessages: string[];
+      try {
+        result = await sweepUnreferencedBackupObjects();
+        errorMessages = error.mock.calls.map(([msg]) => String(msg));
+      } finally {
+        error.mockRestore();
+        warn.mockRestore();
+      }
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deferredIdentities).toBe(1);
+      expect(result.unreachableIdentities).toBe(1);
+      expect(errorMessages.some((msg) => msg.includes(staleKey) && msg.includes('EACCES'))).toBe(true);
+      expect(captureExceptionMock).toHaveBeenCalled();
+      expect(captureExceptionMock.mock.calls.some(([err]) => String((err as Error).message).includes(staleKey) && String((err as Error).message).includes('EACCES'))).toBe(true);
+    });
+
+    it('ENOENT on a STALE local key is the expected "old directory is gone" case: lexical fallback, no deferral', async () => {
+      const { key } = await arrangeLocalIdentityWithReclaimableOrphan();
+      const goneStaleKey = `local::${join(tmpdir(), `breeze-gc-gone-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)}`;
+      selectQueue[2] = [{ storageIdentity: key, count: 1 }, { storageIdentity: goneStaleKey, count: 4 }];
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/OLDORPHAN/manifest.json'], failedKeys: [] });
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let result;
+      try {
+        result = await sweepUnreferencedBackupObjects();
+      } finally {
+        warn.mockRestore();
+      }
+
+      expect(deleteBackupObjectKeysMock).toHaveBeenCalled();
+      expect(result.deferredIdentities).toBe(0);
+      expect(result.unreachableIdentities).toBe(1);
+      expect(captureExceptionMock).not.toHaveBeenCalled();
     });
   });
 
