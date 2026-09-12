@@ -159,3 +159,96 @@ runDb('forges a cross-org correlation insert from the parent org and gets 42501'
       .values({ parentAlertId: alertA1, childAlertId: alertA2, correlationType: 'causal' })
   );
 });
+
+// UPDATE and DELETE, behaviourally.
+//
+// Read this before assuming these cases prove the UPDATE/DELETE policies:
+// they do not, and measurement says so. Postgres enforces the SELECT policy on
+// the row an UPDATE/DELETE reads (any statement with a WHERE or RETURNING) and
+// on the row an UPDATE produces, so with the SELECT policy AND-ed these cases
+// pass no matter what the UPDATE/DELETE policies say. Verified by mutation
+// against live Postgres: hand-installing OR-combined UPDATE + DELETE policies
+// left all five cases in this file green, and the re-point case below still
+// raised 42501 — but OR-ing the SELECT policy as well made that same re-point
+// succeed, which pins the SELECT policy as the load-bearing gate.
+//
+// The upshot: the AND on the SELECT policy is what enforces isolation for
+// every command, and the cases above discriminate it (OR-ing SELECT turns this
+// file red, 3 of 5). These two cases are kept as end-to-end coverage that the
+// write paths behave for a legitimate caller and deny a cross-org one — not as
+// proof of the UPDATE/DELETE predicates in isolation.
+runDb('a cross-org edge cannot be updated or deleted from the parent org, while a same-org edge can', async () => {
+  const { orgAId, alertA1, alertA2, alertB1 } = await seed('write');
+
+  const { crossEdgeId, sameOrgEdgeId } = await withSystemDbAccessContext(async () => {
+    const [cross] = await db
+      .insert(alertCorrelations)
+      .values({ parentAlertId: alertA1, childAlertId: alertB1, correlationType: 'causal' })
+      .returning({ id: alertCorrelations.id });
+    const [same] = await db
+      .insert(alertCorrelations)
+      .values({ parentAlertId: alertA1, childAlertId: alertA2, correlationType: 'causal' })
+      .returning({ id: alertCorrelations.id });
+    return { crossEdgeId: cross!.id, sameOrgEdgeId: same!.id };
+  });
+
+  // USING filters rather than raises, so the tell is the affected-row count.
+  const crossUpdated = await withDbAccessContext(orgContext(orgAId), () =>
+    db
+      .update(alertCorrelations)
+      .set({ correlationType: 'temporal' })
+      .where(eq(alertCorrelations.id, crossEdgeId))
+      .returning({ id: alertCorrelations.id })
+  );
+  expect(crossUpdated.length).toBe(0);
+
+  const sameUpdated = await withDbAccessContext(orgContext(orgAId), () =>
+    db
+      .update(alertCorrelations)
+      .set({ correlationType: 'temporal' })
+      .where(eq(alertCorrelations.id, sameOrgEdgeId))
+      .returning({ id: alertCorrelations.id })
+  );
+  expect(sameUpdated.length).toBe(1);
+
+  const crossDeleted = await withDbAccessContext(orgContext(orgAId), () =>
+    db.delete(alertCorrelations).where(eq(alertCorrelations.id, crossEdgeId)).returning({ id: alertCorrelations.id })
+  );
+  expect(crossDeleted.length).toBe(0);
+
+  const sameDeleted = await withDbAccessContext(orgContext(orgAId), () =>
+    db.delete(alertCorrelations).where(eq(alertCorrelations.id, sameOrgEdgeId)).returning({ id: alertCorrelations.id })
+  );
+  expect(sameDeleted.length).toBe(1);
+
+  // The cross-org edge is still there — it was filtered out, not silently
+  // removed under a policy that happened to deny for some other reason.
+  const survivors = await withSystemDbAccessContext(() =>
+    db.select().from(alertCorrelations).where(eq(alertCorrelations.id, crossEdgeId))
+  );
+  expect(survivors.length).toBe(1);
+  expect(survivors[0]!.correlationType).toBe('causal');
+});
+
+// The UPDATE WITH CHECK slot: an org-A caller holding a legitimate same-org
+// edge must not be able to re-point its child at another org's alert.
+runDb('re-pointing a correlation child at another org is rejected with 42501', async () => {
+  const { orgAId, alertA1, alertA2, alertB1 } = await seed('repoint');
+
+  const edgeId = await withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .insert(alertCorrelations)
+      .values({ parentAlertId: alertA1, childAlertId: alertA2, correlationType: 'causal' })
+      .returning({ id: alertCorrelations.id });
+    return row!.id;
+  });
+
+  await expect(
+    withDbAccessContext(orgContext(orgAId), () =>
+      db
+        .update(alertCorrelations)
+        .set({ childAlertId: alertB1 })
+        .where(eq(alertCorrelations.id, edgeId))
+    )
+  ).rejects.toMatchObject({ cause: { code: '42501' } });
+});

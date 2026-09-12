@@ -973,7 +973,19 @@ const PARENT_FK_REQUIRED_PARENTS_PER_COMMAND: ReadonlyMap<string, PerCommandPare
 // whose child is org B's was DB-visible (and insertable) under an org-A token.
 // 2026-10-16-170100-alert-correlations-child-org-rls.sql ANDs the same EXISTS
 // on child_alert_id. Both columns are NOT NULL, so the conjunction cannot go
-// three-valued. Behavioural proof: alertCorrelationsChildRls.integration.test.ts.
+// three-valued.
+//
+// Scope limit, stated plainly: this is a co-presence check on column NAMES in
+// the evaluated predicate. It catches a column dropped from a slot entirely,
+// which is the regression this class has actually shipped. It does NOT parse
+// boolean structure, so it cannot tell `EXISTS(parent) AND EXISTS(child)` from
+// `EXISTS(parent) OR EXISTS(child)` — and the OR form is a full reopening of
+// the leak that mentions both columns. A green run here is therefore NOT proof
+// of isolation. The proof is behavioural, in
+// alertCorrelationsChildRls.integration.test.ts, which does discriminate the
+// OR form on the SELECT policy — the load-bearing one, since Postgres enforces
+// it on the rows an UPDATE/DELETE reads and writes too. See that file's header
+// for the measurement.
 const PARENT_FK_REQUIRED_FK_COLUMNS: ReadonlyMap<string, readonly string[]> = new Map<string, readonly string[]>([
   ['alert_correlations', ['parent_alert_id', 'child_alert_id']],
 ]);
