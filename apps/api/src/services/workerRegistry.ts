@@ -1261,6 +1261,24 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // W02 (#5612): the script-review worker turns a `proposed` script
+    // proposal into `reviewed`/`review_failed` via an independent model
+    // review. `global` — its closure is db/schema, Redis, the Anthropic SDK
+    // (via llmConfigResolver), and the AI budget/cost services; it never
+    // touches `routes/agentWs.ts` or `services/agentCommandAwait.ts`.
+    // Verified by workerEntrypointClosure.contract.test.ts like every other
+    // entry. Attached unconditionally (`requiredWhen: 'redis'` in the
+    // readiness manifest): BREEZE_AI_SCRIPT_AUTHORING_ENABLED gates the
+    // PRODUCER (propose_script), so with the flag off the queue is simply
+    // empty — same precedent as aiAgentGraduation.
+    name: 'scriptReviewWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/scriptReviewWorker');
+      return { init: m.initializeScriptReviewWorker, shutdown: m.shutdownScriptReviewWorker };
+    },
+  },
+  {
     // SEC-142/143 (review B3): reclaims durable AI budget reservations whose
     // TTL passed without settling. `global` — the sweep is one UPDATE with no
     // socket-local state, and leaving it to the socket owner would mean a

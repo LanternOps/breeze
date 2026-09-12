@@ -492,6 +492,15 @@ export type AiOperatorTaskWakeJobData = z.infer<typeof aiOperatorTaskWakeJobData
 
 export type BackupQueueJobData = z.infer<typeof backupQueueJobDataSchema>;
 export type DiscoveryQueueJobData = z.infer<typeof discoveryQueueJobDataSchema>;
+// W02 (#5612): `script-review` queue — structurally identical to
+// services/scriptProposals/reviewQueue.ts's `ScriptReviewJobData` (the
+// producer's hand-written type); this is the dequeue-boundary parse.
+export const scriptReviewQueueJobDataSchema = z.object({
+  proposalId: z.string().uuid(),
+  orgId: z.string().uuid(),
+  attempt: z.number().int().min(0),
+});
+
 export type FdbEntry = z.infer<typeof fdbEntrySchema>;
 export type MonitorQueueJobData = z.infer<typeof monitorQueueJobDataSchema>;
 export type AutomationQueueJobData = z.infer<typeof automationQueueJobDataSchema>;
@@ -503,6 +512,7 @@ export type FixWatchQueueJobData = z.infer<typeof fixWatchQueueJobDataSchema>;
 export type DrExecutionQueueJobData = z.infer<typeof drExecutionQueueJobDataSchema>;
 export type RecoveryMediaQueueJobData = z.infer<typeof recoveryMediaQueueJobDataSchema>;
 export type VulnSourceSyncJobData = z.infer<typeof vulnSourceSyncSchema>;
+export type ScriptReviewQueueJobData = z.infer<typeof scriptReviewQueueJobDataSchema>;
 export type QueueActorMeta = z.infer<typeof queueActorMetaSchema>;
 // Note: NOT named RouteEventJobData/DeliverEventJobData — those canonical
 // interfaces are hand-written in services/eventDispatchQueue.ts (the

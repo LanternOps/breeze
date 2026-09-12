@@ -1,11 +1,13 @@
 import { Queue } from 'bullmq';
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { scriptProposalReviews, type ScriptProposalReviewRow } from '../../db/schema/scriptProposals';
 import { getBullMQConnection } from '../redis';
 import { captureException } from '../sentry';
 
 export const SCRIPT_REVIEW_QUEUE = 'script-review';
+/** The single job name on the queue; the worker asserts it (bullmqValidation). */
+export const SCRIPT_REVIEW_JOB_NAME = 'review';
 
 export type ScriptReviewJobData = { proposalId: string; orgId: string; attempt: number };
 
@@ -30,7 +32,7 @@ export function getScriptReviewQueue(): Queue<ScriptReviewJobData> {
  * budget reservation key, which is not a job id.
  */
 export async function enqueueScriptReview(data: ScriptReviewJobData): Promise<void> {
-  await getScriptReviewQueue().add('review', data, {
+  await getScriptReviewQueue().add(SCRIPT_REVIEW_JOB_NAME, data, {
     jobId: `script-review-${data.proposalId}-${data.attempt}`,
     attempts: MAX_ATTEMPTS,
     backoff: { type: 'exponential', delay: 10_000 },
@@ -40,7 +42,13 @@ export async function enqueueScriptReview(data: ScriptReviewJobData): Promise<vo
 }
 
 /**
- * Poll the reviews table for a terminal review of this proposal.
+ * Poll the reviews table for a terminal MODEL review of this proposal.
+ *
+ * `reviewer_kind = 'model'` is load-bearing: the W02 worker writes the
+ * `static_scan` row at job START (so the chain is complete even if the model
+ * call never completes), and that row is `completed` — without the filter the
+ * inline wait would return it instantly and `propose_script` would report
+ * `reviewed` with a null risk tier while the proposal was still `proposed`.
  *
  * Modelled on `waitForApproval` (services/aiAgent.ts) with two deliberate
  * differences: a flat 2 s interval rather than a 500 ms→3 s ramp (a model
@@ -65,7 +73,10 @@ export async function waitForReviewCompletion(
       // becomes a hang.
       const [review] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
         db.select().from(scriptProposalReviews)
-          .where(eq(scriptProposalReviews.proposalId, proposalId))
+          .where(and(
+            eq(scriptProposalReviews.proposalId, proposalId),
+            eq(scriptProposalReviews.reviewerKind, 'model'),
+          ))
           .orderBy(desc(scriptProposalReviews.createdAt))
           .limit(1)));
       consecutiveErrors = 0;

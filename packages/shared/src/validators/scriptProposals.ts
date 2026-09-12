@@ -58,3 +58,24 @@ export const proposeScriptInputSchema = z.object({
   supersedesProposalId: z.string().uuid().optional(),
 });
 export type ProposeScriptInput = z.infer<typeof proposeScriptInputSchema>;
+
+const scriptReviewFindingSchema = z.object({
+  severity: z.enum(['info', 'warning', 'blocking']),
+  text: z.string().min(1),
+  lineRef: z.number().int().min(1).optional(),
+});
+
+/** The reviewer model's structured verdict (spec §4.4). W02 (#5612). */
+export const scriptReviewVerdictSchema = z.object({
+  summary: z.string().min(1).max(600),
+  goalMatch: z.enum(['yes', 'partial', 'no']),
+  riskTier: z.enum(RISK_TIERS),
+  // Advisory only — spec §4.4: "no enforcement reads it" (D9). Stored and
+  // shown to the human, never consulted by applyReviewFloors or the W04 lane.
+  blastRadius: z.array(z.string()).default([]),
+  reversible: z.boolean(),
+  verificationAdequate: z.boolean(),
+  findings: z.array(scriptReviewFindingSchema),
+  recommendedAction: z.enum(['approve', 'changes', 'reject']),
+});
+export type ScriptReviewVerdict = z.infer<typeof scriptReviewVerdictSchema>;

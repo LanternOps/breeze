@@ -281,6 +281,8 @@ x-api-env: &api-env
   BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: ${BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED:-false}
   # AI script authoring (#5612) — off by default.
   BREEZE_AI_SCRIPT_AUTHORING_ENABLED: ${BREEZE_AI_SCRIPT_AUTHORING_ENABLED:-false}
+  # Reviewer model for AI script proposals (#5612 W02); empty = platform default.
+  BREEZE_AI_SCRIPT_REVIEWER_MODEL: ${BREEZE_AI_SCRIPT_REVIEWER_MODEL:-}
   # BYO-LLM partner provider catalog (#3922 W01–W04) — off by default.
   LLM_PROVIDER_CATALOG_ENABLED: ${LLM_PROVIDER_CATALOG_ENABLED:-false}
   # MCP OAuth (off by default, opt-in via env)

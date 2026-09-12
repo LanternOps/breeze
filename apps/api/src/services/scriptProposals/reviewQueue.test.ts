@@ -7,12 +7,15 @@ const { captureMock } = vi.hoisted(() => ({ captureMock: vi.fn() }));
 vi.mock('../sentry', () => ({ captureException: captureMock }));
 
 let selectImpl: () => Promise<Record<string, unknown>[]> = async () => [];
+const { whereArgs } = vi.hoisted(() => ({ whereArgs: [] as unknown[] }));
 vi.mock('../../db', () => ({
-  db: { select: () => ({ from: () => ({ where: () => ({ orderBy: () => ({ limit: () => selectImpl() }) }) }) }) },
+  db: { select: () => ({ from: () => ({ where: (cond: unknown) => { whereArgs.push(cond); return { orderBy: () => ({ limit: () => selectImpl() }) }; } }) }) },
   withSystemDbAccessContext: <T,>(fn: () => Promise<T>) => fn(),
   runOutsideDbContext: <T,>(fn: () => T) => fn(),
 }));
 
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { SCRIPT_REVIEW_QUEUE, enqueueScriptReview, waitForReviewCompletion } from './reviewQueue';
 
 afterEach(() => { vi.useRealTimers(); addMock.mockClear(); });
@@ -32,6 +35,15 @@ describe('script review queue', () => {
   it('returns the completed review as soon as one exists', async () => {
     selectImpl = async () => [{ id: 'r1', status: 'completed' }];
     await expect(waitForReviewCompletion('p1', 5_000)).resolves.toMatchObject({ id: 'r1' });
+  });
+
+  it('polls for the MODEL review only — the static-scan row the worker writes at job start is not "the review"', async () => {
+    whereArgs.length = 0;
+    selectImpl = async () => [{ id: 'r1', status: 'completed', reviewerKind: 'model' }];
+    await waitForReviewCompletion('p1', 5_000);
+    const { sql, params } = new PgDialect().sqlToQuery(whereArgs[0] as SQL);
+    expect(sql).toContain('"reviewer_kind"');
+    expect(params).toContain('model');
   });
 
   it('returns a failed review too — the caller reports it, it is not an absence', async () => {

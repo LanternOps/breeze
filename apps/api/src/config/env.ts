@@ -1,4 +1,5 @@
 import { EVENT_SUBSCRIBER_IDS, isSubscriberId, type SubscriberId } from '../services/eventSubscriberIds';
+import { resolveDefaultModel } from '../services/aiModel';
 
 // The single truthy/falsey vocabulary for boolean-ish env vars. Kept as two
 // named sets rather than inline literals so a reader that must distinguish
@@ -121,6 +122,16 @@ export function policyDecideEnabled(): boolean {
 export function aiScriptAuthoringEnabled(): boolean {
   return envFlag('BREEZE_AI_SCRIPT_AUTHORING_ENABLED', false);
 }
+
+// W02 (#5612): the script-proposal reviewer's model. A flat env-driven
+// constant, not a DB-backed policy row — `ai_script_policies.reviewer_model`
+// (W04) does not exist yet. `resolveReviewerModel(orgId)` in
+// services/scriptProposals/reviewer.ts is the seam W04 extends: it ignores
+// `orgId` today and will read the org/partner override first once that table
+// lands, falling back to this constant. Unset ⇒ the platform default model
+// (which itself honours ANTHROPIC_MODEL for self-hosted gateways, #1412).
+export const AI_SCRIPT_REVIEWER_MODEL =
+  process.env.BREEZE_AI_SCRIPT_REVIEWER_MODEL?.trim() || resolveDefaultModel();
 
 // AI Operator durable tasks (#5205 W06, spec §11.2 "Feature controls").
 //
