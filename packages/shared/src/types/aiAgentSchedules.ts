@@ -45,7 +45,7 @@ export type AiSweepKind = (typeof AI_SWEEP_KINDS)[number];
  * narrative one for a single org would silently produce a run profile the
  * partner never configured.
  */
-export const AI_AGENT_SCHEDULE_KINDS = ['sweep', 'narrative'] as const;
+export const AI_AGENT_SCHEDULE_KINDS = ['sweep', 'narrative', 'design'] as const;
 export type AiAgentScheduleKind = (typeof AI_AGENT_SCHEDULE_KINDS)[number];
 
 /** Severity a sweep evaluator assigns to one `SweepFinding`. */

@@ -69,6 +69,29 @@ export function isWeeklyLiteralCron(pattern: string): boolean {
   return /^[0-6]$/.test(dayOfWeek);
 }
 
+/**
+ * Fleet Designer (W01): a design schedule fires at most once a month —
+ * literal minute and hour, literal day-of-month 1-28 (never 29-31, so the
+ * rule holds in February), month `*` / `*\/N` / a comma list of literal
+ * months, and `*` day-of-week. Default `0 6 1 1,4,7,10 *` (quarterly).
+ *
+ * Exported for the same reason as `isHourlyFloorCron`/`isWeeklyLiteralCron`:
+ * the schedule service validates independently of this schema (reachable
+ * from non-HTTP callers) and must enforce the identical rule.
+ */
+export const DESIGN_DEFAULT_CRON = '0 6 1 1,4,7,10 *';
+export function isMonthlyOrRarerLiteralCron(pattern: string): boolean {
+  const fields = pattern.trim().split(/\s+/);
+  if (fields.length !== 5) return false;
+  const [minute, hour, dom, month, dow] = fields as [string, string, string, string, string];
+  if (!LITERAL_INT.test(minute) || Number(minute) > 59) return false;
+  if (!LITERAL_INT.test(hour) || Number(hour) > 23) return false;
+  if (!LITERAL_INT.test(dom) || Number(dom) < 1 || Number(dom) > 28) return false;
+  const monthOk = month === '*' || /^\*\/([1-9]|1[0-2])$/.test(month)
+    || month.split(',').every((m) => LITERAL_INT.test(m) && Number(m) >= 1 && Number(m) <= 12);
+  return monthOk && dow === '*';
+}
+
 // The sweeper evaluates crons with a strictly 5-field evaluator, so a
 // 6-field cron (the optional leading-seconds field `isStructurallyValidCron`
 // otherwise tolerates for BullMQ's benefit — see cron.ts) is rejected HERE,
@@ -146,6 +169,23 @@ const createPartnerScheduleSchema = z.object({
   sweepKinds: z.array(sweepKindEnum).max(6).default([]),
   enabled: z.boolean(),
 }).strict().superRefine((value, ctx) => {
+  if (value.kind === 'design') {
+    if (value.sweepKinds.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['sweepKinds'],
+        message: 'a design schedule evaluates no sweep kinds — sweepKinds must be omitted or empty',
+      });
+    }
+    if (!isMonthlyOrRarerLiteralCron(value.cron)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['cron'],
+        message: 'a design schedule fires at most once a month — literal minute, hour and day-of-month 1-28, month `*`, `*/N` or a list of months, `*` day-of-week',
+      });
+    }
+    return;
+  }
   if (value.kind === 'narrative') {
     if (value.sweepKinds.length > 0) {
       ctx.addIssue({
