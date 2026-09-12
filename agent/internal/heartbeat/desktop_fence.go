@@ -165,6 +165,17 @@ func (f *desktopFence) noteStop(sessionID string, in desktopStopFenceInput) {
 	f.setEntryLocked(sessionID, entry)
 }
 
+// desktopStartFenceError builds the failure the agent reports for a refused
+// start. The reason is named in the text so the server-side audit can tell a
+// superseded start apart from one that landed after a terminal without parsing
+// free-form prose.
+func desktopStartFenceError(reason desktopFenceReason, detail string) error {
+	if detail != "" {
+		return fmt.Errorf("start_desktop refused by the desktop start fence (%s): %s", reason, detail)
+	}
+	return fmt.Errorf("start_desktop refused by the desktop start fence (%s)", reason)
+}
+
 func (f *desktopFence) setEntryLocked(sessionID string, entry desktopFenceEntry) {
 	if f.entries == nil {
 		f.entries = make(map[string]desktopFenceEntry)
