@@ -25,7 +25,7 @@ import { proposalDispatchSnapshot } from '../../services/scriptProposals/dispatc
 import { eventsRoutes } from '../../routes/devices/events';
 import { createAccessToken } from '../../services/jwt';
 
-async function seedReviewedProposal(orgId: string, deviceId: string, authorKind: 'chat_session' | 'agent_run' = 'chat_session') {
+async function seedReviewedProposal(orgId: string, deviceId: string) {
   const auth = { orgId, user: { id: null }, principal: { kind: 'user_session' } } as never;
   const { proposal } = await withSystemDbAccessContext(() =>
     createScriptProposal(
@@ -35,7 +35,7 @@ async function seedReviewedProposal(orgId: string, deviceId: string, authorKind:
         expectedEffect: 'Print spooler restarts', verification: { kind: 'exit_code', equals: 0 },
         deviceIds: [deviceId], runAs: 'system', timeoutSeconds: 60,
       },
-      { kind: authorKind, sessionId: null },
+      { kind: 'chat_session', sessionId: null },
     ),
   );
   await withSystemDbAccessContext(() =>
