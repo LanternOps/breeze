@@ -57,9 +57,9 @@ function mockDeviceLookup() {
       }),
     }),
   } as never);
-  vi.mocked(db.update).mockReturnValue({
-    set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
-  } as never);
+  const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+  vi.mocked(db.update).mockReturnValue({ set } as never);
+  return set;
 }
 
 describe('agent security routes — requireAgentRole gate (F3)', () => {
@@ -125,6 +125,29 @@ describe('agent security routes — requireAgentRole gate (F3)', () => {
         body: JSON.stringify(validPosture),
       });
       expect(res.status).toBe(200);
+    });
+
+    // The web identity card distinguishes "never checked" from "checked and not
+    // joined" purely by identity.source === 'unsupported' (#5626). The ingest
+    // schema must accept that value and persist it verbatim — silently dropping
+    // or rewriting it would make Linux devices read as genuinely unjoined again.
+    it('accepts and persists the unsupported detection source verbatim', async () => {
+      const set = mockDeviceLookup();
+      const app = mountWithRole('agent');
+      const unsupportedPosture = {
+        ...validPosture,
+        identity: { ...validPosture.identity, source: 'unsupported' },
+      };
+      const res = await app.request(`/agents/${AGENT_ID}/management/posture`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(unsupportedPosture),
+      });
+
+      expect(res.status).toBe(200);
+      expect(set).toHaveBeenCalledTimes(1);
+      const written = set.mock.calls[0]?.[0] as { managementPosture: typeof unsupportedPosture };
+      expect(written.managementPosture.identity).toEqual(unsupportedPosture.identity);
     });
   });
 });

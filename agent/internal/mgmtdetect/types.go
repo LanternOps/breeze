@@ -44,6 +44,13 @@ const (
 	JoinTypeNone          JoinType = "none"
 )
 
+// IdentitySourceUnsupported is the IdentityStatus.Source value reported by
+// platforms where no directory/join detection is implemented (Linux, BSD, ...).
+// The zero-valued join flags on such a status mean "not checked", NOT "checked
+// and found negative" — consumers must not present them as a genuine
+// "Not Joined" verdict (#5626).
+const IdentitySourceUnsupported = "unsupported"
+
 // CheckType identifies the kind of system check to perform.
 type CheckType string
 
@@ -97,6 +104,13 @@ type IdentityStatus struct {
 	TenantId        string   `json:"tenantId,omitempty"`
 	MdmUrl          string   `json:"mdmUrl,omitempty"`
 	Source          string   `json:"source"`
+}
+
+// DetectionSupported reports whether the agent actually probed directory/join
+// state on this platform. When false, the join type and the three join flags
+// carry no information and must not be rendered as a negative result.
+func (id IdentityStatus) DetectionSupported() bool {
+	return id.Source != IdentitySourceUnsupported
 }
 
 // ManagementPosture is the top-level result of a posture scan.
