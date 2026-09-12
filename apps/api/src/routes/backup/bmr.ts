@@ -1110,20 +1110,29 @@ bmrPublicRoutes.post(
         .where(eq(devices.id, row.deviceId))
         .limit(1);
 
-      const authenticatedAt = row.authenticatedAt ?? row.usedAt ?? new Date();
+      // Every successful authenticate call (re)starts the download session
+      // window: the recovery download route only serves objects until
+      // authenticated_at + RECOVERY_DOWNLOAD_SESSION_TTL and tells the client
+      // to "Re-authenticate to continue" past that. Before this, a re-auth
+      // kept the ORIGINAL authenticated_at, so the window never moved; a
+      // 105k-file bare-metal rebuild on real hardware (W04b KIT proof,
+      // 2026-09-12) ran past the hour, every download 401'd, the console's
+      // per-file re-authenticate calls then burned BMR_AUTHENTICATE_TOKEN_LIMIT
+      // and the run was dead. Sliding is bounded by the token's own
+      // expires_at (24 h for exchange-minted tokens) and by the per-token
+      // authenticate rate limit above.
+      const authenticatedAt = new Date();
       const nextStatus = row.status === 'active' || (row.status === 'used' && !row.completedAt)
         ? 'authenticated'
         : row.status;
 
-      if (row.status !== nextStatus || !row.authenticatedAt) {
-        await db
-          .update(recoveryTokens)
-          .set({
-            status: nextStatus,
-            authenticatedAt,
-          })
-          .where(eq(recoveryTokens.id, row.id));
-      }
+      await db
+        .update(recoveryTokens)
+        .set({
+          status: nextStatus,
+          authenticatedAt,
+        })
+        .where(eq(recoveryTokens.id, row.id));
 
       const clientIp = getTrustedClientIp(c, 'unknown');
       const redis = getRedis();
