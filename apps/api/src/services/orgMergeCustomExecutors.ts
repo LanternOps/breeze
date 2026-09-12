@@ -377,6 +377,55 @@ const moveAiOperatorTasks: CustomMergeExecutor = async () => ({ moved: 0, droppe
 
 /** ticket_drafts, MOVE half — a no-op: resolve already leaves zero rows behind. */
 const moveTicketDrafts: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
+// ---------------------------------------------------------------------------
+// m365 tenant sync snapshots (spec §3.5) — resolve-phase DELETE of every
+// loser-org row.
+//
+// Two of these tables MUST be emptied in `resolve`, not `move`:
+//   - m365_sync_state's (connection_id, org_id) FK targets m365_connections,
+//     which is `repoint-dedupe` — the loser's connection MOVES to the survivor
+//     org, and a state row left behind under the dead loser org violates the
+//     deferred FK at COMMIT. Exactly the ticket_drafts/tickets shape above.
+//   - m365_intune_devices's (breeze_device_id, org_id) FK targets `devices`,
+//     which is a plain `repoint`. Same failure.
+// The other three carry no composite FK, but share the disposition so the whole
+// feature behaves as one unit and the preview reports it as one loss.
+//
+// Deleting is right, not merely convenient: every row is a re-derivable
+// snapshot of a Microsoft tenant, keyed to a connection that may not survive
+// the merge. The tick's reconciliation (spec §10) re-seeds sync state for
+// whichever connection the survivor org ends up with and the next run
+// repopulates. History (m365_secure_score_snapshots, m365_posture_rollups) is
+// NOT here — it cannot be regenerated and is repoint-deduped instead.
+const M365_SYNC_SNAPSHOT_TABLES = [
+  'm365_sync_state',
+  'm365_users',
+  'm365_intune_devices',
+  'm365_ca_policies',
+  'm365_license_skus',
+] as const;
+
+const resolveM365SnapshotTable =
+  (table: (typeof M365_SYNC_SNAPSHOT_TABLES)[number]): CustomMergeExecutor =>
+  async (loser) => {
+    const dropped = await run(sql`DELETE FROM ${sql.identifier(table)} WHERE org_id = ${uuid(loser)}`);
+    return {
+      moved: 0,
+      dropped,
+      notes: dropped > 0
+        ? [
+            `${table}: dropped ${dropped} M365 tenant-snapshot row(s) from the merged-away org — `
+            + 'these are re-derivable Graph snapshots keyed to a connection that may not survive '
+            + 'the merge, and cannot be re-tenanted (their composite FK would disagree with the '
+            + "connection's or device's new org_id the instant it repoints); the sync ticker "
+            + 're-seeds state for the surviving connection and the next run repopulates them',
+          ]
+        : [],
+    };
+  };
+
+/** Move half: resolve already emptied the table, so there is nothing to move. */
+const moveM365SnapshotTable: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
 
 // ---------------------------------------------------------------------------
 // script_proposals — FENCE, then leave for erasure (AI script authoring W01b).
@@ -1263,6 +1312,11 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   ticket_drafts: moveTicketDrafts,
   ai_operator_tasks: moveAiOperatorTasks,
   script_proposals: moveScriptProposals,
+  m365_sync_state: moveM365SnapshotTable,
+  m365_users: moveM365SnapshotTable,
+  m365_intune_devices: moveM365SnapshotTable,
+  m365_ca_policies: moveM365SnapshotTable,
+  m365_license_skus: moveM365SnapshotTable,
 };
 
 /**
@@ -1288,6 +1342,14 @@ export const CUSTOM_RESOLVE_EXECUTORS: Readonly<Record<string, CustomMergeExecut
   // Must run in resolve, not move: `devices` repoints in the move phase and a
   // live proposal targeting one of them would still be consumable.
   script_proposals: fenceScriptProposals,
+  // Must run in resolve: m365_sync_state's composite FK targets
+  // m365_connections (repoint-dedupe) and m365_intune_devices's targets
+  // devices (plain repoint) — both parents move in the `move` phase.
+  m365_sync_state: resolveM365SnapshotTable('m365_sync_state'),
+  m365_users: resolveM365SnapshotTable('m365_users'),
+  m365_intune_devices: resolveM365SnapshotTable('m365_intune_devices'),
+  m365_ca_policies: resolveM365SnapshotTable('m365_ca_policies'),
+  m365_license_skus: resolveM365SnapshotTable('m365_license_skus'),
 };
 
 /**
@@ -1337,6 +1399,13 @@ export const CUSTOM_WOULD_REVOKE_COUNTS: Readonly<Record<string, (loser: string)
  */
 export const CUSTOM_WOULD_DROP_COUNTS: Readonly<Record<string, (loser: string, survivor: string) => SQL>> = {
   ticket_drafts: (loser) => sql`SELECT count(*)::int AS n FROM ticket_drafts WHERE org_id = ${uuid(loser)}`,
+  // m365 tenant-sync snapshots: resolveM365SnapshotTable deletes EVERY
+  // loser-org row unconditionally, so the mirror is plain loserRows.
+  m365_sync_state: (loser) => sql`SELECT count(*)::int AS n FROM m365_sync_state WHERE org_id = ${uuid(loser)}`,
+  m365_users: (loser) => sql`SELECT count(*)::int AS n FROM m365_users WHERE org_id = ${uuid(loser)}`,
+  m365_intune_devices: (loser) => sql`SELECT count(*)::int AS n FROM m365_intune_devices WHERE org_id = ${uuid(loser)}`,
+  m365_ca_policies: (loser) => sql`SELECT count(*)::int AS n FROM m365_ca_policies WHERE org_id = ${uuid(loser)}`,
+  m365_license_skus: (loser) => sql`SELECT count(*)::int AS n FROM m365_license_skus WHERE org_id = ${uuid(loser)}`,
   discovered_assets: collidingRowCount('discovered_assets', DISCOVERED_ASSET_KEY),
   plugin_installations: collidingRowCount('plugin_installations', ['catalog_id']),
   playbook_definitions: collidingRowCount('playbook_definitions', ['lower({name})']),

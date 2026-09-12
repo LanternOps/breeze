@@ -405,6 +405,23 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
 
   // Unique-key tables — drop loser rows that would collide, move the rest:
   m365_connections: { kind: 'repoint-dedupe', key: ['profile'] }, // verified: m365_connections_org_profile_uniq (org_id, profile)
+  // M365 tenant sync (spec §3.5). The five snapshot/state tables are `custom`
+  // with a resolve-phase DELETE (orgMergeCustomExecutors.ts) rather than
+  // `leave-for-erasure`: m365_sync_state's (connection_id, org_id) FK targets
+  // m365_connections, which repoint-dedupes ABOVE, and m365_intune_devices's
+  // (breeze_device_id, org_id) FK targets `devices`, a plain repoint — a row
+  // left under the dead loser org violates the deferred FK at COMMIT. Same
+  // shape as ticket_drafts/tickets.
+  m365_sync_state: { kind: 'custom', note: 'resolve-phase DELETE of every loser-org row before m365_connections repoints — its (connection_id, org_id) composite FK would otherwise be violated at COMMIT; the sync ticker re-seeds state for the surviving connection (spec §10)' },
+  m365_users: { kind: 'custom', note: 'resolve-phase DELETE of every loser-org row — a re-derivable Graph snapshot keyed to a connection that may not survive the merge; the next sync repopulates under the survivor' },
+  m365_intune_devices: { kind: 'custom', note: 'resolve-phase DELETE of every loser-org row before devices repoints — its (breeze_device_id, org_id) composite FK would otherwise be violated at COMMIT; the next Intune run re-links devices in the survivor org' },
+  m365_ca_policies: { kind: 'custom', note: 'resolve-phase DELETE of every loser-org row — re-derivable Graph snapshot, repopulated by the next sync' },
+  m365_license_skus: { kind: 'custom', note: 'resolve-phase DELETE of every loser-org row — re-derivable Graph snapshot, repopulated by the next sync' },
+  // History is NEVER deleted: it cannot be regenerated. Destination wins on a
+  // date collision. verified: m365_secure_score_snapshots_org_date_uniq
+  // (org_id, score_date), m365_posture_rollups_org_date_uniq (org_id, rollup_date).
+  m365_secure_score_snapshots: { kind: 'repoint-dedupe', key: ['score_date'] },
+  m365_posture_rollups: { kind: 'repoint-dedupe', key: ['rollup_date'] },
   tenant_variables: { kind: 'repoint-dedupe', key: ['key'] }, // verified: tenant_variables_org_key_uniq (org_id, key) WHERE org_id IS NOT NULL — trivially true for org-scoped rows
   catalog_item_org_pricing: { kind: 'repoint-dedupe', key: ['catalog_item_id'] }, // verified: catalog_item_org_pricing_item_org_uq (catalog_item_id, org_id)
   ticket_form_org_links: { kind: 'repoint-dedupe', key: ['form_id'] }, // verified: ticket_form_org_links_form_org_uq (form_id, org_id)

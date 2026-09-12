@@ -22,7 +22,8 @@ vi.mock('../db', () => ({
   db: { execute: (...args: unknown[]) => executeMock(...args) },
 }));
 
-import { CUSTOM_EXECUTORS } from './orgMergeCustomExecutors';
+import { CUSTOM_EXECUTORS, CUSTOM_RESOLVE_EXECUTORS, CUSTOM_WOULD_DROP_COUNTS } from './orgMergeCustomExecutors';
+import { getOrgMergePolicies } from './orgMergeRegistry';
 
 const dialect = new PgDialect();
 const L = '11111111-1111-1111-1111-111111111111';
@@ -297,5 +298,48 @@ describe('mergeCustomFieldDefinitions — reconciles duplicate field_key instead
     expect(compiled.sql).toMatch(/s\.field_key\s*=\s*t\.field_key/i);
     expect(compiled.sql).not.toMatch(/\btype\b/i);
     expect(compiled.sql).not.toMatch(/s\.name\s*=\s*t\.name/i);
+  });
+});
+describe('m365 tenant sync merge disposition', () => {
+  afterEach(() => {
+    executeMock.mockReset();
+  });
+
+  it('classifies all seven tables, deleting snapshots and preserving history', () => {
+    const policies = getOrgMergePolicies();
+    for (const table of [
+      'm365_sync_state', 'm365_users', 'm365_intune_devices',
+      'm365_ca_policies', 'm365_license_skus',
+    ]) {
+      expect(policies.get(table)?.kind, `${table} must be custom`).toBe('custom');
+      expect(CUSTOM_EXECUTORS[table], `${table} needs a move half`).toBeDefined();
+      expect(CUSTOM_RESOLVE_EXECUTORS[table], `${table} needs a resolve half`).toBeDefined();
+      expect(CUSTOM_WOULD_DROP_COUNTS[table], `${table} must be visible in the preview`).toBeDefined();
+    }
+    expect(policies.get('m365_secure_score_snapshots')).toEqual({
+      kind: 'repoint-dedupe', key: ['score_date'],
+    });
+    expect(policies.get('m365_posture_rollups')).toEqual({
+      kind: 'repoint-dedupe', key: ['rollup_date'],
+    });
+  });
+
+  it('the resolve half deletes every loser-org row and the move half is a no-op', async () => {
+    executeMock.mockResolvedValueOnce({ rowCount: 3 });
+
+    const resolved = await CUSTOM_RESOLVE_EXECUTORS.m365_sync_state!(L, S);
+    expect(resolved).toMatchObject({ moved: 0, dropped: 3 });
+
+    const compiled = dialect.sqlToQuery(executeMock.mock.calls[0]![0] as SQL);
+    expect(compiled.sql).toMatch(/delete from "?m365_sync_state"?/i);
+    expect(compiled.sql).toMatch(/org_id\s*=/i);
+    // Assert on the BOUND param, not on the SQL text — the org id is a
+    // placeholder in the compiled statement, so a text-only assertion would
+    // pass against a statement that deletes the survivor's rows.
+    expect(compiled.params).toContain(L);
+
+    const moved = await CUSTOM_EXECUTORS.m365_sync_state!(L, S);
+    expect(moved).toEqual({ moved: 0, dropped: 0, notes: [] });
+    expect(executeMock, 'the move half must issue no SQL').toHaveBeenCalledTimes(1);
   });
 });
