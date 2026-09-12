@@ -12,7 +12,10 @@ import { getOrgAuditRetentionPolicy, upsertOrgAuditRetentionPolicy } from '../se
 // Admin read/write for an org's audit-log retention policy
 // (audit_retention_policies — issue #4633). Registered onto orgRoutes so it
 // inherits orgRoutes' authMiddleware — mounting at the top-level api app
-// would silently skip auth. Mirrors orgTicketSettings.ts.
+// would silently skip auth. Mounting mirrors orgTicketSettings.ts, but the
+// scope list deliberately does not: these routes also admit organization
+// scope (own org only — issue #5423), while ticket settings stay
+// partner/system.
 
 async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> {
   const auth = c.get('auth') as AuthContext;

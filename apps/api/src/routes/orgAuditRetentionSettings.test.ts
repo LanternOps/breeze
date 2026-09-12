@@ -29,13 +29,17 @@ vi.mock('../middleware/auth', () => ({
     c.set('auth', authRef.current);
     await next();
   }),
-  // Mirrors the real requireScope: 401 unauthenticated, else 403 unless the
-  // caller's scope is in the route's declared list. Keeping the scope check
-  // real is what lets these tests prove which scopes the route admits.
+  // Mirrors the real requireScope (middleware/auth.ts): 401 unauthenticated,
+  // 403 for an ai_agent principal, else 403 unless the caller's scope is in
+  // the route's declared list. Keeping the scope check real is what lets
+  // these tests prove which scopes the route admits.
   requireScope: (...scopes: string[]) => async (c: any, next: any) => {
     const auth = c.get('auth');
     if (!auth) {
       return c.json({ error: 'Not authenticated' }, 401);
+    }
+    if (auth.principal?.kind === 'ai_agent') {
+      return c.json({ error: 'AI agents cannot call HTTP routes' }, 403);
     }
     if (!scopes.includes(auth.scope)) {
       return c.json({ error: 'Insufficient permissions' }, 403);
@@ -167,6 +171,31 @@ describe('GET /organizations/:id/audit-retention', () => {
     expect(serviceMocks.getOrgAuditRetentionPolicy).not.toHaveBeenCalled();
   });
 
+  it('404 for an org-scoped caller whose allowlist wrongly admits a foreign org (#5423)', async () => {
+    // Isolates the token-identity check from the accessible-org allowlist:
+    // production derives one from the other, so only a deliberately
+    // disagreeing allowlist can prove the `auth.orgId !== :id` guard is what
+    // refuses the request. Without that guard this returns 200.
+    resetAuth({ ...orgScopedAuth(OTHER_ORG_ID), canAccessOrg: () => true });
+    const res = await makeApp().request(`/organizations/${ORG_ID}/audit-retention`);
+    expect(res.status).toBe(404);
+    expect(dbSelectResult).not.toHaveBeenCalled();
+    expect(serviceMocks.getOrgAuditRetentionPolicy).not.toHaveBeenCalled();
+  });
+
+  it('404 for an org-scoped caller with no bound orgId (#5423)', async () => {
+    resetAuth({ ...orgScopedAuth(ORG_ID), orgId: null, accessibleOrgIds: [] });
+    const res = await makeApp().request(`/organizations/${ORG_ID}/audit-retention`);
+    expect(res.status).toBe(404);
+    expect(dbSelectResult).not.toHaveBeenCalled();
+  });
+
+  it('403 for an ai_agent principal even at organization scope', async () => {
+    resetAuth({ ...orgScopedAuth(ORG_ID), principal: { kind: 'ai_agent' } } as never);
+    const res = await makeApp().request(`/organizations/${ORG_ID}/audit-retention`);
+    expect(res.status).toBe(403);
+  });
+
   it('401 when unauthenticated', async () => {
     authRef.current = null as unknown as typeof authRef.current;
     const res = await makeApp().request(`/organizations/${ORG_ID}/audit-retention`);
@@ -245,6 +274,15 @@ describe('PUT /organizations/:id/audit-retention', () => {
     const res = await put({ retentionDays: 120 });
     expect(res.status).toBe(404);
     expect(await res.json()).toHaveProperty('error', 'Organization not found');
+    expect(dbSelectResult).not.toHaveBeenCalled();
+    expect(serviceMocks.upsertOrgAuditRetentionPolicy).not.toHaveBeenCalled();
+    expect(auditSpy).not.toHaveBeenCalled();
+  });
+
+  it('404 for an org-scoped caller whose allowlist wrongly admits a foreign org (#5423)', async () => {
+    resetAuth({ ...orgScopedAuth(OTHER_ORG_ID), canAccessOrg: () => true });
+    const res = await put({ retentionDays: 120 });
+    expect(res.status).toBe(404);
     expect(dbSelectResult).not.toHaveBeenCalled();
     expect(serviceMocks.upsertOrgAuditRetentionPolicy).not.toHaveBeenCalled();
     expect(auditSpy).not.toHaveBeenCalled();
