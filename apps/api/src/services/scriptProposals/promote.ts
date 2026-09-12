@@ -3,6 +3,7 @@ import type { AuthContext } from '../../middleware/auth';
 import type { ScriptProposalPromoteInput } from '@breeze/shared';
 import { insertScriptRow, resolveScriptCreateScope, isScriptScopeError } from '../scriptWrite';
 import { transitionProposal } from './proposals';
+import { loadProposalRunApprovalMethod } from './queries';
 
 export interface PromotableProposal {
   id: string;
@@ -63,6 +64,20 @@ export async function promoteProposalToLibrary(args: {
 
   const approver = proposal.decidedBy ?? auth.user.id;
   const approvedAt = proposal.decidedAt ?? new Date();
+  // #5645 — the version's method is the RUN's method: `verified` was proved
+  // against an execution row the release stamped (spec §4.1), so promotion
+  // copies it rather than asserting one. Read BEFORE the transaction opens:
+  // the loader takes its own system-scope connection, and holding it inside
+  // `db.transaction` would double-hold the pool.
+  const approvalMethod = await loadProposalRunApprovalMethod(proposal.id, proposal.orgId);
+  if (approvalMethod === null) {
+    // Recorded at the point the gap becomes permanent: promotion can happen
+    // long after the run, so this is the only line that ties the version's
+    // missing method back to its proposal.
+    console.warn('[scriptProposals] promoting a proposal whose run carries no approval_method', {
+      proposalId: proposal.id, orgId: proposal.orgId,
+    });
+  }
 
   return db.transaction(async (tx): Promise<PromoteResult> => {
     const claimed = await transitionProposal(tx, proposal.id, ['verified'], 'promoted', {});
@@ -91,10 +106,7 @@ export async function promoteProposalToLibrary(args: {
           reviewedAt: review?.createdAt ?? null,
           approvedBy: approver,
           approvedAt,
-          // Supervised-vs-four_eyes is the intent's property; the proposal-side
-          // record keeps the coarse value the version panel renders. W04 widens
-          // this to 'unattended_reviewer_gated'.
-          approvalMethod: 'four_eyes',
+          approvalMethod,
           changelog: `Promoted from AI proposal ${proposal.id}`,
           createdBy: auth.user.id,
         },

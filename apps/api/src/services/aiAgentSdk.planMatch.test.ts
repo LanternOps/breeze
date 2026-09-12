@@ -224,7 +224,7 @@ describe('createSessionPreToolUse — approved plan step argument matching', () 
     const selectChain: Record<string, unknown> = {
       from: vi.fn(() => selectChain),
       where: vi.fn(() => selectChain),
-      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest' }]),
+      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest', approvalScope: 'four_eyes', decidedVia: 'session_tap' }]),
     };
     vi.mocked(db.select).mockReturnValue(selectChain as any);
   });
@@ -299,7 +299,11 @@ describe('createSessionPreToolUse — approved plan step argument matching', () 
     // intentId: createdIntentId }` in aiAgentSdk.ts). Pin the id explicitly
     // rather than loosening to objectContaining, so a future regression
     // that drops intentId on this path still fails here.
-    expect(result).toEqual({ allowed: true, intentId: 'intent-1' });
+    // #5645: a won inline release also carries the intent's decision record.
+    expect(result).toEqual({
+      allowed: true, intentId: 'intent-1',
+      context: { releaseDecision: { approvalScope: 'four_eyes', decidedVia: 'session_tap' } },
+    });
     // Falls through to per-step approval: inserts 'pending' and blocks on approval.
     expect(values).toHaveBeenCalledWith(expect.objectContaining({
       toolName: 'execute_command',

@@ -10,7 +10,10 @@ const { flagMock, runnableMock, dispatchMock, accessMock, waitMock, transitionMo
 }));
 
 vi.mock('../config/env', () => ({ aiScriptAuthoringEnabled: flagMock }));
-vi.mock('./scriptProposals', () => ({
+vi.mock('./scriptProposals', async () => ({
+  // The derivation itself is real (approvalMethod.test.ts pins it per value);
+  // this suite proves the handler feeds it the context's decision record.
+  approvalMethodForRelease: (await import('./scriptProposals/approvalMethod')).approvalMethodForRelease,
   assertProposalRunnable: runnableMock,
   proposalDispatchSnapshot: () => ({ proposalId: 'p1', deviceIds: ['d1'] }),
   transitionProposal: transitionMock,
@@ -59,7 +62,8 @@ describe('run_script proposal branch', () => {
     expect(dispatchMock).toHaveBeenCalledTimes(1);
     const dispatchInput = (dispatchMock.mock.calls as unknown as Array<[Record<string, unknown>]>)[0]![0];
     expect((dispatchInput.source as { kind: string }).kind).toBe('proposal');
-    expect((dispatchInput.provenance as { approvalMethod: string }).approvalMethod).toBe('supervised_self');
+    // #5645: no release decision on the context → no method is invented.
+    expect((dispatchInput.provenance as { approvalMethod: string | null }).approvalMethod).toBeNull();
     expect((dispatchInput.offlinePolicy as { kind: string }).kind).toBe('reject');
     expect(out.proposalId).toBe('p1');
     expect(out.results.d1.executionId).toBe('e1');
@@ -103,5 +107,38 @@ describe('run_script proposal branch', () => {
     await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1', 'd1'] }, auth);
     expect(dispatchMock).toHaveBeenCalledTimes(2);
     expect(transitionMock).toHaveBeenCalledTimes(1);
+  });
+
+  // #5645: `approval_method` is the spec §4.1 provenance snapshot; it is
+  // derived from the releasing intent's decision record (§4.6), never a
+  // constant. One case per method value.
+  describe('approval_method derived from the release decision', () => {
+    const proposal = { id: 'p1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low' };
+    const methodOf = () =>
+      ((dispatchMock.mock.calls as unknown as Array<[Record<string, unknown>]>)[0]![0].provenance as { approvalMethod: string | null }).approvalMethod;
+
+    it('unattended_reviewer_gated when the intent was decided by the script reviewer', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
+      await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, {
+        actionIntentId: 'i1', releaseDecision: { approvalScope: 'supervised', decidedVia: 'script_reviewer' },
+      });
+      expect(methodOf()).toBe('unattended_reviewer_gated');
+    });
+
+    it('supervised_self when a supervised intent was decided by its requester', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
+      await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, {
+        actionIntentId: 'i1', releaseDecision: { approvalScope: 'supervised', decidedVia: 'session_tap' },
+      });
+      expect(methodOf()).toBe('supervised_self');
+    });
+
+    it('four_eyes when a four_eyes intent was decided by a second approver', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
+      await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, {
+        actionIntentId: 'i1', releaseDecision: { approvalScope: 'four_eyes', decidedVia: 'webauthn_platform' },
+      });
+      expect(methodOf()).toBe('four_eyes');
+    });
   });
 });

@@ -7,6 +7,8 @@ vi.mock('../scriptWrite', async (importOriginal) => ({
   insertScriptRow: (...a: unknown[]) => insertScriptRow(...a),
 }));
 vi.mock('./proposals', () => ({ transitionProposal: (...a: unknown[]) => transitionProposal(...a) }));
+const loadProposalRunApprovalMethod = vi.fn();
+vi.mock('./queries', () => ({ loadProposalRunApprovalMethod: (...a: unknown[]) => loadProposalRunApprovalMethod(...a) }));
 const TX = { __tx: true };
 vi.mock('../../db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../db')>()),
@@ -37,6 +39,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   insertScriptRow.mockResolvedValue({ id: 'script-1', version: 1, headVersionId: 'ver-1' });
   transitionProposal.mockResolvedValue(true);
+  loadProposalRunApprovalMethod.mockResolvedValue('supervised_self');
 });
 
 describe('promoteProposalToLibrary', () => {
@@ -70,7 +73,7 @@ describe('promoteProposalToLibrary', () => {
         securityAcknowledgedBy: APPROVER,
         provenance: expect.objectContaining({
           origin: 'ai_proposal', proposalId: baseProposal.id, reviewId: 'r1', reviewedAt: review.createdAt,
-          approvedBy: APPROVER, approvedAt: baseProposal.decidedAt, approvalMethod: expect.any(String), createdBy: USER,
+          approvedBy: APPROVER, approvedAt: baseProposal.decidedAt, approvalMethod: 'supervised_self', createdBy: USER,
         }),
       }),
     );
@@ -122,5 +125,36 @@ describe('promoteProposalToLibrary', () => {
     expect(insertScriptRow).toHaveBeenCalledWith(
       expect.anything(), { orgId: ORG, partnerId: 'p1' }, expect.anything(), expect.anything(),
     );
+  });
+
+  // #5645: the promoted version carries the RUN's method (the execution row
+  // the verification was proved against), never a constant.
+  describe('approvalMethod is copied from the verified run', () => {
+    for (const method of ['supervised_self', 'four_eyes', 'unattended_reviewer_gated'] as const) {
+      it(`carries ${method}`, async () => {
+        loadProposalRunApprovalMethod.mockResolvedValueOnce(method);
+        await promoteProposalToLibrary({
+          auth: auth('organization'), proposal: baseProposal as never, review,
+          input: { name: 'Restart spooler', ownerScope: 'organization' },
+        });
+        expect(loadProposalRunApprovalMethod).toHaveBeenCalledWith(baseProposal.id, ORG);
+        expect(insertScriptRow).toHaveBeenCalledWith(
+          expect.anything(), expect.anything(), expect.anything(),
+          expect.objectContaining({ provenance: expect.objectContaining({ approvalMethod: method }) }),
+        );
+      });
+    }
+
+    it('stamps null — not a guess — when the run left no method behind', async () => {
+      loadProposalRunApprovalMethod.mockResolvedValueOnce(null);
+      await promoteProposalToLibrary({
+        auth: auth('organization'), proposal: baseProposal as never, review,
+        input: { name: 'Restart spooler', ownerScope: 'organization' },
+      });
+      expect(insertScriptRow).toHaveBeenCalledWith(
+        expect.anything(), expect.anything(), expect.anything(),
+        expect.objectContaining({ provenance: expect.objectContaining({ approvalMethod: null }) }),
+      );
+    });
   });
 });

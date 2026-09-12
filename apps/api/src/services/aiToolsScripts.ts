@@ -35,7 +35,7 @@ import type { AiTool } from './aiTools';
 import type { CancelOutcome } from './scriptCancellation';
 import type { ToolExecutionContext, VerifiedRunScript } from './toolExecutionContext';
 import { dispatchScriptToDevice } from './scriptDispatch';
-import { assertProposalRunnable, proposalDispatchSnapshot, transitionProposal } from './scriptProposals';
+import { approvalMethodForRelease, assertProposalRunnable, proposalDispatchSnapshot, transitionProposal } from './scriptProposals';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { executeScriptSchema, AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES } from './scriptRunRequest';
 import { loadTenantVariableScope } from './tenantVariableResolution';
@@ -242,6 +242,26 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
       return JSON.stringify({ error: `proposal_not_runnable: ${runnable.reason}`, proposalId: input.proposalId });
     }
     const snapshot = proposalDispatchSnapshot(runnable.proposal, proposalDeviceIds);
+    // #5645 — spec §4.1 `approval_method` is DERIVED from the releasing
+    // intent's decision record (§4.6), which both release paths put on the
+    // context next to `actionIntentId`. Resolved once per call, never per
+    // device, and never a constant: a call that carries no release decision
+    // has nothing to attribute the run to, so the row records null rather
+    // than a guess (the W06 "unattended runs" metric and the audit row read
+    // this column).
+    const approvalMethod = context?.releaseDecision ? approvalMethodForRelease(context.releaseDecision) : null;
+    if (approvalMethod === null) {
+      // Unreachable while run_script stays Tier 3 (every proposal run IS an
+      // intent release, and both release paths attach the record). Reaching
+      // it means that invariant broke — reported, not just logged, because
+      // the row this leaves behind is exactly the audit gap #5645 closed.
+      console.warn('[aiToolsScripts] run_script proposal dispatch without a release decision — approval_method left null', {
+        proposalId: input.proposalId, actionIntentId: context?.actionIntentId ?? null,
+      });
+      captureException(new Error('run_script proposal dispatch without a release decision'), undefined, {
+        area: 'script_proposal_release_decision_missing',
+      });
+    }
     const proposalResults: Record<string, unknown> = {};
     let markedExecuted = false;
     // Same cap and same wait as the library path below — a proposal is not a
@@ -262,7 +282,7 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
             offlinePolicy: { kind: 'reject' },
             provenance: {
               approvedBy: auth.user.id,
-              approvalMethod: 'supervised_self',
+              approvalMethod,
               reviewRiskTier: runnable.proposal.riskTier,
             },
           })));

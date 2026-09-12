@@ -272,6 +272,9 @@ describe('script-verify worker + promote (real rows)', () => {
         orgId: s.orgId, deviceId: s.deviceId, sourceKind: 'proposal', proposalId, scriptId: null,
         status: 'completed', exitCode: 0, stdout: 'ok', triggerType: 'manual',
         language: 'powershell', timeoutSeconds: 60, runAs: 'system', contentDigest: 'a'.repeat(64),
+        // #5645: the run's method, as the release stamps it — a lane run here,
+        // so promotion below must NOT read as four_eyes.
+        approvedBy: s.requester.id, approvalMethod: 'unattended_reviewer_gated',
         startedAt: new Date(), completedAt: new Date(),
       } as never).returning({ id: scriptExecutions.id });
     });
@@ -308,7 +311,8 @@ describe('script-verify worker + promote (real rows)', () => {
       expect(version!.proposalId).toBe(proposalId);
       expect(version!.reviewId).not.toBeNull();
       expect(version!.approvedBy).toBe(s.requester.id);
-      expect(version!.approvalMethod).toBe('four_eyes');
+      // #5645: the promoted version carries the RUN's method, not a constant.
+      expect(version!.approvalMethod).toBe('unattended_reviewer_gated');
     });
     proposal = await readProposal(proposalId);
     expect(proposal.status).toBe('promoted');

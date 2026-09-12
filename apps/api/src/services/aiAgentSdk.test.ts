@@ -1,4 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// #5645: every inline release hands the handler the released intent's decision
+// record (`approvalScope` + `decidedVia`) on the execution context — the same
+// bag the durable worker builds. The default mocked intent row below carries
+// this record, so the terminal return of a won release is asserted against it.
+const RELEASED_INTENT_DECISION = { approvalScope: 'four_eyes', decidedVia: 'session_tap' } as const;
+const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
 import { createSessionPostToolUse, createSessionPreToolUse, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
 import { db } from '../db';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
@@ -918,7 +925,7 @@ describe('createSessionPreToolUse', () => {
       const selectChain: Record<string, unknown> = {
         from: vi.fn(() => selectChain),
         where: vi.fn(() => selectChain),
-        limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest' }]),
+        limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
       };
       vi.mocked(db.select).mockReturnValue(selectChain as any);
     });
@@ -1128,7 +1135,7 @@ describe('createSessionPreToolUse', () => {
       // The tier-3 branch now threads the created intent id back on the
       // terminal return (Task 6) — this is what lets postToolUse seal
       // against the right intent without relying solely on the WeakMap.
-      expect(result).toEqual({ allowed: true, intentId: 'intent-2' });
+      expect(result).toEqual({ allowed: true, intentId: 'intent-2', context: RELEASED_CONTEXT });
       expect(mockTransitionIntent).toHaveBeenCalledWith('intent-2', 'approved', 'executing', expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }), { requireNotExpired: 'release' });
       // ai_tool_executions ledger row marked executing (the inline path today's UX).
       expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
@@ -1267,7 +1274,7 @@ describe('createSessionPreToolUse', () => {
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
       const preResult = await createSessionPreToolUse(session)('execute_command', {});
-      expect(preResult).toEqual({ allowed: true, intentId: 'intent-6' });
+      expect(preResult).toEqual({ allowed: true, intentId: 'intent-6', context: RELEASED_CONTEXT });
 
       mockTransitionIntent.mockClear();
       const postToolUse = createSessionPostToolUse(session);
@@ -1319,7 +1326,7 @@ describe('createSessionPreToolUse', () => {
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
       const pre = await createSessionPreToolUse(session)('execute_command', {});
-      expect(pre).toEqual({ allowed: true, intentId: opts.intentId });
+      expect(pre).toEqual({ allowed: true, intentId: opts.intentId, context: RELEASED_CONTEXT });
 
       // Only the TERMINAL CAS loses.
       mockTransitionIntent.mockClear();
@@ -1428,7 +1435,7 @@ describe('createSessionPreToolUse', () => {
       const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
 
       const pre = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
-      expect(pre).toEqual({ allowed: true, intentId: opts.intentId });
+      expect(pre).toEqual({ allowed: true, intentId: opts.intentId, context: RELEASED_CONTEXT });
 
       await createSessionPostToolUse(session)(
         'execute_command',
@@ -1524,7 +1531,7 @@ describe('createSessionPreToolUse', () => {
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
       const preResult = await createSessionPreToolUse(session)('execute_command', {});
-      expect(preResult).toEqual({ allowed: true, intentId: 'intent-7' });
+      expect(preResult).toEqual({ allowed: true, intentId: 'intent-7', context: RELEASED_CONTEXT });
 
       mockTransitionIntent.mockClear();
       const postToolUse = createSessionPostToolUse(session);
@@ -2466,7 +2473,7 @@ describe('inline secret-bearing completion (Task 6)', () => {
     const selectChain: Record<string, unknown> = {
       from: vi.fn(() => selectChain),
       where: vi.fn(() => selectChain),
-      limit: vi.fn(async () => [{ id: 'intent-legacy', boundArgumentDigest: 'digest' }]),
+      limit: vi.fn(async () => [{ id: 'intent-legacy', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
     };
     vi.mocked(db.select).mockReturnValue(selectChain as any);
     mockInsertReturning({ id: 'exec-legacy' });
@@ -2480,7 +2487,7 @@ describe('inline secret-bearing completion (Task 6)', () => {
 
     // Proves the tier-3 branch genuinely ran (created a real intent and won
     // the release CAS) rather than being refused as an unknown tool.
-    expect(preResult).toEqual({ allowed: true, intentId: 'intent-legacy' });
+    expect(preResult).toEqual({ allowed: true, intentId: 'intent-legacy', context: RELEASED_CONTEXT });
     expect(mockCreateActionIntent).toHaveBeenCalled();
 
     mockTransitionIntent.mockClear();
@@ -2951,7 +2958,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     const selectChain: Record<string, unknown> = {
       from: vi.fn(() => selectChain),
       where: vi.fn(() => selectChain),
-      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest' }]),
+      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
     };
     vi.mocked(db.select).mockReturnValue(selectChain as any);
     vi.mocked(db.update).mockReturnValue({
@@ -2980,7 +2987,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
 
     const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
 
-    expect(result).toEqual({ allowed: true, intentId: 'intent-plan-adv' });
+    expect(result).toEqual({ allowed: true, intentId: 'intent-plan-adv', context: RELEASED_CONTEXT });
     expect(session.currentPlanStepIndex).toBe(1);
     expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
       type: 'plan_step_start',
@@ -3419,6 +3426,8 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
           actionName: 'execute_command',
           arguments: { command: 'whoami' },
           effectDigest: null,
+          approvalScope: 'supervised',
+          decidedVia: 'session_tap',
         },
       ]),
     };
@@ -3431,12 +3440,17 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
 
     const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
 
-    expect(result).toEqual({ allowed: true, intentId: 'intent-plan-digest-null' });
+    // #5645: the inline release, like the durable worker, ALWAYS hands the
+    // handler the released intent's decision record (approval_method is
+    // derived from it) — but nothing was verified, so no verified material.
+    expect(result).toEqual({
+      allowed: true,
+      intentId: 'intent-plan-digest-null',
+      context: { releaseDecision: { approvalScope: 'supervised', decidedVia: 'session_tap' } },
+    });
     expect(session.currentPlanStepIndex).toBe(1);
     expect(mockComputeEffectDigest).not.toHaveBeenCalled();
-    // Nothing was verified, so nothing is handed to the handler — the
-    // no-context path must stay byte-identical for every unpinned tool call.
-    expect((result as { context?: unknown }).context).toBeUndefined();
+    expect((result as { context?: { verifiedRunScript?: unknown } }).context?.verifiedRunScript).toBeUndefined();
     // No content_changed CAS — only the approved -> executing CAS ran.
     expect(mockTransitionIntent).not.toHaveBeenCalledWith(
       expect.anything(),
@@ -3474,6 +3488,8 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
           actionName: 'execute_command',
           arguments: { command: 'whoami' },
           effectDigest: 'stored-digest-abc',
+          approvalScope: 'four_eyes',
+          decidedVia: 'webauthn_platform',
         },
       ]),
     };
@@ -3500,6 +3516,9 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     // resolved, so a re-read cannot masquerade as the verified one.
     expect((result as { context?: { verifiedRunScript?: unknown } }).context?.verifiedRunScript)
       .toBe(verifiedRunScript);
+    // #5645: the decision record rides ALONGSIDE the verified material.
+    expect((result as { context?: { releaseDecision?: unknown } }).context?.releaseDecision)
+      .toEqual({ approvalScope: 'four_eyes', decidedVia: 'webauthn_platform' });
   });
 
   // Regression guards restored from PR #2853. Task 1 necessarily inverted the
@@ -3531,7 +3550,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     // Step 0: effective tier 3 — goes through the durable intent, wins the
     // release CAS, and is authorized. The index must land on 1.
     const first = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
-    expect(first).toEqual({ allowed: true, intentId: 'intent-plan-seq-0' });
+    expect(first).toEqual({ allowed: true, intentId: 'intent-plan-seq-0', context: RELEASED_CONTEXT });
     expect(session.currentPlanStepIndex).toBe(1);
 
     // Step 1: effective tier 2, non-secret — eligible for the plan shortcut.
@@ -3583,7 +3602,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     });
 
     const preResult = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
-    expect(preResult).toEqual({ allowed: true, intentId: 'intent-plan-end' });
+    expect(preResult).toEqual({ allowed: true, intentId: 'intent-plan-end', context: RELEASED_CONTEXT });
     expect(session.currentPlanStepIndex).toBe(1);
 
     mockTransitionIntent.mockClear();
@@ -3639,7 +3658,7 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
     const selectChain: Record<string, unknown> = {
       from: vi.fn(() => selectChain),
       where: vi.fn(() => selectChain),
-      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest' }]),
+      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
     };
     vi.mocked(db.select).mockReturnValue(selectChain as any);
     vi.mocked(db.update).mockReturnValue({
