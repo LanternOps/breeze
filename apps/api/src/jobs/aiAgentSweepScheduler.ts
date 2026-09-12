@@ -556,9 +556,14 @@ export async function processSweepOccurrence(
     enqueuedAt: new Date().toISOString(),
   });
 
-  // P2-3. Hoisted out of the loop: `kind` is immutable for the lifetime of a
-  // schedule row, so this is a property of the OCCURRENCE, not of any one org.
-  const isNarrative = baseline.kind === 'narrative';
+  // P2-3 / design. Hoisted out of the loop: `kind` is immutable for the
+  // lifetime of a schedule row, so this is a property of the OCCURRENCE, not
+  // of any one org.
+  const kind = baseline.kind;
+  // A narrative or design baseline sweeps NOTHING —
+  // `ai_agent_schedules_kind_kinds_chk` forbids any other shape for either —
+  // so the empty-`sweepKinds` guard below is sweep-only.
+  const hasNoSweepKinds = kind === 'narrative' || kind === 'design';
 
   let summary: AiAgentScheduleRunSummary;
   try {
@@ -579,13 +584,13 @@ export async function processSweepOccurrence(
       // An override that disables, or that intersects the baseline down to no
       // kinds at all, is the same outcome: this org has nothing to sweep.
       //
-      // The kinds half of that is SWEEP-ONLY. A narrative schedule sweeps
-      // nothing by definition (`ai_agent_schedules_kind_kinds_chk` forbids any
-      // other shape), so applying the guard to it would skip every org on
-      // every occurrence and the feature would never fire. An org override of
-      // a narrative baseline therefore has exactly one lever — `enabled` —
-      // and it still works.
-      if (!effective.enabled || (!isNarrative && effective.sweepKinds.length === 0)) {
+      // The kinds half of that is SWEEP-ONLY. A narrative or design schedule
+      // sweeps nothing by definition (`ai_agent_schedules_kind_kinds_chk`
+      // forbids any other shape for either), so applying the guard to them
+      // would skip every org on every occurrence and the feature would never
+      // fire. An org override of a narrative or design baseline therefore has
+      // exactly one lever — `enabled` — and it still works.
+      if (!effective.enabled || (!hasNoSweepKinds && effective.sweepKinds.length === 0)) {
         countSkip('override_disabled');
         continue;
       }
@@ -601,32 +606,53 @@ export async function processSweepOccurrence(
         // own (see `alertVerdictSubscriber.ts`'s header on the #1105
         // pool-hold seam).
         //
-        // The two arms differ ONLY in profile, triggerRef and dedupe key. The
-        // dedupe key is namespaced by profile on purpose: `(org_id,
-        // dedupe_key)` is a real unique index, so a shared `sweep-` prefix
-        // would make a narrative and a sweep run for the same (schedule, org,
-        // occurrence) collide and silently drop one of them.
-        const result = isNarrative
-          ? await createAndEnqueueAgentRun({
-            orgId,
-            kind: 'triage',
-            triggerKind: 'schedule',
-            deviceId: null,
-            profile: 'narrative',
-            scheduleId: baseline.id,
-            triggerRef: { scheduleId: baseline.id, occurrenceKey, kind: 'narrative' },
-            dedupeKey: `narrative-${baseline.id}-${orgId}-${occurrenceKey}`,
-          })
-          : await createAndEnqueueAgentRun({
-            orgId,
-            kind: 'triage',
-            triggerKind: 'schedule',
-            deviceId: null,
-            profile: 'sweep',
-            scheduleId: baseline.id,
-            triggerRef: { scheduleId: baseline.id, occurrenceKey, sweepKinds: effective.sweepKinds },
-            dedupeKey: `sweep-${baseline.id}-${orgId}-${occurrenceKey}`,
-          });
+        // The three arms differ ONLY in agent kind, profile, triggerRef and
+        // dedupe key. The dedupe key is namespaced by profile on purpose:
+        // `(org_id, dedupe_key)` is a real unique index, so a shared prefix
+        // would make two of these collide for the same (schedule, org,
+        // occurrence) and silently drop one of them.
+        const buildAdmission = (): Parameters<typeof createAndEnqueueAgentRun>[0] => {
+          switch (kind) {
+            case 'narrative':
+              return {
+                orgId,
+                kind: 'triage',
+                triggerKind: 'schedule',
+                deviceId: null,
+                profile: 'narrative',
+                scheduleId: baseline.id,
+                triggerRef: { scheduleId: baseline.id, occurrenceKey, kind: 'narrative' },
+                dedupeKey: `narrative-${baseline.id}-${orgId}-${occurrenceKey}`,
+              };
+            case 'design':
+              return {
+                orgId,
+                kind: 'designer',
+                triggerKind: 'schedule',
+                deviceId: null,
+                profile: 'design',
+                scheduleId: baseline.id,
+                triggerRef: { scheduleId: baseline.id, occurrenceKey, kind: 'design' },
+                dedupeKey: `design-${baseline.id}-${orgId}-${occurrenceKey}`,
+              };
+            case 'sweep':
+              return {
+                orgId,
+                kind: 'triage',
+                triggerKind: 'schedule',
+                deviceId: null,
+                profile: 'sweep',
+                scheduleId: baseline.id,
+                triggerRef: { scheduleId: baseline.id, occurrenceKey, sweepKinds: effective.sweepKinds },
+                dedupeKey: `sweep-${baseline.id}-${orgId}-${occurrenceKey}`,
+              };
+            default: {
+              const exhaustive: never = kind;
+              throw new Error(`[AiAgentSweepScheduler] unknown schedule kind ${String(exhaustive)}`);
+            }
+          }
+        };
+        const result = await createAndEnqueueAgentRun(buildAdmission());
 
         if (result.created) runsAdmitted++;
         else countSkip(result.skipped);
