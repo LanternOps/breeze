@@ -65,6 +65,7 @@ import { AI_AGENTS_ENABLED } from '../../config/env';
 import type { BreezeEvent } from '../eventBus';
 import { latestVerdictsForAlerts } from './alertVerdicts';
 import { createAndEnqueueAgentRun, type CreateAgentRunInput } from './runService';
+import { recordAgentRunSkip } from './skipVisibility';
 
 /**
  * How recent an auto (system) alert resolution must be, relative to the
@@ -171,7 +172,14 @@ export async function enqueueVerdictRunForAlert(
   alertId: string,
   reason: Extract<VerdictReason, 'auto_resolved' | 'ungrouped'>,
 ): Promise<void> {
-  if (!AI_AGENTS_ENABLED) return;
+  // #5381: this used to `return` silently. A kill-switched server therefore
+  // dropped every alert trigger with no log line anywhere — the exact prod
+  // symptom the issue was filed for. The skip still short-circuits before the
+  // two DB reads below; it just stops being invisible while doing so.
+  if (!AI_AGENTS_ENABLED) {
+    recordAgentRunSkip({ orgId, reason: 'kill_switch_off', kind: 'triage', triggerKind: 'alert', alertId });
+    return;
+  }
 
   const alert = await runWithSystemDbAccess(() => loadAlertForVerdict(alertId, orgId));
   if (!alert) {
@@ -218,7 +226,18 @@ export async function enqueueVerdictRunForGroup(
   orgId: string,
   payload: AlertCorrelationGroupCreatedTrigger,
 ): Promise<void> {
-  if (!AI_AGENTS_ENABLED) return;
+  // Same silent-drop fix as `enqueueVerdictRunForAlert` above (#5381).
+  if (!AI_AGENTS_ENABLED) {
+    recordAgentRunSkip({
+      orgId,
+      reason: 'kill_switch_off',
+      kind: 'triage',
+      triggerKind: 'alert',
+      alertId: payload.rootAlertId ?? null,
+      deviceId: payload.deviceId ?? null,
+    });
+    return;
+  }
 
   if (!payload.rootAlertId || !payload.deviceId) {
     console.warn(
@@ -278,9 +297,18 @@ export async function enqueueVerdictRunForGroup(
  * succeed.
  */
 export async function handleAlertVerdictEvent(event: BreezeEvent): Promise<void> {
-  if (!AI_AGENTS_ENABLED) return;
-
   const orgId = event.orgId;
+
+  // Same silent-drop fix as the two enqueue helpers above (#5381). Recorded
+  // here rather than deeper: this early return is what actually stops the
+  // event, so the two helpers below are never reached to record it
+  // themselves — no double count.
+  if (!AI_AGENTS_ENABLED) {
+    if (orgId) {
+      recordAgentRunSkip({ orgId, reason: 'kill_switch_off', kind: 'triage', triggerKind: 'alert' });
+    }
+    return;
+  }
 
   try {
     if (event.type === 'alert.correlation_group.created') {

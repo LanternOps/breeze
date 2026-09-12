@@ -1587,7 +1587,14 @@
     "stateDisabled": "Deaktiviert",
     "runningBadge": {
       "running": "Läuft",
-      "notRunning": "Läuft nicht"
+      "notRunning": "Läuft nicht",
+      "inactive": "Aktiviert (inaktiv)"
+    },
+    "subsystemDisabled": {
+      "title": "KI-Agenten sind auf diesem Server deaktiviert",
+      "envFlag": "Setzen Sie {{flag}}, damit Agenten ausgeführt werden. Bis dahin wird jeder Auslöser übersprungen.",
+      "killSwitch": "Der Not-Aus der Plattform ist aktiviert. Agenten werden erst ausgeführt, wenn ein Administrator ihn aufhebt.",
+      "skips": "{{total}} Auslöser kürzlich übersprungen — {{reasons}}"
     },
     "reenableNote": "Wiederhergestellt, aber ausgeschaltet. Prüfen Sie zuerst die Richtlinie, bevor Sie ihn einschalten.",
     "chipLabels": {

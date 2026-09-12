@@ -246,6 +246,7 @@ import {
   shutdownAgentCommandRelayWorker,
 } from './jobs/agentCommandRelayWorker';
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
+import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
 import { partnerTrustMode } from './config/partnerTrustMode';
 import { auditChainVerifyEnabled } from './config/auditChainVerify';
 import { getEventBus } from './services/eventBus';
@@ -1132,6 +1133,14 @@ async function initializeWorkers(): Promise<void> {
     aiAgentsEnabled: AI_AGENTS_ENABLED,
     registry: workerReadinessRegistry,
   });
+
+  // #5381: the runner and the sweep scheduler log "initialized" whether or
+  // not the kill switch is set, which reads as "the subsystem is up" when it
+  // is in fact inert. One unambiguous line per process, next to the readiness
+  // declaration that already knows the flag. Imported from `subsystemState`
+  // (env-only) rather than `skipVisibility` (which pulls in Redis) — see that
+  // module's header for why a boot module's import graph has to stay thin.
+  logAiAgentsSubsystemState('api', AI_AGENTS_ENABLED);
 
   if (!redisAvailable) {
     console.warn('[WARN] Redis not available - background workers disabled');

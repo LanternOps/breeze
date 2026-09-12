@@ -1587,7 +1587,14 @@
     "stateDisabled": "Desativado",
     "runningBadge": {
       "running": "Em execução",
-      "notRunning": "Não está em execução"
+      "notRunning": "Não está em execução",
+      "inactive": "Ativado (inativo)"
+    },
+    "subsystemDisabled": {
+      "title": "Os agentes de IA estão desativados neste servidor",
+      "envFlag": "Defina {{flag}} para permitir a execução dos agentes. Até lá, todos os acionamentos são ignorados.",
+      "killSwitch": "A parada de emergência da plataforma está acionada. Os agentes não serão executados até que um administrador a libere.",
+      "skips": "{{total}} acionamento(s) ignorado(s) recentemente — {{reasons}}"
     },
     "reenableNote": "Restaurado, mas desligado. Revise a política dele antes de ativá-lo.",
     "chipLabels": {

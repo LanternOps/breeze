@@ -158,6 +158,12 @@ vi.mock('../deploymentEngine', () => ({ isDeviceInMaintenanceWindow }));
 const publishEvent = vi.hoisted(() => vi.fn());
 vi.mock('../eventBus', () => ({ publishEvent }));
 
+// #5381 — `skip()` now routes through this. Its own logging/throttling/
+// counting contract lives in skipVisibility.test.ts; here we only assert that
+// every skip reaches it.
+const recordAgentRunSkip = vi.hoisted(() => vi.fn());
+vi.mock('./skipVisibility', () => ({ recordAgentRunSkip }));
+
 const reconcileHungExecutions = vi.hoisted(() =>
   vi.fn<(sessionId: string) => Promise<number>>());
 const closeAgentRunSession = vi.hoisted(() =>
@@ -843,11 +849,14 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
     await expect(createAndEnqueueAgentRun(input())).rejects.toThrow('boom');
   });
 
-  it('logs every skip so a dropped trigger is observable', async () => {
+  // #5381: this used to assert a `console.info` line. Info is below the level
+  // a container's logs are actually read at, and it left no trace the UI could
+  // read — every skip now goes through `recordAgentRunSkip`, which warns
+  // (throttled per org+reason) and counts the skip for the settings page.
+  it('records every skip so a dropped trigger is observable', async () => {
     resolveEffectiveAgentSystem.mockResolvedValue(null);
     await createAndEnqueueAgentRun(input());
-    expect(console.info).toHaveBeenCalledWith(
-      '[aiAgentRunService] run skipped',
+    expect(recordAgentRunSkip).toHaveBeenCalledWith(
       expect.objectContaining({ reason: 'no_effective_agent', orgId: ORG_ID }),
     );
   });

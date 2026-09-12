@@ -37,6 +37,7 @@ import {
 } from '../aiOperator/taskOutbox';
 import { AgentRunOwnershipError, assertRunOwnership } from './agentAuthContext';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
+import { recordAgentRunSkip } from './skipVisibility';
 import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger';
 
 /**
@@ -786,8 +787,12 @@ export async function createAndEnqueueAgentRun(
 
   let snapshot: AiAgentPolicySnapshot | null = null;
   const skip = (reason: AgentRunSkipReason): CreateAgentRunResult => {
-    // A dropped trigger must never be invisible (spec §7's silent-drop finding).
-    console.info('[aiAgentRunService] run skipped', {
+    // A dropped trigger must never be invisible (spec §7's silent-drop
+    // finding). #5381: this used to be a bare `console.info`, which is below
+    // the level a container's logs are actually read at and left no trace the
+    // UI could read. `recordAgentRunSkip` logs at warn (throttled per
+    // org+reason) AND counts the skip for the settings page's banner.
+    recordAgentRunSkip({
       reason, orgId, kind, triggerKind, deviceId,
       alertId: input.alertId ?? null,
       agentId: snapshot?.agentId ?? null,

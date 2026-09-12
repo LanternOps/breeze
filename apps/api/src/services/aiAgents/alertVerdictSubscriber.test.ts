@@ -50,6 +50,10 @@ vi.mock('./alertVerdicts', () => ({ latestVerdictsForAlerts }));
 const createAndEnqueueAgentRun = vi.hoisted(() => vi.fn());
 vi.mock('./runService', () => ({ createAndEnqueueAgentRun }));
 
+// #5381 — the kill-switch short-circuits below used to `return` silently.
+const recordAgentRunSkip = vi.hoisted(() => vi.fn());
+vi.mock('./skipVisibility', () => ({ recordAgentRunSkip }));
+
 import { db } from '../../db';
 import type { BreezeEvent } from '../eventBus';
 import { handleAlertVerdictEvent, AUTO_RESOLVE_VERDICT_WINDOW_MINUTES } from './alertVerdictSubscriber';
@@ -450,6 +454,29 @@ describe('ai-agent-alert-verdict subscriber', () => {
 
       expect(db.select).not.toHaveBeenCalled();
       expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+    });
+
+    // #5381 — a kill-switched server dropped every alert trigger here with
+    // nothing in the container logs and no row an operator could read. The
+    // short-circuit stays (it still skips the two DB reads); it just stops
+    // being silent.
+    it('records a kill_switch_off skip instead of dropping the trigger silently', async () => {
+      shared.aiAgentsEnabled = false;
+
+      await handleAlertVerdictEvent(groupCreatedEvent());
+
+      expect(recordAgentRunSkip).toHaveBeenCalledWith(
+        expect.objectContaining({ orgId: ORG_ID, reason: 'kill_switch_off', triggerKind: 'alert' }),
+      );
+    });
+
+    it('records the skip exactly once per event, never once per nested helper', async () => {
+      shared.aiAgentsEnabled = false;
+      recordAgentRunSkip.mockClear();
+
+      await handleAlertVerdictEvent(alertResolvedEvent());
+
+      expect(recordAgentRunSkip).toHaveBeenCalledTimes(1);
     });
   });
 
