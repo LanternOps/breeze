@@ -5,6 +5,10 @@
 // exported functions for the roadmap §3.4 contract this wave produces.
 import type { RiskTier, ScriptReviewVerdict, ScriptScanResult, TouchClass } from '@breeze/shared';
 import { riskTierRank } from '@breeze/shared';
+import { and, eq, inArray } from 'drizzle-orm';
+import { AI_SCRIPT_REVIEWER_MODEL } from '../../config/env';
+import { db, withSystemDbAccessContext } from '../../db';
+import { devices, organizations } from '../../db/schema';
 import type { ScriptProposalRow } from '../../db/schema/scriptProposals';
 
 export const SCRIPT_REVIEW_TIMEOUT_MS = 60_000;
@@ -114,4 +118,52 @@ export function buildReviewerPrompt(args: {
   ].join('\n');
 
   return { system: REVIEWER_SYSTEM_PROMPT, user };
+}
+
+/**
+ * The reviewer's model for `orgId`. Today this is a flat platform constant —
+ * `ai_script_policies.reviewer_model` (W04) does not exist yet. `orgId` is
+ * accepted now (not added later) so this seam's call sites never need to
+ * change shape when W04 lands; only this function's body does.
+ */
+export function resolveReviewerModel(_orgId: string): string {
+  return AI_SCRIPT_REVIEWER_MODEL;
+}
+
+/** The org's partner id. `organizations.partner_id` is NOT NULL, so this
+ *  always resolves for a real org. */
+export async function readOrgPartnerId(orgId: string): Promise<string> {
+  return withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+    if (!row) throw new Error(`script-review: organization ${orgId} not found`);
+    return row.partnerId;
+  });
+}
+
+/** Facts about the proposal's target devices, scoped to `orgId` even though
+ *  this runs in system DB context (defense in depth — the proposal's
+ *  `target_device_ids` are bare uuids, so an org filter is what keeps a
+ *  foreign device's hostname out of this org's reviewer prompt). */
+export async function loadDeviceFacts(orgId: string, deviceIds: string[]): Promise<DeviceFacts[]> {
+  if (deviceIds.length === 0) return [];
+  return withSystemDbAccessContext(async () => {
+    const rows = await db
+      .select({
+        id: devices.id, hostname: devices.hostname, osType: devices.osType,
+        osVersion: devices.osVersion, tags: devices.tags,
+      })
+      .from(devices)
+      .where(and(eq(devices.orgId, orgId), inArray(devices.id, deviceIds)));
+    return rows.map((r) => ({
+      deviceId: r.id,
+      hostname: r.hostname,
+      osFamily: r.osType,
+      osVersion: r.osVersion,
+      tags: r.tags ?? [],
+    }));
+  });
 }
