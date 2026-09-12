@@ -63,6 +63,19 @@ const locale = Astro.locals.locale;
       </a>
 
       <a
+        href="/settings/deliverable-templates"
+        class="rounded-lg border bg-card p-6 shadow-xs transition hover:border-primary hover:shadow-md"
+        data-deliverable-templates-settings-card
+      >
+        <div class="space-y-2">
+          <h2 class="text-lg font-semibold">{tServer(locale, 'settingsIndex.cards.deliverableTemplates.title')}</h2>
+          <p class="text-sm text-muted-foreground">
+            {tServer(locale, 'settingsIndex.cards.deliverableTemplates.description')}
+          </p>
+        </div>
+      </a>
+
+      <a
         href="/settings/organizations"
         class="rounded-lg border bg-card p-6 shadow-xs transition hover:border-primary hover:shadow-md"
       >

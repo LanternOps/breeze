@@ -154,5 +154,66 @@
     "evidenceRemoved": "Evidenza rimossa",
     "deactivated": "Deliverable disattivato",
     "evidenceUploaded": "Evidenza caricata"
+  },
+  "templates": {
+    "pageTitle": "Modelli di deliverable",
+    "pageDescription": "Definisci un livello di servizio una volta sola e applicalo a qualsiasi cliente. I set validi per tutto il partner sono disponibili per ogni organizzazione che gestisci.",
+    "empty": "Nessun set di modelli ancora.",
+    "allOrganizations": "Tutte le org",
+    "actions": {
+      "newSet": "Nuovo set di modelli",
+      "addItem": "Aggiungi deliverable",
+      "apply": "Applica set di modelli",
+      "edit": "Modifica",
+      "delete": "Elimina",
+      "save": "Salva",
+      "cancel": "Annulla"
+    },
+    "form": {
+      "name": "Nome del set",
+      "description": "Descrizione",
+      "itemName": "Nome del deliverable",
+      "cadence": "Cadenza",
+      "leadDays": "Apri questo numero di giorni prima della scadenza",
+      "graceDays": "Segna come mancato questo numero di giorni dopo la scadenza",
+      "artifactRequired": "Evidenza richiesta",
+      "completionMode": "Completamento"
+    },
+    "ownerScope": {
+      "legend": "Per chi è questo set?",
+      "allOrganizations": "Tutte le organizzazioni (valido per tutto il partner)",
+      "thisOrganizationOnly": "Solo questa organizzazione"
+    },
+    "apply": {
+      "title": "Applica set di modelli",
+      "set": "Set di modelli",
+      "contract": "Contratto (facoltativo)",
+      "noContract": "Nessun contratto",
+      "effectiveFrom": "Valido dal",
+      "owner": "Responsabile (facoltativo)",
+      "submit": "Applica",
+      "created_one": "Creato {{count}} deliverable",
+      "created_other": "Creati {{count}} deliverable",
+      "skipped": "Saltati (già presenti): {{names}}"
+    },
+    "errors": {
+      "collision": "Questi deliverable esistono già sulla destinazione: {{names}}",
+      "duplicateSetName": "Esiste già un set di modelli con questo nome.",
+      "duplicateItemName": "Esiste già un elemento con questo nome nel set.",
+      "partnerWideDenied": "La gestione dei modelli validi per tutto il partner richiede l'accesso completo all'organizzazione partner.",
+      "loadFailed": "Impossibile caricare i set di modelli.",
+      "saveFailed": "Impossibile salvare il set di modelli.",
+      "deleteFailed": "Impossibile eliminare il set di modelli.",
+      "itemSaveFailed": "Impossibile salvare il deliverable.",
+      "itemDeleteFailed": "Impossibile rimuovere il deliverable.",
+      "applyFailed": "Impossibile applicare il set di modelli."
+    },
+    "toast": {
+      "setSaved": "Set di modelli salvato",
+      "setDeleted": "Set di modelli eliminato",
+      "itemSaved": "Deliverable salvato",
+      "itemDeleted": "Deliverable rimosso",
+      "applied": "Set di modelli applicato"
+    }
   }
 }

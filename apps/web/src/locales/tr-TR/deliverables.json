@@ -154,5 +154,66 @@
     "evidenceRemoved": "Kanıt kaldırıldı",
     "deactivated": "Çıktı devre dışı bırakıldı",
     "evidenceUploaded": "Kanıt yüklendi"
+  },
+  "templates": {
+    "pageTitle": "Çıktı şablonları",
+    "pageDescription": "Bir hizmet katmanını bir kez tanımlayın ve herhangi bir müşteriye uygulayın. Ortak genelindeki şablon setleri, yönettiğiniz her kuruluş için kullanılabilir.",
+    "empty": "Henüz şablon seti yok.",
+    "allOrganizations": "Tüm kuruluşlar",
+    "actions": {
+      "newSet": "Yeni şablon seti",
+      "addItem": "Çıktı ekle",
+      "apply": "Şablon setini uygula",
+      "edit": "Düzenle",
+      "delete": "Sil",
+      "save": "Kaydet",
+      "cancel": "İptal"
+    },
+    "form": {
+      "name": "Set adı",
+      "description": "Açıklama",
+      "itemName": "Çıktı adı",
+      "cadence": "Sıklık",
+      "leadDays": "Son tarihten bu kadar gün önce aç",
+      "graceDays": "Son tarihten bu kadar gün sonra kaçırıldı olarak işaretle",
+      "artifactRequired": "Kanıt gerekli",
+      "completionMode": "Tamamlama"
+    },
+    "ownerScope": {
+      "legend": "Bu set kimin için?",
+      "allOrganizations": "Tüm kuruluşlar (ortak genelinde)",
+      "thisOrganizationOnly": "Yalnızca bu kuruluş"
+    },
+    "apply": {
+      "title": "Şablon setini uygula",
+      "set": "Şablon seti",
+      "contract": "Sözleşme (isteğe bağlı)",
+      "noContract": "Sözleşme yok",
+      "effectiveFrom": "Geçerlilik başlangıcı",
+      "owner": "Sorumlu (isteğe bağlı)",
+      "submit": "Uygula",
+      "created_one": "{{count}} çıktı oluşturuldu",
+      "created_other": "{{count}} çıktı oluşturuldu",
+      "skipped": "Atlandı (zaten mevcut): {{names}}"
+    },
+    "errors": {
+      "collision": "Bu çıktılar hedefte zaten mevcut: {{names}}",
+      "duplicateSetName": "Bu adla bir şablon seti zaten var.",
+      "duplicateItemName": "Bu adla sette zaten bir öğe var.",
+      "partnerWideDenied": "Ortak genelindeki şablonları yönetmek, partner kuruluşuna tam erişim gerektirir.",
+      "loadFailed": "Şablon setleri yüklenemedi.",
+      "saveFailed": "Şablon seti kaydedilemedi.",
+      "deleteFailed": "Şablon seti silinemedi.",
+      "itemSaveFailed": "Çıktı kaydedilemedi.",
+      "itemDeleteFailed": "Çıktı kaldırılamadı.",
+      "applyFailed": "Şablon seti uygulanamadı."
+    },
+    "toast": {
+      "setSaved": "Şablon seti kaydedildi",
+      "setDeleted": "Şablon seti silindi",
+      "itemSaved": "Çıktı kaydedildi",
+      "itemDeleted": "Çıktı kaldırıldı",
+      "applied": "Şablon seti uygulandı"
+    }
   }
 }

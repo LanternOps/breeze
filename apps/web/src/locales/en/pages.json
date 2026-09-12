@@ -214,6 +214,10 @@
       "sites": {
         "title": "Sites",
         "description": "Configure locations, timezones, and site-specific settings."
+      },
+      "deliverableTemplates": {
+        "title": "Deliverable Templates",
+        "description": "Define a service tier once and apply its deliverables to any customer."
       }
     }
   },

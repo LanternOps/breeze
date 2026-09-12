@@ -219,6 +219,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'google_security_drift',
   'list_configuration_policies',
   'list_contracts',
+  'list_deliverable_templates',
   'list_invoices',
   // W03: read-only document METADATA, same admission shape as the sibling
   // business-object list tools; bytes are not reachable from any tool.

@@ -314,6 +314,17 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
 // is the canonical case: a user row is visible if the caller has access
 // to the user's partner OR the user's org OR is the user themselves.
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
+  // deliverable_template_sets / deliverable_template_items (spec #5573 §4.6,
+  // D9): a template set is org-scoped (org_id set) OR partner-wide (partner_id
+  // set, org_id NULL — one service tier applied across every org the MSP
+  // manages). Created dual-axis from day one in
+  // 2026-10-16-110100-deliverable-templates. The org_id column means org-tenant
+  // auto-discovery already asserts the breeze_has_org_access branch, so these
+  // entries are what assert the breeze_has_partner_access (partner-wide)
+  // branch. CHECKs <table>_one_owner_chk enforce exactly one axis. Functional
+  // cross-partner forge proof: deliverableTemplatesPartnerRls.integration.test.ts.
+  'deliverable_template_sets',
+  'deliverable_template_items',
   'users',
   'deployment_invites',
   'access_reviews',
@@ -586,6 +597,10 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // changes. If access_reviews ever gains a CHECK, this note has no examples
 // left and should be deleted rather than patched.
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
+  // deliverable_template_sets_one_owner_chk / deliverable_template_items_one_owner_chk
+  // ((org_id IS NULL) <> (partner_id IS NULL)), 2026-10-16-100500.
+  'deliverable_template_sets',
+  'deliverable_template_items',
   'access_reviews',
   'custom_field_definitions',
   'configuration_policies',

@@ -49,7 +49,23 @@ export interface OccurrenceView extends ServiceDeliverableOccurrenceRow {
   evidence: Array<{ id: string; kind: 'document' | 'report_run'; documentId: string | null; reportId: string | null; reportRunId: string | null; createdAt: string }>;
 }
 
-type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+/**
+ * A live db handle or an open transaction handle. `applyTemplateSet` (W05)
+ * needs every createDeliverable in ONE transaction: reaching for the
+ * module-level `db` proxy from inside `db.transaction()` resolves to the
+ * AMBIENT request transaction, not the nested one, so the writes would not be
+ * covered by the all-or-nothing rollback.
+ */
+export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Nested `transaction()` on an open handle is a SAVEPOINT (see
+ * assertNameAvailable) — the cast is only needed because the union's two arms
+ * type their callback handle differently; both accept the same call.
+ */
+function withSavepoint<T>(executor: DbExecutor, fn: (tx: DbExecutor) => Promise<T>): Promise<T> {
+  return (executor as typeof db).transaction(async (savepoint) => fn(savepoint));
+}
 
 const NON_TERMINAL: readonly OccurrenceStatus[] = ['scheduled', 'open', 'awaiting_evidence', 'missed'];
 const ACTIONABLE: readonly OccurrenceStatus[] = ['open', 'awaiting_evidence', 'missed'];
@@ -99,12 +115,12 @@ function buildSummary(row: ServiceDeliverableRow, contractName: string | null, o
   };
 }
 
-async function loadSummaries(orgId: string, filters: { id?: string; contractId?: string; includeInactive?: boolean }): Promise<DeliverableSummary[]> {
+async function loadSummaries(orgId: string, filters: { id?: string; contractId?: string; includeInactive?: boolean }, executor: DbExecutor = db): Promise<DeliverableSummary[]> {
   const conditions = [eq(serviceDeliverables.orgId, orgId)];
   if (filters.id !== undefined) conditions.push(eq(serviceDeliverables.id, filters.id));
   if (filters.contractId !== undefined) conditions.push(eq(serviceDeliverables.contractId, filters.contractId));
   if (!filters.includeInactive) conditions.push(eq(serviceDeliverables.active, true));
-  const rows = await db
+  const rows = await executor
     .select({ deliverable: serviceDeliverables, contractName: contracts.name })
     .from(serviceDeliverables)
     .leftJoin(contracts, and(eq(contracts.id, serviceDeliverables.contractId), eq(contracts.orgId, serviceDeliverables.orgId)))
@@ -112,7 +128,7 @@ async function loadSummaries(orgId: string, filters: { id?: string; contractId?:
     .orderBy(asc(serviceDeliverables.sortOrder), asc(serviceDeliverables.name));
   if (rows.length === 0) return [];
   const ids = rows.map((r) => r.deliverable.id);
-  const occ = await db
+  const occ = await executor
     .select({
       id: serviceDeliverableOccurrences.id, deliverableId: serviceDeliverableOccurrences.deliverableId,
       status: serviceDeliverableOccurrences.status, dueAt: serviceDeliverableOccurrences.dueAt,
@@ -142,29 +158,29 @@ type RefInput = Pick<UpdateDeliverableInput, 'contractId' | 'ownerUserId' | 'tic
 
 /** Only keys PRESENT on the input are validated, so a PATCH that omits a
  *  reference never re-validates it (and a null clears it without a lookup). */
-async function validateReferences(orgId: string, input: RefInput): Promise<void> {
+async function validateReferences(orgId: string, input: RefInput, executor: DbExecutor = db): Promise<void> {
   if (input.contractId != null) {
-    const [c] = await db.select({ id: contracts.id }).from(contracts)
+    const [c] = await executor.select({ id: contracts.id }).from(contracts)
       .where(and(eq(contracts.id, input.contractId), eq(contracts.orgId, orgId))).limit(1);
     if (!c) throw new DeliverableServiceError('Contract does not belong to this organization', 400, 'CONTRACT_NOT_IN_ORG');
   }
   if (input.ownerUserId != null || input.ticketCategoryId != null) {
-    const [org] = await db.select({ partnerId: organizations.partnerId }).from(organizations)
+    const [org] = await executor.select({ partnerId: organizations.partnerId }).from(organizations)
       .where(eq(organizations.id, orgId)).limit(1);
     if (!org) throw notFound();
     if (input.ownerUserId != null) {
-      const [u] = await db.select({ id: users.id }).from(users)
+      const [u] = await executor.select({ id: users.id }).from(users)
         .where(and(eq(users.id, input.ownerUserId), eq(users.partnerId, org.partnerId))).limit(1);
       if (!u) throw new DeliverableServiceError('Owner must be a user of the organization\'s partner', 400, 'OWNER_NOT_ALLOWED');
     }
     if (input.ticketCategoryId != null) {
-      const [cat] = await db.select({ id: ticketCategories.id }).from(ticketCategories)
+      const [cat] = await executor.select({ id: ticketCategories.id }).from(ticketCategories)
         .where(and(eq(ticketCategories.id, input.ticketCategoryId), eq(ticketCategories.partnerId, org.partnerId))).limit(1);
       if (!cat) throw new DeliverableServiceError('Ticket category must belong to the organization\'s partner', 400, 'CATEGORY_NOT_ALLOWED');
     }
   }
   if (input.autoEvidenceReportId != null) {
-    const [r] = await db.select({ id: reports.id }).from(reports)
+    const [r] = await executor.select({ id: reports.id }).from(reports)
       .where(and(eq(reports.id, input.autoEvidenceReportId), eq(reports.orgId, orgId))).limit(1);
     if (!r) throw notFound();
   }
@@ -185,14 +201,14 @@ const duplicateName = () =>
  * error rolls back the savepoint alone and the outer transaction stays usable
  * for the 409 response.
  */
-async function assertNameAvailable(orgId: string, contractId: string | null, name: string, excludeId?: string): Promise<void> {
+async function assertNameAvailable(orgId: string, contractId: string | null, name: string, excludeId?: string, executor: DbExecutor = db): Promise<void> {
   const conditions = [
     eq(serviceDeliverables.orgId, orgId),
     eq(serviceDeliverables.name, name),
     contractId === null ? isNull(serviceDeliverables.contractId) : eq(serviceDeliverables.contractId, contractId),
   ];
   if (excludeId) conditions.push(ne(serviceDeliverables.id, excludeId));
-  const [dup] = await db.select({ one: sql<number>`1` }).from(serviceDeliverables).where(and(...conditions)).limit(1);
+  const [dup] = await executor.select({ one: sql<number>`1` }).from(serviceDeliverables).where(and(...conditions)).limit(1);
   if (dup) throw duplicateName();
 }
 
@@ -223,20 +239,25 @@ export async function getDeliverable(orgId: string, id: string, actor: Deliverab
  *  get endpoints return, so the web table can splice a create/PATCH response
  *  straight in without losing status / nextDue / contractName. includeInactive
  *  so a PATCH that just deactivated the row still resolves. */
-async function loadWrittenSummary(orgId: string, id: string): Promise<DeliverableSummary> {
-  const [summary] = await loadSummaries(orgId, { id, includeInactive: true });
+async function loadWrittenSummary(orgId: string, id: string, executor: DbExecutor = db): Promise<DeliverableSummary> {
+  const [summary] = await loadSummaries(orgId, { id, includeInactive: true }, executor);
   if (!summary) throw new DeliverableServiceError('Deliverable vanished after write', 500, 'RELOAD_FAILED');
   return summary;
 }
 
-export async function createDeliverable(orgId: string, input: CreateDeliverableInput, actor: DeliverableActor): Promise<DeliverableSummary> {
+/**
+ * `executor` defaults to the ambient `db` proxy. `applyTemplateSet` (W05) passes
+ * the open transaction handle so every deliverable of one template apply lands
+ * in the same all-or-nothing transaction, reads included.
+ */
+export async function createDeliverable(orgId: string, input: CreateDeliverableInput, actor: DeliverableActor, executor: DbExecutor = db): Promise<DeliverableSummary> {
   requireOrgAccess(actor, orgId);
-  await validateReferences(orgId, input);
-  await assertNameAvailable(orgId, input.contractId ?? null, input.name);
+  await validateReferences(orgId, input, executor);
+  await assertNameAvailable(orgId, input.contractId ?? null, input.name, undefined, executor);
   let row: ServiceDeliverableRow | undefined;
   try {
     // Savepoint: see assertNameAvailable — keeps a 23505 from poisoning the request transaction.
-    [row] = await db.transaction(async (tx) => tx.insert(serviceDeliverables).values({
+    [row] = await withSavepoint(executor, async (tx) => tx.insert(serviceDeliverables).values({
       orgId,
       contractId: input.contractId ?? null,
       name: input.name,
@@ -260,7 +281,7 @@ export async function createDeliverable(orgId: string, input: CreateDeliverableI
     mapUniqueViolation(err);
   }
   if (!row) throw new DeliverableServiceError('Insert returned no row', 500, 'INSERT_FAILED');
-  return loadWrittenSummary(orgId, row.id);
+  return loadWrittenSummary(orgId, row.id, executor);
 }
 
 export async function updateDeliverable(orgId: string, id: string, patch: UpdateDeliverableInput, actor: DeliverableActor): Promise<DeliverableSummary> {

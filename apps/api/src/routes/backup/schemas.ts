@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared';
+import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint, optionalQueryBoolean } from '@breeze/shared';
 import {
   backupRetentionSchema as sharedBackupRetentionSchema,
   backupRetentionUpdateSchema as sharedBackupRetentionUpdateSchema,
@@ -152,7 +152,7 @@ export const snapshotListSchema = z.object({
   // Bare-metal recovery W04a: the recovery-creation panel needs "which
   // snapshots CAN start a bare-metal recovery" without pulling every
   // snapshot and filtering client-side.
-  bareMetalRestorable: z.coerce.boolean().optional(),
+  bareMetalRestorable: optionalQueryBoolean,
 });
 
 export const snapshotProtectionReasonSchema = z.object({

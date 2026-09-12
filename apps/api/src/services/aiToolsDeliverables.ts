@@ -40,6 +40,7 @@ import { z } from 'zod';
 import {
   createDeliverableSchema, updateDeliverableSchema, deliverOccurrenceSchema, waiveOccurrenceSchema,
   rescheduleOccurrenceSchema, reportRunEvidenceRefSchema, createKeyDateSchema, updateKeyDateSchema,
+  applyTemplateSetSchema,
   updateDocumentSchema, type OrgDocumentCategory,
 } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
@@ -50,11 +51,18 @@ import {
   rescheduleOccurrence, addEvidence, DeliverableServiceError, type DeliverableActor,
 } from './serviceDeliverableService';
 import { listKeyDates, createKeyDate, updateKeyDate, deleteKeyDate } from './orgKeyDateService';
+import {
+  listTemplateSets, applyTemplateSet, TemplateServiceError, type TemplateActor,
+} from './deliverableTemplateService';
+import { PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { listDocuments, supersedeDocument, updateDocument } from './orgDocumentService';
 import { missingParamsJson, validationErrorJson, zodErrorToJson } from './aiToolValidation';
 
 export const MANAGE_DELIVERABLES_ACTIONS = [
   'create', 'update', 'deactivate', 'deliver', 'waive', 'reopen', 'reschedule', 'link_evidence',
+  // W05. The ONLY approval-gated (Tier 3) action of this family: one call arms
+  // unattended ticket creation for every future period of every applied item.
+  'apply_template',
 ] as const;
 export const MANAGE_KEY_DATES_ACTIONS = ['list', 'create', 'update', 'delete'] as const;
 
@@ -64,6 +72,7 @@ const MANAGE_DELIVERABLES_REQUIRED: Record<(typeof MANAGE_DELIVERABLES_ACTIONS)[
   create: ['orgId', 'input'], update: ['orgId', 'deliverableId', 'patch'], deactivate: ['orgId', 'deliverableId'],
   deliver: ['orgId', 'occurrenceId'], waive: ['orgId', 'occurrenceId', 'reason'], reopen: ['orgId', 'occurrenceId'],
   reschedule: ['orgId', 'occurrenceId', 'dueAt'], link_evidence: ['orgId', 'occurrenceId', 'reportRunId'],
+  apply_template: ['orgId', 'setId'],
 };
 const MANAGE_KEY_DATES_REQUIRED: Record<(typeof MANAGE_KEY_DATES_ACTIONS)[number], readonly string[]> = {
   list: ['orgId'], create: ['orgId', 'input'], update: ['orgId', 'keyDateId', 'patch'], delete: ['orgId', 'keyDateId'],
@@ -80,6 +89,17 @@ function actorFromAuth(auth: AuthContext): DeliverableActor {
   return { userId: auth.user.id, partnerId: auth.partnerId ?? null, accessibleOrgIds: auth.accessibleOrgIds };
 }
 
+/** The template service needs the partner axis too (visibility of partner-wide sets). */
+function templateActorFromAuth(auth: AuthContext): TemplateActor {
+  return {
+    userId: auth.user.id,
+    scope: auth.scope,
+    partnerId: auth.partnerId ?? null,
+    partnerOrgAccess: auth.partnerOrgAccess ?? null,
+    accessibleOrgIds: auth.accessibleOrgIds,
+  };
+}
+
 function partnerScopeRefusal(auth: AuthContext): string | null {
   if (auth.scope === 'partner' || auth.scope === 'system') return null;
   return JSON.stringify({
@@ -91,8 +111,13 @@ function partnerScopeRefusal(auth: AuthContext): string | null {
 /** Service and validation errors become a tool result the model can act on;
  *  anything else is a real failure and propagates. */
 function toToolError(err: unknown): string {
-  if (err instanceof DeliverableServiceError) {
+  if (err instanceof DeliverableServiceError || err instanceof TemplateServiceError) {
     return JSON.stringify({ error: err.message, code: err.code, ...(err.details ? { details: err.details } : {}) });
+  }
+  // W05: visibility is not permission — a partner tech may SEE a partner-wide
+  // set yet not administer it. Same 403 envelope the REST routes emit.
+  if (err instanceof PartnerWideWriteDeniedError) {
+    return JSON.stringify({ error: err.message, code: 'PARTNER_WIDE_WRITE_DENIED' });
   }
   const zod = zodErrorToJson(err);
   if (zod) return zod;
@@ -150,13 +175,20 @@ export const MANAGE_DELIVERABLES_TOOL: AiTool = {
     description:
       'Create and manage service deliverables and their occurrences for one organization: create, update or deactivate a deliverable; '
       + 'deliver, waive, reopen or reschedule an occurrence; or link an existing report run as evidence. '
-      + 'Delivering an occurrence whose deliverable requires an artifact fails with EVIDENCE_REQUIRED until evidence is linked.',
+      + 'Delivering an occurrence whose deliverable requires an artifact fails with EVIDENCE_REQUIRED until evidence is linked. '
+      + '`apply_template` copies every item of a deliverable template set into the organization (optionally pinned to a contract) as '
+      + 'scheduled deliverables; it arms unattended ticket creation for every future period and therefore requires approval. It is '
+      + 'all-or-nothing: if any item name already exists on the target nothing is written and the colliding names are returned.',
     input_schema: {
       type: 'object' as const,
       properties: {
         action: { type: 'string', enum: [...MANAGE_DELIVERABLES_ACTIONS] },
         orgId: { type: 'string', description: 'Organization id (UUID)' },
         deliverableId: { type: 'string', description: 'Deliverable id (update, deactivate)' },
+        setId: { type: 'string', description: 'Deliverable template set to apply (apply_template, UUID)' },
+        contractId: { type: 'string', description: 'Contract the created deliverables attach to (apply_template, UUID)' },
+        effectiveFrom: { type: 'string', description: 'ISO date YYYY-MM-DD; defaults to the contract start date, else today (apply_template)' },
+        ownerUserId: { type: 'string', description: 'Owner/assignee for every created deliverable (apply_template, UUID)' },
         occurrenceId: { type: 'string', description: 'Occurrence id (deliver, waive, reopen, reschedule, link_evidence)' },
         input: { type: 'object', description: 'Create payload: name, cadence (monthly|quarterly|semiannual|annual|one_time), anchorDueDate, effectiveFrom (YYYY-MM-DD), optional contractId, leadDays, graceDays, artifactRequired, completionMode, ownerUserId, ticketCategoryId, autoEvidenceReportId, portalVisible' },
         patch: { type: 'object', description: 'Update payload (any create field except cadence and anchorDueDate, plus active)' },
@@ -205,6 +237,17 @@ export const MANAGE_DELIVERABLES_TOOL: AiTool = {
         case 'link_evidence':
           return JSON.stringify(await addEvidence(orgId, String(input.occurrenceId),
             reportRunEvidenceRefSchema.parse({ kind: 'report_run', reportRunId: input.reportRunId }), actor));
+        case 'apply_template': {
+          const parsed = applyTemplateSetSchema.parse({
+            setId: String(input.setId),
+            contractId: optionalString(input.contractId),
+            effectiveFrom: optionalString(input.effectiveFrom),
+            ownerUserId: optionalString(input.ownerUserId),
+          });
+          return JSON.stringify(await applyTemplateSet(orgId, parsed.setId, {
+            contractId: parsed.contractId, effectiveFrom: parsed.effectiveFrom, ownerUserId: parsed.ownerUserId,
+          }, templateActorFromAuth(auth)));
+        }
         default:
           return unknownAction(action);
       }
@@ -261,6 +304,31 @@ export const MANAGE_KEY_DATES_TOOL: AiTool = {
         default:
           return unknownAction(action);
       }
+    } catch (err) { return toToolError(err); }
+  },
+};
+
+export const LIST_DELIVERABLE_TEMPLATES_TOOL: AiTool = {
+  tier: 2 as AiToolTier,
+  deviceArgs: [],
+  definition: {
+    name: 'list_deliverable_templates',
+    description:
+      'List deliverable template sets the caller can use: sets owned by an accessible organization, plus the partner-wide sets '
+      + '("all organizations") when the caller holds a partner token. Each set lists its items with cadence, lead and grace days and '
+      + 'whether an artifact is required. Read-only.',
+    input_schema: {
+      type: 'object' as const,
+      properties: { orgId: { type: 'string', description: 'Filter to sets owned by one organization (UUID)' } },
+      required: [],
+    },
+  },
+  handler: async (input, auth) => {
+    const refusal = partnerScopeRefusal(auth);
+    if (refusal) return refusal;
+    try {
+      const sets = await listTemplateSets(templateActorFromAuth(auth), { orgId: optionalString(input.orgId) });
+      return JSON.stringify({ sets, showing: sets.length });
     } catch (err) { return toToolError(err); }
   },
 };
@@ -370,6 +438,7 @@ export const MANAGE_ORG_DOCUMENTS_TOOL: AiTool = {
 };
 
 export function registerDeliverableTools(aiTools: Map<string, AiTool>): void {
+  aiTools.set('list_deliverable_templates', LIST_DELIVERABLE_TEMPLATES_TOOL);
   aiTools.set('list_deliverables', LIST_DELIVERABLES_TOOL);
   aiTools.set('manage_deliverables', MANAGE_DELIVERABLES_TOOL);
   aiTools.set('manage_key_dates', MANAGE_KEY_DATES_TOOL);

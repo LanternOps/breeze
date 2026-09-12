@@ -68,3 +68,25 @@ export function planOccurrences(input: PlanInput): PlannedOccurrence[] {
   }
   return out;
 }
+
+/**
+ * The `anchor_due_date` a deliverable gets when a template item is applied from
+ * `effectiveFrom` (spec §4.6: "end of the first full period after
+ * effective_from").
+ *
+ * anchor = effectiveFrom + cadence months − 1 day, so coveredPeriod(anchor)
+ * begins exactly on effectiveFrom. `one_time` has no period, so its single
+ * obligation is due on the day the schedule starts.
+ *
+ * Month-end caveat (deliberate): addMonthsClamped is not invertible around
+ * short months, so an effectiveFrom of 2026-02-01 yields 2026-02-28 whose
+ * coveredPeriod starts 2026-01-29 — three days early. Advancing a whole cadence
+ * step to avoid that would skip February and delay the first deliverable by a
+ * month, which is the worse error. The anchor names the period END, which is
+ * what the sweep and the customer key on.
+ */
+export function firstAnchorAfter(effectiveFrom: string, cadence: Cadence): string {
+  const months = cadenceMonths(cadence);
+  if (months === null) return effectiveFrom;
+  return addDaysISO(addMonthsClamped(effectiveFrom, months), -1);
+}

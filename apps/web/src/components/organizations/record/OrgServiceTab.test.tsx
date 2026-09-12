@@ -46,6 +46,20 @@ vi.mock('@/components/deliverables/OccurrenceDrawer', () => ({
     <div data-testid="occurrence-drawer">{props.deliverable.name}</div>
   ),
 }));
+const applyTemplateProps = vi.fn();
+vi.mock('@/components/deliverables/ApplyTemplateModal', () => ({
+  default: (props: Record<string, unknown>) => {
+    applyTemplateProps(props);
+    const onApplied = props.onApplied as (() => void) | undefined;
+    return (
+      <div data-testid="apply-template-modal-stub">
+        <button type="button" data-testid="stub-apply" onClick={() => onApplied?.()}>
+          apply
+        </button>
+      </div>
+    );
+  },
+}));
 
 const ORG_ID = 'org-record-1';
 
@@ -108,6 +122,7 @@ afterEach(() => {
   ambientFetch.mockClear();
   tableProps.mockClear();
   formProps.mockClear();
+  applyTemplateProps.mockClear();
 });
 
 describe('OrgServiceTab', () => {
@@ -228,5 +243,30 @@ describe('OrgServiceTab', () => {
     } finally {
       errSpy.mockRestore();
     }
+  });
+
+  it('opens the apply-template modal org-pinned via orgFetch and refetches its deliverables after a successful apply', async () => {
+    const orgFetch = fetchFor([deliverable({ id: 'd-1', name: 'Monthly report' })]);
+    render(<OrgServiceTab orgId={ORG_ID} orgFetch={orgFetch} />);
+    await screen.findByTestId('deliverables-table');
+    expect(screen.queryByTestId('apply-template-modal-stub')).toBeNull();
+
+    await userEvent.click(screen.getByTestId('org-service-apply-template'));
+    await screen.findByTestId('apply-template-modal-stub');
+    const props = applyTemplateProps.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(props.orgId).toBe(ORG_ID);
+    expect(props.fetcher).toBe(orgFetch);
+    expect(props.contractId).toBeUndefined();
+
+    const callsList = () => (orgFetch as unknown as ReturnType<typeof vi.fn>).mock.calls as [string][];
+    const callsBefore = callsList().filter(([path]) => path === `/orgs/${ORG_ID}/deliverables`).length;
+
+    await userEvent.click(screen.getByTestId('stub-apply'));
+    // The modal closes and the deliverables list is reloaded.
+    expect(screen.queryByTestId('apply-template-modal-stub')).toBeNull();
+    await waitFor(() => {
+      const callsAfter = callsList().filter(([path]) => path === `/orgs/${ORG_ID}/deliverables`).length;
+      expect(callsAfter).toBeGreaterThan(callsBefore);
+    });
   });
 });

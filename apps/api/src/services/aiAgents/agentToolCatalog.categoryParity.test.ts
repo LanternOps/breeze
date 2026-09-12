@@ -139,6 +139,7 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   // above — the AI Risk page has no deliverables/key-dates copy yet, and
   // authoring a tier + description + category for them belongs with the
   // customer-facing deliverables UI, not this wave.
+  'list_deliverable_templates',
   'list_deliverables',
   'list_invoices',
   // Org document library (service deliverables W03) — same family as the other

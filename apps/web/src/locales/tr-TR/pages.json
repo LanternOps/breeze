@@ -214,6 +214,10 @@
       "sites": {
         "title": "Siteler",
         "description": "Konumları, saat dilimlerini ve siteye özel ayarları yapılandırın."
+      },
+      "deliverableTemplates": {
+        "title": "Teslimat şablonları",
+        "description": "Bir hizmet katmanını bir kez tanımlayın ve teslimatlarını istediğiniz müşteriye uygulayın."
       }
     }
   },

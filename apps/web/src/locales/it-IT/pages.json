@@ -214,6 +214,10 @@
       "sites": {
         "title": "Sedi",
         "description": "Configura sedi, fusi orari e impostazioni specifiche per sede."
+      },
+      "deliverableTemplates": {
+        "title": "Modelli di deliverable",
+        "description": "Definisci un livello di servizio una volta e applica i suoi deliverable a qualsiasi cliente."
       }
     }
   },

@@ -407,6 +407,19 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   ai_budget_reservations: { kind: 'repoint-dedupe', key: ['idempotency_key'] }, // verified: ai_budget_reservations_org_idempotency_uidx (org_id, idempotency_key). Its composite (session_id, org_id) FK to ai_sessions is DEFERRABLE INITIALLY IMMEDIATE so the merge can re-point ai_sessions and this table in separate statements.
   client_ai_usage: { kind: 'repoint-dedupe', key: ['client_user_id', 'period', 'period_key'] }, // verified: client_ai_usage_bucket_uniq (org_id, client_user_id, period, period_key)
   contact_external_links: { kind: 'repoint-dedupe', key: ['system', 'external_id'] }, // verified: contact_external_links_uniq (org_id, system, external_id)
+  // deliverable_template_sets_org_name_uq (org_id, name) WHERE org_id IS NOT NULL
+  // (2026-10-16-100500) — a plain repoint raises 23505 when both orgs own a set
+  // with the same name. Partner-wide sets (org_id NULL) are never merge
+  // participants, and keyWhere keeps them out of the collision predicate on
+  // both sides. A dropped loser set takes its items with it (both branch FKs
+  // are ON DELETE CASCADE), and a template set carries no delivery history —
+  // the deliverables it produced are separate rows with their own disposition.
+  deliverable_template_sets: { kind: 'repoint-dedupe', key: ['name'], keyWhere: '{org_id} IS NOT NULL' },
+  // Items ride the parent: their only unique is (set_id, name), which no
+  // repoint can collide on, and both (set_id, org_id)/(set_id, partner_id)
+  // branch FKs are DEFERRABLE INITIALLY IMMEDIATE so parent and child may
+  // repoint in separate statements under SET CONSTRAINTS ALL DEFERRED.
+  deliverable_template_items: { kind: 'repoint' },
   delegant_m365_connections: { kind: 'repoint-dedupe', key: ['customer_label'] }, // verified: delegant_m365_org_customer_uniq (org_id, customer_label)
   remediation_suggestions: { kind: 'repoint-dedupe', key: ['source_type', 'source_id'] }, // superset of its four partial uniques (org_id, source_type, source_id, {script_id|script_template_id|playbook_id|target_type}); derived rows, over-dropping is safe
   // service_deliverables_org_contract_name_uq (org_id, COALESCE(contract_id, nil), name)

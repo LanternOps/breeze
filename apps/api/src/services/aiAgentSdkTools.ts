@@ -14,7 +14,7 @@ import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { executeTool, aiTools } from './aiTools';
-import { LIST_DELIVERABLES_TOOL, MANAGE_DELIVERABLES_TOOL, MANAGE_KEY_DATES_TOOL } from './aiToolsDeliverables';
+import { LIST_DELIVERABLE_TEMPLATES_TOOL, LIST_DELIVERABLES_TOOL, MANAGE_DELIVERABLES_TOOL, MANAGE_KEY_DATES_TOOL } from './aiToolsDeliverables';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
@@ -290,8 +290,9 @@ export const TOOL_TIERS = {
   list_contracts: 2,
   get_contract: 2,
   manage_contracts: 2,          // activate/pause/resume/cancel escalate to 3 in guardrails
+  list_deliverable_templates: 2,
   list_deliverables: 2,
-  manage_deliverables: 2,       // no action escalates: apply_template (the gated one) is W05
+  manage_deliverables: 2,       // apply_template escalates to 3 in guardrails (W05)
   manage_key_dates: 2,
   list_org_documents: 2,
   manage_org_documents: 2,
@@ -2672,13 +2673,24 @@ export function createBreezeMcpServer(
     ),
 
     tool(
+      'list_deliverable_templates',
+      LIST_DELIVERABLE_TEMPLATES_TOOL.definition.description ?? 'List deliverable template sets. Read-only.',
+      { orgId: uuid.optional() },
+      makeHandler('list_deliverable_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
       'manage_deliverables',
       MANAGE_DELIVERABLES_TOOL.definition.description ?? 'Create and manage service deliverables and their occurrences.',
       {
-        action: z.enum(['create', 'update', 'deactivate', 'deliver', 'waive', 'reopen', 'reschedule', 'link_evidence']),
+        action: z.enum(['create', 'update', 'deactivate', 'deliver', 'waive', 'reopen', 'reschedule', 'link_evidence', 'apply_template']),
         orgId: uuid.optional(),
         deliverableId: uuid.optional(),
         occurrenceId: uuid.optional(),
+        setId: uuid.optional(),
+        contractId: uuid.optional(),
+        effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        ownerUserId: uuid.optional(),
         input: z.record(z.string(), z.unknown()).optional(),
         patch: z.record(z.string(), z.unknown()).optional(),
         note: z.string().max(4000).optional(),

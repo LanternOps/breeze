@@ -129,6 +129,7 @@ export * from './llmEgressEvents';
 export * from './invoiceDocuments';
 export * from './contracts';
 export * from './serviceDeliverables';
+export * from './deliverableTemplates';
 export * from './orgDocuments';
 export * from './orgKeyDates';
 export * from './quotes';

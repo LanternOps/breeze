@@ -154,5 +154,66 @@
     "evidenceRemoved": "Evidencia quitada",
     "deactivated": "Entregable desactivado",
     "evidenceUploaded": "Evidencia subida"
+  },
+  "templates": {
+    "pageTitle": "Plantillas de entregables",
+    "pageDescription": "Defina un nivel de servicio una vez y aplíquelo a cualquier cliente. Los conjuntos de todo el partner están disponibles para cada organización que administra.",
+    "empty": "Aún no hay conjuntos de plantillas.",
+    "allOrganizations": "Todas las orgs",
+    "actions": {
+      "newSet": "Nuevo conjunto de plantillas",
+      "addItem": "Agregar entregable",
+      "apply": "Aplicar conjunto de plantillas",
+      "edit": "Editar",
+      "delete": "Eliminar",
+      "save": "Guardar",
+      "cancel": "Cancelar"
+    },
+    "form": {
+      "name": "Nombre del conjunto",
+      "description": "Descripción",
+      "itemName": "Nombre del entregable",
+      "cadence": "Frecuencia",
+      "leadDays": "Abrir este número de días antes del vencimiento",
+      "graceDays": "Marcar como incumplido este número de días después del vencimiento",
+      "artifactRequired": "Evidencia requerida",
+      "completionMode": "Finalización"
+    },
+    "ownerScope": {
+      "legend": "¿Para quién es este conjunto?",
+      "allOrganizations": "Todas las organizaciones (todo el partner)",
+      "thisOrganizationOnly": "Solo esta organización"
+    },
+    "apply": {
+      "title": "Aplicar conjunto de plantillas",
+      "set": "Conjunto de plantillas",
+      "contract": "Contrato (opcional)",
+      "noContract": "Sin contrato",
+      "effectiveFrom": "Vigente desde",
+      "owner": "Responsable (opcional)",
+      "submit": "Aplicar",
+      "created_one": "Se creó {{count}} entregable",
+      "created_other": "Se crearon {{count}} entregables",
+      "skipped": "Omitidos (ya existentes): {{names}}"
+    },
+    "errors": {
+      "collision": "Estos entregables ya existen en el destino: {{names}}",
+      "duplicateSetName": "Ya existe un conjunto de plantillas con este nombre.",
+      "duplicateItemName": "Ya existe un elemento con este nombre en el conjunto.",
+      "partnerWideDenied": "Administrar plantillas de todo el partner requiere acceso completo a la organización del partner.",
+      "loadFailed": "No se pudieron cargar los conjuntos de plantillas.",
+      "saveFailed": "No se pudo guardar el conjunto de plantillas.",
+      "deleteFailed": "No se pudo eliminar el conjunto de plantillas.",
+      "itemSaveFailed": "No se pudo guardar el entregable.",
+      "itemDeleteFailed": "No se pudo quitar el entregable.",
+      "applyFailed": "No se pudo aplicar el conjunto de plantillas."
+    },
+    "toast": {
+      "setSaved": "Conjunto de plantillas guardado",
+      "setDeleted": "Conjunto de plantillas eliminado",
+      "itemSaved": "Entregable guardado",
+      "itemDeleted": "Entregable eliminado",
+      "applied": "Conjunto de plantillas aplicado"
+    }
   }
 }

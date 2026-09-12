@@ -154,5 +154,66 @@
     "evidenceRemoved": "Justificatif retiré",
     "deactivated": "Livrable désactivé",
     "evidenceUploaded": "Justificatif téléversé"
+  },
+  "templates": {
+    "pageTitle": "Modèles de livrables",
+    "pageDescription": "Définissez un niveau de service une fois et appliquez-le à n'importe quel client. Les ensembles valables pour tout le partenaire sont disponibles pour chaque organisation que vous gérez.",
+    "empty": "Aucun ensemble de modèles pour le moment.",
+    "allOrganizations": "Toutes les orgs",
+    "actions": {
+      "newSet": "Nouvel ensemble de modèles",
+      "addItem": "Ajouter un livrable",
+      "apply": "Appliquer l'ensemble de modèles",
+      "edit": "Modifier",
+      "delete": "Supprimer",
+      "save": "Enregistrer",
+      "cancel": "Annuler"
+    },
+    "form": {
+      "name": "Nom de l'ensemble",
+      "description": "Descriptif",
+      "itemName": "Nom du livrable",
+      "cadence": "Fréquence",
+      "leadDays": "Ouvrir ce nombre de jours avant l'échéance",
+      "graceDays": "Marquer comme manqué ce nombre de jours après l'échéance",
+      "artifactRequired": "Justificatif requis",
+      "completionMode": "Achèvement"
+    },
+    "ownerScope": {
+      "legend": "Pour qui est cet ensemble ?",
+      "allOrganizations": "Toutes les organisations (tout le partenaire)",
+      "thisOrganizationOnly": "Cette organisation uniquement"
+    },
+    "apply": {
+      "title": "Appliquer l'ensemble de modèles",
+      "set": "Ensemble de modèles",
+      "contract": "Contrat (facultatif)",
+      "noContract": "Aucun contrat",
+      "effectiveFrom": "En vigueur à partir du",
+      "owner": "Responsable (facultatif)",
+      "submit": "Appliquer",
+      "created_one": "{{count}} livrable créé",
+      "created_other": "{{count}} livrables créés",
+      "skipped": "Ignorés (déjà présents) : {{names}}"
+    },
+    "errors": {
+      "collision": "Ces livrables existent déjà sur la cible : {{names}}",
+      "duplicateSetName": "Un ensemble de modèles portant ce nom existe déjà.",
+      "duplicateItemName": "Un élément portant ce nom existe déjà dans l'ensemble.",
+      "partnerWideDenied": "La gestion des modèles valables pour tout le partenaire nécessite un accès complet à l'organisation partenaire.",
+      "loadFailed": "Impossible de charger les ensembles de modèles.",
+      "saveFailed": "Impossible d'enregistrer l'ensemble de modèles.",
+      "deleteFailed": "Impossible de supprimer l'ensemble de modèles.",
+      "itemSaveFailed": "Impossible d'enregistrer le livrable.",
+      "itemDeleteFailed": "Impossible de retirer le livrable.",
+      "applyFailed": "Impossible d'appliquer l'ensemble de modèles."
+    },
+    "toast": {
+      "setSaved": "Ensemble de modèles enregistré",
+      "setDeleted": "Ensemble de modèles supprimé",
+      "itemSaved": "Livrable enregistré",
+      "itemDeleted": "Livrable retiré",
+      "applied": "Ensemble de modèles appliqué"
+    }
   }
 }
