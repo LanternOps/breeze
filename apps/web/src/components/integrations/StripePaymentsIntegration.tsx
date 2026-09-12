@@ -35,6 +35,16 @@ interface ConnectState {
     lastPolledAt: string | null;
     error: string | null;
   };
+  /** SEC-150 Checkout-session revocation health. `credentialUnavailable` is the
+   *  only class the partner can act on — the payment link cannot be killed
+   *  because the key that minted it is gone, so the links must be reissued. It
+   *  is surfaced here rather than emailed: the fix lives on this card. */
+  sessionRevocation?: {
+    blocked: number;
+    credentialUnavailable: number;
+    chargedRepair: number;
+    pending: number;
+  };
 }
 
 /** Mask an `acct_…` id so only the last 4 chars are shown (e.g. `acct_••••1A2b`). */
@@ -62,7 +72,10 @@ export default function StripePaymentsIntegration() {
       setState(
         body.status === "connected" || body.status === "reconnect_required"
           ? body
-          : { status: "disconnected" },
+          // Revocation health survives a disconnect on purpose: a partner who
+          // just pulled the integration is exactly the one with sessions whose
+          // credential is gone.
+          : { status: "disconnected", sessionRevocation: body.sessionRevocation },
       );
     } catch {
       setLoadError(true);
@@ -219,6 +232,43 @@ export default function StripePaymentsIntegration() {
         >
           {t("stripePaymentsIntegration.reconciliationError", {
             reason: state.reconciliation.error ?? "",
+          })}
+        </p>
+      ) : null}
+
+      {!loading && !loadError && (state.sessionRevocation?.credentialUnavailable ?? 0) > 0 ? (
+        <p
+          role="alert"
+          className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          data-testid="stripe-revocation-credential-unavailable"
+        >
+          {t("stripePaymentsIntegration.revocationCredentialUnavailable", {
+            count: state.sessionRevocation?.credentialUnavailable ?? 0,
+          })}
+        </p>
+      ) : null}
+
+      {!loading && !loadError
+        && (state.sessionRevocation?.blocked ?? 0) > (state.sessionRevocation?.credentialUnavailable ?? 0) ? (
+        <p
+          role="alert"
+          className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          data-testid="stripe-revocation-blocked"
+        >
+          {t("stripePaymentsIntegration.revocationBlocked", {
+            count: (state.sessionRevocation?.blocked ?? 0) - (state.sessionRevocation?.credentialUnavailable ?? 0),
+          })}
+        </p>
+      ) : null}
+
+      {!loading && !loadError && (state.sessionRevocation?.chargedRepair ?? 0) > 0 ? (
+        <p
+          role="alert"
+          className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          data-testid="stripe-revocation-charged-repair"
+        >
+          {t("stripePaymentsIntegration.revocationChargedRepair", {
+            count: state.sessionRevocation?.chargedRepair ?? 0,
           })}
         </p>
       ) : null}

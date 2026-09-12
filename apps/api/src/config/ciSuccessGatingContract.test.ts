@@ -40,10 +40,10 @@ const blockingEnd = ciSuccess.indexOf('; then', blockingStart) + '; then'.length
 const blockingCondition = ciSuccess.slice(blockingStart, blockingEnd);
 const conditionalChecks = ciSuccess.slice(blockingEnd);
 
-// smoke-test and guided-setup-smoke are deliberately non-blocking on PRs and required on main
-// pushes via the IS_PR guard (both boot a full stack; guided-setup-smoke also runs the real
+// The smoke suites and their shared image producer are non-blocking on PRs and required
+// in merge groups/manual validation via IS_PR (both boot a full stack; guided setup runs the real
 // self-host installer + systemd unit on the runner).
-const PR_EXEMPT_JOBS = new Set(['smoke-test', 'guided-setup-smoke']);
+const PR_EXEMPT_JOBS = new Set(['build-smoke-images', 'smoke-test', 'guided-setup-smoke']);
 
 const UNGATED_JOBS = new Set([
   'ci-success', // the aggregate itself

@@ -3,11 +3,11 @@ import { tServer, serverBundleLocales } from './server';
 
 describe('tServer', () => {
   it('resolves an English key', () => {
-    expect(tServer('en', 'titles.devices')).toBe('Devices');
+    expect(tServer('en', 'titles.devices')).toBe('Devices & Assets');
   });
 
   it('resolves a translated key for a non-English locale', () => {
-    expect(tServer('pt-BR', 'titles.devices')).toBe('Dispositivos');
+    expect(tServer('pt-BR', 'titles.devices')).toBe('Dispositivos e ativos');
   });
 
   it('falls back to English when the locale is undefined', () => {
