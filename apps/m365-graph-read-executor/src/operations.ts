@@ -1,5 +1,6 @@
 import {
   completeConsentResultSchema,
+  isM365SyncAction,
   readActionResultSchema,
   retestResultSchema,
   type CompleteConsentRequest,
@@ -213,6 +214,13 @@ export async function readActionOperation(
   dependencies: ExecutorOperationDependencies,
 ): Promise<ReadActionResult> {
   if (!CANONICAL_UUID.test(request.tenantId)) {
+    return { success: false, errorCode: 'graph_response_invalid' };
+  }
+  // The route already rejects these with 400 action_not_allowed; this keeps the
+  // narrowing honest and survives a future caller that bypasses the route.
+  if (isM365SyncAction(request.action)) {
+    // readActionOperation returns the INTERACTIVE failure shape, so this one
+    // keeps `errorCode` — it is a ReadActionResult, not a sync response.
     return { success: false, errorCode: 'graph_response_invalid' };
   }
   const credential = await fetchCredential(dependencies);
