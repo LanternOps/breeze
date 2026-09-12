@@ -1,13 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { M365_READ_ACTION_FIELDS } from '@breeze/shared/m365';
-import { GraphClientError, type GraphSyncPageSet, type MicrosoftGraphClient } from './graphClient';
-import { executeGraphSyncAction, type GraphSyncActionContext } from './syncActions';
-import type { OpaqueAccessToken } from './tokenClient';
-import { createSyncContinuationCodec } from '../syncContinuation';
-import { createSigninLimiter } from '../signinLimiter';
+import { GraphClientError, type GraphSyncPageSet } from './graphClient';
+import { executeGraphSyncAction } from './syncActions';
+import { context, page, stubClient } from './syncActions.testHarness';
 
-const ACCESS_TOKEN = 'opaque-test-access-token' as OpaqueAccessToken;
-const TENANT_ID = '11111111-1111-4111-8111-111111111111';
 const ADA = '22222222-2222-4222-8222-222222222222';
 const GRACE = '33333333-3333-4333-8333-333333333333';
 const ADMINS_GROUP = '44444444-4444-4444-8444-444444444444';
@@ -43,46 +39,6 @@ const ROLE_ASSIGNMENTS_PAGE = [
 ];
 
 const GROUP_MEMBERS_PAGE = [{ id: GRACE }];
-
-type Call = { path: string; query?: Record<string, string>; startUrl?: string };
-
-function stubClient(responses: Record<string, GraphSyncPageSet | GraphClientError>): {
-  client: MicrosoftGraphClient; calls: Call[];
-} {
-  const calls: Call[] = [];
-  const client = {
-    async probeTenant() { throw new Error('unused'); },
-    async readResource() { throw new Error('unused'); },
-    async readCollection() { throw new Error('sync actions use readSyncCollection'); },
-    async readSyncCollection(input: Parameters<MicrosoftGraphClient['readSyncCollection']>[0]) {
-      calls.push({ path: input.path, query: input.query, startUrl: input.startUrl });
-      const response = responses[input.path];
-      if (response === undefined) throw new Error(`no fixture for ${input.path}`);
-      if (response instanceof GraphClientError) throw response;
-      if (input.beforePage !== undefined) input.beforePage();
-      return response;
-    },
-  } as unknown as MicrosoftGraphClient;
-  return { client, calls };
-}
-
-const page = (items: Record<string, unknown>[]): GraphSyncPageSet => ({ items, stopReason: 'complete', pages: 1 });
-
-function context(client: MicrosoftGraphClient): GraphSyncActionContext {
-  return {
-    accessToken: ACCESS_TOKEN,
-    graphClient: client,
-    tenantId: TENANT_ID,
-    limits: {
-      syncMaxInFlight: 4, maxInFlight: 32, signinActivityRpm: 4, signinPagesPerCall: 5,
-      maxItemsUsers: 25_000, maxItemsDevices: 25_000, maxItemsCaPolicies: 500,
-      maxItemsSkus: 200, continuationKey: Buffer.alloc(32, 1),
-    },
-    continuations: createSyncContinuationCodec({ key: Buffer.alloc(32, 1) }),
-    signinLimiter: createSigninLimiter({ requestsPerMinute: 4 }),
-    now: () => new Date('2026-09-08T12:00:00.000Z'),
-  };
-}
 
 const HAPPY = {
   '/users': page(USERS_PAGE),

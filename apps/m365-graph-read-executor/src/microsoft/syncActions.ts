@@ -269,6 +269,205 @@ async function syncUsers(
   });
 }
 
+const DEVICES_SELECT = M365_READ_ACTION_FIELDS['m365.sync.intune_devices'].join(',');
+const CA_RETRY = { maxAttempts: 3, cumulativeBudgetMs: 60_000, fixedBackoffMs: 2_000 } as const;
+const SECURE_SCORE_TOP_BACKFILL = 90;
+const SECURE_SCORE_TOP_INCREMENTAL = 3;
+const SECURE_SCORE_MAX_CONTROLS = 500;
+
+// --- m365.sync.signin_activity ----------------------------------------------
+
+async function syncSigninActivity(
+  action: Extract<M365SyncAction, { type: 'm365.sync.signin_activity' }>,
+  context: GraphSyncActionContext,
+  fetchedAt: Date,
+): Promise<M365SyncActionResponse> {
+  // A bad continuation must fail loudly (tenant replay attempt or an expiry) —
+  // silently restarting would hide both.
+  const startUrl = action.continuation === undefined
+    ? undefined
+    : context.continuations.open({
+      tenantId: context.tenantId, action: action.type, continuation: action.continuation,
+    });
+
+  let pageSet: GraphSyncPageSet;
+  try {
+    pageSet = await context.graphClient.readSyncCollection({
+      accessToken: context.accessToken,
+      path: '/users',
+      query: { '$select': 'id,signInActivity', '$top': '500' },
+      ...(startUrl === undefined ? {} : { startUrl }),
+      limits: limitsFor(context, context.limits.maxItemsUsers, {
+        maxPages: context.limits.signinPagesPerCall,
+      }),
+      beforePage: () => context.signinLimiter.tryTake(),
+    });
+  } catch (error) {
+    // Graph answers 403 for signInActivity on a tenant without Entra ID P1.
+    if (error instanceof GraphClientError
+      && (error.code === 'graph_permission_missing' || error.code === 'graph_license_required')) {
+      return succeed(action, [], {
+        truncated: false, fetchedAt, sources: { signInActivity: 'unlicensed' },
+      });
+    }
+    throw error;
+  }
+
+  const items = pageSet.items.flatMap((user) => {
+    if (typeof user.id !== 'string') return [];
+    const activity = user.signInActivity;
+    const last = isRecord(activity) && typeof activity.lastSuccessfulSignInDateTime === 'string'
+      ? activity.lastSuccessfulSignInDateTime
+      : null;
+    // lastSignInDateTime counts FAILED interactive attempts and is never projected.
+    return [{ id: user.id, lastSuccessfulSignInAt: last }];
+  });
+
+  const resumeLink = pageSet.nextLink ?? (pageSet.stopReason === 'paused' ? startUrl : undefined);
+  const continuation = resumeLink === undefined
+    ? undefined
+    : context.continuations.seal({ tenantId: context.tenantId, action: action.type, nextLink: resumeLink });
+
+  return succeed(action, items, {
+    truncated: pageSet.stopReason === 'max_items',
+    fetchedAt,
+    sources: { signInActivity: pageSet.stopReason === 'paused' ? 'throttled' : 'ok' },
+    ...(continuation === undefined ? {} : { continuation }),
+  });
+}
+
+// --- m365.sync.intune_devices ------------------------------------------------
+
+async function syncIntuneDevices(
+  action: Extract<M365SyncAction, { type: 'm365.sync.intune_devices' }>,
+  context: GraphSyncActionContext,
+  fetchedAt: Date,
+): Promise<M365SyncActionResponse> {
+  const pageSet = await context.graphClient.readSyncCollection({
+    accessToken: context.accessToken,
+    path: '/deviceManagement/managedDevices',
+    query: { '$select': DEVICES_SELECT, '$top': '999' },
+    limits: limitsFor(context, context.limits.maxItemsDevices),
+  });
+  return succeed(action, pageSet.items, {
+    truncated: pageSet.stopReason !== 'complete',
+    fetchedAt,
+    sources: { managedDevices: 'ok' },
+  });
+}
+
+// --- m365.sync.ca_policies -----------------------------------------------
+
+async function syncCaPolicies(
+  action: Extract<M365SyncAction, { type: 'm365.sync.ca_policies' }>,
+  context: GraphSyncActionContext,
+  fetchedAt: Date,
+): Promise<M365SyncActionResponse> {
+  // No $select: conditions/grantControls/sessionControls are whole objects and
+  // Graph's CA endpoint is 1 req/s per tenant with NO Retry-After on 429, so a
+  // fixed backoff replaces header-driven waiting (spec §4.1).
+  const pageSet = await context.graphClient.readSyncCollection({
+    accessToken: context.accessToken,
+    path: '/identity/conditionalAccess/policies',
+    limits: limitsFor(context, context.limits.maxItemsCaPolicies, { retry: { ...CA_RETRY } }),
+  });
+  return succeed(action, pageSet.items, {
+    truncated: pageSet.stopReason !== 'complete',
+    fetchedAt,
+    sources: { policies: 'ok' },
+  });
+}
+
+// --- m365.sync.skus --------------------------------------------------------
+
+async function syncSkus(
+  action: Extract<M365SyncAction, { type: 'm365.sync.skus' }>,
+  context: GraphSyncActionContext,
+  fetchedAt: Date,
+): Promise<M365SyncActionResponse> {
+  const pageSet = await context.graphClient.readSyncCollection({
+    accessToken: context.accessToken,
+    path: '/subscribedSkus',   // rejects $top
+    limits: limitsFor(context, context.limits.maxItemsSkus, { maxPages: 5 }),
+  });
+  const items = pageSet.items.map((sku) => {
+    const prepaid = sku.prepaidUnits;
+    return {
+      ...sku,
+      prepaidUnits: isRecord(prepaid)
+        ? { enabled: prepaid.enabled ?? null, suspended: prepaid.suspended ?? null, warning: prepaid.warning ?? null }
+        : null,
+    };
+  });
+  return succeed(action, items, {
+    truncated: pageSet.stopReason !== 'complete',
+    fetchedAt,
+    sources: { subscribedSkus: 'ok' },
+  });
+}
+
+// --- m365.sync.secure_score ------------------------------------------------
+
+async function syncSecureScore(
+  action: Extract<M365SyncAction, { type: 'm365.sync.secure_score' }>,
+  context: GraphSyncActionContext,
+  fetchedAt: Date,
+): Promise<M365SyncActionResponse> {
+  const top = action.backfill === true ? SECURE_SCORE_TOP_BACKFILL : SECURE_SCORE_TOP_INCREMENTAL;
+  const scores = await context.graphClient.readSyncCollection({
+    accessToken: context.accessToken,
+    path: '/security/secureScores',
+    query: { '$top': String(top) },
+    limits: limitsFor(context, top, { maxPages: 5 }),
+  });
+
+  let profileState: M365SyncSourceState = 'ok';
+  const profiles = new Map<string, { title: string | null; maxScore: number | null }>();
+  try {
+    const profileSet = await context.graphClient.readSyncCollection({
+      accessToken: context.accessToken,
+      path: '/security/secureScoreControlProfiles',
+      query: { '$select': 'id,title,maxScore,controlCategory' },
+      limits: limitsFor(context, SECURE_SCORE_MAX_CONTROLS),
+    });
+    if (profileSet.stopReason !== 'complete') profileState = 'error';
+    for (const profile of profileSet.items) {
+      if (typeof profile.id !== 'string') continue;
+      profiles.set(profile.id, {
+        title: typeof profile.title === 'string' ? profile.title : null,
+        maxScore: typeof profile.maxScore === 'number' ? profile.maxScore : null,
+      });
+    }
+  } catch (error) {
+    profileState = sourceStateFor(error);
+  }
+
+  const items = scores.items.map((score) => ({
+    ...score,
+    controlScores: Array.isArray(score.controlScores)
+      ? score.controlScores.flatMap((control) => {
+        if (!isRecord(control) || typeof control.controlName !== 'string') return [];
+        const profile = profiles.get(control.controlName);
+        return [{
+          controlName: control.controlName,
+          title: profile?.title ?? null,
+          score: typeof control.score === 'number' ? control.score : null,
+          maxScore: profile?.maxScore ?? null,
+          implementationStatus: typeof control.implementationStatus === 'string'
+            ? control.implementationStatus
+            : null,
+        }];
+      })
+      : [],
+  }));
+
+  return succeed(action, items, {
+    truncated: scores.stopReason !== 'complete',
+    fetchedAt,
+    sources: { secureScores: 'ok', controlProfiles: profileState },
+  });
+}
+
 export async function executeGraphSyncAction(
   action: M365SyncAction,
   context: GraphSyncActionContext,
@@ -278,8 +477,18 @@ export async function executeGraphSyncAction(
     switch (action.type) {
       case 'm365.sync.users':
         return await syncUsers(action, context, fetchedAt);
+      case 'm365.sync.signin_activity':
+        return await syncSigninActivity(action, context, fetchedAt);
+      case 'm365.sync.intune_devices':
+        return await syncIntuneDevices(action, context, fetchedAt);
+      case 'm365.sync.ca_policies':
+        return await syncCaPolicies(action, context, fetchedAt);
+      case 'm365.sync.skus':
+        return await syncSkus(action, context, fetchedAt);
+      case 'm365.sync.secure_score':
+        return await syncSecureScore(action, context, fetchedAt);
       default: {
-        const exhaustive: never = action as never;
+        const exhaustive: never = action;
         throw new Error(`Unhandled M365 sync action: ${JSON.stringify(exhaustive)}`);
       }
     }
