@@ -1,0 +1,10 @@
+{
+  "managed": {
+    "readOnly": "Managed by a monitor",
+    "description": "This record is generated from a monitor and can't be edited directly. Manage it from the monitor instead.",
+    "open": "Open monitor",
+    "badge": "Monitor-managed",
+    "badgeHint": "Managed by a monitor — edit it from the monitor instead.",
+    "monitorLabel": "Monitor"
+  }
+}

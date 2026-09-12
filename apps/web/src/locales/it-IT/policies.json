@@ -835,6 +835,17 @@
         "openAlertsFeature": "Apri Avvisi",
         "legacyAlertRulesMovedToAlerts": "{{count}} regola/e di avviso legacy salvate in questa scheda sono state spostate nella funzione Avvisi di questo criterio. Il monitoraggio non le memorizza più."
       },
+      "monitorsTab": {
+        "attachMonitor": "Collega un monitor",
+        "loadingMonitors": "Caricamento dei monitor…",
+        "noMoreMonitorsToAttach": "Nessun altro monitor disponibile da collegare",
+        "selectAMonitorToAttach": "Seleziona un monitor da collegare…",
+        "noMonitorsAttached": "Nessun monitor ancora collegato a questa policy.",
+        "inherited": "Ereditato",
+        "overrideValue": "Valore di override",
+        "overridesLabel": "Override:",
+        "failedToLoadMonitors": "Impossibile caricare i monitor"
+      },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Acquisisci prompt di elevazione UAC di Windows",
         "theAgentObservesUACConsentPromptsAnd": "L'agent osserva i prompt di consenso UAC e li registra come richieste di elevazione per la revisione PAM. L'acquisizione è disattivata per impostazione predefinita: abilitala qui per includere l'ambito di un dispositivo in PAM.",

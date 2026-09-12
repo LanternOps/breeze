@@ -1,0 +1,10 @@
+{
+  "managed": {
+    "readOnly": "Von einem Monitor verwaltet",
+    "description": "Dieser Datensatz wird von einem Monitor erzeugt und kann nicht direkt bearbeitet werden. Verwalten Sie ihn stattdessen über den Monitor.",
+    "open": "Monitor öffnen",
+    "badge": "Monitor-verwaltet",
+    "badgeHint": "Von einem Monitor verwaltet — bearbeiten Sie ihn stattdessen über den Monitor.",
+    "monitorLabel": "Monitor"
+  }
+}

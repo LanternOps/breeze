@@ -265,6 +265,21 @@ export default function AlertDetails({
                   </a>
                 </div>
               )}
+              {alert.monitorId && (
+                // #5287 — raised by a rule compiled from a monitor definition.
+                // The monitor UI page lands in a later wave; the route is
+                // reserved now so this link lights up without another edit.
+                <div data-testid="alert-details-monitor">
+                  <p className="text-xs text-muted-foreground">{t('monitoring:managed.monitorLabel')}</p>
+                  <a
+                    href={`/monitoring/monitors/${alert.monitorId}`}
+                    className="flex items-center gap-1 text-sm font-medium hover:underline"
+                  >
+                    {t('monitoring:managed.open')}
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </div>
+              )}
               <div>
                 <p className="text-xs text-muted-foreground">{t('alertDetails.triggered')}</p>
                 <p className="text-sm">{formatDateTime(alert.triggeredAt)}</p>

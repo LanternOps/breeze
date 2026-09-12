@@ -835,6 +835,17 @@
         "openAlertsFeature": "Open Alerts",
         "legacyAlertRulesMovedToAlerts": "{{count}} legacy alert rule(s) saved on this tab were moved to the Alerts feature of this policy. Monitoring no longer stores them."
       },
+      "monitorsTab": {
+        "attachMonitor": "Attach a monitor",
+        "loadingMonitors": "Loading monitors…",
+        "noMoreMonitorsToAttach": "No more monitors available to attach",
+        "selectAMonitorToAttach": "Select a monitor to attach…",
+        "noMonitorsAttached": "No monitors attached to this policy yet.",
+        "inherited": "Inherited",
+        "overrideValue": "Override value",
+        "overridesLabel": "Overrides:",
+        "failedToLoadMonitors": "Failed to load monitors"
+      },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capture Windows UAC elevation prompts",
         "theAgentObservesUACConsentPromptsAnd": "The agent observes UAC consent prompts and records them as elevation requests for PAM review. Capture is off by default — enable it here to opt a device's scope into PAM.",

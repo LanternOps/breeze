@@ -57,6 +57,13 @@ export type Automation = {
   // Managed rows are read-only here: the API 409s on edit, delete, toggle and
   // manual trigger, so the UI must not offer any of the four.
   managedByAgentId?: string | null;
+  // Non-null when this automation was compiled from a monitor definition
+  // (#5287). These rows never reach this list — AutomationsPage filters them
+  // out before render, since a compiled automation is an implementation
+  // detail of its monitor, not a job an operator manages directly — but the
+  // field is declared on the shared type for completeness and so a future
+  // caller doesn't have to guess its shape.
+  managedByMonitorId?: string | null;
 };
 
 type AutomationListProps = {

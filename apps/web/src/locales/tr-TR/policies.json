@@ -835,6 +835,17 @@
         "openAlertsFeature": "Uyarıları Aç\nBu sekmede kayıtlı ",
         "legacyAlertRulesMovedToAlerts": "{{count}} eski uyarı kuralları, bu politikanın Uyarılar özelliğine taşındı. İzleme artık bunları saklamaz."
       },
+      "monitorsTab": {
+        "attachMonitor": "Bir izleyici ekle",
+        "loadingMonitors": "İzleyiciler yükleniyor…",
+        "noMoreMonitorsToAttach": "Eklenecek başka izleyici yok",
+        "selectAMonitorToAttach": "Eklenecek bir izleyici seçin…",
+        "noMonitorsAttached": "Bu politikaya henüz izleyici eklenmedi.",
+        "inherited": "Devralındı",
+        "overrideValue": "Geçersiz kılma değeri",
+        "overridesLabel": "Geçersiz kılmalar:",
+        "failedToLoadMonitors": "İzleyiciler yüklenemedi"
+      },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Windows UAC yükseltme istemlerini yakalayın",
         "theAgentObservesUACConsentPromptsAnd": "Temsilci, UAC onay istemlerini gözlemler ve bunları PAM incelemesi için yükseltme talepleri olarak kaydeder. Yakalama varsayılan olarak kapalıdır; bir cihazın kapsamını PAM'e dahil etmek için burada etkinleştirin.",

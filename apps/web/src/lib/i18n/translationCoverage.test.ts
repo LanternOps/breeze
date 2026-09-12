@@ -75,6 +75,8 @@ const namespaceDuplicateBaselines = {
     'devices.json': 174,
     'discovery.json': 17,
     'integrations.json': 23,
+    // +1: monitoring.json managed.monitorLabel — "Monitor" is the identical loanword in this locale (matches the established common.json monitor terminology).
+    'monitoring.json': 1,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // pt-BR.
     'organizations.json': 6, // W01 #5075: cognates — "Sites", "{{count}} site(s)"; +2 W02: device status "Online"/"Offline" are identical cognates in pt-BR
@@ -182,6 +184,8 @@ const namespaceDuplicateBaselines = {
     'devices.json': 125,
     'discovery.json': 17,
     'integrations.json': 31,
+    // +1: monitoring.json managed.monitorLabel — "Monitor" is the identical loanword in this locale (matches the established common.json monitor terminology).
+    'monitoring.json': 1,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // es-419.
     'organizations.json': 1, // W01 #5075: cognate — "Tickets"
@@ -293,6 +297,7 @@ const namespaceDuplicateBaselines = {
     'devices.json': 152,
     'discovery.json': 15,
     'integrations.json': 38,
+    'monitoring.json': 0,
     'organizations.json': 8, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR
     // +1: PR review fix aligning fr-FR terminology with devices.json/settings.json/
     // scripts.json made titles.scripts an intentional cognate ("Script" is the
@@ -415,6 +420,7 @@ const namespaceDuplicateBaselines = {
     'devices.json': 152,
     'discovery.json': 15,
     'integrations.json': 40,
+    'monitoring.json': 0,
     'organizations.json': 7, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA
     // +1: PR review fix aligning fr-CA terminology with fr-FR (fr-CA mirrors it
     // here) made titles.scripts an intentional cognate ("Script" is the
@@ -550,6 +556,8 @@ const namespaceDuplicateBaselines = {
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     'discovery.json': 27,
     'integrations.json': 43,
+    // +1: monitoring.json managed.monitorLabel — "Monitor" is the identical loanword in this locale (matches the established common.json monitor terminology).
+    'monitoring.json': 1,
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
     // interpolation; German uses the same "OS" acronym.
     'organizations.json': 3, // W01 #5075: cognate — "Tickets"; +2 W02: device status "Online"/"Offline" are identical cognates in de-DE
@@ -640,6 +648,8 @@ const namespaceDuplicateBaselines = {
     'devices.json': 144,
     'discovery.json': 22,
     'integrations.json': 81,
+    // +1: monitoring.json managed.monitorLabel — "Monitor" is the identical loanword in this locale (matches the established common.json monitor terminology).
+    'monitoring.json': 1,
     'organizations.json': 3, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term; +2 W02: device status "Online"/"Offline" are identical cognates in it-IT
     'pages.json': 10, // Cognates: Backup, CIS Benchmarks, Dashboard, OneDrive, EDR, Software (x2), Ticket, and two settings-card titles (Ticketing, SSO) — proper nouns/acronyms/loanwords.
     'patches.json': 18,
@@ -715,6 +725,7 @@ const namespaceDuplicateBaselines = {
     'devices.json': 88,
     'discovery.json': 9,
     'integrations.json': 22,
+    'monitoring.json': 0,
     'organizations.json': 1, // W01 #5075: cognate — "{{count}} site"
     'pages.json': 3, // Cognates: CIS Benchmarks, OneDrive, EDR — proper nouns/acronyms.
     'patches.json': 11,
