@@ -11,6 +11,10 @@ You manage automations from the **Automations** page in the Breeze dashboard. Fr
 
 An automation normally belongs to a single organization, but a partner-scoped user with access to every organization can instead create one **partner-wide** ("All orgs") -- see [Partner-wide Automations](#partner-wide-automations-all-organizations) below.
 
+<Aside>
+  Building an `event` automation on `alert.triggered` specifically to respond to a condition you also watch with an Alert Rule? Consider a [Monitor](/features/monitors/) instead -- it bundles the condition, severity, and response actions into one object, deployed through Configuration Policies instead of hand-wiring a rule to a separate automation.
+</Aside>
+
 ---
 
 ## Creating an Automation
