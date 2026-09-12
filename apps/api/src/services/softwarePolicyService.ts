@@ -399,6 +399,11 @@ export function evaluateSoftwareInventory(
             name: rule.name,
             minVersion: rule.minVersion,
             maxVersion: rule.maxVersion,
+            // #5505 D9: the install path resolves the catalog item from here.
+            // `reason` mirrors the audit-mode branch below, which has always
+            // carried it — a `missing` violation dropping it was an oversight.
+            catalogId: rule.catalogId,
+            reason: rule.reason,
           },
           severity: 'high',
           detectedAt,

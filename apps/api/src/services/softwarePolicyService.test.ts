@@ -234,3 +234,70 @@ describe('SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS', () => {
     }
   });
 });
+
+/**
+ * #5505 D9 — a `missing` violation is the ONLY place the install path can
+ * learn WHAT to install. Before this wave the emission dropped the rule's
+ * `catalogId`, and re-matching a violation to its rule by name is not an
+ * option: rule names are not unique within a policy and nothing enforces that
+ * they are.
+ */
+describe('missing violations carry the rule catalogId', () => {
+  const CATALOG_ID = '99999999-9999-4999-8999-999999999999';
+
+  it('emits catalogId and reason from the unmatched rule', () => {
+    const rules = normalizeSoftwarePolicyRules({
+      software: [{ name: '7-Zip', minVersion: '23.0', catalogId: CATALOG_ID, reason: 'Standard archive tool' }],
+      allowUnknown: true,
+    });
+
+    const violations = evaluateSoftwareInventory('allowlist', rules, []);
+    const missing = violations.find((v) => v.type === 'missing');
+
+    expect(missing).toBeDefined();
+    expect(missing?.rule).toEqual({
+      name: '7-Zip',
+      minVersion: '23.0',
+      maxVersion: undefined,
+      catalogId: CATALOG_ID,
+      reason: 'Standard archive tool',
+    });
+  });
+
+  it('leaves catalogId undefined for a rule that has none — never fabricates one', () => {
+    const rules = normalizeSoftwarePolicyRules({
+      software: [{ name: 'Firefox' }],
+      allowUnknown: true,
+    });
+
+    const missing = evaluateSoftwareInventory('allowlist', rules, []).find((v) => v.type === 'missing');
+    expect(missing?.rule?.name).toBe('Firefox');
+    expect(missing?.rule?.catalogId).toBeUndefined();
+  });
+
+  /**
+   * Contract D9 asks whether the new field changes violation matching.
+   * `violationFingerprint` keys a `missing` violation on
+   * `type:rule:name:minVersion:maxVersion` only (softwarePolicyService.ts:107-110),
+   * so it must NOT. Pinned here so W02 can rely on it: a previously-stored
+   * violation with no catalogId still stabilises the new one's detectedAt.
+   */
+  it('does not disturb detectedAt stabilisation against previously-stored violations', () => {
+    const rules = normalizeSoftwarePolicyRules({
+      software: [{ name: '7-Zip', catalogId: CATALOG_ID }],
+      allowUnknown: true,
+    });
+    const next = evaluateSoftwareInventory('allowlist', rules, []);
+
+    const previous = [{
+      type: 'missing',
+      rule: { name: '7-Zip' }, // stored before D9 shipped — no catalogId
+      severity: 'high',
+      detectedAt: '2026-01-01T00:00:00.000Z',
+    }];
+
+    const stabilised = withStableViolationTimestamps(next, previous);
+    expect(stabilised[0]?.detectedAt).toBe('2026-01-01T00:00:00.000Z');
+    expect(stabilised[0]?.rule?.catalogId).toBe(CATALOG_ID);
+  });
+});

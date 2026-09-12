@@ -57,6 +57,13 @@ export type SoftwarePolicyViolation = {
     minVersion?: string;
     maxVersion?: string;
     reason?: string;
+    /**
+     * The catalog item the matched/unmatched rule points at (#5505 D9).
+     * Load-bearing for desired-state install: a `missing` violation is the only
+     * place the install path can learn WHAT to install, and rule names are not
+     * unique within a policy, so re-deriving it by name is not an option.
+     */
+    catalogId?: string;
   };
   severity: 'low' | 'medium' | 'high' | 'critical';
   detectedAt: string;
