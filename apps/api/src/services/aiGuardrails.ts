@@ -1739,11 +1739,29 @@ function registryKeyIsProtected(candidate: string, protectedKey: string): boolea
   );
 }
 
-function touchesProtected(
-  input: Record<string, unknown>,
+/**
+ * Protected-resource matcher over EXPLICIT name lists.
+ *
+ * Split out of `touchesProtected` for the AI script lane (#5612 W04): the
+ * agent path derives names from NAMED INPUT FIELDS (`serviceName`, path keys,
+ * registry keys — this module has never inspected script content), while the
+ * lane derives them from the shared scanner's `ScriptScanResult.touchedNames`.
+ * Same comparison semantics, one implementation — the path/registry
+ * hierarchy normalisation is exactly the part that must not be duplicated.
+ *
+ * Stays a pure function with no DB or registry import
+ * (`aiGuardrails.imports.contract.test.ts`).
+ */
+export function touchesProtectedNames(
+  names: {
+    services?: readonly string[];
+    paths?: readonly string[];
+    registryKeys?: readonly string[];
+    deviceTags?: readonly string[];
+  },
   protectedResources: AiAgentProtectedResources,
 ): string | null {
-  for (const serviceName of leafValuesFor(input, SERVICE_INPUT_KEYS)) {
+  for (const serviceName of names.services ?? []) {
     if (protectedResources.services.some(
       (protectedService) => protectedService.toLowerCase() === serviceName.toLowerCase(),
     )) {
@@ -1751,13 +1769,13 @@ function touchesProtected(
     }
   }
 
-  for (const path of leafValuesFor(input, PATH_INPUT_KEYS)) {
+  for (const path of names.paths ?? []) {
     if (protectedResources.paths.some((protectedPath) => pathIsProtected(path, protectedPath))) {
       return `path "${path}" is protected`;
     }
   }
 
-  for (const registryKey of leafValuesFor(input, REGISTRY_INPUT_KEYS)) {
+  for (const registryKey of names.registryKeys ?? []) {
     if (protectedResources.registryKeys.some(
       (protectedKey) => registryKeyIsProtected(registryKey, protectedKey),
     )) {
@@ -1765,11 +1783,7 @@ function touchesProtected(
     }
   }
 
-  const deviceTags = [
-    ...leafValuesFor(input, DEVICE_TAG_INPUT_KEYS),
-    ...leafValuesFor(input, DEVICE_TAG_ARRAY_INPUT_KEYS),
-  ];
-  for (const deviceTag of deviceTags) {
+  for (const deviceTag of names.deviceTags ?? []) {
     // Case-insensitive, matching services/paths/registry. 'Production' vs
     // 'production' passed before.
     if (protectedResources.deviceTags.some(
@@ -1780,6 +1794,24 @@ function touchesProtected(
   }
 
   return null;
+}
+
+function touchesProtected(
+  input: Record<string, unknown>,
+  protectedResources: AiAgentProtectedResources,
+): string | null {
+  return touchesProtectedNames(
+    {
+      services: leafValuesFor(input, SERVICE_INPUT_KEYS),
+      paths: leafValuesFor(input, PATH_INPUT_KEYS),
+      registryKeys: leafValuesFor(input, REGISTRY_INPUT_KEYS),
+      deviceTags: [
+        ...leafValuesFor(input, DEVICE_TAG_INPUT_KEYS),
+        ...leafValuesFor(input, DEVICE_TAG_ARRAY_INPUT_KEYS),
+      ],
+    },
+    protectedResources,
+  );
 }
 
 function isAgentGuardrailPolicy(
