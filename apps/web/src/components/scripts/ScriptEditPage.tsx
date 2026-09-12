@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ArrowLeft, History, Copy } from 'lucide-react';
 import ScriptForm, { type ScriptFormValues, type ScriptSubmitValues } from './ScriptForm';
 import { mappingToRows } from './ScriptFormSchema';
+import ScriptProvenancePanel from './ScriptProvenancePanel';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { ScopeBadge } from '../shared/ScopeBadge';
@@ -282,6 +283,8 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
           {error}
         </div>
       )}
+
+      {!isNew && scriptId && <ScriptProvenancePanel scriptId={scriptId} />}
 
       <ScriptForm
         onSubmit={handleSubmit}

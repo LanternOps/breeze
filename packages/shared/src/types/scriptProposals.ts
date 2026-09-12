@@ -167,3 +167,30 @@ export interface ScriptProposalDetailDto {
   /** Live-derived for THIS caller — never cached, never trusted from the client. */
   viewer: { canDecide: boolean; canAcknowledge: boolean; canPromote: boolean };
 }
+
+// ---------------------------------------------------------------------------
+// Script version provenance (Task 21, spec §4.1 / §4.8). One immutable
+// `script_versions` row plus the review it cites, if any, resolved into one
+// DTO so the web provenance panel never has to join client-side.
+// ---------------------------------------------------------------------------
+
+export interface ScriptVersionDto {
+  id: string;
+  version: number;
+  contentDigest: string;
+  changelog: string | null;
+  createdAt: string;
+  origin: ScriptOrigin;
+  proposalId: string | null;
+  reviewId: string | null;
+  reviewedAt: string | null;
+  approvedBy: string | null;
+  approverName: string | null;
+  approvedAt: string | null;
+  approvalMethod: ScriptApprovalMethod | null;
+  reviewSummary: string | null;
+  reviewRiskTier: string | null;
+  reviewModel: string | null;
+  /** True when the review row this version cites is gone (source org erased). */
+  reviewEvidenceErased: boolean;
+}
