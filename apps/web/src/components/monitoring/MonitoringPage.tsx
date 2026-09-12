@@ -7,6 +7,7 @@ import NetworkMonitorList from '../monitors/NetworkMonitorList';
 import SNMPTemplateList from '../snmp/SNMPTemplateList';
 import SNMPTemplateEditor from '../snmp/SNMPTemplateEditor';
 import AddNetworkAssetModal from '../devices/AddNetworkAssetModal';
+import MonitoringTabStrip from './MonitoringTabStrip';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -54,6 +55,7 @@ export default function MonitoringPage() {
 
   return (
     <div className="space-y-6">
+      <MonitoringTabStrip currentPath="/monitoring" />
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{t('longTail.monitoring.MonitoringPage.title')}</h1>

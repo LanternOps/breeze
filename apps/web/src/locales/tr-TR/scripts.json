@@ -7,7 +7,7 @@
     },
     "loading": "Otomasyon yükleniyor...",
     "breadcrumb": {
-      "automations": "Otomasyonlar",
+      "automations": "İşler",
       "new": "Yeni Otomasyon",
       "edit": "Otomasyonu Düzenle"
     },
@@ -341,8 +341,8 @@
       "delete": "Otomasyon silinemedi"
     },
     "loading": "Otomasyonlar yükleniyor...",
-    "title": "Otomasyonlar",
-    "description": "Otomatik iş akışları oluşturun ve yönetin.",
+    "title": "İşler",
+    "description": "Zamanlanmış, isteğe bağlı, webhook ve olay tabanlı otomasyonlar.",
     "actions": {
       "new": "Yeni Otomasyon",
       "deleting": "Siliniyor..."
@@ -351,6 +351,14 @@
       "title": "Otomasyonu Sil",
       "confirmPrefix": "Silmek istediğinizden emin misiniz?",
       "confirmSuffix": "Bu işlem geri alınamaz."
+    },
+    "tabs": {
+      "ariaLabel": "İş türleri",
+      "all": "Tümü",
+      "scheduled": "Zamanlanmış",
+      "on-demand": "İsteğe bağlı",
+      "webhooks": "Webhook'lar",
+      "event-rules": "Olay kuralları"
     }
   },
   "complianceDashboard": {

@@ -1,8 +1,3 @@
 ---
-import DashboardLayout from '../../layouts/DashboardLayout.astro';
-import AutomationEditPage from '../../components/automations/AutomationEditPage';
+return Astro.redirect('/jobs/new', 301);
 ---
-
-<DashboardLayout titleKey="titles.automationsNew">
-  <AutomationEditPage isNew={true} client:load />
-</DashboardLayout>

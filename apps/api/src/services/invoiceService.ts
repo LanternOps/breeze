@@ -28,6 +28,10 @@ import { INVOICE_REMOTE_DELETED_ERROR } from './accounting/types';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
+import {
+  assertInvoiceSessionsRevoked,
+  requestInvoiceSessionRevocation,
+} from './stripeSessionRevocation';
 import { changeOrgCurrency } from './orgCurrencyService';
 import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
 import { buildAutomationEligibleOrgPredicate } from './tenantStatus';
@@ -1463,6 +1467,23 @@ async function inSystemContext<T>(label: string, fn: (runner: DbContextRunner) =
 }
 
 export async function recordPayment(invoiceId: string, input: RecordPaymentInput, actor: InvoiceActor) {
+  // SEC-150 FAIL-CLOSED, phases 1-2, BEFORE the transaction.
+  //
+  // Recording an alternate payment clears the balance a Stripe Checkout session
+  // was minted to collect. Leaving that session payable is the worst outcome in
+  // the finding: a second REAL charge for money already collected. Every open
+  // session on the invoice is asked to die here — not just the one covering this
+  // amount: a deposit/balance pair can both still be payable, and identifying
+  // "the covering session" from partially-applied amounts is exactly the kind of
+  // arithmetic that fails open.
+  //
+  // Deliberately outside the transaction below: Stripe I/O must never enter a
+  // request transaction (#1105), and the intent must survive a rollback so the
+  // sweep can finish it. Phase 3 is the assert under the invoice lock.
+  await requestInvoiceSessionRevocation({
+    invoiceId, reason: 'manual_payment', requestedByUserId: actor.userId, actor,
+  });
+
   // Captured BEFORE the transaction: the ambient scope decides whether the
   // in-transaction outbox write is possible at all.
   const orgScoped = getCurrentDbAccessContext()?.scope === 'organization';
@@ -1481,6 +1502,12 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
     requireInvoiceAccess(actor, inv);
     if (inv.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
     if (inv.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
+    // SEC-150 phase 3, under the invoice lock so a session minted between phase
+    // 2 and here cannot slip through. Refuses with 503 STRIPE_REVOCATION_PENDING
+    // and rolls the whole payment back; the durable intent stays and the sweep
+    // retries. `tx`, never the global db — a global call would escape this
+    // transaction and read outside the lock it holds.
+    await assertInvoiceSessionsRevoked(invoiceId, tx);
 
     // Authoritative balance: recompute from invoice_payments UNDER the lock.
     // Consistent because every payment writer locks the invoice row first —
@@ -1913,6 +1940,17 @@ function chunksOf<T>(items: readonly T[], size: number): T[][] {
  * issue validation is never bypassed (owner-fixed: no conversion, snapshots rule).
  */
 export async function voidInvoice(invoiceId: string, reason: string, opts: { reissue?: boolean }, actor: InvoiceActor) {
+  // SEC-150 FAIL-CLOSED, phases 1-2, BEFORE the transaction. #5180 already
+  // refuses a void with applied payments, so a voidable invoice has no
+  // legitimate open payment capability — a Checkout session that survives the
+  // void can still collect money for work nobody will bill. Same three-phase
+  // shape as recordPayment: intent + Stripe outside the transaction, assert
+  // under the lock inside it. In a BULK void this runs per invoice, so one
+  // unreachable partner refuses its own invoice and never the batch.
+  await requestInvoiceSessionRevocation({
+    invoiceId, reason: 'invoice_void', requestedByUserId: actor.userId, actor,
+  });
+
   // Void + (optional) reissue commit atomically in ONE system transaction: the
   // void/release and the fresh-draft clone must not be observable independently.
   let draftId: string | null = null;
@@ -1959,6 +1997,10 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
         409, 'INVOICE_HAS_PAYMENTS'
       );
     }
+
+    // SEC-150 phase 3, under the invoice lock taken above. `db` IS this
+    // transaction's handle inside withSystemDbAccessContext.
+    await assertInvoiceSessionsRevoked(invoiceId, db);
 
     voidedOrgId = inv.orgId;
     voidedPartnerId = inv.partnerId;
