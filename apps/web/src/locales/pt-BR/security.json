@@ -4,6 +4,7 @@
     "analytics": "Análises",
     "approvals": "Aprovações",
     "denials": "Negações",
+    "proposals": "Propostas de script",
     "failedToLoadData": "Falha ao carregar dados",
     "failedToLoadToolExecutions": "Falha ao carregar execuções de ferramentas",
     "guardrails": "Controles de segurança",
@@ -16,6 +17,19 @@
     "value24h": "24h",
     "value30d": "30d",
     "value7d": "7d"
+  },
+  "aiRiskScriptProposalsPanel": {
+    "title": "Propostas de script",
+    "proposalsPerDay": "Propostas por dia",
+    "reviewerDisagreements": "Divergências do revisor",
+    "humanRejectedAfterApprove": "Rejeitado por humano após aprovação da IA",
+    "humanApprovedAfterReject": "Aprovado por humano após rejeição da IA",
+    "unattendedRuns": "Execuções não supervisionadas",
+    "laneState": "Faixa não supervisionada",
+    "laneOpen": "Aberta (pausada após falhas repetidas de verificação)",
+    "laneClosed": "Fechada",
+    "laneNotConfigured": "Não configurada para esta organização",
+    "noData": "Nenhuma proposta de script neste período"
   },
   "aiRiskApprovalHistoryFeed": {
     "all2": "Todos",

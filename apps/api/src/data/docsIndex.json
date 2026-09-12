@@ -241,6 +241,7 @@
     "headings": [
       "Supported Platforms",
       "Supported Windows Versions",
+      "Supported Linux Distributions",
       "Quick Install",
       "Pre-Configured Installers",
       "Public Installer Links",
@@ -307,11 +308,19 @@
   {
     "path": "/backup/bare-metal-recovery/",
     "title": "Bare Metal Recovery",
-    "description": "Restore a full system image to bare hardware or a replacement device with the Breeze recovery environment, recovery token generation, and token security.",
+    "description": "Boot the Breeze recovery media, enter a one-time code, and rebuild a Linux machine from a whole-machine snapshot onto a blank disk — or, as the fallback, reinstall an OS yourself and recover files or OS state into it with a recovery token.",
     "headings": [
-      "How It Works",
+      "Recover from Breeze recovery media",
+      "1. Get the media",
+      "2. Create a recovery code",
+      "3. Boot and follow the console",
+      "Alternative: recover into a freshly installed OS",
       "Generating a Recovery Token",
       "Running the Recovery",
+      "What a `system_image` recovery applies",
+      "What a Recovered Machine Is — and Isn't",
+      "Is the snapshot bare-metal restorable?",
+      "Rebuilding a Linux disk from scratch (`breeze-backup rebuild`)",
       "When to Use BMR",
       "Recovery Token Security"
     ],
@@ -436,6 +445,7 @@
       "Org-Owned vs. Partner-Wide Profiles",
       "Managing Profiles",
       "Applying a Profile in a Policy",
+      "Whole machine templates",
       "OS Presets (Quick Start)",
       "Destination Cards",
       "Org Default Destination",
@@ -447,7 +457,7 @@
   {
     "path": "/backup/restoring/",
     "title": "Restoring Data",
-    "description": "Restore files, folders, or full systems from Breeze backup snapshots. Covers browsing snapshots, full and selective restores, and bare metal recovery.",
+    "description": "Restore individual files or full snapshots from Breeze backups. Covers browsing snapshots, full and selective (file-level) restores, cross-device restore, and bare metal recovery.",
     "headings": [
       "Browsing Snapshots",
       "Restore Types",
@@ -456,6 +466,7 @@
       "Selective Restore",
       "Monitoring a Restore",
       "Cross-Device Restore",
+      "What Is and Isn't Preserved",
       "Restore Considerations"
     ],
     "section": "backup"
@@ -479,11 +490,10 @@
   {
     "path": "/backup/sql-server/",
     "title": "SQL Server Backup",
-    "description": "Discover SQL Server instances and run full, differential, and transaction log backups with point-in-time recovery.",
+    "description": "Discover SQL Server instances and run full, differential, and transaction log backups.",
     "headings": [
       "Discovering Instances",
       "Backup Types",
-      "Backup Chain View",
       "Running a Manual Backup",
       "Scheduled Backups",
       "Restoring a Database",
@@ -715,6 +725,7 @@
       "AI",
       "AI Operator (preview, off by default)",
       "Self-hosted: alternative Anthropic-compatible backends",
+      "Warranty lookups",
       "Breeze AI for Office (add-ins, optional)",
       "Accounting (QuickBooks Online)",
       "Vulnerability Management",
@@ -731,6 +742,7 @@
       "Deploy Steps",
       "Adding Monitoring",
       "Pinning a Version",
+      "Signed, digest-pinned image references (v0.112.0 and later)",
       "Resource Tuning",
       "Redis Authentication",
       "Updating"
@@ -781,9 +793,10 @@
       "Part 4 — Run the workflow",
       "Part 5 — Point your instance at your builds",
       "T1 (recommended): repointed GitHub mode",
-      "T2 (zero-config fallback): local mode",
+      "T2: local mode",
       "Migration flow for an existing fleet",
       "Optional hardening",
+      "Key rotation",
       "Troubleshooting",
       "Appendix",
       "Viewer and Helper apps",
@@ -839,6 +852,7 @@
       "Compose file changes",
       "v0.95.0 — stable Caddy address and proxy trust",
       "Version-specific notes",
+      "v0.112.0 — Windows MSI fix, security remediations, bare-metal recovery",
       "v0.111.1 — hotfix for a v0.111.0 upgrade-blocking migration",
       "v0.111.0 — offline work queue, script cancellation, organization record page",
       "v0.110.0 — reboot deferral, device-set billing, QuickBooks payments, portal visibility",
@@ -884,6 +898,7 @@
     "description": "Connect QuickBooks Online and your Stripe account from the Accounting tab of the Integrations page to sync your books and collect card payments.",
     "headings": [
       "Connecting QuickBooks",
+      "Who can use the QuickBooks integration",
       "What syncs",
       "Invoice push mode",
       "Invoice sync status",
@@ -1012,6 +1027,22 @@
       "How current the figures are",
       "Exporting a PDF",
       "If everything reads zero"
+    ],
+    "section": "features"
+  },
+  {
+    "path": "/features/ai-script-authoring/",
+    "title": "AI Script Authoring & Review",
+    "description": "How the AI assistant and background agents can write, get reviewed, and run scripts on your devices — and the controls that keep a human in the loop.",
+    "headings": [
+      "The three review layers",
+      "The approval card",
+      "Provenance",
+      "Promotion to the library",
+      "The unattended lane",
+      "Admin setup",
+      "FAQ",
+      "Related"
     ],
     "section": "features"
   },
@@ -1798,7 +1829,8 @@
     "headings": [
       "What an enabled extension contributes",
       "What Breeze does not have",
-      "Enabling Workspace"
+      "Enabling Workspace",
+      "Who can use Workspace"
     ],
     "section": "features"
   },
@@ -2311,6 +2343,7 @@
       "Event Types",
       "Alert Settings",
       "Scan Schedule",
+      "Recurring scans need re-approval after upgrade",
       "Rogue Device Detection",
       "Creating a Baseline",
       "How Baseline Comparison Works",
@@ -2501,6 +2534,7 @@
     "title": "Privileged Access Management",
     "description": "Eliminate standing admin rights with just-in-time elevation: intercept Windows UAC prompts, route them to an approver, and grant self-revoking access.",
     "headings": [
+      "Who Can Approve and Manage PAM",
       "The Privileged Access Console",
       "Overview",
       "Requests",
@@ -2699,9 +2733,7 @@
       "Compliance tracking",
       "Compliance statuses",
       "Policy actions",
-      "Activate / Deactivate",
-      "Evaluate",
-      "Remediate",
+      "Deactivate",
       "Policy state collection from agents",
       "Version comparison",
       "Reporting",
@@ -2905,6 +2937,8 @@
       "Remote Desktop",
       "Starting a desktop session",
       "Connection flow",
+      "Session lease and revocation",
+      "Session time limits",
       "Windows Session 0 Support",
       "macOS and Linux Headless Support",
       "Multi-Display Support",
@@ -3141,6 +3175,8 @@
       "Remediation Actions",
       "Scan Policies",
       "Partner-wide (All organizations)",
+      "Who can run a recurring scan",
+      "Recurring scans need re-approval after upgrade",
       "Creating a Policy",
       "Policy Fields",
       "Scope Configuration",
@@ -4131,6 +4167,7 @@
       "Revoke",
       "Rules",
       "Create / update a rule",
+      "Re-approving a suspended auto-approve rule",
       "Risk-tier drift",
       "Preview a rule",
       "Signer groups",

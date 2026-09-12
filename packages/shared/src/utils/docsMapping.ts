@@ -152,6 +152,7 @@ const docsMapping: DocsEntry[] = [
     docsPath: '/reference/organizations-and-sites/#the-organisation-record-page',
     label: 'Organization Record',
   },
+  { pattern: '/ai-script-proposals', docsPath: '/features/ai-script-authoring/', label: 'AI Script Proposal' },
   { pattern: '/scripts', docsPath: '/features/scripts/', label: 'Scripts' },
   { pattern: '/patches', docsPath: '/features/patch-management/', label: 'Patch Management' },
   { pattern: '/vulnerabilities', docsPath: '/features/vulnerability-management/', label: 'Vulnerability Management' },

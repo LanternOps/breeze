@@ -90,7 +90,9 @@ const namespaceDuplicateBaselines = {
     'reports.json': 39,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
-    'scripts.json': 57,
+    // +1: scriptProposalDetail.statusLabel — "Status" is the same cognate in
+    // pt-BR already accepted above for bulkOrgImport.preview.status.
+    'scripts.json': 58,
     'security.json': 140,
     // +1: the it-IT locale's self-name is intentionally identical in every catalog.
     // +1: bulkOrgImport.preview.status — "Status" is the same cognate in pt-BR
@@ -563,7 +565,9 @@ const namespaceDuplicateBaselines = {
     'reports.json': 53,
     // +1: automationRunHistory.scriptOutput.stderr — a stream name, not
     // wording; intentionally identical in every catalog (#3162).
-    'scripts.json': 54,
+    // +1: scriptProposalDetail.statusLabel — "Status" is the standard
+    // loanword in this locale, same as the German "Status" used elsewhere.
+    'scripts.json': 55,
     'security.json': 166,
     // +1: bulkOrgImport.preview.status — "Status" is the German word too.
     // +1: aiAgentsPage.fields.name — "Name" is the German word too.

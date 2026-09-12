@@ -41,6 +41,8 @@ The four **assurance levels** describe increasingly strong proof, performed on t
   The policy is **raise-only**. For any tier you can require a *higher* assurance level than the Breeze default, but you can never drop below it -- the dropdown simply doesn't offer the weaker options, and the server re-validates the same rule. An override that would weaken the floor is ignored (fail-closed).
 </Aside>
 
+An AI-authored script proposal's risk tier comes from its independent reviewer and feeds into this same floor table like any other approvable action. A proposal that matched a strict security pattern additionally requires the approver to hold the Scripts permission and complete a fresh MFA check before they can approve it, regardless of the proposal's risk tier — see [AI Script Authoring & Review](/features/ai-script-authoring/#the-approval-card).
+
 ## Configuring approval assurance
 
 <Steps>

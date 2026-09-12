@@ -105,6 +105,9 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   // Operator task detail (#5205 W07): a task belongs to one org, resolved by
   // the API from the task id, so the page works under any org context.
   { pattern: /^\/operator\/tasks\/[^/]+$/, kind: 'org-or-all' },
+  // AI script proposal detail (#5618 W06): same shape — GET /ai/script-
+  // proposals/:id resolves the org from the proposal id, not a query param.
+  { pattern: /^\/ai-script-proposals\/[^/]+$/, kind: 'org-or-all' },
   { pattern: /^\/devices(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/alerts(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/patches(\/.*)?$/, kind: 'org-or-all' },

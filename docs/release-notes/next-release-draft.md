@@ -105,3 +105,19 @@ until an approver with `approvals:decide` resets it (also MFA-gated).
 - The restore checkpoint runs as a fixed, server-owned PowerShell body over the
   existing script command — no agent upgrade is needed. A first-class
   `create_restore_point` agent command is tracked in #4609.
+
+## AI script authoring — device activity and dashboard (#5612)
+
+- AI-authored script runs (proposed by the chat assistant or a background agent,
+  reviewed, and approved) now appear on a device's Activity feed with an AI badge
+  and a link to the originating proposal — the link shows "evidence erased"
+  instead of a broken page if the source proposal has since been erased (org
+  merge or retention).
+- **New audit action:** `ai.script.executed`, written at dispatch time from the
+  execution's own approval/review snapshot (never a live read of the proposal).
+- The AI Risk Dashboard has a new **Script Proposals** panel: proposals per day,
+  unattended-run counts, the unattended lane's open/closed state, and how often a
+  human's approve/reject decision disagreed with the independent reviewer's
+  recommendation.
+- New route: `GET /api/v1/ai/admin/script-proposals-metrics`.
+- No new required environment variables; no migrations in this change.

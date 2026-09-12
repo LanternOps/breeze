@@ -278,7 +278,8 @@
     "loadMore": "Carica altro",
     "couldnTLoadMore": "Impossibile caricare altri elementi.",
     "viewAllActivity2": "Visualizza tutta l'attività",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "Visualizza proposta"
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Impossibile recuperare la cronologia degli avvisi",

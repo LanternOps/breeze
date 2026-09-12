@@ -10,6 +10,8 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { streamSSE } from 'hono/streaming';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { aiScriptAuthoringEnabled } from '../config/env';
+import { loadScriptProposalReviewerDisagreements } from '../services/scriptProposals/metrics';
 import {
   createSession,
   getSession,
@@ -41,7 +43,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { assertNotLocked } from '../services/effectiveSettings';
 import { normalizeAlertThresholds, evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
 import { db } from '../db';
-import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents } from '../db/schema';
+import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents, scriptProposals, scriptExecutions, aiScriptLaneState } from '../db/schema';
 import { eq, and, desc, gte, lte, count, avg, sql as drizzleSql } from 'drizzle-orm';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 import { PERMISSIONS } from '../services/permissions';
@@ -1555,6 +1557,96 @@ aiRoutes.get(
         rejected: Number(row.rejected),
       })),
       executions,
+    });
+  }
+);
+
+// GET /admin/script-proposals-metrics - AI Risk Dashboard script-proposal panel (W05, #5612)
+aiRoutes.get(
+  '/admin/script-proposals-metrics',
+  requireScope('organization', 'partner', 'system'),
+  requireAiRead,
+  async (c) => {
+    // Same dark-when-off gate as every other AI script authoring surface
+    // (routes/ai/scriptProposals.ts) — without it, a deployment with the
+    // feature off gets a permanently-empty "Script Proposals" tab instead of
+    // the tab simply not answering.
+    if (!aiScriptAuthoringEnabled()) return c.json({ error: 'feature_disabled' }, 404);
+
+    const auth = c.get('auth');
+    const orgId = c.req.query('orgId') || auth.orgId;
+
+    if (!orgId) {
+      // Same shape as the populated branch below — ScriptProposalsPanel keys
+      // the unattended-run/lane-state cards on `!== undefined`, so a partial
+      // shape here would silently drop both cards for a partner/system-scope
+      // caller with no orgId instead of showing zero / not-configured.
+      return c.json({
+        scriptProposals: {
+          perDay: [], unattendedRuns: 0, laneState: null,
+          reviewerDisagreements: { humanRejectedAfterApprove: 0, humanApprovedAfterReject: 0 },
+        },
+      });
+    }
+    if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
+    }
+
+    const sinceParam = c.req.query('since');
+    const untilParam = c.req.query('until');
+    const since = sinceParam ? new Date(sinceParam) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const until = untilParam ? new Date(untilParam) : new Date();
+    if (isNaN(since.getTime())) return c.json({ error: `Invalid 'since' date: ${sinceParam}` }, 400);
+    if (isNaN(until.getTime())) return c.json({ error: `Invalid 'until' date: ${untilParam}` }, 400);
+
+    // 1. Proposals per day
+    const perDayRows = await db
+      .select({
+        date: drizzleSql<string>`DATE(${scriptProposals.createdAt})::text`,
+        count: drizzleSql<number>`COUNT(*)::int`,
+      })
+      .from(scriptProposals)
+      .where(and(eq(scriptProposals.orgId, orgId), gte(scriptProposals.createdAt, since), lte(scriptProposals.createdAt, until)))
+      .groupBy(drizzleSql`DATE(${scriptProposals.createdAt})`)
+      .orderBy(drizzleSql`DATE(${scriptProposals.createdAt}) ASC`);
+    const perDay = perDayRows.map((row) => ({ date: row.date, count: Number(row.count) }));
+
+    // 2. Reviewer disagreements — a human decision that goes against the
+    // latest completed model review. Extracted to services/scriptProposals/
+    // metrics.ts (raw SQL, DISTINCT ON) so a live-Postgres test can exercise
+    // it directly.
+    const reviewerDisagreements = await loadScriptProposalReviewerDisagreements(orgId, since, until);
+
+    // 3. Unattended runs in the window (W04, #5612)
+    const [unattendedCountRow] = await db
+      .select({ count: drizzleSql<number>`COUNT(*)::int` })
+      .from(scriptExecutions)
+      .where(
+        and(
+          eq(scriptExecutions.orgId, orgId),
+          eq(scriptExecutions.approvalMethod, 'unattended_reviewer_gated'),
+          gte(scriptExecutions.createdAt, since),
+          lte(scriptExecutions.createdAt, until),
+        ),
+      );
+    const unattendedRuns = Number(unattendedCountRow?.count ?? 0);
+
+    // 4. Lane state (W04) — one row per org, PK org_id; no row means the
+    // lane has never been evaluated for this org.
+    const [laneRow] = await db
+      .select({ state: aiScriptLaneState.state })
+      .from(aiScriptLaneState)
+      .where(eq(aiScriptLaneState.orgId, orgId))
+      .limit(1);
+    const laneState = laneRow?.state ?? null;
+
+    return c.json({
+      scriptProposals: {
+        perDay,
+        unattendedRuns,
+        laneState,
+        reviewerDisagreements,
+      },
     });
   }
 );

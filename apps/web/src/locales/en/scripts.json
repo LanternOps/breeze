@@ -1426,5 +1426,17 @@
     "approvedBy": "Approved by",
     "evidenceErased": "Review evidence erased",
     "allOrigins": "All origins"
+  },
+  "scriptProposalDetail": {
+    "loading": "Loading…",
+    "loadError": "Couldn't load this proposal.",
+    "evidenceErased": "This proposal's review evidence has been erased (the source organization was merged or its data retention period ended). The script execution it produced is still visible in device history.",
+    "statusLabel": "Status",
+    "riskTierLabel": "Risk tier",
+    "reviewSummaryLabel": "Reviewer summary",
+    "riskLow": "Low",
+    "riskMedium": "Medium",
+    "riskHigh": "High",
+    "riskCritical": "Critical"
   }
 }
