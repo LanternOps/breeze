@@ -146,17 +146,31 @@ export function withStableViolationTimestamps(
 }
 
 /**
- * Uninstall-arming gate (#3543, incident #3381).
+ * Remediation-arming gate (#3543, incident #3381; verb-aware since #5505).
  *
- * A policy only authorises uninstall commands when all three are true:
- * `mode !== 'audit'`, `enforceMode`, and `remediationOptions.autoUninstall`.
+ * A policy only authorises remediation commands for a given verb when all three
+ * are true: `mode !== 'audit'`, `enforceMode`, and that verb's own flag —
+ * `remediationOptions.autoUninstall` for `'uninstall'`,
+ * `remediationOptions.autoInstall` for `'install'`. The two flags are
+ * deliberately independent: a policy armed to REMOVE unauthorised software is
+ * not thereby armed to INSTALL anything.
+ *
  * Until #3543 the gate lived ONLY inline in softwareComplianceWorker.ts, so
  * every other path that reached `scheduleSoftwareRemediation` (the AI tool, the
  * manual route, a replayed BullMQ job) could queue mass uninstalls against a
  * policy whose owner had deliberately left enforcement off. This is the single
  * shared definition — callers must use it rather than re-deriving the check.
+ *
+ * `verb` is REQUIRED and has no default: an unarmed policy must never be
+ * mistaken for an armed one because a caller forgot an argument.
  */
-export type SoftwarePolicyUnarmedReason = 'audit_mode' | 'enforce_mode_off' | 'auto_uninstall_off';
+export type PolicyRemediationVerb = 'uninstall' | 'install';
+
+export type SoftwarePolicyUnarmedReason =
+  | 'audit_mode'
+  | 'enforce_mode_off'
+  | 'auto_uninstall_off'
+  | 'auto_install_off';
 
 export type SoftwarePolicyArmingState =
   | { armed: true }
@@ -174,14 +188,21 @@ export function readSoftwarePolicyAutoUninstall(raw: unknown): boolean {
   return (raw as Record<string, unknown>).autoUninstall === true;
 }
 
+/** `autoInstall` is opt-in: absent or non-object options mean NOT armed. */
+export function readSoftwarePolicyAutoInstall(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  return (raw as Record<string, unknown>).autoInstall === true;
+}
+
 export function evaluateSoftwarePolicyArming(
-  policy: SoftwarePolicyArmingInput
+  policy: SoftwarePolicyArmingInput,
+  verb: PolicyRemediationVerb
 ): SoftwarePolicyArmingState {
   if (policy.mode === 'audit') {
     return {
       armed: false,
       reason: 'audit_mode',
-      message: 'Policy is audit-only (mode="audit"); it cannot uninstall software.',
+      message: `Policy is audit-only (mode="audit"); it cannot ${verb} software.`,
     };
   }
   if (policy.enforceMode !== true) {
@@ -189,9 +210,21 @@ export function evaluateSoftwarePolicyArming(
       armed: false,
       reason: 'enforce_mode_off',
       message:
-        'Policy enforcement is off (enforceMode=false), so it is detect-only and must not uninstall software. '
+        `Policy enforcement is off (enforceMode=false), so it is detect-only and must not ${verb} software. `
         + 'An administrator has to enable enforcement on the policy first.',
     };
+  }
+  if (verb === 'install') {
+    if (!readSoftwarePolicyAutoInstall(policy.remediationOptions)) {
+      return {
+        armed: false,
+        reason: 'auto_install_off',
+        message:
+          'Policy remediation is not armed (remediationOptions.autoInstall is not true), so it must not install software. '
+          + 'An administrator has to enable automatic install on the policy first.',
+      };
+    }
+    return { armed: true };
   }
   if (!readSoftwarePolicyAutoUninstall(policy.remediationOptions)) {
     return {

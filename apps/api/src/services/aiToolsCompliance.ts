@@ -506,7 +506,7 @@ registerTool({
     // not the policy's own enforcement setting, so it is not a substitute.
     // Deliberately no override parameter: re-arming is an administrator's
     // decision made on the policy, not an argument the model can supply.
-    const arming = evaluateSoftwarePolicyArming(policy);
+    const arming = evaluateSoftwarePolicyArming(policy, 'uninstall');
     if (!arming.armed) {
       auditSoftwarePolicyToolEvent(auth, 'remediate_software_violation', {
         orgId: policy.orgId,
