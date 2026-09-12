@@ -179,10 +179,13 @@ describe('onUnattendedVerificationOutcome', () => {
     expect(failSafeOpens).toBe(0);
   });
 
-  it('never throws: a bookkeeping fault is reported, not propagated', async () => {
+  it('never throws: a LATER fault (agent circuit feed) is reported, not propagated, and does NOT force the lane open', async () => {
     row = { orgId: 'org-1', consecutiveFailedVerifications: 0, state: 'closed', openedAt: null, openedReason: null };
     mockRecordRunTerminal.mockRejectedValue(new Error('circuit down'));
     await expect(onUnattendedVerificationOutcome({ ...base, outcome: 'unknown', origin: AGENT })).resolves.toBeUndefined();
+    // The streak WAS recorded (1 of 2), so the lane is correctly still closed.
+    expect(row).toMatchObject({ consecutiveFailedVerifications: 1, state: 'closed' });
+    expect(failSafeOpens).toBe(0);
   });
 });
 

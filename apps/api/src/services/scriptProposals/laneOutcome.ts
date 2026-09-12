@@ -43,6 +43,10 @@ export interface UnattendedVerificationOutcome {
  */
 export async function onUnattendedVerificationOutcome(o: UnattendedVerificationOutcome): Promise<void> {
   const failed = o.outcome !== 'verified';
+  // Set once the circuit row is durably written. Only a fault BEFORE this
+  // point can leave a failure uncounted; a later fault (audit, agent circuit,
+  // notification) is reported but must not force the lane open.
+  let bookkeepingDone = false;
   try {
     const { laneRow, justOpened } = await runOutsideDbContext(() =>
       withSystemDbAccessContext(async (): Promise<{ laneRow: AiScriptLaneStateRow | null; justOpened: boolean }> => {
@@ -89,6 +93,7 @@ export async function onUnattendedVerificationOutcome(o: UnattendedVerificationO
         return { laneRow: row, justOpened: false };
       }),
     );
+    bookkeepingDone = true;
 
     await createAuditLogAsync({
       orgId: o.orgId,
@@ -161,8 +166,9 @@ export async function onUnattendedVerificationOutcome(o: UnattendedVerificationO
     // verification had succeeded. A failed/unknown outcome whose count could
     // not be recorded therefore OPENS the lane outright (best effort — if
     // even this write fails, the fault is already in Sentry). Reset is the
-    // usual human decision.
-    if (failed) {
+    // usual human decision. Scoped to the BOOKKEEPING fault: a later audit /
+    // agent-circuit / notification fault never re-opens a correctly-closed lane.
+    if (failed && !bookkeepingDone) {
       try {
         await runOutsideDbContext(() =>
           withSystemDbAccessContext(() =>
