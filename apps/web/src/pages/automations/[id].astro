@@ -1,10 +1,3 @@
 ---
-import DashboardLayout from '../../layouts/DashboardLayout.astro';
-import AutomationEditPage from '../../components/automations/AutomationEditPage';
-
-const { id } = Astro.params;
+return Astro.redirect(`/jobs/${Astro.params.id}`, 301);
 ---
-
-<DashboardLayout titleKey="titles.automationsDetail">
-  <AutomationEditPage automationId={id} client:load />
-</DashboardLayout>

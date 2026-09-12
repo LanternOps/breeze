@@ -1,6 +1,10 @@
+import { and, eq } from 'drizzle-orm';
+import { db } from '../db';
+import { invoiceStripePayments } from '../db/schema/stripePayments';
 import { getPartnerStripeClient } from './partnerStripe';
 import { recordStripePayment } from './stripeReconcile';
 import { fromMinorUnits } from './stripeMoney';
+import { markSessionChargedRepair } from './stripeSessionRevocation';
 
 /**
  * Settlement primitive for the API-key model (replaces the inbound webhook):
@@ -42,5 +46,33 @@ export async function settleCheckoutSession(
     amount: fromMinorUnits(amountCents, currency),
     currency,
   });
+
+  // SEC-150 charged-repair detection, AFTER the capture.
+  //
+  // Provider truth wins: a session we asked to die that Stripe nonetheless
+  // reports PAID is still recorded (never discard a real charge to satisfy a
+  // local flag), and the mapping is then parked for a human.
+  //
+  // Deliberately after `recordStripePayment`, not before. This runs on the
+  // caller's transaction, and `recordStripePayment` takes the invoice row
+  // `FOR UPDATE` first (B10 lock order, shared by every payment writer).
+  // Touching `invoice_stripe_payments` beforehand inverted that order against
+  // `recordRevocationIntent`, which locks invoice-then-mapping — a customer
+  // returning from Checkout while an operator voids the same invoice is exactly
+  // the scenario this feature exists for, and it would have deadlocked (40P01).
+  const [mapping] = await db.select({
+    revocationState: invoiceStripePayments.revocationState,
+  }).from(invoiceStripePayments)
+    .where(and(
+      eq(invoiceStripePayments.stripeObjectId, session.id),
+      eq(invoiceStripePayments.stripeObjectType, 'checkout_session'),
+    )).limit(1);
+  if (mapping && mapping.revocationState !== 'active' && mapping.revocationState !== 'legacy_unbounded') {
+    await markSessionChargedRepair(
+      session.id,
+      `session settled while revocation_state=${mapping.revocationState}`,
+    );
+  }
+
   return { settled: true, invoiceId: res.invoiceId };
 }

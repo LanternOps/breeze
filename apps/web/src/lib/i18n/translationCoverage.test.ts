@@ -63,7 +63,8 @@ const namespaceDuplicateBaselines = {
     // (api-key, company-id, personal-access-token, …) and the example address
     // are input-shape hints, not wording, so they are intentionally identical
     // in every catalog.
-    'common.json': 102, // +1 W06: lists.separator ", " is punctuation
+    // +1 #5288: nav.jobs — "Jobs" is the same loanword in pt-BR.
+    'common.json': 103, // +1 W06: lists.separator ", " is punctuation
     // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // (Datto RMM / NinjaOne / ConnectWise Automate / N-central — proper
     // product names, never translated) and dateFormat.iso's "ISO
@@ -78,7 +79,8 @@ const namespaceDuplicateBaselines = {
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // pt-BR.
     'organizations.json': 6, // W01 #5075: cognates — "Sites", "{{count}} site(s)"; +2 W02: device status "Online"/"Offline" are identical cognates in pt-BR
-    'pages.json': 10, // Cognates: Backup, Webhooks (x2), OneDrive, Scripts, Logs, EDR, Software (x2), and one settings-card title (Sites).
+    // +1 #5288: titles.jobs — "Jobs" is the same loanword in pt-BR.
+    'pages.json': 11, // Cognates: Backup, Webhooks (x2), OneDrive, Scripts, Logs, EDR, Software (x2), and one settings-card title (Sites).
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 357,
@@ -92,7 +94,10 @@ const namespaceDuplicateBaselines = {
     // wording, and "Script" is the standard loanword in this locale (#3162).
     // +1: scriptProposalDetail.statusLabel — "Status" is the same cognate in
     // pt-BR already accepted above for bulkOrgImport.preview.status.
-    'scripts.json': 58,
+    // +3 #5288: automationsPage.title and automationEditPage.breadcrumb.
+    // automations are both "Jobs" (same loanword in pt-BR); tabs.webhooks is
+    // "Webhooks" in both languages.
+    'scripts.json': 61,
     'security.json': 140,
     // +1: the it-IT locale's self-name is intentionally identical in every catalog.
     // +1: bulkOrgImport.preview.status — "Status" is the same cognate in pt-BR
@@ -199,7 +204,9 @@ const namespaceDuplicateBaselines = {
     // wording, and "Script" is the standard loanword in this locale (#3162).
     // +1: scriptForm.variables.button — "Variables" is the same word in Spanish
     // (same cognate already accepted for nav.variables).
-    'scripts.json': 60,
+    // +1 #5288: automationsPage.tabs.webhooks — "Webhooks" is the same word
+    // in es-419.
+    'scripts.json': 61,
     'security.json': 114,
     // +1: tenantVariablesPage.title — "Variables" is identical in Spanish.
     // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
@@ -311,7 +318,9 @@ const namespaceDuplicateBaselines = {
     // wording, and "Script" is the standard loanword in this locale (#3162).
     // +1: scriptForm.variables.button — "Variables" is identical in French
     // (same cognate already accepted for nav.variables).
-    'scripts.json': 63,
+    // +1 #5288: automationsPage.tabs.webhooks — "Webhooks" is the same word
+    // in fr-FR.
+    'scripts.json': 64,
     'security.json': 144,
     // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
     // spelled identically in French.
@@ -433,7 +442,9 @@ const namespaceDuplicateBaselines = {
     // wording, and "Script" is the standard loanword in this locale (#3162).
     // +1: scriptForm.variables.button — "Variables" is identical in French
     // (same cognate already accepted for nav.variables).
-    'scripts.json': 63,
+    // +1 #5288: automationsPage.tabs.webhooks — "Webhooks" is the same word
+    // in fr-CA.
+    'scripts.json': 64,
     'security.json': 144,
     // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
     // spelled identically in French.
@@ -567,7 +578,9 @@ const namespaceDuplicateBaselines = {
     // wording; intentionally identical in every catalog (#3162).
     // +1: scriptProposalDetail.statusLabel — "Status" is the standard
     // loanword in this locale, same as the German "Status" used elsewhere.
-    'scripts.json': 55,
+    // +1 #5288: automationsPage.tabs.webhooks — "Webhooks" is the same word
+    // in de-DE.
+    'scripts.json': 56,
     'security.json': 166,
     // +1: bulkOrgImport.preview.status — "Status" is the German word too.
     // +1: aiAgentsPage.fields.name — "Name" is the German word too.

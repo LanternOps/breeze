@@ -144,7 +144,7 @@ const buildHref = (type: NotificationDisplayType, raw: RawNotification) => {
     case 'alert':
       return '/alerts';
     case 'automation':
-      return '/automations';
+      return '/jobs';
     case 'user':
       return '/settings/users';
     case 'security':

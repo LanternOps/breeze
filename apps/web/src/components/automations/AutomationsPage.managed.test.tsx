@@ -56,4 +56,13 @@ describe('AutomationsPage managed automation mapping', () => {
     await screen.findByText('Triage critical alerts');
     expect(screen.queryByTestId('automation-managed-by-agent-badge')).toBeNull();
   });
+
+  it('links "new" and row edit to /jobs, not /automations (#5288)', async () => {
+    fetchMock.mockResolvedValue(json({ data: [automation] }));
+
+    render(<AutomationsPage />);
+
+    const newLink = await screen.findByRole('link', { name: /new/i });
+    expect(newLink).toHaveAttribute('href', '/jobs/new');
+  });
 });

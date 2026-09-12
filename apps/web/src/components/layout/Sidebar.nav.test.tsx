@@ -31,6 +31,7 @@ vi.mock('../../lib/authScope', () => ({ getJwtClaims: () => ({ scope: 'partner' 
 vi.mock('./BrandHeader', () => ({ default: () => null }));
 
 import Sidebar, { navSections, topLevelNav } from './Sidebar';
+import { GO_TO_SHORTCUTS } from '../../lib/keyboard/goToShortcuts';
 import { i18n, loadLocale } from '../../lib/i18n';
 import en from '../../locales/en/common.json';
 import ptBR from '../../locales/pt-BR/common.json';
@@ -154,6 +155,39 @@ describe('navSections structure (#1321, #1324)', () => {
       'administration',
     ]);
   });
+
+  it('exposes Jobs at top level right after Scripts (#5288)', () => {
+    const hrefs = topLevelNav.map((i) => i.href);
+    expect(hrefs.indexOf('/jobs')).toBe(hrefs.indexOf('/scripts') + 1);
+    const jobs = topLevelNav.find((i) => i.href === '/jobs')!;
+    expect(jobs.name).toBe('Jobs');
+    expect(jobs.labelKey).toBe('nav.jobs');
+    expect(jobs.requiredPermission).toEqual({ resource: 'automations', action: 'read' });
+  });
+
+  it('labels /monitoring as Monitoring, not Network Monitor (#5288)', () => {
+    const item = navSections
+      .find((s) => s.id === 'fleet-management')!
+      .items.find((i) => i.href === '/monitoring')!;
+    expect(item.name).toBe('Monitoring');
+    expect(item.labelKey).toBe('nav.monitoring');
+  });
+});
+
+describe('go-to keyboard chords (g then key)', () => {
+  it('every chord targets a top-level nav item and reuses its label key', () => {
+    for (const shortcut of GO_TO_SHORTCUTS) {
+      const item = topLevelNav.find((nav) => nav.href === shortcut.href);
+      expect(item, `no top-level nav item for g ${shortcut.key} → ${shortcut.href}`).toBeDefined();
+      expect(shortcut.labelKey).toBe(item!.labelKey);
+    }
+  });
+
+  it('uses each key at most once', () => {
+    const keys = GO_TO_SHORTCUTS.map((s) => s.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys.every((k) => /^[a-z]$/.test(k))).toBe(true);
+  });
 });
 
 describe('sidebar i18n seed', () => {
@@ -162,7 +196,7 @@ describe('sidebar i18n seed', () => {
     render(<Sidebar currentPath="/" />);
 
     expect(await screen.findByText('Painel')).toBeInTheDocument();
-    expect(screen.getByText('Dispositivos')).toBeInTheDocument();
+    expect(screen.getByText('Dispositivos e ativos')).toBeInTheDocument();
     expect(screen.queryByText('Dashboard')).not.toBeInTheDocument();
   });
 
@@ -268,7 +302,7 @@ describe('sidebar i18n seed', () => {
     await i18n.changeLanguage('pt-BR');
     render(<Sidebar currentPath="/monitoring" />);
 
-    const nestedLink = await screen.findByText('Monitoramento de Rede');
+    const nestedLink = await screen.findByText('Monitoramento');
     expect(nestedLink.closest('a')).toHaveAttribute('href', '/monitoring');
     expect(screen.queryByText('Network Monitor')).not.toBeInTheDocument();
   });

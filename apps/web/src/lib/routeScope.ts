@@ -112,6 +112,9 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   { pattern: /^\/alerts(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/patches(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/automations(\/.*)?$/, kind: 'org-or-all' },
+  // #5288 — Jobs is the new nav home for automations (same page component,
+  // same org-scope semantics); /automations/* now just redirects here.
+  { pattern: /^\/jobs(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/vulnerabilities$/, kind: 'org-or-all' },
   { pattern: /^\/security(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/sensitive-data(\/.*)?$/, kind: 'org-or-all' },

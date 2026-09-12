@@ -10,7 +10,7 @@ import {
   type WorkerRegistration,
 } from './workerRegistry';
 
-// The canonical names, in today's `index.ts:1315-1433` order (see the plan
+// The canonical names, in today's `index.ts:1325-1433` order (see the plan
 // doc, Task 1) plus every entry added since (e.g. `agentNotifyRetry`, wave 4a
 // Task 6, #3826; `aiUnattendedExposureRetention`, wave 5B Task 4, #3827;
 // `authBrowserTransitionCleanup`, auth browser transition Phase 1, #3852;
@@ -54,7 +54,7 @@ const EXPECTED_132_NAMES = [
   'incidentCorrelationWorker', 'incidentTimelineEnricher', 'incidentSlaMonitor', 'staleCommandReaper',
   'softwareDeploymentScheduler', 'pamJobs', 'approvalExpiryReaper', 'offboardingDrainReaper',
   'intentOutboxPublisher', 'aiOperatorTaskOutboxPublisher', 'aiOperatorTaskWorker',
-  'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep',
+  'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep', 'stripeSessionRevocationSweep',
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
   'ticketSlaWorker', 'inboundEmailWorker', 'ticketMailboxPollWorker', 'invoiceWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'deliverableWorker', 'aiUnattendedExposureRetention',
