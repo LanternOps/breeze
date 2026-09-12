@@ -810,6 +810,76 @@ describe('bmr routes', () => {
     expect(updateSetArgs).toContainEqual(expect.objectContaining({ status: 'authenticated' }));
   });
 
+  it('re-authenticating an already-authenticated token slides the download session window', async () => {
+    // KIT W04b proof (2026-09-12): a 105k-file rebuild ran past
+    // RECOVERY_DOWNLOAD_SESSION_TTL (1 h from authenticated_at). Downloads
+    // then 401'd with "Re-authenticate to continue", the console
+    // re-authenticated (200), but authenticated_at was left at its original
+    // value, so the window never moved and every later download still 401'd.
+    const staleAuthenticatedAt = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    selectMock
+      .mockReturnValueOnce(chainMock([{
+        id: TOKEN_ID,
+        orgId: ORG_ID,
+        deviceId: DEVICE_ID,
+        snapshotId: SNAPSHOT_ID,
+        restoreType: 'bare_metal',
+        targetConfig: null,
+        status: 'authenticated',
+        createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
+        expiresAt: new Date(Date.now() + 21 * 60 * 60 * 1000),
+        authenticatedAt: staleAuthenticatedAt,
+        completedAt: null,
+        usedAt: staleAuthenticatedAt,
+      }]))
+      .mockReturnValueOnce(chainMock([{
+        id: SNAPSHOT_ID,
+        orgId: ORG_ID,
+        deviceId: DEVICE_ID,
+        jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        configId: null,
+        snapshotId: 'snap-ext-001',
+        label: 'Backup 2026-03-29',
+        location: 's3://breeze-backups/org-001/dev-001/2026-03-29',
+        timestamp: new Date('2026-03-29T12:34:56.000Z'),
+        size: 1234,
+        fileCount: 12,
+        metadata: { providerType: 's3', storagePrefix: 's3://breeze-backups/org-001/dev-001/2026-03-29' },
+        backupType: 'system_image',
+        isIncremental: false,
+        hardwareProfile: null,
+        systemStateManifest: null,
+      }]))
+      .mockReturnValueOnce(chainMock([]))
+      .mockReturnValueOnce(chainMock([{
+        id: DEVICE_ID,
+        hostname: 'srv-01',
+        osType: 'linux',
+      }]));
+
+    updateMock.mockReturnValueOnce(chainMock([]));
+
+    const before = Date.now();
+    const res = await app.request('/backup/bmr/recover/authenticate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: VALID_RECOVERY_TOKEN }),
+    });
+    expect(res.status).toBe(200);
+
+    const updateSetArgs = updateMock.mock.results
+      .map((entry) => entry.value?.set?.mock?.calls?.[0]?.[0])
+      .filter(Boolean) as Array<{ authenticatedAt?: Date }>;
+    const slid = updateSetArgs.find((args) => args.authenticatedAt instanceof Date);
+    expect(slid, 'authenticated_at must be rewritten on re-authentication').toBeDefined();
+    expect(slid!.authenticatedAt!.getTime()).toBeGreaterThanOrEqual(before - 1000);
+
+    const body = await res.json() as { authenticatedAt: string; bootstrap: { download: { expiresAt: string } } };
+    expect(new Date(body.authenticatedAt).getTime()).toBeGreaterThanOrEqual(before - 1000);
+    // The returned download window must be a fresh hour, not the stale one.
+    expect(new Date(body.bootstrap.download.expiresAt).getTime()).toBeGreaterThan(before + 50 * 60 * 1000);
+  });
+
   it('rate limits public authenticate requests', async () => {
     rateLimiterMock.mockResolvedValueOnce({
       allowed: false,
