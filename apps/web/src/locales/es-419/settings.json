@@ -5317,5 +5317,81 @@
       "conflict": "Conflicto",
       "orgNotFound": "Organización no encontrada"
     }
+  },
+  "scriptAuthoringPage": {
+    "title": "Creación de scripts",
+    "subtitle": "Permita que el asistente y sus agentes escriban, revisen y —cuando usted lo autorice— ejecuten scripts sin una tarjeta de aprobación.",
+    "partnerCard": {
+      "title": "Límite del partner",
+      "description": "La configuración más amplia que puede usar cualquier organización de este partner. Las organizaciones individuales solo pueden restringirla.",
+      "readOnly": "Solo un administrador del partner con acceso completo a la organización puede cambiar el límite.",
+      "missing": "Su partner aún no ha establecido un límite, por lo que la ejecución sin supervisión no se puede habilitar aquí."
+    },
+    "orgCard": {
+      "title": "Esta organización",
+      "description": "Una autorización explícita. La ejecución sin supervisión permanece desactivada hasta que tanto el límite del partner como este interruptor lo permitan.",
+      "noOrgSelected": "Seleccione una organización para administrar su configuración de creación de scripts."
+    },
+    "fields": {
+      "proposingEnabled": "Permitir que la IA proponga scripts",
+      "unattendedAllowed": "Permitir que las organizaciones usen la ejecución sin supervisión",
+      "unattendedEnabled": "Ejecutar scripts de bajo riesgo aprobados sin una tarjeta de aprobación",
+      "maxRiskTier": "Nivel de riesgo más alto permitido sin supervisión",
+      "allowedClasses": "Qué puede tocar un script sin supervisión",
+      "perHour": "Máximo de ejecuciones sin supervisión por hora",
+      "reviewerModel": "Modelo revisor",
+      "reviewerModelHint": "Déjelo vacío para usar el valor predeterminado de la plataforma.",
+      "protectedResources": "Nunca tocar esto",
+      "protectedServices": "Servicios",
+      "protectedPaths": "Rutas",
+      "protectedRegistryKeys": "Claves del registro",
+      "protectedDeviceTags": "Etiquetas de dispositivo"
+    },
+    "tier": {
+      "low": "Bajo",
+      "medium": "Medio"
+    },
+    "class": {
+      "registry": "Registro",
+      "services": "Servicios",
+      "processes": "Procesos",
+      "files_system": "Archivos del sistema",
+      "files_user": "Archivos del usuario",
+      "temp_files": "Archivos temporales",
+      "network_egress": "Salida de red",
+      "firewall": "Firewall",
+      "credentials": "Credenciales",
+      "users_groups": "Usuarios y grupos",
+      "packages": "Paquetes",
+      "scheduled_tasks": "Tareas programadas",
+      "disk": "Disco",
+      "boot": "Configuración de arranque",
+      "security_tooling": "Herramientas de seguridad",
+      "dns_cache": "Caché de DNS",
+      "printing": "Impresión",
+      "browser": "Navegadores",
+      "shell_eval": "Código dinámico"
+    },
+    "windowsOnly": "Solo Windows",
+    "hardDenied": "Nunca disponible sin supervisión, sin importar lo que indique el límite.",
+    "aboveCeiling": "Su partner no permite esto.",
+    "lane": {
+      "closedTitle": "La ejecución sin supervisión funciona con normalidad",
+      "openTitle": "La ejecución sin supervisión está en pausa",
+      "openBody": "{{reason}} Las ejecuciones sin supervisión se rechazan hasta que un aprobador restablezca la vía. Las aprobaciones siguen funcionando con normalidad.",
+      "reset": "Restablecer la vía",
+      "resetSuccess": "La ejecución sin supervisión vuelve a funcionar.",
+      "resetFailed": "No se pudo restablecer la vía."
+    },
+    "stepUp": {
+      "title": "Confirme que es usted",
+      "body": "Habilitar las ejecuciones sin supervisión requiere una nueva verificación de seguridad."
+    },
+    "save": "Guardar",
+    "saving": "Guardando…",
+    "saved": "Configuración de creación de scripts guardada.",
+    "saveFailed": "No se pudieron guardar esos ajustes.",
+    "loading": "Cargando…",
+    "loadFailed": "No se pudo cargar la configuración de creación de scripts."
   }
 }

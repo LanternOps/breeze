@@ -5317,5 +5317,81 @@
       "conflict": "Çakışma",
       "orgNotFound": "Kuruluş bulunamadı"
     }
+  },
+  "scriptAuthoringPage": {
+    "title": "Betik yazımı",
+    "subtitle": "Asistanın ve aracılarınızın betik yazmasına, incelemesine ve — izin verdiğinizde — bir onay kartı olmadan çalıştırmasına izin verin.",
+    "partnerCard": {
+      "title": "İş ortağı üst sınırı",
+      "description": "Bu iş ortağına bağlı herhangi bir kuruluşun kullanabileceği en geniş ayar. Tek tek kuruluşlar bunu yalnızca daraltabilir.",
+      "readOnly": "Üst sınırı yalnızca tam kuruluş erişimine sahip bir iş ortağı yöneticisi değiştirebilir.",
+      "missing": "İş ortağınız henüz bir üst sınır belirlemedi, bu nedenle gözetimsiz kanal burada etkinleştirilemez."
+    },
+    "orgCard": {
+      "title": "Bu kuruluş",
+      "description": "Açık bir izin. Hem iş ortağı üst sınırı hem de bu anahtar izin verene kadar gözetimsiz kanal kapalı kalır.",
+      "noOrgSelected": "Betik yazımı ayarlarını yönetmek için bir kuruluş seçin."
+    },
+    "fields": {
+      "proposingEnabled": "Yapay zekânın betik önermesine izin ver",
+      "unattendedAllowed": "Kuruluşların gözetimsiz kanalı kullanmasına izin ver",
+      "unattendedEnabled": "Onaylanmış düşük riskli betikleri onay kartı olmadan çalıştır",
+      "maxRiskTier": "Gözetimsiz olarak izin verilen en yüksek risk seviyesi",
+      "allowedClasses": "Gözetimsiz bir betiğin dokunabileceği şeyler",
+      "perHour": "Saatte izin verilen maksimum gözetimsiz çalıştırma",
+      "reviewerModel": "İnceleme modeli",
+      "reviewerModelHint": "Platform varsayılanını kullanmak için boş bırakın.",
+      "protectedResources": "Bunlara asla dokunma",
+      "protectedServices": "Hizmetler",
+      "protectedPaths": "Yollar",
+      "protectedRegistryKeys": "Kayıt defteri anahtarları",
+      "protectedDeviceTags": "Cihaz etiketleri"
+    },
+    "tier": {
+      "low": "Düşük",
+      "medium": "Orta"
+    },
+    "class": {
+      "registry": "Kayıt defteri",
+      "services": "Hizmetler",
+      "processes": "İşlemler",
+      "files_system": "Sistem dosyaları",
+      "files_user": "Kullanıcı dosyaları",
+      "temp_files": "Geçici dosyalar",
+      "network_egress": "Giden ağ trafiği",
+      "firewall": "Güvenlik duvarı",
+      "credentials": "Kimlik bilgileri",
+      "users_groups": "Kullanıcılar ve gruplar",
+      "packages": "Paketler",
+      "scheduled_tasks": "Zamanlanmış görevler",
+      "disk": "Disk",
+      "boot": "Önyükleme yapılandırması",
+      "security_tooling": "Güvenlik araçları",
+      "dns_cache": "DNS önbelleği",
+      "printing": "Yazdırma",
+      "browser": "Tarayıcılar",
+      "shell_eval": "Dinamik kod"
+    },
+    "windowsOnly": "Yalnızca Windows",
+    "hardDenied": "Üst sınır ne derse desin, gözetimsiz olarak hiçbir zaman kullanılamaz.",
+    "aboveCeiling": "İş ortağınız buna izin vermiyor.",
+    "lane": {
+      "closedTitle": "Gözetimsiz kanal normal şekilde çalışıyor",
+      "openTitle": "Gözetimsiz kanal duraklatıldı",
+      "openBody": "{{reason}} Bir onaylayıcı kanalı sıfırlayana kadar gözetimsiz çalıştırmalar reddedilir. Onaylar normal şekilde çalışmaya devam eder.",
+      "reset": "Kanalı sıfırla",
+      "resetSuccess": "Gözetimsiz kanal yeniden çalışıyor.",
+      "resetFailed": "Kanal sıfırlanamadı."
+    },
+    "stepUp": {
+      "title": "Sizin olduğunuzu doğrulayın",
+      "body": "Gözetimsiz çalıştırmaları etkinleştirmek yeni bir güvenlik kontrolü gerektirir."
+    },
+    "save": "Kaydet",
+    "saving": "Kaydediliyor…",
+    "saved": "Betik yazımı ayarları kaydedildi.",
+    "saveFailed": "Bu ayarlar kaydedilemedi.",
+    "loading": "Yükleniyor…",
+    "loadFailed": "Betik yazımı ayarları yüklenemedi."
   }
 }

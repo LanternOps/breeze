@@ -82,7 +82,8 @@
         "label": "Activité récente",
         "prompt": "Montrez-moi les dernières entrées du journal d’audit — quelles actions ont été entreprises ces dernières heures ?"
       }
-    }
+    },
+    "unattendedRelease": "Vérifié par le réviseur de scripts de l'IA et publié sans carte d'approbation."
   },
   "aiChatSidebar": {
     "history": "Histoire",

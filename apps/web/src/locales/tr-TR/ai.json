@@ -82,7 +82,8 @@
         "label": "Son etkinlik",
         "prompt": "Bana en son denetim günlüğü girişlerini göster — son birkaç saat içinde hangi işlemler yapıldı?"
       }
-    }
+    },
+    "unattendedRelease": "Yapay zekâ betik incelemecisi tarafından incelendi ve onay kartı olmadan yayınlandı."
   },
   "aiChatSidebar": {
     "history": "Geçmiş",

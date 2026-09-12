@@ -5317,5 +5317,81 @@
       "conflict": "Conflitto",
       "orgNotFound": "Organizzazione non trovata"
     }
+  },
+  "scriptAuthoringPage": {
+    "title": "Creazione di script",
+    "subtitle": "Consenti all'assistente e ai tuoi agenti di scrivere, revisionare e — quando lo autorizzi — eseguire script senza una scheda di approvazione.",
+    "partnerCard": {
+      "title": "Limite del partner",
+      "description": "L'impostazione più ampia che qualsiasi organizzazione di questo partner può utilizzare. Le singole organizzazioni possono solo restringerla.",
+      "readOnly": "Solo un amministratore partner con accesso completo alle organizzazioni può modificare il limite.",
+      "missing": "Il tuo partner non ha ancora concesso un limite, quindi la modalità non presidiata non può essere abilitata qui."
+    },
+    "orgCard": {
+      "title": "Questa organizzazione",
+      "description": "Un'autorizzazione esplicita. La modalità non presidiata resta disattivata finché sia il limite del partner sia questo interruttore non lo consentono.",
+      "noOrgSelected": "Seleziona un'organizzazione per gestirne le impostazioni di creazione script."
+    },
+    "fields": {
+      "proposingEnabled": "Consenti all'IA di proporre script",
+      "unattendedAllowed": "Consenti alle organizzazioni di usare la modalità non presidiata",
+      "unattendedEnabled": "Esegui gli script approvati a basso rischio senza una scheda di approvazione",
+      "maxRiskTier": "Livello di rischio massimo consentito in modalità non presidiata",
+      "allowedClasses": "Cosa può toccare uno script non presidiato",
+      "perHour": "Numero massimo di esecuzioni non presidiate all'ora",
+      "reviewerModel": "Modello di revisione",
+      "reviewerModelHint": "Lascia vuoto per usare il valore predefinito della piattaforma.",
+      "protectedResources": "Non toccare mai questi elementi",
+      "protectedServices": "Servizi",
+      "protectedPaths": "Percorsi",
+      "protectedRegistryKeys": "Chiavi di registro",
+      "protectedDeviceTags": "Tag dispositivo"
+    },
+    "tier": {
+      "low": "Basso",
+      "medium": "Medio"
+    },
+    "class": {
+      "registry": "Registro",
+      "services": "Servizi",
+      "processes": "Processi",
+      "files_system": "File di sistema",
+      "files_user": "File utente",
+      "temp_files": "File temporanei",
+      "network_egress": "Traffico di rete in uscita",
+      "firewall": "Firewall",
+      "credentials": "Credenziali",
+      "users_groups": "Utenti e gruppi",
+      "packages": "Pacchetti",
+      "scheduled_tasks": "Attività pianificate",
+      "disk": "Disco",
+      "boot": "Configurazione di avvio",
+      "security_tooling": "Strumenti di sicurezza",
+      "dns_cache": "Cache DNS",
+      "printing": "Stampa",
+      "browser": "Browser",
+      "shell_eval": "Codice dinamico"
+    },
+    "windowsOnly": "Solo Windows",
+    "hardDenied": "Mai disponibile in modalità non presidiata, qualunque cosa dica il limite.",
+    "aboveCeiling": "Il tuo partner non lo consente.",
+    "lane": {
+      "closedTitle": "La modalità non presidiata funziona normalmente",
+      "openTitle": "La modalità non presidiata è in pausa",
+      "openBody": "{{reason}} Le esecuzioni non presidiate vengono rifiutate finché un approvatore non ripristina la modalità. Le approvazioni continuano a funzionare normalmente.",
+      "reset": "Ripristina la modalità",
+      "resetSuccess": "La modalità non presidiata è di nuovo attiva.",
+      "resetFailed": "Impossibile ripristinare la modalità."
+    },
+    "stepUp": {
+      "title": "Conferma che sei tu",
+      "body": "Abilitare le esecuzioni non presidiate richiede un nuovo controllo di sicurezza."
+    },
+    "save": "Salva",
+    "saving": "Salvataggio…",
+    "saved": "Impostazioni di creazione script salvate.",
+    "saveFailed": "Non è stato possibile salvare queste impostazioni.",
+    "loading": "Caricamento…",
+    "loadFailed": "Non è stato possibile caricare le impostazioni di creazione script."
   }
 }

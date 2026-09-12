@@ -296,6 +296,21 @@ export default function AiChatMessages({
         }
 
         if (msg.role === "tool_result") {
+          // #5612 W05: a script released by the unattended lane never had an
+          // approval card, so rendering it through AiToolCallCard's generic
+          // tool-output chrome would misdescribe it as an executed tool call.
+          // A small inline note instead — just enough to say what happened.
+          if (msg.toolName === "unattended_release") {
+            return (
+              <p
+                key={msg.id}
+                className="text-xs italic text-muted-foreground"
+                data-testid="ai-unattended-release-note"
+              >
+                {t("aiChatMessages.unattendedRelease")}
+              </p>
+            );
+          }
           return (
             <AiToolCallCard
               key={msg.id}

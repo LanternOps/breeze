@@ -82,7 +82,8 @@
         "label": "Atividade recente",
         "prompt": "Mostre as entradas mais recentes do log de auditoria — quais ações foram realizadas nas últimas horas?"
       }
-    }
+    },
+    "unattendedRelease": "Revisado pelo revisor de scripts de IA e liberado sem um cartão de aprovação."
   },
   "aiChatSidebar": {
     "history": "Histórico",
