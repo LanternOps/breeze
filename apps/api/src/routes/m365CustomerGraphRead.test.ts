@@ -201,7 +201,9 @@ describe('GET /m365/connections', () => {
       clientId: '88888888-8888-4888-8888-888888888888',
       displayName: 'Contoso',
       status: 'active',
+      grantHealth: 'active',
       manifestVersion: 3,
+      currentManifestVersion: 3,
       observedGrants: [requiredGrant],
       missingGrants: [],
       unexpectedGrants: [],
@@ -433,5 +435,35 @@ describe.each(strictOrgQueryRoutes)('%s strict orgId query contract', (_name, me
     expect(mocks.retest).not.toHaveBeenCalled();
     expect(mocks.disconnect).not.toHaveBeenCalled();
     expect(mocks.audit).not.toHaveBeenCalled();
+  });
+});
+
+describe('connection DTO grant health', () => {
+  it('exposes the derived health, the stored version, and the current version', async () => {
+    // deriveGrantHealth already returns manifest-stale for a lagging row;
+    // before this change the DTO forwarded stored status only, so the web card
+    // could not tell a stale manifest from a healthy one (spec §2.2).
+    mocks.list.mockResolvedValue([connection({
+      permissionManifestVersion: 2,
+      grantHealth: undefined,
+    })]);
+
+    const response = await app().request(`/m365/connections?orgId=${ORG_ID}`);
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.connection.grantHealth).toBe('manifest-stale');
+    expect(body.connection.manifestVersion).toBe(2);
+    expect(body.connection.currentManifestVersion).toBe(3);
+  });
+
+  it('reports active health for a current, fully granted connection', async () => {
+    mocks.list.mockResolvedValue([connection()]);
+
+    const body = await (await app().request(`/m365/connections?orgId=${ORG_ID}`)).json();
+
+    expect(body.connection.grantHealth).toBe('active');
+    expect(body.connection.manifestVersion).toBe(3);
+    expect(body.connection.currentManifestVersion).toBe(3);
   });
 });
