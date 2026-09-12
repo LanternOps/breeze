@@ -6,6 +6,8 @@ import { getBullMQConnection } from '../redis';
 import { captureException } from '../sentry';
 
 export const SCRIPT_REVIEW_QUEUE = 'script-review';
+/** The single job name on the queue; the worker asserts it (bullmqValidation). */
+export const SCRIPT_REVIEW_JOB_NAME = 'review';
 
 export type ScriptReviewJobData = { proposalId: string; orgId: string; attempt: number };
 
@@ -30,7 +32,7 @@ export function getScriptReviewQueue(): Queue<ScriptReviewJobData> {
  * budget reservation key, which is not a job id.
  */
 export async function enqueueScriptReview(data: ScriptReviewJobData): Promise<void> {
-  await getScriptReviewQueue().add('review', data, {
+  await getScriptReviewQueue().add(SCRIPT_REVIEW_JOB_NAME, data, {
     jobId: `script-review-${data.proposalId}-${data.attempt}`,
     attempts: MAX_ATTEMPTS,
     backoff: { type: 'exponential', delay: 10_000 },
