@@ -120,8 +120,19 @@ The callback origin is selected in this precedence order: `PUBLIC_URL`, `PUBLIC_
 | `M365_GRAPH_READ_EXECUTOR_AZURE_CREDENTIAL_MODE` | `managed-identity` or `workload-identity`; there is no default/CLI credential fallback. |
 | `M365_GRAPH_READ_EXECUTOR_BIND_HOST` | A private RFC1918 IPv4 or unique-local IPv6 interface, not a hostname or public/loopback address. |
 | `M365_GRAPH_READ_EXECUTOR_PORT` | Integer from 1 through 65535. |
+| `M365_SYNC_MAX_IN_FLIGHT` | Optional, default `4`. Concurrent whole-domain sync actions per replica. Must be ≤ `M365_MAX_IN_FLIGHT`; boot refuses otherwise. |
+| `M365_MAX_IN_FLIGHT` | Optional, default `32`. Total concurrent operations per replica across all four routes. The difference between the two caps is the headroom reserved for interactive AI-tool reads. |
+| `M365_SIGNIN_ACTIVITY_RPM` | Optional, default `4`. Token-bucket rate for `signInActivity` Graph requests. Microsoft throttles this **per app across all tenants** at 10/min, so this is a per-process budget, not a per-tenant one: with N replicas set each to `4 / N` (rounded down, minimum 1), and leave headroom if a second region shares the app registration. |
+| `M365_SIGNIN_PAGES_PER_CALL` | Optional, default `5`. Pages of 500 users per sign-in sync call before the executor returns a continuation. |
+| `M365_SYNC_MAX_ITEMS_USERS` | Optional, default `25000`. Hard item ceiling for the users and sign-in domains. |
+| `M365_SYNC_MAX_ITEMS_DEVICES` | Optional, default `25000`. Hard item ceiling for the Intune device domain. |
+| `M365_SYNC_MAX_ITEMS_CA` | Optional, default `500`. Hard item ceiling for Conditional Access policies. |
+| `M365_SYNC_MAX_ITEMS_SKUS` | Optional, default `200`. Hard item ceiling for subscribed SKUs. |
+| `M365_SYNC_CONTINUATION_KEY` | Optional. Exactly 32 bytes of standard base64 (44 characters, one `=`). Encrypts the resumable sign-in continuation. **Set it whenever more than one replica runs**, otherwise each replica mints an ephemeral key at boot and a continuation issued by one replica is rejected by another — correct, but it restarts the sign-in page walk every time. Rotating it invalidates outstanding continuations only. |
 
 Managed identity may use `AZURE_CLIENT_ID` to select a user-assigned identity. Workload identity requires `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_FEDERATED_TOKEN_FILE`.
+
+**Sizing.** Sync actions buffer a whole domain in memory before projecting it: at the default caps a maximum-size tenant is roughly 25 000 users plus 25 000 devices. Size each replica at **512 MB** when `M365_SYNC_MAX_IN_FLIGHT` is at its default of 4 and tenants approach those caps; 256 MB is enough for read-only deployments with `M365_TENANT_SYNC_ENABLED` off on the API. Raising `M365_SYNC_MAX_IN_FLIGHT` raises peak memory roughly linearly — raise the memory limit with it. If bulk pulls must be guaranteed never to contend with interactive AI-tool reads, lower `M365_SYNC_MAX_IN_FLIGHT` to reserve more headroom, or scale the replica count out. Splitting sync onto a separate executor deployment is **not** available: v1 has exactly one executor URL (`M365_GRAPH_READ_EXECUTOR_URL`) and no sync-specific override.
 
 ### Secret ownership matrix
 
@@ -195,5 +206,7 @@ The Prometheus counter is `breeze_m365_customer_graph_read_events_total` with bo
 - `m365.customer_graph_read.disconnected`
 
 A second, independent Prometheus counter, `breeze_m365_graph_read_actions_total{action,outcome}`, covers per-call typed Graph read outcomes (the `m365_query_*` AI tools going through `POST /v1/read-action`), not connection lifecycle events — it does not replace the counter above. Its matching audit action is `m365.customer_graph_read.action_executed`, with details limited to `actionType`, `outcome`, `itemCount`, and `truncated`; it never carries the read's Graph payload. Both counters are registered on the same `/metrics` route.
+
+The executor itself now exposes `GET /metrics` on the same private listener as `/healthz` (unauthenticated, RFC1918-bound, no path prefix): counters `m365_sync_actions_total{action,outcome}` and `m365_sync_capacity_rejected_total{kind}`, and gauges `m365_sync_in_flight`, `m365_in_flight_total`, `m365_signin_limiter_tokens`. These are a separate scrape target from the API's `/metrics` and carry no `breeze_` prefix. `m365_signin_limiter_tokens` sitting at 0 across a scrape interval means the app-wide sign-in budget is saturated and sign-in syncs are returning continuations rather than completing — raise the domain's interval or reduce replica count, do not raise `M365_SIGNIN_ACTIVITY_RPM` above what Microsoft's 10/min per-app limit allows.
 
 Use correlation IDs to join API and executor observations. Never add state, cookies, authorization codes, tokens, verifier/nonces, certificate data, raw provider bodies, or raw vault locators to metrics, audit, or logs.
