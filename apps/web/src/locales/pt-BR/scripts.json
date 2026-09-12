@@ -1426,5 +1426,17 @@
     "approvedBy": "Aprovado por",
     "evidenceErased": "Evidência da revisão apagada",
     "allOrigins": "Todas as origens"
+  },
+  "scriptProposalDetail": {
+    "loading": "Carregando…",
+    "loadError": "Não foi possível carregar esta proposta.",
+    "evidenceErased": "As evidências de revisão desta proposta foram apagadas (a organização de origem foi mesclada ou o período de retenção expirou). A execução de script resultante ainda é visível no histórico do dispositivo.",
+    "statusLabel": "Status",
+    "riskTierLabel": "Nível de risco",
+    "reviewSummaryLabel": "Resumo do revisor",
+    "riskLow": "Baixo",
+    "riskMedium": "Médio",
+    "riskHigh": "Alto",
+    "riskCritical": "Crítico"
   }
 }

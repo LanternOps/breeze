@@ -1426,5 +1426,17 @@
     "approvedBy": "Aprobado por",
     "evidenceErased": "Evidencia de revisión eliminada",
     "allOrigins": "Todos los orígenes"
+  },
+  "scriptProposalDetail": {
+    "loading": "Cargando…",
+    "loadError": "No se pudo cargar esta propuesta.",
+    "evidenceErased": "La evidencia de revisión de esta propuesta fue eliminada (la organización de origen se fusionó o venció su período de retención). La ejecución del script resultante sigue visible en el historial del dispositivo.",
+    "statusLabel": "Estado",
+    "riskTierLabel": "Nivel de riesgo",
+    "reviewSummaryLabel": "Resumen del revisor",
+    "riskLow": "Bajo",
+    "riskMedium": "Medio",
+    "riskHigh": "Alto",
+    "riskCritical": "Crítico"
   }
 }

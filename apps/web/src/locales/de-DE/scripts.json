@@ -1426,5 +1426,17 @@
     "approvedBy": "Freigegeben von",
     "evidenceErased": "Prüfnachweis gelöscht",
     "allOrigins": "Alle Herkünfte"
+  },
+  "scriptProposalDetail": {
+    "loading": "Wird geladen …",
+    "loadError": "Dieser Vorschlag konnte nicht geladen werden.",
+    "evidenceErased": "Die Prüfnachweise dieses Vorschlags wurden gelöscht (die Quellorganisation wurde zusammengeführt oder die Aufbewahrungsfrist ist abgelaufen). Die daraus resultierende Skriptausführung ist weiterhin im Geräteverlauf sichtbar.",
+    "statusLabel": "Status",
+    "riskTierLabel": "Risikostufe",
+    "reviewSummaryLabel": "Prüfzusammenfassung",
+    "riskLow": "Niedrig",
+    "riskMedium": "Mittel",
+    "riskHigh": "Hoch",
+    "riskCritical": "Kritisch"
   }
 }

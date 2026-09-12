@@ -1426,5 +1426,17 @@
     "approvedBy": "Approuvé par",
     "evidenceErased": "Preuves de relecture supprimées",
     "allOrigins": "Toutes les origines"
+  },
+  "scriptProposalDetail": {
+    "loading": "Chargement…",
+    "loadError": "Impossible de charger cette proposition.",
+    "evidenceErased": "Les preuves de révision de cette proposition ont été effacées (l'organisation source a été fusionnée ou sa période de conservation a expiré). L'exécution de script qui en résulte reste visible dans l'historique de l'appareil.",
+    "statusLabel": "Statut",
+    "riskTierLabel": "Niveau de risque",
+    "reviewSummaryLabel": "Résumé du réviseur",
+    "riskLow": "Faible",
+    "riskMedium": "Moyen",
+    "riskHigh": "Élevé",
+    "riskCritical": "Critique"
   }
 }

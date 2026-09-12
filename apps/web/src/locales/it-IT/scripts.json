@@ -1426,5 +1426,17 @@
     "approvedBy": "Approvato da",
     "evidenceErased": "Prove della revisione eliminate",
     "allOrigins": "Tutte le origini"
+  },
+  "scriptProposalDetail": {
+    "loading": "Caricamento…",
+    "loadError": "Impossibile caricare questa proposta.",
+    "evidenceErased": "Le prove di revisione di questa proposta sono state cancellate (l'organizzazione di origine è stata unita o il periodo di conservazione è scaduto). L'esecuzione dello script risultante è ancora visibile nella cronologia del dispositivo.",
+    "statusLabel": "Stato",
+    "riskTierLabel": "Livello di rischio",
+    "reviewSummaryLabel": "Riepilogo del revisore",
+    "riskLow": "Basso",
+    "riskMedium": "Medio",
+    "riskHigh": "Alto",
+    "riskCritical": "Critico"
   }
 }
