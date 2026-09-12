@@ -48,7 +48,8 @@ const { dbMocks, contextMocks, consentMocks, columns } = vi.hoisted(() => ({
     consumeAdmin: vi.fn(async (input: { rawState: string }) => {
       dbMocks.order.push('consume-admin-session');
       if (!consentMocks.validStates.delete(input.rawState)) return null;
-      return { userId: '66666666-6666-4666-8666-666666666666' };
+      // Mirrors the column default: every stored session carries a purpose.
+      return { userId: '66666666-6666-4666-8666-666666666666', purpose: 'initial' };
     }),
     deleteForConnection: vi.fn(async () => {
       dbMocks.order.push('delete-session-by-connection');
@@ -923,8 +924,9 @@ describe('upgrade consent verification', () => {
     dbMocks.selectResults.push([STORED]);
     dbMocks.updateResults.push((set) => [{ ...STORED, ...set }]);
 
-    await applyUpgradeVerificationResult(ATTEMPT, successResult(REQUIRED_V3) as never);
+    const applied = await applyUpgradeVerificationResult(ATTEMPT, successResult(REQUIRED_V3) as never);
 
+    expect(applied.failureCode).toBeNull();
     const set = dbMocks.updateSets[0]!;
     expect(set.permissionManifestVersion).toBe(3);
     expect(set.consentGeneration).toBeDefined();      // sql`consent_generation + 1`
@@ -938,8 +940,9 @@ describe('upgrade consent verification', () => {
     dbMocks.selectResults.push([STORED]);
     dbMocks.updateResults.push((set) => [{ ...STORED, ...set }]);
 
-    await applyUpgradeVerificationResult(ATTEMPT, successResult(partial) as never);
+    const applied = await applyUpgradeVerificationResult(ATTEMPT, successResult(partial) as never);
 
+    expect(applied.failureCode).toBe('grant_missing');
     const set = dbMocks.updateSets[0]!;
     expect(set.permissionManifestVersion).toBeUndefined();
     expect(set.consentGeneration).toBeUndefined();
@@ -957,8 +960,11 @@ describe('upgrade consent verification', () => {
     );
 
     expect(dbMocks.updateSets).toHaveLength(0);
-    expect(applied.permissionManifestVersion).toBe(2);
-    expect(applied.status).toBe('active');
+    expect(applied.connection.permissionManifestVersion).toBe(2);
+    expect(applied.connection.status).toBe('active');
+    // The row is untouched by design, so the reason has to travel in band or
+    // the callback cannot tell this apart from an abandoned flow.
+    expect(applied.failureCode).toBe('consent_cancelled');
   });
 
   it('refuses to rebind: a different verified tenant is a silent no-op', async () => {
@@ -967,34 +973,37 @@ describe('upgrade consent verification', () => {
     // is an attempt to move a live connection to another tenant.
     dbMocks.selectResults.push([STORED]);
 
-    await applyUpgradeVerificationResult(
+    const applied = await applyUpgradeVerificationResult(
       ATTEMPT,
       { ...successResult(REQUIRED_V3), tenantId: '99999999-9999-4999-8999-999999999999' } as never,
     );
 
     expect(dbMocks.updateSets).toHaveLength(0);
+    expect(applied.failureCode).toBe('tenant_mismatch');
   });
 
   it('writes nothing when the returned application is not the configured one', async () => {
     dbMocks.selectResults.push([STORED]);
 
-    await applyUpgradeVerificationResult(
+    const applied = await applyUpgradeVerificationResult(
       ATTEMPT,
       { ...successResult(REQUIRED_V3), applicationId: '99999999-9999-4999-8999-999999999999' } as never,
     );
 
     expect(dbMocks.updateSets).toHaveLength(0);
+    expect(applied.failureCode).toBe('application_token_invalid');
   });
 
   it('writes nothing when grant reconciliation was unavailable', async () => {
     dbMocks.selectResults.push([STORED]);
 
-    await applyUpgradeVerificationResult(
+    const applied = await applyUpgradeVerificationResult(
       ATTEMPT,
       { ...successResult(REQUIRED_V3), grantReconciliation: 'unavailable' } as never,
     );
 
     expect(dbMocks.updateSets).toHaveLength(0);
+    expect(applied.failureCode).toBe('grant_reconciliation_unavailable');
   });
 
   it('rejects an attempt whose connection is not executable', async () => {
@@ -1053,6 +1062,20 @@ describe('transitionUpgradeConsentToIdentity', () => {
       expect.objectContaining({ purpose: 'upgrade', consentAttemptId: ATTEMPT.consentAttemptId }),
       expect.anything(),
     );
+  });
+
+  it('refuses an upgrade session reaching the FIRST-TIME transition', async () => {
+    // Symmetric to the check below. Unreachable today only because the two
+    // flows gate on disjoint statuses; if that ever slipped, an upgrade would
+    // move a live connection to `verifying` and stop its reads.
+    consentMocks.consumeAdmin.mockResolvedValueOnce({ userId: ACTOR_ID, purpose: 'upgrade' } as never);
+
+    await expect(transitionAdminConsentToIdentity({
+      attempt: { ...ATTEMPT, status: 'pending-consent' },
+      rawAdminState: 'admin-state',
+      prepared: {} as never,
+    })).rejects.toMatchObject({ code: 'stale_attempt' });
+    expect(dbMocks.updateSets).toHaveLength(0);
   });
 
   it('refuses an admin session that is not an upgrade session', async () => {

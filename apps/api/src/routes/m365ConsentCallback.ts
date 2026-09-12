@@ -191,7 +191,7 @@ interface CallbackConnectionServiceLike {
   applyUpgradeVerificationResult(
     input: CallbackAttemptSnapshot,
     result: CompleteConsentResult,
-  ): Promise<CallbackConnectionSnapshot>;
+  ): Promise<{ connection: CallbackConnectionSnapshot; failureCode: string | null }>;
 }
 
 interface CallbackEventNames {
@@ -238,7 +238,7 @@ interface CallbackDependencies {
   applyUpgradeResult(
     input: CallbackAttemptSnapshot,
     result: CompleteConsentResult,
-  ): Promise<CallbackConnectionSnapshot>;
+  ): Promise<{ connection: CallbackConnectionSnapshot; failureCode: string | null }>;
   markAttemptFailed(input: CallbackAttemptSnapshot, outcome: string): Promise<CallbackConnectionSnapshot>;
   prepareIdentitySession(input: { tenantHint: string }): PreparedIdentityVerificationSession;
   buildIdentityUrl(input: Parameters<typeof buildMicrosoftIdentityAuthorizationUrl>[0]): string;
@@ -441,15 +441,24 @@ function statusAllowed(
  * An upgrade leaves an executable connection executable even when it fails, so
  * status alone would report `active` for an approval that granted nothing.
  * Whether the stored manifest version actually moved is the real outcome.
+ *
+ * `failureCode` is the reason the apply returned in band. It matters because
+ * every upgrade failure is a deliberate no-op on the row: without it a
+ * wrong-tenant or wrong-application consent would be reported to the
+ * administrator with the same generic "manifest is stale" copy as never having
+ * started, and the specific per-cause copy the UI already ships would be
+ * unreachable.
  */
 function upgradeOutcome(
   value: CallbackConnectionSnapshot,
   currentManifestVersion: number,
+  failureCode: string | null,
 ): PublicOutcome {
   if (value.permissionManifestVersion !== currentManifestVersion) {
-    return PUBLIC_OUTCOMES.has(value.lastErrorCode as PublicOutcome)
-      ? value.lastErrorCode as PublicOutcome
-      : 'manifest_stale';
+    for (const candidate of [failureCode, value.lastErrorCode]) {
+      if (PUBLIC_OUTCOMES.has(candidate as PublicOutcome)) return candidate as PublicOutcome;
+    }
+    return 'manifest_stale';
   }
   return outcomeFromConnection(value);
 }
@@ -679,13 +688,23 @@ export function createM365ConsentCallbackRoutes(
     try {
       let applied: CallbackConnectionSnapshot;
       let outcome: PublicOutcome;
+      let upgradeFailureCode: string | null = null;
       if (isUpgrade) {
-        applied = await dependencies.applyUpgradeResult(attempt, result);
+        const upgraded = await dependencies.applyUpgradeResult(attempt, result);
+        applied = upgraded.connection;
+        upgradeFailureCode = upgraded.failureCode;
         // W05: onConnectionUpgraded(connection) is called here after in-place promotion
-        outcome = upgradeOutcome(applied, currentManifestVersion);
+        outcome = upgradeOutcome(applied, currentManifestVersion, upgradeFailureCode);
       } else {
         applied = await dependencies.applyIdentityResult(attempt, result);
         outcome = outcomeFromConnection(applied);
+      }
+      // An upgrade that did not promote is a FAILED verification even though
+      // the executor reported success and the connection is still executable —
+      // reporting it as tenant_binding_verified would log a wrong-tenant
+      // consent attempt as a verified binding.
+      if (isUpgrade && upgradeFailureCode !== null) {
+        return terminalFailure(outcome, attempt, session.userId);
       }
       if (result.success && (applied.status === 'active' || applied.status === 'degraded')) {
         const driftOutcome = applied.lastErrorCode === 'grant_missing'

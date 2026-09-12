@@ -94,6 +94,24 @@ export interface M365RetestSnapshot<P extends M365ConnectionProfile = M365Connec
 
 export type RetestSnapshot = M365RetestSnapshot<'customer-graph-read'>;
 
+/**
+ * Outcome of an upgrade-consent apply.
+ *
+ * `failureCode` exists because every failure branch of an upgrade is a
+ * deliberate NO-OP on the row (that is the whole point: a cancelled or
+ * mis-tenanted upgrade must leave a live connection exactly as it was). With
+ * nothing written, the caller could not otherwise tell "the administrator
+ * never came back" from "the administrator consented the WRONG TENANT" — both
+ * would surface as the same generic manifest-stale redirect and, worse, as a
+ * `tenant_binding_verified` audit event. The reason is therefore returned in
+ * band instead of being persisted.
+ */
+export interface AppliedUpgradeVerification<P extends M365ConnectionProfile = M365ConnectionProfile> {
+  connection: M365ConnectionSnapshot<P>;
+  /** null when the manifest was promoted; otherwise why it was not. */
+  failureCode: string | null;
+}
+
 export type ConnectionLifecycleErrorCode =
   | 'connection_not_found'
   | 'connection_not_executable'
@@ -270,7 +288,7 @@ export interface ConnectionService<P extends M365ConsentSessionProfile, Client> 
   applyUpgradeVerificationResult(
     input: M365ConsentAttemptSnapshot<P>,
     result: CompleteConsentResult,
-  ): Promise<M365ConnectionSnapshot<P>>;
+  ): Promise<AppliedUpgradeVerification<P>>;
   loadRetestSnapshot(input: {
     id: string;
     orgId: string;
@@ -602,6 +620,13 @@ export function createConnectionService<
         profile,
       });
       if (!adminSession) throw lifecycleError('stale_attempt');
+      // Symmetric with the upgrade transition: the consumed row is the
+      // authority on which flow this is. Today an upgrade session cannot exist
+      // on a pending-consent connection, so this is unreachable — but that is
+      // an invariant of two separate status gates, not of this function, and
+      // an upgrade reaching here would move a live connection to `verifying`.
+      // Rows predating the purpose column default to 'initial'.
+      if (adminSession.purpose !== 'initial') throw lifecycleError('stale_attempt');
 
       const connection = await requireCasRow(await db.update(m365Connections).set({
         status: 'verifying',
@@ -766,7 +791,7 @@ export function createConnectionService<
   async function applyUpgradeVerificationResult(
     input: M365ConsentAttemptSnapshot<P>,
     result: CompleteConsentResult,
-  ): Promise<M365ConnectionSnapshot<P>> {
+  ): Promise<AppliedUpgradeVerification<P>> {
     if (!isExecutable(input.status)) throw lifecycleError('stale_attempt');
     return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
       const rows = await db.select().from(m365Connections)
@@ -774,15 +799,23 @@ export function createConnectionService<
       const current = rows[0] ? snapshot(rows[0]) : null;
       if (!current) throw lifecycleError('stale_attempt');
 
-      if (!result.success) return current;
+      // Every early return writes nothing; the reason travels back in band so
+      // the callback can redirect and audit it truthfully.
+      if (!result.success) return { connection: current, failureCode: result.errorCode };
       // The executor is fixed-profile, but the control plane checks the proof
       // against its own code/config-owned application, exactly as the
       // first-time path does.
-      if (result.applicationId !== deps.loadRuntimeConfig().clientId) return current;
+      if (result.applicationId !== deps.loadRuntimeConfig().clientId) {
+        return { connection: current, failureCode: 'application_token_invalid' };
+      }
       // Strict equality, not "NULL or equal": an upgrade always has a bound
       // tenant, so a different tenant is a rebind attempt, never a binding.
-      if (result.tenantId !== current.tenantId) return current;
-      if (result.grantReconciliation !== 'complete') return current;
+      if (result.tenantId !== current.tenantId) {
+        return { connection: current, failureCode: 'tenant_mismatch' };
+      }
+      if (result.grantReconciliation !== 'complete') {
+        return { connection: current, failureCode: 'grant_reconciliation_unavailable' };
+      }
 
       const verifiedAt = new Date(result.verifiedAt);
       const grantsVerifiedAt = new Date(result.grantsVerifiedAt);
@@ -816,8 +849,9 @@ export function createConnectionService<
             lastErrorCode: 'grant_missing',
             updatedAt: new Date(),
           };
-      return requireCasRow(await db.update(m365Connections).set(set)
+      const connection = await requireCasRow(await db.update(m365Connections).set(set)
         .where(attemptPredicate(input)).returning());
+      return { connection, failureCode: promote ? null : 'grant_missing' };
     }));
   }
 

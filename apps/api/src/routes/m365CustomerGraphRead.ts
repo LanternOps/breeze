@@ -204,6 +204,12 @@ function lifecycleFailure(c: Context, error: unknown) {
     || code === 'tenant_already_bound') {
     return c.json({ error: 'Connection not found' }, 404);
   }
+  if (code === 'manifest_current') {
+    // Reachable by racing the banner (two tabs, double click). Saying so beats
+    // the generic message, because the correct next step is "reload", not
+    // "retry".
+    return c.json({ error: 'The connection already uses the current permission manifest' }, 409);
+  }
   return c.json({ error: 'Connection operation could not be completed' }, 409);
 }
 

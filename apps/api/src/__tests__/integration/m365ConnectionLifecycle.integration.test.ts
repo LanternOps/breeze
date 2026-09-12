@@ -380,8 +380,9 @@ describe('customer Graph-read upgrade consent integration', () => {
         .sort((left, right) => canonicalGrantKey(left).localeCompare(canonicalGrantKey(right))),
     } as never);
 
-    expect(applied.permissionManifestVersion).toBe(manifest.version);
-    expect(applied.status).toBe('active');
+    expect(applied.failureCode).toBeNull();
+    expect(applied.connection.permissionManifestVersion).toBe(manifest.version);
+    expect(applied.connection.status).toBe('active');
     const after = await currentConnection(fixture.orgId);
     expect(after?.consentGeneration).toBe((conn?.consentGeneration ?? 0) + 1);
   });
@@ -395,7 +396,7 @@ describe('customer Graph-read upgrade consent integration', () => {
     });
     const conn = await currentConnection(fixture.orgId);
 
-    await applyUpgradeVerificationResult({
+    const applied = await applyUpgradeVerificationResult({
       id: conn!.id,
       orgId: fixture.orgId,
       profile: 'customer-graph-read',
@@ -403,6 +404,7 @@ describe('customer Graph-read upgrade consent integration', () => {
       status: 'active',
     }, { success: false, errorCode: 'consent_cancelled' } as never);
 
+    expect(applied.failureCode).toBe('consent_cancelled');
     const after = await currentConnection(fixture.orgId);
     expect(after?.status).toBe('active');
     expect(after?.permissionManifestVersion).toBe(2);

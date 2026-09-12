@@ -1001,9 +1001,15 @@ describe('upgrade consent callback', () => {
 
   it('redirects active after a promotion and degraded-with-cause when the version did not move', async () => {
     const cases = [
-      { manifestVersion: 3, status: 'active', lastErrorCode: null, expected: 'active' },
-      { manifestVersion: 2, status: 'active', lastErrorCode: 'grant_missing', expected: 'grant_missing' },
-      { manifestVersion: 2, status: 'active', lastErrorCode: null, expected: 'manifest_stale' },
+      { manifestVersion: 3, status: 'active', lastErrorCode: null, failureCode: null, expected: 'active' },
+      { manifestVersion: 2, status: 'active', lastErrorCode: 'grant_missing', failureCode: 'grant_missing', expected: 'grant_missing' },
+      // The row is untouched on these, so only the in-band failure code can
+      // tell the administrator why the approval did not take. Without it all
+      // three would collapse into the generic manifest_stale redirect.
+      { manifestVersion: 2, status: 'active', lastErrorCode: null, failureCode: 'tenant_mismatch', expected: 'tenant_mismatch' },
+      { manifestVersion: 2, status: 'active', lastErrorCode: null, failureCode: 'application_token_invalid', expected: 'application_token_invalid' },
+      { manifestVersion: 2, status: 'active', lastErrorCode: null, failureCode: 'grant_reconciliation_unavailable', expected: 'grant_reconciliation_unavailable' },
+      { manifestVersion: 2, status: 'active', lastErrorCode: null, failureCode: null, expected: 'manifest_stale' },
     ] as const;
     for (const scenario of cases) {
       const applyIdentityResult = vi.fn();
@@ -1019,10 +1025,13 @@ describe('upgrade consent callback', () => {
           success: true, tenantId: TENANT_ID, manifestVersion: scenario.manifestVersion,
         })) as never,
         applyUpgradeResult: vi.fn(async () => ({
-          id: CONNECTION_ID,
-          status: scenario.status,
-          lastErrorCode: scenario.lastErrorCode,
-          permissionManifestVersion: scenario.manifestVersion,
+          connection: {
+            id: CONNECTION_ID,
+            status: scenario.status,
+            lastErrorCode: scenario.lastErrorCode,
+            permissionManifestVersion: scenario.manifestVersion,
+          },
+          failureCode: scenario.failureCode,
         })) as never,
         applyIdentityResult,
         loadConfig: vi.fn(() => ({
