@@ -9,6 +9,12 @@ describe('getDocsForPath', () => {
       expect(result.url).toBe(`${DOCS_BASE_URL}/features/devices/`);
     });
 
+    it('/ai-script-proposals/:id maps to the AI script authoring docs', () => {
+      const result = getDocsForPath('/ai-script-proposals/abc-123');
+      expect(result.label).toBe('AI Script Proposal');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-script-authoring/`);
+    });
+
     it('/settings/ai-agents maps to AI Agents docs (not the generic AI page)', () => {
       const result = getDocsForPath('/settings/ai-agents');
       expect(result.label).toBe('AI Agents');
