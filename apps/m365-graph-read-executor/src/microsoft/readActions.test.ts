@@ -50,6 +50,9 @@ function createStubGraphClient(options: {
       if (options.throwError) throw options.throwError;
       return options.collection ?? { items: [{ id: 'stub-item-id' }], truncated: false };
     },
+    async readSyncCollection() {
+      throw new Error('readSyncCollection is not used by interactive readActions');
+    },
   };
   return { client, readResourceCalls, readCollectionCalls };
 }

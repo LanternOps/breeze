@@ -26,6 +26,7 @@ function dependencies(observation: Record<string, unknown> = {}) {
       probeTenant: vi.fn().mockResolvedValue({ tenantId: TENANT_ID, applicationId: CLIENT_ID, organizationDisplayName: 'Example', observedGrants: null, ...observation }),
       readResource: vi.fn(),
       readCollection: vi.fn(),
+      readSyncCollection: vi.fn(),
     },
   };
 }
