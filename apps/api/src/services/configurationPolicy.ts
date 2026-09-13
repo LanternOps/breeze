@@ -477,6 +477,29 @@ export async function parentPolicyEnablesHpCmslCollection(parentId: string): Pro
   return warrantyHpCmslCollectionEffective(row?.inlineSettings);
 }
 
+/**
+ * True when the warranty link IN EFFECT on a policy — its own, else the one it
+ * inherits (config_policy_effective_feature_links resolves exactly that, whole
+ * link, no merge: contract D5) — delivers HP CMSL collection (#5511 W02, D4).
+ *
+ * Used by the AI assignment tool, which has no loaded policy aggregate to read
+ * links from; the HTTP assignment route reads the same answer off
+ * getConfigPolicy's links instead of querying again.
+ */
+export async function policyEffectivelyEnablesHpCmslCollection(policyId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings })
+    .from(configPolicyEffectiveFeatureLinks)
+    .where(
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, policyId),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'warranty')
+      )
+    )
+    .limit(1);
+  return warrantyHpCmslCollectionEffective(row?.inlineSettings);
+}
+
 export async function listEligibleParentPolicies(
   auth: AuthContext,
   sel: { ownerScope: 'organization'; orgId: string } | { ownerScope: 'partner' },

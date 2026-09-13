@@ -8,6 +8,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // artefact.
 const { deleteConfigPolicyMock } = vi.hoisted(() => ({ deleteConfigPolicyMock: vi.fn() }));
 
+const { policyEffectivelyEnablesHpCmslCollectionMock } = vi.hoisted(() => ({
+  // Default: the policy does not collect, so every pre-existing assignment
+  // case keeps its meaning.
+  policyEffectivelyEnablesHpCmslCollectionMock: vi.fn(async () => false),
+}));
+
 const { WarrantyConsentErrorMock } = vi.hoisted(() => ({
   WarrantyConsentErrorMock: class WarrantyConsentError extends Error {
     readonly code = 'warranty_hp_cmsl_consent_required' as const;
@@ -117,6 +123,7 @@ vi.mock('./configurationPolicy', () => ({
   // to export a constructor or that check throws on `undefined`.
   PolicyHasChildrenError: PolicyHasChildrenErrorMock,
   WarrantyConsentError: WarrantyConsentErrorMock,
+  policyEffectivelyEnablesHpCmslCollection: policyEffectivelyEnablesHpCmslCollectionMock,
 }));
 
 import { db } from '../db';
@@ -711,6 +718,51 @@ describe('configuration policy AI tools', () => {
 
     expect(JSON.parse(output)).toEqual({ error: 'partner-wide write denied' });
     expect(assignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  // #5511 W02 (contract D4): assigning a policy whose effective warranty link
+  // collects is how HP CMSL collection REACHES devices — the HTTP route gates
+  // it on devices.execute + MFA. This Tier-2 tool auto-executes with no
+  // approval, so it refuses outright and points at the UI: an assistant must
+  // not be able to widen collection any more than it can switch it on.
+  it('apply_configuration_policy refuses to assign a policy that collects HP warranty data', async () => {
+    mockSelectRows([{ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'HP fleet' }]);
+    validateAssignmentTargetMock.mockResolvedValue({ valid: true });
+    authorizeAssignmentTargetMock.mockResolvedValue({ valid: true });
+    assignPolicyMock.mockResolvedValue({ id: 'assignment-1' });
+    policyEffectivelyEnablesHpCmslCollectionMock.mockResolvedValueOnce(true);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('apply_configuration_policy')!.handler({
+      configPolicyId: POLICY_ID,
+      level: 'device',
+      targetId: DEVICE_ID,
+    }, makeAuth());
+
+    expect(JSON.parse(output).error).toMatch(/HP warranty collection/);
+    expect(policyEffectivelyEnablesHpCmslCollectionMock).toHaveBeenCalledWith(POLICY_ID);
+    expect(assignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('apply_configuration_policy still assigns a policy that does not collect', async () => {
+    mockSelectRows([{ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Plain' }]);
+    validateAssignmentTargetMock.mockResolvedValue({ valid: true });
+    authorizeAssignmentTargetMock.mockResolvedValue({ valid: true });
+    assignPolicyMock.mockResolvedValue({ id: 'assignment-1' });
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('apply_configuration_policy')!.handler({
+      configPolicyId: POLICY_ID,
+      level: 'device',
+      targetId: DEVICE_ID,
+    }, makeAuth());
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(assignPolicyMock).toHaveBeenCalled();
   });
 
   it('apply_configuration_policy derives the partner target server-side and ignores a client-supplied targetId', async () => {

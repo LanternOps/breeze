@@ -25,6 +25,7 @@ import {
   addFeatureLink,
   updateFeatureLink,
   WarrantyConsentError,
+  policyEffectivelyEnablesHpCmslCollection,
   removeFeatureLink,
   listFeatureLinks,
   listAssignments,
@@ -431,6 +432,18 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const siteAuth = await authorizeAssignmentTarget(auth, input.level as any, targetId);
       if (!siteAuth.valid) {
         return JSON.stringify({ error: siteAuth.error });
+      }
+
+      // #5511 W02 (contract D4): assigning a policy whose effective warranty
+      // link collects is how HP CMSL collection REACHES devices — the HTTP
+      // route gates that on devices:execute + MFA, because it installs HP
+      // software on every HP endpoint the assignment covers. This tool is
+      // Tier 2 (auto-executes, no approval), so it refuses rather than widen
+      // collection: an assistant can no more spread it than switch it on.
+      if (await policyEffectivelyEnablesHpCmslCollection(policy.id)) {
+        return JSON.stringify({
+          error: `Policy "${policy.name}" has HP warranty collection switched on, which installs HP software on the devices it reaches. Assigning it requires a user with the devices:execute permission — ask them to assign it from the Configuration Policies page.`,
+        });
       }
 
       // assignPolicy returns null (instead of throwing) on a duplicate — see
