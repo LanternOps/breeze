@@ -212,6 +212,16 @@
       "cancel": "Cancel",
       "createReport": "Create report"
     },
+    "lifecycleOptions": {
+      "cancel": "Cancel",
+      "createReport": "Create report",
+      "includeManualAssets": "Include hand-entered assets",
+      "includeManualAssetsHelp": "Manual assets with a purchase or warranty date appear alongside agent devices.",
+      "includeOtherEquipment": "List other equipment",
+      "includeOtherEquipmentHelp": "Printers, network and IoT hardware are listed without a replacement timeline.",
+      "replaceAgeYears": "Plan replacement after (years)",
+      "replaceAgeYearsHelp": "A device is due for replacement this many years after purchase, or when active warranty coverage ends if that is later."
+    },
     "reportBuilderPage": {
       "configurationTitle": "Report Configuration",
       "description": "Generate a one-time report without saving it.",
@@ -264,6 +274,14 @@
         "showing": "Showing {{start}} to {{end}} of {{total}} records"
       },
       "refresh": "Refresh",
+      "lifecycle": {
+        "dueSoon": "Due soon",
+        "onTrack": "On track",
+        "otherEquipment": "Other equipment",
+        "recommendations": "What we recommend",
+        "replaceNow": "Replace now",
+        "unknownAge": "Unknown age"
+      },
       "reportTypes": {
         "ai_fleet_design": "Fleet Design",
         "ai_org_narrative": "Weekly AI Operations Narrative",
@@ -271,6 +289,7 @@
         "compliance": "Compliance Report",
         "device_inventory": "Device Inventory",
         "executive_summary": "Executive Summary",
+        "hardware_lifecycle": "Hardware Lifecycle",
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
         "software_inventory": "Software Inventory"
@@ -330,6 +349,7 @@
         "compliance": "Compliance Report",
         "device_inventory": "Device Inventory",
         "executive_summary": "Executive Summary",
+        "hardware_lifecycle": "Hardware Lifecycle",
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
         "software_inventory": "Software Inventory"
@@ -828,6 +848,7 @@
         "device_inventory": "Device Inventory",
         "devices": "Devices",
         "executive_summary": "Executive Summary",
+        "hardware_lifecycle": "Hardware Lifecycle",
         "patches": "Patches",
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
@@ -861,6 +882,10 @@
         "executive_summary": {
           "description": "High-level KPIs, risk posture, and strategic trends for leadership.",
           "name": "Executive Summary"
+        },
+        "hardware_lifecycle": {
+          "description": "Customer-ready device replacement plan: age, warranty, replace-by dates and OS support status, with a staged recommendation.",
+          "name": "Hardware Lifecycle Report"
         },
         "security_compliance_posture": {
           "description": "Insurance/vetting-ready evidence: EDR coverage, encryption, firewall, patching, vulnerabilities, privileged access, and security integrations with percent-implemented rollups.",

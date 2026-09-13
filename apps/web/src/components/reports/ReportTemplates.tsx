@@ -3,6 +3,7 @@ import {
   Activity,
   BarChart3,
   Bell,
+  CalendarClock,
   FileText,
   Loader2,
   Plus,
@@ -12,6 +13,11 @@ import {
 import { cn } from '@/lib/utils';
 import ReportBuilder, { reportTypeSurvivesBuilder, type ReportBuilderFormValues } from './ReportBuilder';
 import { PostureReportOptionsForm } from './PostureReportOptionsForm';
+import {
+  DEFAULT_HARDWARE_LIFECYCLE_OPTIONS,
+  HardwareLifecycleOptionsForm,
+  type HardwareLifecycleOptions,
+} from './HardwareLifecycleOptionsForm';
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -61,6 +67,7 @@ const reportTypeValues: TemplateReportType[] = [
   'performance',
   'executive_summary',
   'security_compliance_posture',
+  'hardware_lifecycle',
   'devices',
   'alerts',
   'patches',
@@ -87,6 +94,24 @@ const defaultTemplates: ReportTemplate[] = [
     tone: {
       iconBg: 'bg-indigo-500/15',
       iconColor: 'text-indigo-600'
+    }
+  },
+  {
+    id: 'hardware_lifecycle',
+    name: 'Hardware Lifecycle Report',
+    description:
+      'Customer-ready device replacement plan: age, warranty, replace-by dates and OS support status, with a staged recommendation.',
+    defaults: {
+      name: 'Hardware Lifecycle Report',
+      type: 'hardware_lifecycle',
+      dateRange: { preset: 'last_30_days' },
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: CalendarClock,
+    tone: {
+      iconBg: 'bg-emerald-500/15',
+      iconColor: 'text-emerald-600'
     }
   },
   {
@@ -273,6 +298,8 @@ export default function ReportTemplates() {
   const [activeTemplate, setActiveTemplate] = useState<ReportTemplate | null>(null);
   const [postureTemplate, setPostureTemplate] = useState<ReportTemplate | null>(null);
   const [backupRequired, setBackupRequired] = useState(false);
+  const [lifecycleTemplate, setLifecycleTemplate] = useState<ReportTemplate | null>(null);
+  const [lifecycleOptions, setLifecycleOptions] = useState<HardwareLifecycleOptions>(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
   const [builderOpen, setBuilderOpen] = useState(false);
   const [creatingId, setCreatingId] = useState<string | null>(null);
 
@@ -352,6 +379,11 @@ export default function ReportTemplates() {
       if (type === 'security_compliance_posture') {
         setBackupRequired(false);
         setPostureTemplate(template);
+        return;
+      }
+      if (type === 'hardware_lifecycle') {
+        setLifecycleOptions(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
+        setLifecycleTemplate(template);
         return;
       }
       if (type && !reportTypeSurvivesBuilder(type)) {
@@ -524,6 +556,30 @@ export default function ReportTemplates() {
                 defaultValues={builderDefaults}
                 onSubmit={handleSubmit}
                 onCancel={handleCloseBuilder}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {lifecycleTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+            <h2 className="text-lg font-semibold">
+              {t('reports.reportTemplates.useTemplateTitle', {
+                name: getTemplateDisplayName(lifecycleTemplate),
+              })}
+            </h2>
+            <div className="mt-5">
+              <HardwareLifecycleOptionsForm
+                value={lifecycleOptions}
+                onChange={setLifecycleOptions}
+                busy={creatingId === lifecycleTemplate.id}
+                submitLabel={t('reports.lifecycleOptions.createReport')}
+                onCancel={() => setLifecycleTemplate(null)}
+                onSubmit={() => {
+                  void handleCreateDirect(lifecycleTemplate, { ...lifecycleOptions });
+                }}
               />
             </div>
           </div>

@@ -65,6 +65,16 @@
       "totalDevices": "Dispositivi totali"
     },
     "postureOptions": { "requireBackupCoverage": "Richiedi copertura backup", "requireBackupCoverageHelp": "Quando è facoltativo, il backup resta visibile come evidenza neutra e non genera una raccomandazione.", "cancel": "Annulla", "createReport": "Crea report" },
+    "lifecycleOptions": {
+      "cancel": "Annulla",
+      "createReport": "Crea report",
+      "includeManualAssets": "Includi asset inseriti manualmente",
+      "includeManualAssetsHelp": "Gli asset manuali con data di acquisto o garanzia compaiono accanto ai dispositivi con agent.",
+      "includeOtherEquipment": "Elenca altre apparecchiature",
+      "includeOtherEquipmentHelp": "Stampanti, hardware di rete e IoT sono elencati senza calendario di sostituzione.",
+      "replaceAgeYears": "Pianifica la sostituzione dopo (anni)",
+      "replaceAgeYearsHelp": "Un dispositivo va sostituito questo numero di anni dopo l’acquisto, o alla fine della garanzia attiva se successiva."
+    },
     "reportBuilderPage": { "configurationTitle": "Configurazione report", "description": "Genera un report una tantum senza salvarlo.", "errors": { "exportFailed": "Esportazione non riuscita. Riprova.", "generatePreview": "Impossibile generare l'anteprima", "generateReportPreview": "Impossibile generare l'anteprima del report" }, "title": "Generatore report ad hoc" },
     "reportEditPage": { "backToReports": "Torna ai report", "description": "Aggiorna la configurazione per \"{{name}}\".", "errors": { "fetchReport": "Impossibile recuperare il report", "generic": "Si è verificato un errore" }, "loading": "Caricamento report...", "notFound": "Report non trovato", "reportsBreadcrumb": "Report", "title": "Modifica report" },
     "reportPreview": {
@@ -78,7 +88,15 @@
       "noDataMatches": "Nessun dato corrisponde ai filtri correnti.",
       "pagination": { "page": "Pagina {{current}} di {{total}}", "showing": "Visualizzati da {{start}} a {{end}} di {{total}} record" },
       "refresh": "Aggiorna",
-      "reportTypes": { "ai_fleet_design": "Progettazione della flotta", "ai_org_narrative": "Resoconto settimanale delle operazioni AI", "alert_summary": "Riepilogo avvisi", "compliance": "Report conformità", "device_inventory": "Inventario dispositivi", "executive_summary": "Riepilogo direzionale", "performance": "Report prestazioni", "security_compliance_posture": "Stato sicurezza e conformità", "software_inventory": "Inventario software" },
+      "lifecycle": {
+        "dueSoon": "In scadenza",
+        "onTrack": "In linea",
+        "otherEquipment": "Altre apparecchiature",
+        "recommendations": "Cosa raccomandiamo",
+        "replaceNow": "Sostituire ora",
+        "unknownAge": "Età sconosciuta"
+      },
+      "reportTypes": { "ai_fleet_design": "Progettazione della flotta", "ai_org_narrative": "Resoconto settimanale delle operazioni AI", "alert_summary": "Riepilogo avvisi", "compliance": "Report conformità", "device_inventory": "Inventario dispositivi", "executive_summary": "Riepilogo direzionale", "hardware_lifecycle": "Ciclo di vita dell’hardware", "performance": "Report prestazioni", "security_compliance_posture": "Stato sicurezza e conformità", "software_inventory": "Inventario software" },
       "tryAgain": "Riprova",
       "values": { "no": "No", "yes": "Sì" },
       "viewModes": { "chart": "Grafico", "table": "Tabella" }
@@ -103,7 +121,7 @@
       "visibleInPortal": "Visibile nel portale clienti",
       "newReport": "Nuovo report",
       "nextOccurrence": "Prossimo: {{next}}",
-      "reportTypes": { "ai_fleet_design": "Progettazione della flotta", "ai_org_narrative": "Resoconto settimanale delle operazioni AI", "alert_summary": "Riepilogo avvisi", "compliance": "Report conformità", "device_inventory": "Inventario dispositivi", "executive_summary": "Riepilogo direzionale", "performance": "Report prestazioni", "security_compliance_posture": "Stato sicurezza e conformità", "software_inventory": "Inventario software" },
+      "reportTypes": { "ai_fleet_design": "Progettazione della flotta", "ai_org_narrative": "Resoconto settimanale delle operazioni AI", "alert_summary": "Riepilogo avvisi", "compliance": "Report conformità", "device_inventory": "Inventario dispositivi", "executive_summary": "Riepilogo direzionale", "hardware_lifecycle": "Ciclo di vita dell’hardware", "performance": "Report prestazioni", "security_compliance_posture": "Stato sicurezza e conformità", "software_inventory": "Inventario software" },
       "runsTable": { "actions": "Azioni", "completed": "Completato", "report": "Report", "started": "Avviato", "status": "Stato" },
       "schedules": { "daily": "Giornaliero", "monthly": "Mensile", "one_time": "Una tantum", "weekly": "Settimanale" },
       "status": { "completed": "completato", "failed": "non riuscito", "pending": "in attesa", "running": "in esecuzione" },
@@ -181,7 +199,7 @@
       "formats": { "csv": "CSV", "excel": "Excel", "pdf": "PDF" },
       "last30Days": "ultimi 30 giorni",
       "previewAlt": "Anteprima {{name}}",
-      "reportTypes": { "activity": "Attività", "ai_fleet_design": "Progettazione della flotta", "ai_org_narrative": "Resoconto settimanale delle operazioni AI", "alert_summary": "Riepilogo avvisi", "alerts": "Avvisi", "compliance": "Report conformità", "device_inventory": "Inventario dispositivi", "devices": "Dispositivi", "executive_summary": "Riepilogo direzionale", "patches": "Patch", "performance": "Report prestazioni", "security_compliance_posture": "Stato sicurezza e conformità", "software_inventory": "Inventario software" },
+      "reportTypes": { "activity": "Attività", "ai_fleet_design": "Progettazione della flotta", "ai_org_narrative": "Resoconto settimanale delle operazioni AI", "alert_summary": "Riepilogo avvisi", "alerts": "Avvisi", "compliance": "Report conformità", "device_inventory": "Inventario dispositivi", "devices": "Dispositivi", "executive_summary": "Riepilogo direzionale", "hardware_lifecycle": "Ciclo di vita dell’hardware", "patches": "Patch", "performance": "Report prestazioni", "security_compliance_posture": "Stato sicurezza e conformità", "software_inventory": "Inventario software" },
       "schedules": { "daily": "Giornaliero", "monthly": "Mensile", "one_time": "Una tantum", "weekly": "Settimanale" },
       "spec": { "cadence": "Cadenza", "defaultRange": "Intervallo predefinito", "format": "Formato" },
       "success": { "created": "\"{{name}}\" creato. Generalo dall'elenco Report." },
@@ -191,6 +209,10 @@
         "alert_summary": { "description": "Avvisi principali, trend di gravità e carico di risposta.", "name": "Report riepilogo avvisi" },
         "device_health": { "description": "Andamento CPU, memoria e uptime con punteggio sullo stato dei dispositivi.", "name": "Report stato dispositivi" },
         "executive_summary": { "description": "KPI di alto livello, profilo di rischio e trend strategici per la dirigenza.", "name": "Riepilogo direzionale" },
+        "hardware_lifecycle": {
+          "description": "Piano di sostituzione dei dispositivi pronto per il cliente: età, garanzia, date di sostituzione e stato del supporto del sistema operativo, con una raccomandazione a fasi.",
+          "name": "Report ciclo di vita dell’hardware"
+        },
         "security_compliance_posture": { "description": "Evidenze pronte per assicurazione/verifica: copertura EDR, crittografia, firewall, patching, vulnerabilità, accesso privilegiato e integrazioni di sicurezza con riepiloghi percentuali di implementazione.", "name": "Stato di sicurezza e conformità (assicurazione)" }
       },
       "title": "Template report",

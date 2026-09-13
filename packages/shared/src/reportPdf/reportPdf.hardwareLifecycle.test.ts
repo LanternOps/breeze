@@ -33,7 +33,7 @@ const summary: HardwareLifecycleSummary = {
   org: { id: 'o1', name: 'Liggett & Goodman P.C.' },
   generatedAt: '2026-06-10T12:00:00.000Z',
   replaceAgeYears: 4,
-  computers: { total: 3, byReplacement: { replace: 1, due_soon: 1, unknown: 1 }, byOsSupport: { supported: 2, ended: 1 } },
+  computers: { total: 3, byReplacement: { replace: 1, due_soon: 1, unknown: 1 }, byOsSupport: { supported: 1, ending: 1, ended: 1 } },
   otherEquipmentCount: 2,
   rows: [
     row({ name: 'SAM4', manufacturer: 'Dell Inc.', model: 'OptiPlex 3050', serialNumber: '255P3W2', os: 'Windows 10 Pro', osSupport: 'ended', purchaseDate: '2019-04-01', purchaseDateSource: 'manual', warrantyEndDate: '2022-04-01', ageYears: 7.1, replaceBy: '2023-04-01', replacement: 'replace', lifeUsed: 1 }),
@@ -61,7 +61,7 @@ describe('hardware lifecycle PDF', () => {
     expect(text).toContain('1 computer is missing purchase records');
     expect(text).toContain('We also manage');
     // jsPDF escapes parentheses inside text operators.
-    expect(text).toContain('Operating systems: 2 current; 1 ending support soon \\(LAW-SRV\\); 1 no longer receiving security updates \\(SAM4\\).');
+    expect(text).toContain('Operating systems: 1 current; 1 ending support soon \\(LAW-SRV\\); 1 no longer receiving security updates \\(SAM4\\).');
     expect(text).toContain('Replace now');
     expect(text).toContain('Due soon');
     expect(text).toContain('Unknown age');

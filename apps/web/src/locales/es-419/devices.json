@@ -1694,7 +1694,10 @@
     "saveChanges": "Guardar cambios",
     "site": "Sitio",
     "tags": "Etiquetas",
-    "title": "Configuración del dispositivo"
+    "title": "Configuración del dispositivo",
+    "purchaseDate": "Fecha de compra",
+    "purchaseDateHelp": "La usa el informe de ciclo de vida del hardware para planificar el reemplazo.",
+    "purchaseDateVendorHint": "Tomada de la fecha de envío del fabricante. Ingresa una fecha para reemplazarla."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -2787,7 +2790,8 @@
       "assignedContactPlaceholder": "Buscar contactos…",
       "tags": "Etiquetas",
       "tagsPlaceholder": "Separadas por comas",
-      "notes": "Notas"
+      "notes": "Notas",
+      "purchaseDate": "Fecha de compra"
     }
   },
   "addNetworkAssetModal": {

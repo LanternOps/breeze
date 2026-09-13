@@ -212,6 +212,16 @@
       "cancel": "Abbrechen",
       "createReport": "Bericht erstellen"
     },
+    "lifecycleOptions": {
+      "cancel": "Abbrechen",
+      "createReport": "Bericht erstellen",
+      "includeManualAssets": "Manuell erfasste Assets einbeziehen",
+      "includeManualAssetsHelp": "Manuelle Assets mit Kauf- oder Garantiedatum erscheinen neben den Agent-Geräten.",
+      "includeOtherEquipment": "Sonstige Geräte auflisten",
+      "includeOtherEquipmentHelp": "Drucker, Netzwerk- und IoT-Hardware werden ohne Austauschzeitplan aufgeführt.",
+      "replaceAgeYears": "Austausch planen nach (Jahren)",
+      "replaceAgeYearsHelp": "Ein Gerät ist so viele Jahre nach dem Kauf zum Austausch fällig, oder wenn die aktive Garantie später endet."
+    },
     "reportBuilderPage": {
       "configurationTitle": "Berichtskonfiguration",
       "description": "Erstellen Sie einen einmaligen Bericht, ohne ihn zu speichern.",
@@ -264,6 +274,14 @@
         "showing": "Zeigt {{start}} bis {{end}} von {{total}} Datensätzen"
       },
       "refresh": "Aktualisieren",
+      "lifecycle": {
+        "dueSoon": "Bald fällig",
+        "onTrack": "Im Plan",
+        "otherEquipment": "Sonstige Geräte",
+        "recommendations": "Unsere Empfehlung",
+        "replaceNow": "Jetzt austauschen",
+        "unknownAge": "Alter unbekannt"
+      },
       "reportTypes": {
         "ai_fleet_design": "Flottendesign",
         "ai_org_narrative": "Wöchentlicher KI-Betriebsbericht",
@@ -271,6 +289,7 @@
         "compliance": "Compliance-Bericht",
         "device_inventory": "Geräteinventar",
         "executive_summary": "Zusammenfassung",
+        "hardware_lifecycle": "Hardware-Lebenszyklus",
         "performance": "Leistungsbericht",
         "security_compliance_posture": "Sicherheits- und Compliance-Status",
         "software_inventory": "Software-Inventar"
@@ -330,6 +349,7 @@
         "compliance": "Compliance-Bericht",
         "device_inventory": "Geräteinventar",
         "executive_summary": "Zusammenfassung",
+        "hardware_lifecycle": "Hardware-Lebenszyklus",
         "performance": "Leistungsbericht",
         "security_compliance_posture": "Sicherheits- und Compliance-Status",
         "software_inventory": "Software-Inventar"
@@ -828,6 +848,7 @@
         "device_inventory": "Geräteinventar",
         "devices": "Geräte",
         "executive_summary": "Zusammenfassung",
+        "hardware_lifecycle": "Hardware-Lebenszyklus",
         "patches": "Patches",
         "performance": "Leistungsbericht",
         "security_compliance_posture": "Sicherheits- und Compliance-Status",
@@ -861,6 +882,10 @@
         "executive_summary": {
           "description": "KPIs auf hoher Ebene, Risikolage und strategische Trends für Führungskräfte.",
           "name": "Zusammenfassung"
+        },
+        "hardware_lifecycle": {
+          "description": "Kundenfertiger Geräte-Austauschplan: Alter, Garantie, Austauschtermine und Betriebssystem-Supportstatus mit einer gestaffelten Empfehlung.",
+          "name": "Hardware-Lebenszyklusbericht"
         },
         "security_compliance_posture": {
           "description": "Versicherungs-/prüfbereite Beweise: EDR-Abdeckung, Verschlüsselung, Firewall, Patching, Schwachstellen, privilegierter Zugriff und Sicherheitsintegrationen mit prozentual implementierten Rollups.",

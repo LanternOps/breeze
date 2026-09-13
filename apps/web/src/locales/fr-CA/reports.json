@@ -212,6 +212,16 @@
       "cancel": "Annuler",
       "createReport": "Créer le rapport"
     },
+    "lifecycleOptions": {
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport",
+      "includeManualAssets": "Inclure les actifs saisis manuellement",
+      "includeManualAssetsHelp": "Les actifs manuels avec une date d’achat ou de garantie apparaissent aux côtés des appareils avec agent.",
+      "includeOtherEquipment": "Lister les autres équipements",
+      "includeOtherEquipmentHelp": "Imprimantes, matériel réseau et IoT sont listés sans calendrier de remplacement.",
+      "replaceAgeYears": "Planifier le remplacement après (années)",
+      "replaceAgeYearsHelp": "Un appareil est à remplacer ce nombre d’années après l’achat, ou à la fin de la garantie active si elle est plus tardive."
+    },
     "reportBuilderPage": {
       "configurationTitle": "Configuration du rapport",
       "description": "Générez un rapport unique sans le enregistrer.",
@@ -264,6 +274,14 @@
         "showing": "Affichage de {{start}} à {{end}} sur {{total}} enregistrements"
       },
       "refresh": "Actualiser",
+      "lifecycle": {
+        "dueSoon": "Bientôt à remplacer",
+        "onTrack": "Dans les temps",
+        "otherEquipment": "Autres équipements",
+        "recommendations": "Ce que nous recommandons",
+        "replaceNow": "À remplacer maintenant",
+        "unknownAge": "Âge inconnu"
+      },
       "reportTypes": {
         "ai_fleet_design": "Conception de flotte",
         "ai_org_narrative": "Récit hebdomadaire des opérations IA",
@@ -271,6 +289,7 @@
         "compliance": "Rapport de conformité",
         "device_inventory": "Inventaire des appareils",
         "executive_summary": "Résumé exécutif",
+        "hardware_lifecycle": "Cycle de vie du matériel",
         "performance": "Rapport de performance",
         "security_compliance_posture": "Posture de sécurité et de conformité",
         "software_inventory": "Inventaire logiciel"
@@ -330,6 +349,7 @@
         "compliance": "Rapport de conformité",
         "device_inventory": "Inventaire des appareils",
         "executive_summary": "Résumé exécutif",
+        "hardware_lifecycle": "Cycle de vie du matériel",
         "performance": "Rapport de performance",
         "security_compliance_posture": "Posture de sécurité et de conformité",
         "software_inventory": "Inventaire logiciel"
@@ -828,6 +848,7 @@
         "device_inventory": "Inventaire des appareils",
         "devices": "Appareils",
         "executive_summary": "Résumé exécutif",
+        "hardware_lifecycle": "Cycle de vie du matériel",
         "patches": "Correctifs",
         "performance": "Rapport de performance",
         "security_compliance_posture": "Posture de sécurité et de conformité",
@@ -861,6 +882,10 @@
         "executive_summary": {
           "description": "KPI de haut niveau, posture de risque et tendances stratégiques pour le leadership.",
           "name": "Résumé exécutif"
+        },
+        "hardware_lifecycle": {
+          "description": "Plan de remplacement des appareils prêt pour le client : âge, garantie, dates de remplacement et statut de support du système, avec une recommandation par étapes.",
+          "name": "Rapport de cycle de vie du matériel"
         },
         "security_compliance_posture": {
           "description": "Preuves prêtes à l’assurance ou à la vérification : couverture EDR, chiffrement, pare-feu, correctifs, vulnérabilités, accès privilégié et intégrations de sécurité avec des rollups en pourcentage.",

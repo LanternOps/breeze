@@ -1694,7 +1694,10 @@
     "saveChanges": "Salva modifiche",
     "site": "Sito",
     "tags": "Tag",
-    "title": "Impostazioni del dispositivo"
+    "title": "Impostazioni del dispositivo",
+    "purchaseDate": "Data di acquisto",
+    "purchaseDateHelp": "Usata dal report ciclo di vita dell’hardware per pianificare la sostituzione.",
+    "purchaseDateVendorHint": "Ricavata dalla data di spedizione del produttore. Inserisci una data per sovrascriverla."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -2787,7 +2790,8 @@
       "assignedContactPlaceholder": "Cerca contatti…",
       "tags": "Tag",
       "tagsPlaceholder": "Separati da virgole",
-      "notes": "Note"
+      "notes": "Note",
+      "purchaseDate": "Data di acquisto"
     }
   },
   "addNetworkAssetModal": {
