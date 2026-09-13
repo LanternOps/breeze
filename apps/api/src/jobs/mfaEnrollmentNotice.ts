@@ -111,6 +111,43 @@ async function loadCandidates(): Promise<CandidateRow[]> {
   return rows;
 }
 
+/**
+ * The claim-after-send rule keeps a failed delivery retrying — but only while
+ * the window is still open. If sends keep failing until the deadline itself
+ * passes, the row drops out of `loadCandidates` forever and the user is enforced
+ * having never been warned, with nothing to distinguish that from "nobody was
+ * due". Report those rows ONCE, and stamp them so the report does not repeat
+ * every night for the rest of the account's life: the notice is moot now (the
+ * user is already being bounced into enrollment), but the fact that it was
+ * missed must be visible.
+ */
+async function reportMissedNotices(): Promise<number> {
+  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.execute<{ id: string }>(sql`
+    UPDATE users
+       SET mfa_enrollment_notice_sent_at = COALESCE(mfa_enrollment_notice_sent_at, now()),
+           mfa_enrollment_reminded_at = COALESCE(mfa_enrollment_reminded_at, now())
+     WHERE mfa_enrollment_deadline IS NOT NULL
+       AND mfa_enrollment_deadline <= now()
+       -- A zero-length window (the partner set mfaEnrollmentGraceDays = 0, i.e.
+       -- "enforce immediately") never had a notice to deliver, so it is not a
+       -- miss. Excluding it keeps this report meaningful instead of counting
+       -- every deliberately-immediate enforcement as a failure.
+       AND mfa_enrollment_deadline > mfa_enrollment_grace_granted_at
+       AND (mfa_enrollment_notice_sent_at IS NULL OR mfa_enrollment_reminded_at IS NULL)
+    RETURNING id
+  `), 'mfaEnrollmentNotice.reportMissed'));
+
+  if (rows.length > 0) {
+    const sample = rows.slice(0, 20).map((r) => r.id).join(', ');
+    console.warn(
+      `[MfaEnrollmentNotice] ${rows.length} enrolment window(s) lapsed without every notice being `
+      + `delivered (enforcement is unaffected); users: ${sample}`
+      + (rows.length > 20 ? ' …' : ''),
+    );
+  }
+  return rows.length;
+}
+
 type NoticeKind = 'notice' | 'reminder';
 
 function buildNoticeEmail(
@@ -161,6 +198,8 @@ export interface MfaEnrollmentNoticeSweepResult {
   sent: number;
   skipped: number;
   failed: number;
+  /** Windows that lapsed with a notice still undelivered — reported once, then stamped. */
+  missed: number;
 }
 
 /**
@@ -253,10 +292,20 @@ export async function runMfaEnrollmentNoticeSweep(): Promise<MfaEnrollmentNotice
     }
   }
 
+  // After the send pass, so a row that just succeeded is not counted as missed.
+  let missed = 0;
+  try {
+    missed = await reportMissedNotices();
+  } catch (err) {
+    console.error('[MfaEnrollmentNotice] missed-notice report failed', err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
+
   console.log(
-    `[MfaEnrollmentNotice] sweep complete: candidates=${rows.length} sent=${sent} skipped=${skipped} failed=${failed}`,
+    `[MfaEnrollmentNotice] sweep complete: candidates=${rows.length} sent=${sent} `
+    + `skipped=${skipped} failed=${failed} missed=${missed}`,
   );
-  return { candidates: rows.length, sent, skipped, failed };
+  return { candidates: rows.length, sent, skipped, failed, missed };
 }
 
 /** Create the mfa-enrollment-notice BullMQ worker. */

@@ -58,7 +58,14 @@ export default function MfaEnrollmentGraceBanner() {
     void (async () => {
       try {
         const response = await fetchWithAuth('/auth/mfa/enrollment-options');
-        if (!response.ok) return;
+        if (!response.ok) {
+          // Rendering nothing is the right failure mode (enforcement is entirely
+          // server-side), but a systemic break here would silence the ONLY
+          // client-side nudge for every affected user — so make it noticeable.
+          // Network/offline errors land in the catch below and stay quiet.
+          console.warn('[mfa-grace] enrollment-options failed:', response.status);
+          return;
+        }
         const data = await response.json().catch(() => null);
         if (!current) return;
         const value = typeof data?.mfaGraceEndsAt === 'string' ? data.mfaGraceEndsAt : null;

@@ -20,6 +20,8 @@
  *   I-6 an elapsed deadline enforces exactly as before the feature.
  *   I-7 the kill switch being OFF opens no window and writes nothing.
  *   I-8 the migration is idempotent (replay is a no-op).
+ *   I-9 two CONCURRENT first evaluations grant exactly one window (the loser of
+ *       the conditional UPDATE defers to the winner instead of re-granting).
  *
  * Run:
  *   pnpm test-stack up   # worktree root
@@ -30,7 +32,9 @@ import './setup';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { partners, roles, users, userPasskeys } from '../../db/schema';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
+import { evaluateMfaEnrollmentGrace } from '../../services/mfaEnrollmentGrace';
 import { assignUserToPartner, createPartner, createRole, createUser } from './db-utils';
 import { getTestDb } from './setup';
 import { replayMigration } from './replayMigration';
@@ -218,6 +222,27 @@ describe('MFA enrolment grace window (#5306)', () => {
     expect(policy.pendingEnrollment).toBeNull();
     expect(policy.source.graceWindow).toBe('none');
     expect((await readGraceColumns(user.id)).deadline).toBeNull();
+  });
+
+  it('I-9: two concurrent first evaluations grant exactly one window', async () => {
+    const { partner, user } = await seedForcedPartnerAdmin();
+
+    // Both calls race the same conditional UPDATE. The loser sees zero affected
+    // rows and must defer to the winner's persisted grant — if it instead
+    // granted again (or returned "no window"), two logins landing together
+    // would either move the deadline or lock the user out.
+    const evaluateGrace = () => runOutsideDbContext(() => withSystemDbAccessContext(
+      () => evaluateMfaEnrollmentGrace(user.id, 14),
+    ));
+    const [a, b] = await Promise.all([evaluateGrace(), evaluateGrace()]);
+
+    expect(a.deadline).not.toBeNull();
+    expect(b.deadline).not.toBeNull();
+    expect(a.deadline!.toISOString()).toBe(b.deadline!.toISOString());
+    expect(a.expired).toBe(false);
+    expect(b.expired).toBe(false);
+    const columns = await readGraceColumns(user.id);
+    expect(columns.deadline!.toISOString()).toBe(a.deadline!.toISOString());
   });
 
   it('I-8: the migration is idempotent — replaying it changes nothing', async () => {

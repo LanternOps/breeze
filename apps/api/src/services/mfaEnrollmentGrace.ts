@@ -37,6 +37,15 @@ import * as dbModule from '../db';
  * the login/control-gate policy result). It does not retroactively revoke
  * credentials, API keys or sessions minted during the window; those keep their
  * own lifecycles.
+ *
+ * NOT wired into partner REGISTRATION on purpose. `/auth/verify-email`'s
+ * auto-login mint keeps forcing enrollment for a brand-new partner admin
+ * (RMM-QA-164 / SR2-21: `registerPartnerMfaPolicy.integration.test.ts` asserts
+ * the mint carries `mfa: false` for that account). Signup is the moment MFA is
+ * cheapest to set up and the upgrade-surprise this window exists to fix does not
+ * apply there. A window is still granted if that owner abandons setup and comes
+ * back through /auth/login later — first-seen is first-seen — but they will have
+ * been shown the enrollment screen once, up front.
  */
 
 /** Conservative default window: two weeks from first sighting. */
@@ -97,6 +106,37 @@ function effectiveDeadline(deadline: Date, grantedAt: Date | null, graceDays: nu
   return shortened.getTime() < deadline.getTime() ? shortened : deadline;
 }
 
+type Executor = { execute: (q: ReturnType<typeof sql>) => Promise<unknown> };
+
+/**
+ * Every fact the decision needs, plus the DB clock, in one statement. Reused by
+ * the race-loss path so a lost grant re-derives ALL of them (factor state
+ * included) rather than trusting the pre-race snapshot.
+ *
+ * Throws when the row is gone: same disposition as userIsMfaProtected — refuse
+ * to guess about an account we cannot see rather than silently granting it a
+ * window (or silently reporting it factorless).
+ */
+async function readGraceFacts(userId: string, exec: Executor): Promise<GraceRow> {
+  const read = (await exec.execute(sql`
+    SELECT u.mfa_enabled,
+           u.mfa_epoch,
+           (SELECT count(*)::int FROM user_passkeys k
+             WHERE k.user_id = u.id AND k.disabled_at IS NULL) AS passkey_count,
+           u.mfa_enrollment_deadline AS deadline,
+           u.mfa_enrollment_grace_granted_at AS granted_at,
+           now() AS db_now
+      FROM users u
+     WHERE u.id = ${userId}::uuid
+  `)) as GraceRow[];
+
+  const row = read[0];
+  if (!row) {
+    throw new Error(`[mfa-grace] no users row for ${userId}; refusing to decide a grace window`);
+  }
+  return row;
+}
+
 /**
  * Read (and, exactly once per account, create) the grace grant for `userId`.
  *
@@ -113,26 +153,9 @@ function effectiveDeadline(deadline: Date, grantedAt: Date | null, graceDays: nu
 export async function evaluateMfaEnrollmentGrace(
   userId: string,
   graceDays: number,
-  exec: { execute: (q: ReturnType<typeof sql>) => Promise<unknown> } = dbModule.db,
+  exec: Executor = dbModule.db,
 ): Promise<MfaGraceFacts> {
-  const read = (await exec.execute(sql`
-    SELECT u.mfa_enabled,
-           u.mfa_epoch,
-           (SELECT count(*)::int FROM user_passkeys k
-             WHERE k.user_id = u.id AND k.disabled_at IS NULL) AS passkey_count,
-           u.mfa_enrollment_deadline AS deadline,
-           u.mfa_enrollment_grace_granted_at AS granted_at,
-           now() AS db_now
-      FROM users u
-     WHERE u.id = ${userId}::uuid
-  `)) as GraceRow[];
-
-  const row = read[0];
-  if (!row) {
-    // Same disposition as userIsMfaProtected: refuse to guess about an account
-    // we cannot see rather than silently granting it a window.
-    throw new Error(`[mfa-grace] no users row for ${userId}; refusing to decide a grace window`);
-  }
+  const row = await readGraceFacts(userId, exec);
 
   if (row.mfa_enabled === true || Number(row.passkey_count ?? 0) > 0) {
     return { hasFactor: true, deadline: null, expired: false };
@@ -166,18 +189,20 @@ export async function evaluateMfaEnrollmentGrace(
       grantedAt = toDate(granted[0].granted_at);
       now = toDate(granted[0].db_now)!;
     } else {
-      // Lost the race (or the row stopped qualifying mid-flight). Re-read and
-      // honour whatever the winner persisted — never grant a second window.
-      const reread = (await exec.execute(sql`
-        SELECT u.mfa_enrollment_deadline AS deadline,
-               u.mfa_enrollment_grace_granted_at AS granted_at,
-               now() AS db_now
-          FROM users u
-         WHERE u.id = ${userId}::uuid
-      `)) as GraceRow[];
-      deadline = toDate(reread[0]?.deadline ?? null);
-      grantedAt = toDate(reread[0]?.granted_at ?? null);
-      now = toDate(reread[0]?.db_now ?? row.db_now)!;
+      // Zero rows means the row stopped qualifying between the read and the
+      // UPDATE: a concurrent request won the grant, or the user enrolled a
+      // factor (which advances mfa_epoch). Re-derive EVERY fact — a partial
+      // re-read would keep reporting `hasFactor: false` for a user who just
+      // enrolled — and honour whatever the winner persisted, never granting a
+      // second window. A vanished row throws (readGraceFacts), rather than
+      // silently reporting "no window" for a user we can no longer see.
+      const reread = await readGraceFacts(userId, exec);
+      if (reread.mfa_enabled === true || Number(reread.passkey_count ?? 0) > 0) {
+        return { hasFactor: true, deadline: null, expired: false };
+      }
+      deadline = toDate(reread.deadline);
+      grantedAt = toDate(reread.granted_at);
+      now = toDate(reread.db_now)!;
       if (!deadline) return { hasFactor: false, deadline: null, expired: false };
     }
   }

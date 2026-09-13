@@ -265,6 +265,13 @@ export async function getEffectiveMfaPolicy(
       // other request — including the hot middleware gate for users whose org
       // policy requires MFA anyway.
       let grace: MfaGraceFacts | null = null;
+      // If the settings read failed, `security` is undefined and the window
+      // length falls back to the 14-day default. That is intentional: the axis
+      // this postpones is the ROLE force, which does not depend on settings, and
+      // the fallback self-corrects — every later call re-reads the setting, and
+      // a tenant that actually sets requireMfa returns to immediate enforcement
+      // as soon as its settings are readable again. Control gates that pass
+      // failClosed still end up `required` regardless (see combineMfaPolicyFacts).
       if (roleForceMfa && mfaForcePartnerAdmin() && security?.requireMfa !== true) {
         // Deliberately NOT inside the settings try/catch: like the role join, a
         // failure here is a hard error rather than an optional enrichment.

@@ -299,6 +299,19 @@ describe('enrolment grace window (#5306)', () => {
     expect(p.source.graceWindow).toBe('none');
   });
 
+  // The grace read sits OUTSIDE the settings try/catch on purpose: a failure
+  // there is a hard error, not optional enrichment. If someone later "helpfully"
+  // wraps it, this test fails instead of the resolver quietly deciding
+  // `required: false` off an unreadable grant.
+  it('propagates a grace-read failure instead of swallowing it into a permissive verdict', async () => {
+    partnerRoleRows.push({ forceMfa: true });
+    evaluateMfaEnrollmentGraceMock.mockRejectedValueOnce(new Error('grace read boom'));
+
+    await expect(
+      getEffectiveMfaPolicy({ scope: 'partner', userId: 'u1', orgId: null, partnerId: 'p1' }),
+    ).rejects.toThrow('grace read boom');
+  });
+
   it('a settings-read failure under failClosed still requires MFA even with an active window', async () => {
     partnerRoleRows.push({ forceMfa: true });
     effectiveThrows = true;
