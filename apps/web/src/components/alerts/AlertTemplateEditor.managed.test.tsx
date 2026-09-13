@@ -48,7 +48,7 @@ describe('AlertTemplateEditor monitor-managed templates (#5287)', () => {
 
     expect(await screen.findByTestId('alert-template-managed-notice')).toBeInTheDocument();
     const link = screen.getByTestId('alert-template-managed-link');
-    expect(link).toHaveAttribute('href', '/monitoring/monitors/monitor-1');
+    expect(link).toHaveAttribute('href', '/alerts/monitors/monitor-1');
 
     // The form (e.g. the metadata card) must not render alongside the banner.
     expect(screen.queryByText('Template metadata')).toBeNull();

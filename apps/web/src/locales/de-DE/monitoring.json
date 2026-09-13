@@ -39,7 +39,9 @@
       "delete": "Monitor konnte nicht gelöscht werden",
       "toggle": "Monitor konnte nicht aktualisiert werden"
     },
-    "deleteConfirm": "Monitor {{name}} löschen? Die zugehörige Alarmregel und die Reaktionsautomatisierung werden ebenfalls entfernt."
+    "deleteConfirm": "Monitor {{name}} löschen? Die zugehörige Alarmregel und die Reaktionsautomatisierung werden ebenfalls entfernt.",
+    "builtIn": "Integriert",
+    "builtInHint": "Von Breeze bereitgestellt. Schwellenwerte bearbeiten, deaktivieren oder löschen – er kommt nicht zurück."
   },
   "editor": {
     "titleNew": "Neuer Monitor",

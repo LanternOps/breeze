@@ -1,8 +1,4 @@
 ---
-import DashboardLayout from '../../layouts/DashboardLayout.astro';
-import MonitoringPage from '../../components/monitoring/MonitoringPage';
+// Network monitoring is the hub root again; keep the W02 deep link working.
+return Astro.redirect('/monitoring');
 ---
-
-<DashboardLayout titleKey="titles.monitoringNetwork">
-  <MonitoringPage client:load />
-</DashboardLayout>

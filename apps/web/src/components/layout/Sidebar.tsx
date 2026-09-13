@@ -267,7 +267,7 @@ export const navSections: NavSection[] = [
       // /software-policies are aliases (see pathAliases).
       { name: 'Software', labelKey: 'nav.software', href: '/software', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
       // #5288 — the Monitoring hub: Network today, Monitors (W02) and Delivery tabs.
-      { name: 'Monitoring', labelKey: 'nav.monitoring', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Network Monitor', labelKey: 'nav.networkMonitor', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Network Discovery', labelKey: 'nav.networkDiscovery', href: '/discovery', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'OneDrive', labelKey: 'nav.oneDrive', href: '/onedrive', icon: Cloud, requiredPermission: { resource: 'devices', action: 'read' } },
     ],
@@ -459,9 +459,6 @@ const allNavItems: NavItem[] = [
 const pathAliases: Record<string, string> = {
   '/software-inventory': '/software',
   '/software-policies': '/software',
-  '/monitoring/delivery': '/monitoring',
-  '/monitoring/network': '/monitoring',
-  '/monitoring/rules': '/monitoring',
 };
 
 // Determine which section a given href belongs to (for auto-expand)

@@ -664,15 +664,34 @@ Customer Graph-read lets a customer administrator grant read-only Microsoft Grap
   The API does **not** read a `..._CALLBACK_URL` variable. It builds the OAuth consent callback from `PUBLIC_URL` (falling back to `PUBLIC_APP_URL`, then `PUBLIC_API_URL`) and appends `/api/v1/m365/consent/callback`. In production at least one of those origin variables must be set. The `M365_CUSTOMER_GRAPH_READ_CALLBACK_URL` line in `.env.example` is **not consumed by the API** — it is read only by the separate executor sidecar (where it must equal that exact `https://<origin>/api/v1/m365/consent/callback` URL). On an API-only host you can ignore it.
 </Aside>
 
+### API-side tenant sync
+
+These are read by the **API**. The master switch defaults off — see the
+Microsoft 365 tenant sync release note on the release notes page for the
+flag-on rollout order.
+
+| Variable | Required | Format / example | Meaning |
+|---|---|---|---|
+| `M365_TENANT_SYNC_ENABLED` | — (the switch) | `true` / `false` (default `false`) | Master switch for the scheduled tenant snapshot (users, sign-in activity, Intune devices, Conditional Access, licenses, Secure Score). Gates **every** entry point: the ticker, post-consent seeding, the on-demand sync route, and the disconnect hook. Off means no sync work of any kind runs. |
+| `M365_SYNC_CONCURRENCY` | No | Positive integer (default `4`) | Sync jobs processed concurrently per API instance. The Graph fetch holds no database connection, so this bounds persist work, not fetch work. |
+| `M365_SYNC_MAX_BACKLOG` | No | Positive integer (default `500`) | Queue depth (`waiting + prioritized + delayed + active`) above which the ticker skips a tick. Due rows keep their past due time and are picked up next tick. |
+| `M365_SYNC_TICK_BATCH` | No | Positive integer (default `200`) | Rows claimed per 60-second tick. This is the capacity dial: target at most 50 % utilisation of `batch × 1440` runs per day. |
+
 ### Executor-side tenant-sync tuning (v0.113.0+)
 
-These are read by the **`m365-graph-read-executor` sidecar**, not the API. They tune the Microsoft 365 tenant-sync foundation that ships in v0.113.0 (schema and executor plumbing only — nothing surfaces in the dashboard yet). All are optional; the executor refuses to start on a malformed value rather than guessing.
+These are read by the **`m365-graph-read-executor` sidecar**, not the API. They tune the Microsoft 365 tenant-sync feature that ships in v0.113.0. All are optional; the executor refuses to start on a malformed value rather than guessing.
 
 | Variable | Default | Format | Meaning |
 |---|---|---|---|
 | `M365_SYNC_CONTINUATION_KEY` | — (ephemeral per process) | Exactly 32 bytes, base64-encoded (44 characters) | Secret used to seal sync continuation tokens so a long sign-in-log sync can resume across executor restarts or replicas. When unset, the executor mints a key at boot: continuations then die with the process and the sync restarts that domain from page 1 — a self-healing default, so an existing executor keeps working without it. Set it when you run more than one executor replica. |
 | `M365_SYNC_MAX_IN_FLIGHT` | `4` | Integer `1`–`64` | Maximum concurrent tenant-sync operations the executor will run. |
 | `M365_MAX_IN_FLIGHT` | `32` | Integer `1`–`1024` | Overall in-flight Graph request ceiling for the executor. **Must be greater than or equal to `M365_SYNC_MAX_IN_FLIGHT`**, or the executor refuses to start. |
+| `M365_SIGNIN_ACTIVITY_RPM` | `4` | Positive integer | Token bucket for sign-in-activity Graph requests. Microsoft's limit is **10 per minute per application across all tenants**, so divide this across every region and replica that shares one app registration. |
+| `M365_SIGNIN_PAGES_PER_CALL` | `5` | Positive integer | Pages fetched per sign-in call before returning an opaque continuation. |
+| `M365_SYNC_MAX_ITEMS_USERS` | `25000` | Positive integer | Per-pull user cap. A tenant over the cap syncs as `partial` and never has vanished rows marked stale; raising the cap is the remedy. |
+| `M365_SYNC_MAX_ITEMS_DEVICES` | `25000` | Positive integer | Same, for Intune managed devices. |
+| `M365_SYNC_MAX_ITEMS_CA` | `500` | Positive integer | Same, for Conditional Access policies. |
+| `M365_SYNC_MAX_ITEMS_SKUS` | `200` | Positive integer | Same, for subscribed SKUs. |
 
 <Aside type="tip">
   With Docker secrets, `M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE` points at the in-container mount path (e.g. `/run/secrets/...`), while `M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE` in `.env` is the **host path** of the source JWK that feeds that secret. Provision the source file with a numeric owner and mode `0400`; only the mounted `..._FILE` path is validated at boot.

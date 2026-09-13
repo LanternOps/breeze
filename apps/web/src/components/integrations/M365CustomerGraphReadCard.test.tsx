@@ -1188,4 +1188,50 @@ describe("M365CustomerGraphReadCard", () => {
       expect(await screen.findByText("Connection details are unavailable.")).toBeInTheDocument();
     });
   });
+
+  /**
+   * Verification, not TDD: W05 built this card and its own suite covers the
+   * button, the parser and the hidden states. What only this wave can see is
+   * that the envelope shape the API really sends — `syncEnabled` and `sync`
+   * on the ENVELOPE, beside `connection`, not inside it — survives the
+   * card's strict `hasExactKeys` parser and reaches the screen. A drift
+   * between the DTO and the parser degrades the whole card to
+   * "unavailable" silently, which is exactly the failure no other test in
+   * this wave would notice.
+   */
+  describe("sync summary renders from the envelope", () => {
+    it("shows the last-synced line, the counts, and a chip for the unlicensed domain", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        syncEnabled: true,
+        sync: {
+          lastSuccessAt: "2026-09-08T11:30:00.000Z",
+          users: 128,
+          devices: 96,
+          domains: [
+            { domain: "users", status: "success", asOf: "2026-09-08T11:30:00.000Z", truncated: false, unlicensed: false },
+            { domain: "signin_activity", status: "success", asOf: null, truncated: false, unlicensed: true },
+            { domain: "intune_devices", status: "success", asOf: "2026-09-08T11:00:00.000Z", truncated: false, unlicensed: false },
+            { domain: "ca_policies", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
+            { domain: "skus", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
+            { domain: "secure_score", status: "never", asOf: null, truncated: false, unlicensed: false },
+          ],
+        },
+      })));
+
+      render(<M365CustomerGraphReadCard />);
+
+      // The card parsed the envelope rather than degrading to its
+      // "Connection details are unavailable." state. "Last synced" and the
+      // counts share ONE text node (M365CustomerGraphReadCard.tsx: the
+      // `sync.lastSynced` + `sync.counts` strings are joined with " · "
+      // inside a single <p>), so assert on that node's combined content
+      // rather than three separate getByText calls.
+      const summary = await screen.findByTestId("m365-sync-summary");
+      expect(summary).toHaveTextContent(/Last synced/);
+      expect(summary).toHaveTextContent("128 users");
+      expect(summary).toHaveTextContent("96 devices");
+      // At least one chip: sign-in activity on a tenant without Entra ID P1.
+      expect(screen.getByText(/Entra ID P1/)).toBeInTheDocument();
+    });
+  });
 });

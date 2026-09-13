@@ -96,4 +96,36 @@ describe('m365 sync metrics (spec §7)', () => {
     expect(scrape).toContain('m365_sync_ticker_skipped_total 1');
     expect(scrape).toContain('m365_sync_fenced_total 2');
   });
+
+  /**
+   * The nine sync series are UNPREFIXED on purpose, departing from the
+   * neighbouring `breeze_m365_graph_read_actions_total`: the shared interface
+   * contract and spec §7 both pin the bare names, and W04's plan (decision 9)
+   * records that choice. The positive "is it registered" assertions live in
+   * the cases above; this one is the guard against a later hand adding the
+   * house prefix to some of them, which would leave the dashboards and alert
+   * rules pointing at a series that no longer exists.
+   */
+  it('registers no breeze_-prefixed twin of any sync series', () => {
+    const registry = new Registry();
+    registerM365SyncMetrics(registry);
+
+    for (const name of [
+      'm365_sync_runs_total',
+      'm365_sync_items',
+      'm365_sync_executor_seconds',
+      'm365_sync_due_backlog',
+      'm365_sync_queue_depth',
+      'm365_sync_ticker_utilisation',
+      'm365_sync_ticker_skipped_total',
+      'm365_sync_fenced_total',
+      'm365_sync_link_ambiguous_total',
+    ]) {
+      expect(registry.getSingleMetric(name), `${name} is not registered`).toBeDefined();
+      expect(
+        registry.getSingleMetric(`breeze_${name}`),
+        `${name} must stay unprefixed (contract + spec §7); found a breeze_ twin`,
+      ).toBeUndefined();
+    }
+  });
 });

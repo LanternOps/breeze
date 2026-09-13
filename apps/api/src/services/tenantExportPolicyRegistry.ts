@@ -359,7 +359,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // rule: `condition`, `responses` and `recurrence_actions` can carry script
   // ids and channel ids (capability lists), and `delivery_channel_ids` is a
   // grant list.
-  "monitor_definitions": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","description","kind","enabled","severity","cooldown_minutes","auto_resolve","delivery_mode","escalation_policy_id","recurrence_threshold","recurrence_window_hours","pause_responses_on_escalation","ai_agent_id","compiled_alert_template_id","compiled_alert_rule_id","compiled_automation_id","compiled_at","created_by","created_at","updated_at"],"reviewedIncluded":["compiled_hash"],"excludedSensitive":[],"excludedOpen":["condition","auto_resolve_conditions","responses","delivery_channel_ids","recurrence_actions"]}),
+  "monitor_definitions": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","description","kind","enabled","builtin_key","severity","cooldown_minutes","auto_resolve","delivery_mode","escalation_policy_id","recurrence_threshold","recurrence_window_hours","pause_responses_on_escalation","ai_agent_id","compiled_alert_template_id","compiled_alert_rule_id","compiled_automation_id","compiled_at","created_by","created_at","updated_at"],"reviewedIncluded":["compiled_hash"],"excludedSensitive":[],"excludedOpen":["condition","auto_resolve_conditions","responses","delivery_channel_ids","recurrence_actions"]}),
   // SEC-2026-09-05-146 authority envelope: authority_user_id / authority_site_ids
   // are plain tenant identifiers, the epochs are monotonic counters copied from
   // users.permissions_epoch / users.mfa_epoch, and authority_fingerprint is a

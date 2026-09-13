@@ -39,7 +39,9 @@
       "delete": "Monitör silinemedi",
       "toggle": "Monitör güncellenemedi"
     },
-    "deleteConfirm": "{{name}} monitörü silinsin mi? Uyarı kuralı ve yanıt otomasyonu da kaldırılır."
+    "deleteConfirm": "{{name}} monitörü silinsin mi? Uyarı kuralı ve yanıt otomasyonu da kaldırılır.",
+    "builtIn": "Yerleşik",
+    "builtInHint": "Breeze tarafından sağlandı. Eşikleri düzenleyin, devre dışı bırakın veya silin; geri gelmez."
   },
   "editor": {
     "titleNew": "Yeni monitör",

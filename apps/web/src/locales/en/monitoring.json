@@ -39,7 +39,9 @@
       "delete": "Failed to delete monitor",
       "toggle": "Failed to update monitor"
     },
-    "deleteConfirm": "Delete monitor {{name}}? Its alert rule and response automation are removed too."
+    "deleteConfirm": "Delete monitor {{name}}? Its alert rule and response automation are removed too.",
+    "builtIn": "Built-in",
+    "builtInHint": "Provisioned by Breeze. Edit thresholds, disable it, or delete it — it will not come back."
   },
   "editor": {
     "titleNew": "New monitor",
