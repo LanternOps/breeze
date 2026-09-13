@@ -16,6 +16,19 @@ Record tenant/org/user identifiers as redacted aliases plus a one-way digest. Ne
 
 ## Authoritative permission manifest
 
+> **Stale — predates manifest v3.** The manifest moved from version 2 (nine
+> roles) to version 3 (thirteen roles — see
+> [Customer Graph Read manifest v3](../release-notes/m365-customer-graph-read-manifest-v3.md))
+> in an earlier wave. Every "exact nine roles" reference below and in
+> scenarios 1–9 — including the snapshot/restore baseline scenarios 6–8 reset
+> to between runs — still describes v2 and has not been updated for v3. The
+> **Tenant-sync acceptance** section appended below this one already assumes
+> v3 (its prerequisites list all four new roles). Re-validate and update this
+> whole section against the thirteen-role manifest before relying on it —
+> this wave did not have the context to safely rewrite the scenario-by-
+> scenario restore procedure without risking silently changing what a
+> "clean" tenant-local baseline means mid-checklist.
+
 The expected profile is `customer-graph-read`, manifest version `2`, Microsoft Graph resource application `00000003-0000-0000-c000-000000000000`, with exactly these nine application roles:
 
 | Permission | App role ID |
@@ -430,14 +443,25 @@ within the cadence window. Cross-check counts against the Microsoft 365 admin
 centre: user count, licensed seat count, and Intune device count must match
 within the enrolment lag. Confirm the card's "Last synced" line agrees.
 
-Then re-run the same domain and confirm the change-only contract holds:
+Then re-run the same domain and confirm the change-only contract holds. Note
+`last_counts` carries the snake_case **rollup** column names
+(`users_total`, `users_enabled`, …), not a per-run inserted/updated/unchanged
+tally — that tally is internal to the run and isn't persisted, so the durable
+check is that no row actually changed:
 
 ```sql
-SELECT last_counts FROM m365_sync_state WHERE org_id = '<org>' AND domain = 'users';
+-- Snapshot before the re-run.
+SELECT graph_id, last_changed_at FROM m365_users WHERE org_id = '<org>' ORDER BY graph_id;
+-- … trigger the domain's next sync, wait for it to complete …
+-- Re-run the same query. On an unchanged tenant every last_changed_at is
+-- identical to the snapshot; a domain that touches unchanged rows anyway
+-- is the §5.4 "change-only writes" contract regressing.
+SELECT last_status, last_counts FROM m365_sync_state WHERE org_id = '<org>' AND domain = 'users';
 ```
 
-`updated` and `inserted` are 0 on an unchanged tenant, `unchanged` equals the
-user count.
+`last_status` is `success` and `last_counts.users_total` matches the tenant's
+current user count either way — that alone does not prove nothing was
+written; the `last_changed_at` comparison above is what does.
 
 ### S4. On-demand sync
 
@@ -481,20 +505,30 @@ must hold a measured number rather than a guess, and a 25 000-seat tenant is
 not something an acceptance window can conjure on demand. The ceiling is a
 function of the item cap and the in-flight cap, not of who the users are.
 
-1. Start the executor on its own, with the sync cap at its default and a
-   container limit high enough that the limit is not what you are measuring:
+1. Build and start the executor on its own, with the sync cap at its
+   default, autostart on (the process otherwise stays up without listening),
+   and a container limit high enough that the limit is not what you are
+   measuring:
 
 ```bash
-M365_SYNC_MAX_IN_FLIGHT=4 M365_SYNC_MAX_ITEMS_USERS=25000 \
-  node apps/m365-graph-read-executor/dist/index.js &
+pnpm --filter @breeze/m365-graph-read-executor build
+M365_GRAPH_READ_EXECUTOR_AUTOSTART=1 M365_SYNC_MAX_IN_FLIGHT=4 M365_SYNC_MAX_ITEMS_USERS=25000 \
+  node apps/m365-graph-read-executor/dist/index.cjs &
 EXECUTOR_PID=$!
 ```
 
-2. Point its Graph base URL at a local server that serves 25 000 projected
-   users per pull. The payload shape is the one
-   `apps/api/src/__tests__/integration/m365SyncFakeExecutor.ts` builds with
-   `syncUsersResult` — generate it once and serve the same body to every call.
-3. Issue four `m365.sync.users` calls concurrently and sample RSS throughout:
+2. Point its Graph base URL at a local server that serves 25 000
+   **Microsoft-Graph-shaped** `/users` page responses per pull — the raw
+   `{"value": [{"id": …, "userPrincipalName": …, …}], "@odata.nextLink": …}`
+   shape the executor's own Graph client consumes, not the executor's
+   projected `M365SyncActionResult` output (`syncUsersResult` in
+   `apps/api/src/__tests__/integration/m365SyncFakeExecutor.ts` builds THAT
+   shape — the wrong layer for this scenario, which stubs Microsoft, not the
+   executor). Generate the 25 000-user page once and serve the same body to
+   every call.
+3. Issue four `m365.sync.users` calls concurrently (against the EXECUTOR's
+   `/v1/sync-action`, signed the same way `m365SyncFakeExecutor.ts` signs its
+   test requests) and sample RSS throughout:
 
 ```bash
 ( while kill -0 "$EXECUTOR_PID" 2>/dev/null; do ps -o rss= -p "$EXECUTOR_PID"; sleep 0.25; done ) \

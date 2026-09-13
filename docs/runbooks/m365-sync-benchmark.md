@@ -52,16 +52,26 @@ export DATABASE_URL_APP=postgresql://breeze_app@<host>:25060/breeze?sslmode=requ
 export M365_TENANT_SYNC_ENABLED=true
 ```
 
-`DATABASE_URL_APP` is the pool the sync worker uses; `DATABASE_URL` is only
-used for the WAL and `pg_stat_activity` reads.
+The benchmark script itself only reads `DATABASE_URL_APP` — the sync work,
+and the WAL/`pg_stat_activity` reads it reports, all run through that same
+`breeze_app` pool (both `pg_current_wal_lsn()` and `pg_stat_activity` for a
+role's own connections are executable by an unprivileged role on stock
+Postgres, no extra grant needed). `DATABASE_URL` above is only consumed by
+the `pnpm db:migrate` step before the benchmark runs.
 
 ## Run
 
 ```bash
-pnpm --filter @breeze/api m365-sync:benchmark -- \
+pnpm --filter @breeze/api m365-sync:benchmark \
   --orgs=1000 --window-minutes=60 --executor-latency-ms=200 \
   --concurrency=4 --tick-batch=200
 ```
+
+Do **not** put a bare `--` before the flags — this is a plain `tsx` entrypoint,
+not vitest, but pnpm still forwards a literal `--` into argv rather than
+stripping it, and the parser would otherwise reject it as an unknown
+argument. (The parser tolerates a stray `--` defensively, but the example
+above is the form to copy.)
 
 Flags: `--orgs`, `--window-minutes`, `--executor-latency-ms`,
 `--concurrency`, `--tick-batch`, `--probe-interval-ms`, `--seed`,

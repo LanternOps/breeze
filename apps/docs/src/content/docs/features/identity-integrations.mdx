@@ -217,7 +217,7 @@ Both providers verify credentials live before storing them. For Google Workspace
 Complete both Microsoft steps as a Global Administrator or Privileged Role Administrator in the customer tenant. Other directory roles fail closed even if Microsoft allows them to reach a consent screen.
 
 **Customer Graph Read is degraded.**
-Review missing and unexpected grants on the card. Restore the exact nine-permission manifest, choose **Re-consent**, then **Retest**. If the card says reconciliation is unavailable, restore `Application.Read.All` first; the displayed observed list is last known, not a current assignment inventory.
+Review missing and unexpected grants on the card. Restore the exact thirteen-permission manifest, choose **Re-consent**, then **Retest**. If the card says reconciliation is unavailable, restore `Application.Read.All` first; the displayed observed list is last known, not a current assignment inventory.
 
 **Retest says the verification service is unavailable.**
 This does not mean Microsoft consent was removed. Existing active state is preserved during a transient executor outage. Ask the Breeze operator to restore the private verification service, then Retest again.

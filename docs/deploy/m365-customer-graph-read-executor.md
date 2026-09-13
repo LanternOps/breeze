@@ -4,7 +4,7 @@ This runbook deploys the isolated `@breeze/m365-graph-read-executor` and enables
 
 ## Scope and trust boundary
 
-Customer Graph Read uses one dedicated multitenant Entra application, the fixed `customer-graph-read` profile, certificate client authentication, and manifest version 2. It is separate from:
+Customer Graph Read uses one dedicated multitenant Entra application, the fixed `customer-graph-read` profile, certificate client authentication, and permission manifest v3 (thirteen roles — see below; a connection that hasn't re-consented yet keeps working on the older v2 grants). It is separate from:
 
 - the legacy direct M365 connector, where each Breeze organization supplies a tenant ID, client ID, and encrypted client secret;
 - user-owned delegated mail and Teams communications;
@@ -214,12 +214,14 @@ worst case the sizing rule assumes:
 | 4 × 25 000 users | *(fill in from scenario **S7** — see below)* | ≥ 1.5× the measured ceiling |
 
 The number is measured before the first canary, not after it: scenario S7 in
-`docs/runbooks/m365-customer-graph-read-real-tenant.md` drives four concurrent
-25 000-user snapshots through the executor in fake-executor mode and records
-peak RSS. Fill this cell from that run and do not carry a guess into a
-container limit. The 64 MiB cumulative response cap and the 25 000-item cap
-bound a single snapshot, so the ceiling is a product of those two and the
-in-flight cap, not of tenant count.
+`docs/runbooks/m365-customer-graph-read-real-tenant.md` runs the real
+executor binary against a stubbed Microsoft Graph and drives four concurrent
+25 000-user snapshots through it, recording peak RSS. Fill this cell from
+that run and do not carry a guess into a container limit — it refines, not
+replaces, the 512 MB default-caps figure in the Sizing note above. The 64 MiB
+cumulative response cap and the 25 000-item cap bound a single snapshot, so
+the ceiling is a product of those two and the in-flight cap, not of tenant
+count.
 
 ## Network policy
 
