@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent, type KeyboardEvent } from 'react';
 import { useHashState } from '@/lib/useHashState';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
@@ -18,8 +18,15 @@ import { runAction, ActionError, handleActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { isArchiveLifecycleOrg } from '@/lib/archiveLifecycle';
+import { Dialog } from '../shared/Dialog';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'archive' | 'merge';
+
+/** `aria-describedby` target for every row's reorder handle: one hidden
+ *  sentence explaining the arrow-key alternative to dragging. */
+const REORDER_HINT_ID = 'org-list-reorder-hint';
+const ADD_ORG_TITLE_ID = 'org-add-dialog-title';
+const noop = () => {};
 
 type OrganizationFormValues = {
   name: string;
@@ -142,6 +149,19 @@ export default function OrganizationsPage() {
    */
   const [reorderPending, setReorderPending] = useState(false);
   const [dragOverOrgId, setDragOverOrgId] = useState<string | null>(null);
+  /**
+   * Roving tabindex for the org list. Exactly one row's controls are in the
+   * Tab order at a time (`activeOrgId` below); the arrow keys move that row
+   * without selecting it, so a keyboard user can walk 60 rows in 60
+   * keystrokes instead of 240 Tab stops, and only fires the sites fetch on
+   * Enter/Space. A ref map, not `document.querySelector`, finds the button
+   * to focus.
+   */
+  const [activeRowId, setActiveRowId] = useState<string | null>(null);
+  const rowSelectRefs = useRef(new Map<string, HTMLButtonElement>());
+  /** Last keyboard reorder, read out by the polite live region below the
+   *  list — the visual row move is invisible to a screen reader. */
+  const [reorderAnnouncement, setReorderAnnouncement] = useState('');
 
   // Archived-organizations section state. Collapsed by default and fetched
   // ONLY on expand (`includeArchived=true`) — deliberately NOT threaded through
@@ -205,6 +225,16 @@ export default function OrganizationsPage() {
     if (!q) return archivedOrgs;
     return archivedOrgs.filter(org => org.name.toLowerCase().includes(q));
   }, [archivedOrgs, searchQuery]);
+
+  /** The one row whose controls are in the Tab order: the last row the
+   *  arrow keys landed on, else the selected org, else the first row —
+   *  always re-resolved against the CURRENT filtered list so a search that
+   *  hides the remembered row never leaves the list with no tab stop. */
+  const activeOrgId = useMemo(() => {
+    if (activeRowId && filteredOrgs.some(org => org.id === activeRowId)) return activeRowId;
+    if (selectedOrg && filteredOrgs.some(org => org.id === selectedOrg.id)) return selectedOrg.id;
+    return filteredOrgs[0]?.id ?? null;
+  }, [activeRowId, filteredOrgs, selectedOrg]);
 
   /** Renders an archived org's purge countdown, shared by the row and the
    *  read-only detail pane. `purgeAt: null` (retention "Never") and an
@@ -518,8 +548,25 @@ export default function OrganizationsPage() {
 
   const handleSelectOrg = (org: Organization) => {
     setSelectedOrg(prev => prev?.id === org.id ? prev : org);
+    setActiveRowId(org.id);
     siteCrud.close();
     window.location.hash = org.id;
+  };
+
+  /** Arrow/Home/End on a row's select button: move focus and the roving tab
+   *  stop, never the selection (see `activeRowId`). */
+  const handleRowKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let next: number | null = null;
+    if (event.key === 'ArrowDown') next = Math.min(index + 1, filteredOrgs.length - 1);
+    else if (event.key === 'ArrowUp') next = Math.max(index - 1, 0);
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = filteredOrgs.length - 1;
+    if (next === null) return;
+    event.preventDefault();
+    if (next === index) return;
+    const target = filteredOrgs[next];
+    setActiveRowId(target.id);
+    rowSelectRefs.current.get(target.id)?.focus();
   };
 
   const handleToggleArchived = () => {
@@ -717,6 +764,39 @@ export default function OrganizationsPage() {
     setDragOverOrgId(null);
   };
 
+  /**
+   * Keyboard reorder: the same splice-and-persist as `handleOrgDrop`, one
+   * step at a time. Only offered when dragging is (the handle is not
+   * rendered while a search filter is active or a reorder is in flight), so
+   * the two paths can never disagree about whether a move is allowed. The
+   * moved row keeps focus across the re-render because React keys the rows
+   * by id, so a held arrow key walks the org through the list.
+   */
+  const moveOrganization = (org: Organization, delta: -1 | 1) => {
+    const sourceIndex = organizations.findIndex(o => o.id === org.id);
+    if (sourceIndex === -1) return;
+    const targetIndex = sourceIndex + delta;
+    if (targetIndex < 0 || targetIndex >= organizations.length) return;
+    const next = [...organizations];
+    const [moved] = next.splice(sourceIndex, 1);
+    next.splice(targetIndex, 0, moved);
+    setOrganizations(next);
+    setReorderAnnouncement(
+      t('organizationsPage.list.movedAnnouncement', {
+        name: org.name,
+        position: targetIndex + 1,
+        total: next.length,
+      }),
+    );
+    void persistOrganizationOrder(next.map(o => o.id));
+  };
+
+  const handleReorderKeyDown = (event: KeyboardEvent<HTMLButtonElement>, org: Organization) => {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    moveOrganization(org, event.key === 'ArrowUp' ? -1 : 1);
+  };
+
   const handleCloseModal = () => {
     setModalMode('closed');
   };
@@ -878,10 +958,23 @@ export default function OrganizationsPage() {
             <input
               type="search"
               placeholder={t('organizationsPage.list.searchPlaceholder')}
+              aria-label={t('organizationsPage.list.searchLabel')}
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               className="mt-2 h-8 w-full rounded-md border bg-background px-2.5 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
+          </div>
+
+          <p id={REORDER_HINT_ID} className="sr-only">
+            {t('organizationsPage.list.reorderHint')}
+          </p>
+          <div
+            data-testid="org-reorder-announcement"
+            role="status"
+            aria-live="polite"
+            className="sr-only"
+          >
+            {reorderAnnouncement}
           </div>
 
           <div className="max-h-[calc(100vh-320px)] overflow-y-auto">
@@ -892,12 +985,18 @@ export default function OrganizationsPage() {
                   : t('organizationsPage.list.noMatches')}
               </div>
             ) : (
-              <ul className="divide-y">
-                {filteredOrgs.map(org => {
+              <ul className="divide-y" aria-label={t('organizationsPage.list.title')}>
+                {filteredOrgs.map((org, index) => {
                   const dragEnabled = searchQuery.trim().length === 0 && !reorderPending;
                   const isDragging = draggedOrgId === org.id;
                   const isDropTarget = dragOverOrgId === org.id && draggedOrgId !== org.id;
+                  const isSelected = selectedOrg?.id === org.id;
+                  const rowTabIndex = activeOrgId === org.id ? 0 : -1;
                   return (
+                  /* The <li> keeps a click handler as a whole-row hit area for
+                     the mouse; the select button inside it is the keyboard
+                     and assistive-tech path to the same action, so the row's
+                     click is a convenience, never the only route. */
                   <li
                     key={org.id}
                     data-testid={`org-row-${org.id}`}
@@ -908,111 +1007,132 @@ export default function OrganizationsPage() {
                     onDragLeave={dragEnabled ? handleOrgDragLeave : undefined}
                     onDrop={dragEnabled ? (e) => handleOrgDrop(e, org) : undefined}
                     onDragEnd={dragEnabled ? handleOrgDragEnd : undefined}
-                    className={`group relative cursor-pointer px-4 py-3 transition hover:bg-muted/50 ${
-                      selectedOrg?.id === org.id
+                    className={`group relative flex cursor-pointer items-start gap-1.5 px-3 py-3 transition hover:bg-muted/50 ${
+                      isSelected
                         ? 'bg-muted/60 border-l-2 border-l-primary'
                         : 'border-l-2 border-l-transparent'
                     } ${isDragging ? 'opacity-50' : ''} ${isDropTarget ? 'border-t-2 border-t-primary' : ''}`}
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      {dragEnabled && (
-                        <span
-                          data-testid="org-drag-handle"
-                          className="mt-0.5 cursor-grab text-muted-foreground/40 opacity-0 transition group-hover:opacity-100 active:cursor-grabbing"
-                          title={t('organizationsPage.list.dragToReorder')}
-                          aria-hidden="true"
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <circle cx="9" cy="6" r="1" />
-                            <circle cx="9" cy="12" r="1" />
-                            <circle cx="9" cy="18" r="1" />
-                            <circle cx="15" cy="6" r="1" />
-                            <circle cx="15" cy="12" r="1" />
-                            <circle cx="15" cy="18" r="1" />
-                          </svg>
-                        </span>
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <a
-                          href={`/organizations/${org.id}`}
-                          data-testid={`org-open-record-${org.id}`}
-                          onClick={e => e.stopPropagation()}
-                          className="truncate text-sm font-medium hover:underline block"
-                        >
-                          {org.name}
-                        </a>
-                        <div className="mt-1 flex items-center gap-2">
-                          {/* Exception-only: an org's status is worth a glance
-                              only when it's NOT the steady state every other
-                              row is in. `active` is the overwhelming majority
-                              of rows, so giving it the same pill as every
-                              other status just added visual noise the eye had
-                              to filter past to spot the rows that actually
-                              need attention (trial/suspended/churned/etc). */}
-                          {org.status !== 'active' && (
-                            <span
-                              className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${statusColors[org.status]}`}
-                            >
-                              {t(/* i18n-dynamic */ statusLabelKeys[org.status])}
-                            </span>
-                          )}
-                          {shouldShowDeviceCount(org.deviceCount) && (
-                            <span className="text-xs text-muted-foreground">
-                              {t('organizationsPage.deviceCount', { count: org.deviceCount })}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Hover action buttons */}
-                      <div className="flex shrink-0 items-center gap-1 opacity-0 transition group-hover:opacity-100">
-                        <button
-                          type="button"
-                          onClick={e => {
-                            e.stopPropagation();
-                            handleEdit(org);
-                          }}
-                          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                          title={t('organizationsPage.actions.openSettings')}
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
-                            <path d="m15 5 4 4" />
-                          </svg>
-                        </button>
-                        <button
-                          type="button"
-                          data-testid={`org-archive-open-row-${org.id}`}
-                          onClick={e => {
-                            e.stopPropagation();
-                            handleArchive(org);
-                          }}
-                          className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                          title={t('organizationsPage.actions.archiveOrganization')}
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <rect x="2" y="4" width="20" height="5" rx="1" />
-                            <path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9" />
-                            <path d="M10 13h4" />
-                          </svg>
-                        </button>
-                      </div>
-
-                      {/* Row-end chevron — persistent (not hover-only), so the
-                          record page is reachable without discovering the
-                          hover affordances above; same icon-button styling. */}
-                      <a
-                        href={`/organizations/${org.id}`}
-                        aria-label={t('organizationsPage.actions.openRecord')}
-                        title={t('organizationsPage.actions.openRecord')}
+                    {dragEnabled && (
+                      /* Always visible (dimmed) so manual ordering is
+                         discoverable; a real button so it takes focus and
+                         moves the row with the arrow keys. */
+                      <button
+                        type="button"
+                        data-testid="org-drag-handle"
+                        aria-label={t('organizationsPage.list.reorderHandle', { name: org.name })}
+                        aria-describedby={REORDER_HINT_ID}
+                        title={t('organizationsPage.list.dragToReorder')}
+                        tabIndex={rowTabIndex}
                         onClick={e => e.stopPropagation()}
-                        className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                        onKeyDown={e => handleReorderKeyDown(e, org)}
+                        className="mt-0.5 shrink-0 cursor-grab rounded p-0.5 text-muted-foreground/40 transition group-hover:text-muted-foreground group-focus-within:text-muted-foreground active:cursor-grabbing"
                       >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="m9 18 6-6-6-6" />
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <circle cx="9" cy="6" r="1" />
+                          <circle cx="9" cy="12" r="1" />
+                          <circle cx="9" cy="18" r="1" />
+                          <circle cx="15" cy="6" r="1" />
+                          <circle cx="15" cy="12" r="1" />
+                          <circle cx="15" cy="18" r="1" />
                         </svg>
-                      </a>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      ref={el => {
+                        if (el) rowSelectRefs.current.set(org.id, el);
+                        else rowSelectRefs.current.delete(org.id);
+                      }}
+                      data-testid={`org-select-${org.id}`}
+                      aria-current={isSelected ? 'true' : undefined}
+                      tabIndex={rowTabIndex}
+                      onClick={e => {
+                        e.stopPropagation();
+                        handleSelectOrg(org);
+                      }}
+                      onKeyDown={e => handleRowKeyDown(e, index)}
+                      className="min-w-0 flex-1 rounded text-left"
+                    >
+                      <span className="block truncate text-sm font-medium">{org.name}</span>
+                      <span className="mt-1 flex items-center gap-2">
+                        {/* Exception-only: an org's status is worth a glance
+                            only when it's NOT the steady state every other
+                            row is in. `active` is the overwhelming majority
+                            of rows, so giving it the same pill as every
+                            other status just added visual noise the eye had
+                            to filter past to spot the rows that actually
+                            need attention (trial/suspended/churned/etc). */}
+                        {org.status !== 'active' && (
+                          <span
+                            className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${statusColors[org.status]}`}
+                          >
+                            {t(/* i18n-dynamic */ statusLabelKeys[org.status])}
+                          </span>
+                        )}
+                        {shouldShowDeviceCount(org.deviceCount) && (
+                          <span className="text-xs text-muted-foreground">
+                            {t('organizationsPage.deviceCount', { count: org.deviceCount })}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+
+                    {/* Row actions: revealed on hover AND on keyboard focus
+                        within the row, so they are never focusable-but-
+                        invisible. */}
+                    <div className="flex shrink-0 items-center gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
+                      <button
+                        type="button"
+                        aria-label={t('organizationsPage.actions.openSettingsFor', { name: org.name })}
+                        title={t('organizationsPage.actions.openSettings')}
+                        tabIndex={rowTabIndex}
+                        onClick={e => {
+                          e.stopPropagation();
+                          handleEdit(org);
+                        }}
+                        className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                          <path d="m15 5 4 4" />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        data-testid={`org-archive-open-row-${org.id}`}
+                        aria-label={t('organizationsPage.actions.archiveOrganizationFor', { name: org.name })}
+                        title={t('organizationsPage.actions.archiveOrganization')}
+                        tabIndex={rowTabIndex}
+                        onClick={e => {
+                          e.stopPropagation();
+                          handleArchive(org);
+                        }}
+                        className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <rect x="2" y="4" width="20" height="5" rx="1" />
+                          <path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9" />
+                          <path d="M10 13h4" />
+                        </svg>
+                      </button>
                     </div>
+
+                    {/* Row-end chevron — the row's persistent route to the
+                        record page now that the name selects the row. */}
+                    <a
+                      href={`/organizations/${org.id}`}
+                      data-testid={`org-open-record-${org.id}`}
+                      aria-label={t('organizationsPage.actions.openRecordFor', { name: org.name })}
+                      title={t('organizationsPage.actions.openRecord')}
+                      tabIndex={rowTabIndex}
+                      onClick={e => e.stopPropagation()}
+                      className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="m9 18 6-6-6-6" />
+                      </svg>
+                    </a>
                   </li>
                   );
                 })}
@@ -1068,7 +1188,7 @@ export default function OrganizationsPage() {
                         {t('organizationsPage.archived.truncatedNote', { count: archivedOrgs.length })}
                       </p>
                     )}
-                    <ul className="divide-y">
+                    <ul className="divide-y" aria-label={t('organizationsPage.archived.sectionTitle')}>
                       {filteredArchivedOrgs.map(org => (
                         <li
                           key={org.id}
@@ -1078,18 +1198,29 @@ export default function OrganizationsPage() {
                             selectedOrg?.id === org.id ? 'bg-muted/60 border-l-2 border-l-primary' : 'border-l-2 border-l-transparent'
                           }`}
                         >
-                          <p className="truncate text-sm font-medium">{org.name}</p>
-                          <div className="mt-1 flex items-center gap-2">
-                            <span
-                              data-testid="org-archived-badge"
-                              className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${archiveBadge(org).color}`}
-                            >
-                              {archiveBadge(org).label}
+                          <button
+                            type="button"
+                            data-testid="org-archived-select"
+                            aria-current={selectedOrg?.id === org.id ? 'true' : undefined}
+                            onClick={e => {
+                              e.stopPropagation();
+                              handleSelectOrg(org);
+                            }}
+                            className="block w-full min-w-0 rounded text-left"
+                          >
+                            <span className="block truncate text-sm font-medium">{org.name}</span>
+                            <span className="mt-1 flex items-center gap-2">
+                              <span
+                                data-testid="org-archived-badge"
+                                className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${archiveBadge(org).color}`}
+                              >
+                                {archiveBadge(org).label}
+                              </span>
+                              <span data-testid="org-archived-purge" className="text-xs text-muted-foreground">
+                                {renderPurgeCountdown(org.purgeAt)}
+                              </span>
                             </span>
-                            <span data-testid="org-archived-purge" className="text-xs text-muted-foreground">
-                              {renderPurgeCountdown(org.purgeAt)}
-                            </span>
-                          </div>
+                          </button>
                         </li>
                       ))}
                     </ul>
@@ -1251,24 +1382,31 @@ export default function OrganizationsPage() {
         </div>
       </div>
 
-      {/* Org Add/Edit Modal */}
+      {/* Org Add dialog. Escape and the backdrop are inert while the create
+          POST is in flight so a half-submitted form cannot be dismissed. */}
       {modalMode === 'add' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="mb-4 rounded-lg border bg-card p-6 shadow-xs">
-              <h2 className="text-lg font-semibold">{t('organizationsPage.add.title')}</h2>
-              <p className="text-sm text-muted-foreground">
-                {t('organizationsPage.add.description')}
-              </p>
-            </div>
-            <OrganizationForm
-              onSubmit={handleSubmit}
-              onCancel={handleCloseModal}
-              submitLabel={t('organizationsPage.add.submit')}
-              loading={submitting}
-            />
+        <Dialog
+          open
+          onClose={submitting ? noop : handleCloseModal}
+          title={t('organizationsPage.add.title')}
+          labelledBy={ADD_ORG_TITLE_ID}
+          maxWidth="2xl"
+          alignTop
+        >
+          <div className="border-b px-6 py-4">
+            <h2 id={ADD_ORG_TITLE_ID} className="text-lg font-semibold">{t('organizationsPage.add.title')}</h2>
+            <p className="text-sm text-muted-foreground">
+              {t('organizationsPage.add.description')}
+            </p>
           </div>
-        </div>
+          <OrganizationForm
+            onSubmit={handleSubmit}
+            onCancel={handleCloseModal}
+            submitLabel={t('organizationsPage.add.submit')}
+            loading={submitting}
+            className="space-y-6 p-6"
+          />
+        </Dialog>
       )}
 
       {/* Org Archive Modal */}

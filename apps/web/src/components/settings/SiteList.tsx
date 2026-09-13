@@ -51,6 +51,7 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
       <button
         type="button"
         onClick={() => onSiteClick ? onSiteClick(site) : onEdit?.(site)}
+        aria-label={t('siteList.actions.editSite', { name: site.name })}
         className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
       >
         {t('common:actions.edit')}
@@ -58,6 +59,7 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
       <button
         type="button"
         onClick={() => onDelete?.(site)}
+        aria-label={t('siteList.actions.deleteSite', { name: site.name })}
         className="rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
       >
         {t('common:actions.delete')}
@@ -78,6 +80,7 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
           <input
             type="search"
             placeholder={t('siteList.searchPlaceholder')}
+            aria-label={t('siteList.searchPlaceholder')}
             value={query}
             onChange={event => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"

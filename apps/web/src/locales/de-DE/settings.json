@@ -4503,7 +4503,10 @@
       "archiveOrganization": "Organisation archivieren",
       "deleting": "Löschen...",
       "openRecord": "Datensatz öffnen",
-      "openSettings": "Einstellungen"
+      "openSettings": "Einstellungen",
+      "openSettingsFor": "Einstellungen für {{name}}",
+      "archiveOrganizationFor": "{{name}} archivieren",
+      "openRecordFor": "Datensatz für {{name}} öffnen"
     },
     "errors": {
       "fetchOrganizations": "Organisationen konnten nicht abgerufen werden",
@@ -4530,7 +4533,11 @@
       "searchPlaceholder": "Suchen...",
       "empty": "Keine Organisationen gefunden.",
       "noMatches": "Keine Organisationen entsprechen Ihrer Suche.",
-      "dragToReorder": "Zum Neuanordnen ziehen"
+      "dragToReorder": "Zum Neuanordnen ziehen",
+      "searchLabel": "Organisationen durchsuchen",
+      "reorderHandle": "{{name}} neu anordnen",
+      "reorderHint": "Verschieben Sie diese Organisation mit den Pfeiltasten nach oben und unten.",
+      "movedAnnouncement": "{{name}} wurde an Position {{position}} von {{total}} verschoben"
     },
     "sites": {
       "loading": "Seiten werden geladen..."
@@ -4757,7 +4764,9 @@
     "count": "{{filtered}} von {{total}} Standorte",
     "searchPlaceholder": "Standorte suchen",
     "actions": {
-      "add": "Standort hinzufügen"
+      "add": "Standort hinzufügen",
+      "editSite": "{{name}} bearbeiten",
+      "deleteSite": "{{name}} löschen"
     },
     "columns": {
       "timezone": "Zeitzone",

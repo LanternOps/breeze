@@ -4556,7 +4556,10 @@
       "archiveOrganization": "Arquivar organização",
       "deleting": "Excluindo...",
       "openRecord": "Abrir registro",
-      "openSettings": "Configurações"
+      "openSettings": "Configurações",
+      "openSettingsFor": "Configurações de {{name}}",
+      "archiveOrganizationFor": "Arquivar {{name}}",
+      "openRecordFor": "Abrir o registro de {{name}}"
     },
     "errors": {
       "fetchOrganizations": "Falha ao buscar organizações",
@@ -4583,7 +4586,11 @@
       "searchPlaceholder": "Procurar...",
       "empty": "Nenhuma organização encontrada.",
       "noMatches": "Nenhuma organização corresponde à sua pesquisa.",
-      "dragToReorder": "Arraste para reordenar"
+      "dragToReorder": "Arraste para reordenar",
+      "searchLabel": "Buscar organizações",
+      "reorderHandle": "Reordenar {{name}}",
+      "reorderHint": "Use as setas para cima e para baixo para mover esta organização.",
+      "movedAnnouncement": "{{name}} movida para a posição {{position}} de {{total}}"
     },
     "sites": {
       "loading": "Carregando sites..."
@@ -4810,7 +4817,9 @@
     "count": "{{filtered}} de sites {{total}}",
     "searchPlaceholder": "Pesquisar sites",
     "actions": {
-      "add": "Adicionar site"
+      "add": "Adicionar site",
+      "editSite": "Editar {{name}}",
+      "deleteSite": "Excluir {{name}}"
     },
     "columns": {
       "timezone": "Fuso horário",

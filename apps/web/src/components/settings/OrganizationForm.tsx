@@ -53,6 +53,10 @@ type OrganizationFormProps = {
   defaultValues?: Partial<OrganizationFormValues>;
   submitLabel?: string;
   loading?: boolean;
+  /** Classes on the `<form>`. Defaults to a standalone card; a host that is
+   *  already a card (the add-organization dialog) passes flat padding instead
+   *  so the form never renders as a card inside a card. */
+  className?: string;
 };
 
 const typeOptions = [
@@ -75,7 +79,8 @@ export default function OrganizationForm({
   onCancel,
   defaultValues,
   submitLabel,
-  loading
+  loading,
+  className = 'space-y-6 rounded-lg border bg-card p-6 shadow-xs'
 }: OrganizationFormProps) {
   const { t } = useTranslation('settings');
   const organizationSchema = useMemo(() => createOrganizationSchema(t), [t]);
@@ -114,7 +119,7 @@ export default function OrganizationForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
+      className={className}
     >
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">

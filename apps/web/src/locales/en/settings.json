@@ -4556,7 +4556,10 @@
       "archiveOrganization": "Archive organization",
       "deleting": "Deleting...",
       "openRecord": "Open record",
-      "openSettings": "Settings"
+      "openSettings": "Settings",
+      "openSettingsFor": "Settings for {{name}}",
+      "archiveOrganizationFor": "Archive {{name}}",
+      "openRecordFor": "Open record for {{name}}"
     },
     "errors": {
       "fetchOrganizations": "Failed to fetch organizations",
@@ -4583,7 +4586,11 @@
       "searchPlaceholder": "Search...",
       "empty": "No organizations found.",
       "noMatches": "No organizations match your search.",
-      "dragToReorder": "Drag to reorder"
+      "dragToReorder": "Drag to reorder",
+      "searchLabel": "Search organizations",
+      "reorderHandle": "Reorder {{name}}",
+      "reorderHint": "Use the up and down arrow keys to move this organization.",
+      "movedAnnouncement": "{{name}} moved to position {{position}} of {{total}}"
     },
     "sites": {
       "loading": "Loading sites..."
@@ -4810,7 +4817,9 @@
     "count": "{{filtered}} of {{total}} sites",
     "searchPlaceholder": "Search sites",
     "actions": {
-      "add": "Add site"
+      "add": "Add site",
+      "editSite": "Edit {{name}}",
+      "deleteSite": "Delete {{name}}"
     },
     "columns": {
       "timezone": "Timezone",
