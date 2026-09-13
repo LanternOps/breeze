@@ -77,6 +77,19 @@ type LedgerRowLike = {
 };
 
 const MONITORING_REF = /^monitoring:(.+):(watch|rule):(\d+)$/;
+
+/**
+ * A JS array interpolated straight into drizzle's `sql` tag is spread as a
+ * list of chunks, not bound as one array parameter — `ANY(${ids})` renders
+ * `ANY($1)` with a bare uuid string and Postgres answers "malformed array
+ * literal". Build the array literal explicitly (timeSuggestionService.ts
+ * does the same).
+ */
+export function uuidArray(ids: readonly string[]) {
+  return ids.length === 0
+    ? sql`ARRAY[]::uuid[]`
+    : sql`ARRAY[${sql.join(ids.map((id) => sql`${id}`), sql`, `)}]::uuid[]`;
+}
 const RETIRED_REF = /^retired:(\d+)$/;
 
 function iso(value: Date | string): string {
@@ -208,7 +221,10 @@ export async function loadDriftLiveState(orgId: string, approved: ApprovedDesign
   const ownPolicyIds = approved.functions.map((f) => f.policyId).filter((id): id is string => typeof id === 'string');
   const retiredPolicyIds = approved.retired.map((r) => r.policyId);
   const pinned = [...new Set([...ownPolicyIds, ...retiredPolicyIds])];
-  const pinnedPredicate = pinned.length > 0 ? sql`OR cp.id = ANY(${pinned})` : sql``;
+  // Pinned ids come from THIS org's own ledger, so the only legitimate way one
+  // of them is not `org_id = $org` is a partner-wide row (`org_id IS NULL`).
+  // Never a bare id match: that would let a foreign org's row through.
+  const pinnedPredicate = pinned.length > 0 ? sql`OR (cp.id = ANY(${uuidArray(pinned)}) AND cp.org_id IS NULL)` : sql``;
 
   const policies = await db.execute<LivePolicyRow>(sql`
     SELECT cp.id, cp.name, cp.status::text AS status, cp.org_id, cp.created_at
@@ -222,17 +238,17 @@ export async function loadDriftLiveState(orgId: string, approved: ApprovedDesign
     SELECT fl.config_policy_id AS policy_id, w.name, w.watch_type::text AS watch_type, w.enabled
     FROM config_policy_monitoring_watches w
     JOIN config_policy_monitoring_settings ms ON ms.id = w.settings_id
-    JOIN config_policy_feature_links fl ON fl.id = ms.feature_link_id AND fl.config_policy_id = ANY(${policyIds})
+    JOIN config_policy_feature_links fl ON fl.id = ms.feature_link_id AND fl.config_policy_id = ANY(${uuidArray(policyIds)})
   `)];
   const rules = policyIds.length === 0 ? [] : [...await db.execute<LiveRuleRow>(sql`
     SELECT fl.config_policy_id AS policy_id, r.name, r.severity::text AS severity, r.cooldown_minutes
     FROM config_policy_alert_rules r
-    JOIN config_policy_feature_links fl ON fl.id = r.feature_link_id AND fl.config_policy_id = ANY(${policyIds})
+    JOIN config_policy_feature_links fl ON fl.id = r.feature_link_id AND fl.config_policy_id = ANY(${uuidArray(policyIds)})
   `)];
   const assignments = policyIds.length === 0 ? [] : [...await db.execute<LiveAssignmentRow>(sql`
     SELECT a.config_policy_id AS policy_id, a.level::text AS level, a.target_id::text AS target_id, a.priority, a.role_filter
     FROM config_policy_assignments a
-    WHERE a.config_policy_id = ANY(${policyIds})
+    WHERE a.config_policy_id = ANY(${uuidArray(policyIds)})
   `)];
 
   const watchesByPolicy = new Map<string, ApprovedDesignWatch[]>();

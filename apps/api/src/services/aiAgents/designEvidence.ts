@@ -77,7 +77,7 @@ import { getManagementPostureSummary } from '../managementPostureReport';
 import { listReliabilityDevices } from '../reliabilityScoring';
 import { getSecurityPostureTrend } from '../securityPosture';
 import { captureException } from '../sentry';
-import { loadApprovedDesign, loadDriftLiveState, type ApprovedDesignSummary, type DriftLiveState } from '../fleetDesign/drift';
+import { loadApprovedDesign, loadDriftLiveState, uuidArray, type ApprovedDesignSummary, type DriftLiveState } from '../fleetDesign/drift';
 import { sanitizeSweepText } from './runnerPrompt';
 
 // Late-bound namespace import (NOT `const { db } = dbModule`): destructuring
@@ -793,13 +793,13 @@ async function loadConfiguration(orgId: string, partnerId: string | null): Promi
     SELECT fl.config_policy_id AS policy_id, w.name, w.watch_type::text AS watch_type, w.enabled
     FROM config_policy_monitoring_watches w
     JOIN config_policy_monitoring_settings ms ON ms.id = w.settings_id
-    JOIN config_policy_feature_links fl ON fl.id = ms.feature_link_id AND fl.config_policy_id = ANY(${policyIds})
+    JOIN config_policy_feature_links fl ON fl.id = ms.feature_link_id AND fl.config_policy_id = ANY(${uuidArray(policyIds)})
     JOIN configuration_policies cp ON cp.id = fl.config_policy_id AND ${ownerPredicate}
   `);
   const rules = policyIds.length === 0 ? [] : await query<RuleRow>(sql`
     SELECT fl.config_policy_id AS policy_id, r.name, r.severity::text AS severity, r.cooldown_minutes
     FROM config_policy_alert_rules r
-    JOIN config_policy_feature_links fl ON fl.id = r.feature_link_id AND fl.config_policy_id = ANY(${policyIds})
+    JOIN config_policy_feature_links fl ON fl.id = r.feature_link_id AND fl.config_policy_id = ANY(${uuidArray(policyIds)})
     JOIN configuration_policies cp ON cp.id = fl.config_policy_id AND ${ownerPredicate}
   `);
   const watchesByPolicy = new Map<string, RawDesignEvidence['configuration']['policies'][number]['watches']>();
@@ -819,7 +819,7 @@ async function loadConfiguration(orgId: string, partnerId: string | null): Promi
     SELECT a.config_policy_id AS policy_id, a.level::text AS level, a.target_id::text AS target_id, a.priority, a.role_filter
     FROM config_policy_assignments a
     JOIN configuration_policies cp ON cp.id = a.config_policy_id AND ${ownerPredicate}
-    WHERE a.config_policy_id = ANY(${policyIds})
+    WHERE a.config_policy_id = ANY(${uuidArray(policyIds)})
   `);
 
   const alertTemplates = await query<AlertTemplateRow>(sql`
