@@ -183,6 +183,43 @@ export function m365CustomerGraphActionsOnboardingEnabled(): boolean {
   return envFlag('M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED', false);
 }
 
+// Microsoft 365 tenant sync (spec §10). Dark by default and boot-validated.
+// Read at CALL time, never as a module-scope const: the ticker registration in
+// jobs/m365SyncWorker.ts removes its repeat entry when this is off, so an
+// operator flipping the flag and restarting must actually stop the scheduler.
+export function isM365TenantSyncEnabled(): boolean {
+  return envFlag('M365_TENANT_SYNC_ENABLED', false);
+}
+
+/**
+ * Positive-integer env knob with a hard clamp. A knob is a capacity dial an
+ * operator turns under load; an unparseable or out-of-range value must land on
+ * a safe number rather than NaN (which would make `depth > NaN` false and
+ * disable backpressure entirely).
+ */
+function positiveIntEnv(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name];
+  if (!raw || !/^\d+$/.test(raw.trim())) return fallback;
+  const parsed = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.min(Math.max(parsed, min), max);
+}
+
+/** Per-API-instance `sync-domain` concurrency (spec §5.3). */
+export function m365SyncConcurrency(): number {
+  return positiveIntEnv('M365_SYNC_CONCURRENCY', 4, 1, 64);
+}
+
+/** Ticker backpressure ceiling on waiting+prioritized+delayed+active (spec §5.2 step 1). */
+export function m365SyncMaxBacklog(): number {
+  return positiveIntEnv('M365_SYNC_MAX_BACKLOG', 500, 1, 100_000);
+}
+
+/** Rows claimed per tick (spec §5.2 step 3, §5.9 — this is the capacity dial). */
+export function m365SyncTickBatch(): number {
+  return positiveIntEnv('M365_SYNC_TICK_BATCH', 200, 1, 5_000);
+}
+
 // Breeze AI for Office (Excel add-in / client AI). The Entra application
 // (client) ID of the multi-tenant add-in app registration. Empty = the whole
 // /client-ai surface is dark (exchange and admin routes return 404), mirroring

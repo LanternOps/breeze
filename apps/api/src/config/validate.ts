@@ -675,6 +675,18 @@ const envObjectSchema = z
     // the APP_ENCRYPTION_KEY_ID pairing rule below is schema-derived.
     M365_GRAPH_ACTIONS_TOOLS_ENABLED: z.string().optional(),
 
+    // M365 tenant sync (wave 04). Dark by default; read at runtime by
+    // isM365TenantSyncEnabled() in env.ts. Declared here so the format is
+    // guarded — a typo reads as OFF at the runtime flag parser, silently
+    // leaving the scheduler dark for an operator who believed they enabled it.
+    M365_TENANT_SYNC_ENABLED: z.string().optional(),
+    // Capacity dials for the sync worker/ticker. Format-guarded only: the
+    // runtime accessors clamp, so a valid-but-silly value is an operator
+    // choice, but a non-numeric value is a typo and must fail boot.
+    M365_SYNC_CONCURRENCY: z.string().optional(),
+    M365_SYNC_MAX_BACKLOG: z.string().optional(),
+    M365_SYNC_TICK_BATCH: z.string().optional(),
+
     // MFA feature flag. When false, ALL requireMfa() gates become no-ops.
     // Warning is emitted in collectWarnings; we do NOT refuse boot (a
     // self-hosted operator may deliberately run 2FA-off).
@@ -1882,6 +1894,26 @@ const envSchema = envObjectSchema
         message:
           'APP_ENCRYPTION_KEY_ID is required when M365_GRAPH_ACTIONS_TOOLS_ENABLED=true (write-action reveal credentials are sealed with AAD-bound v3 ciphertext).',
       });
+    }
+
+    const tenantSyncRaw = (data.M365_TENANT_SYNC_ENABLED ?? '').trim().toLowerCase();
+    if (tenantSyncRaw && !boolValues.has(tenantSyncRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['M365_TENANT_SYNC_ENABLED'],
+        message:
+          'M365_TENANT_SYNC_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the M365 tenant sync ticker and worker are dark).',
+      });
+    }
+    for (const knob of ['M365_SYNC_CONCURRENCY', 'M365_SYNC_MAX_BACKLOG', 'M365_SYNC_TICK_BATCH'] as const) {
+      const raw = (data[knob] ?? '').trim();
+      if (raw && !/^\d+$/.test(raw)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [knob],
+          message: `${knob} must be a positive integer when set.`,
+        });
+      }
     }
 
     // BREEZE_ROLE ↔ APP_ENCRYPTION_KEY_ID pairing (wave 3.5b, #4084). Once a
