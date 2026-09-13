@@ -216,6 +216,12 @@ describe('buildHardwareLifecycleRecommendations', () => {
     ]);
   });
 
+  it('asks for the order when a due-soon machine is inside six months', () => {
+    expect(buildHardwareLifecycleRecommendations([row({ name: 'kiosk-10', replaceBy: '2026-11-11', replacement: 'due_soon' })], TODAY)).toEqual([
+      'Order a replacement for kiosk-10 this quarter; it comes due Q4 2026.',
+    ]);
+  });
+
   it('says so when nothing needs attention', () => {
     expect(buildHardwareLifecycleRecommendations([row({ name: 'x', replaceBy: '2029-01-01', replacement: 'supported' })], TODAY)).toEqual([
       'Nothing needs your attention right now. The first computer to come due is x, around Q1 2029; we will flag it in the report before then.',

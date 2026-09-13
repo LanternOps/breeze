@@ -435,6 +435,10 @@ export function buildHardwareLifecycleRecommendations(
   for (const r of due.slice(0, 3)) {
     if (r.warrantyExtended && r.warrantyEndDate) {
       lines.push(`${rowMention(r)} is covered by warranty until ${monthYearLong(r.warrantyEndDate)}; budget to replace it when coverage ends.`);
+    } else if (r.replaceBy && daysBetween(today, r.replaceBy) <= 183) {
+      // Inside six months "no action needed yet" would contradict the runway
+      // beside the row; ask for the order now.
+      lines.push(`Order a replacement for ${rowMention(r)} this quarter; it comes due ${replaceByLabel(r.replaceBy, today)}.`);
     } else {
       lines.push(`Budget for ${rowMention(r)} around ${replaceByLabel(r.replaceBy, today)}; no action needed yet.`);
     }

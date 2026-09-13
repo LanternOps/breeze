@@ -76,7 +76,7 @@ const COLUMNS: Col[] = [
   { key: 'os', label: 'Operating system', w: 40, halign: 'left' },
   { key: 'ageYears', label: 'Age', w: 13, halign: 'right' },
   { key: 'purchaseDate', label: 'Purchased', w: 21, halign: 'left' },
-  { key: 'warrantyEndDate', label: 'Warranty to', w: 21, halign: 'left' },
+  { key: 'warrantyEndDate', label: 'Warranty until', w: 21, halign: 'left' },
   { key: 'replacement', label: 'Status', w: 24, halign: 'left' },
   { key: 'replaceBy', label: 'Replace by', w: 22, halign: 'left' },
   { key: 'runway', label: 'Service life used', w: 62, halign: 'left' },
@@ -359,7 +359,7 @@ export function renderHardwareLifecycleReport(
           // Track = the planned service life. Fill = how much is used. The
           // number beside it says what the bar cannot: how far past, or how
           // long left. Undated rows get a word, not an empty shape.
-          const trackW = w * 0.56;
+          const trackW = w * 0.42;
           const h = 2.8;
           const yy = midY - h / 2;
           doc.setFontSize(7.5);
@@ -369,20 +369,28 @@ export function renderHardwareLifecycleReport(
             doc.text('No purchase date', x, midY + 1);
             return;
           }
+          const years = yearsBetween(today, row.replaceBy);
+          const overdue = row.replaceBy <= today;
+          // Planned life is the track; time past the plan runs on beyond it
+          // (capped at three years) so 5 years overdue looks different from 1.
+          const overrunW = overdue ? trackW * 0.5 * Math.min(years / 3, 1) : 0;
           fill(doc, C.rule);
           doc.roundedRect(x, yy, trackW, h, 1.2, 1.2, 'F');
           if (row.lifeUsed > 0) {
             fill(doc, colors[row.replacement]);
             doc.roundedRect(x, yy, Math.max(trackW * Math.min(row.lifeUsed, 1), 2), h, 1.2, 1.2, 'F');
           }
-          const years = yearsBetween(today, row.replaceBy);
-          const overdue = row.replaceBy <= today;
+          if (overrunW > 1) {
+            // Lighter overrun segment: same hue, marked off from the plan by a gap.
+            fill(doc, colors[row.replacement]);
+            doc.roundedRect(x + trackW + 0.7, yy + 0.7, overrunW, h - 1.4, 0.7, 0.7, 'F');
+          }
           doc.setFont('helvetica', overdue ? 'bold' : 'normal');
           ink(doc, overdue ? C.danger : C.muted);
           const text = overdue
             ? (years < 1 / 24 ? 'Due now' : `${yearsLabel(years)} past due`)
             : `${yearsLabel(years)} left`;
-          doc.text(text, x + trackW + 2.5, midY + 1);
+          doc.text(text, x + trackW + overrunW + (overrunW > 1 ? 3.2 : 2.5), midY + 1);
         }
       },
       // Table-relative page 1 is the cover, whose chrome the caller already
