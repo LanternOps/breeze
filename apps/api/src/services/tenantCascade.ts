@@ -475,6 +475,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'escalation_policies',
   'event_delivery_receipts',
   'executive_summaries',
+  // Fleet Designer W03 (#5653): apply ledger. report_run_id FK is ON DELETE
+  // CASCADE (report_runs is pre-cleared above), org_id reached here too —
+  // either order is a no-op for the other. Leaf table, no children.
+  'fleet_design_applied_items',
   'fleet_finding_devices',
   'fleet_findings',
   'fleet_remediation_run_targets',
