@@ -21,11 +21,19 @@
  *  - the task turn NEVER repeats the instructions — a second, undelimited copy
  *    would defeat the fence.
  */
-import { TICKET_TRIAGE_CONFIDENCE_FLOOR, TICKET_TRIAGE_PRIORITIES } from '@breeze/shared';
+import {
+  FLEET_DESIGN_CONFIDENCE_THRESHOLD, FLEET_DESIGN_SECTION_KEYS, TICKET_TRIAGE_CONFIDENCE_FLOOR,
+  TICKET_TRIAGE_PRIORITIES,
+} from '@breeze/shared';
 import type {
   AiAgentKind, AiAgentMode, AiAgentRunProfile, AiAgentTriggerKind,
   AiAlertVerdictClassification, AiSweepKind, AiSweepSeverity,
 } from '@breeze/shared';
+// Type-only, same "erased at compile time, keeps the module graph acyclic"
+// reasoning as `SweepEvidence`/`NarrativeContext` above — `designEvidence.ts`
+// imports the db, but nothing of it survives into runnerPrompt's runtime
+// graph.
+import type { DesignEvidence, DesignEvidenceDevice } from './designEvidence';
 // Type-only (erased at compile time), so this module keeps its "no DB
 // dependency of its own" property — `sweepEvidence.ts` imports the db, but
 // nothing of it survives into runnerPrompt's runtime graph. The shape is NOT
@@ -246,6 +254,22 @@ export interface AgentRunNarrativePromptContext {
   context: NarrativeContext;
 }
 
+/**
+ * Fleet Designer W01 (#5651) — the bounded, system-assembled fleet evidence a
+ * `design`-profile run writes about, plus what triggered it. Set only for
+ * `profile: 'design'`; `null` everywhere else.
+ *
+ * `evidence` is passed by reference (already bounded and sanitized by
+ * `designEvidence.ts`) and `buildFleetDesignTaskPrompt` renders only
+ * sanitized scalars off it, in labelled lines — the object itself is NEVER
+ * serialized, same discipline as `AgentRunNarrativePromptContext.context`.
+ */
+export interface AgentRunDesignPromptContext {
+  trigger: 'manual' | 'schedule';
+  occurrenceKey: string | null;
+  evidence: DesignEvidence;
+}
+
 export interface AgentRunPromptContext {
   agent: { name: string; kind: AiAgentKind };
   run: {
@@ -279,6 +303,8 @@ export interface AgentRunPromptContext {
   sweep: AgentRunSweepPromptContext | null;
   /** Phase 2 wave P2-3 (weekly org narrative) — see `AgentRunNarrativePromptContext`. */
   narrative: AgentRunNarrativePromptContext | null;
+  /** Fleet Designer W01 (#5651) — see `AgentRunDesignPromptContext`. */
+  design: AgentRunDesignPromptContext | null;
 }
 
 /**
@@ -376,6 +402,23 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
       + 'number to get a field through. Finish by calling submit_ticket_proposal exactly once with your '
       + 'proposal. That call IS the output of this run.',
     );
+  } else if (ctx.profile === 'design') {
+    // Fleet Designer W01 (#5651). Sits with the verdict/sweep/narrative/
+    // triage branches, AHEAD of shadow/act, for the same reason: a design
+    // run's mode is a property of the profile, not of the agent's configured
+    // mode. Unlike narrative/triage, its tool floor is NOT empty
+    // (`designProfile.ts`'s `DESIGN_TOOL_ALLOWLIST` — a handful of read-only
+    // drill-down tools), so it is described more like sweep's "confirm a
+    // guess before reporting it" framing than narrative's "nothing to read"
+    // one — but it can never change anything: `designLimits` pins
+    // `maxActionsPerRun: 0` regardless of what the agent is set to.
+    sections.push(
+      '## Mode: fleet design\n'
+      + 'You are designing what ONE organization should be monitored for, from evidence the system has '
+      + 'already collected. You may verify a guess with the read-only tools you have; you cannot change '
+      + 'anything. Every proposal is data for a technician to approve. Finish by calling '
+      + 'submit_fleet_design exactly once — that call IS the output of this run.',
+    );
   } else if (ctx.run.mode === 'shadow') {
     sections.push(
       '## Mode: shadow\n'
@@ -412,6 +455,12 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
     // narrative it may still name a device the requester mentioned, so the
     // instruction is "copy verbatim, never invent" rather than "there is no
     // device" (wave P2-4, task A6).
+    //
+    // Fleet Designer W01 (#5651) — a design run is org-scoped and device-less
+    // BY DESIGN (there is no `run.deviceId`), but unlike narrative it DOES
+    // have a small read-only drill-down floor and an evidence bundle that
+    // deliberately names many devices — same "bound to the org, not a single
+    // device" framing as sweep.
     + (ctx.profile === 'narrative'
       ? '- You are reporting on ONE organization, using only the figures in the task message. There is '
         + 'nothing else available to you and no way to look anything up.\n'
@@ -423,8 +472,13 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
           ? '- You are triaging ONE ticket; there is no device binding at all. If the ticket text names a '
             + 'specific device, you may propose its hostname or serial EXACTLY as written — never invented, '
             + 'guessed, or normalized. Omit the device field when none is named.\n'
-          : '- You are bound to the single device and site this run targets. Do not attempt to widen '
-            + 'the blast radius to other devices, sites, or organizations.\n')
+          : ctx.profile === 'design'
+            ? '- You are bound to the single organization this design covers, and within it to the devices '
+              + 'named in the evidence below. You may use your read-only tools to confirm a device before '
+              + 'including it in the design. Do not attempt to widen the blast radius to other organizations, '
+              + 'or to devices the evidence does not name.\n'
+            : '- You are bound to the single device and site this run targets. Do not attempt to widen '
+              + 'the blast radius to other devices, sites, or organizations.\n')
     + (ctx.profile === 'narrative' || ctx.profile === 'triage'
       // "Prefer a small number of reads" is incoherent advice for a run with
       // no read tools at all, and the contradiction is the kind a model
@@ -453,10 +507,18 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
           + 'The proposal you submit is the output of this run. After submitting it, finish with one short '
           + 'plain-text sentence for the technician who will see this run in a list: what you found. Do not '
           + 'restate your summary or draft text.'
-        : '## Output\n'
-          + 'Finish with a short plain-text summary (a few sentences, no markdown headings) stating '
-          + 'what you found, what you believe the cause is, and what you proposed. That final message '
-          + 'is what the human reviewer reads first.',
+        : ctx.profile === 'design'
+          // Fleet Designer W01 (#5651) — the submit_fleet_design call is the
+          // output; this closing line is only the run-list summary, same
+          // split as narrative/triage above.
+          ? '## Output\n'
+            + 'The design you submit is the output of this run. After submitting it, finish with one or two '
+            + 'plain-text sentences for the technician who will see this run in a list: what the fleet is and '
+            + 'what you propose watching for it. Do not restate the whole design.'
+          : '## Output\n'
+            + 'Finish with a short plain-text summary (a few sentences, no markdown headings) stating '
+            + 'what you found, what you believe the cause is, and what you proposed. That final message '
+            + 'is what the human reviewer reads first.',
   );
 
   if (ctx.ticket) {
@@ -996,6 +1058,222 @@ export function buildTriageTaskPrompt(ctx: AgentRunPromptContext): string {
   return lines.join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// Fleet Designer W01 (#5651) — the fleet design task turn.
+// ---------------------------------------------------------------------------
+
+/** `(none)` for an empty/null/undefined value — never a blank cell a model
+ *  could misread as "measured, and empty". */
+function designCell(value: string | number | null | undefined): string {
+  return value === null || value === undefined || value === '' ? '(none)' : String(value);
+}
+
+/** One row of the device table: `id | hostname | os | role | site | groups |
+ *  tags | custom fields | last seen | reliability`. Every field is already
+ *  sanitized by `assembleDesignEvidence` — this only formats, it does not
+ *  clean. */
+function designDeviceRow(d: DesignEvidenceDevice): string {
+  return [
+    d.id,
+    d.hostname,
+    `${d.osType}${d.osVersion ? ` ${d.osVersion}` : ''}`,
+    `${d.role} (${d.roleSource})`,
+    designCell(d.siteName),
+    d.groupNames.length ? d.groupNames.join('; ') : '(none)',
+    d.tags.length ? d.tags.join('; ') : '(none)',
+    designCell(d.customFields),
+    designCell(d.lastSeenAt),
+    d.reliabilityScore === null ? '(none)' : String(d.reliabilityScore),
+  ].join(' | ');
+}
+
+/**
+ * One-line guidance per section key, in `FLEET_DESIGN_SECTION_KEYS` order —
+ * same "ordered array, not a Record, because the order is part of the brief"
+ * reasoning as `NARRATIVE_SECTION_GUIDANCE`. The literal `${key}:` prefix
+ * these render under is unique to this block: every evidence heading above
+ * uses a DIFFERENT label (`## Devices`, `## Automation catalog`, …)
+ * specifically so this ordered list is the only place these eight words
+ * appear as a line prefix.
+ */
+const FLEET_DESIGN_SECTION_GUIDANCE: Readonly<Record<(typeof FLEET_DESIGN_SECTION_KEYS)[number], string>> = {
+  found: 'what the fleet is (counts by role and inferred function, sites, topology, who else manages it) '
+    + 'and the fleet-wide findings ranked by device count, each with evidence refs.',
+  functions: `one entry per device function you are confident about (>= ${FLEET_DESIGN_CONFIDENCE_THRESHOLD}). `
+    + 'Every device id must come from the device table above. A device belongs to one function.',
+  monitoring: 'per function, the watches (service/process) and alert rules with thresholds, cooldown, '
+    + 'action and paging. Rationale is required on every watch and rule — say why THIS fleet needs it.',
+  retired: 'watches and rules in the current configuration that the design does not carry forward, each '
+    + 'with a reason. Empty is valid.',
+  automation: 'per function, built-in playbooks by name or a custom playbook described in prose, and '
+    + 'scripts you propose (full content).',
+  legacy: 'for each script tagged legacy-import, its intent and bucket (obsolete | covered | needed); '
+    + 'empty when none.',
+  baseline: 'notes only — the numbers are computed by the system.',
+  unsure: 'functions below the threshold, unreachable devices, findings that need a human, and any '
+    + 'coarse-role correction (billing-relevant).',
+};
+
+/**
+ * Fleet Designer W01 (#5651) — the task turn for a `design`-profile run.
+ * Like `buildSweepTaskPrompt`/`buildNarrativeTaskPrompt`, this REPLACES the
+ * full-profile turn rather than layering on it.
+ *
+ * Renders the evidence as compact, labelled lines — never the object
+ * itself: a JSON dump would hand the model internal key names (Postgres
+ * column names among them) it has no use for and undo the byte budget
+ * `designEvidence.ts` just spent bounding it. Every device field is already
+ * sanitized by `assembleDesignEvidence`; this function only formats.
+ */
+export function buildFleetDesignTaskPrompt(ctx: AgentRunPromptContext): string {
+  const design = ctx.design;
+  const e = design?.evidence;
+  const lines: string[] = [];
+
+  const occurrence = sanitizeSweepText(design?.occurrenceKey ?? '', 64);
+  lines.push(
+    design?.trigger === 'schedule'
+      ? `Trigger: design schedule (${occurrence || 'unknown occurrence'})`
+      : 'Trigger: manual fleet design',
+  );
+  lines.push(
+    'You are designing what this organization should be monitored for, from the evidence collected below. '
+    + 'You have a small set of read-only tools to confirm a guess; you cannot change anything.',
+  );
+  lines.push('');
+
+  if (!e) {
+    lines.push('(no evidence was available for this run)');
+    return lines.join('\n');
+  }
+
+  lines.push('## Organization');
+  lines.push(`name: ${designCell(e.org.name)}`);
+  lines.push(`partner: ${designCell(e.org.partnerName)}`);
+  lines.push(`timezone: ${e.org.timezone}`);
+  if (e.org.siteName) lines.push(`site: ${e.org.siteName}`);
+  lines.push(`window: ${e.window.start} to ${e.window.end}`);
+  lines.push('');
+
+  lines.push(`## Devices (${e.devices.length} of ${e.devicesTotal})`);
+  lines.push('id | hostname | os | role | site | groups | tags | custom fields | last seen | reliability');
+  for (const d of e.devices) lines.push(designDeviceRow(d));
+  if (e.devicesNotAssessed > 0) {
+    lines.push(`${e.devicesNotAssessed} devices beyond the bound were not assessed.`);
+  }
+  lines.push('');
+
+  if (e.software.length) {
+    lines.push('## Software catalog');
+    for (const s of e.software) lines.push(`${s.name} (${designCell(s.vendor)}): ${s.versions} version(s), ${s.deviceCount} device(s)`);
+    lines.push('');
+  }
+
+  if (e.services.length) {
+    lines.push('## Monitored services/processes');
+    for (const s of e.services) lines.push(`${s.deviceId} ${s.watchType} ${s.name}: ${s.status}, ${s.restarts30d} restart(s)/30d`);
+    lines.push('');
+  }
+
+  if (e.network.assets.length || e.network.topology.length || e.network.openChanges.length) {
+    lines.push('## Network');
+    lines.push(`baselines: ${e.network.baselines}`);
+    for (const a of e.network.assets) {
+      lines.push(`asset ${a.ip} (${a.type}) ${designCell(a.hostname)}: ports ${a.openPorts.join(',') || '(none)'}${a.linkedDeviceId ? `, device ${a.linkedDeviceId}` : ''}`);
+    }
+    for (const t of e.network.topology) lines.push(`link ${t.source} -> ${t.target}${t.connectionType ? ` (${t.connectionType})` : ''}`);
+    for (const c of e.network.openChanges) lines.push(`open change: ${c.eventType} at ${c.detectedAt}`);
+    lines.push('');
+  }
+
+  if (e.posture.length) {
+    lines.push('## Security posture');
+    for (const p of e.posture) lines.push(`${p.category} ${p.product}: managed ${p.managedCount}, stale ${p.staleCount}`);
+    lines.push('');
+  }
+
+  lines.push('## Health & findings');
+  for (const f of e.health.fleetFindings) lines.push(`finding: ${f.title} (${f.kind}, ${f.deviceCount} device(s))`);
+  for (const r of e.health.reliabilityWorst) lines.push(`reliability ${r.deviceId}: ${r.score}${r.trend ? ` (${r.trend})` : ''}`);
+  if (e.health.vulnerability) {
+    lines.push(`vulnerabilities: ${e.health.vulnerability.critical} critical, ${e.health.vulnerability.high} high, ${e.health.vulnerability.devicesAffected} device(s) affected`);
+  }
+  if (e.health.patching) {
+    lines.push(`patching: score ${designCell(e.health.patching.patchScore)}, ${e.health.patching.devicesPending} device(s) pending, ${e.health.patching.pendingPatches} patch(es) pending`);
+  }
+  if (e.health.backups) {
+    lines.push(`backups: ${e.health.backups.ok} ok, ${e.health.backups.failed} failed, ${e.health.backups.missed} missed, ${e.health.backups.devicesFailed} device(s) failed`);
+  }
+  if (e.health.cis) lines.push(`CIS: ${e.health.cis.devicesAssessed} device(s) assessed, average score ${designCell(e.health.cis.avgScore)}`);
+  lines.push('');
+
+  if (e.configuration.policies.length) {
+    lines.push('## Existing configuration policies');
+    for (const p of e.configuration.policies) {
+      lines.push(`policy ${p.id} "${p.name}" (${p.status}, ${p.ownerScope}): ${p.watches.length} watch(es), ${p.rules.length} rule(s)`);
+      for (const w of p.watches) lines.push(`  watch: ${w.watchType} ${w.name}${w.enabled ? '' : ' (disabled)'}`);
+      for (const r of p.rules) lines.push(`  rule: ${r.name} [${r.severity}], cooldown ${r.cooldownMinutes}m`);
+    }
+    for (const a of e.configuration.assignments) lines.push(`assignment: policy ${a.policyId} -> ${a.level} ${a.targetId} (priority ${a.priority})`);
+    for (const t of e.configuration.alertTemplates) lines.push(`alert template: ${t.id} "${t.name}" [${t.severity}]${t.isBuiltIn ? ' (built-in)' : ''}`);
+    lines.push('');
+  }
+
+  if (e.automation.playbooks.length || e.automation.scripts.length) {
+    lines.push('## Automation catalog');
+    for (const p of e.automation.playbooks) lines.push(`playbook ${p.id} "${p.name}"${p.isBuiltIn ? ' (built-in)' : ''}${p.category ? ` [${p.category}]` : ''}`);
+    for (const s of e.automation.scripts) {
+      lines.push(
+        `script ${s.id} "${s.name}" (${s.language}, ${s.osTypes.join('/')})${s.legacyImport ? ' [legacy-import]' : ''}: ${s.description}`,
+      );
+    }
+    lines.push('');
+  }
+
+  if (e.logs.length) {
+    lines.push('## Recent log signals');
+    for (const l of e.logs) lines.push(`${l.source} [${l.level}] ${l.eventId}: ${l.count} occurrence(s), ${l.deviceCount} device(s)`);
+    lines.push('');
+  }
+
+  lines.push('## Counts');
+  lines.push(`alerts (90d): ${e.counts.alerts90d}`);
+  lines.push(`tickets (90d): ${e.counts.tickets90d}`);
+  lines.push(`endpoints: ${e.counts.endpoints}`);
+  lines.push('');
+
+  lines.push('## Precursors (server-computed thresholds)');
+  lines.push(`disk over ${e.thresholds.diskUsedPercent}%: ${e.precursors.diskOver} device(s)`);
+  lines.push(`reboot pending: ${e.precursors.rebootPending} device(s), ${e.precursors.rebootPendingOver} over ${e.thresholds.rebootPendingDays} day(s)`);
+  lines.push(`patch age over ${e.thresholds.patchAgeDays} day(s): ${e.precursors.patchAgeOver} device(s)`);
+  lines.push(`certificates expiring within ${e.thresholds.certificateDays} day(s): ${designCell(e.precursors.certificateExpiring)}`);
+  lines.push(`backups missed: ${e.precursors.backupMissed} device(s)`);
+  lines.push(`service restarts over ${e.thresholds.serviceRestartsPer30d}/30d: ${e.precursors.serviceRestartsOver} device(s)`);
+  lines.push('');
+
+  if (e.unavailable.length) lines.push(`Not measured: ${e.unavailable.join(', ')}`);
+  if (e.truncated) {
+    lines.push(
+      '(evidence truncated) Some lower-priority rows were left out to keep this context bounded. Every row '
+      + 'shown above is complete.',
+    );
+  }
+  lines.push('');
+
+  lines.push('## Write these eight sections, in this order');
+  for (const key of FLEET_DESIGN_SECTION_KEYS) lines.push(`${key}: ${FLEET_DESIGN_SECTION_GUIDANCE[key]}`);
+  lines.push('');
+  lines.push('## Rules');
+  lines.push(
+    'Use ONLY the evidence above and what your tools return. Never invent a device, service, event id, '
+    + 'threshold or count. Prefer fewer rules with a reason over many "just in case" rules. Plain English '
+    + 'in rationales; no markdown markers, no links.',
+  );
+  lines.push('Call submit_fleet_design exactly once, then stop.');
+
+  return lines.join('\n');
+}
+
 /**
  * The single user turn that starts the run. Facts only — the operator's
  * instructions deliberately do NOT appear here (see the module header).
@@ -1005,6 +1283,7 @@ export function buildAgentRunTaskPrompt(ctx: AgentRunPromptContext): string {
   if (ctx.profile === 'triage') return buildTriageTaskPrompt(ctx);
   if (ctx.profile === 'sweep') return buildSweepTaskPrompt(ctx);
   if (ctx.profile === 'narrative') return buildNarrativeTaskPrompt(ctx);
+  if (ctx.profile === 'design') return buildFleetDesignTaskPrompt(ctx);
 
   const lines: string[] = [];
 
