@@ -71,7 +71,7 @@ export interface ClearDeviceFunctionInput {
 
 export interface ApplyDesignFunctionsInput {
   orgId: string;
-  reportRunId: string;
+  reportRunId: string | null;
   runId: string | null;
   userId: string | null;
   functions: Array<{
