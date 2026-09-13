@@ -4529,26 +4529,11 @@
     }
   },
   "organizationsPage": {
-    "loading": "Loading organizations...",
-    "title": "Organizations",
-    "description": "Manage organizations and their sites.",
     "actions": {
-      "addOrganization": "Add organization",
-      "tryAgain": "Try again",
-      "editOrganization": "Edit organization",
-      "archiveOrganization": "Archive organization",
-      "deleting": "Deleting...",
-      "openRecord": "Open record",
-      "openSettings": "Settings",
-      "openSettingsFor": "Settings for {{name}}",
-      "openRecordFor": "Open record for {{name}}",
-      "more": "More actions"
+      "tryAgain": "Try again"
     },
     "errors": {
-      "fetchOrganizations": "Failed to fetch organizations",
       "generic": "An error occurred",
-      "saveOrder": "Failed to save organization order",
-      "saveOrganization": "Failed to save organization",
       "saveSite": "Failed to save site ({{status}})",
       "deleteSite": "Failed to delete site",
       "loadSites": "Couldn't load sites for this organization."
@@ -4563,39 +4548,8 @@
       "archived": "Archived",
       "purging": "Purging"
     },
-    "deviceCount": "{{count}} devices",
-    "list": {
-      "title": "Organizations",
-      "empty": "No organizations found.",
-      "noMatches": "No organizations match your search or filter.",
-      "dragToReorder": "Drag to reorder",
-      "searchLabel": "Search organizations",
-      "reorderHandle": "Reorder {{name}}",
-      "reorderHint": "Use the up and down arrow keys to move this organization.",
-      "movedAnnouncement": "{{name}} moved to position {{position}} of {{total}}",
-      "workspaceMarker": "Workspace",
-      "sort": {
-        "label": "Sort",
-        "manual": "Manual order",
-        "name": "A to Z",
-        "devices": "Most devices"
-      },
-      "filter": {
-        "label": "Filter by status",
-        "all": "All"
-      }
-    },
     "sites": {
       "loading": "Loading sites..."
-    },
-    "emptySelection": {
-      "title": "No organization selected",
-      "description": "Select an organization to see its status, sites, and actions."
-    },
-    "add": {
-      "title": "Add Organization",
-      "description": "Create a new organization with the details below.",
-      "submit": "Create organization"
     },
     "siteModal": {
       "editTitle": "Edit Site",
@@ -4616,7 +4570,6 @@
       "blockedMessage_other": "{{name}} still has {{count}} devices. Move them to another site before deleting this one."
     },
     "merge": {
-      "openButton": "Merge into another organization",
       "title": "Merge organization",
       "description": "Move {{name}}'s data into a surviving organization. {{name}} is retired permanently afterward and cannot be recovered.",
       "survivorLabel": "Merge into",
@@ -4684,39 +4637,6 @@
         "archive": "Failed to archive the organization",
         "mfaRequired": "Archiving organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
       }
-    },
-    "archived": {
-      "sectionTitle": "Archived",
-      "loading": "Loading archived organizations...",
-      "empty": "No archived organizations.",
-      "noMatches": "No archived organizations match your search.",
-      "badge": "Archived",
-      "archivingBadge": "Archiving…",
-      "keptIndefinitely": "Kept indefinitely",
-      "purgeToday": "Purges today",
-      "purgeCountdown_one": "Purges in {{count}} day",
-      "purgeCountdown_other": "Purges in {{count}} days",
-      "truncatedNote": "Showing the first {{count}} archived organizations. Search to narrow the list.",
-      "readOnlyNotice": "This organization is archived and read-only. Restore it to resume normal access.",
-      "drainNotice": "This organization is being archived — its agents are being removed, and it stays read-only until the drain finishes. Restore it to cancel and bring it back.",
-      "errors": {
-        "fetch": "Failed to load archived organizations"
-      }
-    },
-    "restore": {
-      "action": "Restore",
-      "restoring": "Restoring...",
-      "success": "{{name}} restored — status: {{status}}.",
-      "recreateRequiredNote": "Before it's fully usable again: {{items}}",
-      "suspendedNote": "It was suspended before being archived, so it has been restored as suspended — resolve that before it resumes normal access.",
-      "errors": {
-        "restore": "Failed to restore the organization",
-        "mfaRequired": "Restoring organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
-        "purging": "This organization is already being permanently deleted and can no longer be restored."
-      }
-    },
-    "scope": {
-      "hint": "Your workspace is set to {{orgName}}. Actions on this page apply to the organization selected here."
     }
   },
   "siteDetailPage": {

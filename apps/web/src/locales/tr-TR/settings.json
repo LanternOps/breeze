@@ -4529,26 +4529,11 @@
     }
   },
   "organizationsPage": {
-    "loading": "Organizasyonlar yükleniyor...",
-    "title": "Kuruluşlar",
-    "description": "Kuruluşları ve sitelerini yönetin.",
     "actions": {
-      "addOrganization": "Organizasyon ekle",
-      "tryAgain": "Tekrar deneyin",
-      "editOrganization": "Organizasyonu düzenle",
-      "archiveOrganization": "Kuruluşu arşivle",
-      "deleting": "Siliniyor...",
-      "openRecord": "Kaydı aç",
-      "openSettings": "Ayarlar",
-      "openSettingsFor": "{{name}} ayarları",
-      "openRecordFor": "{{name}} kaydını aç",
-      "more": "Diğer işlemler"
+      "tryAgain": "Tekrar deneyin"
     },
     "errors": {
-      "fetchOrganizations": "Kuruluşlar getirilemedi",
       "generic": "Bir hata oluştu",
-      "saveOrder": "Organizasyon sırası kaydedilemedi",
-      "saveOrganization": "Kuruluş kaydedilemedi",
       "saveSite": "Site kaydedilemedi ({{status}})",
       "deleteSite": "Site silinemedi",
       "loadSites": "Bu kuruluşun siteleri yüklenemedi."
@@ -4563,39 +4548,8 @@
       "archived": "Arşivlendi",
       "purging": "Temizleme"
     },
-    "deviceCount": "{{count}} cihazlar",
-    "list": {
-      "title": "Kuruluşlar",
-      "empty": "Hiçbir kuruluş bulunamadı.",
-      "noMatches": "Aramanızla veya filtrenizle eşleşen kuruluş yok.",
-      "dragToReorder": "Yeniden sıralamak için sürükleyin",
-      "searchLabel": "Kuruluşlarda ara",
-      "reorderHandle": "{{name}} sırasını değiştir",
-      "reorderHint": "Bu kuruluşu taşımak için yukarı ve aşağı ok tuşlarını kullanın.",
-      "movedAnnouncement": "{{name}}, {{total}} kuruluş içinde {{position}}. sıraya taşındı",
-      "workspaceMarker": "Çalışma alanı",
-      "sort": {
-        "label": "Sırala",
-        "manual": "Elle sıralama",
-        "name": "A'dan Z'ye",
-        "devices": "En çok cihaz"
-      },
-      "filter": {
-        "label": "Duruma göre filtrele",
-        "all": "Tümü"
-      }
-    },
     "sites": {
       "loading": "Siteler yükleniyor..."
-    },
-    "emptySelection": {
-      "title": "Hiçbir kuruluş seçilmedi",
-      "description": "Durumunu, sitelerini ve işlemlerini görmek için bir kuruluş seçin."
-    },
-    "add": {
-      "title": "Organizasyon Ekle",
-      "description": "Aşağıdaki ayrıntılarla yeni bir organizasyon oluşturun.",
-      "submit": "Organizasyon oluştur"
     },
     "siteModal": {
       "editTitle": "Siteyi Düzenle",
@@ -4616,7 +4570,6 @@
       "blockedMessage_other": "{{name}} sitesinde hâlâ {{count}} cihaz var. Bu siteyi silmeden önce cihazları başka bir siteye taşıyın."
     },
     "merge": {
-      "openButton": "Başka bir kuruluşla birleştir",
       "title": "Kuruluşu birleştir",
       "description": "{{name}} kuruluşunun verilerini hayatta kalan bir kuruluşa taşıyın. {{name}} bundan sonra kalıcı olarak kapatılır ve geri alınamaz.",
       "survivorLabel": "Şununla birleştir",
@@ -4684,39 +4637,6 @@
         "archive": "Kuruluş arşivlenemedi",
         "mfaRequired": "Kuruluşları arşivlemek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
       }
-    },
-    "archived": {
-      "sectionTitle": "Arşivlenenler",
-      "loading": "Arşivlenen kuruluşlar yükleniyor...",
-      "empty": "Arşivlenmiş kuruluş yok.",
-      "noMatches": "Aramanızla eşleşen arşivlenmiş kuruluş yok.",
-      "badge": "Arşivlendi",
-      "archivingBadge": "Arşivleniyor…",
-      "keptIndefinitely": "Süresiz olarak saklanıyor",
-      "purgeToday": "Bugün kalıcı olarak silinecek",
-      "purgeCountdown_one": "{{count}} gün içinde kalıcı olarak silinecek",
-      "purgeCountdown_other": "{{count}} gün içinde kalıcı olarak silinecek",
-      "truncatedNote": "İlk {{count}} arşivlenmiş kuruluş gösteriliyor. Listeyi daraltmak için arama yapın.",
-      "readOnlyNotice": "Bu kuruluş arşivlendi ve salt okunur durumda. Normal erişimi sürdürmek için geri yükleyin.",
-      "drainNotice": "Bu kuruluş arşivleniyor — temsilcileri kaldırılıyor ve işlem tamamlanana kadar salt okunur kalıyor. İptal edip geri getirmek için geri yükleyin.",
-      "errors": {
-        "fetch": "Arşivlenen kuruluşlar yüklenemedi"
-      }
-    },
-    "restore": {
-      "action": "Geri yükle",
-      "restoring": "Geri yükleniyor...",
-      "success": "{{name}} geri yüklendi — durum: {{status}}.",
-      "recreateRequiredNote": "Tekrar tam olarak kullanılabilir olmadan önce: {{items}}",
-      "suspendedNote": "Arşivlenmeden önce askıya alınmıştı, bu nedenle askıya alınmış olarak geri yüklendi — normal erişimi sürdürmeden önce bunu çözün.",
-      "errors": {
-        "restore": "Kuruluş geri yüklenemedi",
-        "mfaRequired": "Kuruluşları geri yüklemek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin.",
-        "purging": "Bu kuruluş zaten kalıcı olarak siliniyor ve artık geri yüklenemez."
-      }
-    },
-    "scope": {
-      "hint": "Çalışma alanınız {{orgName}} olarak ayarlı. Bu sayfadaki işlemler burada seçilen kuruluşa uygulanır."
     }
   },
   "siteDetailPage": {

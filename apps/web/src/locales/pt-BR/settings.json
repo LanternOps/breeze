@@ -4529,26 +4529,11 @@
     }
   },
   "organizationsPage": {
-    "loading": "Carregando organizações...",
-    "title": "Organizações",
-    "description": "Gerencie organizações e seus sites.",
     "actions": {
-      "addOrganization": "Adicionar organização",
-      "tryAgain": "Tente novamente",
-      "editOrganization": "Editar organização",
-      "archiveOrganization": "Arquivar organização",
-      "deleting": "Excluindo...",
-      "openRecord": "Abrir registro",
-      "openSettings": "Configurações",
-      "openSettingsFor": "Configurações de {{name}}",
-      "openRecordFor": "Abrir o registro de {{name}}",
-      "more": "Mais ações"
+      "tryAgain": "Tente novamente"
     },
     "errors": {
-      "fetchOrganizations": "Falha ao buscar organizações",
       "generic": "Ocorreu um erro",
-      "saveOrder": "Falha ao salvar a ordem das organizações",
-      "saveOrganization": "Falha ao salvar a organização",
       "saveSite": "Falha ao salvar site ({{status}})",
       "deleteSite": "Falha ao excluir site",
       "loadSites": "Não foi possível carregar os sites desta organização."
@@ -4563,39 +4548,8 @@
       "archived": "Arquivado",
       "purging": "Em exclusão"
     },
-    "deviceCount": "Dispositivos {{count}}",
-    "list": {
-      "title": "Organizações",
-      "empty": "Nenhuma organização encontrada.",
-      "noMatches": "Nenhuma organização corresponde à sua busca ou filtro.",
-      "dragToReorder": "Arraste para reordenar",
-      "searchLabel": "Buscar organizações",
-      "reorderHandle": "Reordenar {{name}}",
-      "reorderHint": "Use as setas para cima e para baixo para mover esta organização.",
-      "movedAnnouncement": "{{name}} movida para a posição {{position}} de {{total}}",
-      "workspaceMarker": "Espaço de trabalho",
-      "sort": {
-        "label": "Ordenar",
-        "manual": "Ordem manual",
-        "name": "De A a Z",
-        "devices": "Mais dispositivos"
-      },
-      "filter": {
-        "label": "Filtrar por status",
-        "all": "Todas"
-      }
-    },
     "sites": {
       "loading": "Carregando sites..."
-    },
-    "emptySelection": {
-      "title": "Nenhuma organização selecionada",
-      "description": "Selecione uma organização para ver seu status, sites e ações."
-    },
-    "add": {
-      "title": "Adicionar organização",
-      "description": "Crie uma nova organização com os detalhes abaixo.",
-      "submit": "Criar organização"
     },
     "siteModal": {
       "editTitle": "Editar site",
@@ -4616,7 +4570,6 @@
       "blockedMessage_other": "{{name}} ainda tem {{count}} dispositivos. Mova-os para outro site antes de excluir este."
     },
     "merge": {
-      "openButton": "Mesclar com outra organização",
       "title": "Mesclar organização",
       "description": "Mova os dados de {{name}} para uma organização sobrevivente. {{name}} é então desativada permanentemente e não pode ser recuperada.",
       "survivorLabel": "Mesclar com",
@@ -4684,39 +4637,6 @@
         "archive": "Falha ao arquivar a organização",
         "mfaRequired": "Arquivar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente."
       }
-    },
-    "archived": {
-      "sectionTitle": "Arquivadas",
-      "loading": "Carregando organizações arquivadas...",
-      "empty": "Nenhuma organização arquivada.",
-      "noMatches": "Nenhuma organização arquivada corresponde à sua pesquisa.",
-      "badge": "Arquivada",
-      "archivingBadge": "Arquivando…",
-      "keptIndefinitely": "Mantida indefinidamente",
-      "purgeToday": "Excluída definitivamente hoje",
-      "purgeCountdown_one": "Excluída definitivamente em {{count}} dia",
-      "purgeCountdown_other": "Excluída definitivamente em {{count}} dias",
-      "truncatedNote": "Mostrando as primeiras {{count}} organizações arquivadas. Pesquise para restringir a lista.",
-      "readOnlyNotice": "Esta organização está arquivada e é somente leitura. Restaure-a para retomar o acesso normal.",
-      "drainNotice": "Esta organização está sendo arquivada — seus agentes estão sendo removidos, e ela permanece somente leitura até que o processo termine. Restaure-a para cancelar e trazê-la de volta.",
-      "errors": {
-        "fetch": "Falha ao carregar as organizações arquivadas"
-      }
-    },
-    "restore": {
-      "action": "Restaurar",
-      "restoring": "Restaurando...",
-      "success": "{{name}} restaurada — status: {{status}}.",
-      "recreateRequiredNote": "Antes que ela esteja totalmente utilizável de novo: {{items}}",
-      "suspendedNote": "Ela estava suspensa antes de ser arquivada, então foi restaurada como suspensa — resolva isso antes que ela retome o acesso normal.",
-      "errors": {
-        "restore": "Falha ao restaurar a organização",
-        "mfaRequired": "Restaurar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente.",
-        "purging": "Esta organização já está sendo excluída definitivamente e não pode mais ser restaurada."
-      }
-    },
-    "scope": {
-      "hint": "Seu espaço de trabalho está definido como {{orgName}}. As ações desta página se aplicam à organização selecionada aqui."
     }
   },
   "siteDetailPage": {

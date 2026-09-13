@@ -50,11 +50,11 @@ export function getOrgSwitchRedirect(pathname: string): string | null {
       return '/devices';
     }
   }
-  // /organizations/:id (the org RECORD) -> the organizations list. The record's
+  // /organizations/:id (the org RECORD) -> the organizations board. The record's
   // subject is the org in the URL, so re-navigating to it after a switch would leave
   // the user on the customer they just switched away from (#5075).
   if (/^\/organizations\/[^/]+\/?$/.test(pathname)) {
-    return '/settings/organizations';
+    return '/organizations';
   }
   return null;
 }

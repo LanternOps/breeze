@@ -16,7 +16,7 @@ export interface GoToShortcut {
 
 export const GO_TO_SHORTCUTS: readonly GoToShortcut[] = [
   { key: 'h', href: '/', labelKey: 'nav.dashboard' },
-  { key: 'o', href: '/settings/organizations', labelKey: 'nav.organizations' },
+  { key: 'o', href: '/organizations', labelKey: 'nav.organizations' },
   { key: 'd', href: '/devices', labelKey: 'nav.devices' },
   { key: 'a', href: '/alerts', labelKey: 'nav.alerts' },
   { key: 'i', href: '/incidents', labelKey: 'nav.incidents' },

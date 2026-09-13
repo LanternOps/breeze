@@ -754,7 +754,7 @@ export default function AddDeviceModal({
               <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-700">
                 {t("addDeviceModal.noSitesAvailablePlease")}{" "}
                 <a
-                  href="/settings/organizations"
+                  href="/organizations"
                   className="font-medium underline hover:no-underline"
                 >
                   {t("addDeviceModal.createASite")}{" "}

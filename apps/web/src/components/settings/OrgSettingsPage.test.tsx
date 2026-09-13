@@ -523,7 +523,7 @@ describe('OrgSettingsPage — archived organization (2026-08-28 pre-release swee
     expect(banner.textContent).toMatch(/2026/);
 
     const restoreLink = screen.getByTestId('org-archived-restore-link') as HTMLAnchorElement;
-    expect(restoreLink.getAttribute('href')).toBe('/settings/organizations#org-1');
+    expect(restoreLink.getAttribute('href')).toBe('/organizations#filter=archived');
   });
 
   it('disables the name and type Save controls so the page cannot 404 on save', async () => {

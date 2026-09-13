@@ -1,9 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  fetchAllOrganizations,
-  ORGANIZATIONS_MAX_PAGES,
-  ORGANIZATIONS_PAGE_SIZE,
-} from './OrganizationsPage';
+import { fetchAllOrganizations, ORGANIZATIONS_MAX_PAGES, ORGANIZATIONS_PAGE_SIZE } from './fetchAllOrganizations';
 
 // #3446: the org list rendered only the first page (server default limit 50,
 // clamped to 100), so orgs past it were invisible in the list AND in the

@@ -14,7 +14,6 @@ export { default as OrgNotificationSettings } from './OrgNotificationSettings';
 export { default as OrgSecuritySettings } from './OrgSecuritySettings';
 export { default as OrgSettingsPage } from './OrgSettingsPage';
 export { default as OrganizationForm } from './OrganizationForm';
-export { default as OrganizationsPage } from './OrganizationsPage';
 export { default as ProfilePage } from './ProfilePage';
 export { default as RoleManager } from './RoleManager';
 export { default as RoleSelector } from './RoleSelector';

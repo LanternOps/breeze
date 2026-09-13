@@ -820,11 +820,11 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           <nav className="mb-1 flex items-center gap-1 text-xs text-muted-foreground">
             <a href="/settings" className="hover:text-foreground">{t('orgSettingsPage.breadcrumbs.settings')}</a>
             <span>/</span>
-            <a href="/settings/organizations" className="hover:text-foreground">{t('orgSettingsPage.breadcrumbs.organizations')}</a>
+            <a href="/organizations" className="hover:text-foreground">{t('orgSettingsPage.breadcrumbs.organizations')}</a>
             <span>/</span>
             <span className="text-foreground">{displayOrg.name}</span>
           </nav>
-          <a href="/settings/organizations" className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
+          <a href="/organizations" className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
             <ArrowLeft className="h-4 w-4" />
             {t('orgSettingsPage.backToOrganizations')}
           </a>
@@ -870,7 +870,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                   : t('orgSettingsPage.archived.banner')}
             </p>
             <a
-              href={`/settings/organizations#${displayOrg.id}`}
+              href="/organizations#filter=archived"
               data-testid="org-archived-restore-link"
               className="mt-2 inline-block text-xs font-medium underline hover:no-underline"
             >
