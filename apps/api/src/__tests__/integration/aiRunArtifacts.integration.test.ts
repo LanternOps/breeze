@@ -177,3 +177,43 @@ describe('ai_run_artifacts — RLS forge, composite tenant FK, isolation, cascad
     expect(left).toEqual([]);
   });
 });
+
+describe('org erasure pre-clears artifact blobs before rows (spec §8)', () => {
+  it('removes the blob and the row, in that order, and is rerunnable', async () => {
+    const { createMemoryBlobStorage, setBlobStorageForTests } = await import(
+      '../../services/artifacts/blobStorage'
+    );
+    const { cascadeDeleteOrg } = await import('../../services/tenantCascade');
+    const blobs = createMemoryBlobStorage();
+    setBlobStorageForTests(blobs);
+    try {
+      const t = await orgWithRun();
+      const put = await blobs.put({
+        region: 'us',
+        contentType: 'application/json',
+        body: Buffer.from('{"a":1}'),
+        maxBytes: 1024,
+      });
+      const [row] = await withSystemDbAccessContext(() =>
+        db
+          .insert(aiRunArtifacts)
+          .values({ ...artifactValues(t.org.id, t.run.id), blobKey: put.key })
+          .returning(),
+      );
+      expect(blobs.objects.has(put.key)).toBe(true);
+
+      await cascadeDeleteOrg(t.org.id, '00000000-0000-4000-8000-00000000ffff');
+
+      expect(blobs.objects.has(put.key)).toBe(false);
+      const left = await withSystemDbAccessContext(() =>
+        db.select({ id: aiRunArtifacts.id }).from(aiRunArtifacts).where(eq(aiRunArtifacts.id, row!.id)),
+      );
+      expect(left).toEqual([]);
+      // The org and its run went with it, so nothing needs afterEach cleanup.
+      createdRuns.splice(createdRuns.indexOf(t.run.id), 1);
+      createdAgents.splice(createdAgents.indexOf(t.agent.id), 1);
+    } finally {
+      setBlobStorageForTests(null);
+    }
+  });
+});

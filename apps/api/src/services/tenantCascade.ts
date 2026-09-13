@@ -48,6 +48,7 @@ import { createAuditLog } from './auditService';
 import * as self from './tenantCascade';
 import { pgErrorCode } from '../utils/pgErrors';
 import { deleteObjectKeys } from './ticketAttachmentStorage';
+import { getBlobStorage } from './artifacts/blobStorage';
 import { deleteObjects } from './s3Storage';
 
 type StorageKeyRow = { storageKey: string | null };
@@ -1269,6 +1270,50 @@ export async function cascadeDeleteOrg(
         }`,
       );
     }
+  }
+
+  // 1a-bis. Clear AI ARTIFACT blobs, same rule and same reasoning as 1a
+  //     (execution-plane spec §8: "erasure deletes blobs via the helper before
+  //     the rows cascade"). `ai_run_artifacts.blob_key` is the only index to the
+  //     object — the key deliberately carries no tenant id, so a bucket listing
+  //     cannot reconstruct which objects belonged to this org once the rows are
+  //     gone. A storage fault therefore ABORTS the erasure before anything is
+  //     removed; the same keys are re-read on the re-run.
+  //
+  //     A separate block from 1a because the keys live in a different store
+  //     (region-keyed artifact buckets, not the platform attachment bucket) and
+  //     the helper deletes one key per request.
+  try {
+    const artifactKeys = await dbModule.withSystemDbAccessContext(async () => {
+      const result = await dbModule.db.execute(sql`
+        SELECT blob_key
+        FROM ai_run_artifacts
+        WHERE org_id = ${orgId}::uuid
+      `);
+      const rows = (result as unknown as { rows?: Array<{ blob_key: string }> }).rows
+        ?? (result as unknown as Array<{ blob_key: string }>);
+      return Array.isArray(rows) ? rows.map((r) => r.blob_key).filter(Boolean) : [];
+    });
+    if (artifactKeys.length > 0) {
+      const blobs = getBlobStorage();
+      for (const key of artifactKeys) {
+        await blobs.delete(key);
+      }
+    }
+  } catch (err) {
+    if (!isUndefinedTable(err)) {
+      await writeErasureFailedAudit(
+        orgId, performedBy, performedByEmail, 'ai_run_artifacts_blobs', stats, err,
+      );
+      throw new Error(
+        `[tenantCascade] artifact blob pre-clear failed for org=${orgId}; erasure aborted before any row was deleted and is rerunnable: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    console.warn(
+      `[tenantCascade] artifact blob pre-clear skipped for missing table ai_run_artifacts (org=${orgId})`,
+    );
   }
 
   // 1b. Clear system-scoped associated tables (e.g. device_commands, the
