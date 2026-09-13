@@ -31,6 +31,9 @@ async function seedConnection(status: 'active' | 'degraded' | 'revoked' = 'activ
       vaultRef: `akv://vault.example/m365-customer-graph-read-${org.id}/${credentialVersion}`,
       credentialVersion,
       permissionManifestVersion: 3,
+      // m365_connections_graph_read_consent_check / _profile_binding_check both
+      // require a consent attempt id on the customer-graph-read profile.
+      consentAttemptId: randomUUID(),
       consentGeneration: 2,
       status,
     }).returning({ id: m365Connections.id });
