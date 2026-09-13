@@ -625,6 +625,24 @@ const envObjectSchema = z
     // AGENT_AUTO_PROMOTE above.
     BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: z.string().optional(),
 
+    // AI execution plane (spec §8). Sub-flag of BREEZE_AI_AGENTS_ENABLED, read
+    // at runtime by aiWorkspaceEnabled() in env.ts. Validated here for boolean
+    // format only — the production coupling rule is in the superRefine below.
+    BREEZE_AI_WORKSPACE_ENABLED: z.string().optional(),
+    // 'vercel' | 'fake'. Resolved at runtime by resolveSandboxBackendName()
+    // (services/workspace/sandboxBackend.ts), which refuses an unset value in
+    // production; the superRefine below additionally refuses 'fake' there.
+    AI_WORKSPACE_BACKEND: z.string().optional(),
+    VERCEL_SANDBOX_TOKEN: z.string().optional(),
+    VERCEL_TEAM_ID: z.string().optional(),
+    VERCEL_PROJECT_ID: z.string().optional(),
+    VERCEL_SANDBOX_REGION_EU: z.string().optional(),
+    VERCEL_SANDBOX_REGION_US: z.string().optional(),
+    // Margin/regional-rate multiplier on COMPUTE_PRICING (services/
+    // aiComputePricing.ts). Default 1; a malformed value falls back to 1 there
+    // rather than zeroing billing.
+    AI_COMPUTE_PRICE_MULTIPLIER: z.string().optional(),
+
     // AI script authoring (W01b). Read at runtime by aiScriptAuthoringEnabled()
     // in env.ts. Validated here for boolean format only.
     BREEZE_AI_SCRIPT_AUTHORING_ENABLED: z.string().optional(),
@@ -1296,6 +1314,53 @@ const envSchema = envObjectSchema
           message:
             'RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS must be set in production for both BINARY_SOURCE=github (verifies installer fallback assets against the signed release manifest) and BINARY_SOURCE=local (anchors per-deployment update manifests; without a trust root, agents accept unsigned manifests).',
         });
+      }
+
+      // AI execution plane (spec §8, §2.2 D-I). Modelled on the manifest-key
+      // rule above: a feature whose misconfiguration is SILENT at boot and
+      // expensive at runtime gets a boot-time refusal, not a console.error.
+      //
+      // Three couplings, each a real failure mode:
+      //  - IS_HOSTED: the sandbox vendor account and its bill are LanternOps';
+      //    a self-hoster enabling this spends our money in our tenant.
+      //  - backend must be 'vercel': 'fake' runs model-authored code IN the API
+      //    process with the API process's filesystem and network — not a
+      //    sandbox at all — and an unset value would have
+      //    resolveSandboxBackendName() throw on the first analysis run instead
+      //    of here.
+      //  - all three Vercel credentials: readVercelCredentials() deliberately
+      //    never falls back to the SDK's ambient-env discovery, so a
+      //    half-configured deploy fails every run rather than quietly using
+      //    whatever token the host carries.
+      const workspaceFlag = (data.BREEZE_AI_WORKSPACE_ENABLED ?? '').trim().toLowerCase();
+      if (workspaceFlag === 'true' || workspaceFlag === '1' || workspaceFlag === 'yes') {
+        if ((data.IS_HOSTED ?? '').trim().toLowerCase() !== 'true') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['IS_HOSTED'],
+            message:
+              'BREEZE_AI_WORKSPACE_ENABLED=true requires IS_HOSTED=true — the AI execution plane runs on a third-party sandbox vendor under the LanternOps account and is hosted-only (execution-plane design §8).',
+          });
+        }
+        const backend = (data.AI_WORKSPACE_BACKEND ?? '').trim().toLowerCase();
+        if (backend !== 'vercel') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['AI_WORKSPACE_BACKEND'],
+            message:
+              'BREEZE_AI_WORKSPACE_ENABLED=true requires AI_WORKSPACE_BACKEND=vercel in production. "fake" executes model-authored code inside the API process with the API process\'s filesystem and network — it is a test double, not an isolation boundary.',
+          });
+        }
+        for (const key of ['VERCEL_SANDBOX_TOKEN', 'VERCEL_TEAM_ID', 'VERCEL_PROJECT_ID'] as const) {
+          if (!data[key]?.trim()) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [key],
+              message:
+                `${key} must be set when BREEZE_AI_WORKSPACE_ENABLED=true — the Vercel SDK's ambient-credential fallback is deliberately not used, so a missing value fails every analysis run instead of booting cleanly.`,
+            });
+          }
+        }
       }
 
       // BYO signing (spec 3a): pointing the deployment at a NON-official

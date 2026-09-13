@@ -2494,6 +2494,102 @@ describe('validateConfig', () => {
       });
     });
   });
+
+  // Execution plane W02 (spec §8 "Hosted only", §2.2 D-I). The workspace flag
+  // spends LanternOps' own money in LanternOps' own Vercel tenant, so a
+  // production deploy that turns it on without a backend and credentials must
+  // die at boot, not at the first analysis run.
+  const workspaceProdEnv = {
+    ...validEnv,
+    NODE_ENV: 'production',
+    CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+    TRUST_PROXY_HEADERS: 'true',
+    IS_HOSTED: 'true',
+  };
+
+  it('boots in production when the workspace flag is off, whatever else is unset', () => {
+    withEnv({
+      ...workspaceProdEnv,
+      BREEZE_AI_WORKSPACE_ENABLED: 'false',
+      AI_WORKSPACE_BACKEND: '',
+      VERCEL_SANDBOX_TOKEN: '',
+      VERCEL_TEAM_ID: '',
+      VERCEL_PROJECT_ID: '',
+    }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('refuses BREEZE_AI_WORKSPACE_ENABLED in production without AI_WORKSPACE_BACKEND', () => {
+    withEnv({
+      ...workspaceProdEnv,
+      BREEZE_AI_WORKSPACE_ENABLED: 'true',
+      AI_WORKSPACE_BACKEND: '',
+      VERCEL_SANDBOX_TOKEN: 'prod-test-vercel-sandbox-token',
+      VERCEL_TEAM_ID: 'team_xxx',
+      VERCEL_PROJECT_ID: 'prj_xxx',
+    }, () => {
+      expect(() => validateConfig()).toThrow(/AI_WORKSPACE_BACKEND/);
+    });
+  });
+
+  it('refuses the fake backend in production with the workspace flag on', () => {
+    withEnv({
+      ...workspaceProdEnv,
+      BREEZE_AI_WORKSPACE_ENABLED: 'true',
+      AI_WORKSPACE_BACKEND: 'fake',
+      VERCEL_SANDBOX_TOKEN: 'prod-test-vercel-sandbox-token',
+      VERCEL_TEAM_ID: 'team_xxx',
+      VERCEL_PROJECT_ID: 'prj_xxx',
+    }, () => {
+      expect(() => validateConfig()).toThrow(/AI_WORKSPACE_BACKEND/);
+    });
+  });
+
+  it('refuses the workspace flag without IS_HOSTED=true', () => {
+    withEnv({
+      ...workspaceProdEnv,
+      IS_HOSTED: 'false',
+      BREEZE_AI_WORKSPACE_ENABLED: 'true',
+      AI_WORKSPACE_BACKEND: 'vercel',
+      VERCEL_SANDBOX_TOKEN: 'prod-test-vercel-sandbox-token',
+      VERCEL_TEAM_ID: 'team_xxx',
+      VERCEL_PROJECT_ID: 'prj_xxx',
+    }, () => {
+      expect(() => validateConfig()).toThrow(/IS_HOSTED/);
+    });
+  });
+
+  it.each(['VERCEL_SANDBOX_TOKEN', 'VERCEL_TEAM_ID', 'VERCEL_PROJECT_ID'])(
+    'refuses the workspace flag without %s',
+    (missing) => {
+      withEnv({
+        ...workspaceProdEnv,
+        BREEZE_AI_WORKSPACE_ENABLED: 'true',
+        AI_WORKSPACE_BACKEND: 'vercel',
+        VERCEL_SANDBOX_TOKEN: 'prod-test-vercel-sandbox-token',
+        VERCEL_TEAM_ID: 'team_xxx',
+        VERCEL_PROJECT_ID: 'prj_xxx',
+        [missing]: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(new RegExp(missing));
+      });
+    },
+  );
+
+  it('accepts a fully configured hosted deployment', () => {
+    withEnv({
+      ...workspaceProdEnv,
+      BREEZE_AI_WORKSPACE_ENABLED: 'true',
+      AI_WORKSPACE_BACKEND: 'vercel',
+      VERCEL_SANDBOX_TOKEN: 'prod-test-vercel-sandbox-token',
+      VERCEL_TEAM_ID: 'team_xxx',
+      VERCEL_PROJECT_ID: 'prj_xxx',
+    }, () => {
+      const config = validateConfig();
+      expect(config.NODE_ENV).toBe('production');
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
