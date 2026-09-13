@@ -192,7 +192,8 @@ export const generateReportSchema = z.object({
       status: z.array(z.string()).optional(),
       severity: z.array(z.string()).optional()
     }).optional(),
-    ...securityCompliancePostureConfigFields
+    ...securityCompliancePostureConfigFields,
+    ...hardwareLifecycleConfigFields
   }).optional().default({}),
   format: z.enum(['csv', 'pdf', 'excel']).default('csv'),
   orgId: z.string().guid().optional()

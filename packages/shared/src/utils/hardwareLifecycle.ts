@@ -119,8 +119,13 @@ export function replacementDueDate(
   const today = opts.today ?? todayIso();
   const years = opts.replaceAgeYears ?? HARDWARE_LIFECYCLE_DEFAULT_REPLACE_AGE_YEARS;
 
+  // A future-dated purchase is a data-entry problem, not a healthy device:
+  // it makes the row `unknown` even when an active warranty could have set
+  // a date on its own, so the bad record gets confirmed rather than hidden.
+  if (parseDate(purchaseDate) && (purchaseDate as string) > today) return null;
+
   let due: string | null = null;
-  if (isPlausibleDate(purchaseDate, today) && (purchaseDate as string) <= today) {
+  if (isPlausibleDate(purchaseDate, today)) {
     due = addYears(purchaseDate as string, years);
   }
   if (isPlausibleDate(warrantyEndDate, today) && (warrantyEndDate as string) > today) {
@@ -299,17 +304,23 @@ export function buildAtAGlanceProse(rows: HardwareLifecycleDeviceRow[], otherCou
   const n = rows.length;
   const c = countByReplacement(rows);
   const sentences: string[] = [];
+  const known = n - c.unknown;
   if (n === 0) {
     sentences.push('We are not yet managing any computers for you.');
   } else if (c.replace > 0) {
     sentences.push(`${c.replace} of your ${n} computer${n === 1 ? '' : 's'} ${c.replace === 1 ? 'is' : 'are'} past due for replacement.`);
+  } else if (known === 0) {
+    // Nothing is dated: say so instead of asserting health we cannot prove.
+    sentences.push(`We are still confirming purchase records for ${n === 1 ? 'your computer' : `all ${n} of your computers`}, so no replacement dates are available yet.`);
+  } else if (c.unknown > 0) {
+    sentences.push(`All ${known} of your computer${known === 1 ? '' : 's'} with known dates ${known === 1 ? 'is' : 'are'} within ${known === 1 ? 'its' : 'their'} expected service life.`);
   } else {
     sentences.push(`All ${n} of your computer${n === 1 ? '' : 's'} ${n === 1 ? 'is' : 'are'} within ${n === 1 ? 'its' : 'their'} expected service life.`);
   }
   if (c.due_soon > 0) {
     sentences.push(`${c.due_soon} more computer${c.due_soon === 1 ? ' comes' : 's come'} due within the year.`);
   }
-  if (c.unknown > 0) {
+  if (c.unknown > 0 && known > 0) {
     sentences.push(`${c.unknown} computer${c.unknown === 1 ? ' is' : 's are'} missing purchase records, which we are confirming.`);
   }
   if (otherCount > 0) {

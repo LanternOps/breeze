@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   addYears,
+  buildAtAGlanceProse,
   buildHardwareLifecycleRecommendations,
   classifyOsSupport,
   classifyReplacement,
@@ -36,8 +37,9 @@ describe('replacementDueDate', () => {
     expect(replacementDueDate(null, '2027-05-01', { today: TODAY })).toBe('2027-05-01');
   });
 
-  it('treats a future-dated purchase as unknown, not healthy', () => {
+  it('treats a future-dated purchase as unknown, not healthy — even with an active warranty', () => {
     expect(replacementDueDate('2027-01-01', null, { today: TODAY })).toBeNull();
+    expect(replacementDueDate('2027-01-01', '2028-05-01', { today: TODAY })).toBeNull();
   });
 
   it('rejects epoch-era and far-future dates from RMM sources', () => {
@@ -154,6 +156,28 @@ function row(partial: Partial<HardwareLifecycleDeviceRow> & { name: string }): H
     ...partial,
   };
 }
+
+describe('buildAtAGlanceProse', () => {
+  it('does not claim health for a fleet with no dates at all', () => {
+    const text = buildAtAGlanceProse([row({ name: 'a' }), row({ name: 'b' })], 0);
+    expect(text).toBe('We are still confirming purchase records for all 2 of your computers, so no replacement dates are available yet.');
+  });
+
+  it('scopes the healthy claim to dated computers when some are unknown', () => {
+    const text = buildAtAGlanceProse([row({ name: 'a', replaceBy: '2029-01-01', replacement: 'supported' }), row({ name: 'b' })], 1);
+    expect(text).toBe('All 1 of your computer with known dates is within its expected service life. 1 computer is missing purchase records, which we are confirming. We also manage 1 other device (network and print hardware), listed at the end.');
+  });
+
+  it('reproduces the reference wording for a mixed fleet', () => {
+    const rows = [
+      ...[1, 2, 3, 4].map((i) => row({ name: `r${i}`, replaceBy: '2024-01-01', replacement: 'replace' })),
+      ...[1, 2].map((i) => row({ name: `d${i}`, replaceBy: '2026-12-01', replacement: 'due_soon' })),
+      row({ name: 's', replaceBy: '2028-01-01', replacement: 'supported' }),
+      row({ name: 'u' }),
+    ];
+    expect(buildAtAGlanceProse(rows, 2)).toBe('4 of your 8 computers are past due for replacement. 2 more computers come due within the year. 1 computer is missing purchase records, which we are confirming. We also manage 2 other devices (network and print hardware), listed at the end.');
+  });
+});
 
 describe('sortLifecycleRows', () => {
   it('orders most urgent first, then no-date rows by name', () => {

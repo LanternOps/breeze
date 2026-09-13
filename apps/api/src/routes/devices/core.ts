@@ -944,6 +944,8 @@ coreRoutes.get(
         deviceRoleSource: devices.deviceRoleSource,
         deviceFunction: devices.deviceFunction,
         deviceFunctionSource: devices.deviceFunctionSource,
+        purchaseDate: devices.purchaseDate,
+        purchaseDateSource: devices.purchaseDateSource,
         osVersion: devices.osVersion,
         osBuild: devices.osBuild,
         architecture: devices.architecture,
