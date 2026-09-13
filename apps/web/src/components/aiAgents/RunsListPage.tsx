@@ -222,7 +222,7 @@ function findingsOverrideActive(run: AiAgentRunListItemDto): boolean {
 }
 
 /**
- * The three mutually-exclusive run-profile chips (sweep/narrative/triage),
+ * The four mutually-exclusive run-profile chips (sweep/narrative/triage/design),
  * shared between the desktop table row and the mobile card so both surfaces
  * stay in sync. `idPrefix` keeps mobile-card testids distinct from the
  * desktop table's (`ai-agent-run-profile-*`) so `getByTestId` in tests never
@@ -273,6 +273,17 @@ function ProfileBadges({
           className={badgeClass('muted', { size: 'sm' })}
         >
           {t('aiAgentsPage.runs.profile.triage')}
+        </span>
+      )}
+      {/* Fleet Designer (W01) — a design-profile run is a fleet-wide report,
+          not a device outcome; same "tell it apart in a mixed list"
+          rationale as the sweep/narrative/triage badges above. */}
+      {run.profile === 'design' && (
+        <span
+          data-testid={`${idPrefix}-profile-design-${run.id}`}
+          className={badgeClass('muted', { size: 'sm' })}
+        >
+          {t('aiAgentsPage.runs.profile.design')}
         </span>
       )}
     </>

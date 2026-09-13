@@ -1510,11 +1510,13 @@
       "timezone": "Timezone",
       "kinds": {
         "sweep": "Sweep",
-        "narrative": "Weekly report"
+        "narrative": "Weekly report",
+        "design": "Fleet design"
       },
       "kindsLabel": "Checks to run",
       "kind": "Schedule type",
       "weeklyOnlyHint": "A weekly report fires exactly once a week: a literal minute and hour, * for day-of-month and month, and a single day of the week 0-6. For example 0 7 * * 1 runs every Monday at 07:00.",
+      "monthlyOrRarerHint": "A fleet design fires at most once a month: a literal minute, hour and day-of-month (1-28), month as * or a comma list of literal months, and * for day-of-week. For example 0 6 1 1,4,7,10 * runs quarterly on the 1st at 06:00.",
       "kindsRequired": "Select at least one check.",
       "enabled": "Enabled",
       "override": "Override for this org",
@@ -1554,6 +1556,7 @@
         "baselineAgentMismatch": "That baseline belongs to a different agent.",
         "agentNotPartnerWide": "Sweep schedules require a partner-wide agent.",
         "agentKindNotTriage": "Only a triage agent can be scheduled.",
+        "agentKindNotDesigner": "A design schedule must target a Fleet designer agent.",
         "kindsNotEmpty": "A weekly report schedule runs no checks. Clear the selected checks before saving.",
         "invalidCronForKind": "A weekly report must fire exactly once a week. Use a literal minute and hour, * for day-of-month and month, and a single day of the week."
       }
@@ -1564,7 +1567,8 @@
     "kindHints": {
       "triage": "Investigates new alerts and proposes what to do about them.",
       "patch": "Reviews missing patches and proposes what to install.",
-      "helpdesk": "Picks up tickets and proposes replies and next steps."
+      "helpdesk": "Picks up tickets and proposes replies and next steps.",
+      "designer": "Reads the whole fleet and writes a justified monitoring design for a technician to approve."
     },
     "emptyState": {
       "title": "No agents yet",
@@ -1579,7 +1583,8 @@
       "shadowConsequence": "Observes and proposes; a human approves everything.",
       "act": "Act",
       "actConsequence": "Executes allowed operations without a click. No automatic rollback.",
-      "actUnavailable": "Not available for this agent yet."
+      "actUnavailable": "Not available for this agent yet.",
+      "shadowUnavailableForKind": "This agent only reads and writes reports — there is nothing to shadow."
     },
     "allOrgs": "All orgs",
     "allOrgsHint": "Partner-wide: applies to every organization unless an organization tightens it.",
@@ -1693,7 +1698,8 @@
     "kinds": {
       "triage": "Alert triage",
       "patch": "Patching",
-      "helpdesk": "Help desk"
+      "helpdesk": "Help desk",
+      "designer": "Fleet designer"
     },
     "modes": {
       "off": "Off",
@@ -1828,7 +1834,8 @@
       "profile": {
         "sweep": "Sweep",
         "narrative": "Weekly report",
-        "triage": "Ticket triage"
+        "triage": "Ticket triage",
+        "design": "Fleet design"
       },
       "sweep": {
         "title": "Sweep findings",
@@ -1875,6 +1882,14 @@
         "openReport": "Open report",
         "download": "Download PDF",
         "downloadFailed": "Could not download the PDF."
+      },
+      "fleetDesign": {
+        "title": "Fleet Design",
+        "counts": "{{functions}} functions · {{watches}} watches · {{rules}} alert rules",
+        "openReport": "Open report",
+        "download": "Download PDF",
+        "downloadFailed": "Could not download the PDF.",
+        "truncatedNote": "The evidence was cut short — this design did not see the whole fleet."
       },
       "noAgent": "Unknown agent",
       "loading": "Loading runs…",
@@ -2697,7 +2712,8 @@
       "loggedProposalCount_other": "{{count}} logged proposals",
       "unattendedCount_one": "{{count}} unattended",
       "unattendedCount_other": "{{count}} unattended",
-      "scriptGateNote": "Stays an approval request until a script is authorized for this agent."
+      "scriptGateNote": "Stays an approval request until a script is authorized for this agent.",
+      "designerReadOnly": "The Fleet designer reaches every read-only tool and one report tool. It has no mutating capabilities to choose."
     },
     "summary": {
       "edit": "Edit",
@@ -2798,6 +2814,11 @@
           "blurb": "Works tickets as they're created, replied to, or resolved.",
           "runsWhen": "a ticket is created, gets its first reply, or is marked resolved",
           "recommended": "restarting services and clearing disk space to resolve common requests"
+        },
+        "designer": {
+          "blurb": "Reads the whole fleet and writes a justified monitoring design for a technician to approve.",
+          "runsWhen": "you start a Fleet Design for an organization, or on a quarterly schedule",
+          "recommended": "a clean-slate migration, or a quarterly configuration audit"
         }
       },
       "kindCard": {

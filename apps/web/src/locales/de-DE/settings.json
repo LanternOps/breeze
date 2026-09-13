@@ -1510,11 +1510,13 @@
       "timezone": "Zeitzone",
       "kinds": {
         "sweep": "Prüflauf",
-        "narrative": "Wochenbericht"
+        "narrative": "Wochenbericht",
+        "design": "Flottendesign"
       },
       "kindsLabel": "Auszuführende Prüfungen",
       "kind": "Zeitplantyp",
       "weeklyOnlyHint": "Ein Wochenbericht wird genau einmal pro Woche ausgelöst: feste Minute und Stunde, * für Tag-des-Monats und Monat sowie ein einzelner Wochentag von 0 bis 6. Beispiel: 0 7 * * 1 läuft jeden Montag um 07:00 Uhr.",
+      "monthlyOrRarerHint": "Ein Flottendesign wird höchstens einmal im Monat ausgelöst: feste Minute, Stunde und Tag-des-Monats (1–28), Monat als * oder eine durch Kommas getrennte Liste fester Monate, sowie * für den Wochentag. Beispiel: 0 6 1 1,4,7,10 * läuft vierteljährlich am 1. um 06:00 Uhr.",
       "kindsRequired": "Wählen Sie mindestens eine Prüfung aus.",
       "enabled": "Aktiviert",
       "override": "Für diese Organisation überschreiben",
@@ -1554,6 +1556,7 @@
         "baselineAgentMismatch": "Diese Basis gehört zu einem anderen Agenten.",
         "agentNotPartnerWide": "Sweep-Zeitpläne erfordern einen partnerweiten Agenten.",
         "agentKindNotTriage": "Nur ein Triage-Agent kann geplant werden.",
+        "agentKindNotDesigner": "Ein Flottendesign-Zeitplan muss auf einen Flottendesigner-Agenten abzielen.",
         "kindsNotEmpty": "Ein Wochenbericht-Zeitplan führt keine Prüfungen aus. Entfernen Sie die ausgewählten Prüfungen vor dem Speichern.",
         "invalidCronForKind": "Ein Wochenbericht muss genau einmal pro Woche ausgelöst werden. Verwenden Sie feste Minute und Stunde, * für Tag-des-Monats und Monat sowie einen einzelnen Wochentag."
       }
@@ -1564,7 +1567,8 @@
     "kindHints": {
       "triage": "Untersucht neue Warnungen und schlägt vor, was zu tun ist.",
       "patch": "Prüft fehlende Patches und schlägt vor, was installiert werden soll.",
-      "helpdesk": "Nimmt Tickets auf und schlägt Antworten und nächste Schritte vor."
+      "helpdesk": "Nimmt Tickets auf und schlägt Antworten und nächste Schritte vor.",
+      "designer": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker."
     },
     "emptyState": {
       "title": "Noch keine Agenten",
@@ -1579,7 +1583,8 @@
       "shadowConsequence": "Beobachtet und schlägt vor; ein Mensch genehmigt alles.",
       "act": "Aktion",
       "actConsequence": "Führt erlaubte Vorgänge ohne Klick aus. Kein automatisches Zurücksetzen.",
-      "actUnavailable": "Für diesen Agenten noch nicht verfügbar."
+      "actUnavailable": "Für diesen Agenten noch nicht verfügbar.",
+      "shadowUnavailableForKind": "Dieser Agent liest und schreibt nur Berichte — es gibt nichts zu beobachten."
     },
     "allOrgs": "Alle Organisationen",
     "allOrgsHint": "Partnerweit: gilt für jede Organisation, sofern eine Organisation die Richtlinie nicht verschärft.",
@@ -1693,7 +1698,8 @@
     "kinds": {
       "triage": "Alarm-Triage",
       "patch": "Patch-Verwaltung",
-      "helpdesk": "Helpdesk"
+      "helpdesk": "Helpdesk",
+      "designer": "Flottendesigner"
     },
     "modes": {
       "off": "Aus",
@@ -1828,7 +1834,8 @@
       "profile": {
         "sweep": "Prüflauf",
         "narrative": "Wochenbericht",
-        "triage": "Ticket-Triage"
+        "triage": "Ticket-Triage",
+        "design": "Flottendesign"
       },
       "sweep": {
         "title": "Ergebnisse des Prüflaufs",
@@ -1875,6 +1882,14 @@
         "openReport": "Bericht öffnen",
         "download": "PDF herunterladen",
         "downloadFailed": "Das PDF konnte nicht heruntergeladen werden."
+      },
+      "fleetDesign": {
+        "title": "Flottendesign",
+        "counts": "{{functions}} Funktionen · {{watches}} Überwachungen · {{rules}} Alarmregeln",
+        "openReport": "Bericht öffnen",
+        "download": "PDF herunterladen",
+        "downloadFailed": "Das PDF konnte nicht heruntergeladen werden.",
+        "truncatedNote": "Die Nachweise wurden gekürzt — dieses Design hat nicht die gesamte Flotte gesehen."
       },
       "noAgent": "Unbekannter Agent",
       "loading": "Läufe werden geladen…",
@@ -2697,7 +2712,8 @@
       "loggedProposalCount_other": "{{count}} protokollierte Vorschläge",
       "unattendedCount_one": "{{count}} unbeaufsichtigt",
       "unattendedCount_other": "{{count}} unbeaufsichtigt",
-      "scriptGateNote": "Bleibt eine Genehmigungsanfrage, bis ein Skript für diesen Agenten autorisiert ist."
+      "scriptGateNote": "Bleibt eine Genehmigungsanfrage, bis ein Skript für diesen Agenten autorisiert ist.",
+      "designerReadOnly": "Der Flottendesigner erreicht jedes schreibgeschützte Werkzeug und ein Berichtswerkzeug. Er hat keine veränderbaren Funktionen zur Auswahl."
     },
     "summary": {
       "edit": "Bearbeiten",
@@ -2798,6 +2814,11 @@
           "blurb": "Bearbeitet Tickets, sobald sie erstellt, beantwortet oder gelöst werden.",
           "runsWhen": "ein Ticket erstellt wird, seine erste Antwort erhält oder als gelöst markiert wird",
           "recommended": "Dienste neu starten und Speicherplatz freigeben, um häufige Anfragen zu lösen"
+        },
+        "designer": {
+          "blurb": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker.",
+          "runsWhen": "Sie ein Flottendesign für eine Organisation starten oder nach einem vierteljährlichen Zeitplan",
+          "recommended": "eine Neueinrichtung von Grund auf oder ein vierteljährliches Konfigurationsaudit"
         }
       },
       "kindCard": {

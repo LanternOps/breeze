@@ -1510,11 +1510,13 @@
       "timezone": "Fuseau horaire",
       "kinds": {
         "sweep": "Balayage",
-        "narrative": "Rapport hebdomadaire"
+        "narrative": "Rapport hebdomadaire",
+        "design": "Conception du parc"
       },
       "kindsLabel": "Contrôles à exécuter",
       "kind": "Type de planification",
       "weeklyOnlyHint": "Un rapport hebdomadaire se déclenche exactement une fois par semaine : une minute et une heure littérales, * pour le jour-du-mois et le mois, et un seul jour de la semaine de 0 à 6. Par exemple, 0 7 * * 1 s'exécute chaque lundi à 07h00.",
+      "monthlyOrRarerHint": "Une conception du parc se déclenche au plus une fois par mois : une minute, une heure et un jour-du-mois (1-28) littéraux, le mois étant * ou une liste de mois littéraux séparés par des virgules, et * pour le jour de la semaine. Par exemple, 0 6 1 1,4,7,10 * s'exécute chaque trimestre le 1er à 06h00.",
       "kindsRequired": "Sélectionnez au moins un contrôle.",
       "enabled": "Activé",
       "override": "Déroger pour cette organisation",
@@ -1554,6 +1556,7 @@
         "baselineAgentMismatch": "Cette référence appartient à un autre agent.",
         "agentNotPartnerWide": "Les planifications de balayage exigent un agent valable pour tout le partenaire.",
         "agentKindNotTriage": "Seul un agent de triage peut être planifié.",
+        "agentKindNotDesigner": "Une planification de conception du parc doit cibler un agent Concepteur du parc.",
         "kindsNotEmpty": "Une planification de rapport hebdomadaire n'exécute aucun contrôle. Retirez les contrôles sélectionnés avant d'enregistrer.",
         "invalidCronForKind": "Un rapport hebdomadaire doit se déclencher exactement une fois par semaine. Utilisez une minute et une heure littérales, * pour le jour-du-mois et le mois, et un seul jour de la semaine."
       }
@@ -1564,7 +1567,8 @@
     "kindHints": {
       "triage": "Examine les nouvelles alertes et propose la marche à suivre.",
       "patch": "Passe en revue les correctifs manquants et propose ceux à installer.",
-      "helpdesk": "Prend en charge les tickets et propose des réponses et des étapes suivantes."
+      "helpdesk": "Prend en charge les tickets et propose des réponses et des étapes suivantes.",
+      "designer": "Lit l'ensemble du parc et rédige une conception de surveillance justifiée qu'un technicien doit approuver."
     },
     "emptyState": {
       "title": "Aucun agent pour l’instant",
@@ -1579,7 +1583,8 @@
       "shadowConsequence": "Observe et propose ; une personne approuve tout.",
       "act": "Action",
       "actConsequence": "Exécute les opérations autorisées sans clic. Aucune annulation automatique.",
-      "actUnavailable": "Pas encore disponible pour cet agent."
+      "actUnavailable": "Pas encore disponible pour cet agent.",
+      "shadowUnavailableForKind": "Cet agent ne fait que lire et écrire des rapports — il n'y a rien à observer en mode ombre."
     },
     "allOrgs": "Toutes les organisations",
     "allOrgsHint": "À l’échelle du partenaire : s’applique à chaque organisation, sauf si une organisation la restreint.",
@@ -1693,7 +1698,8 @@
     "kinds": {
       "triage": "Tri des alertes",
       "patch": "Correctifs",
-      "helpdesk": "Centre d’assistance"
+      "helpdesk": "Centre d’assistance",
+      "designer": "Concepteur du parc"
     },
     "modes": {
       "off": "Désactivé",
@@ -1828,7 +1834,8 @@
       "profile": {
         "sweep": "Balayage",
         "narrative": "Rapport hebdomadaire",
-        "triage": "Triage des tickets"
+        "triage": "Triage des tickets",
+        "design": "Conception du parc"
       },
       "sweep": {
         "title": "Constats du balayage",
@@ -1875,6 +1882,14 @@
         "openReport": "Ouvrir le rapport",
         "download": "Télécharger le PDF",
         "downloadFailed": "Impossible de télécharger le PDF."
+      },
+      "fleetDesign": {
+        "title": "Conception du parc",
+        "counts": "{{functions}} fonctions · {{watches}} surveillances · {{rules}} règles d'alerte",
+        "openReport": "Ouvrir le rapport",
+        "download": "Télécharger le PDF",
+        "downloadFailed": "Impossible de télécharger le PDF.",
+        "truncatedNote": "Les preuves ont été tronquées — cette conception n'a pas vu l'ensemble du parc."
       },
       "noAgent": "Agent inconnu",
       "loading": "Chargement des exécutions…",
@@ -2697,7 +2712,8 @@
       "loggedProposalCount_other": "{{count}} propositions consignées",
       "unattendedCount_one": "{{count}} sans intervention",
       "unattendedCount_other": "{{count}} sans intervention",
-      "scriptGateNote": "Reste une demande d'approbation tant qu'aucun script n'est autorisé pour cet agent."
+      "scriptGateNote": "Reste une demande d'approbation tant qu'aucun script n'est autorisé pour cet agent.",
+      "designerReadOnly": "Le Concepteur du parc accède à tous les outils en lecture seule et à un outil de rapport. Il n'a aucune capacité de modification à choisir."
     },
     "summary": {
       "edit": "Modifier",
@@ -2798,6 +2814,11 @@
           "blurb": "Traite les tickets dès leur création, leur première réponse ou leur résolution.",
           "runsWhen": "un ticket est créé, reçoit sa première réponse, ou est marqué résolu",
           "recommended": "redémarrer les services et libérer de l'espace disque pour résoudre les demandes courantes"
+        },
+        "designer": {
+          "blurb": "Lit l'ensemble du parc et rédige une conception de surveillance justifiée qu'un technicien doit approuver.",
+          "runsWhen": "vous lancez une Conception du parc pour une organisation, ou selon une planification trimestrielle",
+          "recommended": "une migration à partir de zéro, ou un audit de configuration trimestriel"
         }
       },
       "kindCard": {

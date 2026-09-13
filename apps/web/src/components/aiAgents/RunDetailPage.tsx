@@ -20,6 +20,7 @@ import type {
   AiSweepKind,
   AiSweepSeverity,
   ExposureBudgetDto,
+  FleetDesignReportSummary,
   NarrativeSection,
   OrgNarrativeReportSummary,
   SweepProposalReason,
@@ -1272,6 +1273,8 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
   const [notFound, setNotFound] = useState(false);
   const [downloadingNarrative, setDownloadingNarrative] = useState(false);
   const [narrativeDownloadError, setNarrativeDownloadError] = useState<string>();
+  const [downloadingFleetDesign, setDownloadingFleetDesign] = useState(false);
+  const [fleetDesignDownloadError, setFleetDesignDownloadError] = useState<string>();
 
   // Monotonic request id shared by `load` and `refreshSilently` (review
   // finding P2-2, #4187 critique — same pattern as RunsListPage's
@@ -1410,6 +1413,41 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
       setNarrativeDownloadError(t('aiAgentsPage.runs.narrative.downloadFailed'));
     } finally {
       setDownloadingNarrative(false);
+    }
+  }, [run, t]);
+
+  /**
+   * Fleet Designer (W01) — "Download PDF" on the fleet-design section. Same
+   * shape as `handleDownloadNarrative` above: the report-run download route
+   * answers JSON authenticated from the `Authorization` header only, so this
+   * fetches the snapshot with the bearer token and renders the PDF
+   * client-side via jsPDF rather than following `fleetDesign.downloadPath`
+   * directly.
+   */
+  const handleDownloadFleetDesign = useCallback(async () => {
+    const reportRunId = run?.fleetDesign?.reportRunId;
+    if (!reportRunId) return;
+    setDownloadingFleetDesign(true);
+    setFleetDesignDownloadError(undefined);
+    try {
+      const response = await fetchWithAuth(`/reports/runs/${reportRunId}/download`);
+      if (!response.ok) {
+        throw new Error(t('aiAgentsPage.runs.fleetDesign.downloadFailed'));
+      }
+      const payload = (await response.json()) as {
+        type?: string;
+        data?: { rows?: unknown[]; summary?: unknown };
+      };
+      await exportReport(payload.data?.rows ?? [], {
+        format: 'pdf',
+        reportType: payload.type ?? 'ai_fleet_design',
+        timezone: getBrowserTimezone(),
+        summary: payload.data?.summary as FleetDesignReportSummary | undefined,
+      });
+    } catch {
+      setFleetDesignDownloadError(t('aiAgentsPage.runs.fleetDesign.downloadFailed'));
+    } finally {
+      setDownloadingFleetDesign(false);
     }
   }, [run, t]);
 
@@ -1841,6 +1879,68 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           {narrativeDownloadError && (
             <p className="mt-2 text-xs text-destructive" data-testid="ai-agent-run-narrative-download-error">
               {narrativeDownloadError}
+            </p>
+          )}
+        </section>
+      )}
+
+      {/* Fleet Designer (W01) — a `design`-profile run's report projection.
+          Null for every other profile, so the whole section is absent
+          rather than empty for them. */}
+      {run.fleetDesign && (
+        <section data-testid="ai-agent-run-fleet-design" className="rounded-lg border bg-card p-4">
+          <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.fleetDesign.title')}</h2>
+
+          <p className="mt-2 text-sm text-muted-foreground" data-testid="ai-agent-run-fleet-design-counts">
+            {t('aiAgentsPage.runs.fleetDesign.counts', {
+              functions: run.fleetDesign.functionCount,
+              watches: run.fleetDesign.watchCount,
+              rules: run.fleetDesign.ruleCount,
+            })}
+          </p>
+
+          {run.fleetDesign.generatedAt && (
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="ai-agent-run-fleet-design-generated-at">
+              {formatDate(run.fleetDesign.generatedAt)}
+            </p>
+          )}
+
+          {run.fleetDesign.evidenceTruncated && (
+            <p className="mt-2 text-xs text-amber-700 dark:text-amber-400" data-testid="ai-agent-run-fleet-design-truncated">
+              {t('aiAgentsPage.runs.fleetDesign.truncatedNote')}
+            </p>
+          )}
+
+          {run.fleetDesign.reportRunId && (
+            <div className="mt-3 flex flex-wrap items-center gap-4">
+              <a
+                href="/reports"
+                data-testid="ai-agent-run-fleet-design-report-link"
+                className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+              >
+                {t('aiAgentsPage.runs.fleetDesign.openReport')}
+                <ExternalLink className="h-3 w-3" />
+              </a>
+              <button
+                type="button"
+                onClick={() => void handleDownloadFleetDesign()}
+                disabled={downloadingFleetDesign}
+                data-testid="ai-agent-run-fleet-design-download"
+                className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline disabled:opacity-50"
+              >
+                {downloadingFleetDesign ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Download className="h-3 w-3" />
+                )}
+                {t('aiAgentsPage.runs.fleetDesign.download')}
+              </button>
+            </div>
+          )}
+
+          {fleetDesignDownloadError && (
+            <p className="mt-2 text-xs text-destructive" data-testid="ai-agent-run-fleet-design-download-error">
+              {fleetDesignDownloadError}
             </p>
           )}
         </section>

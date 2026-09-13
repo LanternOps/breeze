@@ -1510,11 +1510,13 @@
       "timezone": "Fuso horário",
       "kinds": {
         "sweep": "Varredura",
-        "narrative": "Relatório semanal"
+        "narrative": "Relatório semanal",
+        "design": "Projeto de frota"
       },
       "kindsLabel": "Verificações a executar",
       "kind": "Tipo de agendamento",
       "weeklyOnlyHint": "Um relatório semanal é disparado exatamente uma vez por semana: minuto e hora literais, * para dia-do-mês e mês, e um único dia da semana de 0 a 6. Por exemplo, 0 7 * * 1 é executado toda segunda-feira às 07:00.",
+      "monthlyOrRarerHint": "Um projeto de frota é disparado no máximo uma vez por mês: minuto, hora e dia-do-mês (1-28) literais, mês como * ou uma lista separada por vírgulas de meses literais, e * para o dia da semana. Por exemplo, 0 6 1 1,4,7,10 * é executado trimestralmente no dia 1 às 06:00.",
       "kindsRequired": "Selecione pelo menos uma verificação.",
       "enabled": "Ativado",
       "override": "Substituir para esta organização",
@@ -1554,6 +1556,7 @@
         "baselineAgentMismatch": "Essa linha de base pertence a outro agente.",
         "agentNotPartnerWide": "Agendamentos de varredura exigem um agente de todo o parceiro.",
         "agentKindNotTriage": "Somente um agente de triagem pode ser agendado.",
+        "agentKindNotDesigner": "Um agendamento de projeto de frota deve ter como destino um agente Projetista de frota.",
         "kindsNotEmpty": "Um agendamento de relatório semanal não executa verificações. Limpe as verificações selecionadas antes de salvar.",
         "invalidCronForKind": "Um relatório semanal precisa ser disparado exatamente uma vez por semana. Use minuto e hora literais, * para dia-do-mês e mês, e um único dia da semana."
       }
@@ -1564,7 +1567,8 @@
     "kindHints": {
       "triage": "Investiga os alertas novos e propõe o que fazer com eles.",
       "patch": "Revisa as correções pendentes e propõe o que instalar.",
-      "helpdesk": "Assume chamados e propõe respostas e próximos passos."
+      "helpdesk": "Assume chamados e propõe respostas e próximos passos.",
+      "designer": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar."
     },
     "emptyState": {
       "title": "Nenhum agente ainda",
@@ -1579,7 +1583,8 @@
       "shadowConsequence": "Observa e propõe; uma pessoa aprova tudo.",
       "act": "Ação",
       "actConsequence": "Executa as operações permitidas sem um clique. Não há reversão automática.",
-      "actUnavailable": "Ainda não está disponível para este agente."
+      "actUnavailable": "Ainda não está disponível para este agente.",
+      "shadowUnavailableForKind": "Este agente apenas lê e escreve relatórios — não há nada para observar no modo sombra."
     },
     "allOrgs": "Todas as organizações",
     "allOrgsHint": "Em todo o parceiro: vale para cada organização, a menos que uma organização a restrinja.",
@@ -1693,7 +1698,8 @@
     "kinds": {
       "triage": "Triagem de alertas",
       "patch": "Aplicação de patches",
-      "helpdesk": "Central de ajuda"
+      "helpdesk": "Central de ajuda",
+      "designer": "Projetista de frota"
     },
     "modes": {
       "off": "Desligado",
@@ -1828,7 +1834,8 @@
       "profile": {
         "sweep": "Varredura",
         "narrative": "Relatório semanal",
-        "triage": "Triagem de chamados"
+        "triage": "Triagem de chamados",
+        "design": "Projeto de frota"
       },
       "sweep": {
         "title": "Constatações da varredura",
@@ -1875,6 +1882,14 @@
         "openReport": "Abrir relatório",
         "download": "Baixar PDF",
         "downloadFailed": "Não foi possível baixar o PDF."
+      },
+      "fleetDesign": {
+        "title": "Projeto de frota",
+        "counts": "{{functions}} funções · {{watches}} monitoramentos · {{rules}} regras de alerta",
+        "openReport": "Abrir relatório",
+        "download": "Baixar PDF",
+        "downloadFailed": "Não foi possível baixar o PDF.",
+        "truncatedNote": "As evidências foram cortadas — este projeto não viu a frota inteira."
       },
       "noAgent": "Agente desconhecido",
       "loading": "Carregando execuções…",
@@ -2697,7 +2712,8 @@
       "loggedProposalCount_other": "{{count}} propostas registradas",
       "unattendedCount_one": "{{count}} sem supervisão",
       "unattendedCount_other": "{{count}} sem supervisão",
-      "scriptGateNote": "Continua sendo uma solicitação de aprovação até que um script seja autorizado para este agente."
+      "scriptGateNote": "Continua sendo uma solicitação de aprovação até que um script seja autorizado para este agente.",
+      "designerReadOnly": "O Projetista de frota alcança todas as ferramentas somente leitura e uma ferramenta de relatório. Ele não tem capacidades de modificação para escolher."
     },
     "summary": {
       "edit": "Editar",
@@ -2798,6 +2814,11 @@
           "blurb": "Trabalha os tickets à medida que são criados, recebem a primeira resposta ou são resolvidos.",
           "runsWhen": "um ticket é criado, recebe sua primeira resposta, ou é marcado como resolvido",
           "recommended": "reiniciar serviços e liberar espaço em disco para resolver solicitações comuns"
+        },
+        "designer": {
+          "blurb": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar.",
+          "runsWhen": "você inicia um Projeto de frota para uma organização, ou em um agendamento trimestral",
+          "recommended": "uma migração do zero, ou uma auditoria de configuração trimestral"
         }
       },
       "kindCard": {

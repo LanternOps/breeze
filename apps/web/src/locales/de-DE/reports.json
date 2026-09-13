@@ -265,6 +265,7 @@
       },
       "refresh": "Aktualisieren",
       "reportTypes": {
+        "ai_fleet_design": "Flottendesign",
         "ai_org_narrative": "Wöchentlicher KI-Betriebsbericht",
         "alert_summary": "Warnungszusammenfassung",
         "compliance": "Compliance-Bericht",
@@ -323,6 +324,7 @@
       "newReport": "Neuer Bericht",
       "nextOccurrence": "Weiter: {{next}}",
       "reportTypes": {
+        "ai_fleet_design": "Flottendesign",
         "ai_org_narrative": "Wöchentlicher KI-Betriebsbericht",
         "alert_summary": "Warnungszusammenfassung",
         "compliance": "Compliance-Bericht",
@@ -818,6 +820,7 @@
       "previewAlt": "{{name}} Vorschau",
       "reportTypes": {
         "activity": "Aktivität",
+        "ai_fleet_design": "Flottendesign",
         "ai_org_narrative": "Wöchentlicher KI-Betriebsbericht",
         "alert_summary": "Warnungszusammenfassung",
         "alerts": "Warnungen",

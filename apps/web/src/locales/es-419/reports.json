@@ -265,6 +265,7 @@
       },
       "refresh": "Actualizar",
       "reportTypes": {
+        "ai_fleet_design": "Diseño de flota",
         "ai_org_narrative": "Narrativa semanal de operaciones con IA",
         "alert_summary": "Resumen de alerta",
         "compliance": "Informe de cumplimiento",
@@ -323,6 +324,7 @@
       "newReport": "Nuevo informe",
       "nextOccurrence": "Siguiente: {{next}}",
       "reportTypes": {
+        "ai_fleet_design": "Diseño de flota",
         "ai_org_narrative": "Narrativa semanal de operaciones con IA",
         "alert_summary": "Resumen de alerta",
         "compliance": "Informe de cumplimiento",
@@ -818,6 +820,7 @@
       "previewAlt": "Vista previa de {{name}}",
       "reportTypes": {
         "activity": "Actividad",
+        "ai_fleet_design": "Diseño de flota",
         "ai_org_narrative": "Narrativa semanal de operaciones con IA",
         "alert_summary": "Resumen de alerta",
         "alerts": "Alertas",

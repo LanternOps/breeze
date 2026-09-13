@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { AgentCeilingDto, AgentToolCatalogDto } from '@breeze/shared';
+import type { AgentCeilingDto, AgentToolCatalogDto, AiAgentKind } from '@breeze/shared';
 import CapabilityPicker from './CapabilityPicker';
 
 // Same fixture as capabilityModel.test.ts (Task 7) — kept identical so both
@@ -37,7 +37,7 @@ const catalog: AgentToolCatalogDto = {
       operations: [{ key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false, actRequiresAuthorizedScripts: false }],
     },
   ],
-  presets: { triage: ['manage_services:restart'], patch: ['run_script'], helpdesk: [] },
+  presets: { triage: ['manage_services:restart'], patch: ['run_script'], helpdesk: [], designer: [] },
   unreachableTools: ['manage_ai_agents'],
 };
 
@@ -46,13 +46,14 @@ function renderPicker(overrides: {
   ceiling?: AgentCeilingDto | null;
   onChange?: (entries: string[]) => void;
   showToolNames?: boolean;
+  kind?: AiAgentKind;
 } = {}) {
   const onChange = overrides.onChange ?? vi.fn();
   const utils = render(
     <CapabilityPicker
       catalog={catalog}
       ceiling={overrides.ceiling ?? null}
-      kind="triage"
+      kind={overrides.kind ?? 'triage'}
       mode="shadow"
       entries={overrides.entries ?? []}
       onChange={onChange}
@@ -249,7 +250,7 @@ describe('CapabilityPicker', () => {
     // partial-ceiling case.
     const twoKeyPresetCatalog: AgentToolCatalogDto = {
       ...catalog,
-      presets: { triage: ['manage_services:restart', 'manage_services:stop'], patch: [], helpdesk: [] },
+      presets: { triage: ['manage_services:restart', 'manage_services:stop'], patch: [], helpdesk: [], designer: [] },
     };
     const ceiling: AgentCeilingDto = { toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [], scriptIds: [] };
 
@@ -281,5 +282,25 @@ describe('CapabilityPicker', () => {
 
     fireEvent.click(screen.getByTestId('capability-picker-unrecognised-remove-query_devices'));
     expect(onChange).toHaveBeenLastCalledWith([]);
+  });
+
+  // Fleet Designer (W01) — read-only kind with no mutating capabilities to
+  // choose: the picker shows only the always-on read-only tools plus a note,
+  // never the selectable capability list.
+  it('renders only the always-on section and a note for a designer kind, hiding the selectable list', () => {
+    renderPicker({ kind: 'designer' });
+
+    expect(screen.getByTestId('capability-picker-always-on')).toBeInTheDocument();
+    expect(screen.getByText('Query devices')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'The Fleet designer reaches every read-only tool and one report tool. It has no mutating capabilities to choose.',
+      ),
+    ).toBeInTheDocument();
+
+    expect(screen.queryByTestId('capability-picker-list')).toBeNull();
+    expect(screen.queryByTestId('capability-picker-recommended')).toBeNull();
+    expect(screen.queryByTestId('capability-picker-search')).toBeNull();
+    expect(screen.queryByTestId('capability-picker-more')).toBeNull();
   });
 });

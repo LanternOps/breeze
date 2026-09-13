@@ -1510,11 +1510,13 @@
       "timezone": "Saat dilimi",
       "kinds": {
         "sweep": "Tarama",
-        "narrative": "Haftalık rapor"
+        "narrative": "Haftalık rapor",
+        "design": "Filo tasarımı"
       },
       "kindsLabel": "Çalıştırılacak denetimler",
       "kind": "Zamanlama türü",
       "weeklyOnlyHint": "Haftalık rapor haftada tam olarak bir kez çalışır: sabit dakika ve saat, ayın-günü ve ay için * ve 0-6 arasında tek bir haftanın günü. Örneğin 0 7 * * 1 her pazartesi 07:00'de çalışır.",
+      "monthlyOrRarerHint": "Filo tasarımı ayda en fazla bir kez çalışır: sabit dakika, saat ve ayın-günü (1-28), ay için * veya virgülle ayrılmış sabit aylar listesi, ve haftanın günü için *. Örneğin 0 6 1 1,4,7,10 * her çeyrekte 1'inde saat 06:00'da çalışır.",
       "kindsRequired": "En az bir denetim seçin.",
       "enabled": "Etkin",
       "override": "Bu kuruluş için geçersiz kıl",
@@ -1554,6 +1556,7 @@
         "baselineAgentMismatch": "O temel çizgi başka bir aracıya ait.",
         "agentNotPartnerWide": "Tarama zamanlamaları iş ortağı genelinde bir aracı gerektirir.",
         "agentKindNotTriage": "Yalnızca bir triyaj aracısı zamanlanabilir.",
+        "agentKindNotDesigner": "Bir filo tasarımı zamanlaması bir Filo tasarımcısı aracısını hedeflemelidir.",
         "kindsNotEmpty": "Haftalık rapor zamanlaması denetim çalıştırmaz. Kaydetmeden önce seçili denetimleri kaldırın.",
         "invalidCronForKind": "Haftalık rapor haftada tam olarak bir kez çalışmalıdır. Sabit dakika ve saat, ayın-günü ve ay için * ve tek bir haftanın günü kullanın."
       }
@@ -1564,7 +1567,8 @@
     "kindHints": {
       "triage": "Yeni uyarıları inceler ve ne yapılacağını önerir.",
       "patch": "Eksik yamaları gözden geçirir ve nelerin kurulacağını önerir.",
-      "helpdesk": "Talepleri üstlenir; yanıt ve sonraki adım önerir."
+      "helpdesk": "Talepleri üstlenir; yanıt ve sonraki adım önerir.",
+      "designer": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar."
     },
     "emptyState": {
       "title": "Henüz aracı yok",
@@ -1579,7 +1583,8 @@
       "shadowConsequence": "İzler ve önerir; her şeyi bir kişi onaylar.",
       "act": "Eylem",
       "actConsequence": "İzin verilen işlemleri tıklama olmadan yürütür. Otomatik geri alma yoktur.",
-      "actUnavailable": "Bu aracı için henüz kullanılamıyor."
+      "actUnavailable": "Bu aracı için henüz kullanılamıyor.",
+      "shadowUnavailableForKind": "Bu aracı yalnızca rapor okur ve yazar — gölgede izlenecek hiçbir şey yok."
     },
     "allOrgs": "Tüm kuruluşlar",
     "allOrgsHint": "İş ortağı genelinde: bir kuruluş daraltmadığı sürece her kuruluş için geçerlidir.",
@@ -1693,7 +1698,8 @@
     "kinds": {
       "triage": "Uyarı önceliklendirme",
       "patch": "Yama yönetimi",
-      "helpdesk": "Yardım masası"
+      "helpdesk": "Yardım masası",
+      "designer": "Filo tasarımcısı"
     },
     "modes": {
       "off": "Kapalı",
@@ -1828,7 +1834,8 @@
       "profile": {
         "sweep": "Tarama",
         "narrative": "Haftalık rapor",
-        "triage": "Talep önceliklendirme"
+        "triage": "Talep önceliklendirme",
+        "design": "Filo tasarımı"
       },
       "sweep": {
         "title": "Tarama bulguları",
@@ -1875,6 +1882,14 @@
         "openReport": "Raporu aç",
         "download": "PDF'yi indir",
         "downloadFailed": "PDF indirilemedi."
+      },
+      "fleetDesign": {
+        "title": "Filo tasarımı",
+        "counts": "{{functions}} işlev · {{watches}} izleme · {{rules}} uyarı kuralı",
+        "openReport": "Raporu aç",
+        "download": "PDF'yi indir",
+        "downloadFailed": "PDF indirilemedi.",
+        "truncatedNote": "Kanıtlar kısaltıldı — bu tasarım tüm filoyu görmedi."
       },
       "noAgent": "Bilinmeyen aracı",
       "loading": "Çalıştırmalar yükleniyor…",
@@ -2697,7 +2712,8 @@
       "loggedProposalCount_other": "{{count}} kayıtlı öneri",
       "unattendedCount_one": "{{count}} gözetimsiz",
       "unattendedCount_other": "{{count}} gözetimsiz",
-      "scriptGateNote": "Bu aracı için bir betik yetkilendirilene kadar onay isteği olarak kalır."
+      "scriptGateNote": "Bu aracı için bir betik yetkilendirilene kadar onay isteği olarak kalır.",
+      "designerReadOnly": "Filo tasarımcısı, salt okunur her araca ve bir rapor aracına erişir. Seçilecek herhangi bir değiştirme yeteneği yoktur."
     },
     "summary": {
       "edit": "Düzenle",
@@ -2798,6 +2814,11 @@
           "blurb": "Talepler oluşturuldukca, ilk yanıtı aldıkça veya çözüldükçe onlar üzerinde çalışır.",
           "runsWhen": "bir talep oluşturulduğunda, ilk yanıtını aldığında veya çözüldü olarak işaretlendiğinde",
           "recommended": "yaygın talepleri çözmek için hizmetleri yeniden başlatmak ve disk alanı boşaltmak"
+        },
+        "designer": {
+          "blurb": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar.",
+          "runsWhen": "bir kuruluş için Filo tasarımı başlattığınızda veya üç aylık bir zamanlamada",
+          "recommended": "sıfırdan bir geçiş veya üç aylık bir yapılandırma denetimi"
         }
       },
       "kindCard": {

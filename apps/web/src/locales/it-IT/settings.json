@@ -1510,11 +1510,13 @@
       "timezone": "Fuso orario",
       "kinds": {
         "sweep": "Scansione",
-        "narrative": "Report settimanale"
+        "narrative": "Report settimanale",
+        "design": "Progettazione della flotta"
       },
       "kindsLabel": "Controlli da eseguire",
       "kind": "Tipo di pianificazione",
       "weeklyOnlyHint": "Un report settimanale viene attivato esattamente una volta a settimana: minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana da 0 a 6. Ad esempio, 0 7 * * 1 viene eseguito ogni lunedì alle 07:00.",
+      "monthlyOrRarerHint": "Una progettazione della flotta viene attivata al massimo una volta al mese: minuto, ora e giorno-del-mese (1-28) letterali, mese come * o un elenco separato da virgole di mesi letterali, e * per il giorno della settimana. Ad esempio, 0 6 1 1,4,7,10 * viene eseguito trimestralmente il giorno 1 alle 06:00.",
       "kindsRequired": "Seleziona almeno un controllo.",
       "enabled": "Abilitato",
       "override": "Personalizza per questa organizzazione",
@@ -1554,6 +1556,7 @@
         "baselineAgentMismatch": "Quella baseline appartiene a un altro agente.",
         "agentNotPartnerWide": "Le pianificazioni di scansione richiedono un agente valido per tutto il partner.",
         "agentKindNotTriage": "Solo un agente di triage può essere pianificato.",
+        "agentKindNotDesigner": "Una pianificazione di progettazione della flotta deve avere come destinazione un agente Progettista della flotta.",
         "kindsNotEmpty": "Una pianificazione di report settimanale non esegue controlli. Rimuovi i controlli selezionati prima di salvare.",
         "invalidCronForKind": "Un report settimanale deve essere attivato esattamente una volta a settimana. Usa minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana."
       }
@@ -1564,7 +1567,8 @@
     "kindHints": {
       "triage": "Analizza i nuovi avvisi e propone cosa fare.",
       "patch": "Esamina le patch mancanti e propone cosa installare.",
-      "helpdesk": "Prende in carico i ticket e propone risposte e prossimi passi."
+      "helpdesk": "Prende in carico i ticket e propone risposte e prossimi passi.",
+      "designer": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico."
     },
     "emptyState": {
       "title": "Nessun agente per ora",
@@ -1579,7 +1583,8 @@
       "shadowConsequence": "Osserva e propone; una persona approva tutto.",
       "act": "Azione",
       "actConsequence": "Esegue le operazioni consentite senza un clic. Nessun ripristino automatico.",
-      "actUnavailable": "Non ancora disponibile per questo agente."
+      "actUnavailable": "Non ancora disponibile per questo agente.",
+      "shadowUnavailableForKind": "Questo agente legge e scrive solo report — non c'è nulla da osservare in modalità ombra."
     },
     "allOrgs": "Tutte le organizzazioni",
     "allOrgsHint": "A livello di partner: vale per ogni organizzazione, salvo che un’organizzazione la restringa.",
@@ -1693,7 +1698,8 @@
     "kinds": {
       "triage": "Triage degli avvisi",
       "patch": "Gestione delle patch",
-      "helpdesk": "Assistenza"
+      "helpdesk": "Assistenza",
+      "designer": "Progettista della flotta"
     },
     "modes": {
       "off": "Disattivato",
@@ -1828,7 +1834,8 @@
       "profile": {
         "sweep": "Scansione",
         "narrative": "Report settimanale",
-        "triage": "Triage dei ticket"
+        "triage": "Triage dei ticket",
+        "design": "Progettazione della flotta"
       },
       "sweep": {
         "title": "Rilevazioni della scansione",
@@ -1875,6 +1882,14 @@
         "openReport": "Apri il report",
         "download": "Scarica il PDF",
         "downloadFailed": "Impossibile scaricare il PDF."
+      },
+      "fleetDesign": {
+        "title": "Progettazione della flotta",
+        "counts": "{{functions}} funzioni · {{watches}} monitoraggi · {{rules}} regole di avviso",
+        "openReport": "Apri il report",
+        "download": "Scarica il PDF",
+        "downloadFailed": "Impossibile scaricare il PDF.",
+        "truncatedNote": "Le evidenze sono state troncate — questa progettazione non ha visto l'intera flotta."
       },
       "noAgent": "Agente sconosciuto",
       "loading": "Caricamento delle esecuzioni…",
@@ -2697,7 +2712,8 @@
       "loggedProposalCount_other": "{{count}} proposte registrate",
       "unattendedCount_one": "{{count}} senza supervisione",
       "unattendedCount_other": "{{count}} senza supervisione",
-      "scriptGateNote": "Resta una richiesta di approvazione finché uno script non viene autorizzato per questo agente."
+      "scriptGateNote": "Resta una richiesta di approvazione finché uno script non viene autorizzato per questo agente.",
+      "designerReadOnly": "Il Progettista della flotta ha accesso a ogni strumento di sola lettura e a uno strumento di report. Non ha capacità di modifica da scegliere."
     },
     "summary": {
       "edit": "Modifica",
@@ -2798,6 +2814,11 @@
           "blurb": "Gestisce i ticket non appena vengono creati, ricevono una risposta o vengono risolti.",
           "runsWhen": "un ticket viene creato, riceve la sua prima risposta o viene contrassegnato come risolto",
           "recommended": "riavviare i servizi e liberare spazio su disco per risolvere le richieste comuni"
+        },
+        "designer": {
+          "blurb": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico.",
+          "runsWhen": "avvii una Progettazione della flotta per un'organizzazione, oppure in base a una pianificazione trimestrale",
+          "recommended": "una migrazione da zero, oppure un audit di configurazione trimestrale"
         }
       },
       "kindCard": {

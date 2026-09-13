@@ -65,13 +65,15 @@ describe('freeKinds / firstFreeKind', () => {
   ] as unknown as Parameters<typeof freeKinds>[0];
 
   it('excludes a kind already taken on the SAME ownership axis, independently per axis', () => {
-    expect(freeKinds(agents, 'partner', 'org-1')).toEqual(['patch', 'helpdesk']);
-    expect(freeKinds(agents, 'organization', 'org-1')).toEqual(['triage', 'helpdesk']);
+    // Fleet Designer (W01) added a fourth kind to AI_AGENT_KINDS — still free
+    // on both axes here since no fixture agent holds it.
+    expect(freeKinds(agents, 'partner', 'org-1')).toEqual(['patch', 'helpdesk', 'designer']);
+    expect(freeKinds(agents, 'organization', 'org-1')).toEqual(['triage', 'helpdesk', 'designer']);
     expect(firstFreeKind(agents, 'partner', 'org-1')).toBe('patch');
   });
 
   it('never lets one org own a kind another org already owns', () => {
-    expect(freeKinds(agents, 'organization', 'org-2')).toEqual(['triage', 'patch', 'helpdesk']);
+    expect(freeKinds(agents, 'organization', 'org-2')).toEqual(['triage', 'patch', 'helpdesk', 'designer']);
   });
 });
 

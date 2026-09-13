@@ -1510,11 +1510,13 @@
       "timezone": "Zona horaria",
       "kinds": {
         "sweep": "Barrido",
-        "narrative": "Informe semanal"
+        "narrative": "Informe semanal",
+        "design": "Diseño de flota"
       },
       "kindsLabel": "Comprobaciones a ejecutar",
       "kind": "Tipo de programación",
       "weeklyOnlyHint": "Un informe semanal se dispara exactamente una vez por semana: minuto y hora literales, * para día-del-mes y mes, y un solo día de la semana de 0 a 6. Por ejemplo, 0 7 * * 1 se ejecuta todos los lunes a las 07:00.",
+      "monthlyOrRarerHint": "Un diseño de flota se dispara como máximo una vez al mes: minuto, hora y día-del-mes (1-28) literales, mes como * o una lista separada por comas de meses literales, y * para el día de la semana. Por ejemplo, 0 6 1 1,4,7,10 * se ejecuta trimestralmente el día 1 a las 06:00.",
       "kindsRequired": "Selecciona al menos una comprobación.",
       "enabled": "Habilitado",
       "override": "Anular para esta organización",
@@ -1554,6 +1556,7 @@
         "baselineAgentMismatch": "Esa línea base pertenece a otro agente.",
         "agentNotPartnerWide": "Las programaciones de barrido requieren un agente de todo el partner.",
         "agentKindNotTriage": "Solo se puede programar un agente de triaje.",
+        "agentKindNotDesigner": "Una programación de diseño de flota debe dirigirse a un agente Diseñador de flota.",
         "kindsNotEmpty": "Una programación de informe semanal no ejecuta comprobaciones. Quita las comprobaciones seleccionadas antes de guardar.",
         "invalidCronForKind": "Un informe semanal debe dispararse exactamente una vez por semana. Usa minuto y hora literales, * para día-del-mes y mes, y un solo día de la semana."
       }
@@ -1564,7 +1567,8 @@
     "kindHints": {
       "triage": "Investiga las alertas nuevas y propone qué hacer con ellas.",
       "patch": "Revisa los parches faltantes y propone qué instalar.",
-      "helpdesk": "Toma tickets y propone respuestas y próximos pasos."
+      "helpdesk": "Toma tickets y propone respuestas y próximos pasos.",
+      "designer": "Lee toda la flota y escribe un diseño de monitoreo justificado para que un técnico lo apruebe."
     },
     "emptyState": {
       "title": "Aún no hay agentes",
@@ -1579,7 +1583,8 @@
       "shadowConsequence": "Observa y propone; una persona aprueba todo.",
       "act": "Actuación",
       "actConsequence": "Ejecuta las operaciones permitidas sin un clic. No hay reversión automática.",
-      "actUnavailable": "Todavía no está disponible para este agente."
+      "actUnavailable": "Todavía no está disponible para este agente.",
+      "shadowUnavailableForKind": "Este agente solo lee y escribe informes: no hay nada que observar en modo sombra."
     },
     "allOrgs": "Todas las organizaciones",
     "allOrgsHint": "Para todo el partner: se aplica a cada organización, salvo que una organización la restrinja.",
@@ -1693,7 +1698,8 @@
     "kinds": {
       "triage": "Clasificación de alertas",
       "patch": "Aplicación de parches",
-      "helpdesk": "Mesa de ayuda"
+      "helpdesk": "Mesa de ayuda",
+      "designer": "Diseñador de flota"
     },
     "modes": {
       "off": "Desactivado",
@@ -1828,7 +1834,8 @@
       "profile": {
         "sweep": "Barrido",
         "narrative": "Informe semanal",
-        "triage": "Triaje de tickets"
+        "triage": "Triaje de tickets",
+        "design": "Diseño de flota"
       },
       "sweep": {
         "title": "Hallazgos del barrido",
@@ -1875,6 +1882,14 @@
         "openReport": "Abrir informe",
         "download": "Descargar PDF",
         "downloadFailed": "No se pudo descargar el PDF."
+      },
+      "fleetDesign": {
+        "title": "Diseño de flota",
+        "counts": "{{functions}} funciones · {{watches}} monitoreos · {{rules}} reglas de alerta",
+        "openReport": "Abrir informe",
+        "download": "Descargar PDF",
+        "downloadFailed": "No se pudo descargar el PDF.",
+        "truncatedNote": "Se acortó la evidencia: este diseño no vio toda la flota."
       },
       "noAgent": "Agente desconocido",
       "loading": "Cargando ejecuciones…",
@@ -2697,7 +2712,8 @@
       "loggedProposalCount_other": "{{count}} propuestas registradas",
       "unattendedCount_one": "{{count}} sin supervisión",
       "unattendedCount_other": "{{count}} sin supervisión",
-      "scriptGateNote": "Sigue siendo una solicitud de aprobación hasta que se autorice un script para este agente."
+      "scriptGateNote": "Sigue siendo una solicitud de aprobación hasta que se autorice un script para este agente.",
+      "designerReadOnly": "El Diseñador de flota accede a todas las herramientas de solo lectura y a una herramienta de informes. No tiene capacidades de modificación para elegir."
     },
     "summary": {
       "edit": "Editar",
@@ -2798,6 +2814,11 @@
           "blurb": "Trabaja los tickets a medida que se crean, reciben respuesta o se resuelven.",
           "runsWhen": "se crea un ticket, recibe su primera respuesta o se marca como resuelto",
           "recommended": "reiniciar servicios y liberar espacio en disco para resolver solicitudes comunes"
+        },
+        "designer": {
+          "blurb": "Lee toda la flota y escribe un diseño de monitoreo justificado para que un técnico lo apruebe.",
+          "runsWhen": "inicias un Diseño de flota para una organización, o según una programación trimestral",
+          "recommended": "una migración desde cero, o una auditoría de configuración trimestral"
         }
       },
       "kindCard": {
