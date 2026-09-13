@@ -34,7 +34,10 @@
       "designRate": "Bu kuruluş şu an için Filo Tasarımı çalıştırma sınırına ulaştı.",
       "duplicate": "Eşdeğer bir Filo Tasarımı çalıştırması zaten istenmişti.",
       "generic": "Çalıştırma başlatılmadı ({{reason}})."
-    }
+    },
+    "fileAsDocument": "Belge olarak dosyala",
+    "fileAsDocumentSuccess": "Tasarım belge kitaplığına dosyalandı.",
+    "fileAsDocumentError": "Tasarım belge olarak dosyalanamadı."
   },
   "sections": {
     "found": "Neler bulundu",
@@ -89,5 +92,22 @@
     "site_restricted": "Sahayla sınırlı hesaplar bir Filo Tasarımını uygulayamaz veya geri alamaz.",
     "no_designer_agent": "Bu kuruluş için yapılandırılmış bir tasarımcı ajan yok.",
     "not_found": "Bu Filo Tasarımı bulunamadı."
+  },
+  "drift": {
+    "banner": "{{date}} tarihinde uygulanan tasarımdan bu yana sapma: {{missing}} eksik, {{extra}} fazla, {{changed}} değişmiş.",
+    "deviceCount_one": "{{count}} cihaz",
+    "deviceCount_other": "{{count}} cihaz",
+    "rows": {
+      "missing": "Eksik",
+      "extra": "Fazla",
+      "changed": "Değişmiş"
+    },
+    "columns": {
+      "drift": "Sapma",
+      "kind": "Tür",
+      "item": "Öğe",
+      "scope": "İşlev / ilke",
+      "detail": "Ayrıntı"
+    }
   }
 }

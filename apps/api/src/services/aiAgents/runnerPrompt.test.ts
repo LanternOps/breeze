@@ -20,6 +20,7 @@ import {
 import { FLEET_DESIGN_SECTION_KEYS, NARRATIVE_SECTION_KEYS } from '@breeze/shared';
 import type { DesignEvidence } from './designEvidence';
 import type { NarrativeContext } from './narrativeContext';
+import type { ApprovedDesignSummary } from '../fleetDesign/drift';
 
 function ctx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunPromptContext {
   return {
@@ -1131,6 +1132,8 @@ function designEvidence(overrides: Partial<DesignEvidence> = {}): DesignEvidence
     },
     unavailable: [],
     truncated: false,
+    approvedDesign: null,
+    driftLive: null,
     ...overrides,
   };
 }
@@ -1208,5 +1211,44 @@ describe('buildFleetDesignTaskPrompt (Fleet Designer W01)', () => {
 
   it('buildAgentRunTaskPrompt dispatches a design-profile run to the design turn', () => {
     expect(buildAgentRunTaskPrompt(designCtx())).toBe(buildFleetDesignTaskPrompt(designCtx()));
+  });
+
+  // W05 (#5655): a scheduled design run that follows an APPLIED one carries
+  // `approvedDesign` — the prompt should read as drift against it.
+  describe('approved design / drift (W05)', () => {
+    it('without an approved design, there is no heading and the retired guidance is the original text', () => {
+      const text = buildFleetDesignTaskPrompt(designCtx());
+      expect(text).not.toContain('## Approved design');
+      expect(text).toContain('retired: watches and rules in the current configuration that the design does not carry forward');
+      expect(text).not.toContain('drift: rules and watches live today');
+    });
+
+    it('with an approved design, renders the heading, functions, watches, rules, retired items and drift guidance — never raw device ids', () => {
+      const approvedDesign: ApprovedDesignSummary = {
+        reportRunId: 'run-1',
+        appliedAt: '2026-09-01T10:00:00.000Z',
+        functions: [{
+          functionKey: 'file_server',
+          label: 'File servers',
+          groupId: 'g1',
+          policyId: 'p1',
+          deviceIds: ['d1', 'd2'],
+          watches: [{ watchType: 'service', name: 'LanmanServer', enabled: true }],
+          rules: [{ name: 'Disk over 90%', severity: 'high', cooldownMinutes: 30 }],
+        }],
+        retired: [{ kind: 'rule', policyId: 'p9', policyName: 'Old', itemName: 'Ping' }],
+      };
+      const text = buildFleetDesignTaskPrompt(designCtx({
+        design: { trigger: 'manual', occurrenceKey: null, evidence: designEvidence({ approvedDesign }) },
+      }));
+
+      expect(text).toContain('## Approved design (applied 2026-09-01)');
+      expect(text).toContain('function file_server "File servers": 2 device(s), policy p1');
+      expect(text).toContain('watch: service LanmanServer');
+      expect(text).toContain('rule: Disk over 90% [high], cooldown 30m');
+      expect(text).toContain('retired: rule "Ping" from policy p9');
+      expect(text).toContain('retired: drift: rules and watches live today');
+      expect(text).not.toContain('d1');
+    });
   });
 });

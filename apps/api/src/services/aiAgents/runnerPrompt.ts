@@ -1114,6 +1114,11 @@ const FLEET_DESIGN_SECTION_GUIDANCE: Readonly<Record<(typeof FLEET_DESIGN_SECTIO
     + 'coarse-role correction (billing-relevant).',
 };
 
+/** W05 (#5655): replaces the `retired` guidance when an approved design exists. */
+const FLEET_DESIGN_RETIRED_DRIFT_GUIDANCE =
+  'drift: rules and watches live today that the approved design does not carry, and approved ones that '
+  + 'are missing or changed by hand. Each with a reason. Empty is valid.';
+
 /**
  * Fleet Designer W01 (#5651) — the task turn for a `design`-profile run.
  * Like `buildSweepTaskPrompt`/`buildNarrativeTaskPrompt`, this REPLACES the
@@ -1219,6 +1224,22 @@ export function buildFleetDesignTaskPrompt(ctx: AgentRunPromptContext): string {
     lines.push('');
   }
 
+  // W05 (#5655): a design run that follows an APPLIED one sees what was
+  // approved, so its `retired` section reads as drift. Watches/rules only —
+  // never the device id lists, which the drift computation (server-side,
+  // `computeDrift`) already covers deterministically.
+  if (e.approvedDesign) {
+    const a = e.approvedDesign;
+    lines.push(`## Approved design (applied ${a.appliedAt.slice(0, 10)})`);
+    for (const fn of a.functions) {
+      lines.push(`function ${fn.functionKey} "${designCell(fn.label)}": ${fn.deviceIds.length} device(s)${fn.policyId ? `, policy ${fn.policyId}` : ''}`);
+      for (const w of fn.watches) lines.push(`  watch: ${w.watchType} ${w.name}`);
+      for (const r of fn.rules) lines.push(`  rule: ${r.name} [${r.severity}], cooldown ${r.cooldownMinutes}m`);
+    }
+    for (const r of a.retired) lines.push(`retired: ${r.kind} "${r.itemName}" from policy ${r.policyId}`);
+    lines.push('');
+  }
+
   if (e.automation.playbooks.length || e.automation.scripts.length) {
     lines.push('## Automation catalog');
     for (const p of e.automation.playbooks) lines.push(`playbook ${p.id} "${p.name}"${p.isBuiltIn ? ' (built-in)' : ''}${p.category ? ` [${p.category}]` : ''}`);
@@ -1272,7 +1293,10 @@ export function buildFleetDesignTaskPrompt(ctx: AgentRunPromptContext): string {
   lines.push('');
 
   lines.push('## Write these eight sections, in this order');
-  for (const key of FLEET_DESIGN_SECTION_KEYS) lines.push(`${key}: ${FLEET_DESIGN_SECTION_GUIDANCE[key]}`);
+  for (const key of FLEET_DESIGN_SECTION_KEYS) {
+    const guidance = key === 'retired' && e.approvedDesign ? FLEET_DESIGN_RETIRED_DRIFT_GUIDANCE : FLEET_DESIGN_SECTION_GUIDANCE[key];
+    lines.push(`${key}: ${guidance}`);
+  }
   lines.push('');
   lines.push('## Rules');
   lines.push(
@@ -1280,6 +1304,12 @@ export function buildFleetDesignTaskPrompt(ctx: AgentRunPromptContext): string {
     + 'threshold or count. Prefer fewer rules with a reason over many "just in case" rules. Plain English '
     + 'in rationales; no markdown markers, no links.',
   );
+  if (e.approvedDesign) {
+    lines.push(
+      'An approved design already applies to this organization. Nothing you submit is applied automatically; '
+      + 'a technician reviews it. Carry the approved design forward unless the evidence says otherwise.',
+    );
+  }
   lines.push('Call submit_fleet_design exactly once, then stop.');
 
   return lines.join('\n');

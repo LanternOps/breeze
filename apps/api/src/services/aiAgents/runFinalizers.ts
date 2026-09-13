@@ -25,6 +25,7 @@ import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { persistAlertVerdict, type AlertVerdictIntentInfo } from './alertVerdicts';
 import { isDesignProfile } from './designProfile';
 import { FleetDesignPersistConflictError, persistFleetDesignReport } from './fleetDesignReport';
+import { computeDrift } from '../fleetDesign/drift';
 import { isNarrativeProfile } from './narrativeProfile';
 import { NarrativePersistConflictError, persistNarrativeReport } from './narrativeReport';
 import { persistSweepFindings } from './sweepFindings';
@@ -331,6 +332,12 @@ export async function finalizeFleetDesign(ctx: RunContext, result: LoopResult): 
     return null;
   }
 
+  // W05 (#5655): drift is computed HERE, deterministically, from the approved
+  // design the evidence loader found and the live state it loaded beside it
+  // — never from anything the model submitted. No applied design → null.
+  const { approvedDesign, driftLive } = ctx.design.evidence;
+  const drift = approvedDesign && driftLive ? computeDrift(approvedDesign, driftLive) : null;
+
   try {
     const { reportId, reportRunId } = await persistFleetDesignReport({
       run: {
@@ -342,6 +349,7 @@ export async function finalizeFleetDesign(ctx: RunContext, result: LoopResult): 
       agent: { id: ctx.agent.id, name: ctx.agent.name },
       evidence: ctx.design.evidence,
       outcome: outcome.fleetDesign,
+      drift,
     });
     // TWO ids, never the evidence or the outcome again — see the field's
     // docstring on `AgentRunOutcome.fleetDesignReport`.

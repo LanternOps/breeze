@@ -128,6 +128,41 @@ describe('FleetDesignPage', () => {
     expect(window.location.hash).toBe('#run-1');
   });
 
+  it('renders the drift banner and table when the design carries drift (W05)', async () => {
+    getDesignMock.mockResolvedValue({
+      ...DETAIL,
+      summary: {
+        fleetDesign: {
+          outcome: OUTCOME,
+          drift: {
+            approvedReportRunId: 'run-0',
+            appliedAt: '2026-06-01T10:00:00.000Z',
+            missing: [{ functionKey: 'shared_workstation', kind: 'rule', name: 'High CPU' }],
+            extra: [{ policyId: 'p9', policyName: 'Hand-made', kind: 'watch', name: 'Fax', deviceCount: 3 }],
+            changed: [{ functionKey: 'shared_workstation', kind: 'watch', name: 'spooler', field: 'enabled', approved: 'true', live: 'false' }],
+          },
+        },
+      },
+    });
+    window.location.hash = '#run-1';
+    render(<FleetDesignPage />);
+
+    await waitFor(() => expect(screen.getByTestId('fleet-design-drift')).toBeInTheDocument());
+    const banner = screen.getByTestId('fleet-design-drift-banner');
+    expect(banner.textContent).toContain('1 missing');
+    expect(banner.textContent).toContain('1 extra');
+    expect(banner.textContent).toContain('1 changed');
+    expect(screen.getByTestId('fleet-design-drift-table').textContent).toContain('Hand-made');
+    expect(screen.getByTestId('fleet-design-drift-table').textContent).toContain('High CPU');
+  });
+
+  it('renders no drift block when the design has none', async () => {
+    window.location.hash = '#run-1';
+    render(<FleetDesignPage />);
+    await waitFor(() => expect(screen.getByTestId('fleet-design-viewer')).toBeInTheDocument());
+    expect(screen.queryByTestId('fleet-design-drift')).not.toBeInTheDocument();
+  });
+
   it('selects the design named by the URL hash on load', async () => {
     window.location.hash = '#run-1';
     render(<FleetDesignPage />);

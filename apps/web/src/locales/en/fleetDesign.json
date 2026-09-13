@@ -34,7 +34,10 @@
       "designRate": "This organization has reached its Fleet Design run limit for now.",
       "duplicate": "A matching Fleet Design run was already requested.",
       "generic": "The run was not started ({{reason}})."
-    }
+    },
+    "fileAsDocument": "File as document",
+    "fileAsDocumentSuccess": "Design filed in the document library.",
+    "fileAsDocumentError": "Could not file the design as a document."
   },
   "sections": {
     "found": "What was found",
@@ -89,5 +92,22 @@
     "site_restricted": "Site-restricted accounts cannot apply or roll back a Fleet Design.",
     "no_designer_agent": "No designer agent is configured for this organization.",
     "not_found": "This Fleet Design could not be found."
+  },
+  "drift": {
+    "banner": "Drift since the design applied on {{date}}: {{missing}} missing, {{extra}} extra, {{changed}} changed.",
+    "deviceCount_one": "{{count}} device",
+    "deviceCount_other": "{{count}} devices",
+    "rows": {
+      "missing": "Missing",
+      "extra": "Extra",
+      "changed": "Changed"
+    },
+    "columns": {
+      "drift": "Drift",
+      "kind": "Kind",
+      "item": "Item",
+      "scope": "Function / policy",
+      "detail": "Detail"
+    }
   }
 }

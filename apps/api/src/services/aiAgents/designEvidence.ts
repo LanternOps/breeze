@@ -77,6 +77,7 @@ import { getManagementPostureSummary } from '../managementPostureReport';
 import { listReliabilityDevices } from '../reliabilityScoring';
 import { getSecurityPostureTrend } from '../securityPosture';
 import { captureException } from '../sentry';
+import { loadApprovedDesign, loadDriftLiveState, type ApprovedDesignSummary, type DriftLiveState } from '../fleetDesign/drift';
 import { sanitizeSweepText } from './runnerPrompt';
 
 // Late-bound namespace import (NOT `const { db } = dbModule`): destructuring
@@ -194,6 +195,15 @@ export interface DesignEvidence {
   thresholds: typeof FLEET_DESIGN_PRECURSOR_THRESHOLDS;
   unavailable: string[];
   truncated: boolean;
+  /**
+   * W05 (#5655): the org's newest APPLIED design (null when none), and the
+   * live state `computeDrift` compares it against. Loaded together, never
+   * byte-trimmed (deterministic, bounded by the ledger), and rendered to the
+   * model only as the approved design's watches/rules — the drift itself is
+   * computed by the finaliser, not the model.
+   */
+  approvedDesign: ApprovedDesignSummary | null;
+  driftLive: DriftLiveState | null;
 }
 
 // NOTE: `'devices'` is ALSO in the base `Omit` (not just the four
@@ -334,6 +344,10 @@ export function assembleDesignEvidence(raw: RawDesignEvidence, opts: { limitByte
     thresholds: FLEET_DESIGN_PRECURSOR_THRESHOLDS,
     unavailable: raw.unavailable,
     truncated: false,
+    // Never trimmed: the drift comparison must see the whole approved design
+    // or it would report trimmed-away items as "missing".
+    approvedDesign: raw.approvedDesign,
+    driftLive: raw.driftLive,
   };
 
   // Byte ceiling, measured over the WHOLE serialized bundle. Each pass drops
@@ -1017,6 +1031,15 @@ export async function loadDesignEvidence(orgId: string, opts: { siteId?: string 
   if (!counts) missing('counts');
   const precursors = await settled(orgId, 'precursors', () => loadPrecursors(orgId, siteId, FLEET_DESIGN_PRECURSOR_THRESHOLDS));
   if (!precursors) missing('precursors');
+  // W05: the approved design and the live state it is compared against. A
+  // loader failure lands in `unavailable` like any other section — the run
+  // then simply carries no drift, never an invented empty one.
+  const approved = await settled(orgId, 'approvedDesign', async () => {
+    const design = await loadApprovedDesign(orgId);
+    if (!design) return { approvedDesign: null, driftLive: null };
+    return { approvedDesign: design, driftLive: await loadDriftLiveState(orgId, design) };
+  });
+  if (!approved) missing('approvedDesign');
 
   const raw: RawDesignEvidence = {
     org: {
@@ -1039,6 +1062,8 @@ export async function loadDesignEvidence(orgId: string, opts: { siteId?: string 
     counts: counts ?? { alerts90d: 0, tickets90d: 0, endpoints: 0 },
     precursors: precursors ?? { diskOver: 0, rebootPending: 0, rebootPendingOver: 0, patchAgeOver: 0, certificateExpiring: null, backupMissed: 0, serviceRestartsOver: 0 },
     unavailable,
+    approvedDesign: approved?.approvedDesign ?? null,
+    driftLive: approved?.driftLive ?? null,
   };
 
   return assembleDesignEvidence(raw);

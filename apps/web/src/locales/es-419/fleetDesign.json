@@ -34,7 +34,10 @@
       "designRate": "Esta organización alcanzó su límite de ejecuciones de diseño de flota por ahora.",
       "duplicate": "Ya se había solicitado una ejecución de diseño de flota equivalente.",
       "generic": "La ejecución no se inició ({{reason}})."
-    }
+    },
+    "fileAsDocument": "Archivar como documento",
+    "fileAsDocumentSuccess": "Diseño archivado en la biblioteca de documentos.",
+    "fileAsDocumentError": "No se pudo archivar el diseño como documento."
   },
   "sections": {
     "found": "Qué se encontró",
@@ -89,5 +92,22 @@
     "site_restricted": "Las cuentas restringidas a un sitio no pueden aplicar ni revertir un diseño de flota.",
     "no_designer_agent": "No hay ningún agente diseñador configurado para esta organización.",
     "not_found": "No se encontró este diseño de flota."
+  },
+  "drift": {
+    "banner": "Desviación desde el diseño aplicado el {{date}}: {{missing}} faltantes, {{extra}} adicionales, {{changed}} modificados.",
+    "deviceCount_one": "{{count}} dispositivo",
+    "deviceCount_other": "{{count}} dispositivos",
+    "rows": {
+      "missing": "Faltante",
+      "extra": "Adicional",
+      "changed": "Modificado"
+    },
+    "columns": {
+      "drift": "Desviación",
+      "kind": "Tipo",
+      "item": "Elemento",
+      "scope": "Función / política",
+      "detail": "Detalle"
+    }
   }
 }

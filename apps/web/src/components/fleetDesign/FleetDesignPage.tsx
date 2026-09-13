@@ -13,6 +13,7 @@ import { PageHeader } from "../shared/PageHeader";
 import { EmptyState } from "../shared/EmptyState";
 import { exportReport, getBrowserTimezone } from "../reports/reportExport";
 import FleetDesignViewer from "./FleetDesignViewer";
+import DriftPanel from "./DriftPanel";
 import ApplyDrawer from "./ApplyDrawer";
 import { useDesignSelection } from "./useDesignSelection";
 import {
@@ -231,6 +232,7 @@ export default function FleetDesignPage() {
   };
 
   const outcome: FleetDesignOutcome | undefined = detail?.summary.fleetDesign?.outcome;
+  const drift = detail?.summary.fleetDesign?.drift ?? null;
   const hasAppliedRows = ledger.some((i) => i.status === "applied");
 
   return (
@@ -397,6 +399,8 @@ export default function FleetDesignPage() {
               </ul>
             </div>
           )}
+
+          {drift && <DriftPanel drift={drift} />}
 
           <FleetDesignViewer outcome={outcome} selection={selection} />
 

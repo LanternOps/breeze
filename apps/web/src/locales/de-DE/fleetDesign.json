@@ -34,7 +34,10 @@
       "designRate": "Diese Organisation hat ihr aktuelles Limit für Flottendesign-Läufe erreicht.",
       "duplicate": "Ein passender Flottendesign-Lauf wurde bereits angefordert.",
       "generic": "Der Lauf wurde nicht gestartet ({{reason}})."
-    }
+    },
+    "fileAsDocument": "Als Dokument ablegen",
+    "fileAsDocumentSuccess": "Design in der Dokumentbibliothek abgelegt.",
+    "fileAsDocumentError": "Das Design konnte nicht als Dokument abgelegt werden."
   },
   "sections": {
     "found": "Was gefunden wurde",
@@ -89,5 +92,22 @@
     "site_restricted": "Standortbeschränkte Konten können ein Flottendesign weder anwenden noch zurücksetzen.",
     "no_designer_agent": "Für diese Organisation ist kein Design-Agent konfiguriert.",
     "not_found": "Dieses Flottendesign wurde nicht gefunden."
+  },
+  "drift": {
+    "banner": "Abweichung seit dem am {{date}} angewendeten Design: {{missing}} fehlend, {{extra}} zusätzlich, {{changed}} geändert.",
+    "deviceCount_one": "{{count}} Gerät",
+    "deviceCount_other": "{{count}} Geräte",
+    "rows": {
+      "missing": "Fehlt",
+      "extra": "Zusätzlich",
+      "changed": "Geändert"
+    },
+    "columns": {
+      "drift": "Abweichung",
+      "kind": "Art",
+      "item": "Element",
+      "scope": "Funktion / Richtlinie",
+      "detail": "Detail"
+    }
   }
 }

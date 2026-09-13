@@ -34,7 +34,10 @@
       "designRate": "Esta organização atingiu seu limite de execuções de design de frota por enquanto.",
       "duplicate": "Uma execução de design de frota equivalente já havia sido solicitada.",
       "generic": "A execução não foi iniciada ({{reason}})."
-    }
+    },
+    "fileAsDocument": "Arquivar como documento",
+    "fileAsDocumentSuccess": "Design arquivado na biblioteca de documentos.",
+    "fileAsDocumentError": "Não foi possível arquivar o design como documento."
   },
   "sections": {
     "found": "O que foi encontrado",
@@ -89,5 +92,22 @@
     "site_restricted": "Contas restritas a um site não podem aplicar nem reverter um design de frota.",
     "no_designer_agent": "Nenhum agente projetista está configurado para esta organização.",
     "not_found": "Este design de frota não foi encontrado."
+  },
+  "drift": {
+    "banner": "Desvio desde o design aplicado em {{date}}: {{missing}} ausentes, {{extra}} extras, {{changed}} alterados.",
+    "deviceCount_one": "{{count}} dispositivo",
+    "deviceCount_other": "{{count}} dispositivos",
+    "rows": {
+      "missing": "Ausente",
+      "extra": "Extra",
+      "changed": "Alterado"
+    },
+    "columns": {
+      "drift": "Desvio",
+      "kind": "Tipo",
+      "item": "Item",
+      "scope": "Função / política",
+      "detail": "Detalhe"
+    }
   }
 }

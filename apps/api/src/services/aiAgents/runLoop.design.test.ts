@@ -327,6 +327,8 @@ function designRaw(overrides: Partial<RawDesignEvidence> = {}): RawDesignEvidenc
     counts: { alerts90d: 40, tickets90d: 6, endpoints: 1 },
     precursors: { diskOver: 0, rebootPending: 0, rebootPendingOver: 0, patchAgeOver: 0, certificateExpiring: null, backupMissed: 0, serviceRestartsOver: 0 },
     unavailable: [],
+    approvedDesign: null,
+    driftLive: null,
     ...overrides,
   };
 }
