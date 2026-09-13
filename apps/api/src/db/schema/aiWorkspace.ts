@@ -10,7 +10,7 @@ export type { AiArtifactKind };
 
 /**
  * AI execution plane — artifact store (spec 2026-09-13 §5.2 / §6.1; SQL in
- * migrations/2026-10-16-171300-ai-run-artifacts.sql).
+ * migrations/2026-10-16-180400-ai-run-artifacts.sql).
  *
  * `ai_run_artifacts` is Shape 1 (direct NOT NULL org_id, RLS forced). One row
  * per stored blob; `id` IS the handle the model and the UI hold. Rules that

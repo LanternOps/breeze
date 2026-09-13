@@ -1,4 +1,4 @@
--- apps/api/migrations/2026-10-16-171300-ai-run-artifacts.sql
+-- apps/api/migrations/2026-10-16-180400-ai-run-artifacts.sql
 -- AI execution plane W01 — artifact store (spec
 -- docs/superpowers/specs/ai-mcp/2026-09-13-ai-agent-execution-plane-design.md
 -- §5.2, §6.1, §8). Drizzle mirror: src/db/schema/aiWorkspace.ts.
