@@ -86,6 +86,7 @@ import {
   buildRunsKeysetPredicate, decodeRunsCursor, encodeRunsCursor, runsCursorFromRow,
 } from '../services/aiAgents/runsListCursor';
 import { verifyDeviceAccess } from '../services/aiTools';
+import { listArtifactsForAuth, toArtifactDto } from '../services/artifacts/artifactService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import { isPgUniqueViolation } from '../utils/pgErrors';
@@ -1210,6 +1211,27 @@ aiAgentsRoutes.get(
     return c.json({ data: pageRows.map(mapRunListItem), nextCursor });
   },
 );
+
+/**
+ * The run's artifacts (execution-plane spec §5.2/§8, W01). Registered HERE, in
+ * the router that already owns `/runs/:runId`, rather than in its own app
+ * mounted at the same `/ai/agents` prefix: two routers behind one prefix put
+ * their precedence in index.ts's mount order, invisible from either file, which
+ * is the shape of #4189. Keep this ABOVE `/runs/:runId`.
+ *
+ * An empty list rather than a 404 for another org's run: the run-detail route
+ * below already owns the exists/not-exists answer, and duplicating it here
+ * would add a second, independently-driftable disclosure surface. `blobKey`
+ * never leaves the API — `toArtifactDto` projects fields explicitly.
+ */
+aiAgentsRoutes.get('/runs/:runId/artifacts', scopes, requireAiRead, async (c) => {
+  const runId = uuidParam(c, 'runId');
+  if (!runId) return c.json({ error: 'Invalid run id', code: 'INVALID_RUN_ID' }, 400);
+
+  const auth = c.get('auth');
+  const records = await listArtifactsForAuth(runId, auth);
+  return c.json({ data: records.map(toArtifactDto) });
+});
 
 /**
  * The stitched execution-trace detail (Wave 6 PR 1, #3828): the run row's
