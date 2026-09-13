@@ -38,6 +38,7 @@ import { clearedScriptSecurityAcknowledgementColumns } from '../scriptSecurityAc
 import { cutScriptVersion } from '../scriptVersions';
 import { loadTenantVariableScope, resolveForOrg } from '../tenantVariableResolution';
 import {
+  MAX_BUNDLE_TAGS_PER_SCRIPT,
   SCRIPT_BUNDLE_VERSION,
   bundleScriptEntrySchema,
   formatEntryIssues,
@@ -335,6 +336,27 @@ export type BundleTargetOptions = {
   availability: BundleAvailability;
   orgId?: string | null;
 };
+
+/**
+ * Merge import-wide tags (e.g. `legacy-import`, Fleet Designer W04 #5654) into
+ * an entry's own tags. Import-wide tags come FIRST so they survive the
+ * per-script cap — the caller asked for them on every entry, and a legacy
+ * script that silently lost its discovery tag would never reach the designer.
+ * Dedupe is case-insensitive (first spelling wins); the result never exceeds
+ * MAX_BUNDLE_TAGS_PER_SCRIPT, the same bound the entry schema enforces.
+ */
+export function mergeTags(entryTags: readonly string[] | undefined, importTags: readonly string[] | undefined): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const name of [...(importTags ?? []), ...(entryTags ?? [])]) {
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+    if (out.length === MAX_BUNDLE_TAGS_PER_SCRIPT) break;
+  }
+  return out;
+}
 
 type ScriptRow = typeof scripts.$inferSelect;
 
@@ -690,7 +712,11 @@ export type BundleImportResult = {
 export async function importBundle(
   auth: BundleAuth,
   bundle: ScriptBundleEnvelope,
-  options: BundleTargetOptions & { mode: BundleImportMode }
+  options: BundleTargetOptions & {
+    mode: BundleImportMode;
+    /** Tags linked on every imported / renamed / versioned entry (skipped entries are untouched). */
+    tags?: readonly string[];
+  }
 ): Promise<BundleImportResult | ScriptScopeError> {
   const scope = resolveScriptCreateScope(auth, options.availability, options.orgId);
   if (isScriptScopeError(scope)) return scope;
@@ -817,7 +843,7 @@ export async function importBundle(
           });
         });
 
-        const tagIds = await ensureTagIds(scope, entry.tags ?? []);
+        const tagIds = await ensureTagIds(scope, mergeTags(entry.tags, options.tags));
         await linkTags(existing.id, tagIds, true);
 
         result.versioned++;
@@ -861,7 +887,7 @@ export async function importBundle(
         continue;
       }
 
-      const tagIds = await ensureTagIds(scope, entry.tags ?? []);
+      const tagIds = await ensureTagIds(scope, mergeTags(entry.tags, options.tags));
       await linkTags(created.id, tagIds, false);
 
       if (action === 'renamed') result.renamed++;

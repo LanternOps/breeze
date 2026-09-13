@@ -515,6 +515,88 @@ describe('importBundle', () => {
     expect((linkInsert!.values as unknown[]).length).toBe(2);
   });
 
+  // -------------------------------------------------------------------------
+  // Fleet Designer W04 (#5654): import-wide tags (`legacy-import` discovery).
+  // -------------------------------------------------------------------------
+  describe('import-wide tags', () => {
+    function tagNamesInserted(): string[] {
+      const insert = h.state.inserts.find((i) => i.table === scriptTags);
+      return insert ? (insert.values as Array<{ name: string }>).map((t) => t.name) : [];
+    }
+    function linkedTagIds(): string[] {
+      return h.state.inserts
+        .filter((i) => i.table === scriptToTags)
+        .flatMap((i) => (i.values as Array<{ tagId: string }>).map((l) => l.tagId));
+    }
+
+    it('links the import-wide tag on a newly imported entry', async () => {
+      h.state.selectQueue.push([], [], []); // no org conflict, no partner-wide conflict, tag missing
+      const result = await importBundle(makeAuth(), validBundle([baseEntry]), {
+        mode: 'skip', availability: 'org', tags: ['legacy-import'],
+      });
+      expect('error' in result).toBe(false);
+      expect(tagNamesInserted()).toEqual(['legacy-import']);
+      expect(linkedTagIds()).toHaveLength(1);
+    });
+
+    it('links the import-wide tag on a renamed entry', async () => {
+      h.state.selectQueue.push(
+        [{ id: SCRIPT_ID, name: baseEntry.name, version: 1, content: 'old' }], // conflict
+        [], // free-name candidates: (2) free
+        [{ id: TAG_ID, name: 'legacy-import' }], // tag already exists in scope
+      );
+      const result = await importBundle(makeAuth(), validBundle([baseEntry]), {
+        mode: 'rename', availability: 'org', tags: ['legacy-import'],
+      });
+      expect('error' in result).toBe(false);
+      if ('renamed' in result) expect(result.renamed).toBe(1);
+      expect(tagNamesInserted()).toEqual([]); // reused, not re-created
+      expect(linkedTagIds()).toEqual([TAG_ID]);
+    });
+
+    it('links the import-wide tag on a new-version entry', async () => {
+      h.state.selectQueue.push(
+        [{ id: SCRIPT_ID, name: baseEntry.name, version: 4, content: 'old content', description: 'd', category: null, parameters: null, exitCodeSeverityMapping: null }],
+        [{ id: TAG_ID, name: 'legacy-import' }], // ensureTagIds
+        [], // linkTags: existing links on the script → none
+      );
+      const result = await importBundle(makeAuth(), validBundle([{ ...baseEntry, content: 'new content' }]), {
+        mode: 'new-version', availability: 'org', tags: ['legacy-import'],
+      });
+      expect('error' in result).toBe(false);
+      if ('versioned' in result) expect(result.versioned).toBe(1);
+      expect(linkedTagIds()).toEqual([TAG_ID]);
+    });
+
+    it('does not double-link when the entry already carries the tag (case-insensitive)', async () => {
+      h.state.selectQueue.push([], [], []);
+      await importBundle(makeAuth(), validBundle([{ ...baseEntry, tags: ['Legacy-Import', 'printing'] }]), {
+        mode: 'skip', availability: 'org', tags: ['legacy-import'],
+      });
+      const names = tagNamesInserted();
+      expect(names.map((n) => n.toLowerCase()).filter((n) => n === 'legacy-import')).toHaveLength(1);
+      expect(names).toContain('printing');
+      expect(linkedTagIds()).toHaveLength(2);
+    });
+
+    it('keeps the import-wide tag when the entry is already at the per-script tag cap', async () => {
+      const entryTags = Array.from({ length: 20 }, (_, i) => `t${i}`);
+      h.state.selectQueue.push([], [], []);
+      await importBundle(makeAuth(), validBundle([{ ...baseEntry, tags: entryTags }]), {
+        mode: 'skip', availability: 'org', tags: ['legacy-import'],
+      });
+      const names = tagNamesInserted();
+      expect(names).toHaveLength(20);
+      expect(names[0]).toBe('legacy-import');
+    });
+
+    it('without import-wide tags, entry tags behave exactly as before', async () => {
+      h.state.selectQueue.push([], [], []);
+      await importBundle(makeAuth(), validBundle([{ ...baseEntry, tags: ['printing'] }]), { mode: 'skip', availability: 'org' });
+      expect(tagNamesInserted()).toEqual(['printing']);
+    });
+  });
+
   it('rejects a system-scope import with no orgId instead of creating tenantless orphan rows', async () => {
     const auth = makeAuth({ scope: 'system', orgId: null, partnerId: null, accessibleOrgIds: null });
     const result = await importBundle(auth, validBundle([baseEntry]), {
