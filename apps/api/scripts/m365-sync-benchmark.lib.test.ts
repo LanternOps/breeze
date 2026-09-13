@@ -27,6 +27,10 @@ describe('parseBenchmarkArgs', () => {
     expect(() => parseBenchmarkArgs(['--orgs=abc'])).toThrow(/--orgs/);
     expect(() => parseBenchmarkArgs(['--nope'])).toThrow(/unknown/i);
   });
+
+  it('tolerates a stray "--" (pnpm forwards it literally, it does not strip it)', () => {
+    expect(parseBenchmarkArgs(['--', '--orgs=50'])).toMatchObject({ orgs: 50 });
+  });
 });
 
 describe('makeSizeDistribution', () => {

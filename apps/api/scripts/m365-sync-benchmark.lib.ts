@@ -70,6 +70,12 @@ const NUMERIC_FLAGS: Record<string, keyof BenchmarkOptions> = {
 export function parseBenchmarkArgs(argv: string[]): BenchmarkOptions {
   const options: BenchmarkOptions = { ...DEFAULTS };
   for (const argument of argv) {
+    // `pnpm --filter @breeze/api m365-sync:benchmark -- --orgs=1000` forwards
+    // the literal `--` token into this script's argv (pnpm does not strip
+    // it for a plain tsx entrypoint, only for scripts vitest itself parses) —
+    // tolerate it defensively rather than let a copy-pasted `--` (the habit
+    // every other test script in this repo requires) throw "unknown argument".
+    if (argument === '--') continue;
     if (argument === '--keep-data') { options.keepData = true; continue; }
     const [flag, rawValue] = argument.split('=', 2);
     const key = NUMERIC_FLAGS[flag ?? ''];

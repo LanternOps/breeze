@@ -50,7 +50,18 @@ export interface FakeSyncExecutor {
   calls: FakeSyncCall[];
   unauthorizedCount: number;
   latencyMs: number;
-  enqueue(actionType: string, response: M365SyncActionResult | FakeSyncErrorResponse): void;
+  /**
+   * `tenantId` is optional and additive: omit it (every Tasks 1-8 caller
+   * does) and dequeuing is plain FIFO by actionType, unaffected. Pass it
+   * when multiple in-flight calls for the SAME actionType but DIFFERENT
+   * tenants can race — e.g. the benchmark driver runs several orgs
+   * concurrently, and `enqueue` happens synchronously right before an
+   * `await runSyncDomain(job)` whose HTTP POST lands several awaits later,
+   * so two workers' enqueue-then-post pairs can interleave and a plain FIFO
+   * queue would hand tenant A's fixture to tenant B's request whenever B's
+   * POST reaches the server first despite being enqueued second.
+   */
+  enqueue(actionType: string, response: M365SyncActionResult | FakeSyncErrorResponse, tenantId?: string): void;
   reset(): void;
   close(): Promise<void>;
 }
@@ -150,7 +161,12 @@ export async function createFakeSyncExecutor(
 
         if (latencyMs > 0) await new Promise((resolve) => setTimeout(resolve, latencyMs));
 
-        const queued = queues.get(actionType)?.shift();
+        // Tenant-keyed fixtures (queued via `enqueue(type, fixture, tenantId)`)
+        // take priority over the plain actionType queue, so a caller that
+        // needs per-tenant correctness under concurrency (the benchmark
+        // driver) gets it, while every existing plain-FIFO caller is unaffected.
+        const tenantKey = body.tenantId ? `${actionType}::${body.tenantId}` : undefined;
+        const queued = (tenantKey && queues.get(tenantKey)?.shift()) || queues.get(actionType)?.shift();
         if (!queued) {
           send(500, { code: 'no_fixture', action: actionType });
           return;
@@ -191,10 +207,11 @@ export async function createFakeSyncExecutor(
     calls,
     latencyMs,
     get unauthorizedCount() { return state.unauthorized; },
-    enqueue(actionType, queued) {
-      const list = queues.get(actionType) ?? [];
+    enqueue(actionType, queued, tenantId) {
+      const key = tenantId ? `${actionType}::${tenantId}` : actionType;
+      const list = queues.get(key) ?? [];
       list.push(queued);
-      queues.set(actionType, list);
+      queues.set(key, list);
     },
     reset() {
       queues.clear();

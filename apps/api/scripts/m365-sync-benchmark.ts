@@ -30,12 +30,13 @@
  *
  * Usage:
  *   DATABASE_URL_APP=... M365_TENANT_SYNC_ENABLED=true \
- *     pnpm --filter @breeze/api m365-sync:benchmark -- --orgs=1000 --window-minutes=60
+ *     pnpm --filter @breeze/api m365-sync:benchmark --orgs=1000 --window-minutes=60
  */
+import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { M365_SYNC_DOMAINS } from '@breeze/shared/m365';
 import { closeDb, db, withSystemDbAccessContext } from '../src/db';
-import { claimDueDomains } from '../src/services/m365Sync/claim';
+import { claimDueDomains, countDueDomains } from '../src/services/m365Sync/claim';
 import { runSyncDomain } from '../src/services/m365Sync/run';
 import {
   createFakeSyncExecutor,
@@ -55,12 +56,25 @@ async function walLsnBytes(): Promise<bigint> {
   return BigInt(row!.bytes);
 }
 
+/**
+ * The pass criterion is against the APP's configured pool size (the fetch
+ * phase holds no connection, so sync must never occupy more than half the
+ * pool it shares with request traffic) — not `max_connections`, which is a
+ * server-wide ceiling this benchmark's own pool is typically a small
+ * fraction of. Mirrors `getDbPoolMax()` in `../src/db/index.ts` (kept local
+ * rather than importing/exporting it, since that module has no other reason
+ * to expose an internal sizing default).
+ */
+function benchmarkPoolMax(): number {
+  const raw = Number.parseInt(process.env.DB_POOL_MAX ?? '', 10);
+  return !Number.isFinite(raw) || raw <= 0 ? 30 : raw;
+}
+
 async function poolOccupancy(): Promise<{ active: number; max: number }> {
   const [row] = (await withSystemDbAccessContext(() => db.execute(sql`
-    SELECT count(*) FILTER (WHERE state <> 'idle') AS active,
-           current_setting('max_connections')::int AS max
-    FROM pg_stat_activity WHERE usename = current_user`))) as unknown as { active: string; max: number }[];
-  return { active: Number(row!.active), max: row!.max };
+    SELECT count(*) FILTER (WHERE state <> 'idle') AS active
+    FROM pg_stat_activity WHERE usename = current_user`))) as unknown as { active: string }[];
+  return { active: Number(row!.active), max: benchmarkPoolMax() };
 }
 
 async function main(): Promise<void> {
@@ -73,6 +87,10 @@ async function main(): Promise<void> {
 
   // --- seed ---------------------------------------------------------------
   console.log(`[${BENCH_TAG}] seeding ${options.orgs} orgs …`);
+  // tenantId is minted here (not gen_random_uuid() in SQL) so the driver can
+  // key fixtures per tenant below — see the executor.enqueue(..., tenantId)
+  // calls in the ticker loop.
+  const orgTenantIds = new Map<string, string>();
   const orgIds = await withSystemDbAccessContext(async () => {
     const [partner] = (await db.execute(sql`
       INSERT INTO partners (name, slug, status)
@@ -80,6 +98,7 @@ async function main(): Promise<void> {
       RETURNING id`)) as unknown as { id: string }[];
     const created: string[] = [];
     for (let index = 0; index < options.orgs; index += 1) {
+      const tenantId = randomUUID();
       const [org] = (await db.execute(sql`
         INSERT INTO organizations (partner_id, name, status)
         VALUES (${partner!.id}::uuid, ${`${BENCH_TAG}-org-${index}`}, 'active')
@@ -89,7 +108,7 @@ async function main(): Promise<void> {
           org_id, tenant_id, client_id, profile, auth_mode, credential_domain,
           vault_ref, credential_version, permission_manifest_version,
           observed_grants, consent_attempt_id, status, display_name)
-        VALUES (${org!.id}::uuid, gen_random_uuid(), '55555555-5555-4555-8555-555555555555',
+        VALUES (${org!.id}::uuid, ${tenantId}::uuid, '55555555-5555-4555-8555-555555555555',
                 'customer-graph-read', 'application-certificate', 'customer-graph-read',
                 'akv://vault.example/m365-customer-graph-read/0123456789abcdef0123456789abcdef',
                 '0123456789abcdef0123456789abcdef', 3, '[]'::jsonb, gen_random_uuid(),
@@ -103,6 +122,7 @@ async function main(): Promise<void> {
           ON CONFLICT (org_id, domain) DO NOTHING`);
       }
       created.push(org!.id);
+      orgTenantIds.set(org!.id, tenantId);
     }
     return created;
   });
@@ -162,14 +182,24 @@ async function main(): Promise<void> {
 
   while (Date.now() < deadline) {
     const tickStarted = Date.now();
+    // Backlog BEFORE this tick claims anything: this harness drives
+    // claimDueDomains/runSyncDomain directly and never touches BullMQ (per
+    // this wave's own "never drive through BullMQ" constraint), so there is
+    // no real queue whose depth to sample — `claimed.length` is bounded by
+    // `--tick-batch` and would always read as "healthy" at the default.
+    // countDueDomains() (the same gauge feed `m365_sync_due_backlog` uses)
+    // is the honest proxy: unclaimed backlog pressure.
+    maxQueueDepth = Math.max(maxQueueDepth, await countDueDomains());
     const claimed = await claimDueDomains({ limit: options.tickBatch });
-    maxQueueDepth = Math.max(maxQueueDepth, claimed.length);
     const queue = [...claimed];
     await Promise.all(Array.from({ length: options.concurrency }, async () => {
       for (let job = queue.shift(); job; job = queue.shift()) {
         const index = orgIndex.get(job.orgId);
         if (index === undefined) continue;
-        executor.enqueue(`m365.sync.${job.domain}`, fixtureFor(index, `m365.sync.${job.domain}`) as never);
+        executor.enqueue(
+          `m365.sync.${job.domain}`, fixtureFor(index, `m365.sync.${job.domain}`) as never,
+          orgTenantIds.get(job.orgId),
+        );
         const outcome = await runSyncDomain(job);
         // 'noop' means the domain has no registered persister. After W05 all
         // six are registered, so a noop here is a wiring regression — and it
@@ -202,20 +232,28 @@ async function main(): Promise<void> {
   }
 
   // --- steady-state second pass ------------------------------------------
+  // ONE anchor timestamp, captured before any second-pass write, used for
+  // both sides of the comparison. Two separate "before"/"after" windows (an
+  // earlier draft used `now() - interval '1 second'` for one and `now() -
+  // interval '5 minutes'` for the other) measure different spans of wall
+  // clock and can never validly subtract to "writes caused by this pass".
+  const [mark] = (await withSystemDbAccessContext(() => db.execute(sql`
+    SELECT now() AS mark`))) as unknown as { mark: string }[];
   await withSystemDbAccessContext(() => db.execute(sql`
     UPDATE m365_sync_state SET next_sync_at = now(), lease_until = NULL
     WHERE domain IN ('users','ca_policies','skus','secure_score')`));
-  const [writesBefore] = (await withSystemDbAccessContext(() => db.execute(sql`
-    SELECT (SELECT count(*) FROM m365_users WHERE last_changed_at > now() - interval '1 second') AS n`))) as unknown as { n: string }[];
   const secondPass = await claimDueDomains({ limit: options.tickBatch });
   for (const job of secondPass) {
     const index = orgIndex.get(job.orgId);
     if (index === undefined) continue;
-    executor.enqueue(`m365.sync.${job.domain}`, fixtureFor(index, `m365.sync.${job.domain}`) as never);
+    executor.enqueue(
+      `m365.sync.${job.domain}`, fixtureFor(index, `m365.sync.${job.domain}`) as never,
+      orgTenantIds.get(job.orgId),
+    );
     await runSyncDomain(job);
   }
   const [writesAfter] = (await withSystemDbAccessContext(() => db.execute(sql`
-    SELECT count(*) AS n FROM m365_users WHERE last_changed_at > now() - interval '5 minutes'`))) as unknown as { n: string }[];
+    SELECT count(*) AS n FROM m365_users WHERE last_changed_at > ${mark!.mark}::timestamptz`))) as unknown as { n: string }[];
 
   clearInterval(sampler);
   const walAfter = await walLsnBytes();
@@ -232,7 +270,7 @@ async function main(): Promise<void> {
     poolOccupancyPeak: poolPeak,
     poolMax,
     probeP95Milliseconds: Number(percentile(probeLatencies, 95).toFixed(2)),
-    entityWritesSecondPass: Number(writesAfter!.n) - Number(writesBefore!.n),
+    entityWritesSecondPass: Number(writesAfter!.n),
   };
   console.log(formatReport(report));
   console.log(JSON.stringify(report, null, 2));
@@ -241,6 +279,11 @@ async function main(): Promise<void> {
   if (!options.keepData) {
     await withSystemDbAccessContext(() => db.execute(sql`
       DELETE FROM organizations WHERE name LIKE ${`${BENCH_TAG}-org-%`}`));
+    // The seed step's own partner row (organizations cascade-deletes its
+    // orgs, but not itself) — otherwise every run leaves one more
+    // "m365-sync-benchmark partner" row behind.
+    await withSystemDbAccessContext(() => db.execute(sql`
+      DELETE FROM partners WHERE slug LIKE ${`${BENCH_TAG}-%`}`));
   }
 }
 
