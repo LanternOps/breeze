@@ -70,7 +70,7 @@ describe('hardware lifecycle PDF', () => {
     expect(text).toContain('Q4 2026');
     // Status is the word alone; timing lives in the service-life column.
     expect(text).not.toContain('was due');
-    expect(text).toContain('past due');
+    expect(text).toMatch(/\d(\.\d)? yr over/);
     expect(text).toContain('Apr 2019');
     expect(text).toContain('Oct 2021 *');
     expect(text).toContain("* Purchase date taken from the manufacturer's ship record.");
@@ -84,7 +84,7 @@ describe('hardware lifecycle PDF', () => {
     expect(text).toContain('Support ending');
     expect(text).toContain('Windows 10');
     expect(text).not.toContain('Windows 10 Pro');
-    expect(text).toContain('past due');
+    expect(text).toMatch(/\d(\.\d)? yr over/);
     expect(text).toContain('We plan to replace a computer 4 years after purchase');
     // Budget scaffold: due now, then by quarter; servers in their own section.
     expect(text).toContain('Replacement schedule');

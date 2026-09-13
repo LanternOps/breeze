@@ -82,8 +82,8 @@ const COLUMNS: Col[] = [
   { key: 'ageYears', label: 'Age', w: 13, halign: 'right' },
   { key: 'purchaseDate', label: 'Purchased', w: 21, halign: 'left' },
   { key: 'warrantyEndDate', label: 'Warranty', w: 29, halign: 'left' },
-  { key: 'replaceBy', label: 'Status', w: 34, halign: 'left' },
-  { key: 'runway', label: 'Service life used', w: 66, halign: 'left' },
+  { key: 'replaceBy', label: 'Status', w: 38, halign: 'left' },
+  { key: 'runway', label: 'Replacement timeline', w: 62, halign: 'left' },
 ];
 const DEVICE_COL = COLUMNS.findIndex((c) => c.key === 'device');
 const OS_COL = COLUMNS.findIndex((c) => c.key === 'os');
@@ -102,6 +102,25 @@ function customerOs(os: string): string {
     .replace(/\b(Standard|Datacenter|Essentials|Pro|Professional|Home|Enterprise|Education|Workstation)\b.*$/i, '')
     .replace(/\s+\d{2}H\d\b.*$/, '')
     .trim();
+}
+
+/**
+ * The timeline every row shares: one cell per quarter, from two years before
+ * today to three years after (five years in all). Today sits at a fixed column so the reader's
+ * eye lines the rows up; a device's replace-by date is a solid cell on that
+ * grid, its planned life the shaded run leading up to it.
+ */
+const TIMELINE_QUARTERS_BEFORE = 8;
+const TIMELINE_QUARTERS_AFTER = 12;
+const TIMELINE_QUARTERS = TIMELINE_QUARTERS_BEFORE + TIMELINE_QUARTERS_AFTER;
+
+/** Whole quarters from `fromIso` to `toIso` (negative when `toIso` is earlier). */
+function quartersBetween(fromIso: string, toIso: string): number {
+  const a = new Date(`${fromIso.slice(0, 10)}T00:00:00Z`);
+  const b = new Date(`${toIso.slice(0, 10)}T00:00:00Z`);
+  const qa = a.getUTCFullYear() * 4 + Math.floor(a.getUTCMonth() / 3);
+  const qb = b.getUTCFullYear() * 4 + Math.floor(b.getUTCMonth() / 3);
+  return qb - qa;
 }
 
 function yearsBetween(fromIso: string, toIso: string): number {
@@ -303,43 +322,70 @@ function drawHandCell(doc: jsPDF, chrome: PdfChrome, row: HardwareLifecycleDevic
   }
 
   if (data.column.index === RUNWAY_COL) {
-    // Track = the planned service life. Fill = how much is used. The
-    // number beside it says what the bar cannot: how far past, or how
-    // long left. Undated rows get a word, not an empty shape.
-    const trackW = w * 0.42;
-    const h = 2.8;
+    // Status already says "Purchase date unknown"; the timeline stays quiet.
+    if (!row.replaceBy) return;
+    const labelW = 13;
+    const gridW = w - labelW;
+    const cellW = gridW / TIMELINE_QUARTERS;
+    const h = 3.6;
     const yy = midY - h / 2;
-    doc.setFontSize(7.5);
-    // Status already says "Purchase date unknown"; the runway cell stays quiet.
-    if (row.lifeUsed == null || !row.replaceBy) return;
+    const gap = 0.35;
+    const todayQ = TIMELINE_QUARTERS_BEFORE; // index of the quarter containing today
+    const dueQ = todayQ + quartersBetween(today, row.replaceBy);
+    const boughtQ = row.purchaseDate ? todayQ + quartersBetween(today, row.purchaseDate) : Number.NEGATIVE_INFINITY;
+    const tone = colors[row.replacement];
+    // Grid: every quarter is a cell. Planned life (purchase → due) is a soft
+    // tint; the due quarter is solid; everything past due through today is
+    // solid too, so an overdue row reads as a run of colour up to the line.
+    for (let q = 0; q < TIMELINE_QUARTERS; q += 1) {
+      const cx = x + q * cellW;
+      const inLife = q >= boughtQ && q < dueQ;
+      const isDue = q === dueQ;
+      const overdueRun = dueQ < todayQ && q > dueQ && q <= todayQ;
+      if (isDue || overdueRun) fill(doc, mix(tone, C.white, 0.25));
+      else if (inLife) fill(doc, mix(tone, C.white, 0.78));
+      else fill(doc, C.rule);
+      doc.rect(cx, yy, Math.max(cellW - gap, 0.3), h, 'F');
+    }
+    // Today: a dark rule through the grid on every row, at the same x.
+    const todayX = x + (todayQ + 0.5) * cellW;
+    fill(doc, C.ink);
+    doc.rect(todayX - 0.25, yy - 1.1, 0.5, h + 2.2, 'F');
+    // Label to the right: when, in words a budget uses.
     const years = yearsBetween(today, row.replaceBy);
     const overdue = row.replaceBy <= today;
-    // Planned life is the track; time past the plan runs on beyond it
-    // (capped at five years) so 5 years overdue looks different from 1.
-    const overrunW = overdue ? trackW * 0.35 * Math.min(years / 5, 1) : 0;
-    fill(doc, C.rule);
-    doc.roundedRect(x, yy, trackW, h, 1.2, 1.2, 'F');
-    if (row.lifeUsed > 0) {
-      // Bars carry the status hue at the weight the app gives a filled
-      // badge, not full saturation; the Status word already shouts.
-      fill(doc, mix(colors[row.replacement], C.white, 0.3));
-      doc.roundedRect(x, yy, Math.max(trackW * Math.min(row.lifeUsed, 1), 2), h, 1.2, 1.2, 'F');
-    }
-    if (overrunW > 1) {
-      // Lighter overrun segment: same hue, marked off from the plan by a gap.
-      fill(doc, mix(colors[row.replacement], C.white, 0.62));
-      doc.roundedRect(x + trackW + 0.7, yy + 0.7, overrunW, h - 1.4, 0.7, 0.7, 'F');
-    }
     doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
     ink(doc, overdue ? mix(C.danger, C.ink, 0.25) : C.muted);
+    // The grid already shows the quarter; the label only adds what it cannot:
+    // how far past for overdue rows, and "beyond the grid" for far-out ones.
     const text = overdue
-      ? (years < 1 / 24 ? 'Due now' : `${yearsLabel(years)} past due`)
-      : `${yearsLabel(years)} left`;
-    const tx = x + trackW + overrunW + (overrunW > 1 ? 3.2 : 2.5);
-    // Never paint past the cell: step down a size if the label would not fit.
-    if (tx + doc.getTextWidth(text) > x + w) doc.setFontSize(SUB_FONT);
-    doc.text(text, tx, midY + 1);
+      ? (years < 1 / 24 ? 'now' : `${yearsLabel(years)} over`)
+      : dueQ >= TIMELINE_QUARTERS ? `${yearsLabel(years)} out` : '';
+    if (text) {
+      if (doc.getTextWidth(text) > labelW - 1.5) doc.setFontSize(SUB_FONT);
+      doc.text(text, x + gridW + 1.5, midY + 1);
+    }
   }
+}
+
+/** One line under the legend: the grid's span and the meaning of the dark rule. */
+function drawTimelineKey(doc: jsPDF, chrome: PdfChrome, today: string, y: number): number {
+  const { C, PAGE } = chrome;
+  const first = quarterLabel(addQuarters(today, -TIMELINE_QUARTERS_BEFORE));
+  const last = quarterLabel(addQuarters(today, TIMELINE_QUARTERS_AFTER - 1));
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  ink(doc, C.muted);
+  doc.text(`Replacement timeline: one cell per quarter, ${first} to ${last}. The dark line is today; the solid cell is the replace-by quarter.`, PAGE.mx, y + 2.6);
+  return y + 4.5;
+}
+
+function addQuarters(iso: string, n: number): string {
+  const d = new Date(`${iso.slice(0, 10)}T00:00:00Z`);
+  const m = d.getUTCMonth() + n * 3;
+  const out = new Date(Date.UTC(d.getUTCFullYear() + Math.floor(m / 12), ((m % 12) + 12) % 12, 1));
+  return out.toISOString().slice(0, 10);
 }
 
 function ensureSpace(doc: jsPDF, chrome: PdfChrome, y: number, needed: number): number {
@@ -439,13 +485,14 @@ export function renderHardwareLifecycleReport(
     // The legend counts this table's rows, so it always reconciles with them.
     const tableCounts = countByReplacement(tableRows);
     ty = drawLegend(doc, chrome, tableCounts, ty + 1.5);
+    ty = drawTimelineKey(doc, chrome, today, ty + 0.5);
     const contentW = PAGE.w - PAGE.mx * 2;
     const scale = contentW / COLUMNS.reduce((a, c) => a + c.w, 0);
     const columnStyles: Record<number, { cellWidth: number; halign: Col['halign'] }> = {};
     COLUMNS.forEach((c, i) => { columnStyles[i] = { cellWidth: c.w * scale, halign: c.halign }; });
     // Continuation pages restate the heading and legend above the table so a
     // page read on its own still explains its colours.
-    const continuationTop = PAGE.bandH + 6 + 14;
+    const continuationTop = PAGE.bandH + 6 + 19;
 
     autoTable(doc, {
       startY: ty + 1,
@@ -481,7 +528,7 @@ export function renderHardwareLifecycleReport(
         chrome.drawHeaderBand(doc);
         chrome.drawFooter(doc);
         const hy = chrome.drawSectionHeading(doc, `${heading} (continued)`, PAGE.bandH + 10);
-        drawLegend(doc, chrome, tableCounts, hy + 1.5);
+        drawTimelineKey(doc, chrome, today, drawLegend(doc, chrome, tableCounts, hy + 1.5) + 0.5);
       },
     });
     const t = (doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable;
