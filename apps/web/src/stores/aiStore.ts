@@ -120,7 +120,21 @@ const CLEARED_SESSION = {
   pendingApproval: null,
   pendingPlan: null,
   activePlan: null,
+  // A response still streaming for the old tenant is abandoned by the ownership
+  // check in `sendMessage`; without clearing these the indicator would spin and
+  // `sendMessage`'s `isStreaming` guard would silently refuse the next message.
+  isStreaming: false,
+  isInterrupting: false,
+  isPaused: false,
 } as const;
+
+/**
+ * Identifies the stream `sendMessage` currently owns. A rebind (or any later
+ * send) supersedes an in-flight one: the superseded reader must stop appending
+ * into the store, or another tenant's assistant output lands in the new chat
+ * (#5684).
+ */
+let activeStreamToken = 0;
 
 export const useAiStore = create<AiState>()(
   persist(
@@ -312,6 +326,10 @@ export const useAiStore = create<AiState>()(
       pendingApproval: null
     }));
 
+    const streamToken = ++activeStreamToken;
+    /** False once this stream has been superseded — by a rebind, or a newer send. */
+    const ownsStream = () => activeStreamToken === streamToken && get().sessionId === currentSessionId;
+
     try {
       const { pageContext } = get();
       const res = await fetchWithAuth(`/ai/sessions/${currentSessionId}/messages`, {
@@ -343,6 +361,13 @@ export const useAiStore = create<AiState>()(
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        // The chat can rebind to another org mid-response (#5684). Drop the
+        // rest of this stream rather than replay it into whatever session is
+        // live now — its content belongs to the previous tenant.
+        if (!ownsStream()) {
+          await reader.cancel().catch(() => undefined);
+          return;
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
@@ -355,6 +380,7 @@ export const useAiStore = create<AiState>()(
 
             try {
               const event = JSON.parse(jsonStr) as AiStreamEvent;
+              if (!ownsStream()) break;
               currentAssistantId = processStreamEvent(event, set, get, currentAssistantId);
             } catch (parseErr) {
               console.error('[AI] Failed to parse SSE event:', jsonStr.slice(0, 200), parseErr);
@@ -363,13 +389,15 @@ export const useAiStore = create<AiState>()(
         }
       }
     } catch (err) {
+      // A superseded stream must not raise an error on the session that
+      // replaced it — its failure is no longer anything the user can act on.
+      if (!ownsStream()) return;
       set({
         error: err instanceof Error ? err.message : 'Failed to send message',
         isStreaming: false
       });
     } finally {
-      const state = get();
-      if (state.isStreaming) {
+      if (activeStreamToken === streamToken && get().isStreaming) {
         set({ isStreaming: false });
       }
     }

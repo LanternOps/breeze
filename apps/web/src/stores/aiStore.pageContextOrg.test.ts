@@ -134,6 +134,62 @@ describe('ai store page-context org rebinding (#5684)', () => {
     expect(useAiStore.getState().isLoading).toBe(false);
   });
 
+  it('abandons an in-flight Org A stream when the page rebinds to Org B mid-response', async () => {
+    // A tech sends a message on an Org A device, then navigates to an Org B
+    // device before the answer finishes. The reader is still running: without
+    // an ownership check its events append into the freshly-cleared Org B chat
+    // and `isStreaming` stays true, silently blocking the next message.
+    seedOrgASession();
+    useAiStore.setState({ messages: [] });
+
+    let releaseSecondChunk: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseSecondChunk = resolve;
+    });
+    const encode = (obj: unknown) => new TextEncoder().encode(`data: ${JSON.stringify(obj)}\n`);
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    let read = 0;
+    const reader = {
+      cancel,
+      read: vi.fn(async () => {
+        read += 1;
+        if (read === 1) {
+          return { done: false, value: encode({ type: 'message_start', messageId: 'a1' }) };
+        }
+        if (read === 2) {
+          await gate;
+          return {
+            done: false,
+            value: encode({ type: 'content_delta', delta: 'org A secrets' }),
+          };
+        }
+        return { done: true, value: undefined };
+      }),
+    };
+    fetchWithAuthMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      body: { getReader: () => reader },
+    } as unknown as Response);
+
+    const sending = useAiStore.getState().sendMessage('what is wrong with this box?');
+    await vi.waitFor(() => expect(reader.read).toHaveBeenCalledTimes(2));
+
+    // Navigate to the Org B device while the Org A stream is still open.
+    useAiStore.getState().setPageContext(deviceBContext);
+    expect(useAiStore.getState().sessionId).toBeNull();
+    expect(useAiStore.getState().isStreaming).toBe(false);
+
+    releaseSecondChunk();
+    await sending;
+
+    const state = useAiStore.getState();
+    expect(state.messages).toEqual([]);
+    expect(state.isStreaming).toBe(false);
+    expect(state.error).toBeNull();
+    expect(cancel).toHaveBeenCalled();
+  });
+
   it('restores a session normally when its org matches the device page', async () => {
     useAiStore.setState({ sessionId: 'session-org-b', sessionOrgId: null, pageContext: deviceBContext });
 
