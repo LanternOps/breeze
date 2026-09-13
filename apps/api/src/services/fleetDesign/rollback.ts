@@ -49,6 +49,8 @@ interface RollbackCtx {
   audit: RequestLike;
   /** Group ids still targeted by a policy this rollback could NOT archive. */
   groupsStillTargeted: Set<string>;
+  /** Devices whose pre-apply function could not be restored (the prior assessment is gone). */
+  functionsNotRestored: string[];
 }
 
 export async function rollbackFleetDesign(
@@ -61,7 +63,7 @@ export async function rollbackFleetDesign(
   const orgId = locked.orgId;
   const ledger = (await loadLedger(reportRunId, orgId)).filter((r) => r.status === 'applied');
 
-  const ctx: RollbackCtx = { auth, orgId, reportRunId, userId: auth.user.id, audit, groupsStillTargeted: new Set() };
+  const ctx: RollbackCtx = { auth, orgId, reportRunId, userId: auth.user.id, audit, groupsStillTargeted: new Set(), functionsNotRestored: [] };
   const rolledBack: string[] = [];
   const refused: Refusal[] = [];
 
@@ -92,13 +94,21 @@ export async function rollbackFleetDesign(
         await markRolledBack([row.id, ...group.map((g) => g.id)], orgId, ctx.userId);
       });
       rolledBack.push(row.itemRef, ...group.map((g) => g.itemRef));
+      const notRestored = ctx.functionsNotRestored.splice(0);
       writeAuditEvent(audit, {
         orgId, action: 'fleet_design.rollback.item', resourceType: 'report_run', resourceId: reportRunId,
         actorType: 'user', actorId: ctx.userId, actorEmail: auth.user.email,
-        details: { itemRef: row.itemRef, itemKind: row.itemKind, step: row.step },
+        details: {
+          itemRef: row.itemRef, itemKind: row.itemKind, step: row.step,
+          ...(notRestored.length > 0 ? { functionsNotRestored: notRestored } : {}),
+        },
       });
     } catch (error) {
+      ctx.functionsNotRestored.length = 0;
       const reason: FleetDesignRollbackRefusal = error instanceof RollbackRefused ? error.reason : 'modified_since_apply';
+      if (!(error instanceof RollbackRefused)) {
+        console.error(`[fleetDesign] rollback of ${row.itemRef} (run ${reportRunId}) failed:`, error);
+      }
       refused.push({ itemRef: row.itemRef, reason });
       if (row.itemKind === 'policy' && row.createdRefs?.groupId) ctx.groupsStillTargeted.add(row.createdRefs.groupId);
     }
@@ -238,7 +248,12 @@ async function rollbackFunction(ctx: RollbackCtx, row: FleetDesignLedgerRow): Pr
         eq(deviceFunctionAssessments.active, true),
       ));
     for (const a of active) {
-      await restoreDeviceFunction({ deviceId: a.deviceId, orgId: ctx.orgId, assessmentId: prior[a.deviceId] ?? null, userId: ctx.userId });
+      const outcome = await restoreDeviceFunction({ deviceId: a.deviceId, orgId: ctx.orgId, assessmentId: prior[a.deviceId] ?? null, userId: ctx.userId });
+      // `cleared` where a prior assessment was recorded means that row is gone
+      // (erased) and the device ends with NO function rather than the value it
+      // had before the apply. The rollback still succeeded, but the divergence
+      // must not be silent: it lands in the audit event for this row.
+      if (outcome.outcome === 'cleared' && prior[a.deviceId]) ctx.functionsNotRestored.push(a.deviceId);
     }
   }
 
@@ -262,7 +277,9 @@ async function rollbackFunction(ctx: RollbackCtx, row: FleetDesignLedgerRow): Pr
     // Guards (children / billing / quotes) throw DeviceGroupDeleteError → refused.
     const result = await deleteDeviceGroup(groupId, ctx.orgId);
     for (const deviceId of result.affectedDeviceIds) {
-      await schedulePeripheralPolicyDevice(deviceId, 'manual_membership_changed').catch(() => undefined);
+      await schedulePeripheralPolicyDevice(deviceId, 'manual_membership_changed').catch((error) => {
+        console.error(`[fleetDesign] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+      });
     }
     return;
   }
@@ -280,12 +297,20 @@ async function rollbackFunction(ctx: RollbackCtx, row: FleetDesignLedgerRow): Pr
       .delete(deviceGroupMemberships)
       .where(and(eq(deviceGroupMemberships.groupId, groupId), eq(deviceGroupMemberships.orgId, ctx.orgId), inArray(deviceGroupMemberships.deviceId, toRemove)));
     for (const deviceId of toRemove) {
-      await schedulePeripheralPolicyDevice(deviceId, 'manual_membership_changed').catch(() => undefined);
+      await schedulePeripheralPolicyDevice(deviceId, 'manual_membership_changed').catch((error) => {
+        console.error(`[fleetDesign] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+      });
     }
   }
   const toRestore = removed.filter((d) => !currentMembers.includes(d));
   if (toRestore.length > 0) {
     const validation = await validateManualMembershipDevices({ deviceIds: toRestore, orgId: ctx.orgId, siteId: group.siteId ?? null });
-    if (validation.ok) await addManualGroupMemberships({ groupId, orgId: ctx.orgId, deviceIds: toRestore });
+    // A device removed by the apply that has since been deleted, moved org or
+    // moved site cannot be put back. Refuse the whole row rather than report a
+    // rollback that only half happened — the technician sees the reason and the
+    // ledger row stays `applied` so it can be retried once they resolve it.
+    // (The add-path in apply.ts throws on the same validation failure.)
+    if (!validation.ok) throw new RollbackRefused('modified_since_apply');
+    await addManualGroupMemberships({ groupId, orgId: ctx.orgId, deviceIds: toRestore });
   }
 }

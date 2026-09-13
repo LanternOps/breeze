@@ -200,6 +200,11 @@ export async function previewFleetDesignApplyWithContext(
     const displaced = new Map<string, FleetDesignApplyPreviewPolicy['displaces'][number]>();
     for (const deviceId of groupDevices) {
       const eff = await resolveEffectiveConfig(deviceId, auth);
+      // null means the device is no longer visible to this caller — it was
+      // deleted or moved org between the device-index read above and here.
+      // A device that is gone cannot be displaced, so skipping it is correct;
+      // it is not masking a failure (resolveEffectiveConfig's only null is the
+      // device lookup, configurationPolicy.ts:2120).
       if (!eff) continue;
       for (const featureType of ['monitoring', 'alert_rule'] as const) {
         const winner = eff.features[featureType];

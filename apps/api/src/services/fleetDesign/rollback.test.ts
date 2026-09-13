@@ -102,7 +102,7 @@ const ORG = '11111111-1111-4111-8111-111111111111';
 const RUN = '22222222-2222-4222-8222-222222222222';
 const USER = '33333333-3333-4333-8333-333333333333';
 
-function makeAuth(): AuthContext {
+function makeAuth(overrides: Partial<AuthContext> = {}): AuthContext {
   return {
     principal: 'user',
     user: { id: USER, email: 'tech@example.com', name: 'Tech', isPlatformAdmin: false },
@@ -114,6 +114,7 @@ function makeAuth(): AuthContext {
     partnerOrgAccess: null,
     orgCondition: () => undefined,
     canAccessOrg: () => true,
+    ...overrides,
   } as unknown as AuthContext;
 }
 
@@ -270,6 +271,98 @@ describe('rollbackFleetDesign — retired row', () => {
 
     expect(result.refused).toEqual([{ itemRef: 'retired:0', reason: 'modified_since_apply' }]);
     expect(configPolicyMock.updateFeatureLink).not.toHaveBeenCalled();
+  });
+
+  it('refuses modified_since_apply when the before-image has two identically-named items — ambiguous rewrite, fails closed rather than picking one', async () => {
+    // Both entries share the name 'Spooler'; retireRewrite keys purely by
+    // name, so retiring either occurrence produces the SAME rewritten
+    // settings. `current` legitimately equals that single rewrite, but two
+    // distinct before-image entries "explain" it — expectedAfterRetire must
+    // refuse rather than silently pick the first.
+    const ambiguousBefore = { checkIntervalSeconds: 60, watches: [{ name: 'Spooler', enabled: true }, { name: 'Spooler', enabled: true }] };
+    const retiredRow = row({ id: 'retired-1', itemRef: 'retired:0', itemKind: 'retired', step: 2, createdRefs: { policyId: 'p2', linkId: 'link-1' }, beforeImage: { inlineSettings: ambiguousBefore } });
+    ledgerMock.loadLedger.mockResolvedValue([retiredRow]);
+    selectSeed(configurationPolicies, [{ id: 'p2', orgId: ORG }]);
+    configPolicyMock.listFeatureLinks.mockResolvedValue([
+      { id: 'link-1', featureType: 'monitoring', featurePolicyId: null, inlineSettings: { checkIntervalSeconds: 60, watches: [{ name: 'Spooler', enabled: false }, { name: 'Spooler', enabled: false }] } },
+    ]);
+
+    const result = await rollbackFleetDesign(makeAuth(), RUN);
+
+    expect(result.refused).toEqual([{ itemRef: 'retired:0', reason: 'modified_since_apply' }]);
+    expect(configPolicyMock.updateFeatureLink).not.toHaveBeenCalled();
+  });
+
+  describe('rule branch', () => {
+    const ruleBefore = { items: [{ name: 'Disk full' }, { name: 'CPU high' }] };
+
+    it('restores the before-image for an alert_rule link when the current items equal the recomputed post-apply value', async () => {
+      const retiredRow = row({ id: 'retired-1', itemRef: 'retired:0', itemKind: 'retired', step: 2, createdRefs: { policyId: 'p2', linkId: 'link-rule' }, beforeImage: { inlineSettings: ruleBefore } });
+      ledgerMock.loadLedger.mockResolvedValue([retiredRow]);
+      selectSeed(configurationPolicies, [{ id: 'p2', orgId: ORG }]);
+      // 'Disk full' was removed by the apply — matches retireRewrite('rule', 'Disk full', ruleBefore).
+      configPolicyMock.listFeatureLinks.mockResolvedValue([
+        { id: 'link-rule', featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: [{ name: 'CPU high' }] } },
+      ]);
+      configPolicyMock.updateFeatureLink.mockResolvedValue({ id: 'link-rule' });
+
+      const result = await rollbackFleetDesign(makeAuth(), RUN);
+
+      expect(configPolicyMock.updateFeatureLink).toHaveBeenCalledWith('link-rule', { inlineSettings: ruleBefore }, 'p2');
+      expect(result.rolledBack).toEqual(['retired:0']);
+    });
+
+    it('refuses when the current alert_rule items do not match the expected post-apply rewrite', async () => {
+      const retiredRow = row({ id: 'retired-1', itemRef: 'retired:0', itemKind: 'retired', step: 2, createdRefs: { policyId: 'p2', linkId: 'link-rule' }, beforeImage: { inlineSettings: ruleBefore } });
+      ledgerMock.loadLedger.mockResolvedValue([retiredRow]);
+      selectSeed(configurationPolicies, [{ id: 'p2', orgId: ORG }]);
+      // 'CPU high' was ALSO removed by hand since the apply.
+      configPolicyMock.listFeatureLinks.mockResolvedValue([
+        { id: 'link-rule', featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: [] } },
+      ]);
+
+      const result = await rollbackFleetDesign(makeAuth(), RUN);
+
+      expect(result.refused).toEqual([{ itemRef: 'retired:0', reason: 'modified_since_apply' }]);
+      expect(configPolicyMock.updateFeatureLink).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('partner-wide guard', () => {
+    it('refuses with partner_wide_write_denied for a partner-wide policy (orgId null) when the caller cannot manage partner-wide policies', async () => {
+      const retiredRow = row({ id: 'retired-1', itemRef: 'retired:0', itemKind: 'retired', step: 2, createdRefs: { policyId: 'p2', linkId: 'link-1' }, beforeImage: { inlineSettings: before } });
+      ledgerMock.loadLedger.mockResolvedValue([retiredRow]);
+      selectSeed(configurationPolicies, [{ id: 'p2', orgId: null }]);
+      partnerWideMock.canManagePartnerWidePolicies.mockReturnValueOnce(false);
+      const auth = makeAuth({ scope: 'partner', partnerOrgAccess: 'selected' });
+
+      const result = await rollbackFleetDesign(auth, RUN);
+
+      expect(partnerWideMock.canManagePartnerWidePolicies).toHaveBeenCalledWith(auth);
+      expect(result.refused).toEqual([{ itemRef: 'retired:0', reason: 'partner_wide_write_denied' }]);
+      expect(configPolicyMock.listFeatureLinks).not.toHaveBeenCalled();
+      expect(configPolicyMock.updateFeatureLink).not.toHaveBeenCalled();
+      expect(ledgerMock.markRolledBack).not.toHaveBeenCalled();
+    });
+
+    it('proceeds past the guard for a partner-wide policy when the caller has full partner org access (positive control)', async () => {
+      const retiredRow = row({ id: 'retired-1', itemRef: 'retired:0', itemKind: 'retired', step: 2, createdRefs: { policyId: 'p2', linkId: 'link-1' }, beforeImage: { inlineSettings: before } });
+      ledgerMock.loadLedger.mockResolvedValue([retiredRow]);
+      selectSeed(configurationPolicies, [{ id: 'p2', orgId: null }]);
+      configPolicyMock.listFeatureLinks.mockResolvedValue([
+        { id: 'link-1', featureType: 'monitoring', featurePolicyId: null, inlineSettings: { checkIntervalSeconds: 60, watches: [{ name: 'Spooler', enabled: false }, { name: 'BITS', enabled: true }] } },
+      ]);
+      configPolicyMock.updateFeatureLink.mockResolvedValue({ id: 'link-1' });
+      partnerWideMock.canManagePartnerWidePolicies.mockReturnValueOnce(true);
+      const auth = makeAuth({ scope: 'partner', partnerOrgAccess: 'all' });
+
+      const result = await rollbackFleetDesign(auth, RUN);
+
+      expect(partnerWideMock.canManagePartnerWidePolicies).toHaveBeenCalledWith(auth);
+      expect(configPolicyMock.updateFeatureLink).toHaveBeenCalledWith('link-1', { inlineSettings: before }, 'p2');
+      expect(result.refused).toEqual([]);
+      expect(result.rolledBack).toEqual(['retired:0']);
+    });
   });
 });
 

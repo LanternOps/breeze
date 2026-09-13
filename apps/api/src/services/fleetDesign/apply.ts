@@ -60,6 +60,17 @@ interface ApplyCtx extends FleetDesignPreviewContext {
   audit: RequestLike;
 }
 
+/**
+ * A null from `recordApplied` means `(report_run_id, item_ref)` already
+ * existed — but every call site pre-filters against `ctx.appliedRefs` under
+ * the report-run row lock, so reaching it means the ledger disagrees with the
+ * state this apply just wrote. The mutation has already committed inside the
+ * step's savepoint, so it must not pass unnoticed.
+ */
+function warnUnrecordedApply(reportRunId: string, itemRef: string): void {
+  console.error(`[fleetDesign] apply wrote ${itemRef} for run ${reportRunId} but its ledger row already existed — the mutation is not attributed to this apply`);
+}
+
 function stepKind(step: number): 'function' | 'retired' | 'policy' | 'script' | 'role_correction' {
   switch (step) {
     case 1: return 'function';
@@ -147,7 +158,7 @@ async function stepFunctions(ctx: ApplyCtx): Promise<void> {
       for (const row of active) priorAssessmentIdByDevice[row.deviceId] = row.id;
     }
 
-    await applyDesignFunctions({
+    const functionWrites = await applyDesignFunctions({
       orgId: ctx.orgId,
       reportRunId: ctx.reportRunId,
       runId,
@@ -222,9 +233,16 @@ async function stepFunctions(ctx: ApplyCtx): Promise<void> {
       writeAuditEvent(ctx.audit, {
         orgId: ctx.orgId, action: 'fleet_design.apply.function', resourceType: 'device_group', resourceId: groupId, resourceName: fleetDesignGroupName(fn.label),
         actorType: 'user', actorId: ctx.userId, actorEmail: ctx.auth.user.email,
-        details: { reportRunId: ctx.reportRunId, functionKey: fn.functionKey, deviceCount: wanted.length, groupCreated, added: devicesAdded.length, removed: devicesRemoved.length },
+        details: {
+          reportRunId: ctx.reportRunId, functionKey: fn.functionKey, deviceCount: wanted.length, groupCreated,
+          added: devicesAdded.length, removed: devicesRemoved.length,
+          // What actually landed, not what was requested: a device deleted or
+          // moved between the preview read and this write is counted, never
+          // written and never thrown on (applyDesignFunctions' contract).
+          assessmentsWritten: functionWrites.written, keptManual: functionWrites.keptManual, skippedForeign: functionWrites.skippedForeign,
+        },
       });
-    }
+    } else warnUnrecordedApply(ctx.reportRunId, itemRef);
   }
 }
 
@@ -265,7 +283,7 @@ async function stepRetire(ctx: ApplyCtx): Promise<void> {
         actorType: 'user', actorId: ctx.userId, actorEmail: ctx.auth.user.email,
         details: { reportRunId: ctx.reportRunId, kind: item.kind, itemName: item.itemName, itemRef },
       });
-    }
+    } else warnUnrecordedApply(ctx.reportRunId, itemRef);
   }
 }
 
@@ -379,16 +397,16 @@ async function stepMonitoring(ctx: ApplyCtx): Promise<void> {
         ctx.applied.push(policyRef);
         ctx.appliedRefs.add(policyRef);
         ctx.policyRowByFunction.set(functionKey, row);
-      }
+      } else warnUnrecordedApply(ctx.reportRunId, policyRef);
     }
 
     for (const ref of newWatchRefs) {
       const row = await recordApplied({ orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef: ref, itemKind: 'watch', step: 3, createdRefs: { policyId }, userId: ctx.userId });
-      if (row) { ctx.applied.push(ref); ctx.appliedRefs.add(ref); }
+      if (row) { ctx.applied.push(ref); ctx.appliedRefs.add(ref); } else warnUnrecordedApply(ctx.reportRunId, ref);
     }
     for (const ref of newRuleRefs) {
       const row = await recordApplied({ orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef: ref, itemKind: 'rule', step: 3, createdRefs: { policyId }, userId: ctx.userId });
-      if (row) { ctx.applied.push(ref); ctx.appliedRefs.add(ref); }
+      if (row) { ctx.applied.push(ref); ctx.appliedRefs.add(ref); } else warnUnrecordedApply(ctx.reportRunId, ref);
     }
     writeAuditEvent(ctx.audit, {
       orgId: ctx.orgId, action: 'fleet_design.apply.monitoring', resourceType: 'configuration_policy', resourceId: policyId, resourceName: policyName,
@@ -451,6 +469,6 @@ async function stepRoleCorrections(ctx: ApplyCtx): Promise<void> {
         actorType: 'user', actorId: ctx.userId, actorEmail: ctx.auth.user.email,
         details: { from: current.deviceRole, to: rc.to, reportRunId: ctx.reportRunId },
       });
-    }
+    } else warnUnrecordedApply(ctx.reportRunId, itemRef);
   }
 }

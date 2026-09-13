@@ -116,6 +116,7 @@ import {
   toWatchItem,
 } from './apply';
 import { FleetDesignApplyError, type FleetDesignPreviewContext } from './preview';
+import type { FleetDesignLedgerRow } from './ledger';
 import { deviceFunctionAssessments, deviceGroupMemberships, deviceGroups, devices } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 
@@ -341,6 +342,88 @@ describe('applyFleetDesign — step 3 (monitoring)', () => {
     expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:watch:0', itemKind: 'watch', step: 3, createdRefs: { policyId: 'p-new' } }));
     expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:rule:0', itemKind: 'rule', step: 3, createdRefs: { policyId: 'p-new' } }));
     expect(result.applied).toEqual(expect.arrayContaining(['policy:file_server', 'monitoring:file_server:watch:0', 'monitoring:file_server:rule:0']));
+  });
+});
+
+describe('applyFleetDesign — step 3 (monitoring) — second apply in the same run', () => {
+  it('unions new watches into the existing monitoring link, creates the missing alert_rule link, and refreshes created_refs.linksSnapshot instead of creating a new policy', async () => {
+    const rule: FleetDesignRule = {
+      name: 'Disk full', severity: 'high', conditions: [], cooldownMinutes: 30, rationale: 'why', action: 'none', paging: 'always',
+    };
+    const outcome = makeOutcome({
+      monitoring: [{
+        functionKey: 'file_server',
+        watches: [
+          { watchType: 'service', name: 'Spooler', alertOnStop: true, autoRestart: false, rationale: 'first apply' },
+          { watchType: 'service', name: 'BITS', alertOnStop: true, autoRestart: false, rationale: 'second apply' },
+        ],
+        alertRules: [rule],
+      }],
+    });
+    const existingRow = {
+      id: 'ledger-row-policy',
+      createdRefs: { policyId: 'p-existing', groupId: 'g1' },
+    } as unknown as FleetDesignLedgerRow;
+    const previewCtx = makeCtx({
+      outcome,
+      preview: makePreview({
+        functions: [{ functionKey: 'file_server', label: 'File Server', groupId: 'g1', groupName: 'Fleet Design: File Server', deviceCount: 2, devicesAdded: [], devicesRemoved: [], keptManual: 0, missingDevices: [] }],
+        policies: [{ functionKey: 'file_server', policyName: 'Fleet Design: File Server', watchCount: 1, ruleCount: 1, displaces: [] }],
+      }),
+      // Only the NEW items are approved this time — index 0 (Spooler) was
+      // already applied in a prior run and is not part of this approval.
+      monitoringByFunction: new Map([['file_server', { watches: [1], rules: [0] }]]),
+      policyRowByFunction: new Map([['file_server', existingRow]]),
+    });
+    previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(previewCtx);
+
+    const existingWatchItem = { watchType: 'service', name: 'Spooler', enabled: true, alertOnStop: true, autoRestart: false, rationale: 'first apply' };
+    const newWatchItem = toWatchItem(outcome.sections.monitoring[0]!.watches[1]!);
+    const newRuleItem = toRuleItem(rule);
+    const afterLinks = [
+      { id: 'link-mon-old', featureType: 'monitoring', featurePolicyId: null, inlineSettings: { checkIntervalSeconds: 60, watches: [existingWatchItem, newWatchItem] } },
+      { id: 'link-rule-new', featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: [newRuleItem] } },
+    ];
+    configPolicyMock.listFeatureLinks
+      .mockResolvedValueOnce([{ id: 'link-mon-old', featureType: 'monitoring', featurePolicyId: null, inlineSettings: { checkIntervalSeconds: 60, watches: [existingWatchItem] } }])
+      .mockResolvedValueOnce(afterLinks);
+    configPolicyMock.updateFeatureLink.mockResolvedValue({ id: 'link-mon-old' });
+    configPolicyMock.addFeatureLink.mockResolvedValue({ id: 'link-rule-new' });
+
+    const result = await applyFleetDesign(makeAuth(), RUN, makeApproval({ monitoring: ['monitoring:file_server:watch:1', 'monitoring:file_server:rule:0'] }));
+
+    // Not a new policy: the second apply reuses the existing one.
+    expect(configPolicyMock.createConfigPolicy).not.toHaveBeenCalled();
+    expect(configPolicyMock.assignPolicy).not.toHaveBeenCalled();
+
+    // Existing monitoring link updated with the union of old + new watches.
+    expect(configPolicyMock.updateFeatureLink).toHaveBeenCalledWith(
+      'link-mon-old',
+      { inlineSettings: { checkIntervalSeconds: 60, watches: [existingWatchItem, newWatchItem] } },
+      'p-existing',
+    );
+    // Missing alert_rule link created fresh.
+    expect(configPolicyMock.addFeatureLink).toHaveBeenCalledWith('p-existing', 'alert_rule', null, { items: [newRuleItem] });
+
+    // created_refs refreshed with a snapshot of the union, on the SAME ledger row.
+    expect(ledgerMock.updateCreatedRefs).toHaveBeenCalledWith(
+      'ledger-row-policy',
+      ORG,
+      expect.objectContaining({
+        policyId: 'p-existing',
+        groupId: 'g1',
+        monitoringLinkId: 'link-mon-old',
+        alertRuleLinkId: 'link-rule-new',
+        linksSnapshot: snapshotLinks(afterLinks),
+      }),
+    );
+
+    // New item rows recorded; the policy ref itself is not (it already exists).
+    expect(ledgerMock.recordApplied).not.toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'policy:file_server' }));
+    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:watch:1', itemKind: 'watch', step: 3, createdRefs: { policyId: 'p-existing' } }));
+    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:rule:0', itemKind: 'rule', step: 3, createdRefs: { policyId: 'p-existing' } }));
+    expect(result.applied).toEqual(expect.arrayContaining(['monitoring:file_server:watch:1', 'monitoring:file_server:rule:0']));
+    expect(result.applied).not.toContain('policy:file_server');
   });
 });
 
