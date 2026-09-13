@@ -37,6 +37,12 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // every child, so the pin must stay on the base table to identify exactly one
   // row; a miss returns TARGET_ABSENT (deny), never "no constraint applies".
   'services/actionIntents/effectDigest.ts',
+  // Fleet Designer evidence (W01): reports each policy's AUTHORED watches and
+  // rules so the design's `retired` section names rows the policy actually
+  // owns — the W03 retire step rewrites that policy's own link. Reading the
+  // view would let the designer propose retiring an inherited row the child
+  // cannot edit. Never decides what a device gets.
+  'services/aiAgents/designEvidence.ts',
 
   // Standalone-entity delete guards and authored-link editors.
   'routes/updateRingsHelpers.ts',
