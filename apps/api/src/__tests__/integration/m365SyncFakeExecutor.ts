@@ -256,8 +256,11 @@ export function syncUsersResult(
     onPremisesSyncEnabled: false,
     createdDateTime: '2026-01-05T00:00:00.000Z',
     assignedLicenses: user.assignedLicenses ?? [],
-    mfaRegistered: user.mfaRegistered ?? true,
-    mfaCapable: user.mfaRegistered ?? true,
+    // `??` treats an explicit `null` (meaning "unknown/unregistered") the same
+    // as "not provided" and would silently coerce it to `true` — distinguish
+    // the two with `in` so callers can assert the mfa-unknown path.
+    mfaRegistered: 'mfaRegistered' in user ? user.mfaRegistered : true,
+    mfaCapable: 'mfaRegistered' in user ? user.mfaRegistered : true,
     defaultMfaMethod: user.mfaRegistered === null ? null : 'microsoftAuthenticatorPush',
     adminRoles: user.adminRoles ?? [],
   })), sources, extra);
