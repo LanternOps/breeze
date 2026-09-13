@@ -252,6 +252,9 @@
       "overrides": "Overrides",
       "source": "Source policy"
     },
-    "empty": "No devices are covered by this monitor yet."
+    "empty": "No devices are covered by this monitor yet.",
+    "errors": {
+      "fetch": "Failed to load devices"
+    }
   }
 }

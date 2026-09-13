@@ -60,6 +60,22 @@ describe('LegacyRulesPage (#5289)', () => {
     expect(screen.queryByTestId('legacy-rules-row-r-managed')).toBeNull();
   });
 
+  it('shows a Converted badge instead of the Convert action for an already-converted rule', async () => {
+    const convertedRows = [
+      { ...rows[0], id: 'r-converted', convertedToMonitorId: 'monitor-9' },
+    ];
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input.startsWith('/alerts/rules') && !init) return json({ data: convertedRows, pagination: { page: 1, limit: 50, total: 1 } });
+      return json({ data: [] });
+    });
+    render(<LegacyRulesPage />);
+    await waitFor(() => expect(screen.getByTestId('legacy-rules-row-r-converted')).toBeInTheDocument());
+
+    const row = screen.getByTestId('legacy-rules-row-r-converted');
+    expect(within(row).getByText('Converted')).toBeInTheDocument();
+    expect(within(row).queryByTestId('legacy-rules-convert-r-converted')).toBeNull();
+  });
+
   it('converts a rule and navigates to the new monitor', async () => {
     fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
       if (input === '/monitor-definitions/convert-from-rule/r-legacy' && init?.method === 'POST') {

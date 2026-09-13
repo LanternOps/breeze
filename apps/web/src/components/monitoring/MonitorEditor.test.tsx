@@ -32,6 +32,30 @@ function defaultFetchImpl(input: string) {
   return json({ data: [] });
 }
 
+const MONITOR_M1_FIXTURE = {
+  id: 'm1',
+  name: 'Disk full',
+  description: '',
+  kind: 'disk',
+  enabled: true,
+  condition: { operator: 'gt', value: 90, durationMinutes: 5 },
+  severity: 'high',
+  cooldownMinutes: 5,
+  autoResolve: false,
+  responses: [],
+  deliveryMode: 'inherit',
+  deliveryChannelIds: [],
+  escalationPolicyId: null,
+  recurrenceThreshold: null,
+  recurrenceWindowHours: null,
+  recurrenceActions: [],
+  pauseResponsesOnEscalation: true,
+  aiAgentId: null,
+  orgId: 'org-1',
+  partnerId: null,
+  attachments: [],
+};
+
 describe('MonitorEditor (#5289)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -80,6 +104,50 @@ describe('MonitorEditor (#5289)', () => {
     const body = JSON.parse((call![1] as RequestInit).body as string);
     expect(body.recurrenceThreshold).toBe(3);
     expect(body.recurrenceWindowHours).toBe(240);
+  });
+
+  it('allows clearing a previously-set recurrence threshold back to off (regression: valueAsNumber -> NaN blocked save)', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (init?.method === 'POST' && input === '/monitor-definitions') return json({ data: { id: 'new-1' } }, true, 201);
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('monitor-editor-name'), { target: { value: 'Disk full' } });
+    fireEvent.change(screen.getByTestId('monitor-editor-recurrence-threshold'), { target: { value: '3' } });
+    fireEvent.change(screen.getByTestId('monitor-editor-recurrence-window-days'), { target: { value: '10' } });
+    // Turn escalation back off by emptying both fields.
+    fireEvent.change(screen.getByTestId('monitor-editor-recurrence-threshold'), { target: { value: '' } });
+    fireEvent.change(screen.getByTestId('monitor-editor-recurrence-window-days'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+
+    await waitFor(() => expect(navMock).toHaveBeenCalled());
+    const call = fetchMock.mock.calls.find(([url, init]) => url === '/monitor-definitions' && (init as RequestInit)?.method === 'POST');
+    expect(call).toBeDefined();
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    expect(body.recurrenceThreshold).toBeNull();
+    expect(body.recurrenceWindowHours).toBeNull();
+  });
+
+  it('omits an emptied optional condition field from the submitted payload instead of sending null (regression: valueAsNumber -> NaN)', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (init?.method === 'POST' && input === '/monitor-definitions') return json({ data: { id: 'new-1' } }, true, 201);
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('monitor-editor-kind'), { target: { value: 'disk' } });
+    fireEvent.change(screen.getByTestId('monitor-editor-name'), { target: { value: 'Disk full' } });
+    // durationMinutes is optional on the disk condition — clear it.
+    fireEvent.change(screen.getByTestId('condition-field-durationMinutes'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+
+    await waitFor(() => expect(navMock).toHaveBeenCalled());
+    const call = fetchMock.mock.calls.find(([url, init]) => url === '/monitor-definitions' && (init as RequestInit)?.method === 'POST');
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    expect('durationMinutes' in body.condition).toBe(false);
   });
 
   it('offers ai_triage in the Respond action list only once an AI agent is selected', async () => {
@@ -153,6 +221,48 @@ describe('MonitorEditor (#5289)', () => {
     );
   });
 
+  it('edit mode: surfaces an error banner when detaching an attachment fails (regression: silent no-op)', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions/m1' && !init) {
+        return json({
+          data: {
+            id: 'm1',
+            name: 'Disk full',
+            kind: 'disk',
+            enabled: true,
+            condition: { operator: 'gt', value: 90, durationMinutes: 5 },
+            severity: 'high',
+            cooldownMinutes: 5,
+            autoResolve: false,
+            responses: [],
+            deliveryMode: 'inherit',
+            deliveryChannelIds: [],
+            recurrenceActions: [],
+            pauseResponsesOnEscalation: true,
+            orgId: 'org-1',
+            partnerId: null,
+            attachments: [
+              { id: 'a1', configPolicyId: 'cp1', policyName: 'Site Policy', enabled: true, overrides: null },
+            ],
+          },
+        });
+      }
+      if (input === '/monitor-definitions/m1/devices') return json({ data: [] });
+      if (init?.method === 'DELETE' && input === '/monitor-definitions/m1/attachments/a1') {
+        return json({ error: 'Policy not found' }, false, 404);
+      }
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
+
+    fireEvent.click(screen.getByTestId('monitor-editor-detach-a1'));
+
+    await waitFor(() => expect(screen.getByText('Policy not found')).toBeInTheDocument());
+    // The row must stay listed — a failed detach is not a detach.
+    expect(screen.getByText('Site Policy')).toBeInTheDocument();
+  });
+
   it('edit mode: tests the monitor against a picked device', async () => {
     fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
       if (input === '/monitor-definitions/m1' && !init) {
@@ -194,5 +304,76 @@ describe('MonitorEditor (#5289)', () => {
     fireEvent.click(screen.getByTestId('monitor-editor-test-run'));
 
     await waitFor(() => expect(screen.getByTestId('monitor-editor-test-result')).toHaveTextContent('HOST-1'));
+  });
+
+  it('edit mode: PATCHes the monitor on save and refetches (not POST, not the create-mode navigate)', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions/m1' && !init) return json({ data: MONITOR_M1_FIXTURE });
+      if (input === '/monitor-definitions/m1' && init?.method === 'PATCH') return json({ data: { id: 'm1' } });
+      if (input === '/monitor-definitions/m1/devices') return json({ data: [] });
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
+
+    fireEvent.change(screen.getByTestId('monitor-editor-name'), { target: { value: 'Disk full (renamed)' } });
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/monitor-definitions/m1',
+        expect.objectContaining({ method: 'PATCH' }),
+      ),
+    );
+    const call = fetchMock.mock.calls.find(([url, init]) => url === '/monitor-definitions/m1' && (init as RequestInit)?.method === 'PATCH');
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    expect(body.name).toBe('Disk full (renamed)');
+    expect(navMock).not.toHaveBeenCalled();
+    // Edit-mode save re-fetches the monitor rather than navigating away.
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/monitor-definitions/m1').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('edit mode: deletes the monitor via the confirm dialog and navigates to the list', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions/m1' && !init) return json({ data: MONITOR_M1_FIXTURE });
+      if (input === '/monitor-definitions/m1' && init?.method === 'DELETE') return json({}, true, 204);
+      if (input === '/monitor-definitions/m1/devices') return json({ data: [] });
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
+
+    fireEvent.click(screen.getByTestId('monitor-editor-delete'));
+    fireEvent.click(screen.getByTestId('monitor-editor-delete-confirm'));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/monitor-definitions/m1', expect.objectContaining({ method: 'DELETE' })),
+    );
+    await waitFor(() => expect(navMock).toHaveBeenCalledWith('/monitoring'));
+  });
+
+  it('reaches the delivery-mode radio choice in the submitted payload, and reveals the channel picker only for "channels"', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (init?.method === 'POST' && input === '/monitor-definitions') return json({ data: { id: 'new-1' } }, true, 201);
+      if (input.startsWith('/alerts/channels')) return json({ data: [{ id: 'chan-1', name: 'Ops', type: 'email' }] });
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('monitor-editor-channels')).toBeNull();
+    fireEvent.click(screen.getByTestId('monitor-editor-delivery-channels'));
+    expect(screen.getByTestId('monitor-editor-channels')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('monitor-editor-name'), { target: { value: 'Disk full' } });
+    fireEvent.click(screen.getByTestId('monitor-editor-save'));
+
+    await waitFor(() => expect(navMock).toHaveBeenCalled());
+    const call = fetchMock.mock.calls.find(([url, init]) => url === '/monitor-definitions' && (init as RequestInit)?.method === 'POST');
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    expect(body.deliveryMode).toBe('channels');
+
+    fireEvent.click(screen.getByTestId('monitor-editor-delivery-none'));
+    expect(screen.queryByTestId('monitor-editor-channels')).toBeNull();
   });
 });

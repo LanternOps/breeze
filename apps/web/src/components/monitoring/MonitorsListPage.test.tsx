@@ -92,4 +92,18 @@ describe('MonitorsListPage (#5289)', () => {
       expect(fetchMock).toHaveBeenCalledWith('/monitor-definitions/m-org', expect.objectContaining({ method: 'DELETE' })),
     );
   });
+
+  it('toggles a monitor enabled/disabled via PATCH', async () => {
+    render(<MonitorsListPage />);
+    await waitFor(() => expect(screen.getByTestId('monitors-list-page')).toBeInTheDocument());
+
+    fireEvent.click(within(screen.getByTestId('monitors-list-row-m-org')).getByTestId('monitors-list-enabled-m-org'));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/monitor-definitions/m-org',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ enabled: false }) }),
+      ),
+    );
+  });
 });

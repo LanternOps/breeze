@@ -252,6 +252,9 @@
       "overrides": "Sovrascritture",
       "source": "Criterio di origine"
     },
-    "empty": "Nessun dispositivo è ancora coperto da questo monitor."
+    "empty": "Nessun dispositivo è ancora coperto da questo monitor.",
+    "errors": {
+      "fetch": "Impossibile caricare i dispositivi"
+    }
   }
 }

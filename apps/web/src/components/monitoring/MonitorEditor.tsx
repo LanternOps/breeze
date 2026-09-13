@@ -371,15 +371,18 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
 
   const handleDetach = async (attachmentId: string) => {
     if (!monitorId) return;
+    setError(undefined);
     try {
       const response = await fetchWithAuth(`/monitor-definitions/${monitorId}/attachments/${attachmentId}`, {
         method: 'DELETE',
       });
-      if (response.ok || response.status === 204) {
-        setAttachments((prev) => prev.filter((a) => a.id !== attachmentId));
+      if (!response.ok && response.status !== 204) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(extractApiError(data, t('monitoring:deploy.errors.detach')));
       }
-    } catch {
-      // Best-effort; the Deployed card simply won't refresh on failure.
+      setAttachments((prev) => prev.filter((a) => a.id !== attachmentId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('monitoring:deploy.errors.detach'));
     }
   };
 
@@ -511,7 +514,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
                 {testResult.status === 'error'
                   ? testResult.message
                   : t(
-                      testResult.triggered
+                      /* i18n-dynamic */ testResult.triggered
                         ? 'monitoring:editor.testResult.triggered'
                         : 'monitoring:editor.testResult.notTriggered',
                       { device: testResult.deviceName },
@@ -721,8 +724,22 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
                   min={2}
                   max={100}
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                  {...register('recurrenceThreshold', { valueAsNumber: true })}
+                  {...register('recurrenceThreshold', {
+                    // `valueAsNumber` turns an emptied field into NaN, which
+                    // this field's `.nullable().optional()` schema rejects —
+                    // blocking the save an operator uses to turn escalation
+                    // back OFF, with no field-level message pointing at why.
+                    // react-hook-form also runs `setValueAs` over the
+                    // registered DEFAULT value (not only live DOM events), so
+                    // this must tolerate `null`/`undefined` too — `Number(null)`
+                    // is 0, which silently passed `.min(2)` as a false "too
+                    // small" error instead of staying null.
+                    setValueAs: (v: string | number | null) => (v === '' || v == null ? null : Number(v)),
+                  })}
                 />
+                {errors.recurrenceThreshold && (
+                  <p className="text-xs text-destructive">{String(errors.recurrenceThreshold.message)}</p>
+                )}
               </div>
               <div className="space-y-2">
                 <label
@@ -738,8 +755,13 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
                   min={1}
                   max={365}
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                  {...register('recurrenceWindowDays', { valueAsNumber: true })}
+                  {...register('recurrenceWindowDays', {
+                    setValueAs: (v: string | number | null) => (v === '' || v == null ? null : Number(v)),
+                  })}
                 />
+                {errors.recurrenceWindowDays && (
+                  <p className="text-xs text-destructive">{String(errors.recurrenceWindowDays.message)}</p>
+                )}
               </div>
             </div>
             <div className="space-y-2">

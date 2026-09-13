@@ -24,18 +24,28 @@ export default function MonitorDevicesTable({ monitorId }: MonitorDevicesTablePr
   const { t } = useTranslation('monitoring');
   const [rows, setRows] = useState<DeviceRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setError(false);
     fetchWithAuth(`/monitor-definitions/${monitorId}/devices`)
-      .then((res) => (res.ok ? res.json() : { data: [] }))
+      .then((res) => {
+        if (!res.ok) throw new Error('fetch failed');
+        return res.json();
+      })
       .then((data) => {
         if (!cancelled) setRows(Array.isArray(data?.data) ? data.data : []);
       })
       .catch(() => {
-        if (!cancelled) setRows([]);
+        if (cancelled) return;
+        // Distinct from "no devices": a failed load must never render as the
+        // same empty state, or an operator troubleshooting "this monitor
+        // isn't firing anywhere" would wrongly conclude it's undeployed.
+        setRows([]);
+        setError(true);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -59,6 +69,8 @@ export default function MonitorDevicesTable({ monitorId }: MonitorDevicesTablePr
         <div className="mt-2">
           {loading ? (
             <p className="text-sm text-muted-foreground">{t('editor.loading')}</p>
+          ) : error ? (
+            <p className="text-sm text-destructive">{t('devices.errors.fetch')}</p>
           ) : rows.length === 0 ? (
             <p className="text-sm text-muted-foreground">{t('devices.empty')}</p>
           ) : (

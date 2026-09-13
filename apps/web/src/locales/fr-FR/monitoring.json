@@ -252,6 +252,9 @@
       "overrides": "Outremises",
       "source": "Politique source"
     },
-    "empty": "Aucun appareil n’est encore couvert par ce moniteur."
+    "empty": "Aucun appareil n’est encore couvert par ce moniteur.",
+    "errors": {
+      "fetch": "Impossible de charger les appareils"
+    }
   }
 }

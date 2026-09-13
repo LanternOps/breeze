@@ -252,6 +252,9 @@
       "overrides": "Überschreibungen",
       "source": "Quellrichtlinie"
     },
-    "empty": "Diesem Monitor sind noch keine Geräte zugeordnet."
+    "empty": "Diesem Monitor sind noch keine Geräte zugeordnet.",
+    "errors": {
+      "fetch": "Geräte konnten nicht geladen werden"
+    }
   }
 }

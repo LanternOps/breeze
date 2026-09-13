@@ -97,7 +97,25 @@ export default function MonitorConditionFields({ kind, name }: MonitorConditionF
               max={field.max}
               step={field.step ?? (field.kind === 'number' ? 1 : undefined)}
               className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              {...register(path, field.kind === 'number' ? { valueAsNumber: true } : {})}
+              {...register(
+                path,
+                field.kind === 'number'
+                  // `valueAsNumber` turns an emptied field into NaN, not
+                  // undefined — for an `optional()` condition field (most of
+                  // them), that serializes as `condition.<key>: null`, which
+                  // the wire schema rejects (optional accepts an ABSENT key,
+                  // not an explicit null), surfacing only as a generic
+                  // "Save failed" banner with no field pointed at. Map an
+                  // empty value to undefined so JSON.stringify drops the key
+                  // entirely, same as never having touched the field.
+                  // react-hook-form also runs `setValueAs` over the
+                  // registered default (not only live DOM events) — a kind
+                  // whose default condition omits this optional key mounts
+                  // it as `undefined`, which must stay undefined rather than
+                  // become `Number(undefined)` (NaN).
+                  ? { setValueAs: (v: string | number | undefined) => (v === '' || v == null ? undefined : Number(v)) }
+                  : {},
+              )}
             />
             {fieldError && <p className="text-xs text-destructive">{fieldError}</p>}
           </div>

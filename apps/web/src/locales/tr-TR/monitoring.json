@@ -252,6 +252,9 @@
       "overrides": "Geçersiz Kılmalar",
       "source": "Kaynak politika"
     },
-    "empty": "Bu monitör tarafından henüz kapsanan bir cihaz yok."
+    "empty": "Bu monitör tarafından henüz kapsanan bir cihaz yok.",
+    "errors": {
+      "fetch": "Cihazlar yüklenemedi"
+    }
   }
 }

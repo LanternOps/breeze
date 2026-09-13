@@ -252,6 +252,9 @@
       "overrides": "Substituições",
       "source": "Política de origem"
     },
-    "empty": "Nenhum dispositivo é coberto por este monitor ainda."
+    "empty": "Nenhum dispositivo é coberto por este monitor ainda.",
+    "errors": {
+      "fetch": "Falha ao carregar os dispositivos"
+    }
   }
 }
