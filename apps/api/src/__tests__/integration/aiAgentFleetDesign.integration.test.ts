@@ -65,9 +65,11 @@ import { createOrganization, createPartner, createSite, createUser } from './db-
 import {
   db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext,
 } from '../../db';
-import { aiAgentRuns, aiAgents, aiAgentSchedules, devices } from '../../db/schema';
+import { aiAgentRuns, aiAgents, aiAgentSchedules, devices, reportRuns, reports } from '../../db/schema';
+import { persistedSystemSiteScopeValues, systemReportAuthority } from '../../services/siteScope';
 import {
   FleetDesignPersistConflictError,
+  loadFleetDesignReport,
   persistFleetDesignReport,
   type FleetDesignPersistInput,
 } from '../../services/aiAgents/fleetDesignReport';
@@ -384,6 +386,131 @@ describe('persistFleetDesignReport / loadDesignEvidence against live Postgres (F
     `)) as unknown as Array<{ id: string }>;
     expect(otherOrgDeviceRows).toHaveLength(1);
     expect(evidence.deviceIds.has(otherOrgDeviceRows[0]!.id)).toBe(false);
+  });
+
+  /**
+   * PR-review gap (Important) — the "never present an unmeasured evidence
+   * section as a zero" fix (`assembleDesignEvidence`) is proven at the pure
+   * layer by `designEvidence.test.ts`'s own fixtures, and at the mocked-DB
+   * layer by that file's `loadDesignEvidence (loader failure isolation)`
+   * suite (a loader that genuinely REJECTS lands in `unavailable`). What
+   * neither proves is the other half of the same contract against REAL
+   * Postgres: a loader that runs and legitimately finds NOTHING must NOT be
+   * confused with one that failed — a brand new org with zero rows anywhere
+   * must come back with `unavailable: []` and real, measured zeros.
+   */
+  runDb('a fresh, empty org yields unavailable: [] and MEASURED zeros, never an invented "unavailable"', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+
+    const evidence = await withSystemDbAccessContext(() => loadDesignEvidence(org.id, {}));
+
+    expect(evidence.unavailable).toEqual([]);
+    expect(evidence.devicesTotal).toBe(0);
+    expect(evidence.devices).toEqual([]);
+    expect(evidence.counts).toEqual({ alerts90d: 0, tickets90d: 0, endpoints: 0 });
+
+    const baseline = designBaselineNumbers(evidence);
+    // `ticketsPerMonth` divides a genuinely MEASURED zero count — unlike
+    // `alertsPer100EndpointsPerMonth`, which is legitimately null here for a
+    // DIFFERENT, unrelated reason (division by zero endpoints), not
+    // asserted either way to avoid conflating the two nulls.
+    expect(baseline.ticketsPerMonth).toBe(0);
+    expect(baseline.precursors.find((p) => p.condition === 'disk_used_over_threshold')?.deviceCount).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR-review gap (Critical) — `loadFleetDesignReport` (the run-detail route's
+// and the W03 Fleet Design page's read path) was never invoked by any test:
+// `routes/fleetDesign.test.ts` mocks the module entirely. These four cases
+// prove the three ways it returns `null` (wrong org, wrong report type,
+// nonexistent id) are genuinely indistinguishable from one another — and
+// from each other — while a real hit still resolves.
+// ---------------------------------------------------------------------------
+describe('loadFleetDesignReport against live Postgres (Fleet Designer W01, Task 13 gap)', () => {
+  /** Seeds a `reports` + `report_runs` row of a DIFFERENT type (the weekly
+   *  narrative), using the SAME system-principal scope shape
+   *  `persistFleetDesignReport` writes — so `loadFleetDesignReport`'s
+   *  `eq(reports.type, FLEET_DESIGN_REPORT_TYPE)` predicate is the ONLY
+   *  thing standing between this row and a false hit. */
+  async function seedNonDesignReportRun(orgId: string): Promise<string> {
+    const scopeValues = persistedSystemSiteScopeValues(systemReportAuthority(orgId));
+    return withSystemDbAccessContext(async () => {
+      const [definition] = await db
+        .insert(reports)
+        .values({
+          orgId,
+          name: 'Weekly Narrative',
+          type: 'ai_org_narrative',
+          config: {},
+          schedule: 'one_time',
+          format: 'pdf',
+          createdBy: null,
+          sourceAiAgentScheduleId: null,
+          ...scopeValues,
+        })
+        .returning({ id: reports.id });
+      const [run] = await db
+        .insert(reportRuns)
+        .values({
+          reportId: definition!.id,
+          status: 'completed',
+          startedAt: new Date(),
+          completedAt: new Date(),
+          rowCount: 0,
+          result: { rows: [], rowCount: 0, summary: {} },
+          requestedByKind: 'system',
+          requestedByUserId: null,
+          requestedByPortalUserId: null,
+          ...scopeValues,
+        })
+        .returning({ id: reportRuns.id });
+      return run!.id;
+    });
+  }
+
+  runDb('returns the row for an org-A condition', async () => {
+    const f = await seed();
+    const evidence = await withSystemDbAccessContext(() => loadDesignEvidence(f.orgId, {}));
+    const outcome = await buildOutcome(evidence, f.deviceId);
+    const { reportRunId, reportId } = await persistFleetDesignReport(input(f, evidence, outcome));
+
+    const row = await withSystemDbAccessContext(() => loadFleetDesignReport(reportRunId, (orgId) => eq(orgId, f.orgId)));
+
+    expect(row).not.toBeNull();
+    expect(row!.reportRunId).toBe(reportRunId);
+    expect(row!.reportId).toBe(reportId);
+    expect(row!.orgId).toBe(f.orgId);
+    expect(row!.summary.fleetDesign!.runId).toBe(f.runId);
+  });
+
+  runDb('returns null for an org-B condition — the SAME reportRunId, a foreign org filter', async () => {
+    const f = await seed();
+    const evidence = await withSystemDbAccessContext(() => loadDesignEvidence(f.orgId, {}));
+    const outcome = await buildOutcome(evidence, f.deviceId);
+    const { reportRunId } = await persistFleetDesignReport(input(f, evidence, outcome));
+
+    const row = await withSystemDbAccessContext(() => loadFleetDesignReport(reportRunId, (orgId) => eq(orgId, f.otherOrgId)));
+
+    expect(row).toBeNull();
+  });
+
+  runDb('returns null when the report_run exists but reports.type is not ai_fleet_design', async () => {
+    const f = await seed();
+    const narrativeRunId = await seedNonDesignReportRun(f.orgId);
+
+    const row = await withSystemDbAccessContext(() => loadFleetDesignReport(narrativeRunId, (orgId) => eq(orgId, f.orgId)));
+
+    expect(row).toBeNull();
+  });
+
+  runDb('returns null for a random uuid — indistinguishable from the other two misses', async () => {
+    const f = await seed();
+
+    const row = await withSystemDbAccessContext(() => loadFleetDesignReport(randomUUID(), (orgId) => eq(orgId, f.orgId)));
+
+    expect(row).toBeNull();
   });
 });
 

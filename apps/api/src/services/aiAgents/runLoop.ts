@@ -555,10 +555,21 @@ export function createAgentRunPreToolUse(args: {
    * SDK's `abortController` (which this synchronous hook does not observe).
    */
   deadlineMs: number;
+  /**
+   * Fleet Designer W01 (#5651) — the SAME refs `postToolUse` receives,
+   * needed here too: `validateOutcomeToolInput('submit_fleet_design', ...)`
+   * throws unconditionally when its third argument is omitted (see its own
+   * switch case), so without this the pre-hook's own validate-only check
+   * below denied EVERY `submit_fleet_design` call before the SDK's real tool
+   * handler (which already has `design` via `buildOutcomeSdkTools`) ever
+   * ran — a design run could never actually submit. `undefined` on every
+   * non-design run, where the switch never reaches that case.
+   */
+  design?: FleetDesignOutcomeRefs;
 }): PreToolUseCallback {
   const {
     run, agentName, agentAuth, agentKind, guardrailPolicy, outcome, intentIds, allowedPending,
-    sessionId, executionIdPending, actPinPending, actReservation, deadlineMs,
+    sessionId, executionIdPending, actPinPending, actReservation, deadlineMs, design,
   } = args;
 
   /**
@@ -792,7 +803,7 @@ export function createAgentRunPreToolUse(args: {
         return { allowed: false, error: 'not available on this run' };
       }
       try {
-        validateOutcomeToolInput(toolName, input);
+        validateOutcomeToolInput(toolName, input, design);
       } catch (e) {
         return { allowed: false, error: `invalid ${toolName} input: ${(e as Error).message}` };
       }
@@ -1606,16 +1617,17 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // Shared across every act-mode call in THIS run — see actRevalidation.ts.
   const actReservation: ActReservationState = { count: 0 };
 
+  // Fleet Designer W01 (#5651) — computed ONCE here (not inside either hook)
+  // and reused for BOTH the pre-hook's validate-only check and the post-hook
+  // capture below, so the referential pass and the tool's own schema can
+  // never see two different device-id sets or two different `generatedAt`
+  // timestamps for the same run.
+  const designRefs = designOutcomeRefs(ctx);
   const preToolUse = createAgentRunPreToolUse({
     run, agentName: ctx.agent.name, agentAuth, agentKind: ctx.agent.kind, guardrailPolicy, outcome,
     intentIds, allowedPending, sessionId: ctx.sessionId, executionIdPending, actPinPending,
-    actReservation, deadlineMs,
+    actReservation, deadlineMs, design: designRefs,
   });
-  // Fleet Designer W01 (#5651) — computed ONCE here (not inside the post-hook)
-  // and reused for the SDK tool build below, so the referential pass and the
-  // tool's own schema can never see two different device-id sets or two
-  // different `generatedAt` timestamps for the same run.
-  const designRefs = designOutcomeRefs(ctx);
   const postToolUse = createAgentRunPostToolUse({
     outcome, allowedPending, executionIdPending, actPinPending,
     run: {

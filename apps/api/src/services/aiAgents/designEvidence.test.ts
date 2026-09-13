@@ -1,10 +1,75 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FLEET_DESIGN_PRECURSOR_THRESHOLDS } from '@breeze/shared';
 
+// ---------------------------------------------------------------------------
+// db + leaf-service mocks for the `loadDesignEvidence` suite at the bottom of
+// this file. Same harness shape as `narrativeContext.test.ts`'s
+// `loadNarrativeContext` suite — compiled-SQL matching via a `failOn`
+// fragment list, since a rejected loader is asserted by SQL substring, not by
+// call order. The pure-assembler suite above this comment needs none of it
+// (`assembleDesignEvidence` never touches the database).
+//
+// `../../db` is imported as a late-bound namespace in `designEvidence.ts`
+// (`import * as dbModule from '../../db'`) specifically so a test's
+// `vi.mock('../../db')` factory is observed — see that file's own comment.
+// ---------------------------------------------------------------------------
+/** SQL fragments whose statement must REJECT (per-loader isolation tests). */
+let failOn: string[] = [];
+/** Rows to serve, matched by an SQL fragment rather than by call index, so a
+ *  reordered loader list does not silently re-point the fixtures. */
+let rowsFor: Array<{ match: string; rows: unknown[] }> = [];
+
+vi.mock('../../db', () => ({
+  db: {
+    execute: vi.fn((statement: unknown) => {
+      const text = sqlText(statement).replace(/\s+/g, ' ');
+      if (failOn.some((fragment) => text.includes(fragment))) {
+        return Promise.reject(new Error('db unavailable'));
+      }
+      const hit = rowsFor.find((entry) => text.includes(entry.match));
+      return Promise.resolve(hit ? hit.rows : []);
+    }),
+  },
+}));
+
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+
+// The four leaf services `loadPosture`/`loadHealth` call directly (not
+// through the generic `query()` helper above) — mocked with benign,
+// zero-result defaults so every loader OTHER than the one under test
+// resolves cleanly without a real Postgres connection.
+vi.mock('../managementPostureReport', () => ({
+  getManagementPostureSummary: vi.fn(async () => ({ orgs: [] })),
+}));
+vi.mock('../reliabilityScoring', () => ({
+  listReliabilityDevices: vi.fn(async () => ({ total: 0, rows: [] })),
+}));
+vi.mock('../vulnerabilityFleetQueries', () => ({
+  fetchFleetFindingRows: vi.fn(async () => []),
+}));
+vi.mock('../vulnerabilityFleetAggregation', () => ({
+  computeStats: vi.fn(() => ({
+    criticalOpen: 0, highOpen: 0, mediumOpen: 0, lowOpen: 0, totalOpen: 0, devicesAffected: 0,
+  })),
+}));
+vi.mock('../securityPosture', () => ({
+  getSecurityPostureTrend: vi.fn(async () => []),
+}));
+
+// --- compiled-SQL helper (the narrativeContext.test.ts / sweepEvidence.test.ts idiom) ---
+function sqlText(node: unknown): string {
+  if (!node || typeof node !== 'object') return '';
+  const n = node as Record<string, unknown>;
+  if (Array.isArray(n.queryChunks)) return n.queryChunks.map(sqlText).join('');
+  if (Array.isArray(n.value) && !('encoder' in n)) return (n.value as unknown[]).join('');
+  return '';
+}
+
+import { captureException } from '../sentry';
 import {
   DESIGN_EVIDENCE_HARD_LIMIT_BYTES, DESIGN_EVIDENCE_MAX_DEVICES,
-  assembleDesignEvidence, designBaselineNumbers, type RawDesignEvidence,
+  assembleDesignEvidence, designBaselineNumbers, loadDesignEvidence, type RawDesignEvidence,
 } from './designEvidence';
 
 const uuid = (n: number) => `${String(n).padStart(8, '0')}-0000-4000-8000-000000000000`;
@@ -71,5 +136,95 @@ describe('assembleDesignEvidence', () => {
     const onlyCounts = designBaselineNumbers(assembleDesignEvidence(raw({ unavailable: ['counts'], precursors: { ...raw().precursors, diskOver: 2 } })));
     expect(onlyCounts.ticketsPerMonth).toBeNull();
     expect(onlyCounts.precursors.find((p) => p.condition === 'disk_used_over_threshold')?.deviceCount).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR-review gap (Important): the "unavailable section is never a zero" fix
+// (see this module's `assembleDesignEvidence` and the tests above) was only
+// ever proven at the PURE assembler layer, fed a hand-typed
+// `unavailable: [...]` array. Nothing proved `loadDesignEvidence` ITSELF
+// produces that array correctly when a loader genuinely throws. This suite
+// drives the real async orchestrator with a mocked `../../db` — the SAME
+// module-boundary seam `designEvidence.ts`'s own header comment says exists
+// for exactly this purpose ("a late-bound namespace import ... so a test's
+// vi.mock('../../db') factory can be observed") — and makes ONE loader's
+// statement genuinely reject, the same `failOn` idiom
+// `narrativeContext.test.ts` uses for `loadNarrativeContext`.
+//
+// `software` is the loader under test: it is the simplest loader in this
+// module (one `query()` call, no dependent leaf service), so failing it
+// exercises the orchestrator's `settled()`/`missing()` pairing without also
+// depending on the correctness of the four mocked leaf services above.
+// ---------------------------------------------------------------------------
+describe('loadDesignEvidence (loader failure isolation)', () => {
+  const ORG = '00000000-0000-4000-8000-000000000e01';
+  const HEADER_ROWS = [{
+    org_name: 'Acme', partner_id: '00000000-0000-4000-8000-000000000e02',
+    partner_name: 'MSP', timezone: 'UTC', site_name: null,
+  }];
+
+  beforeEach(() => {
+    failOn = [];
+    rowsFor = [{ match: 'FROM organizations', rows: HEADER_ROWS }];
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('a genuinely failing loader statement costs exactly its own section — never an invented zero', async () => {
+    failOn = ['FROM software_inventory'];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const evidence = await loadDesignEvidence(ORG, { siteId: null });
+
+    // The narrow section name, not a sibling and not the whole bundle.
+    expect(evidence.unavailable).toEqual(['software']);
+    expect(evidence.software).toEqual([]);
+    // Every OTHER section resolved normally (the header succeeded, so `org`
+    // is not in `unavailable` either) — proving this is per-loader
+    // isolation, not a poisoned shared transaction taking everything down.
+    expect(evidence.org.name).toBe('Acme');
+
+    // Reported, not swallowed — same contract `narrativeContext.ts` and
+    // `sweepEvidence.ts` carry: a broken table must be observable, not just
+    // quietly rendered as "(not measured)" with nobody ever finding out.
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      expect.objectContaining({ service: 'aiAgents', operation: 'loadDesignEvidence', loader: 'software', orgId: ORG }),
+    );
+    const warned = warnSpy.mock.calls.find((call) => String(call[0]).includes('context loader failed'));
+    expect(warned?.[1]).toMatchObject({ orgId: ORG, loader: 'software' });
+    warnSpy.mockRestore();
+  });
+
+  it('feeds the real assembler, so baseline numbers for an unavailable section are null, not zero, end to end', async () => {
+    // `precursors` failing is the section `designBaselineNumbers` actually
+    // reads from — proving the SAME "unavailable, not zero" contract the
+    // pure-assembler tests above assert, but through the real DB-backed
+    // loader this time, not a hand-typed fixture.
+    failOn = ['device_patches dp']; // inside loadPrecursors, per its own SQL
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const evidence = await loadDesignEvidence(ORG, { siteId: null });
+
+    expect(evidence.unavailable).toContain('precursors');
+    const baseline = designBaselineNumbers(evidence);
+    expect(baseline.precursors.every((p) => p.deviceCount === null)).toBe(true);
+  });
+
+  it('an unavailable device section reports empty devices, not a fabricated device list', async () => {
+    failOn = ['FROM devices d'];
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const evidence = await loadDesignEvidence(ORG, { siteId: null });
+
+    expect(evidence.unavailable).toContain('devices');
+    expect(evidence.devices).toEqual([]);
+    expect(evidence.devicesTotal).toBe(0);
   });
 });
