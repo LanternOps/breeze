@@ -419,6 +419,19 @@ const ALLOWED_TAG_NAMES = new Set([
   // a type-level guarantee: never build a key from tenant or user data. Carries
   // no tenant, device, or host id.
   'i18n_key',
+  // PR #5695 review finding 1: `outcomeForFailure`'s `sentryWorthy` flag was
+  // computed in run.ts and then dropped at the call site — every genuinely
+  // unexpected Graph failure (graph_response_invalid, graph_request_timeout,
+  // graph_transport_failed, graph_license_required, graph_not_found,
+  // graph_response_too_large, the refusal codes) degraded silently to
+  // `last_status='error'` with no alert. `m365_sync_domain` is the closed
+  // `M365SyncDomain` union and `m365_sync_failure_code` is the closed
+  // `M365SyncCallFailureCode` union — both string-literal unions from
+  // services/m365Sync/types.ts / m365ControlPlane/readActionService.ts, never
+  // interpolated. `org_id` (already allowlisted above) scopes the alert to a
+  // tenant; neither new tag carries a vault ref, credential, or tenant secret.
+  'm365_sync_domain',
+  'm365_sync_failure_code',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;

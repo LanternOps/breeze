@@ -1186,7 +1186,13 @@
         "generateACriticalAlertWhenWarrantyExpires": "Générez une alerte critique lorsque la garantie expire dans ce délai de jours.",
         "enabled": "activé",
         "warnDays": "AvertissementsJours",
-        "criticalDays": "Critical Days"
+        "criticalDays": "Critical Days",
+        "collectHpWarrantyFromTheDevice": "Recueillir la garantie HP à partir de l'appareil",
+        "hpCmslConsentExplainer": "Les données de garantie HP sont lues sur l'appareil à l'aide de la Client Management Script Library de HP. Cocher cette case accepte la licence HP au nom de ce client, et HP peut collecter des informations techniques depuis l'appareil, y compris son adresse IP. Laissée décochée, les appareils HP conservent l'état de garantie qu'ils possèdent déjà.",
+        "hpCmslNoAcceptanceRecordedYet": "Aucune acceptation n'est enregistrée pour le moment. L'enregistrement avec cette case cochée consigne votre utilisateur et l'heure du serveur.",
+        "hpCmslAcceptedByOn": "Accepté par {{user}} le {{date}}",
+        "hpCmslTermsChangedSaveAgain": "HP a modifié ses conditions de licence depuis cette acceptation. Enregistrez de nouveau pour accepter à nouveau.",
+        "hpCmslInheritanceReplacesTheWholeLink": "Cette stratégie remplace entièrement les paramètres de garantie hérités, sans fusion champ par champ. L'enregistrer avec la collecte sur l'appareil désactivée arrête la collecte de garantie HP sur tous les appareils qu'elle atteint."
       },
       "rationale": {
         "label": "Justification",
@@ -1195,6 +1201,7 @@
         "save": "Enregistrer",
         "cancel": "Annuler",
         "none": "Aucune justification enregistrée."
+
       }
     }
   },

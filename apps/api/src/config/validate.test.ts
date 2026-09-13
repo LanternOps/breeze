@@ -3138,3 +3138,32 @@ describe('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED boolean guard', () => {
     },
   );
 });
+
+describe('M365_TENANT_SYNC_ENABLED + sync knobs (wave 04)', () => {
+  it('declares every sync key in the schema so buildEnvParseInput sees it', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('M365_TENANT_SYNC_ENABLED');
+    expect(ENV_SCHEMA_KEYS).toContain('M365_SYNC_CONCURRENCY');
+    expect(ENV_SCHEMA_KEYS).toContain('M365_SYNC_MAX_BACKLOG');
+    expect(ENV_SCHEMA_KEYS).toContain('M365_SYNC_TICK_BATCH');
+  });
+
+  it('refuses boot on a non-boolean M365_TENANT_SYNC_ENABLED (a typo must not read as OFF)', () => {
+    withEnv({ ...validEnv, M365_TENANT_SYNC_ENABLED: 'tru' }, () => {
+      expect(() => validateConfig()).toThrow(/M365_TENANT_SYNC_ENABLED must be a boolean/);
+    });
+  });
+
+  it('accepts every recognised boolean spelling', () => {
+    for (const raw of ['true', 'false', '1', '0', 'yes', 'no', 'on', 'off']) {
+      withEnv({ ...validEnv, M365_TENANT_SYNC_ENABLED: raw }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    }
+  });
+
+  it('refuses boot on a non-integer sync knob', () => {
+    withEnv({ ...validEnv, M365_SYNC_TICK_BATCH: 'lots' }, () => {
+      expect(() => validateConfig()).toThrow(/M365_SYNC_TICK_BATCH/);
+    });
+  });
+});

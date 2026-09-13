@@ -1,5 +1,5 @@
 {
-  "lastReviewedRef": "v0.112.0",
-  "reviewedAt": "2026-09-10",
-  "notes": "v0.112.0 release sync (docs/v0.112.0-release-sync): registry-based MSI OS floor (agents/installation), PAM/accounting/workspace/connected_apps permissions (users-and-roles, pam-api, accounting-integrations), recurring sensitive-data + network-baseline re-approval, Office add-in bindings revoked + TOTP, AUTH_BROWSER_TRANSITIONS_ENFORCED removed + RECOVERY_MEDIA_WORK_DIR/BACKUP_GC_GRACE_MS (environment), signed digest-pinned image refs for fresh installs (production, quickstart), full v0.112.0 section in deploy/upgrades, BMR rewrite (system state applied, restorability badge, breeze-backup rebuild) across backup/bare-metal-recovery, restoring, profiles, policies. Remote-access lease, Lenovo warranty and manifest-key rotation had already landed with their PRs."
+  "lastReviewedRef": "v0.113.0",
+  "reviewedAt": "2026-09-13",
+  "notes": "v0.113.0 release sync (docs/v0.113.0-sync): new env vars BREEZE_AI_SCRIPT_AUTHORING_ENABLED (default true) / BREEZE_AI_SCRIPT_REVIEWER_MODEL / STRIPE_SESSION_REVOCATION_MODE / APP_ENCRYPTION_KEY_ID boot rules / executor M365_SYNC_* knobs (environment), full v0.113.0 section in deploy/upgrades (22 migrations, Strict-proposal approval bar, unattended lane off, Jobs + Monitoring renames), Fleet Designer kind (ai-agents), device function (devices), service deliverables (contracts, portal), step-up grant (approval-security), MFA enrolment grace (users-and-roles, hardening), backup GC prefix reclamation (backup/storage). AI script authoring, monitors, Jobs nav, mobile attestation and BMR pages had already landed with their PRs."
 }

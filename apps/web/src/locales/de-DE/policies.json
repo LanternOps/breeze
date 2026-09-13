@@ -1186,7 +1186,13 @@
         "generateACriticalAlertWhenWarrantyExpires": "Generieren Sie eine kritische Warnung, wenn die Garantie innerhalb dieser Anzahl von Tagen abläuft.",
         "enabled": "aktiviert",
         "warnDays": "warnDays",
-        "criticalDays": "kritischeTage"
+        "criticalDays": "kritischeTage",
+        "collectHpWarrantyFromTheDevice": "HP-Garantiedaten auf dem Gerät erfassen",
+        "hpCmslConsentExplainer": "HP-Garantiedaten werden auf dem Gerät mit der Client Management Script Library von HP gelesen. Mit diesem Kontrollkästchen akzeptieren Sie die HP-Lizenz im Namen dieses Kunden, und HP darf technische Informationen vom Gerät erfassen, einschließlich der IP-Adresse. Bleibt es leer, behalten HP-Geräte den Garantiestatus, den sie bereits haben.",
+        "hpCmslNoAcceptanceRecordedYet": "Noch keine Zustimmung erfasst. Beim Speichern mit gesetztem Kontrollkästchen werden Ihr Benutzer und die Serverzeit erfasst.",
+        "hpCmslAcceptedByOn": "Akzeptiert von {{user}} am {{date}}",
+        "hpCmslTermsChangedSaveAgain": "HP hat seine Lizenzbedingungen seit dieser Zustimmung geändert. Speichern Sie erneut, um erneut zuzustimmen.",
+        "hpCmslInheritanceReplacesTheWholeLink": "Diese Richtlinie ersetzt die geerbten Garantieeinstellungen vollständig, ohne feldweise Zusammenführung. Wird sie mit deaktivierter Erfassung gespeichert, endet die HP-Garantieerfassung auf jedem Gerät, das diese Richtlinie erreicht."
       },
       "rationale": {
         "label": "Begründung",
@@ -1195,6 +1201,7 @@
         "save": "Speichern",
         "cancel": "Abbrechen",
         "none": "Keine Begründung hinterlegt."
+
       }
     }
   },

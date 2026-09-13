@@ -7,15 +7,18 @@ import {
   alertRuleInlineSettingsSchema,
   backupInlineSettingsSchema,
   backupProfileLinkedInlineSettingsSchema,
+  clientSuppliedWarrantyHpCmslConsent,
   monitoringInlineSettingsSchema,
   monitorsInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
   patchInlineSettingsSchema,
+  warrantyHpCmslRequested,
+  warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
 import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared/constants';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { findOfflineDurationViolation } from '../../services/alertConditions/offlineDuration';
 import {
   getConfigPolicy,
@@ -31,6 +34,7 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   PARTNER_LINKABLE_FEATURE_TYPES,
   isBackupProfileReference,
+  WarrantyConsentError,
 } from '../../services/configurationPolicy';
 import { isMonitorAttachableToPolicy } from '../../services/monitors/monitorAttachability';
 import { getMonitorDefinition } from '../../services/monitors/monitorService';
@@ -46,6 +50,7 @@ import {
   linkIdParamSchema,
 } from './schemas';
 import { AutomationReferenceAuthorizationError } from '../../services/automationReferenceAuthorization';
+import { checkHpCmslWriteAllowed, warrantyLinkEnablesCollection } from './hpCmslGate';
 
 // The `config_policy_monitors_compat` deferred constraint trigger
 // (2026-10-16-160300-monitor-definitions.sql) is the owner-compatibility
@@ -96,6 +101,15 @@ featureLinkRoutes.get(
 );
 
 // POST /:id/features — add a feature link
+// #5511 W02 (contract D3): HP CMSL consent is stamped by the server from the
+// authenticated session, never accepted from a client. One literal, shared by
+// the POST/PATCH pre-checks and the service-error mapping, so the code a UI
+// branches on cannot drift between them.
+const WARRANTY_CONSENT_REFUSAL = {
+  error: 'HP CMSL consent is recorded by the server from your authenticated session. Remove hpCmsl.consent from the request and send it again.',
+  code: 'WARRANTY_CONSENT_NOT_CLIENT_SETTABLE',
+} as const;
+
 featureLinkRoutes.post(
   '/:id/features',
   requireScope('organization', 'partner', 'system'),
@@ -128,6 +142,17 @@ featureLinkRoutes.post(
         { error: `The "${data.featureType}" feature is not supported on partner-wide policies; it must be configured on an organization-scoped policy.` },
         400
       );
+    }
+
+    // #5511 W02 (contract D4): enabling device-side HP warranty collection
+    // installs HP software on every HP endpoint this policy reaches, so it
+    // carries the deployment gate — devices.execute (and MFA, already enforced
+    // route-level) — rather than the plain devices.write every other
+    // feature-link write needs. Keyed on the RESULT of the write, not the
+    // feature type: an alert-threshold edit installs nothing and stays ungated.
+    if (data.featureType === 'warranty' && warrantyHpCmslRequested(data.inlineSettings)) {
+      const gate = checkHpCmslWriteAllowed(auth, c.get('permissions') as UserPermissions | undefined);
+      if (!gate.allowed) return c.json(gate.body, 403);
     }
 
     // Validate the referenced feature policy exists (only when a policy ID is provided)
@@ -192,6 +217,25 @@ featureLinkRoutes.post(
       if (!parsed.success) {
         return c.json(
           zodValidationErrorBody('Invalid device lifecycle settings', parsed.error),
+          400
+        );
+      }
+      data.inlineSettings = parsed.data;
+    }
+
+    // #5511 W02 (contract D3): the consent refusal runs FIRST and on its own so
+    // a client that supplied one gets a coded, actionable 400. Letting the
+    // strict schema report it would produce a bare "Unrecognized key" with no
+    // `code`, and silently stripping it would let a UI believe an acceptance
+    // had been recorded when none was.
+    if (data.featureType === 'warranty' && data.inlineSettings) {
+      if (clientSuppliedWarrantyHpCmslConsent(data.inlineSettings)) {
+        return c.json(WARRANTY_CONSENT_REFUSAL, 400);
+      }
+      const parsed = warrantyInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(
+          zodValidationErrorBody('Invalid warranty settings', parsed.error),
           400
         );
       }
@@ -294,11 +338,15 @@ featureLinkRoutes.post(
         id,
         data.featureType,
         data.featurePolicyId,
-        data.inlineSettings
+        data.inlineSettings,
+        { userId: auth.user.id }
       );
     } catch (error) {
       if (error instanceof AutomationReferenceAuthorizationError) {
         return c.json({ error: 'Unknown or unauthorized automation reference' }, 400);
+      }
+      if (error instanceof WarrantyConsentError) {
+        return c.json({ error: error.message, code: WARRANTY_CONSENT_REFUSAL.code }, 400);
       }
       if (isMonitorNotAttachableDbError(error)) {
         return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
@@ -351,6 +399,14 @@ featureLinkRoutes.patch(
 
     if (!existingLink) {
       return c.json({ error: 'Feature link not found' }, 404);
+    }
+
+    // Same gate as the POST route (#5511 W02, D4). `data.inlineSettings` is the
+    // whole replacement blob (warranty updates are replace, not merge — D5), so
+    // the request predicate reads the post-write state directly.
+    if (existingLink.featureType === 'warranty' && warrantyHpCmslRequested(data.inlineSettings)) {
+      const gate = checkHpCmslWriteAllowed(auth, c.get('permissions') as UserPermissions | undefined);
+      if (!gate.allowed) return c.json(gate.body, 403);
     }
 
     if (data.featurePolicyId !== undefined && data.featurePolicyId !== null) {
@@ -414,6 +470,20 @@ featureLinkRoutes.patch(
         if (!parsed.success) {
           return c.json(
             zodValidationErrorBody('Invalid device lifecycle settings', parsed.error),
+            400
+          );
+        }
+        data.inlineSettings = parsed.data;
+      }
+      if (existingLink.featureType === 'warranty') {
+        // Same ordering and reasoning as the POST route above (#5511 W02, D3).
+        if (clientSuppliedWarrantyHpCmslConsent(data.inlineSettings)) {
+          return c.json(WARRANTY_CONSENT_REFUSAL, 400);
+        }
+        const parsed = warrantyInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(
+            zodValidationErrorBody('Invalid warranty settings', parsed.error),
             400
           );
         }
@@ -492,10 +562,13 @@ featureLinkRoutes.patch(
 
     let updated;
     try {
-      updated = await updateFeatureLink(linkId, data, id);
+      updated = await updateFeatureLink(linkId, data, id, { userId: auth.user.id });
     } catch (error) {
       if (error instanceof AutomationReferenceAuthorizationError) {
         return c.json({ error: 'Unknown or unauthorized automation reference' }, 400);
+      }
+      if (error instanceof WarrantyConsentError) {
+        return c.json({ error: error.message, code: WARRANTY_CONSENT_REFUSAL.code }, 400);
       }
       if (isMonitorNotAttachableDbError(error)) {
         return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
@@ -541,6 +614,19 @@ featureLinkRoutes.delete(
 
     const existingLink = policy.featureLinks.find((l: any) => l.id === linkId);
     if (!existingLink) return c.json({ error: 'Feature link not found' }, 404);
+
+    // #5511 W02 (contract D4/D5): deleting a warranty link is normally a pure
+    // revocation and stays ungated — but with a parent that COLLECTS, this
+    // delete does not end collection, it reverts to the parent's link and
+    // starts it. Fails CLOSED when the parent is set but could not be resolved
+    // (`parentPolicy` null): "can't tell" must not read as "no parent".
+    const parentUnresolved = !!policy.parentPolicyId && !policy.parentPolicy;
+    const revertStartsHpCmslCollection = existingLink.featureType === 'warranty'
+      && (parentUnresolved || warrantyLinkEnablesCollection(policy.parentPolicy?.featureLinks));
+    if (revertStartsHpCmslCollection) {
+      const gate = checkHpCmslWriteAllowed(auth, c.get('permissions') as UserPermissions | undefined);
+      if (!gate.allowed) return c.json(gate.body, 403);
+    }
 
     const deleted = await removeFeatureLink(linkId, id);
     if (!deleted) return c.json({ error: 'Feature link not found' }, 404);

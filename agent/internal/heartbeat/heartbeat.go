@@ -2949,6 +2949,22 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 		h.applyOneDriveHelperConfig(odRaw)
 	}
 
+	// Apply warranty_settings if present (#5511 W02): permit or stop device-side
+	// HP CMSL warranty collection. The flag is stored on every OS; only the
+	// (Windows-only, W03) collector acts on it.
+	//
+	// THIS MUST STAY ABOVE THE POLICY-PROBE BLOCK BELOW. That block returns
+	// unconditionally when neither probe key is present, which is most
+	// heartbeats — a key dispatched after it is silently unreachable in
+	// production with nothing in the logs to show for it.
+	warRaw, hasWar := update["warranty_settings"]
+	if !hasWar {
+		warRaw, hasWar = update["warrantySettings"]
+	}
+	if hasWar {
+		h.applyWarrantyConfig(warRaw)
+	}
+
 	registryRaw, hasRegistry := update["policy_registry_state_probes"]
 	if !hasRegistry {
 		registryRaw, hasRegistry = update["policyRegistryStateProbes"]

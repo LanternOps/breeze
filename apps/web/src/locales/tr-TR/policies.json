@@ -1186,7 +1186,13 @@
         "generateACriticalAlertWhenWarrantyExpires": "Garantinin süresi bu kadar gün içinde dolduğunda kritik bir uyarı oluşturun.",
         "enabled": "etkin",
         "warnDays": "warnDays",
-        "criticalDays": "kritikDayler"
+        "criticalDays": "kritikDayler",
+        "collectHpWarrantyFromTheDevice": "HP garantisini cihazdan topla",
+        "hpCmslConsentExplainer": "HP garanti verileri, HP'nin Client Management Script Library aracı kullanılarak cihaz üzerinde okunur. Bu kutuyu işaretlemek HP lisansını bu müşteri adına kabul eder ve HP, IP adresi dahil olmak üzere cihazdan teknik bilgi toplayabilir. İşaretlenmezse HP cihazları mevcut garanti durumlarını korur.",
+        "hpCmslNoAcceptanceRecordedYet": "Henüz kayıtlı bir kabul yok. Bu kutu işaretliyken kaydettiğinizde kullanıcınız ve sunucu saati kaydedilir.",
+        "hpCmslAcceptedByOn": "{{date}} tarihinde {{user}} tarafından kabul edildi",
+        "hpCmslTermsChangedSaveAgain": "HP, bu kabulden bu yana lisans koşullarını değiştirdi. Yeniden kabul etmek için tekrar kaydedin.",
+        "hpCmslInheritanceReplacesTheWholeLink": "Bu ilke, devralınan garanti ayarlarının tamamını değiştirir; alan alan birleştirme yoktur. Cihaz üzerinde toplama kapalıyken kaydedilmesi, bu ilkenin ulaştığı her cihazda HP garanti toplamayı durdurur."
       },
       "rationale": {
         "label": "Gerekçe",
@@ -1195,6 +1201,7 @@
         "save": "Kaydet",
         "cancel": "İptal",
         "none": "Kayıtlı gerekçe yok."
+
       }
     }
   },

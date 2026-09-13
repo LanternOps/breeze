@@ -1186,7 +1186,13 @@
         "generateACriticalAlertWhenWarrantyExpires": "Gerar um alerta crítico quando a garantia vencer dentro deste número de dias.",
         "enabled": "enabled",
         "warnDays": "warnDays",
-        "criticalDays": "criticalDays"
+        "criticalDays": "criticalDays",
+        "collectHpWarrantyFromTheDevice": "Coletar a garantia HP do dispositivo",
+        "hpCmslConsentExplainer": "Os dados de garantia da HP são lidos no dispositivo com a Client Management Script Library da HP. Marcar esta caixa aceita a licença da HP em nome deste cliente, e a HP pode coletar informações técnicas do dispositivo, incluindo o endereço IP. Se ficar desmarcada, os dispositivos HP mantêm o status de garantia que já possuem.",
+        "hpCmslNoAcceptanceRecordedYet": "Nenhuma aceitação registrada até agora. Ao salvar com esta caixa marcada, seu usuário e o horário do servidor são registrados.",
+        "hpCmslAcceptedByOn": "Aceito por {{user}} em {{date}}",
+        "hpCmslTermsChangedSaveAgain": "A HP alterou os termos de licença desde esta aceitação. Salve novamente para aceitar de novo.",
+        "hpCmslInheritanceReplacesTheWholeLink": "Esta política substitui por completo as configurações de garantia herdadas, sem mesclagem campo a campo. Salvá-la com a coleta no dispositivo desativada interrompe a coleta de garantia HP em todos os dispositivos que ela alcança."
       },
       "rationale": {
         "label": "Justificativa",
@@ -1195,6 +1201,7 @@
         "save": "Salvar",
         "cancel": "Cancelar",
         "none": "Nenhuma justificativa registrada."
+
       }
     }
   },

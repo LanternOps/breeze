@@ -23,7 +23,7 @@ import {
 // `metricAnomalyIncidentRetention`, #4210; `deviceGroupJobs`, dynamic device
 // group re-evaluation, #4630; `aiOperatorTaskOutboxPublisher`, #5205 W05
 // #5210; `aiOperatorTaskWorker`, #5205 W06 #5211; `m365SyncRetention`, M365
-// tenant sync W02, #5329).
+// tenant sync W02, #5329; `m365SyncWorker`, M365 tenant sync W04, #5331).
 // This list is duplicated here deliberately — the whole point of the test is
 // to catch drift between the plan's documented contract and the actual
 // registry, so it must not import the list from the module under test.
@@ -47,7 +47,7 @@ const EXPECTED_WORKER_NAMES = [
   'discoveryWorker', 'networkBaselineWorker', 'snmpWorker', 'monitorWorker',
   'unifiWorker', 'unifiTelemetryWorker', 'snmpRetention', 'patchComplianceReportWorker',
   'reportScheduleWorker', 'cveEnrichmentWorker', 'wingetIndexSyncWorker', 'vulnerabilityJobs',
-  'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker', 'pax8SyncWorker',
+  'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker', 'm365SyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
   'maintenanceRebootWorker', 'backupWorker', 'sensitiveDataWorker', 'peripheralJobs',
   'deviceGroupJobs',
@@ -76,7 +76,7 @@ describe('workerRegistry: losslessness', () => {
   });
 
   it('has exactly the expected number of entries', () => {
-    expect(WORKER_REGISTRY.length).toBe(134);
+    expect(WORKER_REGISTRY.length).toBe(135);
   });
 
   it('registers the m365 sync retention worker as global placement', async () => {
@@ -86,6 +86,19 @@ describe('workerRegistry: losslessness', () => {
     const loaded = await entry!.load();
     expect(typeof loaded.init).toBe('function');
     expect(typeof loaded.shutdown).toBe('function');
+  });
+
+  it('registers the m365 sync worker as a socket-owner-placement entry', () => {
+    // NOTE (deviation from plan text): the plan's Step 1 pins 'global', but
+    // workerEntrypointClosure.contract.test.ts's static import-closure walk
+    // shows jobs/m365SyncWorker.ts -> services/m365Sync/run.ts ->
+    // services/m365ControlPlane/readActionService.ts -> services/aiTools.ts
+    // -> ... -> routes/agentWs.ts — reaching socket-local dispatch, same as
+    // policyEvaluationWorker's flip above. Verified by running the closure
+    // contract, per the plan's own instruction to flip and say so if it fails.
+    const entry = WORKER_REGISTRY.find((e) => e.name === 'm365SyncWorker');
+    expect(entry).toBeDefined();
+    expect(entry!.placement).toBe('socket-owner');
   });
 
   it('every entry has a well-formed shape', () => {
@@ -105,14 +118,14 @@ describe('workerRegistry: losslessness', () => {
 
 describe('workerRegistry: selectWorkers', () => {
   it("'all' selects every entry", () => {
-    expect(selectWorkers('all').length).toBe(134);
+    expect(selectWorkers('all').length).toBe(135);
     expect(selectWorkers('all')).toEqual(WORKER_REGISTRY);
   });
 
   it("'api' and 'worker' partition the set with no overlap and no loss", () => {
     const api = selectWorkers('api');
     const worker = selectWorkers('worker');
-    expect(api.length + worker.length).toBe(134);
+    expect(api.length + worker.length).toBe(135);
 
     const apiNames = new Set(api.map((e) => e.name));
     const workerNames = new Set(worker.map((e) => e.name));
@@ -120,7 +133,7 @@ describe('workerRegistry: selectWorkers', () => {
       expect(workerNames.has(name)).toBe(false);
     }
     const union = new Set([...apiNames, ...workerNames]);
-    expect(union.size).toBe(134);
+    expect(union.size).toBe(135);
   });
 
   it("'api' selects only socket-owner placements", () => {

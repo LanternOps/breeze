@@ -4,7 +4,8 @@ import { eq } from 'drizzle-orm';
 import type { AuthContext } from '../../middleware/auth';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { checkHpCmslWriteAllowed } from './hpCmslGate';
 import { db } from '../../db';
 import { organizations } from '../../db/schema';
 import {
@@ -18,6 +19,7 @@ import {
   PartnerWideWriteDeniedError,
   InvalidParentPolicyError,
   PolicyHasChildrenError,
+  parentPolicyEnablesHpCmslCollection,
 } from '../../services/configurationPolicy';
 import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
@@ -68,6 +70,17 @@ crudRoutes.post(
       return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
     }
     const data = c.req.valid('json');
+
+    // #5511 W02 (contract D4): gating follows EFFECTIVENESS, not the verb.
+    // Creating a child of a parent whose warranty link collects HP warranty
+    // data makes that collection effective on the new policy immediately — the
+    // same capability POST /:id/features gates, reached through a second door.
+    // parentPolicyId is create-only (the update schema strips it), so this is
+    // the only re-parenting door there is.
+    if (data.parentPolicyId && await parentPolicyEnablesHpCmslCollection(data.parentPolicyId)) {
+      const gate = checkHpCmslWriteAllowed(auth, c.get('permissions') as UserPermissions | undefined);
+      if (!gate.allowed) return c.json(gate.body, 403);
+    }
 
     // Partner-wide / all-orgs policy (#1724). The partner is ALWAYS derived from
     // the caller's own token — never from a client-supplied value — so a caller
