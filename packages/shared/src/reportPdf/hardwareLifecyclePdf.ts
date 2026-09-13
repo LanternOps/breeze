@@ -249,10 +249,12 @@ function drawFleetBar(doc: jsPDF, chrome: PdfChrome, counts: Record<ReplacementS
       const w = usable * (n / total);
       // Same treatment as a status badge in the app: a light tint of the
       // status colour with the colour itself reserved for the text.
+      // Tint above a solid stripe, both the full segment width, square-cornered
+      // so the stripe reads as the base of the segment rather than a stray rule.
       fill(doc, mix(colors[s], C.white, 0.82));
-      doc.roundedRect(x, y, w, barH, 0.8, 0.8, 'F');
+      doc.rect(x, y, w, barH - 1.1, 'F');
       fill(doc, colors[s]);
-      doc.rect(x + 0.8, y + barH - 0.9, Math.max(w - 1.6, 0.5), 0.9, 'F');
+      doc.rect(x, y + barH - 1.1, w, 1.1, 'F');
       const label = String(n);
       if (doc.getTextWidth(label) + 3 <= w) {
         ink(doc, colors[s]);
@@ -383,7 +385,7 @@ export function renderHardwareLifecycleReport(
     'Hardware Lifecycle Report',
     summary.org?.name ?? '',
     `Prepared ${opts.generatedAt}   ·   ${rows.length} computer${rows.length === 1 ? '' : 's'}${other.length ? `   ·   ${other.length} other device${other.length === 1 ? '' : 's'}` : ''}`,
-    PAGE.bandH + 8,
+    PAGE.bandH + 14,
   );
 
   // --- At a glance -----------------------------------------------------------
